@@ -1,0 +1,120 @@
+import os
+from typing import Optional, List, Union
+from pydantic import Field, field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+class Settings(BaseSettings):
+    # ==========================================
+    # 核心系统配置 (Application Config)
+    # ==========================================
+    APP_NAME: str = "toLink-Rag"
+    APP_HOST: str = "0.0.0.0"
+    APP_PORT: int = 8000
+    LOG_LEVEL: str = "INFO"
+    APP_ENV: str = "development"
+
+    # ==========================================
+    # 存储 & 缓存配置 (Storage & Cache)
+    # ==========================================
+    # Database (MySQL)
+    DB_HOST: str = "localhost"
+    DB_PORT: int = 3306
+    DB_USER: str = "root"
+    DB_PASSWORD: str = ""
+    DB_NAME: str = "tolink_rag_db"
+    
+    # 支持直接从 env 读取 DATABASE_URL，如果不存在则由上述字段构建
+    DATABASE_URL: Optional[str] = None
+
+    @field_validator("DATABASE_URL", mode="before")
+    @classmethod
+    def assemble_db_url(cls, v: Optional[str], info) -> str:
+        if isinstance(v, str) and v:
+            return v
+        values = info.data
+        return f"mysql+pymysql://{values.get('DB_USER')}:{values.get('DB_PASSWORD')}@{values.get('DB_HOST')}:{values.get('DB_PORT')}/{values.get('DB_NAME')}"
+
+    # Redis
+    REDIS_HOST: str = "localhost"
+    REDIS_PORT: int = 6379
+    REDIS_DB: int = 0
+    REDIS_PASSWORD: Optional[str] = None
+    
+    # 支持直接从 env 读取 REDIS_URL
+    REDIS_URL: Optional[str] = None
+
+    @field_validator("REDIS_URL", mode="before")
+    @classmethod
+    def assemble_redis_url(cls, v: Optional[str], info) -> str:
+        if isinstance(v, str) and v:
+            return v
+        values = info.data
+        host = values.get("REDIS_HOST")
+        port = values.get("REDIS_PORT")
+        db = values.get("REDIS_DB")
+        pw = values.get("REDIS_PASSWORD")
+        auth = f":{pw}@" if pw else ""
+        return f"redis://{auth}{host}:{port}/{db}"
+
+    # ==========================================
+    # 安全配置 (Security)
+    # ==========================================
+    API_KEY_ENCRYPTION_SECRET: str = "default-secret"
+
+    # ==========================================
+    # 向量数据库配置 (Vector Store)
+    # ==========================================
+    # 可选值: milvus / elasticsearch
+    VECTOR_STORE_TYPE: str = "milvus"
+    
+    # Milvus
+    MILVUS_HOST: str = "localhost"
+    MILVUS_PORT: int = 19530
+    MILVUS_USER: str = "root"
+    MILVUS_PASSWORD: str = ""
+    MILVUS_COLLECTION_NAME: str = "tolink_rag_collection"
+
+    # Elasticsearch
+    ES_HOST: str = "http://localhost:9200"
+    ES_USER: Optional[str] = None
+    ES_PASSWORD: Optional[str] = None
+    ES_INDEX_NAME: str = "tolink_rag_index"
+
+    # ==========================================
+    # 存储 & 资源配置 (Storage & Resources)
+    # ==========================================
+    STORAGE_TYPE: str = "minio"  # minio / local
+    MINIO_ENDPOINT: str = "localhost:9000"
+    MINIO_ACCESS_KEY: str = "minioadmin"
+    MINIO_SECRET_KEY: str = "minioadmin"
+    MINIO_BUCKET_NAME: str = "tolink-rag-docs"
+    MINIO_USE_SSL: bool = False
+    LOCAL_DOCS_PATH: str = "./data/documents"
+
+    # ==========================================
+    # 异步任务配置 (Celery)
+    # ==========================================
+    CELERY_BROKER_URL: str = "redis://localhost:6379/1"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/1"
+
+    # ==========================================
+    # 杂项配置 (Misc)
+    # ==========================================
+    CORS_ORIGINS: Union[List[str], str] = ["*"]
+
+    @field_validator("CORS_ORIGINS", mode="before")
+    @classmethod
+    def assemble_cors_origins(cls, v: Union[str, List[str]]) -> Union[List[str], str]:
+        if isinstance(v, str) and not v.startswith("["):
+            return [i.strip() for i in v.split(",")]
+        elif isinstance(v, (list, str)):
+            return v
+        raise ValueError(v)
+
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore"
+    )
+
+settings = Settings()
