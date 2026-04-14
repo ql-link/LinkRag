@@ -47,6 +47,9 @@ venv/
 htmlcov/
 .tox/
 
+# API Keys (DO NOT COMMIT)
+tests/api_keys.json
+
 # MyPy
 .mypy_cache/
 

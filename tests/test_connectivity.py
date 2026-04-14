@@ -41,34 +41,59 @@ def test_redis():
         pytest.fail(f"Redis 连接失败: {e}")
 
 
-@pytest.mark.skipif(settings.VECTOR_STORE_TYPE != "milvus", reason="当前环境未配置使用 Milvus 作为向量库")
-def test_milvus():
-    """测试 Milvus 连通性"""
-    pymilvus = pytest.importorskip("pymilvus", reason="未安装 pymilvus，跳过 Milvus 测试")
-    
-    logger.info(f"正在测试 Milvus 连通性: {settings.MILVUS_HOST}:{settings.MILVUS_PORT}")
+# @pytest.mark.skipif(settings.VECTOR_STORE_TYPE != "milvus", reason="当前环境未配置使用 Milvus 作为向量库")
+# def test_milvus():
+#     """测试 Milvus 连通性"""
+#     pymilvus = pytest.importorskip("pymilvus", reason="未安装 pymilvus，跳过 Milvus 测试")
+#
+#     logger.info(f"正在测试 Milvus 连通性: {settings.MILVUS_HOST}:{settings.MILVUS_PORT}")
+#     try:
+#         test_alias = "milvus_test_conn_pytest"
+#
+#         if test_alias in pymilvus.connections.list_connections():
+#             pymilvus.connections.disconnect(test_alias)
+#
+#         pymilvus.connections.connect(
+#             alias=test_alias,
+#             host=settings.MILVUS_HOST,
+#             port=str(settings.MILVUS_PORT),
+#             user=settings.MILVUS_USER,
+#             password=settings.MILVUS_PASSWORD,
+#             timeout=5
+#         )
+#
+#         server_version = pymilvus.utility.get_server_version(using=test_alias)
+#         pymilvus.connections.disconnect(test_alias)
+#
+#         assert server_version, "获取到的 Server Version 为空"
+#         logger.success(f"Milvus 连接成功! Server Version: {server_version}")
+#     except Exception as e:
+#         pytest.fail(f"Milvus 连接失败: {e}")
+
+
+@pytest.mark.skipif(settings.VECTOR_STORE_TYPE != "qdrant", reason="当前环境未配置使用 Qdrant 作为向量库")
+def test_qdrant():
+    """测试 Qdrant 连通性"""
+    grpc = pytest.importorskip("grpc", reason="未安装 grpc，跳过 Qdrant 测试")
+
+    logger.info(f"正在测试 Qdrant 连通性: {settings.QDRANT_HOST}:{settings.QDRANT_PORT}")
     try:
-        test_alias = "milvus_test_conn_pytest"
-        
-        if test_alias in pymilvus.connections.list_connections():
-            pymilvus.connections.disconnect(test_alias)
-            
-        pymilvus.connections.connect(
-            alias=test_alias,
-            host=settings.MILVUS_HOST,
-            port=str(settings.MILVUS_PORT),
-            user=settings.MILVUS_USER,
-            password=settings.MILVUS_PASSWORD,
+        import qdrant_client
+        from qdrant_client import QdrantClient
+
+        client = QdrantClient(
+            host=settings.QDRANT_HOST,
+            port=settings.QDRANT_PORT,
             timeout=5
         )
-        
-        server_version = pymilvus.utility.get_server_version(using=test_alias)
-        pymilvus.connections.disconnect(test_alias)
-        
-        assert server_version, "获取到的 Server Version 为空"
-        logger.success(f"Milvus 连接成功! Server Version: {server_version}")
+
+        # 获取Collections列表作为连通标志
+        collections = client.get_collections()
+        assert collections is not None, "获取 Collections 失败"
+
+        logger.success(f"Qdrant 连接成功! Collections: {[c.name for c in collections.collections]}")
     except Exception as e:
-        pytest.fail(f"Milvus 连接失败: {e}")
+        pytest.fail(f"Qdrant 连接失败: {e}")
 
 
 @pytest.mark.skipif(not settings.ES_HOST, reason="当前环境未配置 ES_HOST")
