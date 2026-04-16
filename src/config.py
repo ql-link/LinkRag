@@ -62,17 +62,28 @@ class Settings(BaseSettings):
     API_KEY_ENCRYPTION_SECRET: str = "default-secret"
 
     # ==========================================
+    # 系统级兜底 LLM 配置 (Platform Default Fallback LLMs)
+    # ==========================================
+    SYSTEM_LLM_PROVIDER: str = "qwen"
+    SYSTEM_LLM_API_KEY: Optional[str] = None
+    SYSTEM_LLM_API_BASE: Optional[str] = None
+
+    SYSTEM_LLM_MODEL_CHAT: str = "qwen3.5-flash"
+    SYSTEM_LLM_MODEL_EMBEDDING: str = "text-embedding-v4"
+    SYSTEM_LLM_MODEL_RERANK: Optional[str] = "qwen3-vl-rerank"
+    SYSTEM_LLM_MODEL_VISION: Optional[str] = None
+
+    # ==========================================
     # 向量数据库配置 (Vector Store)
     # ==========================================
-    # 可选值: milvus / elasticsearch
-    VECTOR_STORE_TYPE: str = "milvus"
-    
-    # Milvus
-    MILVUS_HOST: str = "localhost"
-    MILVUS_PORT: int = 19530
-    MILVUS_USER: str = "root"
-    MILVUS_PASSWORD: str = ""
-    MILVUS_COLLECTION_NAME: str = "tolink_rag_collection"
+    # 可选值: qdrant / elasticsearch
+    VECTOR_STORE_TYPE: str = "qdrant"
+
+    # Qdrant
+    QDRANT_HOST: str = "36.213.180.176"
+    QDRANT_PORT: int = 6333
+    QDRANT_GRPC_PORT: int = 6334
+    QDRANT_COLLECTION_NAME: str = "tolink_rag_collection"
 
     # Elasticsearch
     ES_HOST: str = "http://localhost:9200"
