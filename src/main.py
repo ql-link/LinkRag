@@ -6,11 +6,16 @@ from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+import uvicorn
 
 from src.config import settings
-from src.api.routes import llm, internal
+from src.api.routes import llm, internal, parse
 from src.cache.redis_client import redis_client
 from src.database import init_database, close_database
+
+# 引入文档解析模块的数据库依赖
+from src.core.database import engine
+from src.models.parse_task import Base
 
 
 @asynccontextmanager
@@ -37,7 +42,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 app = FastAPI(
     title=settings.APP_NAME,
     version="1.0.0",
-    description="RAG 系统 LLM 调用接口",
+    description="RAG 系统服务（包含 LLM 调用与多格式文档解析）",
     lifespan=lifespan,
 )
 
@@ -50,19 +55,23 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# 注册路由
+# 注册所有模块路由
 app.include_router(llm.router)
 app.include_router(internal.router)
+app.include_router(parse.router)  # 挂载文档解析路由
 
 
 @app.get("/health")
 async def health_check():
     """健康检查"""
-    return {"status": "ok", "app": settings.APP_NAME}
+    return {
+        "status": "ok", 
+        "app": settings.APP_NAME,
+        "services": ["llm", "document_parser"]
+    }
 
 
 if __name__ == "__main__":
-    import uvicorn
     uvicorn.run(
         "src.main:app",
         host=settings.APP_HOST,
