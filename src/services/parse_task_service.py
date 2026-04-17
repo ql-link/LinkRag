@@ -1,5 +1,5 @@
 import time
-from src.core.parser.factory import ParserFactory
+from src.core.document_parser.factory import ParserFactory
 from src.utils.text_formatter import TextFormatter
 
 

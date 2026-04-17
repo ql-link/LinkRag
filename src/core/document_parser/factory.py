@@ -2,7 +2,7 @@ from .providers.word_parser import WordParser
 from .providers.txt_parser import TxtParser
 from .providers.pdf_parser import PdfParser  # 新增引入
 from .providers.html_parser import HtmlParser  # 新增引入
-from ..exceptions import UnsupportedFormatError
+from src.core.exceptions import UnsupportedFormatError
 
 
 class ParserFactory:

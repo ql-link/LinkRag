@@ -1,6 +1,6 @@
 import trafilatura
 from ..base_parser import BaseParser
-from ...exceptions import ParseBaseException
+from src.core.exceptions import ParseBaseException
 
 class HtmlParser(BaseParser):
     """网页去噪提取正文逻辑"""
