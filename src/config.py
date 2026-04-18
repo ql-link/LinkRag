@@ -102,11 +102,25 @@ class Settings(BaseSettings):
     MINIO_USE_SSL: bool = False
     LOCAL_DOCS_PATH: str = "./data/documents"
 
+
     # ==========================================
-    # 异步任务配置 (Celery)
+    # MQ 消息中台配置 (Message Queue)
     # ==========================================
-    CELERY_BROKER_URL: str = "redis://localhost:6379/1"
-    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/1"
+    # 可选值: kafka / rabbitmq
+    MQ_VENDOR: str = "kafka"
+
+    # --- Kafka 配置 ---
+    KAFKA_BOOTSTRAP_SERVERS: str = "localhost:9092"
+    KAFKA_SASL_MECHANISM: Optional[str] = None
+    KAFKA_SASL_USERNAME: Optional[str] = None
+    KAFKA_SASL_PASSWORD: Optional[str] = None
+    KAFKA_SECURITY_PROTOCOL: str = "PLAINTEXT"
+
+    # --- RabbitMQ 配置 ---
+    RABBITMQ_URL: str = "amqp://guest:guest@localhost:5672/"
+    RABBITMQ_EXCHANGE_NAME: str = ""
+    RABBITMQ_EXCHANGE_TYPE: str = "direct"
+    RABBITMQ_PREFETCH_COUNT: int = 10
 
     # ==========================================
     # 杂项配置 (Misc)
@@ -123,7 +137,7 @@ class Settings(BaseSettings):
         raise ValueError(v)
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"),
         env_file_encoding="utf-8",
         extra="ignore"
     )
