@@ -1,32 +1,22 @@
 # -*- coding: utf-8 -*-
-"""
-Chunker 抽象基类
-
-定义分片策略的接口契约。所有具体的 chunking 实现必须继承此基类。
-用户通过实现 chunk() 方法注入自己的分片逻辑。
-"""
+"""Base interfaces for splitter implementations."""
 
 from abc import ABC, abstractmethod
 
-from src.core.markdown_parser.models import MarkdownElement, ParseResult
+from src.core.markdown_parser import MarkdownElement, ParseResult
+
 from .models import Chunk
 
 
 class BaseChunker(ABC):
-    """分片策略抽象基类
+    """
+        定义 splitter 阶段的统一抽象接口，约束所有分片策略的输入输出形式。
 
-    定义 chunking 阶段的接口契约。
+    Args:
+        None.
 
-    典型的继承实现:
-        class MyChunker(BaseChunker):
-            def chunk(self, elements, **kwargs):
-                # 自定义分片逻辑
-                ...
-
-    设计原则:
-        - 输入: MarkdownElement 列表 (由 markdown_parser 产出)
-        - 输出: Chunk 列表 (供下游 Embedding 消费)
-        - 不修改输入数据，保持无副作用
+    Returns:
+        None.
     """
 
     @abstractmethod
@@ -35,14 +25,15 @@ class BaseChunker(ABC):
         elements: list[MarkdownElement],
         **kwargs,
     ) -> list[Chunk]:
-        """将元素列表分片
+        """
+            将解析后的 Markdown 元素序列切分为按文档顺序排列的 Chunk 列表。
 
         Args:
-            elements: markdown_parser 产出的扁平元素列表（按文档顺序）
-            **kwargs: 预留扩展参数，如 max_chunk_size, overlap 等
+            elements: `markdown_parser` 输出的扁平元素列表。
+            **kwargs: 透传给具体 chunker 的扩展配置，例如长度约束或 overlap 参数。
 
         Returns:
-            按文档顺序排列的 Chunk 列表
+            list[Chunk]: 分片后的结果列表。
         """
         ...
 
@@ -51,23 +42,60 @@ class BaseChunker(ABC):
         parse_result: ParseResult,
         **kwargs,
     ) -> list[Chunk]:
-        """便捷方法: 直接从 ParseResult 分片
-
-        从 MarkdownParser.parse() 的输出直接进入分片流程，
-        自动将 source_file 注入到每个 Chunk 的 metadata 中。
+        """
+            直接消费 `ParseResult` 执行分片，并自动把 `source_file` 注入每个 Chunk 的元数据。
 
         Args:
-            parse_result: MarkdownParser.parse() 的返回值
-            **kwargs: 透传给 chunk()
+            parse_result: 解析器产出的结构化结果对象。
+            **kwargs: 透传给 `chunk()` 的扩展配置。
 
         Returns:
-            Chunk 列表
+            list[Chunk]: 已补齐来源文件信息的分片结果。
         """
         chunks = self.chunk(parse_result.elements, **kwargs)
 
-        # 自动注入 source_file
         if parse_result.source_file:
-            for c in chunks:
-                c.metadata.setdefault("source_file", parse_result.source_file)
+            for chunk in chunks:
+                chunk.metadata.setdefault("source_file", parse_result.source_file)
+
+        return chunks
+
+    async def achunk(
+        self,
+        elements: list[MarkdownElement],
+        **kwargs,
+    ) -> list[Chunk]:
+        """
+            提供异步分片入口，默认回退到同步 `chunk()` 实现。
+
+        Args:
+            elements: `markdown_parser` 输出的扁平元素列表。
+            **kwargs: 透传给 `chunk()` 的扩展配置。
+
+        Returns:
+            list[Chunk]: 分片结果列表。
+        """
+        return self.chunk(elements, **kwargs)
+
+    async def achunk_from_parse_result(
+        self,
+        parse_result: ParseResult,
+        **kwargs,
+    ) -> list[Chunk]:
+        """
+            提供异步版 `ParseResult` 入口，并在返回前补齐 `source_file` 元数据。
+
+        Args:
+            parse_result: 解析器产出的结构化结果对象。
+            **kwargs: 透传给 `achunk()` 的扩展配置。
+
+        Returns:
+            list[Chunk]: 异步分片后的结果列表。
+        """
+        chunks = await self.achunk(parse_result.elements, **kwargs)
+
+        if parse_result.source_file:
+            for chunk in chunks:
+                chunk.metadata.setdefault("source_file", parse_result.source_file)
 
         return chunks

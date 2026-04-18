@@ -10,12 +10,23 @@ splitter — 文本分片模块
     Chunk           — 分片数据模型
 """
 
-from .models import Chunk
+from .models import Chunk, EmbeddedChunk, EmbeddingPipelineStats
 from .base import BaseChunker
 from .chunking_engine import ChunkingEngine
+from .rule_chunker import ASTAwareChunker
+from .pipeline_chunker import StructuredSemanticChunker
+from .semantic_chunker import PercentileSemanticChunker, SemanticSplitter
+from .embedding_pipeline import ChunkEmbeddingPipeline
 
 __all__ = [
-    "ChunkingEngine",
-    "BaseChunker",
     "Chunk",
+    "EmbeddedChunk",
+    "EmbeddingPipelineStats",
+    "BaseChunker",
+    "ChunkingEngine",
+    "ASTAwareChunker",
+    "StructuredSemanticChunker",
+    "PercentileSemanticChunker",
+    "SemanticSplitter",
+    "ChunkEmbeddingPipeline",
 ]
