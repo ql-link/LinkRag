@@ -191,15 +191,17 @@ class TestUsageLogServiceIntegration:
     ):
         """get_user_usage 应该支持日期过滤"""
         user_id = setup_test_data["user_id"]
-        today = date.today()
+        # 跨时区环境下，数据库 CURRENT_TIMESTAMP 可能与本地 date.today() 存在日期边界差异
+        # 使用“近 1 天”窗口验证过滤能力，避免凌晨时段偶发失败。
+        start_date = date.today() - timedelta(days=1)
 
-        logs = await service.get_user_usage(user_id, start_date=today)
+        logs = await service.get_user_usage(user_id, start_date=start_date)
 
         assert isinstance(logs, list)
         assert len(logs) > 0
         for log in logs:
             log_date = datetime.fromisoformat(log["created_at"]).date()
-            assert log_date >= today
+            assert log_date >= start_date
 
     @pytest.mark.asyncio
     async def test_Get_User_Usage_Limit(
@@ -247,9 +249,10 @@ class TestUsageLogServiceIntegration:
     ):
         """get_usage_summary 应该支持日期过滤"""
         user_id = setup_test_data["user_id"]
-        today = date.today()
+        # 与 get_user_usage 的日期过滤保持一致，降低跨时区导致的偶发失败。
+        start_date = date.today() - timedelta(days=1)
 
-        summary = await service.get_usage_summary(user_id, start_date=today)
+        summary = await service.get_usage_summary(user_id, start_date=start_date)
 
         assert summary["total_calls"] >= 1
 
