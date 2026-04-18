@@ -22,6 +22,7 @@ class ModelFactory:
     _instance: Optional["ModelFactory"] = None
     _providers: Dict[str, Type[BaseProvider]] = {}
     _client_cache: Dict[str, BaseProvider] = {}
+    _default_provider_types = {"openai", "anthropic", "glm", "deepseek", "qwen"}
 
     def __new__(cls) -> "ModelFactory":
         if cls._instance is None:
@@ -32,18 +33,28 @@ class ModelFactory:
         return cls._instance
 
     def _register_default_providers(self) -> None:
-        """注册默认的 Providers"""
+        """注册默认的 Providers（幂等）"""
         from src.core.llm.providers.openai import OpenAIProvider
         from src.core.llm.providers.anthropic import AnthropicProvider
         from src.core.llm.providers.glm import GLMProvider
         from src.core.llm.providers.deepseek import DeepSeekProvider
         from src.core.llm.providers.qwen import QwenProvider
 
-        self._providers["openai"] = OpenAIProvider
-        self._providers["anthropic"] = AnthropicProvider
-        self._providers["glm"] = GLMProvider
-        self._providers["deepseek"] = DeepSeekProvider
-        self._providers["qwen"] = QwenProvider
+        if "openai" not in self._providers:
+            self._providers["openai"] = OpenAIProvider
+        if "anthropic" not in self._providers:
+            self._providers["anthropic"] = AnthropicProvider
+        if "glm" not in self._providers:
+            self._providers["glm"] = GLMProvider
+        if "deepseek" not in self._providers:
+            self._providers["deepseek"] = DeepSeekProvider
+        if "qwen" not in self._providers:
+            self._providers["qwen"] = QwenProvider
+
+    def _ensure_default_provider_available(self, provider_type: str) -> None:
+        """确保默认 provider 在被测试清空后可自动恢复注册。"""
+        if provider_type in self._default_provider_types and provider_type not in self._providers:
+            self._register_default_providers()
 
     def register_provider(self, provider_type: str, provider_cls: Type[BaseProvider]) -> None:
         """注册 Provider
@@ -71,6 +82,7 @@ class ModelFactory:
         Raises:
             KeyError: 如果该类型未注册
         """
+        self._ensure_default_provider_available(provider_type)
         if provider_type not in self._providers:
             raise KeyError(f"Provider type '{provider_type}' is not registered")
         return self._providers[provider_type]

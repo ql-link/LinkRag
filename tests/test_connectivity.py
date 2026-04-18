@@ -1,4 +1,5 @@
 import pytest
+import asyncio
 from src.utils.logger import logger
 from src.config import settings
 
@@ -39,6 +40,46 @@ def test_redis():
         logger.success("Redis 连接成功!")
     except Exception as e:
         pytest.fail(f"Redis 连接失败: {e}")
+
+
+@pytest.mark.skipif(settings.MQ_VENDOR.lower() != "kafka", reason="当前环境 MQ_VENDOR 不是 Kafka")
+@pytest.mark.asyncio
+async def test_kafka():
+    """测试 Kafka 连通性（启动握手，不写入消息）"""
+    try:
+        from aiokafka import AIOKafkaProducer
+    except ImportError as e:
+        pytest.fail(f"未安装 aiokafka，无法测试 Kafka 连通性: {e}（建议执行: pip install aiokafka）")
+
+    logger.info(f"正在测试 Kafka 连通性: {settings.KAFKA_BOOTSTRAP_SERVERS}")
+    producer = None
+    try:
+        kwargs = {
+            "bootstrap_servers": settings.KAFKA_BOOTSTRAP_SERVERS,
+            "client_id": "tolink-rag-connectivity-test",
+            "security_protocol": getattr(settings, "KAFKA_SECURITY_PROTOCOL", "PLAINTEXT"),
+        }
+        sasl_mechanism = getattr(settings, "KAFKA_SASL_MECHANISM", None)
+        if sasl_mechanism:
+            kwargs.update(
+                {
+                    "sasl_mechanism": sasl_mechanism,
+                    "sasl_plain_username": getattr(settings, "KAFKA_SASL_USERNAME", None),
+                    "sasl_plain_password": getattr(settings, "KAFKA_SASL_PASSWORD", None),
+                }
+            )
+
+        producer = AIOKafkaProducer(**kwargs)
+        await asyncio.wait_for(producer.start(), timeout=5)
+        logger.success("Kafka 连接成功!")
+    except Exception as e:
+        pytest.fail(f"Kafka 连接失败: {e}")
+    finally:
+        if producer is not None:
+            try:
+                await asyncio.wait_for(producer.stop(), timeout=5)
+            except Exception:
+                pass
 
 
 # @pytest.mark.skipif(settings.VECTOR_STORE_TYPE != "milvus", reason="当前环境未配置使用 Milvus 作为向量库")
