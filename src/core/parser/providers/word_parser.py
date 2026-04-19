@@ -1,6 +1,6 @@
 import docx
 from io import BytesIO
-from ..base_parser import BaseParser
+from ..base import BaseParser
 
 
 class WordParser(BaseParser):

@@ -120,6 +120,51 @@ CREATE TABLE IF NOT EXISTS llm_usage_log (
     INDEX idx_conversation_id (conversation_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT 'LLM 调用用量日志表';
 
+-- 7. 原始文档上传记录表
+CREATE TABLE IF NOT EXISTS document_original_file (
+    id                    BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '原始文件主键ID',
+    conversation_id       BIGINT UNSIGNED NOT NULL COMMENT '所属对话ID',
+    user_id               BIGINT UNSIGNED NOT NULL COMMENT '上传用户ID',
+    original_filename     VARCHAR(255)    NOT NULL COMMENT '用户上传时的原始文件名',
+    file_suffix           VARCHAR(32)     NOT NULL COMMENT '标准化小写文件后缀: md/pdf/docx/txt/html',
+    file_size             BIGINT UNSIGNED NOT NULL COMMENT '原始文件大小，单位字节',
+    content_type          VARCHAR(128)    DEFAULT NULL COMMENT '上传请求中的Content-Type',
+    file_sha256           CHAR(64)        DEFAULT NULL COMMENT '原文件SHA256',
+    storage_provider      VARCHAR(32)     NOT NULL DEFAULT 'minio' COMMENT '存储提供方: minio/oss',
+    bucket_name           VARCHAR(128)    NOT NULL COMMENT '原始文件所在bucket',
+    object_key            VARCHAR(512)    NOT NULL COMMENT '原始文件对象Key',
+    file_url              VARCHAR(1024)   DEFAULT NULL COMMENT '内部访问URL，可选',
+    upload_status         VARCHAR(20)     NOT NULL DEFAULT 'uploading' COMMENT '上传状态: uploading/success/failed',
+    upload_failure_reason VARCHAR(512)    DEFAULT NULL COMMENT '上传失败原因',
+    is_deleted            TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '软删除标记: 0-未删除, 1-已删除',
+    created_at            DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
+    updated_at            DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
+
+    KEY idx_conversation_deleted_created (conversation_id, is_deleted, created_at),
+    KEY idx_user_deleted_created (user_id, is_deleted, created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '原始文档上传记录表';
+
+-- 8. 文档解析任务执行记录表
+CREATE TABLE IF NOT EXISTS document_parse_task (
+    id                BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '解析任务主键ID',
+    task_id           VARCHAR(36)     NOT NULL COMMENT '解析任务唯一标识(UUID)',
+    original_file_id  BIGINT UNSIGNED NOT NULL COMMENT '关联原始文件ID，对应 document_original_file.id',
+    file_type         VARCHAR(32)     NOT NULL COMMENT '文件真实格式: md/pdf/docx/txt/html',
+    status            VARCHAR(16)     NOT NULL DEFAULT 'pending' COMMENT '状态: pending/processing/success/failed',
+    md_bucket         VARCHAR(128)    DEFAULT NULL COMMENT 'Markdown文件bucket',
+    md_object_key     VARCHAR(512)    DEFAULT NULL COMMENT 'Markdown文件对象Key',
+    md_storage_status VARCHAR(24)     NOT NULL DEFAULT 'pending' COMMENT 'Markdown存储状态: pending/success/failed',
+    page_count        INT             DEFAULT NULL COMMENT '解析出的总页数/大致长度指标',
+    error_message     VARCHAR(512)    DEFAULT NULL COMMENT '失败原因',
+    time_cost_ms      INT             DEFAULT NULL COMMENT '解析耗时(毫秒)',
+    created_at        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '任务创建时间',
+    updated_at        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '任务更新时间',
+
+    UNIQUE KEY uk_task_id (task_id),
+    KEY idx_original_file_status (original_file_id, status),
+    KEY idx_created_at (created_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '文档解析任务执行记录表';
+
 -- 设置所有表的自增起始值为 10000 (MySQL 8.0 推荐显式指定方式)
 ALTER TABLE sys_user AUTO_INCREMENT = 10000;
 ALTER TABLE llm_system_provider AUTO_INCREMENT = 10000;
@@ -127,3 +172,5 @@ ALTER TABLE llm_user_config AUTO_INCREMENT = 10000;
 ALTER TABLE chat_conversation AUTO_INCREMENT = 10000;
 ALTER TABLE chat_message AUTO_INCREMENT = 10000;
 ALTER TABLE llm_usage_log AUTO_INCREMENT = 10000;
+ALTER TABLE document_original_file AUTO_INCREMENT = 10000;
+ALTER TABLE document_parse_task AUTO_INCREMENT = 10000;
