@@ -1,5 +1,5 @@
 import trafilatura
-from ..base_parser import BaseParser
+from ..base import BaseParser
 from ...exceptions import ParseBaseException
 
 class HtmlParser(BaseParser):

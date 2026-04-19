@@ -1,7 +1,9 @@
 class FileDownloader:
-    """OSS 流式下载工具类"""
+    """对象存储下载兼容包装器"""
+
     @staticmethod
-    def download(url: str) -> bytes:
-        # 这里替换为真实的 requests.get 或 OSS SDK 调用
-        print(f"正在从 {url} 下载文件...")
-        return b"mock file content"
+    def download(bucket: str, object_key: str) -> bytes:
+        from src.services.storage.factory import StorageFactory
+
+        storage = StorageFactory.get_storage()
+        return storage.download_bytes(bucket, object_key)

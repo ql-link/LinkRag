@@ -31,9 +31,17 @@ router = APIRouter(
 class SendParseTaskRequest(BaseModel):
     """文档解析任务消息发送请求"""
     task_id: str = Field(..., title="任务ID", description="文档解析任务唯一标识")
-    document_id: str = Field(..., title="文档ID", description="待解析文档标识")
-    file_url: str = Field(..., title="文件URL", description="OSS 文件下载地址")
+    original_file_id: int = Field(..., title="原始文件ID", description="原始文件表主键")
     file_type: str = Field(..., title="文件类型", description="文件格式 (pdf/docx/html/...)")
+    source_bucket: str = Field(..., title="源文件Bucket", description="原始文件所在对象存储 bucket")
+    source_object_key: str = Field(..., title="源文件对象Key", description="原始文件对象存储 key")
+    source_filename: str = Field(..., title="原始文件名", description="用户上传时的原始文件名")
+    md_bucket: str = Field(..., title="Markdown Bucket", description="Markdown 输出 bucket")
+    md_object_key: str = Field(..., title="Markdown 对象Key", description="Markdown 输出对象 key")
+    parser_backend: str = Field("naive", title="PDF解析器", description="可选 PDF 解析器: naive/docling")
+    docling_force_ocr: bool = Field(False, title="Docling强制全页OCR", description="仅 docling 后端生效")
+    image_bucket: Optional[str] = Field(None, title="图片Bucket", description="PDF 图片输出 bucket")
+    image_prefix: Optional[str] = Field(None, title="图片前缀", description="PDF 图片输出对象 key 前缀")
 
     model_config = {"title": "发送解析任务请求体"}
 
@@ -100,9 +108,17 @@ async def send_parse_task(request: SendParseTaskRequest):
         mq_service = MQService()
         msg = ParseTaskMessage.build(
             task_id=request.task_id,
-            document_id=request.document_id,
-            file_url=request.file_url,
+            original_file_id=request.original_file_id,
             file_type=request.file_type,
+            source_bucket=request.source_bucket,
+            source_object_key=request.source_object_key,
+            source_filename=request.source_filename,
+            md_bucket=request.md_bucket,
+            md_object_key=request.md_object_key,
+            parser_backend=request.parser_backend,
+            docling_force_ocr=request.docling_force_ocr,
+            image_bucket=request.image_bucket or request.md_bucket,
+            image_prefix=request.image_prefix or request.md_object_key,
         )
         await mq_service.send(msg)
         return MQResponse(success=True, message="解析任务已投递")

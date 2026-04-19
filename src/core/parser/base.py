@@ -1,10 +1,16 @@
-from .interfaces import IFileParser
+from abc import ABC, abstractmethod
 
+class IFileParser(ABC):
+    """抽象接口契约"""
+    @abstractmethod
+    def parse(self, file_stream: bytes) -> str:
+        """接收文件流，必须返回 Markdown 格式字符串"""
+        pass
 
 class BaseParser(IFileParser):
     """解析器基类"""
 
-    metadata: dict  # 添加类型注解，消除 IDE 对未解析特性的误报警告
+    metadata: dict
 
     def __init__(self):
         self.metadata = {}
