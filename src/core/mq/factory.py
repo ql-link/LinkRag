@@ -51,7 +51,7 @@ class MQFactory:
 
     def _register_defaults(self) -> None:
         """注册内置的厂商适配器"""
-        from src.core.mq.vendors.kafka_adapter import KafkaSender, KafkaReceiver
+        from src.core.mq.vendors.kafka.kafka_adapter import KafkaSender, KafkaReceiver
         from src.core.mq.vendors.rabbitmq_adapter import RabbitMQSender, RabbitMQReceiver
 
         self._sender_registry[MQVendorType.KAFKA] = KafkaSender

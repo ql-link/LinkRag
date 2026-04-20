@@ -19,6 +19,7 @@ from src.models.parse_task import Base
 
 # MQ 工厂（生命周期管理）
 from src.core.mq.factory import MQFactory
+from src.core.mq.topic_admin import ensure_topics
 
 
 @asynccontextmanager
@@ -37,6 +38,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # 启动时初始化
     await redis_client.initialize()
     await init_database()
+    if settings.MQ_VENDOR.lower() == "kafka" and settings.INIT_KAFKA_TOPICS_ON_STARTUP:
+        ensure_topics()
     yield
     # 关闭时清理（MQ 连接优先关闭，避免消息丢失）
     try:
@@ -51,7 +54,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 app = FastAPI(
     title=settings.APP_NAME,
     version="1.0.0",
-    description="RAG 系统服务（包含 LLM 调用与多格式文档解析）",
+    description="RAG 系统服务",
     lifespan=lifespan,
 )
 

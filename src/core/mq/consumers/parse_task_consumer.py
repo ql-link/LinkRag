@@ -21,11 +21,20 @@ from src.services.storage.factory import StorageFactory
 from src.core.mq.messages import ParseTaskMessage
 from src.core.database import SessionLocal
 from src.models.parse_task import DocumentParseTask
+from src.core.splitter import ChunkingEngine, ASTAwareChunker
 
 
 # Topic / Queue 名称与消费者组常量
 PARSE_TASK_TOPIC = ParseTaskMessage.MQ_NAME
 PARSE_TASK_GROUP = "tolink-rag-parse-group"
+
+
+def _chunk_markdown(markdown: str, source_file: str | None = None) -> int:
+    """调用分片模块执行 Markdown 分块，返回分块数量。"""
+    engine = ChunkingEngine(chunker=ASTAwareChunker())
+    chunks = engine.process(markdown, source_file=source_file)
+    return len(chunks)
+
 
 async def handle_parse_task(message_body: str, metadata: Dict[str, Any]) -> None:
     """业务回调: 处理文档解析任务
@@ -104,6 +113,21 @@ async def handle_parse_task(message_body: str, metadata: Dict[str, Any]) -> None
         task_record.page_count = result["metadata"].get("pages_or_length", 0)
         task_record.time_cost_ms = result["time_cost_ms"]
         db.commit()
+
+        # 7. 落库完成后触发分块
+        try:
+            chunk_count = _chunk_markdown(
+                result["markdown"],
+                source_file=payload.md_object_key,
+            )
+            logger.info(
+                f"[ParseTaskConsumer] 分块完成: task_id={task_id}, chunk_count={chunk_count}"
+            )
+        except Exception as chunk_err:
+            logger.error(
+                f"[ParseTaskConsumer] 分块失败: task_id={task_id}, error={chunk_err}"
+            )
+
         logger.info(f"[ParseTaskConsumer] 解析成功: task_id={task_id}")
 
     except Exception as e:

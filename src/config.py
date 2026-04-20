@@ -120,6 +120,7 @@ class Settings(BaseSettings):
     KAFKA_SASL_USERNAME: Optional[str] = None
     KAFKA_SASL_PASSWORD: Optional[str] = None
     KAFKA_SECURITY_PROTOCOL: str = "PLAINTEXT"
+    INIT_KAFKA_TOPICS_ON_STARTUP: bool = False
 
     # --- RabbitMQ 配置 ---
     RABBITMQ_URL: str = "amqp://guest:guest@localhost:5672/"

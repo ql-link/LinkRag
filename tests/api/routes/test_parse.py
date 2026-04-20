@@ -104,13 +104,13 @@ class TestParseRoutes:
 class TestMQConsumerCallback:
     """MQ 消费者回调测试"""
 
-    @patch("src.services.mq_consumer.FileDownloader.download")
-    @patch("src.services.mq_consumer.ParseTaskService.process_sync")
-    @patch("src.services.mq_consumer.SessionLocal")
+    @patch("src.core.mq.consumers.parse_task_consumer.FileDownloader.download")
+    @patch("src.core.mq.consumers.parse_task_consumer.ParseTaskService.process_sync")
+    @patch("src.core.mq.consumers.parse_task_consumer.SessionLocal")
     async def test_handle_parse_task_success(
         self, mock_session_cls, mock_process, mock_download
     ):
-        from src.services.mq_consumer import handle_parse_task
+        from src.core.mq.consumers.parse_task_consumer import handle_parse_task
         from src.core.mq.messages import ParseTaskMessage
 
         # 构造消息
@@ -146,10 +146,10 @@ class TestMQConsumerCallback:
         mock_db.commit.assert_called()
         mock_db.close.assert_called_once()
 
-    @patch("src.services.mq_consumer.SessionLocal")
+    @patch("src.core.mq.consumers.parse_task_consumer.SessionLocal")
     async def test_handle_idempotent_skip(self, mock_session_cls):
         """已完成的任务应幂等跳过"""
-        from src.services.mq_consumer import handle_parse_task
+        from src.core.mq.consumers.parse_task_consumer import handle_parse_task
         from src.core.mq.messages import ParseTaskMessage
 
         msg = ParseTaskMessage.build(
