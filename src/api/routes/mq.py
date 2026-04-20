@@ -4,10 +4,7 @@ MQ 消息中台 API 路由
 提供 MQ 消息发送、厂商信息查询等 HTTP 接口。
 用于 Java 管理端通过 HTTP 触发 Python 侧的 MQ 消息投递。
 """
-from typing import Optional
-
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
 from loguru import logger
 
 from src.services.mq_service import MQService
@@ -17,71 +14,19 @@ from src.core.mq.messages import (
     CacheSyncMessage,
     UsageReportMessage,
 )
+from src.api.schemas.mq import (
+    SendParseTaskRequest,
+    SendCacheSyncRequest,
+    SendUsageReportRequest,
+    SendRawMessageRequest,
+    MQResponse,
+    MQVendorInfoResponse,
+)
 
 router = APIRouter(
     prefix="/api/v1/mq",
     tags=["MQ消息中台"],
 )
-
-
-# ==========================================
-# 请求/响应模型
-# ==========================================
-
-class SendParseTaskRequest(BaseModel):
-    """文档解析任务消息发送请求"""
-    task_id: str = Field(..., title="任务ID", description="文档解析任务唯一标识")
-    document_id: str = Field(..., title="文档ID", description="待解析文档标识")
-    file_url: str = Field(..., title="文件URL", description="OSS 文件下载地址")
-    file_type: str = Field(..., title="文件类型", description="文件格式 (pdf/docx/html/...)")
-
-    model_config = {"title": "发送解析任务请求体"}
-
-
-class SendCacheSyncRequest(BaseModel):
-    """缓存同步消息发送请求"""
-    user_id: str = Field(..., title="用户ID", description="需要同步缓存的用户标识")
-    action: str = Field("refresh", title="操作类型", description="refresh / invalidate / warmup")
-    config_id: Optional[str] = Field(None, title="配置ID", description="具体配置标识")
-
-    model_config = {"title": "发送缓存同步请求体"}
-
-
-class SendUsageReportRequest(BaseModel):
-    """用量上报消息发送请求"""
-    user_id: str = Field(..., title="用户ID")
-    provider_type: str = Field(..., title="LLM厂商类型")
-    model_name: str = Field(..., title="模型名称")
-    prompt_tokens: int = Field(0, ge=0, title="输入Token数")
-    completion_tokens: int = Field(0, ge=0, title="输出Token数")
-    total_tokens: int = Field(0, ge=0, title="总Token数")
-
-    model_config = {"title": "发送用量上报请求体"}
-
-
-class SendRawMessageRequest(BaseModel):
-    """原始消息发送请求"""
-    topic: str = Field(..., title="目标Topic/Queue", description="消息投递目标")
-    message: str = Field(..., title="消息体", description="JSON 字符串格式的消息内容")
-    key: Optional[str] = Field(None, title="路由键", description="Kafka partition key / RabbitMQ routing key")
-
-    model_config = {"title": "原始消息发送请求体"}
-
-
-class MQResponse(BaseModel):
-    """MQ 操作响应"""
-    success: bool = Field(..., title="操作结果")
-    message: str = Field("", title="描述信息")
-
-    model_config = {"title": "MQ操作响应"}
-
-
-class MQVendorInfoResponse(BaseModel):
-    """MQ 厂商信息响应"""
-    current_vendor: str = Field(..., title="当前厂商", description="当前激活的 MQ 厂商")
-    available_vendors: list[str] = Field(..., title="可用厂商列表")
-
-    model_config = {"title": "MQ厂商信息响应"}
 
 
 # ==========================================
@@ -100,9 +45,17 @@ async def send_parse_task(request: SendParseTaskRequest):
         mq_service = MQService()
         msg = ParseTaskMessage.build(
             task_id=request.task_id,
-            document_id=request.document_id,
-            file_url=request.file_url,
+            original_file_id=request.original_file_id,
             file_type=request.file_type,
+            source_bucket=request.source_bucket,
+            source_object_key=request.source_object_key,
+            source_filename=request.source_filename,
+            md_bucket=request.md_bucket,
+            md_object_key=request.md_object_key,
+            parser_backend=request.parser_backend,
+            docling_force_ocr=request.docling_force_ocr,
+            image_bucket=request.image_bucket or request.md_bucket,
+            image_prefix=request.image_prefix or request.md_object_key,
         )
         await mq_service.send(msg)
         return MQResponse(success=True, message="解析任务已投递")

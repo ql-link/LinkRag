@@ -5,54 +5,53 @@
 异步任务通过 MQ 中台投递，由消费端异步处理。
 """
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
-from pydantic import BaseModel, Field
 
 from src.services.parse_task_service import ParseTaskService
 from src.services.mq_service import MQService
+from src.services.storage.factory import StorageFactory
 from src.core.mq.messages import ParseTaskMessage
+from src.api.schemas.parse import TaskSubmitRequest, TaskSubmitResponse
 
 router = APIRouter(
     prefix="/api/v1/parser",
     tags=["文档解析"],
 )
 
-
-class TaskSubmitRequest(BaseModel):
-    """异步解析任务提交请求"""
-    task_id: str = Field(..., title="任务ID", description="文档解析任务唯一标识")
-    document_id: str = Field(..., title="文档ID", description="待解析文档标识")
-    file_url: str = Field(..., title="文件URL", description="OSS 文件下载地址")
-    file_type: str = Field(..., title="文件类型", description="文件格式 (pdf/docx/html/txt)")
-
-    model_config = {"title": "异步解析任务请求体"}
-
-
-class TaskSubmitResponse(BaseModel):
-    """异步解析任务提交响应"""
-    code: int = Field(200, title="状态码")
-    message: str = Field("", title="描述信息")
-    data: dict = Field(default_factory=dict, title="响应数据")
-
-    model_config = {"title": "异步解析任务响应体"}
-
-
 @router.post(
     "/extract_sync",
     summary="同步提取文档转 Markdown",
-    description="上传文件后同步解析并返回 Markdown 内容。适用于测试或小文件直传场景。",
+    description="上传文件后同步解析并返回 Markdown 内容。仅用于测试或联调，不作为生产上传入口。",
 )
-async def extract_sync(file: UploadFile = File(...), file_type: str = Form(...)):
+async def extract_sync(
+    file: UploadFile = File(...),
+    file_type: str = Form(...),
+    parser_backend: str = Form("naive"),
+    docling_force_ocr: bool = Form(False),
+    image_bucket: str | None = Form(None),
+    image_prefix: str | None = Form(None),
+):
     """同步解析文档"""
     try:
         file_stream = await file.read()
-        result = ParseTaskService.process_sync(file_stream, file_type)
+        parser_kwargs = {}
+        if file_type.lower() == "pdf":
+            parser_kwargs["backend"] = parser_backend
+            parser_kwargs["docling_force_ocr"] = docling_force_ocr
+            if image_bucket and image_prefix:
+                parser_kwargs["image_bucket"] = image_bucket
+                parser_kwargs["image_prefix"] = image_prefix
+                parser_kwargs["storage"] = StorageFactory.get_storage()
+
+        result = ParseTaskService.process_sync(file_stream, file_type, **parser_kwargs)
         return {
             "code": 200,
             "message": "success",
             "data": {
                 "file_type": file_type,
+                "parser_backend": result["metadata"].get("pdf_parser_backend", parser_backend),
                 "markdown": result["markdown"],
-                "metadata": result["metadata"]
+                "metadata": result["metadata"],
+                "warning": "该接口仅用于测试联调，生产流程请通过 Java 上传后发送 Kafka 解析任务",
             },
             "time_cost_ms": result["time_cost_ms"]
         }
@@ -72,9 +71,17 @@ async def submit_async_task(request: TaskSubmitRequest):
         mq_service = MQService()
         msg = ParseTaskMessage.build(
             task_id=request.task_id,
-            document_id=request.document_id,
-            file_url=request.file_url,
+            original_file_id=request.original_file_id,
             file_type=request.file_type,
+            source_bucket=request.source_bucket,
+            source_object_key=request.source_object_key,
+            source_filename=request.source_filename,
+            md_bucket=request.md_bucket,
+            md_object_key=request.md_object_key,
+            parser_backend=request.parser_backend,
+            docling_force_ocr=request.docling_force_ocr,
+            image_bucket=request.image_bucket or request.md_bucket,
+            image_prefix=request.image_prefix or request.md_object_key,
         )
         await mq_service.send(msg)
         return TaskSubmitResponse(

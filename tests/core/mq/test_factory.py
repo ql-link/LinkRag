@@ -5,7 +5,7 @@ MQFactory 单元测试
 Mock 外部依赖（Settings），不连接真实 Broker。
 """
 import pytest
-from unittest.mock import patch, MagicMock
+from unittest.mock import patch
 
 from src.core.mq.factory import MQFactory
 from src.core.mq.interfaces import IMQSender, IMQReceiver, MQVendorType
@@ -60,7 +60,7 @@ class TestFactoryGetSender:
         factory = MQFactory()
         sender = factory.get_sender()
         # 验证返回的是 KafkaSender 实例
-        from src.core.mq.vendors.kafka_adapter import KafkaSender
+        from src.core.mq.vendors.kafka.kafka_adapter import KafkaSender
         assert isinstance(sender, KafkaSender)
 
     @patch("src.core.mq.factory.MQFactory._resolve_config")
@@ -109,7 +109,7 @@ class TestFactoryGetReceiver:
         }
         factory = MQFactory()
         receiver = factory.get_receiver()
-        from src.core.mq.vendors.kafka_adapter import KafkaReceiver
+        from src.core.mq.vendors.kafka.kafka_adapter import KafkaReceiver
         assert isinstance(receiver, KafkaReceiver)
 
     @patch("src.core.mq.factory.MQFactory._resolve_config")

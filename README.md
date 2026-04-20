@@ -55,6 +55,20 @@ pytest tests/ -v
 
 启动服务后访问: http://localhost:8000/docs
 
+## 文档解析（PDF 后端）
+
+`PDF` 支持多后端解析与回退链（见 `src/config.py` / `.env.example`）：
+
+- `PDF_PARSER_BACKEND`: `naive` / `docling`
+- `PDF_PARSER_FALLBACKS`: 逗号分隔的回退链（例如 `docling,naive`）
+
+图片处理：
+
+- `docling` 会优先产出页面图 / 图形图 / 表格图资产并上传到 MinIO
+- 当 `docling` 资产缺失时，回退到 `PyMuPDF` 提取内嵌图；若仍无图则回退为整页渲染图
+- Markdown 中会将图片占位符替换为 MinIO URL 引用
+- 可通过 `DOCLING_IMAGES_SCALE` 与 `DOCLING_FORCE_FULL_PAGE_OCR` 调整 `docling` 解析策略
+
 ## 目录结构
 
 ```

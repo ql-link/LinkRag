@@ -1,30 +1,64 @@
-import fitz  # PyMuPDF
-from ..base_parser import BaseParser
+import fitz
+
+from src.config import settings
+from src.core.parser.pdf.models import PdfParseOptions
+from src.core.parser.pdf.service import PdfParserService
+from ..base import BaseParser
+
 
 class PdfParser(BaseParser):
-    """PDF 坐标提取与排版还原逻辑"""
+    """PDF -> Markdown 解析入口，可通过 backend 参数选择具体解析器。
+
+    支持的 backend:
+    - auto: MinerU → Marker → Docling → Naive 全链路降级（推荐）
+    - mineru: MinerU HTTP API → Marker → Naive
+    - marker: Marker 本地深度学习 → Naive
+    - docling: Docling → Naive
+    - naive: PyMuPDF (最快，质量最低)
+    """
+
+    def __init__(
+        self,
+        backend: str | None = None,
+        image_bucket: str | None = None,
+        image_prefix: str | None = None,
+        storage=None,
+        docling_force_ocr: bool = False,
+        mineru_api_url: str | None = None,
+        mineru_api_key: str | None = None,
+        mineru_timeout: int | None = None,
+    ):
+        super().__init__()
+        self.backend = (backend or settings.PDF_PARSER_BACKEND).lower()
+        self.image_bucket = image_bucket
+        self.image_prefix = image_prefix
+        self.storage = storage
+        self.docling_force_ocr = bool(docling_force_ocr)
+        self.mineru_api_url = mineru_api_url or settings.MINERU_API_URL
+        self.mineru_api_key = mineru_api_key or settings.MINERU_API_KEY
+        self.mineru_timeout = mineru_timeout or settings.MINERU_TIMEOUT
+        self._service = PdfParserService()
 
     def parse(self, file_stream: bytes) -> str:
         self.validate_stream(file_stream)
-
-        # 使用 fitz 从内存字节流中加载 PDF
         doc = fitz.open(stream=file_stream, filetype="pdf")
-        markdown_lines = []
+        markdown, metadata = self._service.parse(
+            file_stream,
+            PdfParseOptions(
+                backend=self.backend,
+                image_bucket=self.image_bucket,
+                image_prefix=self.image_prefix,
+                storage=self.storage,
+                docling_force_ocr=self.docling_force_ocr,
+                mineru_api_url=self.mineru_api_url,
+                mineru_api_key=self.mineru_api_key,
+                mineru_timeout=self.mineru_timeout,
+            ),
+        )
+        self.metadata.update(metadata)
+        self.metadata["pages_or_length"] = len(doc)
+        self.metadata["pdf_info"] = doc.metadata
 
-        for page_num, page in enumerate(doc):
-            # 提取纯文本排版
-            text = page.get_text("text")
-            if text.strip():
-                # 增加 Markdown 格式的页码分隔符，方便后续切片 (Chunking)
-                markdown_lines.append(f"## 第 {page_num + 1} 页\n")
-                markdown_lines.append(text.strip())
-
-        # 记录关键元数据
-        self.metadata['pages_or_length'] = len(doc)
-        self.metadata['pdf_info'] = doc.metadata
-
-        # 如果整篇文档没有提取出任何文字（可能是纯扫描件）
-        if not markdown_lines:
-            markdown_lines.append("> [系统提示] 检测到纯图片/扫描版 PDF，物理提取文本为空。")
-
-        return "\n\n---\n\n".join(markdown_lines)
+        if not markdown.strip():
+            markdown = "> [系统提示] 检测到纯图片/扫描版 PDF，物理提取文本为空。"
+        return markdown.strip()
