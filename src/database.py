@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -19,14 +20,13 @@ from src.config import settings
 def _get_async_database_url() -> str:
     """将 pymysql URL 转换为 aiomysql URL
 
-    mysql+pymysql:// -> mysql+aiomysql://
+    mysql+pymysql:// / mysql:// -> mysql+aiomysql://
     """
     db_url = settings.DATABASE_URL or ""
     if "mysql+pymysql://" in db_url:
         return db_url.replace("mysql+pymysql://", "mysql+aiomysql://")
-    elif db_url.startswith("mysql://") or db_url.startswith("("):
-        # Handle cases where it's just mysql:// or wrapped in quotes/parens
-        return db_url
+    if db_url.startswith("mysql://"):
+        return db_url.replace("mysql://", "mysql+aiomysql://", 1)
     return db_url
 
 
@@ -45,8 +45,14 @@ def get_async_engine() -> AsyncEngine:
             echo=False,
             pool_size=10,
             max_overflow=20,
-            pool_recycle=3600,
+            pool_recycle=1800,
             pool_pre_ping=True,
+            pool_use_lifo=True,
+            pool_timeout=30,
+            connect_args={
+                "connect_timeout": 10,
+                "charset": "utf8mb4",
+            },
         )
     return _async_engine
 
@@ -71,6 +77,9 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with session_factory() as session:
         try:
             yield session
+        except SQLAlchemyError:
+            await session.rollback()
+            raise
         finally:
             await session.close()
 
@@ -82,6 +91,9 @@ async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
     async with session_factory() as session:
         try:
             yield session
+        except SQLAlchemyError:
+            await session.rollback()
+            raise
         finally:
             await session.close()
 

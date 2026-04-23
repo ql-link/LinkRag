@@ -20,6 +20,7 @@ from src.models.parse_task import Base
 # MQ 工厂（生命周期管理）
 from src.core.mq.factory import MQFactory
 from src.core.mq.topic_admin import ensure_topics
+from src.core.mq.consumers.parse_task_consumer import start_parse_consumer
 
 
 @asynccontextmanager
@@ -40,6 +41,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     await init_database()
     if settings.MQ_VENDOR.lower() == "kafka" and settings.INIT_KAFKA_TOPICS_ON_STARTUP:
         ensure_topics()
+    await start_parse_consumer()
     yield
     # 关闭时清理（MQ 连接优先关闭，避免消息丢失）
     try:

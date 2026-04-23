@@ -103,6 +103,9 @@ class MQFactory:
             config["security_protocol"] = getattr(
                 settings, "KAFKA_SECURITY_PROTOCOL", "PLAINTEXT"
             )
+            config["max_poll_interval_ms"] = getattr(
+                settings, "KAFKA_MAX_POLL_INTERVAL_MS", 900000
+            )
         elif vendor == MQVendorType.RABBITMQ:
             config["url"] = getattr(
                 settings, "RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"
@@ -161,6 +164,7 @@ class MQFactory:
                 "sasl_plain_username": config.get("sasl_plain_username"),
                 "sasl_plain_password": config.get("sasl_plain_password"),
                 "security_protocol": config.get("security_protocol", "PLAINTEXT"),
+                "max_poll_interval_ms": config.get("max_poll_interval_ms", 900000),
             }
         elif vendor == MQVendorType.RABBITMQ:
             kwargs = {

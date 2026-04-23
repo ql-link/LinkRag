@@ -11,6 +11,7 @@ Pipeline:
     → 上传 Markdown 到对象存储
     → 回写数据库
 """
+import asyncio
 from typing import Any, Dict
 
 from loguru import logger
@@ -37,6 +38,10 @@ def _chunk_markdown(markdown: str, source_file: str | None = None) -> int:
 
 
 async def handle_parse_task(message_body: str, metadata: Dict[str, Any]) -> None:
+    await asyncio.to_thread(_handle_parse_task_sync, message_body, metadata)
+
+
+def _handle_parse_task_sync(message_body: str, metadata: Dict[str, Any]) -> None:
     """业务回调: 处理文档解析任务
 
     对应 SKILL.md 中的 BusinessReceiver 角色。
