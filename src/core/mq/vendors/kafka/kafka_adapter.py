@@ -202,6 +202,7 @@ class KafkaReceiver(IMQReceiver):
         auto_offset_reset: str = "latest",
         enable_auto_commit: bool = False,
         max_poll_records: int = 100,
+        max_poll_interval_ms: int = 900000,
         session_timeout_ms: int = 30000,
         heartbeat_interval_ms: int = 10000,
         sasl_mechanism: str | None = None,
@@ -214,6 +215,7 @@ class KafkaReceiver(IMQReceiver):
         self._auto_offset_reset = auto_offset_reset
         self._enable_auto_commit = enable_auto_commit
         self._max_poll_records = max_poll_records
+        self._max_poll_interval_ms = max_poll_interval_ms
         self._session_timeout_ms = session_timeout_ms
         self._heartbeat_interval_ms = heartbeat_interval_ms
         self._sasl_mechanism = sasl_mechanism
@@ -272,6 +274,7 @@ class KafkaReceiver(IMQReceiver):
                 "auto_offset_reset": offset_reset,
                 "enable_auto_commit": self._enable_auto_commit,
                 "max_poll_records": self._max_poll_records,
+                "max_poll_interval_ms": self._max_poll_interval_ms,
                 "session_timeout_ms": self._session_timeout_ms,
                 "heartbeat_interval_ms": self._heartbeat_interval_ms,
                 "value_deserializer": lambda v: v.decode("utf-8"),

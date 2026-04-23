@@ -25,6 +25,13 @@ from .parser import MarkdownParser
 from .scanner import MarkdownScanner
 from .image_extractor import ImageExtractor
 from .llm_integration import VisionClient, ImageDescriber, TableClient, TableDescriber
+from .provider_clients import (
+    ProviderTableClient,
+    ProviderVisionClient,
+    build_default_table_client,
+    build_default_vision_client,
+)
+from .orchestrator import MarkdownEnhancementOrchestrator
 
 __all__ = [
     "MarkdownParser",
@@ -38,4 +45,9 @@ __all__ = [
     "ImageDescriber",
     "TableClient",
     "TableDescriber",
+    "ProviderTableClient",
+    "ProviderVisionClient",
+    "build_default_table_client",
+    "build_default_vision_client",
+    "MarkdownEnhancementOrchestrator",
 ]

@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     SYSTEM_LLM_MODEL_EMBEDDING: str = "text-embedding-v4"
     SYSTEM_LLM_MODEL_RERANK: Optional[str] = "qwen3-vl-rerank"
     SYSTEM_LLM_MODEL_VISION: Optional[str] = None
+    MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT: bool = True
+    MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT: bool = True
+    MARKDOWN_PARSER_TABLE_MODEL: Optional[str] = None
+    MARKDOWN_PARSER_VISION_MODEL: Optional[str] = None
+    MARKDOWN_PARSER_LLM_TIMEOUT_MS: int = 60000
 
     # ==========================================
     # 向量数据库配置 (Vector Store)
@@ -120,6 +125,7 @@ class Settings(BaseSettings):
     KAFKA_SASL_USERNAME: Optional[str] = None
     KAFKA_SASL_PASSWORD: Optional[str] = None
     KAFKA_SECURITY_PROTOCOL: str = "PLAINTEXT"
+    KAFKA_MAX_POLL_INTERVAL_MS: int = 900000
     INIT_KAFKA_TOPICS_ON_STARTUP: bool = False
 
     # --- RabbitMQ 配置 ---

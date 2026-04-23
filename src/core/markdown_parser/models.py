@@ -171,3 +171,8 @@ class ParseResult:
             "images": [img.to_dict() for img in self.images],
             "source_file": self.source_file,
         }
+
+    def to_markdown(self) -> str:
+        if not self.elements:
+            return self.remainder
+        return "\n\n".join(element.content for element in self.elements if element.content)
