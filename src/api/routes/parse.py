@@ -42,7 +42,12 @@ async def extract_sync(
                 parser_kwargs["image_prefix"] = image_prefix
                 parser_kwargs["storage"] = StorageFactory.get_storage()
 
-        result = ParseTaskService.process_sync(file_stream, file_type, **parser_kwargs)
+        result = await ParseTaskService.aprocess(
+            file_stream,
+            file_type,
+            source_file=file.filename,
+            **parser_kwargs,
+        )
         return {
             "code": 200,
             "message": "success",

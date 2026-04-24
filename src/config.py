@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     SYSTEM_LLM_MODEL_EMBEDDING: str = "text-embedding-v4"
     SYSTEM_LLM_MODEL_RERANK: Optional[str] = "qwen3-vl-rerank"
     SYSTEM_LLM_MODEL_VISION: Optional[str] = None
+    MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT: bool = True
+    MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT: bool = True
+    MARKDOWN_PARSER_TABLE_MODEL: Optional[str] = None
+    MARKDOWN_PARSER_VISION_MODEL: Optional[str] = None
+    MARKDOWN_PARSER_LLM_TIMEOUT_MS: int = 60000
 
     # ==========================================
     # 向量数据库配置 (Vector Store)

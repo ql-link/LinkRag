@@ -7,7 +7,7 @@ Pipeline:
     Java 管理端 → Kafka / HTTP 兼容投递 ParseTaskMessage
     → Broker (Kafka/RabbitMQ)
     → ParseTaskConsumer.handle() （本模块）
-    → ParseTaskService.process_sync()
+    → ParseTaskService.aprocess()
     → 上传 Markdown 到对象存储
     → 回写数据库
 """
@@ -100,7 +100,14 @@ def _handle_parse_task_sync(message_body: str, metadata: Dict[str, Any]) -> None
                 "image_prefix": payload.image_prefix or payload.md_object_key,
                 "storage": storage,
             }
-        result = ParseTaskService.process_sync(file_stream, payload.file_type, **parser_kwargs)
+        result = asyncio.run(
+            ParseTaskService.aprocess(
+                file_stream,
+                payload.file_type,
+                source_file=payload.source_filename or payload.md_object_key,
+                **parser_kwargs,
+            )
+        )
 
         # 5. 上传 Markdown 到对象存储
         storage.upload_bytes(
