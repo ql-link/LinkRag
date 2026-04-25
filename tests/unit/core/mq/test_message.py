@@ -42,9 +42,13 @@ class TestParseTaskMessage:
     def test_build(self):
         msg = ParseTaskMessage.build(
             task_id="t-001",
-            document_id="d-001",
-            file_url="https://oss.example.com/test.pdf",
+            original_file_id=1,
             file_type="pdf",
+            source_bucket="source-bucket",
+            source_object_key="uploads/test.pdf",
+            source_filename="test.pdf",
+            md_bucket="markdown-bucket",
+            md_object_key="parsed/t-001.md",
         )
         assert msg.get_mq_name() == "tolink.rag.parse_task"
         assert msg.get_mq_type() == "PARSE_TASK"
@@ -52,17 +56,23 @@ class TestParseTaskMessage:
 
         payload = msg.get_payload()
         assert payload.task_id == "t-001"
-        assert payload.document_id == "d-001"
-        assert payload.file_url == "https://oss.example.com/test.pdf"
+        assert payload.original_file_id == 1
         assert payload.file_type == "pdf"
+        assert payload.source_bucket == "source-bucket"
+        assert payload.source_object_key == "uploads/test.pdf"
+        assert payload.md_object_key == "parsed/t-001.md"
 
     def test_serialize_deserialize_roundtrip(self):
         """序列化 → 反序列化闭环"""
         msg = ParseTaskMessage.build(
             task_id="t-002",
-            document_id="d-002",
-            file_url="https://oss.example.com/doc.docx",
+            original_file_id=2,
             file_type="docx",
+            source_bucket="source-bucket",
+            source_object_key="uploads/doc.docx",
+            source_filename="doc.docx",
+            md_bucket="markdown-bucket",
+            md_object_key="parsed/t-002.md",
         )
         serialized = msg.serialize()
         data = json.loads(serialized)
@@ -70,12 +80,14 @@ class TestParseTaskMessage:
         assert data["mq_type"] == "PARSE_TASK"
         assert data["mq_name"] == "tolink.rag.parse_task"
         assert data["payload"]["task_id"] == "t-002"
+        assert data["payload"]["original_file_id"] == 2
 
         # 反序列化
         parsed = ParseTaskMessage.parse_msg(serialized)
         assert isinstance(parsed, ParseTaskPayload)
         assert parsed.task_id == "t-002"
         assert parsed.file_type == "docx"
+        assert parsed.source_filename == "doc.docx"
 
     def test_mq_name_constant(self):
         assert ParseTaskMessage.get_mq_name() == "tolink.rag.parse_task"

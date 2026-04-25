@@ -5,6 +5,7 @@
 - 项目名称：`toLink-Rag`
 - 技术栈：`FastAPI`、`SQLAlchemy`、`Redis`、`MySQL`、`MinIO`、`Qdrant`、`Kafka/RabbitMQ`
 - Python 版本：`3.10+`
+- 本地虚拟环境：仓库根目录下的 `.venv`
 - 应用入口：[src/main.py](/Users/jixu/Project/Agent/toLink-Rag/src/main.py)
 
 ## 目录约定
@@ -100,6 +101,24 @@ toLink-Rag/
 │       ├── logger.py
 │       └── text_formatter.py
 └── tests/                        # 测试目录
+    ├── conftest.py               # pytest 统一入口（marker/集成测试开关）
+    ├── README.md                 # 测试分层与运行约定
+    ├── unit/                     # 单元测试 (Mock 驱动)
+    │   ├── api/
+    │   ├── core/
+    │   │   ├── llm/
+    │   │   ├── mq/
+    │   │   ├── parser/
+    │   │   └── splitter/
+    │   └── services/
+    └── integration/              # 集成测试 (真实组件/网络)
+        ├── api/
+        ├── core/
+        │   ├── llm/
+        │   ├── markdown_parser/
+        │   └── splitter/
+        ├── services/
+        └── test_connectivity.py
 ```
 
 

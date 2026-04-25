@@ -164,7 +164,6 @@ class MQFactory:
                 "sasl_plain_username": config.get("sasl_plain_username"),
                 "sasl_plain_password": config.get("sasl_plain_password"),
                 "security_protocol": config.get("security_protocol", "PLAINTEXT"),
-                "max_poll_interval_ms": config.get("max_poll_interval_ms", 900000),
             }
         elif vendor == MQVendorType.RABBITMQ:
             kwargs = {

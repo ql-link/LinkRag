@@ -29,9 +29,13 @@ class TestMQServiceSend:
 
         msg = ParseTaskMessage.build(
             task_id="t-001",
-            document_id="d-001",
-            file_url="https://example.com/test.pdf",
+            original_file_id=1,
             file_type="pdf",
+            source_bucket="source-bucket",
+            source_object_key="uploads/test.pdf",
+            source_filename="test.pdf",
+            md_bucket="markdown-bucket",
+            md_object_key="parsed/t-001.md",
         )
         await service.send(msg)
 

@@ -8,6 +8,7 @@ ConfigReaderService 集成测试 - 真实 MySQL 数据库
 """
 import asyncio
 import json
+import time
 import uuid
 import pytest
 import pytest_asyncio
@@ -30,14 +31,24 @@ def create_unique_user_id():
 
 def get_sync_connection():
     """获取同步 MySQL 连接（用于测试数据准备）"""
-    return pymysql.connect(
-        host=settings.DB_HOST,
-        port=settings.DB_PORT,
-        user=settings.DB_USER,
-        password=settings.DB_PASSWORD,
-        database=settings.DB_NAME,
-        autocommit=True
-    )
+    last_error = None
+    for _ in range(3):
+        try:
+            return pymysql.connect(
+                host=settings.DB_HOST,
+                port=settings.DB_PORT,
+                user=settings.DB_USER,
+                password=settings.DB_PASSWORD,
+                database=settings.DB_NAME,
+                autocommit=True,
+                connect_timeout=5,
+                read_timeout=10,
+                write_timeout=10,
+            )
+        except pymysql.err.OperationalError as exc:
+            last_error = exc
+            time.sleep(0.2)
+    raise last_error
 
 
 def create_unique_provider_type():

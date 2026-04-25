@@ -1,10 +1,7 @@
 import base64
 import os
-import sys
 import unittest
 from unittest.mock import patch
-
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../../../..")))
 
 from src.core.llm.base_provider import BaseProvider
 from src.core.llm.interfaces import CapabilityType

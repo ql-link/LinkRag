@@ -94,5 +94,11 @@ line_length = 100
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "--import-mode=importlib"
 asyncio_mode = "auto"
 asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "unit: fast tests with mocked dependencies",
+    "integration: tests that require real services, network, or full application wiring",
+    "connectivity: smoke checks for external infrastructure connectivity",
+]

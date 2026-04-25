@@ -2,8 +2,8 @@
 
 ## Overview
 
-- Fixture: `/Users/jixu/Project/Agent/toLink-Rag/tests/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
-- Source file recorded by parser: `/Users/jixu/Project/Agent/toLink-Rag/tests/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
+- Fixture: `/Users/jixu/Project/Agent/toLink-Rag/tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
+- Source file recorded by parser: `/Users/jixu/Project/Agent/toLink-Rag/tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element count: `30`
 - Final chunk count: `14`
 - Vision mock calls: `1`
@@ -56,7 +56,7 @@
       "https://cdn.test.local/hero-dashboard.png",
       "https://cdn.test.local/inline-architecture.png"
     ],
-    "source_file": "/Users/jixu/Project/Agent/toLink-Rag/tests/core/splitter/fixtures/full_markdown_pipeline_fixture.md"
+    "source_file": "/Users/jixu/Project/Agent/toLink-Rag/tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md"
   }
 ]
 ```
@@ -69,7 +69,7 @@
     "tables": [
       "| Metric | Value | Trend |\n| :--- | ---: | :---: |\n| Recall | 0.82 | up |\n| LatencyMs | 128 | stable |\n| Coverage | 0.97 | up |"
     ],
-    "source_file": "/Users/jixu/Project/Agent/toLink-Rag/tests/core/splitter/fixtures/full_markdown_pipeline_fixture.md"
+    "source_file": "/Users/jixu/Project/Agent/toLink-Rag/tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md"
   }
 ]
 ```
@@ -136,7 +136,7 @@
 
 - Strategy: `rule`
 - Heading trail: `['Overview']`
-- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
+- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element types: `['heading', 'paragraph']`
 - Context prev tokens: `0`
 - Context next tokens: `13`
@@ -158,7 +158,7 @@ This opening paragraph mixes plain text with an inline image ![Architecture Inli
 
 - Strategy: `isolated`
 - Heading trail: `['Overview']`
-- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
+- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element types: `['image']`
 - Context prev tokens: `46`
 - Context next tokens: `22`
@@ -184,7 +184,7 @@ This opening paragraph mixes plain text with an inline image ![Architecture Inli
 
 - Strategy: `rule`
 - Heading trail: `['Overview', 'Quoted Insight']`
-- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
+- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element types: `['blockquote', 'heading']`
 - Context prev tokens: `13`
 - Context next tokens: `42`
@@ -210,7 +210,7 @@ This opening paragraph mixes plain text with an inline image ![Architecture Inli
 
 - Strategy: `rule`
 - Heading trail: `['Overview', 'Action Checklist']`
-- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
+- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element types: `['heading', 'list']`
 - Context prev tokens: `22`
 - Context next tokens: `13`
@@ -242,7 +242,7 @@ This opening paragraph mixes plain text with an inline image ![Architecture Inli
 
 - Strategy: `rule`
 - Heading trail: `['Overview', 'Code Sample']`
-- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
+- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element types: `['heading', 'paragraph']`
 - Context prev tokens: `42`
 - Context next tokens: `22`
@@ -272,7 +272,7 @@ The code fence below should become its own isolated chunk.
 
 - Strategy: `isolated`
 - Heading trail: `['Overview', 'Code Sample']`
-- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
+- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element types: `['code_block']`
 - Context prev tokens: `13`
 - Context next tokens: `17`
@@ -299,7 +299,7 @@ def summarize_metrics(total_requests: int, failures: int) -> float:
 
 - Strategy: `rule`
 - Heading trail: `['Overview', 'Metrics Table']`
-- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
+- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element types: `['heading', 'paragraph']`
 - Context prev tokens: `22`
 - Context next tokens: `50`
@@ -326,7 +326,7 @@ The table block below should stay isolated and also receive a mocked table summa
 
 - Strategy: `isolated`
 - Heading trail: `['Overview', 'Metrics Table']`
-- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
+- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element types: `['table']`
 - Context prev tokens: `17`
 - Context next tokens: `10`
@@ -354,7 +354,7 @@ The table block below should stay isolated and also receive a mocked table summa
 
 - Strategy: `rule`
 - Heading trail: `['Overview', 'Math Notes']`
-- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
+- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element types: `['heading', 'paragraph']`
 - Context prev tokens: `50`
 - Context next tokens: `5`
@@ -382,7 +382,7 @@ $$ E = mc^2 $$
 
 - Strategy: `isolated`
 - Heading trail: `['Overview', 'Math Notes']`
-- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
+- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element types: `['math_block']`
 - Context prev tokens: `10`
 - Context next tokens: `7`
@@ -406,7 +406,7 @@ $$
 
 - Strategy: `isolated`
 - Heading trail: `['Overview', 'Math Notes']`
-- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
+- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element types: `['math_block']`
 - Context prev tokens: `5`
 - Context next tokens: `64`
@@ -430,7 +430,7 @@ $$
 
 - Strategy: `rule`
 - Heading trail: `['Overview', 'Deep Dive']`
-- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
+- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element types: `['heading', 'paragraph']`
 - Context prev tokens: `7`
 - Context next tokens: `64`
@@ -460,7 +460,7 @@ The closing paragraph stays in the incident response theme and should therefore 
 
 - Strategy: `semantic`
 - Heading trail: `['Overview', 'Semantic Pressure Test']`
-- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
+- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element types: `['heading', 'paragraph']`
 - Context prev tokens: `64`
 - Context next tokens: `64`
@@ -492,7 +492,7 @@ Incident coordination shifts the topic toward paging policy, rollback sequencing
 
 - Strategy: `semantic`
 - Heading trail: `['Overview', 'Semantic Pressure Test']`
-- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
+- Source file: `/Users/jixu/Project/Agent/toLink-Rag/tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element types: `['paragraph']`
 - Context prev tokens: `64`
 - Context next tokens: `0`
