@@ -62,6 +62,7 @@ class TestParseTaskMessage:
         assert payload.source_bucket == "source-bucket"
         assert payload.source_object_key == "uploads/test.pdf"
         assert payload.md_object_key == "parsed/t-001.md"
+        assert payload.pdf_parser_backend == "mineru"
 
     def test_serialize_deserialize_roundtrip(self):
         """序列化 → 反序列化闭环"""
@@ -82,6 +83,8 @@ class TestParseTaskMessage:
         assert data["mq_name"] == "tolink.rag.parse_task"
         assert data["payload"]["task_id"] == "t-002"
         assert data["payload"]["original_file_id"] == 2
+        assert data["payload"]["pdf_parser_backend"] == "mineru"
+        assert "parser_backend" not in data["payload"]
 
         # 反序列化
         parsed = ParseTaskMessage.parse_msg(serialized)
@@ -113,6 +116,27 @@ class TestParseTaskMessage:
         assert parsed.task_id == "t-flat"
         assert parsed.original_file_id == 3
         assert parsed.source_object_key == "uploads/test.pdf"
+        assert parsed.pdf_parser_backend == "mineru"
+
+    def test_parse_msg_supports_legacy_parser_backend_field(self):
+        raw = json.dumps(
+            {
+                "task_id": "t-legacy",
+                "original_file_id": 4,
+                "file_type": "pdf",
+                "source_bucket": "source-bucket",
+                "source_object_key": "uploads/test.pdf",
+                "source_filename": "test.pdf",
+                "md_bucket": "markdown-bucket",
+                "md_object_key": "parsed/t-legacy.md",
+                "parser_backend": "naive",
+            }
+        )
+
+        parsed = ParseTaskMessage.parse_msg(raw)
+
+        assert parsed.task_id == "t-legacy"
+        assert parsed.pdf_parser_backend == "naive"
 
 
 class TestCacheSyncMessage:

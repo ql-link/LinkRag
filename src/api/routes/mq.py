@@ -52,7 +52,7 @@ async def send_parse_task(request: SendParseTaskRequest):
             source_filename=request.source_filename,
             md_bucket=request.md_bucket,
             md_object_key=request.md_object_key,
-            parser_backend=request.parser_backend,
+            pdf_parser_backend=request.pdf_parser_backend,
             docling_force_ocr=request.docling_force_ocr,
             image_bucket=request.image_bucket or request.md_bucket,
             image_prefix=request.image_prefix or request.md_object_key,

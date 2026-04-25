@@ -1,6 +1,6 @@
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class SendParseTaskRequest(BaseModel):
@@ -14,12 +14,18 @@ class SendParseTaskRequest(BaseModel):
     source_filename: str = Field(..., title="原始文件名", description="用户上传时的原始文件名")
     md_bucket: str = Field(..., title="Markdown Bucket", description="Markdown 输出 bucket")
     md_object_key: str = Field(..., title="Markdown 对象Key", description="Markdown 输出对象 key")
-    parser_backend: str = Field("naive", title="PDF解析器", description="可选 PDF 解析器: naive/docling")
+    pdf_parser_backend: str = Field(
+        "mineru",
+        title="PDF解析器",
+        description="可选 PDF 解析器: mineru/naive",
+        validation_alias=AliasChoices("pdf_parser_backend", "parser_backend"),
+        serialization_alias="pdf_parser_backend",
+    )
     docling_force_ocr: bool = Field(False, title="Docling强制全页OCR", description="仅 docling 后端生效")
     image_bucket: Optional[str] = Field(None, title="图片Bucket", description="PDF 图片输出 bucket")
     image_prefix: Optional[str] = Field(None, title="图片前缀", description="PDF 图片输出对象 key 前缀")
 
-    model_config = {"title": "发送解析任务请求体"}
+    model_config = ConfigDict(title="发送解析任务请求体", populate_by_name=True)
 
 
 class SendCacheSyncRequest(BaseModel):
@@ -29,7 +35,7 @@ class SendCacheSyncRequest(BaseModel):
     action: str = Field("refresh", title="操作类型", description="refresh / invalidate / warmup")
     config_id: Optional[str] = Field(None, title="配置ID", description="具体配置标识")
 
-    model_config = {"title": "发送缓存同步请求体"}
+    model_config = ConfigDict(title="发送缓存同步请求体", populate_by_name=True)
 
 
 class SendUsageReportRequest(BaseModel):
@@ -42,7 +48,7 @@ class SendUsageReportRequest(BaseModel):
     completion_tokens: int = Field(0, ge=0, title="输出Token数")
     total_tokens: int = Field(0, ge=0, title="总Token数")
 
-    model_config = {"title": "发送用量上报请求体"}
+    model_config = ConfigDict(title="发送用量上报请求体", populate_by_name=True)
 
 
 class SendRawMessageRequest(BaseModel):
@@ -52,7 +58,7 @@ class SendRawMessageRequest(BaseModel):
     message: str = Field(..., title="消息体", description="JSON 字符串格式的消息内容")
     key: Optional[str] = Field(None, title="路由键", description="Kafka partition key / RabbitMQ routing key")
 
-    model_config = {"title": "原始消息发送请求体"}
+    model_config = ConfigDict(title="原始消息发送请求体", populate_by_name=True)
 
 
 class MQResponse(BaseModel):
@@ -61,7 +67,7 @@ class MQResponse(BaseModel):
     success: bool = Field(..., title="操作结果")
     message: str = Field("", title="描述信息")
 
-    model_config = {"title": "MQ操作响应"}
+    model_config = ConfigDict(title="MQ操作响应", populate_by_name=True)
 
 
 class MQVendorInfoResponse(BaseModel):
@@ -70,4 +76,4 @@ class MQVendorInfoResponse(BaseModel):
     current_vendor: str = Field(..., title="当前厂商", description="当前激活的 MQ 厂商")
     available_vendors: list[str] = Field(..., title="可用厂商列表")
 
-    model_config = {"title": "MQ厂商信息响应"}
+    model_config = ConfigDict(title="MQ厂商信息响应", populate_by_name=True)

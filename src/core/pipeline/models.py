@@ -1,9 +1,11 @@
+"""Pipeline 数据模型。"""
+
 from dataclasses import dataclass
 from enum import Enum
 
 
 class PipelineStatus(str, Enum):
-    """Pipeline execution status."""
+    """Pipeline 执行状态。"""
 
     SUCCESS = "success"
     SKIPPED = "skipped"
@@ -12,7 +14,17 @@ class PipelineStatus(str, Enum):
 
 @dataclass
 class ParsePipelineResult:
-    """Result contract returned by ParseTaskPipeline."""
+    """ParseTaskPipeline 返回的结果契约。
+
+    Attributes:
+        status: 执行状态
+        task_id: 任务ID
+        chunk_count: 分块数量
+        time_cost_ms: 解析耗时（毫秒）
+        page_count: 文档页数
+        skip_reason: 跳过原因（当 status=SKIPPED 时）
+        error: 异常对象（当 status=FAILED 时）
+    """
 
     status: PipelineStatus
     task_id: str
@@ -24,8 +36,13 @@ class ParsePipelineResult:
 
     @property
     def is_success(self) -> bool:
+        """判断解析是否成功。"""
         return self.status == PipelineStatus.SUCCESS
 
     @property
     def should_ack(self) -> bool:
+        """判断是否需要向 MQ 发送 ACK。
+
+        成功和跳过的任务都需要 ACK，避免消息重复投递。
+        """
         return self.status in (PipelineStatus.SUCCESS, PipelineStatus.SKIPPED)

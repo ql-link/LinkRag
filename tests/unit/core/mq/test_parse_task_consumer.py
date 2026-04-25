@@ -2,6 +2,7 @@
 ParseTask MQ consumer 单元测试
 """
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -70,3 +71,36 @@ class TestParseTaskConsumer:
 
         with pytest.raises(RuntimeError, match="触发重投"):
             await handle_parse_task(msg.serialize(), {})
+
+    @patch("src.core.mq.consumers.parse_task_consumer.ParseTaskPipeline")
+    async def test_handle_parse_task_should_default_backend_to_mineru_when_missing(
+        self, mock_pipeline_cls
+    ):
+        from src.core.mq.consumers.parse_task_consumer import handle_parse_task
+
+        raw = json.dumps(
+            {
+                "task_id": "t-default-backend",
+                "original_file_id": 1,
+                "file_type": "pdf",
+                "source_bucket": "source-bucket",
+                "source_object_key": "uploads/test.pdf",
+                "source_filename": "test.pdf",
+                "md_bucket": "markdown-bucket",
+                "md_object_key": "parsed/t-default-backend.md",
+            }
+        )
+        pipeline = MagicMock()
+        pipeline.execute = AsyncMock(
+            return_value=ParsePipelineResult(
+                status=PipelineStatus.SUCCESS,
+                task_id="t-default-backend",
+                chunk_count=1,
+            )
+        )
+        mock_pipeline_cls.return_value = pipeline
+
+        await handle_parse_task(raw, {})
+
+        pipeline.execute.assert_called_once()
+        assert pipeline.execute.call_args.args[0].pdf_parser_backend == "mineru"

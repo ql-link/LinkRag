@@ -543,7 +543,7 @@ class PdfParserService:
     def _inject_image_references(
         self, markdown: str, backend: str, image_assets: list[PdfImageAsset]
     ) -> str:
-        if not markdown or not image_assets:
+        if not markdown:
             return markdown
 
         pattern = self.PLACEHOLDER_PATTERNS.get(backend)

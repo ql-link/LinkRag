@@ -25,7 +25,7 @@ router = APIRouter(
 async def extract_sync(
     file: UploadFile = File(...),
     file_type: str = Form(...),
-    parser_backend: str = Form("naive"),
+    pdf_parser_backend: str = Form("naive", alias="parser_backend"),
     docling_force_ocr: bool = Form(False),
     image_bucket: str | None = Form(None),
     image_prefix: str | None = Form(None),
@@ -35,7 +35,7 @@ async def extract_sync(
         file_stream = await file.read()
         parser_kwargs = {}
         if file_type.lower() == "pdf":
-            parser_kwargs["backend"] = parser_backend
+            parser_kwargs["backend"] = pdf_parser_backend
             parser_kwargs["docling_force_ocr"] = docling_force_ocr
             if image_bucket and image_prefix:
                 parser_kwargs["image_bucket"] = image_bucket
@@ -53,7 +53,7 @@ async def extract_sync(
             "message": "success",
             "data": {
                 "file_type": file_type,
-                "parser_backend": result["metadata"].get("pdf_parser_backend", parser_backend),
+                "pdf_parser_backend": result["metadata"].get("pdf_parser_backend", pdf_parser_backend),
                 "markdown": result["markdown"],
                 "metadata": result["metadata"],
                 "warning": "该接口仅用于测试联调，生产流程请通过 Java 上传后发送 Kafka 解析任务",
@@ -83,7 +83,7 @@ async def submit_async_task(request: TaskSubmitRequest):
             source_filename=request.source_filename,
             md_bucket=request.md_bucket,
             md_object_key=request.md_object_key,
-            parser_backend=request.parser_backend,
+            pdf_parser_backend=request.pdf_parser_backend,
             docling_force_ocr=request.docling_force_ocr,
             image_bucket=request.image_bucket or request.md_bucket,
             image_prefix=request.image_prefix or request.md_object_key,

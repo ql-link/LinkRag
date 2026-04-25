@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class TaskSubmitRequest(BaseModel):
@@ -12,12 +12,18 @@ class TaskSubmitRequest(BaseModel):
     source_filename: str = Field(..., title="原始文件名", description="用户上传的原始文件名")
     md_bucket: str = Field(..., title="Markdown Bucket", description="Markdown 输出 bucket")
     md_object_key: str = Field(..., title="Markdown 对象Key", description="Markdown 输出对象 key")
-    parser_backend: str = Field("naive", title="PDF解析器", description="可选 PDF 解析器: naive/docling")
+    pdf_parser_backend: str = Field(
+        "mineru",
+        title="PDF解析器",
+        description="可选 PDF 解析器: mineru/naive",
+        validation_alias=AliasChoices("pdf_parser_backend", "parser_backend"),
+        serialization_alias="pdf_parser_backend",
+    )
     docling_force_ocr: bool = Field(False, title="Docling强制全页OCR", description="仅 docling 后端生效")
     image_bucket: str | None = Field(None, title="图片Bucket", description="PDF 图片输出 bucket")
     image_prefix: str | None = Field(None, title="图片前缀", description="PDF 图片输出对象 key 前缀")
 
-    model_config = {"title": "异步解析任务请求体"}
+    model_config = ConfigDict(title="异步解析任务请求体", populate_by_name=True)
 
 
 class TaskSubmitResponse(BaseModel):
@@ -27,4 +33,4 @@ class TaskSubmitResponse(BaseModel):
     message: str = Field("", title="描述信息")
     data: dict = Field(default_factory=dict, title="响应数据")
 
-    model_config = {"title": "异步解析任务响应体"}
+    model_config = ConfigDict(title="异步解析任务响应体", populate_by_name=True)

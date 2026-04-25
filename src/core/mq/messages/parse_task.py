@@ -1,7 +1,7 @@
 import json
 from typing import Optional, Protocol
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 
 from src.core.mq.exceptions import MQSerializationError
 from src.core.mq.message import AbstractMessage, MessagePayload
@@ -18,8 +18,12 @@ class ParseTaskPayload(MessagePayload):
     source_filename: str = Field(..., title="原始文件名", description="用户上传时的原始文件名")
     md_bucket: str = Field(..., title="Markdown Bucket", description="Markdown 输出 bucket")
     md_object_key: str = Field(..., title="Markdown 对象Key", description="Markdown 输出对象 key")
-    parser_backend: Optional[str] = Field(
-        "naive", title="PDF解析器", description="可选 PDF 解析器: naive/docling"
+    pdf_parser_backend: Optional[str] = Field(
+        "mineru",
+        title="PDF解析器",
+        description="可选 PDF 解析器: mineru/naive",
+        validation_alias=AliasChoices("pdf_parser_backend", "parser_backend"),
+        serialization_alias="pdf_parser_backend",
     )
     docling_force_ocr: Optional[bool] = Field(
         False, title="Docling强制全页 OCR", description="仅 Docling 后端生效"
@@ -68,7 +72,7 @@ class ParseTaskMessage(AbstractMessage):
         source_filename: str,
         md_bucket: str,
         md_object_key: str,
-        parser_backend: Optional[str] = "naive",
+        pdf_parser_backend: Optional[str] = "mineru",
         docling_force_ocr: Optional[bool] = False,
         image_bucket: Optional[str] = None,
         image_prefix: Optional[str] = None,
@@ -83,7 +87,7 @@ class ParseTaskMessage(AbstractMessage):
                 source_filename=source_filename,
                 md_bucket=md_bucket,
                 md_object_key=md_object_key,
-                parser_backend=parser_backend,
+                pdf_parser_backend=pdf_parser_backend,
                 docling_force_ocr=docling_force_ocr,
                 image_bucket=image_bucket,
                 image_prefix=image_prefix,
