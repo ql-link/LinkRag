@@ -4,6 +4,7 @@ MQ 消息模型单元测试
 覆盖 AbstractMessage / MessagePayload 的序列化/反序列化、
 以及三个业务消息的 build/parse/serialize 闭环。
 """
+
 import json
 import time
 
@@ -93,6 +94,26 @@ class TestParseTaskMessage:
         assert ParseTaskMessage.get_mq_name() == "tolink.rag.parse_task"
         assert ParseTaskMessage.get_mq_type() == "PARSE_TASK"
 
+    def test_parse_msg_supports_flat_payload(self):
+        raw = json.dumps(
+            {
+                "task_id": "t-flat",
+                "original_file_id": 3,
+                "file_type": "pdf",
+                "source_bucket": "source-bucket",
+                "source_object_key": "uploads/test.pdf",
+                "source_filename": "test.pdf",
+                "md_bucket": "markdown-bucket",
+                "md_object_key": "parsed/t-flat.md",
+            }
+        )
+
+        parsed = ParseTaskMessage.parse_msg(raw)
+
+        assert parsed.task_id == "t-flat"
+        assert parsed.original_file_id == 3
+        assert parsed.source_object_key == "uploads/test.pdf"
+
 
 class TestCacheSyncMessage:
     """缓存同步消息测试"""
@@ -164,11 +185,13 @@ class TestDeserialization:
             AbstractMessage.deserialize_envelope('{"payload": {}}')
 
     def test_valid_envelope(self):
-        envelope = json.dumps({
-            "mq_type": "TEST",
-            "mq_name": "test.topic",
-            "payload": {"message_id": "abc", "timestamp": 123},
-        })
+        envelope = json.dumps(
+            {
+                "mq_type": "TEST",
+                "mq_name": "test.topic",
+                "payload": {"message_id": "abc", "timestamp": 123},
+            }
+        )
         result = AbstractMessage.deserialize_envelope(envelope)
         assert result["mq_type"] == "TEST"
         assert result["payload"]["message_id"] == "abc"

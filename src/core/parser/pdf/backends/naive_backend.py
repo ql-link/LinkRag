@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import tempfile
 
 import fitz
@@ -10,11 +11,16 @@ from src.core.parser.pdf.models import PdfBinaryAsset
 
 class NaivePdfBackend(BasePdfBackend):
     name = "naive"
+    PICTURE_TEXT_BLOCK_PATTERN = re.compile(
+        r"\*\*-----\s*Start of picture text\s*-----\*\*<br>\s*.*?"
+        r"\*\*-----\s*End of picture text\s*-----\*\*<br>",
+        re.IGNORECASE | re.DOTALL,
+    )
 
     def parse(self, file_stream: bytes, options=None) -> tuple[str, list[PdfBinaryAsset]]:
         markdown = self._extract_with_pymupdf4llm(file_stream)
         if markdown:
-            return markdown, []
+            return self._postprocess_markdown(markdown), []
 
         doc = fitz.open(stream=file_stream, filetype="pdf")
         markdown_lines = []
@@ -23,6 +29,125 @@ class NaivePdfBackend(BasePdfBackend):
             if page_markdown:
                 markdown_lines.append(page_markdown)
         return "\n\n---\n\n".join(markdown_lines), []
+
+    def _remove_picture_text_blocks(self, markdown: str) -> str:
+        cleaned = self.PICTURE_TEXT_BLOCK_PATTERN.sub("", markdown)
+        return re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+
+    def _postprocess_markdown(self, markdown: str) -> str:
+        markdown = self._remove_picture_text_blocks(markdown)
+        markdown = self._merge_split_tables(markdown)
+        markdown = self._normalize_numbered_lists(markdown)
+        return re.sub(r"\n{3,}", "\n\n", markdown).strip()
+
+    def _merge_split_tables(self, markdown: str) -> str:
+        lines = markdown.splitlines()
+        result: list[str] = []
+        index = 0
+
+        while index < len(lines):
+            if not self._is_table_start(lines, index):
+                result.append(lines[index])
+                index += 1
+                continue
+
+            table_lines, index = self._consume_table(lines, index)
+            while True:
+                lookahead = index
+                blank_lines: list[str] = []
+                while lookahead < len(lines) and not lines[lookahead].strip():
+                    blank_lines.append(lines[lookahead])
+                    lookahead += 1
+
+                if not self._is_table_start(lines, lookahead):
+                    result.extend(table_lines)
+                    result.extend(blank_lines)
+                    index = lookahead
+                    break
+
+                next_table_lines, next_index = self._consume_table(lines, lookahead)
+                if not self._same_table_header(table_lines, next_table_lines):
+                    result.extend(table_lines)
+                    result.extend(blank_lines)
+                    table_lines = next_table_lines
+                    index = next_index
+                    continue
+
+                table_lines.extend(next_table_lines[2:])
+                index = next_index
+
+        return "\n".join(result)
+
+    def _consume_table(self, lines: list[str], start: int) -> tuple[list[str], int]:
+        index = start
+        table_lines = []
+        while index < len(lines) and self._is_table_line(lines[index]):
+            table_lines.append(lines[index])
+            index += 1
+        return table_lines, index
+
+    def _is_table_start(self, lines: list[str], index: int) -> bool:
+        return (
+            index + 1 < len(lines)
+            and self._is_table_line(lines[index])
+            and self._is_table_separator(lines[index + 1])
+        )
+
+    @staticmethod
+    def _is_table_line(line: str) -> bool:
+        stripped = line.strip()
+        return stripped.startswith("|") and stripped.endswith("|") and stripped.count("|") >= 3
+
+    @staticmethod
+    def _is_table_separator(line: str) -> bool:
+        stripped = line.strip()
+        if not stripped.startswith("|") or not stripped.endswith("|"):
+            return False
+        cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+        return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell or "") for cell in cells)
+
+    def _same_table_header(self, first: list[str], second: list[str]) -> bool:
+        if len(first) < 2 or len(second) < 2:
+            return False
+        return self._normalize_table_row(first[0]) == self._normalize_table_row(second[0])
+
+    @staticmethod
+    def _normalize_table_row(row: str) -> list[str]:
+        return [
+            re.sub(r"\s+", "", cell.replace("<br>", ""))
+            for cell in row.strip().strip("|").split("|")
+        ]
+
+    def _normalize_numbered_lists(self, markdown: str) -> str:
+        normalized_lines = []
+        pending_first_level_marker = False
+
+        for raw_line in markdown.splitlines():
+            line = raw_line.rstrip()
+            stripped = line.strip()
+
+            if stripped in {"- 一", "- －", "- —"}:
+                pending_first_level_marker = True
+                continue
+
+            if pending_first_level_marker and re.match(r"^-\s*1\.\s+", stripped):
+                line = re.sub(r"（\s*级评论\s*）", "（一级评论）", line)
+                pending_first_level_marker = False
+            elif stripped:
+                pending_first_level_marker = False
+
+            line = re.sub(r"^(\s*)-\s+(\d+\.\s+)", r"\1\2", line)
+            line = re.sub(r"\s+（", "（", line)
+            line = re.sub(r"（\s*", "（", line)
+            line = re.sub(r"\s*）", "）", line)
+
+            if re.match(r"^\s*\d+\.\s+", line):
+                parts = re.split(r"\s+(?=\d+\.\s+)", line)
+                normalized_lines.extend(part.strip() for part in parts if part.strip())
+            else:
+                normalized_lines.append(line)
+
+        return "\n".join(normalized_lines)
 
     def _extract_with_pymupdf4llm(self, file_stream: bytes) -> str:
         try:
@@ -41,13 +166,26 @@ class NaivePdfBackend(BasePdfBackend):
             return ""
 
     def _extract_page_markdown(self, page_num: int, page: fitz.Page) -> str:
-        text_blocks = []
+        ordered_blocks = []
         image_block_count = 0
 
         for block in page.get_text("dict").get("blocks", []):
             block_type = block.get("type")
+            x0, y0, x1, _ = block["bbox"]
             if block_type == 1:
                 image_block_count += 1
+                ordered_blocks.append(
+                    {
+                        "kind": "image",
+                        "x0": x0,
+                        "y0": y0,
+                        "x1": x1,
+                        "text": (
+                            f"**==> picture page {page_num + 1} image "
+                            f"{image_block_count} intentionally omitted <==**"
+                        ),
+                    }
+                )
                 continue
             if block_type != 0:
                 continue
@@ -61,39 +199,34 @@ class NaivePdfBackend(BasePdfBackend):
             if not lines:
                 continue
 
-            x0, y0, x1, _ = block["bbox"]
-            text_blocks.append({
-                "x0": x0,
-                "y0": y0,
-                "x1": x1,
-                "text": "\n".join(lines),
-            })
+            ordered_blocks.append(
+                {
+                    "kind": "text",
+                    "x0": x0,
+                    "y0": y0,
+                    "x1": x1,
+                    "text": "\n".join(lines),
+                }
+            )
 
-        if not text_blocks:
+        if not ordered_blocks:
             if image_block_count:
-                return (
-                    f"## 第 {page_num + 1} 页\n\n"
-                    "> [系统提示] 当前页面主要为图片或流程图，默认解析器未对图片内容执行 OCR。"
-                )
+                return f"## 第 {page_num + 1} 页"
             return ""
 
-        text_blocks.sort(key=lambda item: (round(item["y0"], 1), round(item["x0"], 1), round(item["x1"], 1)))
+        ordered_blocks.sort(
+            key=lambda item: (round(item["y0"], 1), round(item["x0"], 1), round(item["x1"], 1))
+        )
 
         markdown_lines = [f"## 第 {page_num + 1} 页", ""]
-        for block in text_blocks:
+        for block in ordered_blocks:
             block_text = block["text"].strip()
             if not block_text:
                 continue
-            if self._is_heading_block(block_text):
+            if block["kind"] == "text" and self._is_heading_block(block_text):
                 markdown_lines.append(f"### {block_text}")
             else:
                 markdown_lines.append(block_text)
-            markdown_lines.append("")
-
-        if image_block_count:
-            markdown_lines.append(
-                "> [系统提示] 当前页面包含图片/流程图，默认文本解析器未提取图片内部文字。"
-            )
             markdown_lines.append("")
 
         return "\n".join(markdown_lines).strip()
@@ -103,6 +236,9 @@ class NaivePdfBackend(BasePdfBackend):
         stripped = text.replace(" ", "")
         if not stripped:
             return False
-        if len(stripped) <= 30 and (stripped.startswith(("第", "一", "二", "三", "四", "五", "六", "七", "八", "九")) or stripped.endswith(("方案", "策略", "总结", "问题", "优化", "处理"))):
+        if len(stripped) <= 30 and (
+            stripped.startswith(("第", "一", "二", "三", "四", "五", "六", "七", "八", "九"))
+            or stripped.endswith(("方案", "策略", "总结", "问题", "优化", "处理"))
+        ):
             return True
         return False

@@ -21,6 +21,8 @@ class PdfImageAsset:
     index: int
     object_key: str
     url: str
+    width: int | None = None
+    height: int | None = None
 
 
 @dataclass(slots=True)

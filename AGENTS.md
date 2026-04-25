@@ -60,6 +60,9 @@ toLink-Rag/
 │   │   │   ├── factory.py
 │   │   │   ├── interfaces.py
 │   │   │   └── providers/
+│   │   ├── pipeline/             # 解析任务业务流水线编排
+│   │   │   ├── models.py
+│   │   │   └── parse_task_pipeline.py
 │   │   ├── markdown_parser/
 │   │   │   ├── llm_integration.py
 │   │   │   ├── orchestrator.py
@@ -108,6 +111,7 @@ toLink-Rag/
     │   ├── core/
     │   │   ├── llm/
     │   │   ├── mq/
+    │   │   ├── pipeline/
     │   │   ├── parser/
     │   │   └── splitter/
     │   └── services/

@@ -1,7 +1,9 @@
+import json
 from typing import Optional, Protocol
 
 from pydantic import Field
 
+from src.core.mq.exceptions import MQSerializationError
 from src.core.mq.message import AbstractMessage, MessagePayload
 
 
@@ -16,10 +18,18 @@ class ParseTaskPayload(MessagePayload):
     source_filename: str = Field(..., title="原始文件名", description="用户上传时的原始文件名")
     md_bucket: str = Field(..., title="Markdown Bucket", description="Markdown 输出 bucket")
     md_object_key: str = Field(..., title="Markdown 对象Key", description="Markdown 输出对象 key")
-    parser_backend: Optional[str] = Field("naive", title="PDF解析器", description="可选 PDF 解析器: naive/docling")
-    docling_force_ocr: Optional[bool] = Field(False, title="Docling强制全页 OCR", description="仅 Docling 后端生效")
-    image_bucket: Optional[str] = Field(None, title="图片 Bucket", description="PDF 图片输出 bucket")
-    image_prefix: Optional[str] = Field(None, title="图片前缀", description="PDF 图片输出对象 key 前缀")
+    parser_backend: Optional[str] = Field(
+        "naive", title="PDF解析器", description="可选 PDF 解析器: naive/docling"
+    )
+    docling_force_ocr: Optional[bool] = Field(
+        False, title="Docling强制全页 OCR", description="仅 Docling 后端生效"
+    )
+    image_bucket: Optional[str] = Field(
+        None, title="图片 Bucket", description="PDF 图片输出 bucket"
+    )
+    image_prefix: Optional[str] = Field(
+        None, title="图片前缀", description="PDF 图片输出对象 key 前缀"
+    )
 
     model_config = {"title": "文档解析任务载荷"}
 
@@ -82,8 +92,21 @@ class ParseTaskMessage(AbstractMessage):
 
     @classmethod
     def parse_msg(cls, raw: str) -> ParseTaskPayload:
-        envelope = cls.deserialize_envelope(raw)
-        return ParseTaskPayload(**envelope["payload"])
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise MQSerializationError(f"消息 JSON 反序列化失败: {exc}") from exc
+
+        if not isinstance(data, dict):
+            raise MQSerializationError("消息必须是 JSON 对象")
+
+        payload_data = data.get("payload", data)
+        try:
+            return ParseTaskPayload(**payload_data)
+        except Exception as exc:
+            raise MQSerializationError(
+                f"ParseTaskPayload 字段校验失败: {exc}，原始消息前200字符: {raw[:200]}"
+            ) from exc
 
     class MQReceiver(Protocol):
         async def on_parse_task(self, payload: "ParseTaskPayload") -> None: ...
