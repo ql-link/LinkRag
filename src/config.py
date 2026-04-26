@@ -89,6 +89,16 @@ class Settings(BaseSettings):
     QDRANT_PORT: int = 6333
     QDRANT_GRPC_PORT: int = 6334
     QDRANT_COLLECTION_NAME: str = "tolink_rag_collection"
+    QDRANT_API_KEY: Optional[str] = None
+    QDRANT_TIMEOUT_SECONDS: int = 5
+
+    # Chunk indexing / vector storage
+    CHUNK_INDEX_BUCKET_COUNT: int = 128
+    CHUNK_INDEX_COLLECTION_PREFIX: str = "kb_bucket"
+    CHUNK_INDEX_EMBED_BATCH_SIZE: int = 32
+    CHUNK_INDEX_RETRY_LIMIT: int = 3
+    CHUNK_INDEX_RETRY_INTERVAL_SECONDS: int = 300
+    CHUNK_INDEX_INDEXING_STALE_SECONDS: int = 900
 
     # Elasticsearch
     ES_HOST: str = "http://localhost:9200"

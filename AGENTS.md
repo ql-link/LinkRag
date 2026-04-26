@@ -5,33 +5,40 @@
 - 项目名称：`toLink-Rag`
 - 技术栈：`FastAPI`、`SQLAlchemy`、`Redis`、`MySQL`、`MinIO`、`Qdrant`、`Kafka/RabbitMQ`
 - Python 版本：`3.10+`
-- 本地虚拟环境：仓库根目录下的 `.venv`
-- 应用入口：[src/main.py](/Users/jixu/Project/Agent/toLink-Rag/src/main.py)
+- 默认虚拟环境：仓库根目录下的 `.venv`
+- 应用入口：[src/main.py](src/main.py)
 
 ## 目录约定
 
-- [src/api/routes](/Users/jixu/Project/Agent/toLink-Rag/src/api/routes)：FastAPI 路由层
-- [src/api/schemas](/Users/jixu/Project/Agent/toLink-Rag/src/api/schemas)：HTTP 请求/响应模型
-- [src/services](/Users/jixu/Project/Agent/toLink-Rag/src/services)：服务层
-- [src/core](/Users/jixu/Project/Agent/toLink-Rag/src/core)：核心能力与基础设施
-- [src/core/mq](/Users/jixu/Project/Agent/toLink-Rag/src/core/mq)：MQ 中台
-- [src/models](/Users/jixu/Project/Agent/toLink-Rag/src/models)：ORM 模型
-- [tests](/Users/jixu/Project/Agent/toLink-Rag/tests)：测试
-- [scripts](/Users/jixu/Project/Agent/toLink-Rag/scripts)：可执行脚本
-- [docs](/Users/jixu/Project/Agent/toLink-Rag/docs)：设计和说明文档
+- [src/api/routes](src/api/routes)：FastAPI 路由层
+- [src/api/schemas](src/api/schemas)：HTTP 请求/响应模型
+- [src/services](src/services)：服务层
+- [src/core](src/core)：核心能力与基础设施
+- [src/core/mq](src/core/mq)：MQ 中台
+- [src/core/pipeline](src/core/pipeline)：解析任务业务流水线
+- [src/core/vector_storage](src/core/vector_storage)：向量存储与 Chunk 管理
+- [src/models](src/models)：ORM 模型
+- [tests/unit](tests/unit)：单元测试
+- [tests/integration](tests/integration)：集成测试与真实基础设施测试
+- [scripts](scripts)：可执行脚本
+- [docs](docs)：设计和说明文档
 
-当前项目结构如下（仅保留目录骨架和核心文件，已省略 `.git`、`.venv`、`.pytest_cache`、`__pycache__` 等运行时/缓存目录）：
+当前项目结构如下（仅保留目录骨架和核心文件，已省略 `.git`、`.venv`、`.pytest_cache`、`.ruff_cache`、`__pycache__` 等运行时/缓存目录）：
 
 ```text
 toLink-Rag/
 ├── .agents/                      # Agent/Skill 配置
 │   └── skills/
-│       └── mq-middleware/SKILL.md
-├── .env                          # 本地环境变量
+│       ├── agents-tree-sync/
+│       ├── auto-test/
+│       ├── mq-middleware/
+│       ├── mysql-ddl-conventions/
+│       ├── prd-generator/
+│       ├── swagger-annotation/
+│       └── tdd/
 ├── .env.example                  # 环境变量样例
 ├── AGENTS.md                     # 项目级 Agent 说明
 ├── README.md                     # 项目说明
-├── docker-compose.yml            # 本地依赖编排
 ├── pyproject.toml                # Python 依赖与项目配置
 ├── docs/                         # 设计与说明文档
 ├── scripts/                      # 可执行脚本
@@ -60,13 +67,17 @@ toLink-Rag/
 │   │   │   ├── factory.py
 │   │   │   ├── interfaces.py
 │   │   │   └── providers/
-│   │   ├── pipeline/             # 解析任务业务流水线编排
+│   │   ├── pipeline/             # 文档解析业务流水线编排
 │   │   │   ├── models.py
 │   │   │   └── parse_task_pipeline.py
 │   │   ├── markdown_parser/
+│   │   │   ├── image_extractor.py
 │   │   │   ├── llm_integration.py
+│   │   │   ├── models.py
 │   │   │   ├── orchestrator.py
-│   │   │   └── provider_clients.py
+│   │   │   ├── parser.py
+│   │   │   ├── provider_clients.py
+│   │   │   └── scanner.py
 │   │   ├── mq/
 │   │   │   ├── factory.py        # MQFactory
 │   │   │   ├── interfaces.py
@@ -84,10 +95,47 @@ toLink-Rag/
 │   │   │           ├── kafka_adapter.py
 │   │   │           └── topic_admin.py
 │   │   ├── parser/
-│   │   │   └── pdf/
-│   │   │       └── backends/
-│   │   └── splitter/
+│   │   │   ├── base.py
+│   │   │   ├── factory.py
+│   │   │   ├── pdf/
+│   │   │   │   ├── base.py
+│   │   │   │   ├── models.py
+│   │   │   │   ├── service.py
+│   │   │   │   └── backends/
+│   │   │   │       ├── mineru_backend.py
+│   │   │   │       └── naive_backend.py
+│   │   │   └── providers/
+│   │   │       ├── html_parser.py
+│   │   │       ├── pdf_parser.py
+│   │   │       └── word_parser.py
+│   │   ├── splitter/
+│   │   │   ├── base.py
+│   │   │   ├── chunking_engine.py
+│   │   │   ├── embedding_pipeline.py
+│   │   │   ├── models.py
+│   │   │   ├── pipeline_chunker.py
+│   │   │   ├── rule_chunker.py
+│   │   │   └── semantic_chunker.py
+│   │   └── vector_storage/       # 向量存储与 Chunk 管理
+│   │       ├── bucket_router.py
+│   │       ├── constants.py
+│   │       ├── draft_factory.py
+│   │       ├── exceptions.py
+│   │       ├── facade.py
+│   │       ├── factory.py
+│   │       ├── models.py
+│   │       ├── point_factory.py
+│   │       ├── services/
+│   │       │   ├── base.py
+│   │       │   ├── compensation.py
+│   │       │   ├── management.py
+│   │       │   └── storage.py
+│   │       └── stores/
+│   │           ├── qdrant_store.py
+│   │           └── repository.py
 │   ├── models/                   # ORM 模型
+│   │   ├── chunk_record.py
+│   │   ├── db_models.py
 │   │   ├── parse_task.py
 │   │   ├── system_provider.py
 │   │   ├── usage_log.py
@@ -99,40 +147,43 @@ toLink-Rag/
 │   │   ├── config_reader_service.py
 │   │   ├── usage_log_service.py
 │   │   └── storage/
+│   │       ├── base.py
+│   │       ├── factory.py
+│   │       ├── minio_storage.py
+│   │       └── oss_storage.py
 │   └── utils/
 │       ├── file_downloader.py
 │       ├── logger.py
 │       └── text_formatter.py
 └── tests/                        # 测试目录
-    ├── conftest.py               # pytest 统一入口（marker/集成测试开关）
-    ├── README.md                 # 测试分层与运行约定
+    ├── README.md                 # pytest 统一入口（marker/集成测试开关）
+    ├── conftest.py               # 测试分层与运行约定
     ├── unit/                     # 单元测试 (Mock 驱动)
     │   ├── api/
     │   ├── core/
     │   │   ├── llm/
     │   │   ├── mq/
-    │   │   ├── pipeline/
     │   │   ├── parser/
-    │   │   └── splitter/
+    │   │   ├── pipeline/
+    │   │   ├── splitter/
+    │   │   └── vector_storage/
     │   └── services/
-    └── integration/              # 集成测试 (真实组件/网络)
+    └── integration/              # 集成测试
         ├── api/
         ├── core/
         │   ├── llm/
         │   ├── markdown_parser/
-        │   └── splitter/
+        │   ├── splitter/
+        │   └── vector_storage/
         ├── services/
         └── test_connectivity.py
 ```
 
-
 ## 配置约定
 
-- 所有运行时配置统一从 [src/config.py](/Users/jixu/Project/Agent/toLink-Rag/src/config.py) 的 `Settings` 读取。
-- 本地环境变量样例参考 [.env.example](/Users/jixu/Project/Agent/toLink-Rag/.env.example)。
+- 所有运行时配置统一从 [src/config.py](src/config.py) 的 `Settings` 读取。
+- 本地环境变量样例参考 [.env.example](.env.example)。
 - 不要硬编码敏感信息；新增配置时同步更新 `Settings` 和 `.env.example`。
-
-
 
 ## 工作方式
 
