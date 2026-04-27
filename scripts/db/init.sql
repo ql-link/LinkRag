@@ -165,6 +165,36 @@ CREATE TABLE IF NOT EXISTS document_parse_task (
     KEY idx_created_at (created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '文档解析任务执行记录表';
 
+-- 9. 文档 Chunk 真值记录表
+CREATE TABLE IF NOT EXISTS kb_document_chunk (
+    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '物理主键ID',
+    chunk_id        VARCHAR(128) NOT NULL COMMENT 'Chunk业务唯一键，对应Qdrant Point ID',
+    doc_id          BIGINT UNSIGNED NOT NULL COMMENT '文档ID',
+    set_id          BIGINT UNSIGNED NOT NULL COMMENT '知识集ID',
+    user_id         BIGINT UNSIGNED NOT NULL COMMENT '用户ID',
+    bucket_id       INT NOT NULL COMMENT '路由后的Qdrant物理桶编号',
+    content         TEXT NOT NULL COMMENT 'splitter最终产出的可检索Chunk原文',
+    content_hash    VARCHAR(64) NOT NULL COMMENT '基于最终Chunk内容计算的SHA-256哈希',
+    chunk_type      VARCHAR(32) NOT NULL DEFAULT 'text' COMMENT '分片类型: paragraph/image/table/code_block/heading/mixed/text',
+    start_line      INT DEFAULT NULL COMMENT 'Chunk在源文档中的起始行号',
+    end_line        INT DEFAULT NULL COMMENT 'Chunk在源文档中的结束行号',
+    chunk_index     INT DEFAULT NULL COMMENT '当前Chunk在文档内的顺序编号',
+    status          VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT '生命周期状态: PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED',
+    error_msg       VARCHAR(512) DEFAULT NULL COMMENT '最近一次写入或补偿失败原因',
+    retry_count     INT NOT NULL DEFAULT 0 COMMENT '已执行的补偿重试次数',
+    last_retry_at   DATETIME DEFAULT NULL COMMENT '最近一次补偿重试时间',
+    embedding_model VARCHAR(128) DEFAULT NULL COMMENT '实际使用的embedding模型名称',
+    create_time     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
+    update_time     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
+
+    UNIQUE KEY uk_chunk_id (chunk_id),
+    KEY idx_user_set (user_id, set_id),
+    KEY idx_bucket_status (bucket_id, status),
+    KEY idx_doc_id (doc_id),
+    KEY idx_chunk_type (chunk_type),
+    KEY idx_content_hash (content_hash)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '文档Chunk真值记录表';
+
 -- 设置所有表的自增起始值为 10000 (MySQL 8.0 推荐显式指定方式)
 ALTER TABLE sys_user AUTO_INCREMENT = 10000;
 ALTER TABLE llm_system_provider AUTO_INCREMENT = 10000;
@@ -174,3 +204,4 @@ ALTER TABLE chat_message AUTO_INCREMENT = 10000;
 ALTER TABLE llm_usage_log AUTO_INCREMENT = 10000;
 ALTER TABLE document_original_file AUTO_INCREMENT = 10000;
 ALTER TABLE document_parse_task AUTO_INCREMENT = 10000;
+ALTER TABLE kb_document_chunk AUTO_INCREMENT = 10000;
