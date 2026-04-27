@@ -10,29 +10,15 @@ from pathlib import Path
 from urllib.parse import urlparse
 from urllib.request import urlopen
 
+from src.core.prompts.markdown_enhancement import (
+    TABLE_PROMPT_TEMPLATE,
+    TABLE_SYSTEM_PROMPT,
+    VISION_PROMPT_TEMPLATE,
+)
+
 from .llm_integration import TableClient, VisionClient
 
 logger = logging.getLogger(__name__)
-
-TABLE_SYSTEM_PROMPT = (
-    "你是文档解析助手。你会阅读 Markdown 表格，并输出一句简洁、准确、可直接用于检索增强的中文总结。"
-    "不要复述表头格式，不要输出多段内容，不要加前缀标签。"
-)
-
-VISION_PROMPT_TEMPLATE = (
-    "请描述这张图片的关键信息，输出一段简洁、准确的中文说明。"
-    "优先关注图片里可帮助理解文档的信息，不要输出'这是一张图片'之类空话。"
-    "{source_context}"
-)
-
-TABLE_PROMPT_TEMPLATE = """请阅读下面的 Markdown 表格，并给出一句简洁、准确的中文总结。
-如果表格中包含对比关系、统计结果或异常值，请优先点出最重要的信息。
-
-来源文件: {source_file}
-
-Markdown 表格:
-{table}
-"""
 
 
 def _clean_llm_text(text: str) -> str:

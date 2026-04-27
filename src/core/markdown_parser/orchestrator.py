@@ -7,6 +7,7 @@ import asyncio
 import logging
 
 from .llm_integration import ImageDescriber, TableDescriber
+from .models import ParseResult
 from .parser import MarkdownParser
 from .provider_clients import build_default_table_client, build_default_vision_client
 
@@ -19,7 +20,12 @@ class MarkdownEnhancementOrchestrator:
     def __init__(self, parser: MarkdownParser | None = None) -> None:
         self._parser = parser or MarkdownParser()
 
-    async def aenhance_markdown(self, markdown: str, source_file: str | None = None) -> str:
+    async def aenhance_parse_result(
+        self,
+        markdown: str,
+        source_file: str | None = None,
+    ) -> ParseResult:
+        """Parse markdown and enrich the structured result before materializing markdown again."""
         settings = _get_settings()
         parse_result = self._parser.parse(markdown, source_file=source_file)
 
@@ -35,6 +41,10 @@ class MarkdownEnhancementOrchestrator:
             except Exception as exc:
                 logger.warning("Image enhancement skipped: %s", exc)
 
+        return parse_result
+
+    async def aenhance_markdown(self, markdown: str, source_file: str | None = None) -> str:
+        parse_result = await self.aenhance_parse_result(markdown, source_file=source_file)
         return parse_result.to_markdown()
 
     def enhance_markdown(self, markdown: str, source_file: str | None = None) -> str:
