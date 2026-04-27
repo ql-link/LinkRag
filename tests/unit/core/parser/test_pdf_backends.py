@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import cv2
@@ -17,6 +18,7 @@ import pytest
 
 from src.core.parser.pdf.backends.mineru_backend import MinerUBackend
 from src.core.parser.pdf.backends.naive_backend import NaivePdfBackend
+from src.core.parser.pdf.backends.opendataloader_backend import OpenDataLoaderBackend
 from src.core.parser.pdf.models import PdfImageAsset, PdfParseOptions
 from src.core.parser.pdf.service import PdfParserService
 
@@ -110,6 +112,53 @@ class TestMinerUBackend:
         assert "$E=mc^2$" in md
 
 
+class TestOpenDataLoaderBackend:
+    """OpenDataLoader 本地后端测试。"""
+
+    @patch("src.core.parser.pdf.backends.opendataloader_backend.importlib.import_module")
+    @patch("src.core.parser.pdf.backends.opendataloader_backend.subprocess.run")
+    def test_successful_convert_should_return_markdown_and_assets(
+        self,
+        mock_run,
+        mock_import_module,
+    ):
+        mock_run.return_value = MagicMock(stderr='openjdk version "17.0.12"\n')
+        mock_module = MagicMock()
+
+        def fake_convert(*, input_path, output_dir, **kwargs):
+            output_path = Path(output_dir)
+            (output_path / "images").mkdir(parents=True, exist_ok=True)
+            (output_path / "document.md").write_text(
+                "# Title\n\n![figure](images/page-001-figure-01.png)\n",
+                encoding="utf-8",
+            )
+            (output_path / "images" / "page-001-figure-01.png").write_bytes(b"png-bytes")
+
+        mock_module.convert.side_effect = fake_convert
+        mock_import_module.return_value = mock_module
+
+        backend = OpenDataLoaderBackend()
+        markdown, assets = backend.parse(b"fake-pdf-bytes")
+
+        assert "# Title" in markdown
+        assert len(assets) == 1
+        assert assets[0].source_path == "images/page-001-figure-01.png"
+        assert backend.metadata["opendataloader_image_count"] == 1
+
+    @patch("src.core.parser.pdf.backends.opendataloader_backend.importlib.import_module")
+    @patch("src.core.parser.pdf.backends.opendataloader_backend.subprocess.run")
+    def test_java_8_should_return_empty(self, mock_run, mock_import_module):
+        mock_run.return_value = MagicMock(stderr='java version "1.8.0_441"\n')
+        mock_import_module.return_value = MagicMock()
+
+        backend = OpenDataLoaderBackend()
+        markdown, assets = backend.parse(b"fake-pdf-bytes")
+
+        assert markdown == ""
+        assert assets == []
+        assert "Java 11+" in backend.metadata["opendataloader_backend_error"]
+
+
 # ── Service Routing Tests ─────────────────────────────────────────────
 
 
@@ -117,16 +166,22 @@ class TestPdfParserServiceRouting:
     """PdfParserService 后端路由测试。"""
 
     def test_auto_backend_order(self):
-        """auto 模式应按 MinerU→Naive 顺序。"""
+        """auto 模式应按 MinerU→OpenDataLoader→Naive 顺序。"""
         service = PdfParserService()
         order = service._build_backend_order("auto")
-        assert order == ["mineru", "naive"]
+        assert order == ["mineru", "opendataloader", "naive"]
 
     def test_mineru_backend_order(self):
         """mineru 模式应有 Naive 兜底。"""
         service = PdfParserService()
         order = service._build_backend_order("mineru")
         assert order == ["mineru", "naive"]
+
+    def test_opendataloader_backend_order(self):
+        """opendataloader 模式应有 Naive 兜底。"""
+        service = PdfParserService()
+        order = service._build_backend_order("opendataloader")
+        assert order == ["opendataloader", "naive"]
 
     def test_naive_backend_order(self):
         """naive 模式应仅有 Naive。"""
@@ -154,6 +209,13 @@ class TestPdfParserServiceRouting:
         options = PdfParseOptions(backend="unknown")
         instance = service._create_backend_instance("nonexistent", options)
         assert instance is None
+
+    def test_create_opendataloader_instance(self):
+        """OpenDataLoader 应可直接实例化。"""
+        service = PdfParserService()
+        options = PdfParseOptions(backend="opendataloader")
+        instance = service._create_backend_instance("opendataloader", options)
+        assert isinstance(instance, OpenDataLoaderBackend)
 
     def test_build_image_object_key_should_store_under_md_sibling_image_dir(self):
         service = PdfParserService()
@@ -217,6 +279,24 @@ class TestPdfParserServiceRouting:
         assert injected.index("http://minio/flow.png") < injected.index(
             "http://minio/architecture.png"
         )
+
+    def test_inject_image_references_should_replace_opendataloader_local_refs(self):
+        service = PdfParserService()
+        markdown = "# Title\n\n![figure](images/page-001-figure-01.png)\n"
+        image_assets = [
+            PdfImageAsset(
+                page_number=1,
+                index=1,
+                object_key="picture-page-001-01.png",
+                url="http://minio/page-001-figure-01.png",
+                source_path="images/page-001-figure-01.png",
+            )
+        ]
+
+        injected = service._inject_image_references(markdown, "opendataloader", image_assets)
+
+        assert "http://minio/page-001-figure-01.png" in injected
+        assert "images/page-001-figure-01.png" not in injected
 
     @patch("src.core.parser.pdf.service.fitz.open")
     def test_upload_images_should_extract_naive_image_blocks_without_page_render(

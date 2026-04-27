@@ -19,9 +19,9 @@ class ParseTaskPayload(MessagePayload):
     md_bucket: str = Field(..., title="Markdown Bucket", description="Markdown 输出 bucket")
     md_object_key: str = Field(..., title="Markdown 对象Key", description="Markdown 输出对象 key")
     pdf_parser_backend: Optional[str] = Field(
-        "mineru",
+        "opendataloader",
         title="PDF解析器",
-        description="可选 PDF 解析器: mineru/naive",
+        description="可选 PDF 解析器: mineru/opendataloader/naive",
         validation_alias=AliasChoices("pdf_parser_backend", "parser_backend"),
         serialization_alias="pdf_parser_backend",
     )
@@ -72,7 +72,7 @@ class ParseTaskMessage(AbstractMessage):
         source_filename: str,
         md_bucket: str,
         md_object_key: str,
-        pdf_parser_backend: Optional[str] = "mineru",
+        pdf_parser_backend: Optional[str] = "opendataloader",
         docling_force_ocr: Optional[bool] = False,
         image_bucket: Optional[str] = None,
         image_prefix: Optional[str] = None,

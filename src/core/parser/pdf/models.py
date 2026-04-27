@@ -13,6 +13,7 @@ class PdfBinaryAsset:
     index: int
     ext: str
     content: bytes
+    source_path: str | None = None
 
 
 @dataclass(slots=True)
@@ -23,6 +24,7 @@ class PdfImageAsset:
     url: str
     width: int | None = None
     height: int | None = None
+    source_path: str | None = None
 
 
 @dataclass(slots=True)
