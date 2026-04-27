@@ -77,6 +77,14 @@ class Settings(BaseSettings):
     MARKDOWN_PARSER_TABLE_MODEL: Optional[str] = None
     MARKDOWN_PARSER_VISION_MODEL: Optional[str] = None
     MARKDOWN_PARSER_LLM_TIMEOUT_MS: int = 60000
+    CHUNKING_ENABLE_ADVANCED_PIPELINE: bool = True
+    CHUNKING_HEADING_BREAK_LEVEL: int = 3
+    CHUNKING_SEMANTIC_PERCENTILE: float = 95.0
+    CHUNKING_MIN_CHUNK_TOKENS: int = 150
+    CHUNKING_MAX_CHUNK_TOKENS: int = 512
+    CHUNKING_OVERLAP_TOKENS: int = 64
+    CHUNKING_MIN_DISTANCE_GATE: float = 0.25
+    CHUNKING_EMBED_BATCH_SIZE: int = 32
 
     # ==========================================
     # 向量数据库配置 (Vector Store)
@@ -116,7 +124,7 @@ class Settings(BaseSettings):
     MINIO_BUCKET_NAME: str = "tolink-rag-docs"
     MINIO_USE_SSL: bool = False
     LOCAL_DOCS_PATH: str = "./data/documents"
-    PDF_PARSER_BACKEND: str = "auto"  # auto / mineru / marker / docling / naive
+    PDF_PARSER_BACKEND: str = "opendataloader"  # auto / mineru / opendataloader / naive
     PDF_PARSER_FALLBACKS: str = "naive"
     MINERU_API_URL: str = ""  # mineru-api 服务地址，例如 http://localhost:8010 或云服务地址
     MINERU_API_KEY: Optional[str] = None  # MinerU 云服务专属 Token (如需)

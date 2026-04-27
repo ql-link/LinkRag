@@ -69,22 +69,37 @@ CREATE TABLE IF NOT EXISTS llm_user_config (
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '用户级 LLM 配置表';
 
 
--- 4. 对话表
+-- 4. 数据集表
+CREATE TABLE IF NOT EXISTS dataset (
+    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '数据集唯一标识',
+    user_id         BIGINT UNSIGNED NOT NULL COMMENT '所属用户 ID',
+    name            VARCHAR(128)    NOT NULL COMMENT '数据集名称',
+    description     VARCHAR(512)    DEFAULT NULL COMMENT '数据集描述',
+    status          VARCHAR(16)     NOT NULL DEFAULT 'ACTIVE' COMMENT '数据集状态',
+    created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uk_dataset_user_name (user_id, name),
+    INDEX idx_dataset_user_updated (user_id, updated_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '数据集表';
+
+-- 5. 对话表
 CREATE TABLE IF NOT EXISTS chat_conversation (
     id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '对话唯一标识',
     user_id         BIGINT UNSIGNED NOT NULL COMMENT '所属用户 ID',
+    dataset_id      BIGINT UNSIGNED NOT NULL COMMENT '所属数据集 ID',
     last_config_id  BIGINT UNSIGNED COMMENT '最后使用的 LLM 配置 ID',
     last_model_name VARCHAR(128)    COMMENT '最后使用的模型名快照',
     title           VARCHAR(255)    COMMENT '对话标题',
     is_pinned       BOOLEAN         DEFAULT FALSE COMMENT '是否置顶',
-    is_deleted      BOOLEAN         DEFAULT FALSE COMMENT '软删除标记',
     created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-    INDEX idx_user_active_list (user_id, is_deleted, is_pinned, updated_at)
+    INDEX idx_chat_conversation_user_pinned_updated (user_id, is_pinned, updated_at),
+    INDEX idx_chat_conversation_dataset_updated (dataset_id, updated_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '对话表';
 
--- 5. 对话消息表
+-- 6. 对话消息表
 CREATE TABLE IF NOT EXISTS chat_message (
     id                  BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '消息唯一标识',
     conversation_id     BIGINT UNSIGNED NOT NULL COMMENT '所属对话 ID',
@@ -98,7 +113,7 @@ CREATE TABLE IF NOT EXISTS chat_message (
     INDEX idx_conversation_created (conversation_id, created_at)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '对话消息表';
 
--- 6. LLM 调用用量日志表
+-- 7. LLM 调用用量日志表
 CREATE TABLE IF NOT EXISTS llm_usage_log (
     id                  BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '记录唯一标识',
     user_id             BIGINT UNSIGNED NOT NULL COMMENT '用户 ID',
@@ -120,50 +135,103 @@ CREATE TABLE IF NOT EXISTS llm_usage_log (
     INDEX idx_conversation_id (conversation_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT 'LLM 调用用量日志表';
 
--- 7. 原始文档上传记录表
+-- 8. 知识文件原始文档上传记录表
 CREATE TABLE IF NOT EXISTS document_original_file (
-    id                    BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '原始文件主键ID',
-    conversation_id       BIGINT UNSIGNED NOT NULL COMMENT '所属对话ID',
-    user_id               BIGINT UNSIGNED NOT NULL COMMENT '上传用户ID',
-    original_filename     VARCHAR(255)    NOT NULL COMMENT '用户上传时的原始文件名',
-    file_suffix           VARCHAR(32)     NOT NULL COMMENT '标准化小写文件后缀: md/pdf/docx/txt/html',
-    file_size             BIGINT UNSIGNED NOT NULL COMMENT '原始文件大小，单位字节',
-    content_type          VARCHAR(128)    DEFAULT NULL COMMENT '上传请求中的Content-Type',
-    file_sha256           CHAR(64)        DEFAULT NULL COMMENT '原文件SHA256',
-    storage_provider      VARCHAR(32)     NOT NULL DEFAULT 'minio' COMMENT '存储提供方: minio/oss',
-    bucket_name           VARCHAR(128)    NOT NULL COMMENT '原始文件所在bucket',
-    object_key            VARCHAR(512)    NOT NULL COMMENT '原始文件对象Key',
-    file_url              VARCHAR(1024)   DEFAULT NULL COMMENT '内部访问URL，可选',
-    upload_status         VARCHAR(20)     NOT NULL DEFAULT 'uploading' COMMENT '上传状态: uploading/success/failed',
-    upload_failure_reason VARCHAR(512)    DEFAULT NULL COMMENT '上传失败原因',
-    is_deleted            TINYINT(1)      NOT NULL DEFAULT 0 COMMENT '软删除标记: 0-未删除, 1-已删除',
-    created_at            DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
-    updated_at            DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
+    id                         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '原始文档唯一标识',
+    dataset_id                 BIGINT UNSIGNED NOT NULL COMMENT '所属数据集ID，对应 dataset.id',
+    user_id                    BIGINT UNSIGNED NOT NULL COMMENT '上传用户ID',
+    original_filename          VARCHAR(255) NOT NULL COMMENT '用户上传时的原始文件名',
+    file_suffix                VARCHAR(32) NOT NULL COMMENT '标准化小写文件后缀',
+    file_size                  BIGINT UNSIGNED NOT NULL COMMENT '原始文件大小，单位字节',
+    content_type               VARCHAR(128) DEFAULT NULL COMMENT '上传请求中的 Content-Type',
+    bucket_name                VARCHAR(64) NOT NULL DEFAULT 'rag-raw' COMMENT '原文件私有存储桶',
+    object_key                 VARCHAR(512) DEFAULT NULL COMMENT '私有OSS对象Key',
+    file_url                   VARCHAR(1024) DEFAULT NULL COMMENT 'Python/RAG内部下载URL，不含服务间鉴权Token',
+    upload_status              VARCHAR(20) NOT NULL DEFAULT 'uploading' COMMENT '上传状态: uploading/success/failed',
+    is_upload_success          TINYINT(1) NOT NULL DEFAULT 0 COMMENT '是否上传成功',
+    failure_reason             VARCHAR(512) DEFAULT NULL COMMENT '上传失败原因',
+    created_at                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-    KEY idx_conversation_deleted_created (conversation_id, is_deleted, created_at),
-    KEY idx_user_deleted_created (user_id, is_deleted, created_at)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '原始文档上传记录表';
+    UNIQUE KEY uk_dataset_user_name_suffix (dataset_id, user_id, original_filename, file_suffix),
+    INDEX idx_document_original_dataset_created (dataset_id, created_at),
+    INDEX idx_document_original_user_created (user_id, created_at),
+    INDEX idx_document_original_upload_status (upload_status, updated_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '知识库原始文档上传记录表';
 
--- 8. 文档解析任务执行记录表
+-- 9. 知识文件解析任务表
 CREATE TABLE IF NOT EXISTS document_parse_task (
-    id                BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '解析任务主键ID',
-    task_id           VARCHAR(36)     NOT NULL COMMENT '解析任务唯一标识(UUID)',
-    original_file_id  BIGINT UNSIGNED NOT NULL COMMENT '关联原始文件ID，对应 document_original_file.id',
-    file_type         VARCHAR(32)     NOT NULL COMMENT '文件真实格式: md/pdf/docx/txt/html',
-    status            VARCHAR(16)     NOT NULL DEFAULT 'pending' COMMENT '状态: pending/processing/success/failed',
-    md_bucket         VARCHAR(128)    DEFAULT NULL COMMENT 'Markdown文件bucket',
-    md_object_key     VARCHAR(512)    DEFAULT NULL COMMENT 'Markdown文件对象Key',
-    md_storage_status VARCHAR(24)     NOT NULL DEFAULT 'pending' COMMENT 'Markdown存储状态: pending/success/failed',
-    page_count        INT             DEFAULT NULL COMMENT '解析出的总页数/大致长度指标',
-    error_message     VARCHAR(512)    DEFAULT NULL COMMENT '失败原因',
-    time_cost_ms      INT             DEFAULT NULL COMMENT '解析耗时(毫秒)',
-    created_at        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '任务创建时间',
-    updated_at        DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '任务更新时间',
+    id                         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '解析任务记录主键',
+    task_id                    VARCHAR(36) NOT NULL COMMENT '解析任务业务唯一标识(UUID)',
+    document_original_file_id  BIGINT UNSIGNED NOT NULL COMMENT '原文件主键，对应 document_original_file.id',
+    dataset_id                 BIGINT UNSIGNED NOT NULL COMMENT '所属数据集ID',
+    user_id                    BIGINT UNSIGNED NOT NULL COMMENT '所属用户ID',
+    trigger_mode               VARCHAR(20) NOT NULL COMMENT '触发方式: upload_auto/manual_retry',
+    task_status                VARCHAR(16) NOT NULL DEFAULT 'created' COMMENT '任务状态: created/processing/success/failed',
+    failure_reason             VARCHAR(512) DEFAULT NULL COMMENT '业务化失败原因',
+    last_dispatch_error        VARCHAR(512) DEFAULT NULL COMMENT '最近一次投递异常摘要',
+    last_dispatched_at         DATETIME DEFAULT NULL COMMENT '最近一次调用MQ发送时间',
+    parse_started_at           DATETIME DEFAULT NULL COMMENT 'Python开始解析时间',
+    parse_finished_at          DATETIME DEFAULT NULL COMMENT 'Python结束解析时间',
+    parse_duration_ms          BIGINT DEFAULT NULL COMMENT '解析耗时，单位毫秒',
+    created_at                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-    UNIQUE KEY uk_task_id (task_id),
-    KEY idx_original_file_status (original_file_id, status),
-    KEY idx_created_at (created_at)
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '文档解析任务执行记录表';
+    UNIQUE KEY uk_parse_task_id (task_id),
+    INDEX idx_parse_task_original_status (document_original_file_id, task_status, updated_at),
+    INDEX idx_parse_task_dataset_user (dataset_id, user_id, created_at),
+    INDEX idx_parse_task_status_retry (task_status, last_dispatched_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '知识文件解析任务表';
+
+-- 10. 知识文件最新解析产物表
+CREATE TABLE IF NOT EXISTS document_parsed_file (
+    id                         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '解析产物记录主键',
+    document_original_file_id  BIGINT UNSIGNED NOT NULL COMMENT '原文件主键，对应 document_original_file.id',
+    dataset_id                 BIGINT UNSIGNED NOT NULL COMMENT '所属数据集ID',
+    user_id                    BIGINT UNSIGNED NOT NULL COMMENT '所属用户ID',
+    latest_success_task_id     VARCHAR(36) NOT NULL COMMENT '最新成功解析任务ID，对应 document_parse_task.task_id',
+    original_filename          VARCHAR(255) NOT NULL COMMENT '原文件名快照',
+    parsed_filename            VARCHAR(255) DEFAULT NULL COMMENT '解析后md文件名',
+    parsed_bucket_name         VARCHAR(64) NOT NULL DEFAULT 'rag-md' COMMENT '解析结果文件桶名',
+    parsed_object_key          VARCHAR(512) NOT NULL COMMENT '解析结果文件对象Key',
+    parsed_file_url            VARCHAR(1024) DEFAULT NULL COMMENT '解析结果文件内部定位地址',
+    parsed_storage_path        VARCHAR(1024) DEFAULT NULL COMMENT '解析结果统一存储路径',
+    parse_count                INT NOT NULL DEFAULT 1 COMMENT '累计成功解析次数，仅解析成功后递增',
+    parsed_at                  DATETIME NOT NULL COMMENT '最新成功解析时间',
+    created_at                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uk_document_parsed_original_file (document_original_file_id),
+    INDEX idx_document_parsed_dataset_user (dataset_id, user_id, updated_at),
+    INDEX idx_document_parsed_latest_task (latest_success_task_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '知识文件最新解析产物表';
+
+-- 11. 文档分片真值表
+CREATE TABLE IF NOT EXISTS kb_document_chunk (
+    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '分片记录主键ID',
+    chunk_id        VARCHAR(128)    NOT NULL COMMENT 'Chunk业务唯一标识，对应Qdrant Point ID',
+    doc_id          BIGINT UNSIGNED NOT NULL COMMENT '所属文档ID',
+    set_id          BIGINT UNSIGNED NOT NULL COMMENT '所属知识集ID',
+    user_id         BIGINT UNSIGNED NOT NULL COMMENT '所属用户ID',
+    bucket_id       INT UNSIGNED    NOT NULL COMMENT 'Qdrant物理分桶编号',
+    content         TEXT            NOT NULL COMMENT 'Splitter最终产出的Chunk文本内容',
+    content_hash    CHAR(64)        NOT NULL COMMENT 'Chunk内容SHA-256哈希',
+    chunk_type      VARCHAR(32)     NOT NULL DEFAULT 'text' COMMENT '分片类型：text/paragraph/table/code_block/heading/mixed等',
+    start_line      INT             DEFAULT NULL COMMENT 'Chunk起始行号',
+    end_line        INT             DEFAULT NULL COMMENT 'Chunk结束行号',
+    chunk_index     INT             DEFAULT NULL COMMENT '当前文档内的Chunk顺序编号',
+    status          VARCHAR(16)     NOT NULL DEFAULT 'PENDING' COMMENT '索引状态：PENDING/INDEXING/INDEXED/FAILED',
+    error_msg       VARCHAR(512)    DEFAULT NULL COMMENT '最近一次失败原因',
+    retry_count     INT             NOT NULL DEFAULT 0 COMMENT '补偿重试次数',
+    last_retry_at   DATETIME        DEFAULT NULL COMMENT '最近一次补偿重试时间',
+    embedding_model VARCHAR(128)    DEFAULT NULL COMMENT '实际使用的Embedding模型名称',
+    create_time     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    update_time     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+
+    UNIQUE KEY uk_chunk_id (chunk_id),
+    KEY idx_user_set (user_id, set_id,doc_id),
+    KEY idx_bucket_status (bucket_id, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT='文档分片真值表，保存Chunk原文、归属字段、索引状态与补偿信息';
 
 -- 9. 文档 Chunk 真值记录表
 CREATE TABLE IF NOT EXISTS kb_document_chunk (
@@ -199,9 +267,12 @@ CREATE TABLE IF NOT EXISTS kb_document_chunk (
 ALTER TABLE sys_user AUTO_INCREMENT = 10000;
 ALTER TABLE llm_system_provider AUTO_INCREMENT = 10000;
 ALTER TABLE llm_user_config AUTO_INCREMENT = 10000;
+ALTER TABLE dataset AUTO_INCREMENT = 10000;
 ALTER TABLE chat_conversation AUTO_INCREMENT = 10000;
 ALTER TABLE chat_message AUTO_INCREMENT = 10000;
 ALTER TABLE llm_usage_log AUTO_INCREMENT = 10000;
 ALTER TABLE document_original_file AUTO_INCREMENT = 10000;
 ALTER TABLE document_parse_task AUTO_INCREMENT = 10000;
+ALTER TABLE document_parsed_file AUTO_INCREMENT = 10000;
+ALTER TABLE knowledge_file_config AUTO_INCREMENT = 10000;
 ALTER TABLE kb_document_chunk AUTO_INCREMENT = 10000;
