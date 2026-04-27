@@ -1,7 +1,7 @@
 ---
 name: swagger-annotation
 description: FastAPI Swagger 中文注解生成工作流。为 Controller 路由和 Pydantic 模型生成符合企业级规范的中文 Swagger 注解。
-when_to_use: "当用户提供 API 文件、Controller 文件或 Pydantic 模型文件，要求添加 Swagger 注解时激活"
+when_to_use: "当用户要求为 FastAPI 路由、Pydantic 模型添加 Swagger/OpenAPI 注解、补充 API 文档说明或优化 /docs 页面显示时激活。触发示例：'给这个接口加swagger注解'、'补充API文档'、'添加openapi描述'"
 ---
 
 # FastAPI Swagger 中文注解生成规范

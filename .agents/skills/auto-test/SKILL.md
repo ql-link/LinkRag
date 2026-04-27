@@ -1,7 +1,7 @@
 ---
 name: auto-test
 description: 自动化测试生成工作流。为 FastAPI/RAG 后端生成 pytest 单测/集成/冒烟测试，强调 Mock 隔离、分层策略与边界覆盖。
-when_to_use: "当用户要求补齐/生成/修复自动化测试、pytest 用例、测试夹具（fixtures）、Mock 策略或测试覆盖时激活"
+when_to_use: "当用户要求生成测试用例、补齐单元测试、修复失败的测试、编写 pytest fixtures、设置 Mock 策略或提升测试覆盖率时激活。触发示例：'写一下这个函数的单元测试'、'补全测试覆盖'、'这个接口的测试怎么写'、'用pytest测试'"
 ---
 
 # 自动化测试代码生成规范

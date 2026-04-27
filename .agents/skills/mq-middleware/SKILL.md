@@ -1,7 +1,7 @@
 ---
 name: tolink-rag-mq-middleware
 description: 指导 LLM 如何使用 toLink-Rag 项目的 MQ 消息中台进行消息收发、定义新消息类型以及处理多厂商适配逻辑。
-when_to_use: "当用户要求对接 MQ（Kafka/RabbitMQ）、发送/订阅消息、定义新消息类型、实现消费者或处理多厂商适配逻辑时激活"
+when_to_use: "当用户要求接入 Kafka/RabbitMQ、发送或订阅消息、新增 MQ 消息类型、实现消息消费者或处理多消息队列厂商适配时激活。触发示例：'接入Kafka'、'发送一条消息'、'写个MQ消费者'、'新增消息类型'、'对接RabbitMQ'"
 ---
 
 # MQ 消息中台 Skill (LLM 调用指南)
