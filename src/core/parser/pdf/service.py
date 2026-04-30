@@ -11,6 +11,7 @@ import numpy as np
 
 from src.core.parser.pdf.backends.mineru_backend import MinerUBackend
 from src.core.parser.pdf.backends.naive_backend import NaivePdfBackend
+from src.core.parser.pdf.backends.opendataloader_backend import OpenDataLoaderBackend
 from src.core.parser.pdf.models import PdfBinaryAsset, PdfImageAsset, PdfParseOptions
 
 
@@ -23,6 +24,7 @@ class PdfParserService:
         ),
         "docling": re.compile(r"<!-- image -->"),
     }
+    IMAGE_MARKDOWN_PATTERN = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
     MIN_IMAGE_BYTES = 2048
     MIN_IMAGE_WIDTH = 64
     MIN_IMAGE_HEIGHT = 64
@@ -30,6 +32,7 @@ class PdfParserService:
     def __init__(self) -> None:
         self._backends = {
             NaivePdfBackend.name: NaivePdfBackend,
+            OpenDataLoaderBackend.name: OpenDataLoaderBackend,
             # MinerU 需要 API URL，在 _create_backend_instance 中动态实例化
         }
 
@@ -116,9 +119,11 @@ class PdfParserService:
     def _build_backend_order(self, backend: str) -> list[str]:
         normalized = (backend or "naive").lower()
         if normalized == "auto":
-            return ["mineru", "naive"]
+            return ["mineru", "opendataloader", "naive"]
         if normalized == "mineru":
             return ["mineru", "naive"]
+        if normalized == "opendataloader":
+            return ["opendataloader", "naive"]
         return ["naive"]
 
     def _count_placeholders(self, markdown: str, backend: str) -> int:
@@ -162,6 +167,7 @@ class PdfParserService:
                         url=url,
                         width=image_size[0],
                         height=image_size[1],
+                        source_path=asset.source_path,
                     )
                 )
             return image_assets
@@ -546,8 +552,11 @@ class PdfParserService:
         if not markdown:
             return markdown
 
-        pattern = self.PLACEHOLDER_PATTERNS.get(backend)
         remaining = list(image_assets)
+        if backend == "opendataloader":
+            markdown = self._replace_existing_image_urls(markdown, remaining)
+
+        pattern = self.PLACEHOLDER_PATTERNS.get(backend)
 
         if pattern:
 
@@ -569,6 +578,47 @@ class PdfParserService:
             markdown = markdown.rstrip() + tail
 
         return markdown
+
+    def _replace_existing_image_urls(
+        self,
+        markdown: str,
+        remaining: list[PdfImageAsset],
+    ) -> str:
+        def replacer(match: re.Match[str]) -> str:
+            alt_text = match.group(1)
+            target = self._normalize_image_target(match.group(2))
+            if target.startswith(("http://", "https://", "data:")):
+                return match.group(0)
+
+            asset = self._pop_asset_by_source_path(target, remaining)
+            if asset is None:
+                return match.group(0)
+            label = alt_text or f"page-{asset.page_number}-image-{asset.index}"
+            return f"![{label}]({asset.url})"
+
+        return self.IMAGE_MARKDOWN_PATTERN.sub(replacer, markdown)
+
+    @staticmethod
+    def _normalize_image_target(target: str) -> str:
+        return target.strip().replace("\\", "/").lstrip("./")
+
+    def _pop_asset_by_source_path(
+        self,
+        target: str,
+        remaining: list[PdfImageAsset],
+    ) -> PdfImageAsset | None:
+        normalized_target = self._normalize_image_target(target)
+        for index, asset in enumerate(remaining):
+            asset_target = self._normalize_image_target(asset.source_path or "")
+            if asset_target == normalized_target:
+                return remaining.pop(index)
+
+        target_name = Path(normalized_target).name
+        for index, asset in enumerate(remaining):
+            asset_name = Path(asset.source_path or "").name
+            if asset_name == target_name:
+                return remaining.pop(index)
+        return None
 
     def _pop_matching_asset(
         self,

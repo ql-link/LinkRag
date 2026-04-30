@@ -1,7 +1,7 @@
 import asyncio
 import time
 
-from src.core.markdown_parser import MarkdownEnhancementOrchestrator
+from src.core.markdown_parser import MarkdownEnhancementOrchestrator, MarkdownParser
 from src.core.parser.factory import ParserFactory
 from src.utils.text_formatter import TextFormatter
 
@@ -22,11 +22,12 @@ class ParseTaskService:
         cleaned_markdown = TextFormatter.clean(raw_markdown)
 
         orchestrator = MarkdownEnhancementOrchestrator()
-        final_markdown = await orchestrator.aenhance_markdown(
+        enhanced_parse_result = await orchestrator.aenhance_parse_result(
             cleaned_markdown,
             source_file=source_file,
         )
-        final_markdown = TextFormatter.clean(final_markdown)
+        final_markdown = TextFormatter.clean(enhanced_parse_result.to_markdown())
+        final_parse_result = MarkdownParser().parse(final_markdown, source_file=source_file)
         metadata = parser.extract_metadata()
         metadata["markdown_enhanced"] = final_markdown != cleaned_markdown
 
@@ -34,6 +35,7 @@ class ParseTaskService:
 
         return {
             "markdown": final_markdown,
+            "parse_result": final_parse_result,
             "metadata": metadata,
             "time_cost_ms": time_cost_ms,
         }

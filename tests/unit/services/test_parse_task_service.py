@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from src.core.markdown_parser.models import ParseResult
 from src.services.parse_task_service import ParseTaskService
 
 
@@ -13,15 +14,20 @@ class TestParseTaskService:
     """ParseTaskService 单元测试"""
 
     @patch("src.services.parse_task_service.MarkdownEnhancementOrchestrator")
+    @patch("src.services.parse_task_service.MarkdownParser")
     @patch("src.services.parse_task_service.ParserFactory.get_parser")
-    def test_process_sync(self, mock_get_parser, mock_orchestrator_cls):
+    def test_process_sync(self, mock_get_parser, mock_markdown_parser_cls, mock_orchestrator_cls):
         mock_parser = MagicMock()
         mock_parser.parse.return_value = "raw markdown"
         mock_parser.extract_metadata.return_value = {"pages_or_length": 1}
         mock_get_parser.return_value = mock_parser
         mock_orchestrator = MagicMock()
-        mock_orchestrator.aenhance_markdown = AsyncMock(return_value="cleaned markdown")
+        enhanced_parse_result = MagicMock()
+        enhanced_parse_result.to_markdown.return_value = "cleaned markdown"
+        mock_orchestrator.aenhance_parse_result = AsyncMock(return_value=enhanced_parse_result)
         mock_orchestrator_cls.return_value = mock_orchestrator
+        final_parse_result = ParseResult(elements=[], tables=[], images=[], source_file=None)
+        mock_markdown_parser_cls.return_value.parse.return_value = final_parse_result
 
         with patch(
             "src.services.parse_task_service.TextFormatter.clean",
@@ -33,16 +39,19 @@ class TestParseTaskService:
         mock_parser.parse.assert_called_with(b"dummy byte content")
         mock_clean.assert_any_call("raw markdown")
         assert result["markdown"] == "cleaned markdown"
+        assert result["parse_result"] is final_parse_result
         assert result["metadata"]["pages_or_length"] == 1
         assert result["metadata"]["markdown_enhanced"] is False
         assert "time_cost_ms" in result
         assert isinstance(result["time_cost_ms"], int)
 
     @patch("src.services.parse_task_service.MarkdownEnhancementOrchestrator")
+    @patch("src.services.parse_task_service.MarkdownParser")
     @patch("src.services.parse_task_service.ParserFactory.get_parser")
     async def test_aprocess_should_parse_clean_enhance_and_return_metadata(
         self,
         mock_get_parser,
+        mock_markdown_parser_cls,
         mock_orchestrator_cls,
     ):
         mock_parser = MagicMock()
@@ -50,8 +59,12 @@ class TestParseTaskService:
         mock_parser.extract_metadata.return_value = {"pages_or_length": 2}
         mock_get_parser.return_value = mock_parser
         mock_orchestrator = MagicMock()
-        mock_orchestrator.aenhance_markdown = AsyncMock(return_value=" enhanced markdown ")
+        enhanced_parse_result = MagicMock()
+        enhanced_parse_result.to_markdown.return_value = " enhanced markdown "
+        mock_orchestrator.aenhance_parse_result = AsyncMock(return_value=enhanced_parse_result)
         mock_orchestrator_cls.return_value = mock_orchestrator
+        final_parse_result = ParseResult(elements=[], tables=[], images=[], source_file="source.pdf")
+        mock_markdown_parser_cls.return_value.parse.return_value = final_parse_result
 
         with patch(
             "src.services.parse_task_service.TextFormatter.clean",
@@ -71,12 +84,13 @@ class TestParseTaskService:
             image_bucket="image-bucket",
         )
         mock_parser.parse.assert_called_once_with(b"file bytes")
-        mock_orchestrator.aenhance_markdown.assert_awaited_once_with(
+        mock_orchestrator.aenhance_parse_result.assert_awaited_once_with(
             "cleaned markdown",
             source_file="source.pdf",
         )
         assert mock_clean.call_count == 2
         assert result["markdown"] == "enhanced markdown"
+        assert result["parse_result"] is final_parse_result
         assert result["metadata"] == {
             "pages_or_length": 2,
             "markdown_enhanced": True,
@@ -84,10 +98,12 @@ class TestParseTaskService:
         assert isinstance(result["time_cost_ms"], int)
 
     @patch("src.services.parse_task_service.MarkdownEnhancementOrchestrator")
+    @patch("src.services.parse_task_service.MarkdownParser")
     @patch("src.services.parse_task_service.ParserFactory.get_parser")
     async def test_aprocess_should_mark_not_enhanced_when_markdown_unchanged(
         self,
         mock_get_parser,
+        mock_markdown_parser_cls,
         mock_orchestrator_cls,
     ):
         mock_parser = MagicMock()
@@ -95,8 +111,16 @@ class TestParseTaskService:
         mock_parser.extract_metadata.return_value = {}
         mock_get_parser.return_value = mock_parser
         mock_orchestrator = MagicMock()
-        mock_orchestrator.aenhance_markdown = AsyncMock(return_value="markdown")
+        enhanced_parse_result = MagicMock()
+        enhanced_parse_result.to_markdown.return_value = "markdown"
+        mock_orchestrator.aenhance_parse_result = AsyncMock(return_value=enhanced_parse_result)
         mock_orchestrator_cls.return_value = mock_orchestrator
+        mock_markdown_parser_cls.return_value.parse.return_value = ParseResult(
+            elements=[],
+            tables=[],
+            images=[],
+            source_file=None,
+        )
 
         with patch(
             "src.services.parse_task_service.TextFormatter.clean",

@@ -34,13 +34,17 @@ toLink-Rag/
 │       ├── mq-middleware/
 │       ├── mysql-ddl-conventions/
 │       ├── prd-generator/
+│       ├── run-all-tests/
 │       ├── swagger-annotation/
 │       └── tdd/
 ├── .env.example                  # 环境变量样例
 ├── AGENTS.md                     # 项目级 Agent 说明
 ├── README.md                     # 项目说明
+├── docker-compose.yml            # 本地依赖编排
+├── project_info.md               # 项目基础信息
 ├── pyproject.toml                # Python 依赖与项目配置
 ├── docs/                         # 设计与说明文档
+│   └── module-development-files/ # 模块研发文档
 ├── scripts/                      # 可执行脚本
 │   ├── db/
 │   │   ├── init.sql              # 建库建表脚本
@@ -70,6 +74,8 @@ toLink-Rag/
 │   │   ├── pipeline/             # 文档解析业务流水线编排
 │   │   │   ├── models.py
 │   │   │   └── parse_task_pipeline.py
+│   │   ├── prompts/              # LLM 提示词模板
+│   │   │   └── markdown_enhancement.py
 │   │   ├── markdown_parser/
 │   │   │   ├── image_extractor.py
 │   │   │   ├── llm_integration.py

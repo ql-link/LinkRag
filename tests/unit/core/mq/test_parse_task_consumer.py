@@ -73,7 +73,7 @@ class TestParseTaskConsumer:
             await handle_parse_task(msg.serialize(), {})
 
     @patch("src.core.mq.consumers.parse_task_consumer.ParseTaskPipeline")
-    async def test_handle_parse_task_should_default_backend_to_mineru_when_missing(
+    async def test_handle_parse_task_should_default_backend_to_opendataloader_when_missing(
         self, mock_pipeline_cls
     ):
         from src.core.mq.consumers.parse_task_consumer import handle_parse_task
@@ -103,4 +103,4 @@ class TestParseTaskConsumer:
         await handle_parse_task(raw, {})
 
         pipeline.execute.assert_called_once()
-        assert pipeline.execute.call_args.args[0].pdf_parser_backend == "mineru"
+        assert pipeline.execute.call_args.args[0].pdf_parser_backend == "opendataloader"

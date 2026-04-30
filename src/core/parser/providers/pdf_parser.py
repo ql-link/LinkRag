@@ -10,10 +10,9 @@ class PdfParser(BaseParser):
     """PDF -> Markdown 解析入口，可通过 backend 参数选择具体解析器。
 
     支持的 backend:
-    - auto: MinerU → Marker → Docling → Naive 全链路降级（推荐）
-    - mineru: MinerU HTTP API → Marker → Naive
-    - marker: Marker 本地深度学习 → Naive
-    - docling: Docling → Naive
+    - auto: MinerU → OpenDataLoader → Naive 全链路降级（推荐）
+    - mineru: MinerU HTTP API → Naive
+    - opendataloader: OpenDataLoader 本地解析 → Naive
     - naive: PyMuPDF (最快，质量最低)
     """
 
