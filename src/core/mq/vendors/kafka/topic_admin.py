@@ -3,6 +3,7 @@ Kafka Topic 管理工具。
 
 提供给运维脚本或部署流程调用，不默认绑定到应用启动生命周期。
 """
+
 from __future__ import annotations
 
 import os
@@ -13,9 +14,7 @@ from src.config import settings
 try:
     from confluent_kafka.admin import AdminClient, NewTopic
 except ImportError as exc:
-    raise RuntimeError(
-        "缺少依赖 confluent-kafka，请先安装后再使用 Topic Admin。"
-    ) from exc
+    raise RuntimeError("缺少依赖 confluent-kafka，请先安装后再使用 Topic Admin。") from exc
 
 
 @dataclass(frozen=True)
@@ -48,17 +47,11 @@ def _env_int(name: str, default: int) -> int:
 
 def build_admin_client() -> AdminClient:
     config = {
-        "bootstrap.servers": os.getenv(
-            "BOOTSTRAP_SERVER", settings.KAFKA_BOOTSTRAP_SERVERS
-        ),
-        "security.protocol": os.getenv(
-            "KAFKA_SECURITY_PROTOCOL", settings.KAFKA_SECURITY_PROTOCOL
-        ),
+        "bootstrap.servers": os.getenv("BOOTSTRAP_SERVER", settings.KAFKA_BOOTSTRAP_SERVERS),
+        "security.protocol": os.getenv("KAFKA_SECURITY_PROTOCOL", settings.KAFKA_SECURITY_PROTOCOL),
     }
 
-    sasl_mechanism = os.getenv(
-        "KAFKA_SASL_MECHANISM", settings.KAFKA_SASL_MECHANISM or ""
-    )
+    sasl_mechanism = os.getenv("KAFKA_SASL_MECHANISM", settings.KAFKA_SASL_MECHANISM or "")
     if sasl_mechanism:
         config["sasl.mechanism"] = sasl_mechanism
         config["sasl.username"] = os.getenv(
@@ -82,6 +75,14 @@ def build_default_topic_specs() -> list[TopicSpec]:
             partitions=_env_int("PARSE_TASK_PARTITIONS", 1),
             replication_factor=replication_factor,
             retention_ms=_env_int("RETENTION_MS_PARSE_TASK", 604800000),
+            min_insync_replicas=min_insync_replicas,
+            max_message_bytes=max_message_bytes,
+        ),
+        TopicSpec(
+            name=os.getenv("PARSE_RESULT_TOPIC", "tolink.rag.parse_result"),
+            partitions=_env_int("PARSE_RESULT_PARTITIONS", 1),
+            replication_factor=replication_factor,
+            retention_ms=_env_int("RETENTION_MS_PARSE_RESULT", 604800000),
             min_insync_replicas=min_insync_replicas,
             max_message_bytes=max_message_bytes,
         ),

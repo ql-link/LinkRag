@@ -45,6 +45,11 @@ toLink-Rag/
 ├── pyproject.toml                # Python 依赖与项目配置
 ├── docs/                         # 设计与说明文档
 │   └── module-development-files/ # 模块研发文档
+│       └── service-file-upload-parse-collaboration/
+│           ├── feature_info.md
+│           ├── implementation_report.md
+│           ├── requirement.md
+│           └── technical_design.md
 ├── scripts/                      # 可执行脚本
 │   ├── db/
 │   │   ├── init.sql              # 建库建表脚本
@@ -72,6 +77,7 @@ toLink-Rag/
 │   │   │   ├── interfaces.py
 │   │   │   └── providers/
 │   │   ├── pipeline/             # 文档解析业务流水线编排
+│   │   │   ├── error_codes.py
 │   │   │   ├── models.py
 │   │   │   └── parse_task_pipeline.py
 │   │   ├── prompts/              # LLM 提示词模板
@@ -93,6 +99,7 @@ toLink-Rag/
 │   │   │   │   └── parse_task_consumer.py
 │   │   │   ├── messages/         # MQ 业务消息
 │   │   │   │   ├── parse_task.py
+│   │   │   │   ├── parse_result.py
 │   │   │   │   ├── cache_sync.py
 │   │   │   │   └── usage_report.py
 │   │   │   └── vendors/

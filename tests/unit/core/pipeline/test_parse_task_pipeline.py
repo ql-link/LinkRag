@@ -1,15 +1,21 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from sqlalchemy.exc import IntegrityError
+
 from src.core.markdown_parser.models import ParseResult
 from src.core.mq.messages import ParseTaskMessage
 from src.core.pipeline import ParseTaskPipeline, PipelineStatus
 from src.core.splitter import ChunkEmbeddingPipeline, EmbeddingPipelineStats
+from src.models.parse_task import DocumentParseTask
 
 
 def build_payload(file_type: str = "pdf"):
     return ParseTaskMessage.build(
         task_id="t-001",
         original_file_id=1,
+        document_parse_task_id=10,
+        user_id=20,
+        dataset_id=30,
         file_type=file_type,
         source_bucket="source-bucket",
         source_object_key="uploads/test.pdf",
@@ -34,53 +40,88 @@ class FakeAsyncSessionFactory:
         return False
 
 
-def build_db(record):
-    db = AsyncMock()
+def build_db(parse_task):
+    db = MagicMock()
+    db.flush = AsyncMock()
+    db.commit = AsyncMock()
+    db.rollback = AsyncMock()
+    db.close = AsyncMock()
+    db.execute = AsyncMock()
     result = MagicMock()
-    result.scalar_one_or_none.return_value = record
+    result.scalar_one_or_none.return_value = parse_task
     db.execute.return_value = result
     return db
 
 
+def build_parse_task():
+    record = DocumentParseTask(
+        id=10,
+        document_original_file_id=1,
+        dataset_id=30,
+        user_id=20,
+        latest_parse_task_id="t-001",
+        original_filename="test.pdf",
+        parse_count=1,
+    )
+    return record
+
+
 class TestParseTaskPipeline:
-    async def test_execute_should_skip_when_task_record_missing(self):
-        db = build_db(None)
-        pipeline = ParseTaskPipeline(storage=MagicMock(), session_factory=FakeAsyncSessionFactory(db))
+    async def test_execute_should_skip_when_task_id_duplicate(self):
+        db = build_db(build_parse_task())
+        db.flush.side_effect = IntegrityError("duplicate", None, None)
+        pipeline = ParseTaskPipeline(
+            storage=MagicMock(),
+            session_factory=FakeAsyncSessionFactory(db),
+            mq_service=MagicMock(),
+        )
 
         result = await pipeline.execute(build_payload())
 
         assert result.status == PipelineStatus.SKIPPED
         assert result.should_ack is True
-        assert result.skip_reason == "task_record_not_found"
+        assert result.skip_reason == "duplicate_task_id"
+        db.rollback.assert_awaited_once()
         db.close.assert_awaited_once()
 
-    async def test_execute_should_skip_when_task_already_success(self):
-        record = MagicMock()
-        record.status = "success"
-        db = build_db(record)
-        pipeline = ParseTaskPipeline(storage=MagicMock(), session_factory=FakeAsyncSessionFactory(db))
+    async def test_execute_should_mark_failed_when_parse_task_context_invalid(self):
+        db = build_db(None)
+        mq_service = MagicMock()
+        mq_service.send = AsyncMock()
+        pipeline = ParseTaskPipeline(
+            storage=MagicMock(),
+            session_factory=FakeAsyncSessionFactory(db),
+            mq_service=mq_service,
+        )
 
         result = await pipeline.execute(build_payload())
 
-        assert result.status == PipelineStatus.SKIPPED
-        assert result.skip_reason == "already_success"
-        db.commit.assert_not_awaited()
-        db.close.assert_awaited_once()
+        assert result.status == PipelineStatus.FAILED
+        assert result.should_ack is True
+        log_record = db.add.call_args.args[0]
+        assert log_record.task_status == "failed"
+        assert (
+            log_record.failure_reason
+            == "INVALID_TASK_CONTEXT: 解析任务上下文不一致，请联系管理员确认；文件解析记录不存在"
+        )
+        mq_service.send.assert_awaited_once()
+        sent_payload = mq_service.send.call_args.args[0].get_payload()
+        assert sent_payload.task_status == "failed"
 
     @patch(
         "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess", new_callable=AsyncMock
     )
     @patch("src.core.pipeline.parse_task_pipeline.ParseTaskPipeline._chunk_markdown")
-    async def test_execute_should_parse_upload_mark_success_and_chunk(
+    async def test_execute_should_parse_upload_mark_success_notify_and_chunk(
         self,
         mock_chunk_markdown,
         mock_aprocess,
     ):
-        record = MagicMock()
-        record.status = "pending"
-        db = build_db(record)
+        db = build_db(build_parse_task())
         storage = MagicMock()
         storage.download_bytes.return_value = b"pdf bytes"
+        mq_service = MagicMock()
+        mq_service.send = AsyncMock()
         mock_aprocess.return_value = {
             "markdown": "parsed content",
             "parse_result": MagicMock(),
@@ -88,7 +129,11 @@ class TestParseTaskPipeline:
             "time_cost_ms": 120,
         }
         mock_chunk_markdown.return_value = [MagicMock(), MagicMock()]
-        pipeline = ParseTaskPipeline(storage=storage, session_factory=FakeAsyncSessionFactory(db))
+        pipeline = ParseTaskPipeline(
+            storage=storage,
+            session_factory=FakeAsyncSessionFactory(db),
+            mq_service=mq_service,
+        )
 
         result = await pipeline.execute(build_payload())
 
@@ -96,45 +141,59 @@ class TestParseTaskPipeline:
         assert result.chunk_count == 2
         assert result.page_count == 3
         assert result.time_cost_ms == 120
-        assert record.status == "success"
-        assert record.md_storage_status == "success"
-        assert record.page_count == 3
-        assert record.time_cost_ms == 120
+        log_record = db.add.call_args.args[0]
+        assert log_record.task_status == "success"
+        assert log_record.parsed_filename == "test.md"
+        assert log_record.parsed_bucket_name == "markdown-bucket"
+        assert log_record.parsed_object_key == "parsed/t-001.md"
+        assert log_record.parsed_file_url == "oss://markdown-bucket/parsed/t-001.md"
         storage.download_bytes.assert_called_once_with(
             bucket="source-bucket",
             object_key="uploads/test.pdf",
         )
         storage.upload_bytes.assert_called_once()
-        mock_aprocess.assert_awaited_once()
+        mq_service.send.assert_awaited_once()
+        sent_payload = mq_service.send.call_args.args[0].get_payload()
+        assert sent_payload.task_status == "success"
         mock_chunk_markdown.assert_called_once_with(
             "parsed content",
             "parsed/t-001.md",
             mock_aprocess.return_value["parse_result"],
         )
-        db.commit.assert_awaited()
-        db.close.assert_awaited_once()
 
     @patch(
         "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess", new_callable=AsyncMock
     )
-    async def test_execute_should_mark_failed_when_parse_fails(self, mock_aprocess):
-        record = MagicMock()
-        record.status = "pending"
-        db = build_db(record)
+    async def test_execute_should_mark_failed_and_notify_when_parse_fails(self, mock_aprocess):
+        db = build_db(build_parse_task())
         storage = MagicMock()
         storage.download_bytes.return_value = b"pdf bytes"
+        mq_service = MagicMock()
+        mq_service.send = AsyncMock()
         mock_aprocess.side_effect = RuntimeError("parse failed")
-        pipeline = ParseTaskPipeline(storage=storage, session_factory=FakeAsyncSessionFactory(db))
+        pipeline = ParseTaskPipeline(
+            storage=storage,
+            session_factory=FakeAsyncSessionFactory(db),
+            mq_service=mq_service,
+        )
 
         result = await pipeline.execute(build_payload())
 
         assert result.status == PipelineStatus.FAILED
-        assert result.should_ack is False
-        assert record.status == "failed"
-        assert record.md_storage_status == "failed"
-        assert record.error_message == "parse failed"
-        db.commit.assert_awaited()
-        db.close.assert_awaited_once()
+        assert result.should_ack is True
+        log_record = db.add.call_args.args[0]
+        assert log_record.task_status == "failed"
+        assert (
+            log_record.failure_reason
+            == "PARSE_ENGINE_FAILED: 文件解析失败，请检查文件内容；parse failed"
+        )
+        mq_service.send.assert_awaited_once()
+        sent_payload = mq_service.send.call_args.args[0].get_payload()
+        assert sent_payload.task_status == "failed"
+        assert (
+            sent_payload.failure_reason
+            == "PARSE_ENGINE_FAILED: 文件解析失败，请检查文件内容；parse failed"
+        )
 
     @patch(
         "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess", new_callable=AsyncMock
@@ -145,11 +204,11 @@ class TestParseTaskPipeline:
         mock_chunk_markdown,
         mock_aprocess,
     ):
-        record = MagicMock()
-        record.status = "pending"
-        db = build_db(record)
+        db = build_db(build_parse_task())
         storage = MagicMock()
         storage.download_bytes.return_value = b"pdf bytes"
+        mq_service = MagicMock()
+        mq_service.send = AsyncMock()
         mock_aprocess.return_value = {
             "markdown": "parsed content",
             "parse_result": MagicMock(),
@@ -157,13 +216,17 @@ class TestParseTaskPipeline:
             "time_cost_ms": 120,
         }
         mock_chunk_markdown.side_effect = RuntimeError("chunk failed")
-        pipeline = ParseTaskPipeline(storage=storage, session_factory=FakeAsyncSessionFactory(db))
+        pipeline = ParseTaskPipeline(
+            storage=storage,
+            session_factory=FakeAsyncSessionFactory(db),
+            mq_service=mq_service,
+        )
 
         result = await pipeline.execute(build_payload())
 
         assert result.status == PipelineStatus.SUCCESS
         assert result.chunk_count == 0
-        assert record.status == "success"
+        assert db.add.call_args.args[0].task_status == "success"
 
     @patch("src.core.pipeline.parse_task_pipeline.ParseTaskPipeline._build_chunk_processor")
     def test_chunk_markdown_should_use_process_parse_result_when_available(
@@ -207,5 +270,7 @@ class TestParseTaskPipeline:
         chunks = ParseTaskPipeline._chunk_markdown("enhanced markdown", "parsed/t-001.md")
 
         assert len(chunks) == 1
-        processor.process.assert_called_once_with("enhanced markdown", source_file="parsed/t-001.md")
+        processor.process.assert_called_once_with(
+            "enhanced markdown", source_file="parsed/t-001.md"
+        )
         mock_logger.info.assert_called()

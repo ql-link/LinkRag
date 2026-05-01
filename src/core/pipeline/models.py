@@ -43,6 +43,6 @@ class ParsePipelineResult:
     def should_ack(self) -> bool:
         """判断是否需要向 MQ 发送 ACK。
 
-        成功和跳过的任务都需要 ACK，避免消息重复投递。
+        解析失败已由 Pipeline 写入终态日志并通知 Java，不再依赖 MQ 重投。
         """
-        return self.status in (PipelineStatus.SUCCESS, PipelineStatus.SKIPPED)
+        return True

@@ -4,6 +4,7 @@ MQ 消息中台 API 路由
 提供 MQ 消息发送、厂商信息查询等 HTTP 接口。
 用于 Java 管理端通过 HTTP 触发 Python 侧的 MQ 消息投递。
 """
+
 from fastapi import APIRouter, HTTPException
 from loguru import logger
 
@@ -33,6 +34,7 @@ router = APIRouter(
 # 路由端点
 # ==========================================
 
+
 @router.post(
     "/send/parse-task",
     response_model=MQResponse,
@@ -46,12 +48,16 @@ async def send_parse_task(request: SendParseTaskRequest):
         msg = ParseTaskMessage.build(
             task_id=request.task_id,
             original_file_id=request.original_file_id,
+            document_parse_task_id=request.document_parse_task_id,
+            user_id=request.user_id,
+            dataset_id=request.dataset_id,
             file_type=request.file_type,
             source_bucket=request.source_bucket,
             source_object_key=request.source_object_key,
             source_filename=request.source_filename,
             md_bucket=request.md_bucket,
             md_object_key=request.md_object_key,
+            trigger_mode=request.trigger_mode,
             pdf_parser_backend=request.pdf_parser_backend,
             docling_force_ocr=request.docling_force_ocr,
             image_bucket=request.image_bucket or request.md_bucket,

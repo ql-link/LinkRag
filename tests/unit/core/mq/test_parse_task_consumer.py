@@ -5,8 +5,6 @@ ParseTask MQ consumer 单元测试
 import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
-
 from src.core.pipeline import ParsePipelineResult, PipelineStatus
 
 
@@ -21,6 +19,9 @@ class TestParseTaskConsumer:
         msg = ParseTaskMessage.build(
             task_id="t-001",
             original_file_id=1,
+            document_parse_task_id=10,
+            user_id=20,
+            dataset_id=30,
             file_type="pdf",
             source_bucket="source-bucket",
             source_object_key="uploads/test.pdf",
@@ -44,13 +45,16 @@ class TestParseTaskConsumer:
         assert pipeline.execute.call_args.args[0].task_id == "t-001"
 
     @patch("src.core.mq.consumers.parse_task_consumer.ParseTaskPipeline")
-    async def test_handle_parse_task_failed_should_raise_for_redelivery(self, mock_pipeline_cls):
+    async def test_handle_parse_task_failed_should_ack_without_redelivery(self, mock_pipeline_cls):
         from src.core.mq.consumers.parse_task_consumer import handle_parse_task
         from src.core.mq.messages import ParseTaskMessage
 
         msg = ParseTaskMessage.build(
             task_id="t-failed",
             original_file_id=1,
+            document_parse_task_id=10,
+            user_id=20,
+            dataset_id=30,
             file_type="pdf",
             source_bucket="source-bucket",
             source_object_key="uploads/test.pdf",
@@ -69,8 +73,9 @@ class TestParseTaskConsumer:
         )
         mock_pipeline_cls.return_value = pipeline
 
-        with pytest.raises(RuntimeError, match="触发重投"):
-            await handle_parse_task(msg.serialize(), {})
+        await handle_parse_task(msg.serialize(), {})
+
+        pipeline.execute.assert_called_once()
 
     @patch("src.core.mq.consumers.parse_task_consumer.ParseTaskPipeline")
     async def test_handle_parse_task_should_default_backend_to_opendataloader_when_missing(
@@ -82,6 +87,9 @@ class TestParseTaskConsumer:
             {
                 "task_id": "t-default-backend",
                 "original_file_id": 1,
+                "document_parse_task_id": 10,
+                "user_id": 20,
+                "dataset_id": 30,
                 "file_type": "pdf",
                 "source_bucket": "source-bucket",
                 "source_object_key": "uploads/test.pdf",

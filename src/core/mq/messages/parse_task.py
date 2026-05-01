@@ -12,12 +12,20 @@ class ParseTaskPayload(MessagePayload):
 
     task_id: str = Field(..., title="任务ID", description="文档解析任务的唯一标识")
     original_file_id: int = Field(..., title="原始文件ID", description="原始文件表主键")
+    document_parse_task_id: int = Field(
+        ..., title="文件解析表ID", description="document_parse_task 表主键"
+    )
+    user_id: int = Field(..., title="用户ID", description="文件所属用户ID")
+    dataset_id: int = Field(..., title="数据集ID", description="文件所属数据集ID")
     file_type: str = Field(..., title="文件类型", description="文件格式（pdf/docx/html/...）")
     source_bucket: str = Field(..., title="原始文件Bucket", description="源文件对象存储 bucket")
     source_object_key: str = Field(..., title="原始文件对象Key", description="源文件对象存储 key")
     source_filename: str = Field(..., title="原始文件名", description="用户上传时的原始文件名")
     md_bucket: str = Field(..., title="Markdown Bucket", description="Markdown 输出 bucket")
     md_object_key: str = Field(..., title="Markdown 对象Key", description="Markdown 输出对象 key")
+    trigger_mode: str = Field(
+        "upload_auto", title="触发方式", description="upload_auto/manual_retry"
+    )
     pdf_parser_backend: Optional[str] = Field(
         "opendataloader",
         title="PDF解析器",
@@ -66,12 +74,16 @@ class ParseTaskMessage(AbstractMessage):
         cls,
         task_id: str,
         original_file_id: int,
+        document_parse_task_id: int,
+        user_id: int,
+        dataset_id: int,
         file_type: str,
         source_bucket: str,
         source_object_key: str,
         source_filename: str,
         md_bucket: str,
         md_object_key: str,
+        trigger_mode: str = "upload_auto",
         pdf_parser_backend: Optional[str] = "opendataloader",
         docling_force_ocr: Optional[bool] = False,
         image_bucket: Optional[str] = None,
@@ -81,12 +93,16 @@ class ParseTaskMessage(AbstractMessage):
             payload=ParseTaskPayload(
                 task_id=task_id,
                 original_file_id=original_file_id,
+                document_parse_task_id=document_parse_task_id,
+                user_id=user_id,
+                dataset_id=dataset_id,
                 file_type=file_type,
                 source_bucket=source_bucket,
                 source_object_key=source_object_key,
                 source_filename=source_filename,
                 md_bucket=md_bucket,
                 md_object_key=md_object_key,
+                trigger_mode=trigger_mode,
                 pdf_parser_backend=pdf_parser_backend,
                 docling_force_ocr=docling_force_ocr,
                 image_bucket=image_bucket,
