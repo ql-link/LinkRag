@@ -3,6 +3,7 @@ MQ Service 层单元测试
 
 Mock Factory 和 Sender，验证 MQService 的发送/订阅逻辑。
 """
+
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -30,6 +31,9 @@ class TestMQServiceSend:
         msg = ParseTaskMessage.build(
             task_id="t-001",
             original_file_id=1,
+            document_parse_task_id=10,
+            user_id=20,
+            dataset_id=30,
             file_type="pdf",
             source_bucket="source-bucket",
             source_object_key="uploads/test.pdf",

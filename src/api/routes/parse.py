@@ -4,6 +4,7 @@
 提供同步解析和异步任务提交两个端点。
 异步任务通过 MQ 中台投递，由消费端异步处理。
 """
+
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 
 from src.services.parse_task_service import ParseTaskService
@@ -16,6 +17,7 @@ router = APIRouter(
     prefix="/api/v1/parser",
     tags=["文档解析"],
 )
+
 
 @router.post(
     "/extract_sync",
@@ -53,12 +55,14 @@ async def extract_sync(
             "message": "success",
             "data": {
                 "file_type": file_type,
-                "pdf_parser_backend": result["metadata"].get("pdf_parser_backend", pdf_parser_backend),
+                "pdf_parser_backend": result["metadata"].get(
+                    "pdf_parser_backend", pdf_parser_backend
+                ),
                 "markdown": result["markdown"],
                 "metadata": result["metadata"],
                 "warning": "该接口仅用于测试联调，生产流程请通过 Java 上传后发送 Kafka 解析任务",
             },
-            "time_cost_ms": result["time_cost_ms"]
+            "time_cost_ms": result["time_cost_ms"],
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -77,12 +81,16 @@ async def submit_async_task(request: TaskSubmitRequest):
         msg = ParseTaskMessage.build(
             task_id=request.task_id,
             original_file_id=request.original_file_id,
+            document_parse_task_id=request.document_parse_task_id,
+            user_id=request.user_id,
+            dataset_id=request.dataset_id,
             file_type=request.file_type,
             source_bucket=request.source_bucket,
             source_object_key=request.source_object_key,
             source_filename=request.source_filename,
             md_bucket=request.md_bucket,
             md_object_key=request.md_object_key,
+            trigger_mode=request.trigger_mode,
             pdf_parser_backend=request.pdf_parser_backend,
             docling_force_ocr=request.docling_force_ocr,
             image_bucket=request.image_bucket or request.md_bucket,
@@ -94,7 +102,7 @@ async def submit_async_task(request: TaskSubmitRequest):
             message="Task accepted and queued via MQ",
             data={
                 "task_id": request.task_id,
-                "status": "pending",
+                "status": "created",
             },
         )
     except Exception as e:

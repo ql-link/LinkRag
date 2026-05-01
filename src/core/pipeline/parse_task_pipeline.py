@@ -1,24 +1,27 @@
 """ParseTaskPipeline - 文档解析任务编排器。
 
-协调文件从对象存储下载、解析、上传、数据库状态更新的完整流程。
-支持幂等跳过（已成功任务不重复执行）和异常时的失败状态回写。
+协调 Java 解析任务消息、Python 解析执行、解析日志落库和结果 MQ 通知。
 """
 
 import asyncio
 from dataclasses import replace
+from datetime import datetime, timezone
+from pathlib import PurePosixPath
 from typing import Callable
 
 from loguru import logger
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from src.database import get_async_session_factory
 from src.config import settings
 from src.core.llm.factory import ModelFactory
 from src.core.llm.interfaces import CapabilityType
 from src.core.llm.tokenizer import Tokenizer
 from src.core.markdown_parser import ParseResult
+from src.core.mq.messages.parse_result import ParseResultMessage
 from src.core.mq.messages.parse_task import ParseTaskPayload
+from src.core.pipeline.error_codes import ParseFailureCode, build_failure_reason
 from src.core.pipeline.models import ParsePipelineResult, PipelineStatus
 from src.core.splitter import (
     ASTAwareChunker,
@@ -27,7 +30,9 @@ from src.core.splitter import (
     PercentileSemanticChunker,
     StructuredSemanticChunker,
 )
-from src.models.parse_task import DocumentParseTask
+from src.database import get_async_session_factory
+from src.models.parse_task import DocumentParsedLog, DocumentParseTask
+from src.services.mq_service import MQService
 from src.services.parse_task_service import ParseTaskService
 from src.services.storage.base import BaseObjectStorage
 from src.services.storage.factory import StorageFactory
@@ -36,68 +41,78 @@ from src.services.storage.factory import StorageFactory
 class ParseTaskPipeline:
     """文档解析任务编排器。
 
-    编排文档从下载到解析、上传、状态更新的完整生命周期。
-    支持幂等：若任务已执行成功，则跳过并返回 SKIPPED。
+    Python 侧以 `document_parsed_log.task_id` 唯一键完成幂等判断。业务失败不触发
+    MQ 重投，由日志表记录终态并通过结果 MQ 通知 Java。
     """
 
     def __init__(
         self,
         storage: BaseObjectStorage | None = None,
-        session_factory: async_sessionmaker[AsyncSession] | Callable[[], AsyncSession] | None = None,
+        session_factory: (
+            async_sessionmaker[AsyncSession] | Callable[[], AsyncSession] | None
+        ) = None,
+        mq_service: MQService | None = None,
     ) -> None:
-        """初始化编排器。
-
-        Args:
-            storage: 对象存储实例，默认使用 StorageFactory 创建
-            session_factory: 数据库会话工厂，默认使用 SessionLocal
-        """
         self._storage = storage or StorageFactory.get_storage()
         self._session_factory = session_factory or get_async_session_factory()
+        self._mq_service = mq_service or MQService()
 
     async def execute(self, payload: ParseTaskPayload) -> ParsePipelineResult:
-        """执行文档解析任务。
-
-        Args:
-            payload: MQ 消息中的解析任务载荷
-
-        Returns:
-            解析结果（成功/跳过/失败）
-        """
+        """执行文档解析任务。"""
         async with self._session_factory() as db:
             return await self._run(payload, db)
 
     async def _run(self, payload: ParseTaskPayload, db: AsyncSession) -> ParsePipelineResult:
-        """核心执行流程。
+        """核心执行流程。"""
+        log_record = await self._create_log_record(payload, db)
+        if log_record is None:
+            return ParsePipelineResult(
+                status=PipelineStatus.SKIPPED,
+                task_id=payload.task_id,
+                skip_reason="duplicate_task_id",
+            )
 
-        1. 幂等检查：若任务已成功执行，直接跳过
-        2. 标记处理中状态
-        3. 下载文件并解析
-        4. 上传 Markdown 到对象存储
-        5. 标记成功并执行分块
-        6. 异常时标记失败
-        """
-        # 幂等检查：已成功任务不重复执行
-        skip_result = await self._check_idempotency(payload, db)
-        if skip_result is not None:
-            return skip_result
+        parse_task = await self._get_parse_task_record(payload.document_parse_task_id, db)
+        validation_error = self._validate_parse_task(payload, parse_task)
+        if validation_error:
+            await self._finish_failed(payload, log_record, validation_error, db)
+            await self._send_parse_result(
+                payload, "failed", log_record.parse_finished_at, validation_error
+            )
+            return ParsePipelineResult(
+                status=PipelineStatus.FAILED,
+                task_id=payload.task_id,
+                error=RuntimeError(validation_error),
+            )
 
-        # 标记任务为处理中（让其他消费者感知到该任务正在执行）
-        await self._mark_processing(payload, db)
+        log_record.parse_started_at = self._now()
+        await db.commit()
 
         try:
-            # 下载源文件（从对象存储获取原始文档）
-            file_bytes = await asyncio.to_thread(self._download_file, payload)
+            try:
+                file_bytes = await asyncio.to_thread(self._download_file, payload)
+            except Exception as exc:
+                return await self._handle_execution_failure(
+                    payload, log_record, db, ParseFailureCode.SOURCE_FILE_NOT_FOUND, exc
+                )
 
-            # 解析文件（PDF/DOCX 等转为 Markdown）
-            parse_result = await self._parse_file(file_bytes, payload)
+            try:
+                parse_result = await self._parse_file(file_bytes, payload)
+            except Exception as exc:
+                return await self._handle_execution_failure(
+                    payload, log_record, db, ParseFailureCode.PARSE_ENGINE_FAILED, exc
+                )
 
-            # 上传解析后的 Markdown（供后续检索使用）
-            await asyncio.to_thread(self._upload_markdown, payload, parse_result["markdown"])
+            try:
+                await asyncio.to_thread(self._upload_markdown, payload, parse_result["markdown"])
+            except Exception as exc:
+                return await self._handle_execution_failure(
+                    payload, log_record, db, ParseFailureCode.PARSED_FILE_UPLOAD_FAILED, exc
+                )
 
-            # 标记任务成功（更新数据库状态）
-            await self._mark_success(payload, parse_result, db)
+            await self._finish_success(payload, log_record, db)
+            await self._send_parse_result(payload, "success", log_record.parse_finished_at, None)
 
-            # 执行文档分块（独立流程，失败不影响解析状态）
             chunk_count = await self._run_chunking(
                 parse_result["markdown"],
                 parse_result.get("parse_result"),
@@ -112,65 +127,91 @@ class ParseTaskPipeline:
                 page_count=parse_result["metadata"].get("pages_or_length", 0),
             )
         except Exception as exc:
-            # 解析失败时记录日志并回写失败状态（允许重试）
+            failure_reason = build_failure_reason(ParseFailureCode.INTERNAL_UNKNOWN_ERROR, str(exc))
             logger.error(f"[ParseTaskPipeline] 解析失败: task_id={payload.task_id}, error={exc}")
-            await self._mark_failed(payload, exc, db)
+            await self._finish_failed(payload, log_record, failure_reason, db)
+            await self._send_parse_result(
+                payload, "failed", log_record.parse_finished_at, failure_reason
+            )
             return ParsePipelineResult(
                 status=PipelineStatus.FAILED,
                 task_id=payload.task_id,
                 error=exc,
             )
 
-    async def _check_idempotency(
+    async def _handle_execution_failure(
+        self,
+        payload: ParseTaskPayload,
+        log_record: DocumentParsedLog,
+        db: AsyncSession,
+        code: ParseFailureCode,
+        exc: Exception,
+    ) -> ParsePipelineResult:
+        """按业务失败码写入终态并通知 Java。"""
+        failure_reason = build_failure_reason(code, str(exc))
+        logger.error(
+            f"[ParseTaskPipeline] 解析失败: task_id={payload.task_id}, reason={failure_reason}"
+        )
+        await self._finish_failed(payload, log_record, failure_reason, db)
+        await self._send_parse_result(
+            payload, "failed", log_record.parse_finished_at, failure_reason
+        )
+        return ParsePipelineResult(
+            status=PipelineStatus.FAILED,
+            task_id=payload.task_id,
+            error=exc,
+        )
+
+    async def _create_log_record(
         self,
         payload: ParseTaskPayload,
         db: AsyncSession,
-    ) -> ParsePipelineResult | None:
-        """幂等检查。
+    ) -> DocumentParsedLog | None:
+        """插入解析日志；唯一键冲突表示重复消息，直接跳过。"""
+        log_record = DocumentParsedLog(
+            task_id=payload.task_id,
+            document_original_file_id=payload.original_file_id,
+            document_parse_task_id=payload.document_parse_task_id,
+            trigger_mode=payload.trigger_mode,
+            task_status="created",
+        )
+        db.add(log_record)
+        try:
+            await db.flush()
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            logger.info(f"[ParseTaskPipeline] 幂等跳过重复任务: task_id={payload.task_id}")
+            return None
+        return log_record
 
-        Returns:
-            若任务记录不存在或已成功，返回 SKIPPED 结果；否则返回 None（继续执行）
-        """
-        record = await self._get_task_record(payload.task_id, db)
-        if not record:
-            logger.warning(f"[ParseTaskPipeline] 任务记录不存在: {payload.task_id}")
-            return ParsePipelineResult(
-                status=PipelineStatus.SKIPPED,
-                task_id=payload.task_id,
-                skip_reason="task_record_not_found",
+    @staticmethod
+    def _validate_parse_task(
+        payload: ParseTaskPayload,
+        parse_task: DocumentParseTask | None,
+    ) -> str | None:
+        """校验 Java 传入的文件解析表记录是否存在且归属一致。"""
+        if parse_task is None:
+            return build_failure_reason(ParseFailureCode.INVALID_TASK_CONTEXT, "文件解析记录不存在")
+        if parse_task.document_original_file_id != payload.original_file_id:
+            return build_failure_reason(
+                ParseFailureCode.INVALID_TASK_CONTEXT,
+                "原文件ID与文件解析记录不一致",
             )
-
-        if record.status == "success":
-            # 已成功执行过的任务不再重复执行（保证幂等）
-            logger.info(f"[ParseTaskPipeline] 幂等跳过: {payload.task_id}")
-            return ParsePipelineResult(
-                status=PipelineStatus.SKIPPED,
-                task_id=payload.task_id,
-                skip_reason="already_success",
+        if parse_task.dataset_id != payload.dataset_id:
+            return build_failure_reason(
+                ParseFailureCode.INVALID_TASK_CONTEXT,
+                "数据集ID与文件解析记录不一致",
             )
-
+        if parse_task.user_id != payload.user_id:
+            return build_failure_reason(
+                ParseFailureCode.INVALID_TASK_CONTEXT,
+                "用户ID与文件解析记录不一致",
+            )
         return None
 
-    async def _mark_processing(self, payload: ParseTaskPayload, db: AsyncSession) -> None:
-        """标记任务为处理中状态。
-
-        让其他消费者感知到该任务正在被处理，避免重复消费。
-        """
-        record = await self._get_task_record(payload.task_id, db)
-        if not record:
-            return
-        record.status = "processing"
-        record.md_bucket = payload.md_bucket
-        record.md_object_key = payload.md_object_key
-        record.md_storage_status = "pending"
-        await db.commit()
-
     def _download_file(self, payload: ParseTaskPayload) -> bytes:
-        """从对象存储下载原始文件。
-
-        Returns:
-            文件字节数据
-        """
+        """从对象存储下载原始文件。"""
         logger.info(
             f"[ParseTaskPipeline] 下载文件: bucket={payload.source_bucket}, "
             f"object_key={payload.source_object_key}"
@@ -181,17 +222,8 @@ class ParseTaskPipeline:
         )
 
     async def _parse_file(self, file_bytes: bytes, payload: ParseTaskPayload) -> dict:
-        """调用 ParseTaskService 执行文件解析。
-
-        Args:
-            file_bytes: 文件字节数据
-            payload: 任务载荷（包含文件类型、解析配置）
-
-        Returns:
-            解析结果，包含 markdown 文本和元数据
-        """
+        """调用 ParseTaskService 执行文件解析。"""
         parser_kwargs = {}
-        # PDF 文件需要传递额外的解析参数（如 OCR 配置、图片存储位置）
         if payload.file_type.lower() == "pdf":
             parser_kwargs = {
                 "backend": payload.pdf_parser_backend or "opendataloader",
@@ -217,34 +249,76 @@ class ParseTaskPipeline:
             content_type="text/markdown; charset=utf-8",
         )
 
-    async def _mark_success(self, payload: ParseTaskPayload, parse_result: dict, db: AsyncSession) -> None:
-        """标记任务成功。"""
-        record = await self._get_task_record(payload.task_id, db)
-        if not record:
-            return
-        record.status = "success"
-        record.md_bucket = payload.md_bucket
-        record.md_object_key = payload.md_object_key
-        record.md_storage_status = "success"
-        record.page_count = parse_result["metadata"].get("pages_or_length", 0)
-        record.time_cost_ms = parse_result["time_cost_ms"]
+    async def _finish_success(
+        self,
+        payload: ParseTaskPayload,
+        log_record: DocumentParsedLog,
+        db: AsyncSession,
+    ) -> None:
+        """写入解析成功终态。"""
+        finished_at = self._now()
+        log_record.task_status = "success"
+        log_record.failure_reason = None
+        log_record.parsed_filename = self._build_parsed_filename(payload.source_filename)
+        log_record.parsed_bucket_name = payload.md_bucket
+        log_record.parsed_object_key = payload.md_object_key
+        log_record.parsed_file_url = self._build_internal_file_url(
+            payload.md_bucket, payload.md_object_key
+        )
+        log_record.parsed_at = finished_at
+        log_record.parse_finished_at = finished_at
+        log_record.parse_duration_ms = self._duration_ms(log_record.parse_started_at, finished_at)
         await db.commit()
 
-    async def _mark_failed(self, payload: ParseTaskPayload, exc: Exception, db: AsyncSession) -> None:
-        """标记任务失败（允许重试）。"""
+    async def _finish_failed(
+        self,
+        payload: ParseTaskPayload,
+        log_record: DocumentParsedLog,
+        failure_reason: str,
+        db: AsyncSession,
+    ) -> None:
+        """写入解析失败终态。"""
         try:
-            record = await self._get_task_record(payload.task_id, db)
-            if record and record.status != "success":
-                record.status = "failed"
-                record.md_bucket = payload.md_bucket
-                record.md_object_key = payload.md_object_key
-                if record.md_object_key:
-                    record.md_storage_status = "failed"
-                record.error_message = str(exc)[:500]
-                await db.commit()
+            finished_at = self._now()
+            log_record.task_status = "failed"
+            log_record.failure_reason = failure_reason[:512]
+            log_record.parse_finished_at = finished_at
+            log_record.parse_duration_ms = self._duration_ms(
+                log_record.parse_started_at, finished_at
+            )
+            await db.commit()
         except Exception as db_exc:
-            # 数据库写入失败不影响主流程，仅记录日志
-            logger.error(f"[ParseTaskPipeline] 回写失败状态异常: {db_exc}")
+            await db.rollback()
+            logger.error(
+                f"[ParseTaskPipeline] 回写失败状态异常: task_id={payload.task_id}, error={db_exc}"
+            )
+
+    async def _send_parse_result(
+        self,
+        payload: ParseTaskPayload,
+        task_status: str,
+        parse_finished_at: datetime | None,
+        failure_reason: str | None,
+    ) -> None:
+        """发送解析终态 MQ；发送失败只记录日志，不触发重试。"""
+        try:
+            finished_at = parse_finished_at or self._now()
+            message = ParseResultMessage.build(
+                task_id=payload.task_id,
+                original_file_id=payload.original_file_id,
+                document_parse_task_id=payload.document_parse_task_id,
+                dataset_id=payload.dataset_id,
+                user_id=payload.user_id,
+                task_status=task_status,
+                failure_reason=failure_reason,
+                parse_finished_at=finished_at.isoformat(),
+            )
+            await self._mq_service.send(message)
+        except Exception as exc:
+            logger.error(
+                f"[ParseTaskPipeline] 解析结果 MQ 通知失败: "
+                f"task_id={payload.task_id}, status={task_status}, error={exc}"
+            )
 
     async def _run_chunking(
         self,
@@ -252,13 +326,7 @@ class ParseTaskPipeline:
         parse_result: ParseResult | None,
         payload: ParseTaskPayload,
     ) -> int:
-        """执行文档分块。
-
-        分块是独立流程，失败不影响解析状态（文档已成功解析并存储）。
-
-        Returns:
-            分块数量，分块失败返回 0
-        """
+        """执行文档分块，分块失败不影响解析终态。"""
         try:
             chunks = await asyncio.to_thread(
                 self._chunk_markdown,
@@ -273,7 +341,6 @@ class ParseTaskPipeline:
             )
             return chunk_count
         except Exception as exc:
-            # 分块失败不影响解析成功状态，仅记录日志
             logger.error(
                 f"[ParseTaskPipeline] 分块失败，不影响解析状态: "
                 f"task_id={payload.task_id}, error={exc}"
@@ -369,9 +436,31 @@ class ParseTaskPipeline:
         return processor.process_parse_result(parse_result_for_chunking)
 
     @staticmethod
-    async def _get_task_record(task_id: str, db: AsyncSession) -> DocumentParseTask | None:
-        """从数据库查询任务记录。"""
+    async def _get_parse_task_record(
+        document_parse_task_id: int,
+        db: AsyncSession,
+    ) -> DocumentParseTask | None:
+        """按文件解析表主键查询 Java 创建的解析聚合记录。"""
         result = await db.execute(
-            select(DocumentParseTask).where(DocumentParseTask.task_id == task_id)
+            select(DocumentParseTask).where(DocumentParseTask.id == document_parse_task_id)
         )
         return result.scalar_one_or_none()
+
+    @staticmethod
+    def _build_parsed_filename(source_filename: str) -> str:
+        stem = PurePosixPath(source_filename).stem or source_filename
+        return f"{stem}.md"
+
+    @staticmethod
+    def _build_internal_file_url(bucket: str, object_key: str) -> str:
+        return f"oss://{bucket}/{object_key}"
+
+    @staticmethod
+    def _duration_ms(started_at: datetime | None, finished_at: datetime) -> int | None:
+        if started_at is None:
+            return None
+        return int((finished_at - started_at).total_seconds() * 1000)
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime.now(timezone.utc)

@@ -8,12 +8,20 @@ class SendParseTaskRequest(BaseModel):
 
     task_id: str = Field(..., title="任务ID", description="文档解析任务唯一标识")
     original_file_id: int = Field(..., title="原始文件ID", description="原始文件表主键")
+    document_parse_task_id: int = Field(
+        ..., title="文件解析表ID", description="document_parse_task 表主键"
+    )
+    user_id: int = Field(..., title="用户ID", description="文件所属用户ID")
+    dataset_id: int = Field(..., title="数据集ID", description="文件所属数据集ID")
     file_type: str = Field(..., title="文件类型", description="文件格式 (pdf/docx/html/...)")
     source_bucket: str = Field(..., title="源文件Bucket", description="原始文件所在对象存储 bucket")
     source_object_key: str = Field(..., title="源文件对象Key", description="原始文件对象存储 key")
     source_filename: str = Field(..., title="原始文件名", description="用户上传时的原始文件名")
     md_bucket: str = Field(..., title="Markdown Bucket", description="Markdown 输出 bucket")
     md_object_key: str = Field(..., title="Markdown 对象Key", description="Markdown 输出对象 key")
+    trigger_mode: str = Field(
+        "upload_auto", title="触发方式", description="upload_auto/manual_retry"
+    )
     pdf_parser_backend: str = Field(
         "opendataloader",
         title="PDF解析器",
@@ -21,9 +29,13 @@ class SendParseTaskRequest(BaseModel):
         validation_alias=AliasChoices("pdf_parser_backend", "parser_backend"),
         serialization_alias="pdf_parser_backend",
     )
-    docling_force_ocr: bool = Field(False, title="Docling强制全页OCR", description="仅 docling 后端生效")
+    docling_force_ocr: bool = Field(
+        False, title="Docling强制全页OCR", description="仅 docling 后端生效"
+    )
     image_bucket: Optional[str] = Field(None, title="图片Bucket", description="PDF 图片输出 bucket")
-    image_prefix: Optional[str] = Field(None, title="图片前缀", description="PDF 图片输出对象 key 前缀")
+    image_prefix: Optional[str] = Field(
+        None, title="图片前缀", description="PDF 图片输出对象 key 前缀"
+    )
 
     model_config = ConfigDict(title="发送解析任务请求体", populate_by_name=True)
 
@@ -56,7 +68,9 @@ class SendRawMessageRequest(BaseModel):
 
     topic: str = Field(..., title="目标Topic/Queue", description="消息投递目标")
     message: str = Field(..., title="消息体", description="JSON 字符串格式的消息内容")
-    key: Optional[str] = Field(None, title="路由键", description="Kafka partition key / RabbitMQ routing key")
+    key: Optional[str] = Field(
+        None, title="路由键", description="Kafka partition key / RabbitMQ routing key"
+    )
 
     model_config = ConfigDict(title="原始消息发送请求体", populate_by_name=True)
 

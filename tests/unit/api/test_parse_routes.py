@@ -1,6 +1,7 @@
 """
 解析路由单元测试
 """
+
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from fastapi.testclient import TestClient
@@ -43,6 +44,9 @@ class TestParseRoutes:
         payload = {
             "task_id": "task_123",
             "original_file_id": 456,
+            "document_parse_task_id": 789,
+            "user_id": 10002,
+            "dataset_id": 10003,
             "file_type": "pdf",
             "source_bucket": "source-bucket",
             "source_object_key": "uploads/file.pdf",
@@ -57,11 +61,12 @@ class TestParseRoutes:
         data = response.json()
         assert data["code"] == 200
         assert data["data"]["task_id"] == "task_123"
-        assert data["data"]["status"] == "pending"
+        assert data["data"]["status"] == "created"
 
         mock_mq_instance.send.assert_called_once()
         sent_msg = mock_mq_instance.send.call_args[0][0]
         assert sent_msg.get_mq_name() == "tolink.rag.parse_task"
         assert sent_msg.get_payload().task_id == "task_123"
         assert sent_msg.get_payload().original_file_id == 456
+        assert sent_msg.get_payload().document_parse_task_id == 789
         assert sent_msg.get_payload().file_type == "pdf"

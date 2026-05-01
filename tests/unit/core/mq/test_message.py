@@ -15,6 +15,8 @@ from src.core.mq.exceptions import MQSerializationError
 from src.core.mq.messages import (
     ParseTaskMessage,
     ParseTaskPayload,
+    ParseResultMessage,
+    ParseResultPayload,
     CacheSyncMessage,
     CacheSyncPayload,
     UsageReportMessage,
@@ -44,6 +46,9 @@ class TestParseTaskMessage:
         msg = ParseTaskMessage.build(
             task_id="t-001",
             original_file_id=1,
+            document_parse_task_id=10,
+            user_id=20,
+            dataset_id=30,
             file_type="pdf",
             source_bucket="source-bucket",
             source_object_key="uploads/test.pdf",
@@ -58,6 +63,9 @@ class TestParseTaskMessage:
         payload = msg.get_payload()
         assert payload.task_id == "t-001"
         assert payload.original_file_id == 1
+        assert payload.document_parse_task_id == 10
+        assert payload.user_id == 20
+        assert payload.dataset_id == 30
         assert payload.file_type == "pdf"
         assert payload.source_bucket == "source-bucket"
         assert payload.source_object_key == "uploads/test.pdf"
@@ -69,6 +77,9 @@ class TestParseTaskMessage:
         msg = ParseTaskMessage.build(
             task_id="t-002",
             original_file_id=2,
+            document_parse_task_id=11,
+            user_id=21,
+            dataset_id=31,
             file_type="docx",
             source_bucket="source-bucket",
             source_object_key="uploads/doc.docx",
@@ -102,6 +113,9 @@ class TestParseTaskMessage:
             {
                 "task_id": "t-flat",
                 "original_file_id": 3,
+                "document_parse_task_id": 12,
+                "user_id": 22,
+                "dataset_id": 32,
                 "file_type": "pdf",
                 "source_bucket": "source-bucket",
                 "source_object_key": "uploads/test.pdf",
@@ -123,6 +137,9 @@ class TestParseTaskMessage:
             {
                 "task_id": "t-legacy",
                 "original_file_id": 4,
+                "document_parse_task_id": 13,
+                "user_id": 23,
+                "dataset_id": 33,
                 "file_type": "pdf",
                 "source_bucket": "source-bucket",
                 "source_object_key": "uploads/test.pdf",
@@ -137,6 +154,31 @@ class TestParseTaskMessage:
 
         assert parsed.task_id == "t-legacy"
         assert parsed.pdf_parser_backend == "naive"
+
+
+class TestParseResultMessage:
+    """文档解析结果消息测试"""
+
+    def test_build_and_parse(self):
+        msg = ParseResultMessage.build(
+            task_id="t-001",
+            original_file_id=1,
+            document_parse_task_id=10,
+            dataset_id=30,
+            user_id=20,
+            task_status="success",
+            parse_finished_at="2026-04-29T10:00:00+00:00",
+        )
+
+        assert msg.get_mq_name() == "tolink.rag.parse_result"
+        assert msg.get_mq_type() == "PARSE_RESULT"
+        assert msg.get_routing_key() == "t-001"
+
+        parsed = ParseResultMessage.parse_msg(msg.serialize())
+        assert isinstance(parsed, ParseResultPayload)
+        assert parsed.task_id == "t-001"
+        assert parsed.task_status == "success"
+        assert parsed.failure_reason is None
 
 
 class TestCacheSyncMessage:

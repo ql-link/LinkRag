@@ -8,6 +8,7 @@ from src.core.mq.consumers.parse_task_consumer import handle_parse_task
 from src.core.mq.messages import ParseTaskMessage
 from src.core.mq.vendors.kafka.kafka_adapter import KafkaReceiver
 from src.core.pipeline import ParseTaskPipeline
+from src.models.parse_task import DocumentParseTask
 
 
 class FakeAsyncSessionFactory:
@@ -26,7 +27,12 @@ class FakeAsyncSessionFactory:
 
 
 def build_db(record):
-    db = AsyncMock()
+    db = MagicMock()
+    db.flush = AsyncMock()
+    db.commit = AsyncMock()
+    db.rollback = AsyncMock()
+    db.close = AsyncMock()
+    db.execute = AsyncMock()
     result = MagicMock()
     result.scalar_one_or_none.return_value = record
     db.execute.return_value = result
@@ -64,20 +70,33 @@ def build_kafka_message(message_body: str, topic: str):
 
 @pytest.mark.integration
 async def test_kafka_receiver_should_consume_parse_task_message_and_commit_after_pipeline_success():
-    record = MagicMock()
-    record.status = "pending"
+    record = DocumentParseTask(
+        id=10,
+        document_original_file_id=1,
+        dataset_id=30,
+        user_id=20,
+        latest_parse_task_id="t-kafka-success",
+        original_filename="test.pdf",
+        parse_count=1,
+    )
     db = build_db(record)
     storage = MagicMock()
     storage.download_bytes.return_value = b"pdf-bytes"
+    mq_service = MagicMock()
+    mq_service.send = AsyncMock()
 
     pipeline = ParseTaskPipeline(
         storage=storage,
         session_factory=FakeAsyncSessionFactory(db),
+        mq_service=mq_service,
     )
 
     message = ParseTaskMessage.build(
         task_id="t-kafka-success",
         original_file_id=1,
+        document_parse_task_id=10,
+        user_id=20,
+        dataset_id=30,
         file_type="pdf",
         source_bucket="source-bucket",
         source_object_key="uploads/test.pdf",
@@ -106,16 +125,20 @@ async def test_kafka_receiver_should_consume_parse_task_message_and_commit_after
         "time_cost_ms": 88,
     }
 
-    with patch(
-        "src.core.mq.consumers.parse_task_consumer.ParseTaskPipeline",
-        return_value=pipeline,
-    ), patch(
-        "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess",
-        new=AsyncMock(return_value=parse_result),
-    ), patch(
-        "src.core.pipeline.parse_task_pipeline.ParseTaskPipeline._chunk_markdown",
-        return_value=[MagicMock(), MagicMock()],
-    ) as mock_chunk_markdown:
+    with (
+        patch(
+            "src.core.mq.consumers.parse_task_consumer.ParseTaskPipeline",
+            return_value=pipeline,
+        ),
+        patch(
+            "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess",
+            new=AsyncMock(return_value=parse_result),
+        ),
+        patch(
+            "src.core.pipeline.parse_task_pipeline.ParseTaskPipeline._chunk_markdown",
+            return_value=[MagicMock(), MagicMock()],
+        ) as mock_chunk_markdown,
+    ):
         await receiver._consume_loop()
 
     storage.download_bytes.assert_called_once_with(
@@ -129,28 +152,41 @@ async def test_kafka_receiver_should_consume_parse_task_message_and_commit_after
         "parsed/t-kafka-success.md",
         parse_result["parse_result"],
     )
-    assert record.status == "success"
-    assert record.md_storage_status == "success"
-    assert record.page_count == 2
-    assert record.time_cost_ms == 88
+    log_record = db.add.call_args.args[0]
+    assert log_record.task_status == "success"
+    assert log_record.parsed_object_key == "parsed/t-kafka-success.md"
+    mq_service.send.assert_awaited_once()
 
 
 @pytest.mark.integration
-async def test_kafka_receiver_should_not_commit_when_pipeline_fails():
-    record = MagicMock()
-    record.status = "pending"
+async def test_kafka_receiver_should_commit_when_pipeline_fails():
+    record = DocumentParseTask(
+        id=10,
+        document_original_file_id=1,
+        dataset_id=30,
+        user_id=20,
+        latest_parse_task_id="t-kafka-failed",
+        original_filename="test.pdf",
+        parse_count=1,
+    )
     db = build_db(record)
     storage = MagicMock()
     storage.download_bytes.return_value = b"pdf-bytes"
+    mq_service = MagicMock()
+    mq_service.send = AsyncMock()
 
     pipeline = ParseTaskPipeline(
         storage=storage,
         session_factory=FakeAsyncSessionFactory(db),
+        mq_service=mq_service,
     )
 
     message = ParseTaskMessage.build(
         task_id="t-kafka-failed",
         original_file_id=1,
+        document_parse_task_id=10,
+        user_id=20,
+        dataset_id=30,
         file_type="pdf",
         source_bucket="source-bucket",
         source_object_key="uploads/test.pdf",
@@ -172,16 +208,23 @@ async def test_kafka_receiver_should_not_commit_when_pipeline_fails():
         }
     ]
 
-    with patch(
-        "src.core.mq.consumers.parse_task_consumer.ParseTaskPipeline",
-        return_value=pipeline,
-    ), patch(
-        "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess",
-        new=AsyncMock(side_effect=RuntimeError("parse failed")),
+    with (
+        patch(
+            "src.core.mq.consumers.parse_task_consumer.ParseTaskPipeline",
+            return_value=pipeline,
+        ),
+        patch(
+            "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess",
+            new=AsyncMock(side_effect=RuntimeError("parse failed")),
+        ),
     ):
         await receiver._consume_loop()
 
-    receiver._consumer.commit.assert_not_awaited()
-    assert record.status == "failed"
-    assert record.md_storage_status == "failed"
-    assert record.error_message == "parse failed"
+    receiver._consumer.commit.assert_awaited_once()
+    log_record = db.add.call_args.args[0]
+    assert log_record.task_status == "failed"
+    assert (
+        log_record.failure_reason
+        == "PARSE_ENGINE_FAILED: 文件解析失败，请检查文件内容；parse failed"
+    )
+    mq_service.send.assert_awaited_once()

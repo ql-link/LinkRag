@@ -14,7 +14,7 @@ from src.core.pipeline import ParseTaskPipeline
 from src.services.mq_service import MQService
 
 PARSE_TASK_TOPIC = ParseTaskMessage.MQ_NAME
-PARSE_TASK_GROUP = "tolink-rag-parse-group"
+PARSE_TASK_GROUP = "tolink-document-pares"
 
 
 async def handle_parse_task(message_body: str, metadata: Dict[str, Any]) -> None:
@@ -27,12 +27,6 @@ async def handle_parse_task(message_body: str, metadata: Dict[str, Any]) -> None
 
     pipeline = ParseTaskPipeline()
     result = await pipeline.execute(payload)
-
-    if not result.should_ack:
-        raise RuntimeError(
-            f"[ParseTaskConsumer] 任务执行失败，触发重投: "
-            f"task_id={result.task_id}, error={result.error}"
-        ) from result.error
 
     logger.info(
         f"[ParseTaskConsumer] 任务处理完成: task_id={result.task_id}, "
