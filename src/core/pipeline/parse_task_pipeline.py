@@ -1,13 +1,10 @@
-"""ParseTaskPipeline - 文档解析任务编排器。
-
-协调 Java 解析任务消息、Python 解析执行、解析日志落库和结果 MQ 通知。
-"""
+"""Parse task pipeline orchestration."""
 
 import asyncio
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import PurePosixPath
-from typing import Callable
+from typing import Any, Callable
 
 from loguru import logger
 from sqlalchemy import select
@@ -30,6 +27,8 @@ from src.core.splitter import (
     PercentileSemanticChunker,
     StructuredSemanticChunker,
 )
+from src.core.splitter.models import Chunk
+from src.core.vector_storage.factory import create_vector_storage_facade
 from src.database import get_async_session_factory
 from src.models.parse_task import DocumentParsedLog, DocumentParseTask
 from src.services.mq_service import MQService
@@ -39,11 +38,7 @@ from src.services.storage.factory import StorageFactory
 
 
 class ParseTaskPipeline:
-    """文档解析任务编排器。
-
-    Python 侧以 `document_parsed_log.task_id` 唯一键完成幂等判断。业务失败不触发
-    MQ 重投，由日志表记录终态并通过结果 MQ 通知 Java。
-    """
+    """Coordinate parse execution, result notification, and post-parse chunk indexing."""
 
     def __init__(
         self,
@@ -52,18 +47,18 @@ class ParseTaskPipeline:
             async_sessionmaker[AsyncSession] | Callable[[], AsyncSession] | None
         ) = None,
         mq_service: MQService | None = None,
+        vector_storage: Any | None = None,
     ) -> None:
         self._storage = storage or StorageFactory.get_storage()
         self._session_factory = session_factory or get_async_session_factory()
         self._mq_service = mq_service or MQService()
+        self._vector_storage = vector_storage
 
     async def execute(self, payload: ParseTaskPayload) -> ParsePipelineResult:
-        """执行文档解析任务。"""
         async with self._session_factory() as db:
             return await self._run(payload, db)
 
     async def _run(self, payload: ParseTaskPayload, db: AsyncSession) -> ParsePipelineResult:
-        """核心执行流程。"""
         log_record = await self._create_log_record(payload, db)
         if log_record is None:
             return ParsePipelineResult(
@@ -77,7 +72,10 @@ class ParseTaskPipeline:
         if validation_error:
             await self._finish_failed(payload, log_record, validation_error, db)
             await self._send_parse_result(
-                payload, "failed", log_record.parse_finished_at, validation_error
+                payload,
+                "failed",
+                log_record.parse_finished_at,
+                validation_error,
             )
             return ParsePipelineResult(
                 status=PipelineStatus.FAILED,
@@ -93,45 +91,65 @@ class ParseTaskPipeline:
                 file_bytes = await asyncio.to_thread(self._download_file, payload)
             except Exception as exc:
                 return await self._handle_execution_failure(
-                    payload, log_record, db, ParseFailureCode.SOURCE_FILE_NOT_FOUND, exc
+                    payload,
+                    log_record,
+                    db,
+                    ParseFailureCode.SOURCE_FILE_NOT_FOUND,
+                    exc,
                 )
 
             try:
                 parse_result = await self._parse_file(file_bytes, payload)
             except Exception as exc:
                 return await self._handle_execution_failure(
-                    payload, log_record, db, ParseFailureCode.PARSE_ENGINE_FAILED, exc
+                    payload,
+                    log_record,
+                    db,
+                    ParseFailureCode.PARSE_ENGINE_FAILED,
+                    exc,
                 )
 
             try:
-                await asyncio.to_thread(self._upload_markdown, payload, parse_result["markdown"])
+                await asyncio.to_thread(
+                    self._upload_markdown,
+                    payload,
+                    parse_result["markdown"],
+                )
             except Exception as exc:
                 return await self._handle_execution_failure(
-                    payload, log_record, db, ParseFailureCode.PARSED_FILE_UPLOAD_FAILED, exc
+                    payload,
+                    log_record,
+                    db,
+                    ParseFailureCode.PARSED_FILE_UPLOAD_FAILED,
+                    exc,
                 )
 
             await self._finish_success(payload, log_record, db)
             await self._send_parse_result(payload, "success", log_record.parse_finished_at, None)
 
-            chunk_count = await self._run_chunking(
+            chunks = await self._run_chunking(
                 parse_result["markdown"],
                 parse_result.get("parse_result"),
                 payload,
+                db,
             )
 
             return ParsePipelineResult(
                 status=PipelineStatus.SUCCESS,
                 task_id=payload.task_id,
-                chunk_count=chunk_count,
+                chunk_count=len(chunks),
                 time_cost_ms=parse_result["time_cost_ms"],
                 page_count=parse_result["metadata"].get("pages_or_length", 0),
             )
         except Exception as exc:
             failure_reason = build_failure_reason(ParseFailureCode.INTERNAL_UNKNOWN_ERROR, str(exc))
-            logger.error(f"[ParseTaskPipeline] 解析失败: task_id={payload.task_id}, error={exc}")
+            logger.error(f"[ParseTaskPipeline] parse failed: task_id={payload.task_id}, error={exc}")
             await self._finish_failed(payload, log_record, failure_reason, db)
             await self._send_parse_result(
-                payload, "failed", log_record.parse_finished_at, failure_reason
+                payload,
+                "failed",
+                log_record.parse_finished_at,
+                failure_reason,
             )
             return ParsePipelineResult(
                 status=PipelineStatus.FAILED,
@@ -147,14 +165,17 @@ class ParseTaskPipeline:
         code: ParseFailureCode,
         exc: Exception,
     ) -> ParsePipelineResult:
-        """按业务失败码写入终态并通知 Java。"""
         failure_reason = build_failure_reason(code, str(exc))
         logger.error(
-            f"[ParseTaskPipeline] 解析失败: task_id={payload.task_id}, reason={failure_reason}"
+            f"[ParseTaskPipeline] parse failed: task_id={payload.task_id}, "
+            f"reason={failure_reason}"
         )
         await self._finish_failed(payload, log_record, failure_reason, db)
         await self._send_parse_result(
-            payload, "failed", log_record.parse_finished_at, failure_reason
+            payload,
+            "failed",
+            log_record.parse_finished_at,
+            failure_reason,
         )
         return ParsePipelineResult(
             status=PipelineStatus.FAILED,
@@ -167,7 +188,6 @@ class ParseTaskPipeline:
         payload: ParseTaskPayload,
         db: AsyncSession,
     ) -> DocumentParsedLog | None:
-        """插入解析日志；唯一键冲突表示重复消息，直接跳过。"""
         log_record = DocumentParsedLog(
             task_id=payload.task_id,
             document_original_file_id=payload.original_file_id,
@@ -181,7 +201,7 @@ class ParseTaskPipeline:
             await db.commit()
         except IntegrityError:
             await db.rollback()
-            logger.info(f"[ParseTaskPipeline] 幂等跳过重复任务: task_id={payload.task_id}")
+            logger.info(f"[ParseTaskPipeline] skip duplicate task: task_id={payload.task_id}")
             return None
         return log_record
 
@@ -190,7 +210,6 @@ class ParseTaskPipeline:
         payload: ParseTaskPayload,
         parse_task: DocumentParseTask | None,
     ) -> str | None:
-        """校验 Java 传入的文件解析表记录是否存在且归属一致。"""
         if parse_task is None:
             return build_failure_reason(ParseFailureCode.INVALID_TASK_CONTEXT, "文件解析记录不存在")
         if parse_task.document_original_file_id != payload.original_file_id:
@@ -211,9 +230,8 @@ class ParseTaskPipeline:
         return None
 
     def _download_file(self, payload: ParseTaskPayload) -> bytes:
-        """从对象存储下载原始文件。"""
         logger.info(
-            f"[ParseTaskPipeline] 下载文件: bucket={payload.source_bucket}, "
+            f"[ParseTaskPipeline] download file: bucket={payload.source_bucket}, "
             f"object_key={payload.source_object_key}"
         )
         return self._storage.download_bytes(
@@ -222,7 +240,6 @@ class ParseTaskPipeline:
         )
 
     async def _parse_file(self, file_bytes: bytes, payload: ParseTaskPayload) -> dict:
-        """调用 ParseTaskService 执行文件解析。"""
         parser_kwargs = {}
         if payload.file_type.lower() == "pdf":
             parser_kwargs = {
@@ -241,7 +258,6 @@ class ParseTaskPipeline:
         )
 
     def _upload_markdown(self, payload: ParseTaskPayload, markdown: str) -> None:
-        """上传解析后的 Markdown 到对象存储。"""
         self._storage.upload_bytes(
             bucket=payload.md_bucket,
             object_key=payload.md_object_key,
@@ -255,7 +271,6 @@ class ParseTaskPipeline:
         log_record: DocumentParsedLog,
         db: AsyncSession,
     ) -> None:
-        """写入解析成功终态。"""
         finished_at = self._now()
         log_record.task_status = "success"
         log_record.failure_reason = None
@@ -263,7 +278,8 @@ class ParseTaskPipeline:
         log_record.parsed_bucket_name = payload.md_bucket
         log_record.parsed_object_key = payload.md_object_key
         log_record.parsed_file_url = self._build_internal_file_url(
-            payload.md_bucket, payload.md_object_key
+            payload.md_bucket,
+            payload.md_object_key,
         )
         log_record.parsed_at = finished_at
         log_record.parse_finished_at = finished_at
@@ -277,20 +293,21 @@ class ParseTaskPipeline:
         failure_reason: str,
         db: AsyncSession,
     ) -> None:
-        """写入解析失败终态。"""
         try:
             finished_at = self._now()
             log_record.task_status = "failed"
             log_record.failure_reason = failure_reason[:512]
             log_record.parse_finished_at = finished_at
             log_record.parse_duration_ms = self._duration_ms(
-                log_record.parse_started_at, finished_at
+                log_record.parse_started_at,
+                finished_at,
             )
             await db.commit()
         except Exception as db_exc:
             await db.rollback()
             logger.error(
-                f"[ParseTaskPipeline] 回写失败状态异常: task_id={payload.task_id}, error={db_exc}"
+                f"[ParseTaskPipeline] failed to write failed status: "
+                f"task_id={payload.task_id}, error={db_exc}"
             )
 
     async def _send_parse_result(
@@ -300,7 +317,6 @@ class ParseTaskPipeline:
         parse_finished_at: datetime | None,
         failure_reason: str | None,
     ) -> None:
-        """发送解析终态 MQ；发送失败只记录日志，不触发重试。"""
         try:
             finished_at = parse_finished_at or self._now()
             message = ParseResultMessage.build(
@@ -316,7 +332,7 @@ class ParseTaskPipeline:
             await self._mq_service.send(message)
         except Exception as exc:
             logger.error(
-                f"[ParseTaskPipeline] 解析结果 MQ 通知失败: "
+                f"[ParseTaskPipeline] parse result MQ notification failed: "
                 f"task_id={payload.task_id}, status={task_status}, error={exc}"
             )
 
@@ -325,8 +341,8 @@ class ParseTaskPipeline:
         markdown: str,
         parse_result: ParseResult | None,
         payload: ParseTaskPayload,
-    ) -> int:
-        """执行文档分块，分块失败不影响解析终态。"""
+        db: AsyncSession,
+    ) -> list[Chunk]:
         try:
             chunks = await asyncio.to_thread(
                 self._chunk_markdown,
@@ -334,41 +350,33 @@ class ParseTaskPipeline:
                 payload.md_object_key,
                 parse_result,
             )
-            chunk_count = len(chunks)
             logger.info(
-                f"[ParseTaskPipeline] 分块完成: task_id={payload.task_id}, "
-                f"chunk_count={chunk_count}"
+                f"[ParseTaskPipeline] chunking completed: task_id={payload.task_id}, "
+                f"chunk_count={len(chunks)}"
             )
-            return chunk_count
         except Exception as exc:
             logger.error(
-                f"[ParseTaskPipeline] 分块失败，不影响解析状态: "
+                f"[ParseTaskPipeline] chunking failed without changing parse status: "
                 f"task_id={payload.task_id}, error={exc}"
             )
-            return 0
+            return []
+
+        try:
+            await self._store_chunk_vectors(chunks, payload, db)
+        except Exception as exc:
+            logger.error(
+                f"[ParseTaskPipeline] vector indexing failed without changing parse status: "
+                f"task_id={payload.task_id}, error={exc}"
+            )
+        return chunks
 
     @classmethod
-    def _build_chunk_processor(cls) -> ChunkEmbeddingPipeline | ChunkingEngine:
-        """优先构建增强分片+向量化管线，失败时降级为规则分片。"""
+    def _build_chunk_processor(cls) -> ChunkingEngine:
         if not settings.CHUNKING_ENABLE_ADVANCED_PIPELINE:
             return ChunkingEngine(chunker=ASTAwareChunker())
 
         try:
-            if not settings.SYSTEM_LLM_API_KEY:
-                raise ValueError("SYSTEM_LLM_API_KEY is not configured")
-
-            embedder = ModelFactory().create_client(
-                provider_type=settings.SYSTEM_LLM_PROVIDER,
-                api_key=settings.SYSTEM_LLM_API_KEY,
-                api_base_url=settings.SYSTEM_LLM_API_BASE,
-                model_name=settings.SYSTEM_LLM_MODEL_EMBEDDING,
-                timeout_ms=settings.MARKDOWN_PARSER_LLM_TIMEOUT_MS,
-            )
-            if not embedder.has_capability(CapabilityType.EMBEDDING):
-                raise ValueError(
-                    f"Configured provider '{settings.SYSTEM_LLM_PROVIDER}' does not support embedding"
-                )
-
+            embedder = cls._build_embedding_client()
             semantic_chunker = PercentileSemanticChunker(
                 embedder=embedder,
                 tokenizer=Tokenizer(),
@@ -382,19 +390,111 @@ class ParseTaskPipeline:
                 semantic_chunker=semantic_chunker,
                 heading_break_level=settings.CHUNKING_HEADING_BREAK_LEVEL,
             )
-            engine = ChunkingEngine(chunker=chunker)
-            return ChunkEmbeddingPipeline(
-                chunking_engine=engine,
-                embedder=embedder,
-                embedding_model=settings.SYSTEM_LLM_MODEL_EMBEDDING,
-                batch_size=settings.CHUNKING_EMBED_BATCH_SIZE,
-            )
+            return ChunkingEngine(chunker=chunker)
         except Exception as exc:
             logger.warning(
-                "[ParseTaskPipeline] 高级分块管线初始化失败，回退到规则分块: {}",
+                "[ParseTaskPipeline] advanced chunking init failed, fallback to rule chunking: {}",
                 exc,
             )
             return ChunkingEngine(chunker=ASTAwareChunker())
+
+    @classmethod
+    def _build_embedding_client(cls):
+        if not settings.SYSTEM_LLM_API_KEY:
+            raise ValueError("SYSTEM_LLM_API_KEY is not configured")
+
+        embedder = ModelFactory().create_client(
+            provider_type=settings.SYSTEM_LLM_PROVIDER,
+            api_key=settings.SYSTEM_LLM_API_KEY,
+            api_base_url=settings.SYSTEM_LLM_API_BASE,
+            model_name=settings.SYSTEM_LLM_MODEL_EMBEDDING,
+            timeout_ms=settings.MARKDOWN_PARSER_LLM_TIMEOUT_MS,
+        )
+        if not embedder.has_capability(CapabilityType.EMBEDDING):
+            raise ValueError(
+                f"Configured provider '{settings.SYSTEM_LLM_PROVIDER}' does not support embedding"
+            )
+        return embedder
+
+    @classmethod
+    def _build_vector_storage(cls):
+        embedding_pipeline = ChunkEmbeddingPipeline(
+            chunking_engine=ChunkingEngine(chunker=ASTAwareChunker()),
+            embedder=cls._build_embedding_client(),
+            embedding_model=settings.SYSTEM_LLM_MODEL_EMBEDDING,
+            batch_size=settings.CHUNK_INDEX_EMBED_BATCH_SIZE,
+        )
+        return create_vector_storage_facade(embedding_pipeline=embedding_pipeline)
+
+    def _get_vector_storage(self):
+        if self._vector_storage is None:
+            self._vector_storage = self._build_vector_storage()
+        return self._vector_storage
+
+    async def _store_chunk_vectors(
+        self,
+        chunks: list[Chunk],
+        payload: ParseTaskPayload,
+        db: AsyncSession,
+    ) -> None:
+        if not chunks:
+            return
+
+        owner = self._resolve_chunk_owner(payload, db)
+        if owner is None:
+            logger.warning(
+                "[ParseTaskPipeline] skip vector indexing because owner is missing: task_id={}",
+                payload.task_id,
+            )
+            return
+
+        user_id, set_id, doc_id = owner
+        result = await self._get_vector_storage().store_chunks(
+            user_id=user_id,
+            set_id=set_id,
+            doc_id=doc_id,
+            chunks=chunks,
+        )
+        if result.failed_chunk_ids:
+            logger.warning(
+                "[ParseTaskPipeline] vector indexing has failed chunks: "
+                "task_id={} total={} indexed={} failed={}",
+                payload.task_id,
+                result.total_chunks,
+                result.indexed_chunks,
+                result.failed_chunk_ids,
+            )
+            return
+
+        logger.info(
+            "[ParseTaskPipeline] vector indexing completed: task_id={} indexed={} model={}",
+            payload.task_id,
+            result.indexed_chunks,
+            result.embedding_model,
+        )
+
+    def _resolve_chunk_owner(
+        self,
+        payload: ParseTaskPayload,
+        db: AsyncSession,
+    ) -> tuple[int, int, int] | None:
+        _ = db
+        user_id = self._coerce_optional_int(payload.user_id)
+        set_id = self._coerce_optional_int(payload.dataset_id)
+        doc_id = self._coerce_optional_int(payload.original_file_id)
+        if user_id is None or set_id is None or doc_id is None:
+            return None
+        return user_id, set_id, doc_id
+
+    @staticmethod
+    def _coerce_optional_int(value: object) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, int):
+            return value
+        if isinstance(value, str) and value.strip():
+            return int(value)
+        return None
 
     @classmethod
     def _chunk_markdown(
@@ -402,37 +502,13 @@ class ParseTaskPipeline:
         markdown: str,
         source_file: str | None,
         parse_result: ParseResult | None = None,
-    ) -> list:
-        """调用分块/向量化管线处理 Markdown，优先复用增强后的 ParseResult。"""
+    ) -> list[Chunk]:
         processor = cls._build_chunk_processor()
 
         if parse_result is None:
-            if isinstance(processor, ChunkEmbeddingPipeline):
-                embedded_chunks = processor.process(markdown, source_file=source_file)
-                logger.info(
-                    "[ParseTaskPipeline] 高级分块向量化完成: total={} cache_hits={} cache_misses={} batches={} model={}",
-                    processor.last_stats.total_chunks,
-                    processor.last_stats.cache_hits,
-                    processor.last_stats.cache_misses,
-                    processor.last_stats.batch_count,
-                    processor.last_stats.embedding_model,
-                )
-                return embedded_chunks
             return processor.process(markdown, source_file=source_file)
 
         parse_result_for_chunking = replace(parse_result, source_file=source_file)
-        if isinstance(processor, ChunkEmbeddingPipeline):
-            embedded_chunks = processor.process_parse_result(parse_result_for_chunking)
-            logger.info(
-                "[ParseTaskPipeline] 高级分块向量化完成: total={} cache_hits={} cache_misses={} batches={} model={}",
-                processor.last_stats.total_chunks,
-                processor.last_stats.cache_hits,
-                processor.last_stats.cache_misses,
-                processor.last_stats.batch_count,
-                processor.last_stats.embedding_model,
-            )
-            return embedded_chunks
-
         return processor.process_parse_result(parse_result_for_chunking)
 
     @staticmethod
@@ -440,7 +516,6 @@ class ParseTaskPipeline:
         document_parse_task_id: int,
         db: AsyncSession,
     ) -> DocumentParseTask | None:
-        """按文件解析表主键查询 Java 创建的解析聚合记录。"""
         result = await db.execute(
             select(DocumentParseTask).where(DocumentParseTask.id == document_parse_task_id)
         )
