@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.core.chunk_fact_storage.constants import CHUNK_STATUS_PENDING
 from src.core.splitter.models import Chunk, EmbeddedChunk
-from src.core.vector_storage.constants import CHUNK_STATUS_PENDING
 from src.core.vector_storage.models import StoredChunkDraft
 from src.models.chunk_record import ChunkRecordDB
 

@@ -2,9 +2,10 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.core.vector_storage import ChunkStorageService
-from src.core.vector_storage.constants import CHUNK_STATUS_INDEXING, CHUNK_STATUS_PENDING
-from src.core.vector_storage.models import ChunkStorageRequest, IndexedPoint
+from src.core.chunk_fact_storage.constants import CHUNK_STATUS_INDEXING, CHUNK_STATUS_PENDING
+from src.core.qdrant_vector_storage import IndexedPoint
+from src.core.vector_storage import VectorStoragePipeline
+from src.core.vector_storage.models import ChunkStorageRequest
 
 
 @pytest.fixture
@@ -15,7 +16,7 @@ def chunk_storage_service(
     mock_qdrant_store,
     mock_embedding_pipeline,
 ):
-    return ChunkStorageService(
+    return VectorStoragePipeline(
         session_factory=mock_session_factory,
         draft_factory=mock_draft_factory,
         repository=mock_repository,
