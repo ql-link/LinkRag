@@ -37,6 +37,27 @@ from src.services.storage.base import BaseObjectStorage
 from src.services.storage.factory import StorageFactory
 
 
+class _LazyEmbeddingClient:
+    """Defer embedding client construction until vectors are actually generated."""
+
+    def __init__(self, client_factory: Callable[[], Any]) -> None:
+        self._client_factory = client_factory
+        self._client: Any | None = None
+
+    def _get_client(self) -> Any:
+        if self._client is None:
+            self._client = self._client_factory()
+        return self._client
+
+    def has_capability(self, capability: CapabilityType) -> bool:
+        if capability == CapabilityType.EMBEDDING:
+            return True
+        return self._get_client().has_capability(capability)
+
+    async def embed(self, texts: str | list[str], model: str | None = None, **kwargs):
+        return await self._get_client().embed(texts=texts, model=model, **kwargs)
+
+
 class ParseTaskPipeline:
     """Coordinate parse execution, result notification, and post-parse chunk indexing."""
 
@@ -420,11 +441,15 @@ class ParseTaskPipeline:
     def _build_vector_storage(cls):
         embedding_pipeline = ChunkEmbeddingPipeline(
             chunking_engine=ChunkingEngine(chunker=ASTAwareChunker()),
-            embedder=cls._build_embedding_client(),
+            embedder=cls._build_lazy_embedding_client(),
             embedding_model=settings.SYSTEM_LLM_MODEL_EMBEDDING,
             batch_size=settings.CHUNK_INDEX_EMBED_BATCH_SIZE,
         )
         return create_vector_storage_facade(embedding_pipeline=embedding_pipeline)
+
+    @classmethod
+    def _build_lazy_embedding_client(cls) -> _LazyEmbeddingClient:
+        return _LazyEmbeddingClient(cls._build_embedding_client)
 
     def _get_vector_storage(self):
         if self._vector_storage is None:

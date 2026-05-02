@@ -168,6 +168,42 @@ async def test_should_mark_failed_when_qdrant_upsert_raises_exception(
 
 
 @pytest.mark.asyncio
+async def test_should_insert_pending_and_mark_failed_when_embedding_raises_exception(
+    chunk_storage_service,
+    mock_session,
+    mock_repository,
+    mock_qdrant_store,
+    mock_embedding_pipeline,
+    sample_chunks,
+    sample_drafts,
+):
+    request = build_request(chunks=sample_chunks)
+    mock_repository.mark_failed.return_value = 2
+    mock_embedding_pipeline.aembed_chunks = AsyncMock(
+        side_effect=RuntimeError("missing embedding config")
+    )
+
+    result = await chunk_storage_service.store_chunks(request)
+
+    assert result.total_chunks == 2
+    assert result.indexed_chunks == 0
+    assert result.failed_chunk_ids == ["chunk-1", "chunk-2"]
+    assert result.embedding_model is None
+
+    mock_repository.bulk_insert_pending.assert_awaited_once_with(mock_session, sample_drafts)
+    mock_embedding_pipeline.aembed_chunks.assert_awaited_once_with(sample_chunks)
+    mock_repository.mark_indexing.assert_not_awaited()
+    mock_qdrant_store.ensure_collection.assert_not_awaited()
+    mock_qdrant_store.upsert_points.assert_not_awaited()
+    mock_repository.mark_failed.assert_awaited_once_with(
+        mock_session,
+        ["chunk-1", "chunk-2"],
+        error_msg="missing embedding config",
+        expected_status=CHUNK_STATUS_PENDING,
+    )
+
+
+@pytest.mark.asyncio
 async def test_should_stop_indexing_when_mark_indexing_rowcount_is_incomplete(
     chunk_storage_service,
     mock_repository,

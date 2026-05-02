@@ -31,6 +31,7 @@ def test_should_create_vector_storage_facade_with_injected_dependencies(
     assert facade.storage_service.repository is mock_repository
     assert facade.management_service.repository is mock_repository
     assert facade.compensation_service.repository is mock_repository
+    assert facade.compensation_service.embedding_pipeline is mock_embedding_pipeline
     assert facade.storage_service.qdrant_store is mock_qdrant_store
     assert facade.management_service.qdrant_store is mock_qdrant_store
     assert facade.compensation_service.qdrant_store is mock_qdrant_store

@@ -145,6 +145,28 @@ class VectorStorageFacade:
         """
         return await self.compensation_service.retry_delete_failed(limit=limit)
 
+    async def repair_stale_indexing(self, *, limit: int = 100) -> ChunkMutationResult:
+        """执行一轮卡住的 INDEXING 状态修复。"""
+        return await self.compensation_service.repair_stale_indexing(limit=limit)
+
+    async def mark_indexed_if_point_exists(
+        self,
+        chunk_ids: Sequence[str],
+    ) -> ChunkMutationResult:
+        """当 Qdrant point 已存在时，将对应 INDEXING 记录轻量修复为 INDEXED。"""
+        return await self.compensation_service.mark_indexed_if_point_exists(chunk_ids)
+
+    async def mark_failed_if_point_missing(
+        self,
+        chunk_ids: Sequence[str],
+    ) -> ChunkMutationResult:
+        """当 Qdrant point 确认不存在时，将对应 INDEXING 记录显式关闭为 FAILED。"""
+        return await self.compensation_service.mark_failed_if_point_missing(chunk_ids)
+
+    async def reindex_failed_chunks(self, chunk_ids: Sequence[str]) -> ChunkIndexingResult:
+        """受控重建 FAILED chunk 的向量索引。"""
+        return await self.compensation_service.reindex_failed_chunks(chunk_ids)
+
     async def close(self) -> None:
         """
         释放由门面持有的底层连接资源。

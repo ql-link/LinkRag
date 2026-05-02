@@ -1,10 +1,12 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from sqlalchemy.exc import IntegrityError
 
 from src.core.markdown_parser.models import ParseResult
 from src.core.mq.messages import ParseTaskMessage
 from src.core.pipeline import ParseTaskPipeline, PipelineStatus
+from src.core.splitter.models import Chunk
 from src.core.vector_storage.models import ChunkIndexingResult
 from src.models.parse_task import DocumentParseTask
 
@@ -270,6 +272,33 @@ class TestParseTaskPipeline:
             doc_id=1,
             chunks=chunks,
         )
+
+    @patch("src.core.pipeline.parse_task_pipeline.create_vector_storage_facade")
+    async def test_build_vector_storage_should_defer_embedding_client_initialization(
+        self,
+        mock_create_vector_storage_facade,
+    ):
+        facade = MagicMock()
+        mock_create_vector_storage_facade.return_value = facade
+
+        with patch.object(
+            ParseTaskPipeline,
+            "_build_embedding_client",
+            side_effect=RuntimeError("missing embedding config"),
+        ) as mock_build_embedding_client:
+            result = ParseTaskPipeline._build_vector_storage()
+            embedding_pipeline = mock_create_vector_storage_facade.call_args.kwargs[
+                "embedding_pipeline"
+            ]
+
+            assert result is facade
+            mock_build_embedding_client.assert_not_called()
+
+            with pytest.raises(RuntimeError, match="missing embedding config"):
+                await embedding_pipeline.aembed_chunks(
+                    [Chunk(content="alpha", start_line=1, end_line=1)]
+                )
+            mock_build_embedding_client.assert_called_once()
 
     @patch("src.core.pipeline.parse_task_pipeline.ParseTaskPipeline._build_chunk_processor")
     def test_chunk_markdown_should_use_process_parse_result_when_available(

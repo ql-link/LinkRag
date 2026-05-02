@@ -71,6 +71,7 @@ def create_vector_storage_facade(
         session_factory=resolved_session_factory,
         repository=resolved_repository,
         qdrant_store=resolved_qdrant_store,
+        embedding_pipeline=embedding_pipeline,
     )
 
     return VectorStorageFacade(

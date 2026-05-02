@@ -147,6 +147,38 @@ async def test_should_retry_delete_failed_through_facade(
 
 
 @pytest.mark.asyncio
+async def test_should_repair_stale_indexing_through_facade(
+    vector_storage_facade,
+    mock_compensation_service,
+):
+    repair_result = ChunkMutationResult(total_chunks=2, affected_chunks=1)
+    mock_compensation_service.repair_stale_indexing.return_value = repair_result
+
+    result = await vector_storage_facade.repair_stale_indexing(limit=20)
+
+    assert result is repair_result
+    mock_compensation_service.repair_stale_indexing.assert_awaited_once_with(limit=20)
+
+
+@pytest.mark.asyncio
+async def test_should_reindex_failed_chunks_through_facade(
+    vector_storage_facade,
+    mock_compensation_service,
+):
+    reindex_result = ChunkIndexingResult(
+        total_chunks=1,
+        indexed_chunks=1,
+        embedding_model="embed-v1",
+    )
+    mock_compensation_service.reindex_failed_chunks.return_value = reindex_result
+
+    result = await vector_storage_facade.reindex_failed_chunks(["chunk-1"])
+
+    assert result is reindex_result
+    mock_compensation_service.reindex_failed_chunks.assert_awaited_once_with(["chunk-1"])
+
+
+@pytest.mark.asyncio
 async def test_should_close_qdrant_store_when_facade_is_closed(
     vector_storage_facade,
     mock_closable_qdrant_store,

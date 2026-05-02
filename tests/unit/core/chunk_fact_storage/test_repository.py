@@ -229,6 +229,41 @@ async def test_should_claim_delete_retry_when_record_is_retryable():
 
 
 @pytest.mark.asyncio
+async def test_should_claim_stale_indexing_for_repair_without_changing_status():
+    repository = ChunkRepository()
+    session = CapturingSession(rowcount=1)
+
+    claimed = await repository.claim_stale_indexing_for_repair(
+        session,
+        "chunk-1",
+        stale_after_seconds=60,
+    )
+
+    values = _values_by_key(session)
+    assert claimed is True
+    assert "status" not in values
+    assert "last_retry_at" in values
+
+
+@pytest.mark.asyncio
+async def test_should_claim_failed_for_reindex_and_reset_vector_stage():
+    repository = ChunkRepository()
+    session = CapturingSession(rowcount=1)
+
+    claimed = await repository.claim_failed_for_reindex(session, "chunk-1")
+
+    values = _values_by_key(session)
+    assert claimed is True
+    assert values["status"] == CHUNK_STATUS_INDEXING
+    assert values["error_msg"] is None
+    assert values["vector_status"] == VECTOR_STATUS_PENDING
+    assert values["vector_error_msg"] is None
+    assert values["es_status"] == ES_STATUS_PENDING
+    assert "retry_count" in values
+    assert "last_retry_at" in values
+
+
+@pytest.mark.asyncio
 async def test_should_return_records_in_input_order_when_get_by_chunk_ids():
     repository = ChunkRepository()
     first = repository.model_cls(chunk_id="chunk-1", doc_id=1, set_id=1, user_id=1, content="a", content_hash="a")

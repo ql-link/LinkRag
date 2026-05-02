@@ -402,6 +402,47 @@ class ChunkRepository:
         result = await db.execute(stmt)
         return bool(result.rowcount)
 
+    async def claim_stale_indexing_for_repair(
+        self,
+        db: AsyncSession,
+        chunk_id: str,
+        *,
+        stale_after_seconds: int,
+    ) -> bool:
+        cutoff = datetime.utcnow() - timedelta(seconds=stale_after_seconds)
+        stmt = (
+            update(self.model_cls)
+            .where(self.model_cls.chunk_id == chunk_id)
+            .where(self.model_cls.status == CHUNK_STATUS_INDEXING)
+            .where(self.model_cls.update_time <= cutoff)
+            .values(last_retry_at=func.now())
+        )
+        result = await db.execute(stmt)
+        return bool(result.rowcount)
+
+    async def claim_failed_for_reindex(
+        self,
+        db: AsyncSession,
+        chunk_id: str,
+    ) -> bool:
+        stmt = (
+            update(self.model_cls)
+            .where(self.model_cls.chunk_id == chunk_id)
+            .where(self.model_cls.status == CHUNK_STATUS_FAILED)
+            .values(
+                status=CHUNK_STATUS_INDEXING,
+                error_msg=None,
+                vector_status=VECTOR_STATUS_PENDING,
+                vector_error_msg=None,
+                es_status=ES_STATUS_PENDING,
+                es_error_msg=None,
+                retry_count=self.model_cls.retry_count + 1,
+                last_retry_at=func.now(),
+            )
+        )
+        result = await db.execute(stmt)
+        return bool(result.rowcount)
+
     async def list_delete_retry_candidates(
         self,
         db: AsyncSession,
@@ -419,6 +460,24 @@ class ChunkRepository:
                     self.model_cls.update_time <= cutoff,
                 )
             )
+            .order_by(self.model_cls.update_time.asc())
+            .limit(limit)
+        )
+        result = await db.execute(stmt)
+        return result.scalars().all()
+
+    async def list_stale_indexing_candidates(
+        self,
+        db: AsyncSession,
+        *,
+        limit: int,
+        stale_after_seconds: int,
+    ) -> list[ChunkRecordDB]:
+        cutoff = datetime.utcnow() - timedelta(seconds=stale_after_seconds)
+        stmt = (
+            select(self.model_cls)
+            .where(self.model_cls.status == CHUNK_STATUS_INDEXING)
+            .where(self.model_cls.update_time <= cutoff)
             .order_by(self.model_cls.update_time.asc())
             .limit(limit)
         )
