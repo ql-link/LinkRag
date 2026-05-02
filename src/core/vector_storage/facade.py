@@ -13,9 +13,10 @@ from .models import (
     ChunkMutationResult,
     ChunkStorageRequest,
     ChunkUpdateRequest,
-    VectorStorageCompensationResult,
 )
-from .services import ChunkCompensationService, ChunkManagementService, ChunkStorageService
+from .compensation_pipeline import VectorStorageCompensationPipeline
+from .management_pipeline import VectorStorageManagementPipeline
+from .pipeline import VectorStoragePipeline
 
 
 class VectorStorageFacade:
@@ -32,9 +33,9 @@ class VectorStorageFacade:
     def __init__(
         self,
         *,
-        storage_service: ChunkStorageService,
-        management_service: ChunkManagementService,
-        compensation_service: ChunkCompensationService,
+        storage_service: VectorStoragePipeline,
+        management_service: VectorStorageManagementPipeline,
+        compensation_service: VectorStorageCompensationPipeline,
         qdrant_store: Any | None = None,
     ) -> None:
         """
@@ -132,30 +133,6 @@ class VectorStorageFacade:
             ChunkDeleteRequest(chunk_ids=list(chunk_ids))
         )
 
-    async def retry_failed(self, *, limit: int = 100) -> ChunkIndexingResult:
-        """
-        执行一轮 `FAILED` 记录重试。
-
-        Args:
-            limit: 本轮最多处理的记录数。
-
-        Returns:
-            ChunkIndexingResult: 失败重试补偿结果。
-        """
-        return await self.compensation_service.retry_failed(limit=limit)
-
-    async def recover_stuck_indexing(self, *, limit: int = 100) -> ChunkIndexingResult:
-        """
-        执行一轮超时 `INDEXING` 记录恢复。
-
-        Args:
-            limit: 本轮最多处理的记录数。
-
-        Returns:
-            ChunkIndexingResult: 卡住索引恢复结果。
-        """
-        return await self.compensation_service.recover_stuck_indexing(limit=limit)
-
     async def retry_delete_failed(self, *, limit: int = 100) -> ChunkMutationResult:
         """
         执行一轮删除失败或删除中断记录恢复。
@@ -167,29 +144,6 @@ class VectorStorageFacade:
             ChunkMutationResult: 删除补偿结果。
         """
         return await self.compensation_service.retry_delete_failed(limit=limit)
-
-    async def run_compensation_once(
-        self,
-        *,
-        limit: int = 100,
-    ) -> VectorStorageCompensationResult:
-        """
-        按固定顺序执行一轮完整补偿巡检。
-
-        Args:
-            limit: 每一类补偿本轮最多处理的记录数。
-
-        Returns:
-            VectorStorageCompensationResult: 三类补偿的汇总结果。
-        """
-        failed_retry_result = await self.retry_failed(limit=limit)
-        stuck_indexing_result = await self.recover_stuck_indexing(limit=limit)
-        delete_retry_result = await self.retry_delete_failed(limit=limit)
-        return VectorStorageCompensationResult(
-            failed_retry_result=failed_retry_result,
-            stuck_indexing_result=stuck_indexing_result,
-            delete_retry_result=delete_retry_result,
-        )
 
     async def close(self) -> None:
         """

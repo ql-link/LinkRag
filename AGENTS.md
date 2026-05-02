@@ -16,7 +16,9 @@
 - [src/core](src/core)：核心能力与基础设施
 - [src/core/mq](src/core/mq)：MQ 中台
 - [src/core/pipeline](src/core/pipeline)：解析任务业务流水线
-- [src/core/vector_storage](src/core/vector_storage)：向量存储与 Chunk 管理
+- [src/core/vector_storage](src/core/vector_storage)：向量存储编排层
+- [src/core/chunk_fact_storage](src/core/chunk_fact_storage)：Chunk SQL 事实存储
+- [src/core/qdrant_vector_storage](src/core/qdrant_vector_storage)：Qdrant 向量索引存储
 - [src/models](src/models)：ORM 模型
 - [tests/unit](tests/unit)：单元测试
 - [tests/integration](tests/integration)：集成测试与真实基础设施测试
@@ -129,23 +131,30 @@ toLink-Rag/
 │   │   │   ├── pipeline_chunker.py
 │   │   │   ├── rule_chunker.py
 │   │   │   └── semantic_chunker.py
-│   │   └── vector_storage/       # 向量存储与 Chunk 管理
-│   │       ├── bucket_router.py
+│   │   ├── chunk_fact_storage/   # Chunk SQL 事实存储
+│   │   │   ├── constants.py
+│   │   │   ├── exceptions.py
+│   │   │   ├── models.py
+│   │   │   └── repository.py
+│   │   ├── qdrant_vector_storage/ # Qdrant 向量索引存储
+│   │   │   ├── bucket_router.py
+│   │   │   ├── constants.py
+│   │   │   ├── exceptions.py
+│   │   │   ├── models.py
+│   │   │   ├── point_factory.py
+│   │   │   └── qdrant_store.py
+│   │   └── vector_storage/       # 向量存储编排层
+│   │       ├── compensation_pipeline.py
 │   │       ├── constants.py
 │   │       ├── draft_factory.py
 │   │       ├── exceptions.py
 │   │       ├── facade.py
 │   │       ├── factory.py
+│   │       ├── management_pipeline.py
 │   │       ├── models.py
-│   │       ├── point_factory.py
-│   │       ├── services/
-│   │       │   ├── base.py
-│   │       │   ├── compensation.py
-│   │       │   ├── management.py
-│   │       │   └── storage.py
-│   │       └── stores/
-│   │           ├── qdrant_store.py
-│   │           └── repository.py
+│   │       ├── pipeline.py
+│   │       ├── repair_policy.py
+│   │       └── _transaction.py
 │   ├── models/                   # ORM 模型
 │   │   ├── chunk_record.py
 │   │   ├── db_models.py
@@ -177,7 +186,9 @@ toLink-Rag/
     │   │   ├── llm/
     │   │   ├── mq/
     │   │   ├── parser/
+    │   │   ├── chunk_fact_storage/
     │   │   ├── pipeline/
+    │   │   ├── qdrant_vector_storage/
     │   │   ├── splitter/
     │   │   └── vector_storage/
     │   └── services/
@@ -186,6 +197,7 @@ toLink-Rag/
         ├── core/
         │   ├── llm/
         │   ├── markdown_parser/
+        │   ├── qdrant_vector_storage/
         │   ├── splitter/
         │   └── vector_storage/
         ├── services/

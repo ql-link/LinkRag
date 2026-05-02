@@ -7,15 +7,17 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.config import settings
+from src.core.chunk_fact_storage import ChunkRepository
+from src.core.qdrant_vector_storage import BucketRouter, QdrantIndexStore
+from src.core.qdrant_vector_storage.constants import DEFAULT_BUCKET_COUNT, DEFAULT_COLLECTION_PREFIX
 from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
 from src.database import get_async_session_factory
 
-from .bucket_router import BucketRouter
-from .constants import DEFAULT_BUCKET_COUNT, DEFAULT_COLLECTION_PREFIX
+from .compensation_pipeline import VectorStorageCompensationPipeline
 from .draft_factory import ChunkDraftFactory
 from .facade import VectorStorageFacade
-from .services import ChunkCompensationService, ChunkManagementService, ChunkStorageService
-from .stores import ChunkRepository, QdrantIndexStore
+from .management_pipeline import VectorStorageManagementPipeline
+from .pipeline import VectorStoragePipeline
 
 
 def create_vector_storage_facade(
@@ -52,24 +54,23 @@ def create_vector_storage_facade(
         bucket_router=resolved_bucket_router,
     )
 
-    storage_service = ChunkStorageService(
+    storage_service = VectorStoragePipeline(
         session_factory=resolved_session_factory,
         draft_factory=ChunkDraftFactory(bucket_router=resolved_bucket_router),
         repository=resolved_repository,
         qdrant_store=resolved_qdrant_store,
         embedding_pipeline=embedding_pipeline,
     )
-    management_service = ChunkManagementService(
+    management_service = VectorStorageManagementPipeline(
         session_factory=resolved_session_factory,
         repository=resolved_repository,
         qdrant_store=resolved_qdrant_store,
         embedding_pipeline=embedding_pipeline,
     )
-    compensation_service = ChunkCompensationService(
+    compensation_service = VectorStorageCompensationPipeline(
         session_factory=resolved_session_factory,
         repository=resolved_repository,
         qdrant_store=resolved_qdrant_store,
-        embedding_pipeline=embedding_pipeline,
     )
 
     return VectorStorageFacade(

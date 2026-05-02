@@ -8,20 +8,20 @@ from collections.abc import Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from src.core.chunk_fact_storage import ChunkRepository
+from src.core.chunk_fact_storage.constants import CHUNK_STATUS_INDEXING, CHUNK_STATUS_PENDING
+from src.core.qdrant_vector_storage import IndexedPoint, QdrantIndexStore
+from src.core.qdrant_vector_storage.point_factory import indexed_point_from_draft
 from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
 from src.core.splitter.models import EmbeddedChunk
 from src.utils.logger import logger
 
-from ..constants import CHUNK_STATUS_INDEXING, CHUNK_STATUS_PENDING
-from ..draft_factory import ChunkDraftFactory
-from ..models import ChunkIndexingResult, ChunkStorageRequest, IndexedPoint, StoredChunkDraft
-from ..point_factory import indexed_point_from_draft
-from ..stores.qdrant_store import QdrantIndexStore
-from ..stores.repository import ChunkRepository
-from .base import TransactionalServiceMixin
+from ._transaction import TransactionalPipelineMixin
+from .draft_factory import ChunkDraftFactory
+from .models import ChunkIndexingResult, ChunkStorageRequest, StoredChunkDraft
 
 
-class ChunkStorageService(TransactionalServiceMixin):
+class VectorStoragePipeline(TransactionalPipelineMixin):
     """
         编排 chunk 真值入库、embedding、Qdrant 建索引与状态回写的主服务入口。
 
@@ -84,7 +84,7 @@ class ChunkStorageService(TransactionalServiceMixin):
                 chunks=request.chunks,
             )
         except Exception as exc:
-            logger.exception(f"[ChunkStorageService] Failed to build drafts: {exc}")
+            logger.exception(f"[VectorStoragePipeline] Failed to build drafts: {exc}")
             return ChunkIndexingResult(total_chunks=len(request.chunks), indexed_chunks=0)
 
         chunk_ids = [draft.chunk_id for draft in drafts]
@@ -102,7 +102,7 @@ class ChunkStorageService(TransactionalServiceMixin):
                     error_msg,
                     expected_status=CHUNK_STATUS_PENDING,
                 )
-            logger.error(f"[ChunkStorageService] Initial storage stage failed: {error_msg}")
+            logger.error(f"[VectorStoragePipeline] Initial storage stage failed: {error_msg}")
             return ChunkIndexingResult(
                 total_chunks=len(drafts),
                 indexed_chunks=0,
@@ -116,7 +116,7 @@ class ChunkStorageService(TransactionalServiceMixin):
             indexing_count = await self._mark_indexing(chunk_ids, embedding_model=embedding_model)
             if indexing_count != len(chunk_ids):
                 logger.warning(
-                    "[ChunkStorageService] Skipped indexing because pending rowcount "
+                    "[VectorStoragePipeline] Skipped indexing because pending rowcount "
                     f"{indexing_count} != {len(chunk_ids)} for chunks {chunk_ids}."
                 )
                 return ChunkIndexingResult(
@@ -130,7 +130,7 @@ class ChunkStorageService(TransactionalServiceMixin):
             indexed_count = await self._mark_indexed(chunk_ids, embedding_model=embedding_model)
             if indexed_count != len(chunk_ids):
                 logger.warning(
-                    "[ChunkStorageService] Skipped stale index completion because rowcount "
+                    "[VectorStoragePipeline] Skipped stale index completion because rowcount "
                     f"{indexed_count} != {len(chunk_ids)} for chunks {chunk_ids}."
                 )
                 return ChunkIndexingResult(
@@ -146,7 +146,7 @@ class ChunkStorageService(TransactionalServiceMixin):
                 error_msg,
                 expected_status=CHUNK_STATUS_INDEXING,
             )
-            logger.exception(f"[ChunkStorageService] Failed to index chunks: {error_msg}")
+            logger.exception(f"[VectorStoragePipeline] Failed to index chunks: {error_msg}")
             return ChunkIndexingResult(
                 total_chunks=len(drafts),
                 indexed_chunks=0,
@@ -251,11 +251,11 @@ class ChunkStorageService(TransactionalServiceMixin):
             )
             if affected_rows != len(chunk_ids):
                 logger.warning(
-                    "[ChunkStorageService] Failed status rowcount mismatch: "
+                    "[VectorStoragePipeline] Failed status rowcount mismatch: "
                     f"{affected_rows} != {len(chunk_ids)} for chunks {chunk_ids}."
                 )
         except Exception as exc:
-            logger.exception(f"[ChunkStorageService] Failed to mark chunks as failed: {exc}")
+            logger.exception(f"[VectorStoragePipeline] Failed to mark chunks as failed: {exc}")
 
     async def _ensure_and_upsert(self, points: Sequence[IndexedPoint]) -> None:
         """

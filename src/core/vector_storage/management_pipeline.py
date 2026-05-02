@@ -8,20 +8,25 @@ from collections.abc import Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from src.core.chunk_fact_storage import ChunkRepository
+from src.core.chunk_fact_storage.constants import (
+    CHUNK_DELETE_PROTECTED_STATUSES,
+    CHUNK_STATUS_DELETING,
+    CHUNK_STATUS_INDEXED,
+    CHUNK_STATUS_INDEXING,
+)
+from src.core.qdrant_vector_storage import IndexedPoint, QdrantIndexStore
+from src.core.qdrant_vector_storage.point_factory import chunk_from_fields, indexed_point_from_record
 from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
 from src.core.splitter.models import EmbeddedChunk
 from src.models.chunk_record import ChunkRecordDB
 from src.utils.logger import logger
 
-from ..constants import CHUNK_STATUS_DELETING, CHUNK_STATUS_INDEXED, CHUNK_STATUS_INDEXING
-from ..models import ChunkDeleteRequest, ChunkMutationResult, ChunkUpdateRequest, IndexedPoint
-from ..point_factory import chunk_from_fields, indexed_point_from_record
-from ..stores.qdrant_store import QdrantIndexStore
-from ..stores.repository import ChunkRepository
-from .base import TransactionalServiceMixin
+from ._transaction import TransactionalPipelineMixin
+from .models import ChunkDeleteRequest, ChunkMutationResult, ChunkUpdateRequest
 
 
-class ChunkManagementService(TransactionalServiceMixin):
+class VectorStorageManagementPipeline(TransactionalPipelineMixin):
     """
         负责 chunk 内容修改与删除管理，并保持 MySQL 真值与 Qdrant 索引最终一致。
 
@@ -116,7 +121,7 @@ class ChunkManagementService(TransactionalServiceMixin):
             except Exception as exc:
                 error_msg = str(exc)
                 logger.exception(
-                    f"[ChunkManagementService] Failed to update chunk metadata "
+                    f"[VectorStorageManagementPipeline] Failed to update chunk metadata "
                     f"{record.chunk_id}: {error_msg}"
                 )
                 return ChunkMutationResult(
@@ -163,7 +168,7 @@ class ChunkManagementService(TransactionalServiceMixin):
                     fallback_bucket_id=record.bucket_id,
                 )
                 logger.warning(
-                    "[ChunkManagementService] Skipped stale update completion for chunk "
+                    "[VectorStorageManagementPipeline] Skipped stale update completion for chunk "
                     f"{record.chunk_id}; status no longer matches {CHUNK_STATUS_INDEXING}."
                 )
                 return ChunkMutationResult(
@@ -176,7 +181,7 @@ class ChunkManagementService(TransactionalServiceMixin):
             error_msg = str(exc)
             await self._mark_failed([record.chunk_id], error_msg=error_msg)
             logger.exception(
-                f"[ChunkManagementService] Failed to update chunk {record.chunk_id}: {error_msg}"
+                f"[VectorStorageManagementPipeline] Failed to update chunk {record.chunk_id}: {error_msg}"
             )
             return ChunkMutationResult(
                 total_chunks=1,
@@ -220,7 +225,7 @@ class ChunkManagementService(TransactionalServiceMixin):
             deleting_count = await self._mark_deleting(active_chunk_ids)
             if deleting_count != len(active_chunk_ids):
                 logger.warning(
-                    "[ChunkManagementService] Skipped delete because deleting rowcount "
+                    "[VectorStorageManagementPipeline] Skipped delete because deleting rowcount "
                     f"{deleting_count} != {len(active_chunk_ids)} for chunks {active_chunk_ids}."
                 )
                 return ChunkMutationResult(
@@ -240,7 +245,7 @@ class ChunkManagementService(TransactionalServiceMixin):
             deleted_count = await self._mark_deleted(active_chunk_ids)
             if deleted_count != len(active_chunk_ids):
                 logger.warning(
-                    "[ChunkManagementService] Skipped stale delete completion for chunks "
+                    "[VectorStorageManagementPipeline] Skipped stale delete completion for chunks "
                     f"{active_chunk_ids}; rowcount {deleted_count} != {len(active_chunk_ids)} "
                     f"or status no longer matches {CHUNK_STATUS_DELETING}."
                 )
@@ -253,7 +258,7 @@ class ChunkManagementService(TransactionalServiceMixin):
             error_msg = str(exc)
             await self._mark_delete_failed(active_chunk_ids, error_msg=error_msg)
             logger.exception(
-                f"[ChunkManagementService] Failed to delete chunks {active_chunk_ids}: {error_msg}"
+                f"[VectorStorageManagementPipeline] Failed to delete chunks {active_chunk_ids}: {error_msg}"
             )
             return ChunkMutationResult(
                 total_chunks=len(chunk_ids),
@@ -483,6 +488,71 @@ class ChunkManagementService(TransactionalServiceMixin):
                 chunk_ids,
                 error_msg=error_msg,
                 expected_status=CHUNK_STATUS_DELETING,
+            )
+        )
+
+    async def _delete_qdrant_point_if_record_is_delete_state(
+        self,
+        *,
+        chunk_id: str,
+        fallback_bucket_id: int,
+    ) -> None:
+        """
+            当旧修改流程发现 MySQL 已进入删除态时，反删刚写入的 Qdrant point。
+
+        Args:
+            chunk_id: 需要清理的 chunk 标识。
+            fallback_bucket_id: 回查失败时可用于定位旧 point 的桶编号。
+
+        Returns:
+            None.
+        """
+        async with self.session_factory() as session:
+            records = await self.repository.get_by_chunk_ids(session, [chunk_id])
+
+        record = records[0] if records else None
+        if record is None or record.status not in CHUNK_DELETE_PROTECTED_STATUSES:
+            return
+
+        bucket_id = record.bucket_id if record.bucket_id is not None else fallback_bucket_id
+        try:
+            await self.qdrant_store.delete_points(bucket_id=bucket_id, chunk_ids=[chunk_id])
+        except Exception as exc:
+            error_msg = str(exc)
+            await self._mark_delete_failed_for_status(
+                [chunk_id],
+                error_msg=error_msg,
+                expected_status=record.status,
+            )
+            logger.exception(
+                "[VectorStorageManagementPipeline] Failed to clean stale Qdrant point "
+                f"for delete-state chunk {chunk_id}: {error_msg}"
+            )
+
+    async def _mark_delete_failed_for_status(
+        self,
+        chunk_ids: Sequence[str],
+        *,
+        error_msg: str,
+        expected_status: str,
+    ) -> int:
+        """
+            用指定删除态条件回写 `DELETE_FAILED`，避免旧清理任务覆盖新状态。
+
+        Args:
+            chunk_ids: 需要更新状态的 chunk 标识列表。
+            error_msg: 需要落库的失败原因。
+            expected_status: 当前期望的删除态。
+
+        Returns:
+            int: 实际切换为 `DELETE_FAILED` 的记录数。
+        """
+        return await self._run_in_transaction_with_result(
+            lambda session: self.repository.mark_delete_failed(
+                session,
+                chunk_ids,
+                error_msg=error_msg,
+                expected_status=expected_status,
             )
         )
 
