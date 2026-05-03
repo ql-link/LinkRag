@@ -3,18 +3,18 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from src.core.splitter.models import EmbeddedChunk
-from src.core.vector_storage import ChunkManagementService
-from src.core.vector_storage.constants import (
+from src.core.chunk_fact_storage.constants import (
     CHUNK_STATUS_DELETED,
     CHUNK_STATUS_DELETING,
     CHUNK_STATUS_INDEXING,
 )
+from src.core.qdrant_vector_storage import IndexedPoint
+from src.core.splitter.models import EmbeddedChunk
+from src.core.vector_storage import VectorStorageManagementPipeline
 from src.core.vector_storage.models import (
     ChunkDeleteRequest,
     ChunkMutationResult,
     ChunkUpdateRequest,
-    IndexedPoint,
 )
 from src.models.chunk_record import ChunkRecordDB
 
@@ -26,7 +26,7 @@ def chunk_management_service(
     mock_qdrant_store,
     mock_embedding_pipeline,
 ):
-    return ChunkManagementService(
+    return VectorStorageManagementPipeline(
         session_factory=mock_session_factory,
         repository=mock_repository,
         qdrant_store=mock_qdrant_store,

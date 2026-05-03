@@ -7,14 +7,13 @@ from typing import TypeVar
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from src.core.chunk_fact_storage.constants import CHUNK_DELETE_PROTECTED_STATUSES
 from src.utils.logger import logger
-
-from ..constants import CHUNK_DELETE_PROTECTED_STATUSES
 
 ResultT = TypeVar("ResultT")
 
 
-class TransactionalServiceMixin:
+class TransactionalPipelineMixin:
     """
     为向量存储服务提供统一的独立事务执行方法。
 
@@ -94,12 +93,12 @@ class TransactionalServiceMixin:
                     error_msg=str(exc),
                 )
                 logger.warning(
-                    "[TransactionalServiceMixin] Failed to cleanup stale Qdrant point "
+                    "[TransactionalPipelineMixin] Failed to cleanup stale Qdrant point "
                     f"for deleted chunk {chunk_id}: {exc}"
                 )
         except Exception as exc:
             logger.warning(
-                "[TransactionalServiceMixin] Failed to inspect delete state before "
+                "[TransactionalPipelineMixin] Failed to inspect delete state before "
                 f"stale Qdrant cleanup for chunk {chunk_id}: {exc}"
             )
 

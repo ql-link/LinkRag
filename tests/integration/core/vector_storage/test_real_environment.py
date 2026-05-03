@@ -11,14 +11,13 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.config import settings
+from src.core.chunk_fact_storage import ChunkRepository
+from src.core.qdrant_vector_storage import BucketRouter, QdrantIndexStore
 from src.core.splitter.models import Chunk, EmbeddedChunk
-from src.core.vector_storage.bucket_router import BucketRouter
 from src.core.vector_storage.draft_factory import ChunkDraftFactory
 from src.core.vector_storage.models import ChunkDeleteRequest, ChunkStorageRequest, ChunkUpdateRequest
-from src.core.vector_storage.services.management import ChunkManagementService
-from src.core.vector_storage.services.storage import ChunkStorageService
-from src.core.vector_storage.stores.qdrant_store import QdrantIndexStore
-from src.core.vector_storage.stores.repository import ChunkRepository
+from src.core.vector_storage.management_pipeline import VectorStorageManagementPipeline
+from src.core.vector_storage.pipeline import VectorStoragePipeline
 from src.models.chunk_record import ChunkRecordDB
 
 
@@ -108,14 +107,14 @@ async def test_should_store_update_and_delete_chunks_into_real_mysql_and_qdrant_
         Chunk(content="real vector storage smoke chunk alpha", start_line=1, end_line=1),
         Chunk(content="real vector storage smoke chunk beta", start_line=2, end_line=2),
     ]
-    service = ChunkStorageService(
+    service = VectorStoragePipeline(
         session_factory=session_factory,
         draft_factory=ChunkDraftFactory(bucket_router=bucket_router),
         repository=repository,
         qdrant_store=qdrant_store,
         embedding_pipeline=DeterministicEmbeddingPipeline(),
     )
-    management_service = ChunkManagementService(
+    management_service = VectorStorageManagementPipeline(
         session_factory=session_factory,
         repository=repository,
         qdrant_store=qdrant_store,

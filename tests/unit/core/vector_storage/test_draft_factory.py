@@ -1,9 +1,9 @@
 import hashlib
 from unittest.mock import patch
 
+from src.core.chunk_fact_storage.constants import CHUNK_STATUS_PENDING
+from src.core.qdrant_vector_storage import BucketRoute
 from src.core.splitter.models import Chunk
-from src.core.vector_storage.bucket_router import BucketRoute
-from src.core.vector_storage.constants import CHUNK_STATUS_PENDING
 from src.core.vector_storage.draft_factory import ChunkDraftFactory
 
 

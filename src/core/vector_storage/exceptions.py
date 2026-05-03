@@ -23,27 +23,3 @@ class VectorStorageConfigurationError(VectorStorageError):
     Returns:
         None.
     """
-
-
-class ChunkRepositoryError(VectorStorageError):
-    """
-        表示底层 MySQL 持久化操作失败时抛出的仓储层异常。
-
-    Args:
-        None.
-
-    Returns:
-        None.
-    """
-
-
-class QdrantStoreError(VectorStorageError):
-    """
-        表示 Qdrant collection 或 point 操作失败时抛出的存储异常。
-
-    Args:
-        None.
-
-    Returns:
-        None.
-    """

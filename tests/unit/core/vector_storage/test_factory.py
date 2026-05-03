@@ -1,10 +1,10 @@
 from unittest.mock import MagicMock
 
 from src.core.vector_storage import VectorStorageFacade, create_vector_storage_facade
-from src.core.vector_storage.services import (
-    ChunkCompensationService,
-    ChunkManagementService,
-    ChunkStorageService,
+from src.core.vector_storage import (
+    VectorStorageCompensationPipeline,
+    VectorStorageManagementPipeline,
+    VectorStoragePipeline,
 )
 
 
@@ -25,12 +25,13 @@ def test_should_create_vector_storage_facade_with_injected_dependencies(
 
     # Assert: 断言结果
     assert isinstance(facade, VectorStorageFacade)
-    assert isinstance(facade.storage_service, ChunkStorageService)
-    assert isinstance(facade.management_service, ChunkManagementService)
-    assert isinstance(facade.compensation_service, ChunkCompensationService)
+    assert isinstance(facade.storage_service, VectorStoragePipeline)
+    assert isinstance(facade.management_service, VectorStorageManagementPipeline)
+    assert isinstance(facade.compensation_service, VectorStorageCompensationPipeline)
     assert facade.storage_service.repository is mock_repository
     assert facade.management_service.repository is mock_repository
     assert facade.compensation_service.repository is mock_repository
+    assert facade.compensation_service.embedding_pipeline is mock_embedding_pipeline
     assert facade.storage_service.qdrant_store is mock_qdrant_store
     assert facade.management_service.qdrant_store is mock_qdrant_store
     assert facade.compensation_service.qdrant_store is mock_qdrant_store

@@ -6,9 +6,9 @@ import hashlib
 from collections.abc import Sequence
 from uuid import uuid4
 
+from src.core.qdrant_vector_storage import BucketRouter
 from src.core.splitter.models import Chunk
 
-from .bucket_router import BucketRouter
 from .models import StoredChunkDraft
 
 

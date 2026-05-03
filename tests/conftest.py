@@ -27,6 +27,10 @@ def pytest_configure(config: pytest.Config) -> None:
         "markers",
         "connectivity: smoke checks for external infrastructure connectivity",
     )
+    config.addinivalue_line(
+        "markers",
+        "real_env: tests that require explicitly enabled real external infrastructure",
+    )
 
 
 def pytest_ignore_collect(collection_path: Path, config: pytest.Config) -> bool:

@@ -11,11 +11,11 @@ from src.core.splitter import (
     PercentileSemanticChunker,
     StructuredSemanticChunker,
 )
-from src.core.vector_storage import ChunkStorageService
-from src.core.vector_storage.bucket_router import BucketRouter
-from src.core.vector_storage.constants import CHUNK_STATUS_INDEXING, CHUNK_STATUS_PENDING
+from src.core.chunk_fact_storage.constants import CHUNK_STATUS_INDEXING, CHUNK_STATUS_PENDING
+from src.core.qdrant_vector_storage import BucketRouter, IndexedPoint
+from src.core.vector_storage import VectorStoragePipeline
 from src.core.vector_storage.draft_factory import ChunkDraftFactory
-from src.core.vector_storage.models import ChunkStorageRequest, IndexedPoint
+from src.core.vector_storage.models import ChunkStorageRequest
 
 
 class MockWordTokenizer:
@@ -142,7 +142,7 @@ async def test_should_store_rule_splitter_output_with_real_embedding_pipeline(
     repository.mark_indexed.return_value = 3
     qdrant_store = AsyncMock()
     bucket_router = BucketRouter(bucket_count=16, prefix="kb_bucket")
-    service = ChunkStorageService(
+    service = VectorStoragePipeline(
         session_factory=mock_session_factory,
         draft_factory=ChunkDraftFactory(bucket_router=bucket_router),
         repository=repository,
@@ -355,7 +355,7 @@ async def test_should_store_structured_semantic_splitter_output_with_real_embedd
     repository.mark_indexed.return_value = 2
     qdrant_store = AsyncMock()
     bucket_router = BucketRouter(bucket_count=32, prefix="kb_bucket")
-    service = ChunkStorageService(
+    service = VectorStoragePipeline(
         session_factory=mock_session_factory,
         draft_factory=ChunkDraftFactory(bucket_router=bucket_router),
         repository=repository,

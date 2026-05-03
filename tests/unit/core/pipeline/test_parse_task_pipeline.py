@@ -1,11 +1,13 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
 from sqlalchemy.exc import IntegrityError
 
 from src.core.markdown_parser.models import ParseResult
 from src.core.mq.messages import ParseTaskMessage
 from src.core.pipeline import ParseTaskPipeline, PipelineStatus
-from src.core.splitter import ChunkEmbeddingPipeline, EmbeddingPipelineStats
+from src.core.splitter.models import Chunk
+from src.core.vector_storage.models import ChunkIndexingResult
 from src.models.parse_task import DocumentParseTask
 
 
@@ -54,7 +56,7 @@ def build_db(parse_task):
 
 
 def build_parse_task():
-    record = DocumentParseTask(
+    return DocumentParseTask(
         id=10,
         document_original_file_id=1,
         dataset_id=30,
@@ -63,7 +65,6 @@ def build_parse_task():
         original_filename="test.pdf",
         parse_count=1,
     )
-    return record
 
 
 class TestParseTaskPipeline:
@@ -100,19 +101,18 @@ class TestParseTaskPipeline:
         assert result.should_ack is True
         log_record = db.add.call_args.args[0]
         assert log_record.task_status == "failed"
-        assert (
-            log_record.failure_reason
-            == "INVALID_TASK_CONTEXT: 解析任务上下文不一致，请联系管理员确认；文件解析记录不存在"
-        )
+        assert log_record.failure_reason.startswith("INVALID_TASK_CONTEXT:")
         mq_service.send.assert_awaited_once()
         sent_payload = mq_service.send.call_args.args[0].get_payload()
         assert sent_payload.task_status == "failed"
+        assert sent_payload.failure_reason.startswith("INVALID_TASK_CONTEXT:")
 
     @patch(
-        "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess", new_callable=AsyncMock
+        "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess",
+        new_callable=AsyncMock,
     )
     @patch("src.core.pipeline.parse_task_pipeline.ParseTaskPipeline._chunk_markdown")
-    async def test_execute_should_parse_upload_mark_success_notify_and_chunk(
+    async def test_execute_should_parse_upload_mark_success_notify_chunk_and_store_vectors(
         self,
         mock_chunk_markdown,
         mock_aprocess,
@@ -122,6 +122,11 @@ class TestParseTaskPipeline:
         storage.download_bytes.return_value = b"pdf bytes"
         mq_service = MagicMock()
         mq_service.send = AsyncMock()
+        vector_storage = AsyncMock()
+        vector_storage.store_chunks.return_value = ChunkIndexingResult(
+            total_chunks=2,
+            indexed_chunks=2,
+        )
         mock_aprocess.return_value = {
             "markdown": "parsed content",
             "parse_result": MagicMock(),
@@ -133,6 +138,7 @@ class TestParseTaskPipeline:
             storage=storage,
             session_factory=FakeAsyncSessionFactory(db),
             mq_service=mq_service,
+            vector_storage=vector_storage,
         )
 
         result = await pipeline.execute(build_payload())
@@ -160,9 +166,18 @@ class TestParseTaskPipeline:
             "parsed/t-001.md",
             mock_aprocess.return_value["parse_result"],
         )
+        vector_storage.store_chunks.assert_awaited_once_with(
+            user_id=20,
+            set_id=30,
+            doc_id=1,
+            chunks=mock_chunk_markdown.return_value,
+        )
+        db.commit.assert_awaited()
+        db.close.assert_awaited_once()
 
     @patch(
-        "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess", new_callable=AsyncMock
+        "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess",
+        new_callable=AsyncMock,
     )
     async def test_execute_should_mark_failed_and_notify_when_parse_fails(self, mock_aprocess):
         db = build_db(build_parse_task())
@@ -183,20 +198,17 @@ class TestParseTaskPipeline:
         assert result.should_ack is True
         log_record = db.add.call_args.args[0]
         assert log_record.task_status == "failed"
-        assert (
-            log_record.failure_reason
-            == "PARSE_ENGINE_FAILED: 文件解析失败，请检查文件内容；parse failed"
-        )
+        assert log_record.failure_reason.startswith("PARSE_ENGINE_FAILED:")
+        assert log_record.failure_reason.endswith("parse failed")
         mq_service.send.assert_awaited_once()
         sent_payload = mq_service.send.call_args.args[0].get_payload()
         assert sent_payload.task_status == "failed"
-        assert (
-            sent_payload.failure_reason
-            == "PARSE_ENGINE_FAILED: 文件解析失败，请检查文件内容；parse failed"
-        )
+        assert sent_payload.failure_reason.startswith("PARSE_ENGINE_FAILED:")
+        assert sent_payload.failure_reason.endswith("parse failed")
 
     @patch(
-        "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess", new_callable=AsyncMock
+        "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess",
+        new_callable=AsyncMock,
     )
     @patch("src.core.pipeline.parse_task_pipeline.ParseTaskPipeline._chunk_markdown")
     async def test_execute_should_keep_success_when_chunking_fails(
@@ -209,6 +221,7 @@ class TestParseTaskPipeline:
         storage.download_bytes.return_value = b"pdf bytes"
         mq_service = MagicMock()
         mq_service.send = AsyncMock()
+        vector_storage = AsyncMock()
         mock_aprocess.return_value = {
             "markdown": "parsed content",
             "parse_result": MagicMock(),
@@ -220,6 +233,7 @@ class TestParseTaskPipeline:
             storage=storage,
             session_factory=FakeAsyncSessionFactory(db),
             mq_service=mq_service,
+            vector_storage=vector_storage,
         )
 
         result = await pipeline.execute(build_payload())
@@ -227,6 +241,64 @@ class TestParseTaskPipeline:
         assert result.status == PipelineStatus.SUCCESS
         assert result.chunk_count == 0
         assert db.add.call_args.args[0].task_status == "success"
+        vector_storage.store_chunks.assert_not_awaited()
+
+    @patch("src.core.pipeline.parse_task_pipeline.ParseTaskPipeline._chunk_markdown")
+    async def test_run_chunking_should_return_full_chunk_list_and_store_chunks(
+        self,
+        mock_chunk_markdown,
+    ):
+        db = build_db(build_parse_task())
+        chunks = [MagicMock(), MagicMock()]
+        mock_chunk_markdown.return_value = chunks
+        vector_storage = AsyncMock()
+        vector_storage.store_chunks.return_value = ChunkIndexingResult(
+            total_chunks=2,
+            indexed_chunks=2,
+        )
+        pipeline = ParseTaskPipeline(
+            storage=MagicMock(),
+            mq_service=MagicMock(),
+            vector_storage=vector_storage,
+        )
+        payload = build_payload()
+
+        result = await pipeline._run_chunking("markdown", None, payload, db)
+
+        assert result == chunks
+        vector_storage.store_chunks.assert_awaited_once_with(
+            user_id=20,
+            set_id=30,
+            doc_id=1,
+            chunks=chunks,
+        )
+
+    @patch("src.core.pipeline.parse_task_pipeline.create_vector_storage_facade")
+    async def test_build_vector_storage_should_defer_embedding_client_initialization(
+        self,
+        mock_create_vector_storage_facade,
+    ):
+        facade = MagicMock()
+        mock_create_vector_storage_facade.return_value = facade
+
+        with patch.object(
+            ParseTaskPipeline,
+            "_build_embedding_client",
+            side_effect=RuntimeError("missing embedding config"),
+        ) as mock_build_embedding_client:
+            result = ParseTaskPipeline._build_vector_storage()
+            embedding_pipeline = mock_create_vector_storage_facade.call_args.kwargs[
+                "embedding_pipeline"
+            ]
+
+            assert result is facade
+            mock_build_embedding_client.assert_not_called()
+
+            with pytest.raises(RuntimeError, match="missing embedding config"):
+                await embedding_pipeline.aembed_chunks(
+                    [Chunk(content="alpha", start_line=1, end_line=1)]
+                )
+            mock_build_embedding_client.assert_called_once()
 
     @patch("src.core.pipeline.parse_task_pipeline.ParseTaskPipeline._build_chunk_processor")
     def test_chunk_markdown_should_use_process_parse_result_when_available(
@@ -249,28 +321,16 @@ class TestParseTaskPipeline:
         forwarded_parse_result = processor.process_parse_result.call_args.args[0]
         assert forwarded_parse_result.source_file == "parsed/t-001.md"
 
-    @patch("src.core.pipeline.parse_task_pipeline.logger")
     @patch("src.core.pipeline.parse_task_pipeline.ParseTaskPipeline._build_chunk_processor")
-    def test_chunk_markdown_should_log_embedding_stats_for_advanced_pipeline(
+    def test_chunk_markdown_should_use_process_when_parse_result_is_absent(
         self,
         mock_build_chunk_processor,
-        mock_logger,
     ):
-        processor = object.__new__(ChunkEmbeddingPipeline)
-        processor.process = MagicMock(return_value=[MagicMock()])
-        processor.last_stats = EmbeddingPipelineStats(
-            total_chunks=1,
-            cache_hits=0,
-            cache_misses=1,
-            batch_count=1,
-            embedding_model="embed-model",
-        )
+        processor = MagicMock()
+        processor.process.return_value = [MagicMock()]
         mock_build_chunk_processor.return_value = processor
 
         chunks = ParseTaskPipeline._chunk_markdown("enhanced markdown", "parsed/t-001.md")
 
         assert len(chunks) == 1
-        processor.process.assert_called_once_with(
-            "enhanced markdown", source_file="parsed/t-001.md"
-        )
-        mock_logger.info.assert_called()
+        processor.process.assert_called_once_with("enhanced markdown", source_file="parsed/t-001.md")

@@ -201,41 +201,14 @@ CREATE TABLE IF NOT EXISTS document_parsed_log (
     INDEX idx_parsed_log_parse_task_status (document_parse_task_id, task_status, updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '文件解析任务日志表';
 
--- 11. 文档分片真值表
-CREATE TABLE IF NOT EXISTS kb_document_chunk (
-    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '分片记录主键ID',
-    chunk_id        VARCHAR(128)    NOT NULL COMMENT 'Chunk业务唯一标识，对应Qdrant Point ID',
-    doc_id          BIGINT UNSIGNED NOT NULL COMMENT '所属文档ID',
-    set_id          BIGINT UNSIGNED NOT NULL COMMENT '所属知识集ID',
-    user_id         BIGINT UNSIGNED NOT NULL COMMENT '所属用户ID',
-    bucket_id       INT UNSIGNED    NOT NULL COMMENT 'Qdrant物理分桶编号',
-    content         TEXT            NOT NULL COMMENT 'Splitter最终产出的Chunk文本内容',
-    content_hash    CHAR(64)        NOT NULL COMMENT 'Chunk内容SHA-256哈希',
-    chunk_type      VARCHAR(32)     NOT NULL DEFAULT 'text' COMMENT '分片类型：text/paragraph/table/code_block/heading/mixed等',
-    start_line      INT             DEFAULT NULL COMMENT 'Chunk起始行号',
-    end_line        INT             DEFAULT NULL COMMENT 'Chunk结束行号',
-    chunk_index     INT             DEFAULT NULL COMMENT '当前文档内的Chunk顺序编号',
-    status          VARCHAR(16)     NOT NULL DEFAULT 'PENDING' COMMENT '索引状态：PENDING/INDEXING/INDEXED/FAILED',
-    error_msg       VARCHAR(512)    DEFAULT NULL COMMENT '最近一次失败原因',
-    retry_count     INT             NOT NULL DEFAULT 0 COMMENT '补偿重试次数',
-    last_retry_at   DATETIME        DEFAULT NULL COMMENT '最近一次补偿重试时间',
-    embedding_model VARCHAR(128)    DEFAULT NULL COMMENT '实际使用的Embedding模型名称',
-    create_time     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
-    update_time     DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
-
-    UNIQUE KEY uk_chunk_id (chunk_id),
-    KEY idx_user_set (user_id, set_id,doc_id),
-    KEY idx_bucket_status (bucket_id, status)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT='文档分片真值表，保存Chunk原文、归属字段、索引状态与补偿信息';
-
--- 9. 文档 Chunk 真值记录表
+-- 11. 文档 Chunk 真值记录表
 CREATE TABLE IF NOT EXISTS kb_document_chunk (
     id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '物理主键ID',
     chunk_id        VARCHAR(128) NOT NULL COMMENT 'Chunk业务唯一键，对应Qdrant Point ID',
     doc_id          BIGINT UNSIGNED NOT NULL COMMENT '文档ID',
     set_id          BIGINT UNSIGNED NOT NULL COMMENT '知识集ID',
     user_id         BIGINT UNSIGNED NOT NULL COMMENT '用户ID',
-    bucket_id       INT NOT NULL COMMENT '路由后的Qdrant物理桶编号',
+    bucket_id       INT DEFAULT NULL COMMENT '路由后的Qdrant物理桶编号',
     content         TEXT NOT NULL COMMENT 'splitter最终产出的可检索Chunk原文',
     content_hash    VARCHAR(64) NOT NULL COMMENT '基于最终Chunk内容计算的SHA-256哈希',
     chunk_type      VARCHAR(32) NOT NULL DEFAULT 'text' COMMENT '分片类型: paragraph/image/table/code_block/heading/mixed/text',
@@ -247,15 +220,21 @@ CREATE TABLE IF NOT EXISTS kb_document_chunk (
     retry_count     INT NOT NULL DEFAULT 0 COMMENT '已执行的补偿重试次数',
     last_retry_at   DATETIME DEFAULT NULL COMMENT '最近一次补偿重试时间',
     embedding_model VARCHAR(128) DEFAULT NULL COMMENT '实际使用的embedding模型名称',
+    vector_status   VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT '向量化状态: PENDING/SUCCESS/FAILED',
+    vector_error_msg VARCHAR(512) DEFAULT NULL COMMENT '向量化失败原因',
+    es_status       VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT 'ES索引状态: PENDING/SUCCESS/FAILED',
+    es_error_msg    VARCHAR(512) DEFAULT NULL COMMENT 'ES索引失败原因',
     create_time     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
     update_time     DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
 
     UNIQUE KEY uk_chunk_id (chunk_id),
     KEY idx_user_set (user_id, set_id),
     KEY idx_bucket_status (bucket_id, status),
+    KEY idx_bucket_vector_status (bucket_id, vector_status),
     KEY idx_doc_id (doc_id),
     KEY idx_chunk_type (chunk_type),
-    KEY idx_content_hash (content_hash)
+    KEY idx_content_hash (content_hash),
+    KEY idx_bucket_es_status (bucket_id, es_status)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '文档Chunk真值记录表';
 
 -- 设置所有表的自增起始值为 10000 (MySQL 8.0 推荐显式指定方式)

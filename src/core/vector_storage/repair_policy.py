@@ -1,0 +1,63 @@
+"""Repair policy primitives for vector storage compensation workflows."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from enum import Enum
+
+from src.core.chunk_fact_storage.constants import (
+    CHUNK_STATUS_DELETE_FAILED,
+    CHUNK_STATUS_DELETING,
+    CHUNK_STATUS_FAILED,
+    CHUNK_STATUS_INDEXING,
+)
+
+
+class RepairDecision(str, Enum):
+    """Decision categories used by compensation schedulers and future repair entry points."""
+
+    AUTO_RETRY_DELETE = "auto_retry_delete"
+    LIGHTWEIGHT_STATUS_REPAIR = "lightweight_status_repair"
+    MANUAL_REINDEX_REQUIRED = "manual_reindex_required"
+    SKIP = "skip"
+
+
+@dataclass(frozen=True, slots=True)
+class RepairPolicy:
+    """Centralize which inconsistencies may be repaired automatically in this module.
+
+    The current policy mirrors the design docs: delete convergence is safe to retry
+    automatically, stale ``INDEXING`` can be handled by lightweight point-existence checks, and
+    explicit vectorization failures should not silently consume embedding capacity.
+    """
+
+    max_delete_retry_limit: int = 100
+    allow_auto_reindex_failed: bool = False
+    allow_stale_indexing_status_repair: bool = True
+
+    def normalize_limit(self, limit: int | None) -> int:
+        """Clamp a requested repair batch size into the policy-supported range."""
+        if limit is None:
+            return self.max_delete_retry_limit
+        if limit <= 0:
+            return 0
+        return min(limit, self.max_delete_retry_limit)
+
+    def decide_for_status(self, status: str, *, point_exists: bool | None = None) -> RepairDecision:
+        """Return the safest supported repair decision for a chunk lifecycle status."""
+        if status in {CHUNK_STATUS_DELETING, CHUNK_STATUS_DELETE_FAILED}:
+            return RepairDecision.AUTO_RETRY_DELETE
+
+        if status == CHUNK_STATUS_INDEXING and self.allow_stale_indexing_status_repair:
+            if point_exists is True:
+                return RepairDecision.LIGHTWEIGHT_STATUS_REPAIR
+            if point_exists is False:
+                return RepairDecision.MANUAL_REINDEX_REQUIRED
+            return RepairDecision.SKIP
+
+        if status == CHUNK_STATUS_FAILED:
+            if self.allow_auto_reindex_failed:
+                return RepairDecision.LIGHTWEIGHT_STATUS_REPAIR
+            return RepairDecision.MANUAL_REINDEX_REQUIRED
+
+        return RepairDecision.SKIP

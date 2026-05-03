@@ -124,41 +124,58 @@ async def test_should_delete_chunks_through_facade_with_business_arguments(
 
 
 @pytest.mark.asyncio
-async def test_should_run_all_compensation_steps_once_in_facade(
+async def test_should_retry_delete_failed_through_facade(
     vector_storage_facade,
     mock_compensation_service,
 ):
-    # Arrange: 准备数据
-    retry_result = ChunkIndexingResult(
-        total_chunks=2,
-        indexed_chunks=1,
-        failed_chunk_ids=["chunk-failed"],
-    )
-    stuck_result = ChunkIndexingResult(total_chunks=1, indexed_chunks=1)
     delete_result = ChunkMutationResult(
         total_chunks=2,
         affected_chunks=1,
         failed_chunk_ids=["chunk-delete-failed"],
         skipped_chunk_ids=["chunk-delete-skipped"],
     )
-    mock_compensation_service.retry_failed.return_value = retry_result
-    mock_compensation_service.recover_stuck_indexing.return_value = stuck_result
     mock_compensation_service.retry_delete_failed.return_value = delete_result
 
-    # Act: 执行动作
-    result = await vector_storage_facade.run_compensation_once(limit=50)
+    result = await vector_storage_facade.retry_delete_failed(limit=50)
 
-    # Assert: 断言结果
-    assert result.failed_retry_result is retry_result
-    assert result.stuck_indexing_result is stuck_result
-    assert result.delete_retry_result is delete_result
-    assert result.total_chunks == 5
-    assert result.recovered_chunks == 3
-    assert result.failed_chunk_ids == ["chunk-failed", "chunk-delete-failed"]
+    assert result is delete_result
+    assert result.total_chunks == 2
+    assert result.affected_chunks == 1
+    assert result.failed_chunk_ids == ["chunk-delete-failed"]
     assert result.skipped_chunk_ids == ["chunk-delete-skipped"]
-    mock_compensation_service.retry_failed.assert_awaited_once_with(limit=50)
-    mock_compensation_service.recover_stuck_indexing.assert_awaited_once_with(limit=50)
     mock_compensation_service.retry_delete_failed.assert_awaited_once_with(limit=50)
+
+
+@pytest.mark.asyncio
+async def test_should_repair_stale_indexing_through_facade(
+    vector_storage_facade,
+    mock_compensation_service,
+):
+    repair_result = ChunkMutationResult(total_chunks=2, affected_chunks=1)
+    mock_compensation_service.repair_stale_indexing.return_value = repair_result
+
+    result = await vector_storage_facade.repair_stale_indexing(limit=20)
+
+    assert result is repair_result
+    mock_compensation_service.repair_stale_indexing.assert_awaited_once_with(limit=20)
+
+
+@pytest.mark.asyncio
+async def test_should_reindex_failed_chunks_through_facade(
+    vector_storage_facade,
+    mock_compensation_service,
+):
+    reindex_result = ChunkIndexingResult(
+        total_chunks=1,
+        indexed_chunks=1,
+        embedding_model="embed-v1",
+    )
+    mock_compensation_service.reindex_failed_chunks.return_value = reindex_result
+
+    result = await vector_storage_facade.reindex_failed_chunks(["chunk-1"])
+
+    assert result is reindex_result
+    mock_compensation_service.reindex_failed_chunks.assert_awaited_once_with(["chunk-1"])
 
 
 @pytest.mark.asyncio
