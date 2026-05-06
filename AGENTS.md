@@ -28,41 +28,38 @@
 当前项目结构如下（仅保留目录骨架和核心文件，已省略 `.git`、`.venv`、`.pytest_cache`、`.ruff_cache`、`__pycache__` 等运行时/缓存目录）：
 
 ```text
-toLink-Rag/
+toLink-Rag/                         # 仓库根目录
 ├── .agents/                      # Agent/Skill 配置
-│   └── skills/
-│       ├── agents-tree-sync/
-│       ├── auto-test/
-│       ├── mq-middleware/
-│       ├── mysql-ddl-conventions/
-│       ├── prd-generator/
-│       ├── run-all-tests/
-│       ├── swagger-annotation/
-│       └── tdd/
+│   └── skills/                   # 项目专用 Agent 技能
+│       ├── agents-tree-sync/     # AGENTS.md 目录树同步规则
+│       ├── auto-test/            # 自动化测试生成工作流
+│       ├── code-annotator/       # 代码注释生成工作流
+│       ├── code-review-and-quality/ # 代码审查与质量门禁
+│       ├── contract-guard/       # 跨模块公共契约校验
+│       ├── implementation-execution/ # 需求实现执行流程
+│       ├── mq-middleware/        # MQ 中台开发规范
+│       ├── mysql-ddl-conventions/ # MySQL DDL 规范
+│       ├── prd-generator/        # PRD 生成工作流
+│       ├── pre-prd-requirement-analysis/ # 需求预分析工作流
+│       ├── run-all-tests/        # 全量测试运行工作流
+│       ├── swagger-annotation/   # Swagger 注解生成工作流
+│       ├── tdd/                  # 测试驱动开发工作流
+│       └── technical-design/     # 技术设计生成工作流
 ├── .env.example                  # 环境变量样例
 ├── AGENTS.md                     # 项目级 Agent 说明
 ├── README.md                     # 项目说明
 ├── docker-compose.yml            # 本地依赖编排
 ├── project_info.md               # 项目基础信息
 ├── pyproject.toml                # Python 依赖与项目配置
-├── docs/                         # 设计与说明文档
-│   └── module-development-files/ # 模块研发文档
-│       └── service-file-upload-parse-collaboration/
-│           ├── feature_info.md
-│           ├── implementation_report.md
-│           ├── requirement.md
-│           └── technical_design.md
 ├── scripts/                      # 可执行脚本
-│   ├── db/
-│   │   ├── init.sql              # 建库建表脚本
+│   ├── db/                       # 数据库初始化脚本
+│   │   ├── init.sql              # 当前数据库表结构（DDL）
 │   │   └── schema.sql            # 初始化数据脚本
-│   ├── init_kafka_topics.py      # Kafka Topic 初始化（Python Admin API）
-│   └── init_kafka_topics.sh      # Kafka Topic 初始化（CLI）
 ├── src/                          # 应用源码
 │   ├── config.py                 # 全局配置
 │   ├── database.py               # 数据库初始化入口
 │   ├── main.py                   # FastAPI 应用入口
-│   ├── api/
+│   ├── api/                      # HTTP API 分层
 │   │   ├── routes/               # 路由层
 │   │   │   ├── llm.py
 │   │   │   ├── mq.py
@@ -70,21 +67,21 @@ toLink-Rag/
 │   │   └── schemas/              # HTTP 请求/响应模型
 │   │       ├── mq.py
 │   │       └── parse.py
-│   ├── cache/
+│   ├── cache/                    # 缓存客户端与缓存基础设施
 │   │   └── redis_client.py       # Redis 客户端
 │   ├── core/                     # 核心能力与基础设施
 │   │   ├── database.py
-│   │   ├── llm/
+│   │   ├── llm/                  # LLM 抽象、工厂与厂商适配
 │   │   │   ├── factory.py
 │   │   │   ├── interfaces.py
-│   │   │   └── providers/
+│   │   │   └── providers/        # LLM 提供方实现
 │   │   ├── pipeline/             # 文档解析业务流水线编排
 │   │   │   ├── error_codes.py
 │   │   │   ├── models.py
 │   │   │   └── parse_task_pipeline.py
 │   │   ├── prompts/              # LLM 提示词模板
 │   │   │   └── markdown_enhancement.py
-│   │   ├── markdown_parser/
+│   │   ├── markdown_parser/      # Markdown 解析与增强编排
 │   │   │   ├── image_extractor.py
 │   │   │   ├── llm_integration.py
 │   │   │   ├── models.py
@@ -92,38 +89,38 @@ toLink-Rag/
 │   │   │   ├── parser.py
 │   │   │   ├── provider_clients.py
 │   │   │   └── scanner.py
-│   │   ├── mq/
+│   │   ├── mq/                   # MQ 中台核心实现
 │   │   │   ├── factory.py        # MQFactory
 │   │   │   ├── interfaces.py
 │   │   │   ├── message.py        # AbstractMessage / MessagePayload
 │   │   │   ├── topic_admin.py    # Topic 初始化逻辑
-│   │   │   ├── consumers/
+│   │   │   ├── consumers/        # MQ 消费者
 │   │   │   │   └── parse_task_consumer.py
 │   │   │   ├── messages/         # MQ 业务消息
 │   │   │   │   ├── parse_task.py
 │   │   │   │   ├── parse_result.py
 │   │   │   │   ├── cache_sync.py
 │   │   │   │   └── usage_report.py
-│   │   │   └── vendors/
+│   │   │   └── vendors/          # MQ 厂商适配
 │   │   │       ├── rabbitmq_adapter.py
-│   │   │       └── kafka/
+│   │   │       └── kafka/        # Kafka 适配与 Topic 管理
 │   │   │           ├── kafka_adapter.py
 │   │   │           └── topic_admin.py
-│   │   ├── parser/
+│   │   ├── parser/               # 文档解析器抽象与实现
 │   │   │   ├── base.py
 │   │   │   ├── factory.py
-│   │   │   ├── pdf/
+│   │   │   ├── pdf/              # PDF 解析服务与后端
 │   │   │   │   ├── base.py
 │   │   │   │   ├── models.py
 │   │   │   │   ├── service.py
-│   │   │   │   └── backends/
+│   │   │   │   └── backends/     # PDF 解析后端实现
 │   │   │   │       ├── mineru_backend.py
 │   │   │   │       └── naive_backend.py
-│   │   │   └── providers/
+│   │   │   └── providers/        # 多格式解析器实现
 │   │   │       ├── html_parser.py
 │   │   │       ├── pdf_parser.py
 │   │   │       └── word_parser.py
-│   │   ├── splitter/
+│   │   ├── splitter/             # 文本切分与嵌入流水线
 │   │   │   ├── base.py
 │   │   │   ├── chunking_engine.py
 │   │   │   ├── embedding_pipeline.py
@@ -168,12 +165,12 @@ toLink-Rag/
 │   │   ├── cache_sync_service.py
 │   │   ├── config_reader_service.py
 │   │   ├── usage_log_service.py
-│   │   └── storage/
+│   │   └── storage/              # 对象存储抽象与实现
 │   │       ├── base.py
 │   │       ├── factory.py
 │   │       ├── minio_storage.py
 │   │       └── oss_storage.py
-│   └── utils/
+│   └── utils/                    # 通用工具函数
 │       ├── file_downloader.py
 │       ├── logger.py
 │       └── text_formatter.py
@@ -181,26 +178,26 @@ toLink-Rag/
     ├── README.md                 # pytest 统一入口（marker/集成测试开关）
     ├── conftest.py               # 测试分层与运行约定
     ├── unit/                     # 单元测试 (Mock 驱动)
-    │   ├── api/
-    │   ├── core/
-    │   │   ├── llm/
-    │   │   ├── mq/
-    │   │   ├── parser/
-    │   │   ├── chunk_fact_storage/
-    │   │   ├── pipeline/
-    │   │   ├── qdrant_vector_storage/
-    │   │   ├── splitter/
-    │   │   └── vector_storage/
-    │   └── services/
+    │   ├── api/                  # API 层单元测试
+    │   ├── core/                 # 核心模块单元测试
+    │   │   ├── llm/              # LLM 模块单元测试
+    │   │   ├── mq/               # MQ 模块单元测试
+    │   │   ├── parser/           # 解析器模块单元测试
+    │   │   ├── chunk_fact_storage/ # Chunk 事实存储单元测试
+    │   │   ├── pipeline/         # 解析流水线单元测试
+    │   │   ├── qdrant_vector_storage/ # Qdrant 存储单元测试
+    │   │   ├── splitter/         # 切分模块单元测试
+    │   │   └── vector_storage/   # 向量存储编排单元测试
+    │   └── services/             # 服务层单元测试
     └── integration/              # 集成测试
-        ├── api/
-        ├── core/
-        │   ├── llm/
-        │   ├── markdown_parser/
-        │   ├── qdrant_vector_storage/
-        │   ├── splitter/
-        │   └── vector_storage/
-        ├── services/
+        ├── api/                  # API 层集成测试
+        ├── core/                 # 核心模块集成测试
+        │   ├── llm/              # LLM 模块集成测试
+        │   ├── markdown_parser/  # Markdown 解析集成测试
+        │   ├── qdrant_vector_storage/ # Qdrant 存储集成测试
+        │   ├── splitter/         # 切分模块集成测试
+        │   └── vector_storage/   # 向量存储编排集成测试
+        ├── services/             # 服务层集成测试
         └── test_connectivity.py
 ```
 
@@ -208,6 +205,7 @@ toLink-Rag/
 
 - 所有运行时配置统一从 [src/config.py](src/config.py) 的 `Settings` 读取。
 - 本地环境变量样例参考 [.env.example](.env.example)。
+- 当前数据库表结构以 [scripts/db/init.sql](scripts/db/init.sql) 为准。
 - 不要硬编码敏感信息；新增配置时同步更新 `Settings` 和 `.env.example`。
 
 ## 工作方式

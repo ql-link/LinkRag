@@ -1,6 +1,6 @@
 ---
 name: technical-design
-description: 在 requirement.md 审核通过后，为当前模块当前期次目录产出 technical_design.md，并严格基于真实代码、组件文档和公共契约进行设计。
+description: 在用户明确要求生成技术文档、技术设计或 technical_design.md 时，默认视为对应 requirement.md 已审核通过；必须先确认同目录已存在 requirement.md 与 pre_requirement_analysis.md，然后在同目录产出 technical_design.md，并严格基于真实代码、组件文档和公共契约进行设计。
 when_to_use: 当任务进入本 skill 对应阶段，或该 skill 的 description 触发条件命中时使用；进入下一阶段前，必须满足 AGENTS.md 的门禁与人工审核要求。
 ---
 
@@ -10,11 +10,15 @@ when_to_use: 当任务进入本 skill 对应阶段，或该 skill 的 descriptio
 
 本 skill 用于把已经确认的 `requirement.md` 转化成可落地的 `technical_design.md`。
 
+当用户明确要求“生成技术文档”“生成技术实现文档”“生成技术设计”或“生成 technical_design.md”时，默认视为对应 PRD 已经完成审核，不需要再向用户确认“PRD 是否审核通过”。但必须先校验 `requirement.md` 与 `pre_requirement_analysis.md` 均已存在。
+
 它主要回答：
 
 - 准备改哪些模块
+- 准备改哪些文件、类、方法
 - 复用哪些现有能力
 - API、数据、缓存、消息、对象存储怎么设计
+- 每个要修改的方法如何改、为什么这样改、需要验证什么
 - 风险、兼容性、测试策略是什么
 
 它不直接负责：
@@ -29,12 +33,13 @@ when_to_use: 当任务进入本 skill 对应阶段，或该 skill 的 descriptio
 
 只有满足以下条件时，才允许使用本 skill：
 
-1. 已完成 `project-bootstrap`
-2. 当前模块目录与当前期次目录存在
-3. `requirement.md` 已经过人工审核通过
-4. 当前复杂度等级为 `L2` 或 `L3`，或用户明确要求单独技术方案
+1. 已完成 `prd-generator`
+2. 当前需求文档目录真实存在
+3. 当前目录下必须同时存在 `pre_requirement_analysis.md` 与 `requirement.md`
+4. 用户明确要求生成技术文档、技术实现文档、技术设计或 `technical_design.md`，此时默认视为 `requirement.md` 已审核通过
+5. 当前复杂度等级为 `L2` / `L3` / 中高复杂度，或用户明确要求单独技术方案
 
-如果需求文档还未审核通过，不允许提前写 `technical_design.md`。
+如果缺少 `pre_requirement_analysis.md` 或 `requirement.md`，必须先停止并说明缺失文件；不能基于聊天记录直接生成 `technical_design.md`。
 
 ## 3. 必读文件
 
@@ -42,17 +47,18 @@ when_to_use: 当任务进入本 skill 对应阶段，或该 skill 的 descriptio
 
 1. `AGENTS.md`
 2. `project_info.md`
-3. 当前模块当前期次目录 `feature_info.md`
-4. 当前模块当前期次目录 `requirement.md`
-5. `.agents/skills/technical-design/technical_design.template.md`
-6. `docs/architecture/middleware_contract.md`
+3. 当前需求文档目录的 `pre_requirement_analysis.md`
+4. 当前需求文档目录的 `feature_info.md`（若已存在）
+5. 当前需求文档目录的 `requirement.md`
+6. `.agents/skills/technical-design/technical_design.template.md`
+7. `docs/architecture/middleware_contract.md`（若存在）
 
 按需补读：
 
-7. 对应组件说明文档
-8. 同业务域历史模块目录中的 `technical_design.md`
-9. 同业务域历史模块目录中的 `implementation_report.md`
-10. 相关真实代码
+8. 对应组件说明文档
+9. 同业务域历史模块目录中的 `technical_design.md`
+10. 同业务域历史模块目录中的 `implementation_report.md`
+11. 相关真实代码
 
 组件文档的读取规则：
 
@@ -69,14 +75,16 @@ when_to_use: 当任务进入本 skill 对应阶段，或该 skill 的 descriptio
 
 ## 4. 输出位置
 
-输出文件固定为：
+输出文件固定为 `requirement.md` 所在目录下：
 
-`docs/module-development-files/<domain>-<module-name>/<phase>/technical_design.md`
+`<requirement.md 所在目录>/technical_design.md`
 
 注意：
 
 - 输出文件名固定为 `technical_design.md`
-- 文档结构必须优先遵循 `.agents/skills/technical-design/technical_design.template.md`
+- 文档结构必须遵循 `.agents/skills/technical-design/technical_design.template.md`
+- 不允许默认输出到 `docs/module-development-files/<domain>-<module-name>/<phase>/technical_design.md`，除非用户显式要求迁移或另存
+- 不允许为技术设计额外创建与 `pre_requirement_analysis.md` / `requirement.md` 不一致的新目录
 
 若目录中已有旧版 `technical_design.md`：
 
@@ -86,7 +94,7 @@ when_to_use: 当任务进入本 skill 对应阶段，或该 skill 的 descriptio
 
 ## 5. 同时需要维护的文件
 
-除 `technical_design.md` 外，本 skill 还应同步维护当前模块当前期次目录的 `feature_info.md`。
+除 `technical_design.md` 外，本 skill 还应同步维护 `requirement.md` 所在目录的 `feature_info.md`。
 
 至少应回填：
 
@@ -113,18 +121,57 @@ when_to_use: 当任务进入本 skill 对应阶段，或该 skill 的 descriptio
 11. 测试方案
 12. 发布方案
 
+技术文档必须同时结合 `pre_requirement_analysis.md` 和 `requirement.md`：
+
+- `pre_requirement_analysis.md` 用于还原问题链路、已确认问答结论、边界取舍和异常场景。
+- `requirement.md` 用于确认功能范围、验收标准、业务对象、状态流转和技术设计输入。
+- 技术设计中必须有“输入依据映射”或等价章节，说明关键方案来自哪份输入文档。
+
+其中“技术目标与范围”或“总体方案设计”中必须包含“改动文件目录树”。目录树要求：
+
+- 从仓库根目录或当前模块根目录开始展示。
+- 只列出本次会新增、修改、删除或需要重点确认不改的核心文件，不要粘贴完整项目树。
+- 每个文件或目录后必须用注释标明动作：`[新增]`、`[修改]`、`[删除]`、`[测试新增]`、`[测试修改]`、`[不改]`、`[待确认]`。
+- 对 `[修改]` / `[新增]` 文件必须用一句话说明改动目的。
+- 对明确不新增的公共契约文件、DDL、Topic 初始化脚本等，可以用 `[不改]` 标注，避免实现阶段误改。
+- 如果技术方案无法确定某个文件是新增还是修改，必须标为 `[待确认]` 并在“风险与待确认问题”中解释。
+
+“核心实现设计”必须精确到方法级别。最低要求：
+
+- 给出“方法级变更总表”，列出文件、类、方法、动作、输入、输出、改动目的。
+- 对每个 `[修改]` / `[新增]` 方法分别说明：
+  - 当前行为或现有缺口
+  - 修改后的职责
+  - 关键入参和返回值
+  - 详细处理步骤
+  - 事务 / 异常 / 幂等边界
+  - 对其他方法的调用关系
+  - 对应测试用例
+- 如果某个文件标为 `[修改]`，但没有任何方法级方案，技术文档不合格。
+- 如果某个方法需要新增参数或返回值，必须写明调用方同步改动。
+- 如果选择“不修改”某个看似相关的方法，必须解释原因，避免实现阶段误改。
+
 允许按功能复杂度精简某些章节的内容密度，但不要擅自删除一级章节。
 
 ## 7. 技术设计的工作步骤
 
 ### 步骤 1：把需求拆成工程问题
 
-先从 `requirement.md` 提炼出：
+先确认输入文件：
+
+- `pre_requirement_analysis.md` 存在
+- `requirement.md` 存在
+- 二者位于同一需求文档目录
+- 用户已明确要求生成技术文档；该请求默认表示 PRD 已审核通过
+
+再从 `requirement.md` 提炼出：
 
 - 哪些需求会改接口
 - 哪些需求会改数据结构
 - 哪些需求会碰中间件
 - 哪些需求只影响业务逻辑
+- 哪些文件需要新增、修改、删除或确认不改，并沉淀为“改动文件目录树”
+- 哪些类和方法需要新增、修改、删除或确认不改，并沉淀为“方法级变更总表”
 
 ### 步骤 2：扫描真实代码
 
@@ -134,6 +181,10 @@ when_to_use: 当任务进入本 skill 对应阶段，或该 skill 的 descriptio
 - 相近功能怎么写
 - 是否已有可复用组件或服务
 - 是否已有同名或同类 DTO / Entity / Mapper / Controller
+- 本次目录树中列出的每个 `[修改]` 文件是否真实存在
+- 本次目录树中列出的每个 `[新增]` 文件的父目录是否符合现有项目结构
+- 本次方法级变更总表中列出的每个 `[修改]` 方法是否真实存在
+- 本次方法级变更总表中列出的每个 `[新增]` 方法所属类是否真实存在或已说明新建原因
 
 如果没扫代码就写方案，这份文档默认不合格。
 
@@ -176,6 +227,7 @@ when_to_use: 当任务进入本 skill 对应阶段，或该 skill 的 descriptio
 - 哪些是高风险点
 - 如何验证改动正确
 - 是否需要数据迁移、配置变更、回滚预案
+- 每个方法级改动对应哪些单元测试、集成测试或人工验证点
 
 ## 8. 强制代码引用要求
 
@@ -199,6 +251,8 @@ when_to_use: 当任务进入本 skill 对应阶段，或该 skill 的 descriptio
 - “复用哪个已有类/接口/组件”
 - “新增代码建议放在哪个包”
 - “为什么不改 framework，只改业务层”
+- “本次改动文件目录树”，并标明每个文件的新增/修改/删除/不改状态
+- “方法级变更总表”，并标明每个方法的新增/修改/不改状态和调用关系
 
 ## 9. 提问门禁
 
@@ -240,6 +294,8 @@ when_to_use: 当任务进入本 skill 对应阶段，或该 skill 的 descriptio
 
 - 另一个工程师读完可以开始实现
 - 另一个 AI 读完不需要重新猜模块边界
+- 能从目录树直接看出要改哪些文件、要新增哪些文件、哪些文件明确不改
+- 能从方法级变更总表直接看出要改哪些类和方法，以及每个方法怎么改
 - 能明确看出复用了哪些现有代码和组件
 - 能明确区分“业务层改动”和“framework 改动”
 
@@ -275,7 +331,7 @@ when_to_use: 当任务进入本 skill 对应阶段，或该 skill 的 descriptio
 
 ## 14. 与其他 skill 的衔接
 
-- 进入前：应先完成 `requirement-analysis`，且需求文档已审核通过
+- 进入前：应先完成 `prd-generator`；当用户明确要求生成技术文档时，默认视为 PRD 已审核通过，但仍必须校验同目录存在 `pre_requirement_analysis.md` 和 `requirement.md`
 - 结束后：等待人工审核
 - 审核通过后：再进入 `implementation-execution`
 
