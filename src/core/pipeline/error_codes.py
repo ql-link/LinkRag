@@ -4,10 +4,15 @@ from enum import Enum
 
 
 class ParseFailureCode(str, Enum):
-    """解析任务失败原因编码。"""
+    """解析任务失败原因编码。
+
+    编码会作为 failure_reason 的前缀落库并发送给 Java，新增编码时需要同步补充
+    ``FAILURE_REASON_TEXT``，保证所有失败都能转成业务可读原因。
+    """
 
     INVALID_TASK_CONTEXT = "INVALID_TASK_CONTEXT"
     DUPLICATE_TASK = "DUPLICATE_TASK"
+    INTERRUPTED_TASK = "INTERRUPTED_TASK"
     SOURCE_FILE_NOT_FOUND = "SOURCE_FILE_NOT_FOUND"
     UNSUPPORTED_FILE_TYPE = "UNSUPPORTED_FILE_TYPE"
     PARSE_ENGINE_FAILED = "PARSE_ENGINE_FAILED"
@@ -19,11 +24,12 @@ class ParseFailureCode(str, Enum):
 FAILURE_REASON_TEXT: dict[ParseFailureCode, str] = {
     ParseFailureCode.INVALID_TASK_CONTEXT: "解析任务上下文不一致，请联系管理员确认",
     ParseFailureCode.DUPLICATE_TASK: "解析任务已被处理，请勿重复提交",
+    ParseFailureCode.INTERRUPTED_TASK: "解析任务中断，请重新解析",
     ParseFailureCode.SOURCE_FILE_NOT_FOUND: "原始文件不存在或无法访问",
     ParseFailureCode.UNSUPPORTED_FILE_TYPE: "当前文件类型暂不支持解析",
     ParseFailureCode.PARSE_ENGINE_FAILED: "文件解析失败，请检查文件内容",
     ParseFailureCode.PARSED_FILE_UPLOAD_FAILED: "解析结果保存失败，请重新解析",
-    ParseFailureCode.RESULT_NOTIFY_FAILED: "解析完成但结果通知失败，请联系管理员确认",
+    ParseFailureCode.RESULT_NOTIFY_FAILED: "解析结果通知失败，请重新解析",
     ParseFailureCode.INTERNAL_UNKNOWN_ERROR: "系统异常，请稍后重试",
 }
 
@@ -34,7 +40,16 @@ def build_failure_reason(
     *,
     max_length: int = 512,
 ) -> str:
-    """构造可落库、可展示的业务化失败原因。"""
+    """构造可落库、可展示的业务化失败原因。
+
+    Args:
+        code: 解析失败业务编码。
+        detail: 可选底层异常详情，用于排查具体失败点。
+        max_length: 返回字符串最大长度，默认匹配 document_parsed_log.failure_reason。
+
+    Returns:
+        ``CODE: 中文原因；detail`` 格式的失败原因字符串。
+    """
     reason = f"{code.value}: {FAILURE_REASON_TEXT[code]}"
     if detail:
         reason = f"{reason}；{detail.strip()}"

@@ -179,6 +179,50 @@ class TestParseResultMessage:
         assert parsed.task_id == "t-001"
         assert parsed.task_status == "success"
         assert parsed.failure_reason is None
+        assert parsed.user_message is None
+
+    def test_build_should_include_user_message(self):
+        msg = ParseResultMessage.build(
+            task_id="t-duplicate-success",
+            original_file_id=1,
+            document_parse_task_id=10,
+            dataset_id=30,
+            user_id=20,
+            task_status="success",
+            parse_finished_at="2026-04-29T10:00:00+00:00",
+            user_message="当前文档已经解析完成，请勿重复解析",
+        )
+
+        serialized = msg.serialize()
+        data = json.loads(serialized)
+
+        assert data["payload"]["user_message"] == "当前文档已经解析完成，请勿重复解析"
+        parsed = ParseResultMessage.parse_msg(serialized)
+        assert parsed.user_message == "当前文档已经解析完成，请勿重复解析"
+        assert msg.get_routing_key() == "t-duplicate-success"
+
+    def test_parse_msg_supports_legacy_payload_without_user_message(self):
+        raw = json.dumps(
+            {
+                "mq_type": "PARSE_RESULT",
+                "mq_name": "tolink.rag.parse_result",
+                "payload": {
+                    "task_id": "t-legacy-result",
+                    "original_file_id": 1,
+                    "document_parse_task_id": 10,
+                    "dataset_id": 30,
+                    "user_id": 20,
+                    "task_status": "failed",
+                    "failure_reason": "parse failed",
+                    "parse_finished_at": "2026-04-29T10:00:00+00:00",
+                },
+            }
+        )
+
+        parsed = ParseResultMessage.parse_msg(raw)
+
+        assert parsed.task_id == "t-legacy-result"
+        assert parsed.user_message is None
 
 
 class TestCacheSyncMessage:

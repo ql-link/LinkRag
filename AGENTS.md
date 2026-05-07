@@ -76,6 +76,7 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── interfaces.py
 │   │   │   └── providers/        # LLM 提供方实现
 │   │   ├── pipeline/             # 文档解析业务流水线编排
+│   │   │   ├── constants.py       # 解析任务状态、通知文案等流水线常量
 │   │   │   ├── error_codes.py
 │   │   │   ├── models.py
 │   │   │   └── parse_task_pipeline.py

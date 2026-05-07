@@ -2,13 +2,20 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.exc import IntegrityError
 
 from src.core.markdown_parser.models import ParseResult
 from src.core.mq.consumers.parse_task_consumer import handle_parse_task
 from src.core.mq.messages import ParseTaskMessage
 from src.core.mq.vendors.kafka.kafka_adapter import KafkaReceiver
 from src.core.pipeline import ParseTaskPipeline
-from src.models.parse_task import DocumentParseTask
+from src.core.pipeline.constants import (
+    DUPLICATE_SUCCESS_USER_MESSAGE,
+    PARSE_TASK_STATUS_CREATED,
+    PARSE_TASK_STATUS_FAILED,
+    PARSE_TASK_STATUS_SUCCESS,
+)
+from src.models.parse_task import DocumentParsedLog, DocumentParseTask
 
 
 class FakeAsyncSessionFactory:
@@ -65,6 +72,17 @@ def build_kafka_message(message_body: str, topic: str):
         key=b"pdf",
         headers=[("trace_id", b"trace-001")],
         value=message_body,
+    )
+
+
+def build_log(status: str):
+    return DocumentParsedLog(
+        id=100,
+        task_id="t-kafka-duplicate",
+        document_original_file_id=1,
+        document_parse_task_id=10,
+        trigger_mode="upload_auto",
+        task_status=status,
     )
 
 
@@ -153,7 +171,7 @@ async def test_kafka_receiver_should_consume_parse_task_message_and_commit_after
         parse_result["parse_result"],
     )
     log_record = db.add.call_args.args[0]
-    assert log_record.task_status == "success"
+    assert log_record.task_status == PARSE_TASK_STATUS_SUCCESS
     assert log_record.parsed_object_key == "parsed/t-kafka-success.md"
     mq_service.send.assert_awaited_once()
 
@@ -222,9 +240,122 @@ async def test_kafka_receiver_should_commit_when_pipeline_fails():
 
     receiver._consumer.commit.assert_awaited_once()
     log_record = db.add.call_args.args[0]
-    assert log_record.task_status == "failed"
+    assert log_record.task_status == PARSE_TASK_STATUS_FAILED
     assert (
         log_record.failure_reason
         == "PARSE_ENGINE_FAILED: 文件解析失败，请检查文件内容；parse failed"
     )
     mq_service.send.assert_awaited_once()
+
+
+@pytest.mark.integration
+async def test_kafka_receiver_should_commit_when_duplicate_created_is_marked_failed():
+    log_record = build_log(PARSE_TASK_STATUS_CREATED)
+    db = build_db(log_record)
+    db.flush.side_effect = IntegrityError("duplicate", None, None)
+    storage = MagicMock()
+    mq_service = MagicMock()
+    mq_service.send = AsyncMock()
+
+    pipeline = ParseTaskPipeline(
+        storage=storage,
+        session_factory=FakeAsyncSessionFactory(db),
+        mq_service=mq_service,
+    )
+
+    message = ParseTaskMessage.build(
+        task_id="t-kafka-duplicate",
+        original_file_id=1,
+        document_parse_task_id=10,
+        user_id=20,
+        dataset_id=30,
+        file_type="pdf",
+        source_bucket="source-bucket",
+        source_object_key="uploads/test.pdf",
+        source_filename="test.pdf",
+        md_bucket="markdown-bucket",
+        md_object_key="parsed/t-kafka-duplicate.md",
+    ).serialize()
+    kafka_message = build_kafka_message(message, ParseTaskMessage.MQ_NAME)
+
+    receiver = KafkaReceiver(bootstrap_servers="mock:9092")
+    receiver._consumer = FakeConsumer([kafka_message])
+    receiver._running = True
+    receiver._subscriptions = [
+        {
+            "topic": ParseTaskMessage.MQ_NAME,
+            "group_id": "parse-group",
+            "callback": handle_parse_task,
+            "from_beginning": False,
+        }
+    ]
+
+    with patch(
+        "src.core.mq.consumers.parse_task_consumer.ParseTaskPipeline",
+        return_value=pipeline,
+    ):
+        await receiver._consume_loop()
+
+    receiver._consumer.commit.assert_awaited_once()
+    assert log_record.task_status == PARSE_TASK_STATUS_FAILED
+    assert log_record.failure_reason.startswith("INTERRUPTED_TASK:")
+    storage.download_bytes.assert_not_called()
+    storage.upload_bytes.assert_not_called()
+    mq_service.send.assert_awaited_once()
+
+
+@pytest.mark.integration
+async def test_kafka_receiver_should_commit_when_duplicate_success_is_resent():
+    log_record = build_log(PARSE_TASK_STATUS_SUCCESS)
+    db = build_db(log_record)
+    db.flush.side_effect = IntegrityError("duplicate", None, None)
+    storage = MagicMock()
+    mq_service = MagicMock()
+    mq_service.send = AsyncMock()
+
+    pipeline = ParseTaskPipeline(
+        storage=storage,
+        session_factory=FakeAsyncSessionFactory(db),
+        mq_service=mq_service,
+    )
+
+    message = ParseTaskMessage.build(
+        task_id="t-kafka-duplicate",
+        original_file_id=1,
+        document_parse_task_id=10,
+        user_id=20,
+        dataset_id=30,
+        file_type="pdf",
+        source_bucket="source-bucket",
+        source_object_key="uploads/test.pdf",
+        source_filename="test.pdf",
+        md_bucket="markdown-bucket",
+        md_object_key="parsed/t-kafka-duplicate.md",
+    ).serialize()
+    kafka_message = build_kafka_message(message, ParseTaskMessage.MQ_NAME)
+
+    receiver = KafkaReceiver(bootstrap_servers="mock:9092")
+    receiver._consumer = FakeConsumer([kafka_message])
+    receiver._running = True
+    receiver._subscriptions = [
+        {
+            "topic": ParseTaskMessage.MQ_NAME,
+            "group_id": "parse-group",
+            "callback": handle_parse_task,
+            "from_beginning": False,
+        }
+    ]
+
+    with patch(
+        "src.core.mq.consumers.parse_task_consumer.ParseTaskPipeline",
+        return_value=pipeline,
+    ):
+        await receiver._consume_loop()
+
+    receiver._consumer.commit.assert_awaited_once()
+    assert log_record.task_status == PARSE_TASK_STATUS_SUCCESS
+    storage.download_bytes.assert_not_called()
+    storage.upload_bytes.assert_not_called()
+    sent_payload = mq_service.send.call_args.args[0].get_payload()
+    assert sent_payload.task_status == PARSE_TASK_STATUS_SUCCESS
+    assert sent_payload.user_message == DUPLICATE_SUCCESS_USER_MESSAGE

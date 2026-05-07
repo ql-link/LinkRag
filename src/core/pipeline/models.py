@@ -1,6 +1,6 @@
 """Pipeline 数据模型。"""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 
 
@@ -22,6 +22,8 @@ class ParsePipelineResult:
         chunk_count: 分块数量
         time_cost_ms: 解析耗时（毫秒）
         page_count: 文档页数
+        vector_indexing_completed: 向量索引是否全部 chunk 处理完成
+        failed_chunk_ids: 向量索引失败的 chunk 标识列表
         skip_reason: 跳过原因（当 status=SKIPPED 时）
         error: 异常对象（当 status=FAILED 时）
     """
@@ -31,6 +33,8 @@ class ParsePipelineResult:
     chunk_count: int = 0
     time_cost_ms: int = 0
     page_count: int = 0
+    vector_indexing_completed: bool = True
+    failed_chunk_ids: list[str] = field(default_factory=list)
     skip_reason: str | None = None
     error: Exception | None = None
 
