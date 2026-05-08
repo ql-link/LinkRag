@@ -19,6 +19,7 @@
 - [src/core/vector_storage](src/core/vector_storage)：向量存储编排层
 - [src/core/chunk_fact_storage](src/core/chunk_fact_storage)：Chunk SQL 事实存储
 - [src/core/qdrant_vector_storage](src/core/qdrant_vector_storage)：Qdrant 向量索引存储
+- [src/core/es_index_storage](src/core/es_index_storage)：ES 倒排索引入库编排层
 - [src/models](src/models)：ORM 模型
 - [tests/unit](tests/unit)：单元测试
 - [tests/integration](tests/integration)：集成测试与真实基础设施测试
@@ -141,6 +142,9 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── models.py
 │   │   │   ├── point_factory.py
 │   │   │   └── qdrant_store.py
+│   │   ├── es_index_storage/     # ES 倒排索引入库编排层
+│   │   │   ├── models.py
+│   │   │   └── pipeline.py
 │   │   └── vector_storage/       # 向量存储编排层
 │   │       ├── compensation_pipeline.py
 │   │       ├── constants.py
@@ -187,6 +191,7 @@ toLink-Rag/                         # 仓库根目录
     │   │   ├── chunk_fact_storage/ # Chunk 事实存储单元测试
     │   │   ├── pipeline/         # 解析流水线单元测试
     │   │   ├── qdrant_vector_storage/ # Qdrant 存储单元测试
+    │   │   ├── es_index_storage/ # ES 入库编排单元测试
     │   │   ├── splitter/         # 切分模块单元测试
     │   │   └── vector_storage/   # 向量存储编排单元测试
     │   └── services/             # 服务层单元测试

@@ -50,3 +50,21 @@ class ParsePipelineResult:
         解析失败已由 Pipeline 写入终态日志并通知 Java，不再依赖 MQ 重投。
         """
         return True
+
+
+@dataclass(slots=True)
+class PostProcessStageResult:
+    """文件级后处理单阶段执行结果。"""
+
+    success: bool
+    duration_ms: int | None = None
+    failure_reason: str | None = None
+
+
+@dataclass(slots=True)
+class PostProcessResult:
+    """文件级后处理整体执行结果。"""
+
+    success: bool
+    failure_reason: str | None = None
+    chunk_count: int = 0

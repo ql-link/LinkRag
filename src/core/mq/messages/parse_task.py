@@ -13,7 +13,7 @@ class ParseTaskPayload(MessagePayload):
     task_id: str = Field(..., title="任务ID", description="文档解析任务的唯一标识")
     original_file_id: int = Field(..., title="原始文件ID", description="原始文件表主键")
     document_parse_task_id: int = Field(
-        ..., title="文件解析表ID", description="document_parse_task 表主键"
+        ..., title="文件解析表ID", description="document_parse_file 表主键，字段名保持历史兼容"
     )
     user_id: int = Field(..., title="用户ID", description="文件所属用户ID")
     dataset_id: int = Field(..., title="数据集ID", description="文件所属数据集ID")

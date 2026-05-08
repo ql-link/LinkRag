@@ -17,6 +17,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.config import settings
+from src.core.es_index_storage import EsIndexingPipeline, EsIndexingResult
 from src.core.llm.factory import ModelFactory
 from src.core.llm.interfaces import CapabilityType
 from src.core.llm.tokenizer import Tokenizer
@@ -35,6 +36,15 @@ from src.core.pipeline.constants import (
 )
 from src.core.pipeline.error_codes import ParseFailureCode, build_failure_reason
 from src.core.pipeline.models import ParsePipelineResult, PipelineStatus
+from src.core.pipeline.post_process_constants import (
+    PIPELINE_STATUS_FAILED,
+    PIPELINE_STATUS_SUCCESS,
+    POST_PROCESS_STAGE_CHUNKING,
+    POST_PROCESS_STAGE_ES_INDEXING,
+    POST_PROCESS_STAGE_VECTORIZING,
+    STAGE_STATUS_SUCCESS,
+)
+from src.core.pipeline.post_process_repository import PostProcessPipelineRepository
 from src.core.splitter import (
     ASTAwareChunker,
     ChunkEmbeddingPipeline,
@@ -51,6 +61,10 @@ from src.services.mq_service import MQService
 from src.services.parse_task_service import ParseTaskService
 from src.services.storage.base import BaseObjectStorage
 from src.services.storage.factory import StorageFactory
+
+
+class ParseResultNotificationError(RuntimeError):
+    """Raised when parse_result notification cannot be delivered."""
 
 
 class _LazyEmbeddingClient:
@@ -121,6 +135,8 @@ class ParseTaskPipeline:
         ) = None,
         mq_service: MQService | None = None,
         vector_storage: Any | None = None,
+        post_process_repository: PostProcessPipelineRepository | None = None,
+        es_indexing_pipeline: Any | None = None,
     ) -> None:
         """初始化解析流水线依赖。
 
@@ -129,11 +145,15 @@ class ParseTaskPipeline:
             session_factory: SQLAlchemy 异步 Session 工厂。
             mq_service: MQ 中台服务，用于发送 parse_result。
             vector_storage: 向量存储门面，测试或特殊场景可注入替身。
+            post_process_repository: 文件级后处理状态仓储。
+            es_indexing_pipeline: ES 文件级入库阶段，测试或特殊场景可注入替身。
         """
         self._storage = storage or StorageFactory.get_storage()
         self._session_factory = session_factory or get_async_session_factory()
         self._mq_service = mq_service or MQService()
         self._vector_storage = vector_storage
+        self._post_process_repository = post_process_repository or PostProcessPipelineRepository()
+        self._es_indexing_pipeline = es_indexing_pipeline
 
     async def execute(self, payload: ParseTaskPayload) -> ParsePipelineResult:
         """执行单条解析任务消息。
@@ -172,13 +192,11 @@ class ParseTaskPipeline:
         if validation_error:
             # 将上下文错误写入 failed，确保后续重投能快速返回失败状态。
             await self._finish_failed(payload, log_record, validation_error, db)
-            await self._send_parse_result(
+            await self._send_parse_result_or_raise(
                 payload,
                 PARSE_TASK_STATUS_FAILED,
                 log_record.parse_finished_at,
                 validation_error,
-                log_record=log_record,
-                db=db,
             )
             return ParsePipelineResult(
                 status=PipelineStatus.FAILED,
@@ -232,26 +250,72 @@ class ParseTaskPipeline:
                     exc,
                 )
 
+            pipeline_record = self._get_pipeline_from_log(log_record)
+            if pipeline_record is None:
+                pipeline_record = await self._post_process_repository.get_by_log_id(db, log_record.id)
+            if pipeline_record is None:
+                return await self._handle_execution_failure(
+                    payload,
+                    log_record,
+                    db,
+                    ParseFailureCode.INTERNAL_UNKNOWN_ERROR,
+                    RuntimeError("post-process pipeline row not found"),
+                )
+
+            # Markdown 转换事实先落库，后处理失败只影响 pipeline 当前态。
+            await self._finish_success(payload, log_record, db)
+            await self._post_process_repository.mark_processing(
+                db,
+                pipeline_record,
+                started_at=self._now(),
+            )
+
             try:
                 # 分片是阻断性后置步骤；失败时不能继续向量化或发送 success。
+                chunking_started_at = self._now()
                 chunks = await self._run_chunking(
                     parse_result["markdown"],
                     parse_result.get("parse_result"),
                     payload,
                     db,
                 )
-            except Exception as exc:
-                return await self._handle_execution_failure(
-                    payload,
-                    log_record,
+                chunking_finished_at = self._now()
+                await self._post_process_repository.mark_chunking_success(
                     db,
-                    ParseFailureCode.PARSE_ENGINE_FAILED,
-                    exc,
+                    pipeline_record,
+                    chunk_count=len(chunks),
+                    duration_ms=self._duration_ms(chunking_started_at, chunking_finished_at),
+                )
+            except Exception as exc:
+                finished_at = self._now()
+                failure_reason = build_failure_reason(ParseFailureCode.PARSE_ENGINE_FAILED, str(exc))
+                await self._post_process_repository.mark_chunking_failed(
+                    db,
+                    pipeline_record,
+                    reason=failure_reason,
+                    duration_ms=self._duration_ms(locals().get("chunking_started_at"), finished_at),
+                    finished_at=finished_at,
+                )
+                await self._send_parse_result_or_raise(
+                    payload,
+                    PARSE_TASK_STATUS_FAILED,
+                    finished_at,
+                    failure_reason,
+                )
+                return ParsePipelineResult(
+                    status=PipelineStatus.FAILED,
+                    task_id=payload.task_id,
+                    error=exc,
                 )
 
             # 向量索引按 chunk 汇总结果，部分失败不阻断 Pipeline，但必须把状态返回给上层。
+            vectorizing_started_at = self._now()
             vector_result = await self._store_chunk_vectors(chunks, payload, db)
-            vector_indexing_completed = not vector_result.failed_chunk_ids
+            vectorizing_finished_at = self._now()
+            vector_indexing_completed = self._is_vector_indexing_success(
+                vector_result,
+                len(chunks),
+            )
             if not vector_indexing_completed:
                 logger.warning(
                     "[ParseTaskPipeline] vector indexing partially failed: "
@@ -261,27 +325,80 @@ class ParseTaskPipeline:
                     vector_result.indexed_chunks,
                     vector_result.failed_chunk_ids,
                 )
-
-
-
-            # 解析主流程结束，先落库 success，保证 Java 收到通知后可查结果。
-            await self._finish_success(payload, log_record, db)
-            # success 只在完整链路成功后发送；通知失败会改写为 failed，避免用户侧永久等待。
-            sent = await self._send_parse_result(
-                payload,
-                PARSE_TASK_STATUS_SUCCESS,
-                log_record.parse_finished_at,
-                None,
-                log_record=log_record,
-                db=db,
-            )
-            if not sent:
-                # Java 收不到终态时用户无法感知结果，当前策略是改为 failed 后让用户手动重试。
+                finished_at = self._now()
+                failure_reason = self._build_vector_failure_reason(vector_result)
+                await self._post_process_repository.mark_vectorizing_failed(
+                    db,
+                    pipeline_record,
+                    reason=failure_reason,
+                    duration_ms=self._duration_ms(vectorizing_started_at, vectorizing_finished_at),
+                    finished_at=finished_at,
+                )
+                await self._send_parse_result_or_raise(
+                    payload,
+                    PARSE_TASK_STATUS_FAILED,
+                    finished_at,
+                    failure_reason,
+                )
                 return ParsePipelineResult(
                     status=PipelineStatus.FAILED,
                     task_id=payload.task_id,
-                    error=RuntimeError(RESULT_NOTIFY_FAILED_DETAIL),
+                    chunk_count=len(chunks),
+                    vector_indexing_completed=False,
+                    failed_chunk_ids=vector_result.failed_chunk_ids,
                 )
+
+            await self._post_process_repository.mark_vectorizing_success(
+                db,
+                pipeline_record,
+                duration_ms=self._duration_ms(vectorizing_started_at, vectorizing_finished_at),
+            )
+
+            es_started_at = self._now()
+            es_result = await self._get_es_indexing_pipeline().index_for_parse_task(
+                payload=payload,
+                chunks=chunks,
+            )
+            es_finished_at = self._now()
+            if not es_result.is_success:
+                finished_at = self._now()
+                failure_reason = es_result.failure_reason or self._build_es_failure_reason(es_result)
+                await self._post_process_repository.mark_es_failed(
+                    db,
+                    pipeline_record,
+                    reason=failure_reason,
+                    duration_ms=self._duration_ms(es_started_at, es_finished_at),
+                    finished_at=finished_at,
+                )
+                await self._send_parse_result_or_raise(
+                    payload,
+                    PARSE_TASK_STATUS_FAILED,
+                    finished_at,
+                    failure_reason,
+                )
+                return ParsePipelineResult(
+                    status=PipelineStatus.FAILED,
+                    task_id=payload.task_id,
+                    chunk_count=len(chunks),
+                    vector_indexing_completed=True,
+                )
+
+            finished_at = self._now()
+            await self._post_process_repository.mark_es_success(
+                db,
+                pipeline_record,
+                duration_ms=self._duration_ms(es_started_at, es_finished_at),
+                total_duration_ms=self._duration_ms(pipeline_record.started_at, finished_at),
+                finished_at=finished_at,
+            )
+
+            # success 只在 Markdown、分片、向量化、ES 入库均成功后发送。
+            await self._send_parse_result_or_raise(
+                payload,
+                PARSE_TASK_STATUS_SUCCESS,
+                finished_at,
+                None,
+            )
 
             return ParsePipelineResult(
                 status=PipelineStatus.SUCCESS,
@@ -293,6 +410,8 @@ class ParseTaskPipeline:
                 failed_chunk_ids=vector_result.failed_chunk_ids,
             )
         except Exception as exc:
+            if isinstance(exc, ParseResultNotificationError):
+                raise
             # 兜底捕获未被分类的异常，保证任何未知错误都会收敛为 failed 终态。
             failure_reason = build_failure_reason(ParseFailureCode.INTERNAL_UNKNOWN_ERROR, str(exc))
             logger.error(f"[ParseTaskPipeline] parse failed: task_id={payload.task_id}, error={exc}")
@@ -339,13 +458,11 @@ class ParseTaskPipeline:
             f"reason={failure_reason}"
         )
         await self._finish_failed(payload, log_record, failure_reason, db)
-        await self._send_parse_result(
+        await self._send_parse_result_or_raise(
             payload,
             PARSE_TASK_STATUS_FAILED,
             log_record.parse_finished_at,
             failure_reason,
-            log_record=log_record,
-            db=db,
         )
         return ParsePipelineResult(
             status=PipelineStatus.FAILED,
@@ -377,6 +494,12 @@ class ParseTaskPipeline:
         db.add(log_record)
         try:
             await db.flush()
+            pipeline_record = await self._post_process_repository.create_for_log(
+                db,
+                log_record,
+                payload,
+            )
+            self._attach_pipeline_to_log(log_record, pipeline_record)
             await db.commit()
         except IntegrityError:
             await db.rollback()
@@ -430,45 +553,77 @@ class ParseTaskPipeline:
             )
 
         if existing.task_status == PARSE_TASK_STATUS_SUCCESS:
-            # 已成功的任务只补发终态通知，不再触碰文件解析与向量索引。
-            await self._send_parse_result(
+            pipeline_record = await self._post_process_repository.get_by_log_id(db, existing.id)
+            if pipeline_record is not None:
+                pipeline_status = getattr(pipeline_record, "pipeline_status", None)
+                if pipeline_status == PIPELINE_STATUS_SUCCESS:
+                    await self._send_parse_result_or_raise(
+                        payload,
+                        PARSE_TASK_STATUS_SUCCESS,
+                        existing.parse_finished_at,
+                        None,
+                        user_message=DUPLICATE_SUCCESS_USER_MESSAGE,
+                    )
+                    return ParsePipelineResult(status=PipelineStatus.SUCCESS, task_id=payload.task_id)
+
+                if pipeline_status == PIPELINE_STATUS_FAILED:
+                    failure_reason = pipeline_record.failure_reason or DUPLICATE_FAILED_USER_MESSAGE
+                    await self._send_parse_result_or_raise(
+                        payload,
+                        PARSE_TASK_STATUS_FAILED,
+                        pipeline_record.finished_at or existing.parse_finished_at,
+                        failure_reason,
+                        user_message=DUPLICATE_FAILED_USER_MESSAGE,
+                    )
+                    return ParsePipelineResult(status=PipelineStatus.FAILED, task_id=payload.task_id)
+
+                failure_reason = build_failure_reason(ParseFailureCode.INTERRUPTED_TASK)
+                finished_at = self._now()
+                await self._mark_incomplete_pipeline_failed(
+                    db,
+                    pipeline_record,
+                    failure_reason,
+                    finished_at,
+                )
+                await self._send_parse_result_or_raise(
+                    payload,
+                    PARSE_TASK_STATUS_FAILED,
+                    finished_at,
+                    failure_reason,
+                    user_message=INTERRUPTED_TASK_USER_MESSAGE,
+                )
+                return ParsePipelineResult(status=PipelineStatus.FAILED, task_id=payload.task_id)
+
+            # 旧数据缺失 pipeline 时保持兼容，按解析日志 success 补发 success。
+            await self._send_parse_result_or_raise(
                 payload,
                 PARSE_TASK_STATUS_SUCCESS,
                 existing.parse_finished_at,
                 None,
                 user_message=DUPLICATE_SUCCESS_USER_MESSAGE,
-                log_record=existing,
-                db=db,
-                mark_failed_on_error=False,
             )
             return ParsePipelineResult(status=PipelineStatus.SUCCESS, task_id=payload.task_id)
 
         if existing.task_status == PARSE_TASK_STATUS_FAILED:
             # 已失败的任务保留原失败原因，Java 侧收到后引导用户手动重新解析。
             failure_reason = existing.failure_reason or DUPLICATE_FAILED_USER_MESSAGE
-            await self._send_parse_result(
+            await self._send_parse_result_or_raise(
                 payload,
                 PARSE_TASK_STATUS_FAILED,
                 existing.parse_finished_at,
                 failure_reason,
                 user_message=DUPLICATE_FAILED_USER_MESSAGE,
-                log_record=existing,
-                db=db,
-                mark_failed_on_error=False,
             )
             return ParsePipelineResult(status=PipelineStatus.FAILED, task_id=payload.task_id)
 
         failure_reason = build_failure_reason(ParseFailureCode.INTERRUPTED_TASK)
         await self._finish_failed(payload, existing, failure_reason, db)
-        await self._send_parse_result(
+        await self._send_parse_result_or_raise(
             payload,
             PARSE_TASK_STATUS_FAILED,
             existing.parse_finished_at,
             failure_reason,
             user_message=INTERRUPTED_TASK_USER_MESSAGE,
-            log_record=existing,
-            db=db,
-            mark_failed_on_error=False,
         )
         return ParsePipelineResult(status=PipelineStatus.FAILED, task_id=payload.task_id)
 
@@ -681,6 +836,27 @@ class ParseTaskPipeline:
                 await self._mark_result_notify_failed(payload, log_record, db)
             return False
 
+    async def _send_parse_result_or_raise(
+        self,
+        payload: ParseTaskPayload,
+        task_status: str,
+        parse_finished_at: datetime | None,
+        failure_reason: str | None,
+        *,
+        user_message: str | None = None,
+    ) -> None:
+        """发送 parse_result，失败时抛错交给 MQ 重投补发。"""
+        sent = await self._send_parse_result(
+            payload,
+            task_status,
+            parse_finished_at,
+            failure_reason,
+            user_message=user_message,
+            mark_failed_on_error=False,
+        )
+        if not sent:
+            raise ParseResultNotificationError(RESULT_NOTIFY_FAILED_DETAIL)
+
     async def _mark_result_notify_failed(
         self,
         payload: ParseTaskPayload,
@@ -827,6 +1003,12 @@ class ParseTaskPipeline:
             self._vector_storage = self._build_vector_storage()
         return self._vector_storage
 
+    def _get_es_indexing_pipeline(self):
+        """获取 ES 文件级入库阶段，首次调用时按配置构建。"""
+        if self._es_indexing_pipeline is None:
+            self._es_indexing_pipeline = EsIndexingPipeline()
+        return self._es_indexing_pipeline
+
     async def _store_chunk_vectors(
         self,
         chunks: list[Chunk],
@@ -901,6 +1083,94 @@ class ParseTaskPipeline:
         """为无法进入底层索引的 chunk 生成稳定的失败标识。"""
         return [f"chunk-{index}" for index, _ in enumerate(chunks)]
 
+    @staticmethod
+    def _is_vector_indexing_success(
+        vector_result: ChunkIndexingResult,
+        expected_chunks: int,
+    ) -> bool:
+        """判断现有向量 pipeline 返回值是否代表文件级向量化成功。"""
+        return (
+            not vector_result.failed_chunk_ids
+            and vector_result.total_chunks == expected_chunks
+            and vector_result.indexed_chunks == vector_result.total_chunks
+        )
+
+    @staticmethod
+    def _build_vector_failure_reason(vector_result: ChunkIndexingResult) -> str:
+        failed_count = len(vector_result.failed_chunk_ids)
+        return (
+            "VECTORIZING_FAILED: 向量化失败；"
+            f"total={vector_result.total_chunks}, indexed={vector_result.indexed_chunks}, "
+            f"failed={failed_count}"
+        )
+
+    @staticmethod
+    def _build_es_failure_reason(es_result: EsIndexingResult) -> str:
+        failed_count = len(es_result.failed_item_ids)
+        return (
+            "ES_INDEXING_FAILED: ES入库失败；"
+            f"total={es_result.total_items}, indexed={es_result.indexed_items}, "
+            f"failed={failed_count}"
+        )
+
+    @staticmethod
+    def _attach_pipeline_to_log(log_record: DocumentParsedLog, pipeline_record: Any) -> None:
+        setattr(log_record, "_post_process_pipeline", pipeline_record)
+
+    @staticmethod
+    def _get_pipeline_from_log(log_record: DocumentParsedLog) -> Any | None:
+        return getattr(log_record, "_post_process_pipeline", None)
+
+    async def _mark_incomplete_pipeline_failed(
+        self,
+        db: AsyncSession,
+        pipeline_record: Any,
+        failure_reason: str,
+        finished_at: datetime,
+    ) -> None:
+        """将已中断的非终态后处理 pipeline 收敛为可恢复失败。
+
+        MQ 重投进入重复任务分支时，若解析日志已经 success 但 pipeline 仍是
+        PENDING/PROCESSING，说明上一次执行没有形成后处理终态。这里按已有阶段
+        成功状态推断下次恢复点，避免给 Java 误补发整体 success。
+        """
+        recover_stage = self._infer_recover_stage(pipeline_record)
+        started_at = getattr(pipeline_record, "started_at", None)
+        duration_ms = self._duration_ms(started_at, finished_at)
+        if recover_stage == POST_PROCESS_STAGE_CHUNKING:
+            await self._post_process_repository.mark_chunking_failed(
+                db,
+                pipeline_record,
+                reason=failure_reason,
+                duration_ms=duration_ms,
+                finished_at=finished_at,
+            )
+        elif recover_stage == POST_PROCESS_STAGE_VECTORIZING:
+            await self._post_process_repository.mark_vectorizing_failed(
+                db,
+                pipeline_record,
+                reason=failure_reason,
+                duration_ms=duration_ms,
+                finished_at=finished_at,
+            )
+        else:
+            await self._post_process_repository.mark_es_failed(
+                db,
+                pipeline_record,
+                reason=failure_reason,
+                duration_ms=duration_ms,
+                finished_at=finished_at,
+            )
+
+    @staticmethod
+    def _infer_recover_stage(pipeline_record: Any) -> str:
+        """根据阶段成功状态推断非终态 pipeline 的恢复入口。"""
+        if getattr(pipeline_record, "chunking_status", None) != STAGE_STATUS_SUCCESS:
+            return POST_PROCESS_STAGE_CHUNKING
+        if getattr(pipeline_record, "vectorizing_status", None) != STAGE_STATUS_SUCCESS:
+            return POST_PROCESS_STAGE_VECTORIZING
+        return POST_PROCESS_STAGE_ES_INDEXING
+
     def _resolve_chunk_owner(
         self,
         payload: ParseTaskPayload,
@@ -974,7 +1244,7 @@ class ParseTaskPipeline:
         """查询 Java 侧创建的文件解析任务记录。
 
         Args:
-            document_parse_task_id: document_parse_task.id。
+            document_parse_task_id: document_parse_file.id，参数名保持历史兼容。
             db: 当前数据库会话。
 
         Returns:
