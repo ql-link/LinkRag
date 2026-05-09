@@ -56,7 +56,7 @@ class TestParseTaskMessage:
             md_bucket="markdown-bucket",
             md_object_key="parsed/t-001.md",
         )
-        assert msg.get_mq_name() == "tolink.rag.parse_task"
+        assert msg.get_mq_name() == "tolink-document-pares"
         assert msg.get_mq_type() == "PARSE_TASK"
         assert msg.get_routing_key() == "pdf"
 
@@ -70,7 +70,7 @@ class TestParseTaskMessage:
         assert payload.source_bucket == "source-bucket"
         assert payload.source_object_key == "uploads/test.pdf"
         assert payload.md_object_key == "parsed/t-001.md"
-        assert payload.pdf_parser_backend == "opendataloader"
+        assert payload.pdf_parser_backend == "mineru"
 
     def test_serialize_deserialize_roundtrip(self):
         """序列化 → 反序列化闭环"""
@@ -91,10 +91,10 @@ class TestParseTaskMessage:
         data = json.loads(serialized)
 
         assert data["mq_type"] == "PARSE_TASK"
-        assert data["mq_name"] == "tolink.rag.parse_task"
+        assert data["mq_name"] == "tolink-document-pares"
         assert data["payload"]["task_id"] == "t-002"
         assert data["payload"]["original_file_id"] == 2
-        assert data["payload"]["pdf_parser_backend"] == "opendataloader"
+        assert data["payload"]["pdf_parser_backend"] == "mineru"
         assert "parser_backend" not in data["payload"]
 
         # 反序列化
@@ -105,7 +105,7 @@ class TestParseTaskMessage:
         assert parsed.source_filename == "doc.docx"
 
     def test_mq_name_constant(self):
-        assert ParseTaskMessage.get_mq_name() == "tolink.rag.parse_task"
+        assert ParseTaskMessage.get_mq_name() == "tolink-document-pares"
         assert ParseTaskMessage.get_mq_type() == "PARSE_TASK"
 
     def test_parse_msg_supports_flat_payload(self):
@@ -130,7 +130,7 @@ class TestParseTaskMessage:
         assert parsed.task_id == "t-flat"
         assert parsed.original_file_id == 3
         assert parsed.source_object_key == "uploads/test.pdf"
-        assert parsed.pdf_parser_backend == "opendataloader"
+        assert parsed.pdf_parser_backend == "mineru"
 
     def test_parse_msg_supports_legacy_parser_backend_field(self):
         raw = json.dumps(
@@ -179,29 +179,41 @@ class TestParseResultMessage:
         assert parsed.task_id == "t-001"
         assert parsed.task_status == "success"
         assert parsed.failure_reason is None
-        assert parsed.user_message is None
 
-    def test_build_should_include_user_message(self):
+    def test_build_should_only_include_java_contract_fields(self):
         msg = ParseResultMessage.build(
-            task_id="t-duplicate-success",
-            original_file_id=1,
-            document_parse_task_id=10,
-            dataset_id=30,
-            user_id=20,
+            task_id="9f6b7d7e-4e7b-4a3f-9f4d-8d2a1b6c7e90",
+            original_file_id=10001,
+            document_parse_task_id=10002,
+            dataset_id=10003,
+            user_id=10002,
             task_status="success",
-            parse_finished_at="2026-04-29T10:00:00+00:00",
-            user_message="当前文档已经解析完成，请勿重复解析",
+            failure_reason=None,
+            parse_finished_at="2026-04-28T10:00:08",
         )
 
         serialized = msg.serialize()
         data = json.loads(serialized)
 
-        assert data["payload"]["user_message"] == "当前文档已经解析完成，请勿重复解析"
+        assert data == {
+            "task_id": "9f6b7d7e-4e7b-4a3f-9f4d-8d2a1b6c7e90",
+            "original_file_id": 10001,
+            "document_parse_task_id": 10002,
+            "dataset_id": 10003,
+            "user_id": 10002,
+            "task_status": "success",
+            "failure_reason": None,
+            "parse_finished_at": "2026-04-28T10:00:08",
+        }
+        assert "mq_type" not in data
+        assert "mq_name" not in data
+        assert "payload" not in data
         parsed = ParseResultMessage.parse_msg(serialized)
-        assert parsed.user_message == "当前文档已经解析完成，请勿重复解析"
-        assert msg.get_routing_key() == "t-duplicate-success"
+        assert parsed.failure_reason is None
+        assert not hasattr(parsed, "user_message")
+        assert msg.get_routing_key() == "9f6b7d7e-4e7b-4a3f-9f4d-8d2a1b6c7e90"
 
-    def test_parse_msg_supports_legacy_payload_without_user_message(self):
+    def test_parse_msg_supports_payload_without_user_message(self):
         raw = json.dumps(
             {
                 "mq_type": "PARSE_RESULT",
@@ -222,7 +234,7 @@ class TestParseResultMessage:
         parsed = ParseResultMessage.parse_msg(raw)
 
         assert parsed.task_id == "t-legacy-result"
-        assert parsed.user_message is None
+        assert not hasattr(parsed, "user_message")
 
 
 class TestCacheSyncMessage:

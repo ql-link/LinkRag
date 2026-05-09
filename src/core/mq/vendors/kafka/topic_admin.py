@@ -71,7 +71,7 @@ def build_default_topic_specs() -> list[TopicSpec]:
 
     return [
         TopicSpec(
-            name=os.getenv("PARSE_TASK_TOPIC", "tolink.rag.parse_task"),
+            name=os.getenv("PARSE_TASK_TOPIC", "tolink-document-pares"),
             partitions=_env_int("PARSE_TASK_PARTITIONS", 1),
             replication_factor=replication_factor,
             retention_ms=_env_int("RETENTION_MS_PARSE_TASK", 604800000),

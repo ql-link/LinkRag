@@ -1,216 +1,98 @@
 # AGENTS
 
-## 项目概览
+## Project Overview
 
-- 项目名称：`toLink-Rag`
-- 技术栈：`FastAPI`、`SQLAlchemy`、`Redis`、`MySQL`、`MinIO`、`Qdrant`、`Kafka/RabbitMQ`
-- Python 版本：`3.10+`
-- 默认虚拟环境：仓库根目录下的 `.venv`
-- 应用入口：[src/main.py](src/main.py)
+`toLink-Rag` is a FastAPI-based RAG backend for document parsing, chunking, vector indexing, and MQ-driven integration with Java services.
 
-## 目录约定
+## How To Use This File
 
-- [src/api/routes](src/api/routes)：FastAPI 路由层
-- [src/api/schemas](src/api/schemas)：HTTP 请求/响应模型
-- [src/services](src/services)：服务层
-- [src/core](src/core)：核心能力与基础设施
-- [src/core/mq](src/core/mq)：MQ 中台
-- [src/core/pipeline](src/core/pipeline)：解析任务业务流水线
-- [src/core/vector_storage](src/core/vector_storage)：向量存储编排层
-- [src/core/chunk_fact_storage](src/core/chunk_fact_storage)：Chunk SQL 事实存储
-- [src/core/qdrant_vector_storage](src/core/qdrant_vector_storage)：Qdrant 向量索引存储
-- [src/models](src/models)：ORM 模型
-- [tests/unit](tests/unit)：单元测试
-- [tests/integration](tests/integration)：集成测试与真实基础设施测试
-- [scripts](scripts)：可执行脚本
-- [docs](docs)：设计和说明文档
+This file is only the stable entry map for agents.
 
-当前项目结构如下（仅保留目录骨架和核心文件，已省略 `.git`、`.venv`、`.pytest_cache`、`.ruff_cache`、`__pycache__` 等运行时/缓存目录）：
+- Start here to decide which document area to read.
+- Do not treat this file as the full source of project knowledge.
+- Load detailed documents progressively from `docs/` only when the task needs them.
+- Keep feature details, architecture details, plans, and references out of this file.
 
-```text
-toLink-Rag/                         # 仓库根目录
-├── .agents/                      # Agent/Skill 配置
-│   └── skills/                   # 项目专用 Agent 技能
-│       ├── agents-tree-sync/     # AGENTS.md 目录树同步规则
-│       ├── auto-test/            # 自动化测试生成工作流
-│       ├── code-annotator/       # 代码注释生成工作流
-│       ├── code-review-and-quality/ # 代码审查与质量门禁
-│       ├── contract-guard/       # 跨模块公共契约校验
-│       ├── implementation-execution/ # 需求实现执行流程
-│       ├── mq-middleware/        # MQ 中台开发规范
-│       ├── mysql-ddl-conventions/ # MySQL DDL 规范
-│       ├── prd-generator/        # PRD 生成工作流
-│       ├── pre-prd-requirement-analysis/ # 需求预分析工作流
-│       ├── run-all-tests/        # 全量测试运行工作流
-│       ├── swagger-annotation/   # Swagger 注解生成工作流
-│       ├── tdd/                  # 测试驱动开发工作流
-│       └── technical-design/     # 技术设计生成工作流
-├── .env.example                  # 环境变量样例
-├── AGENTS.md                     # 项目级 Agent 说明
-├── README.md                     # 项目说明
-├── docker-compose.yml            # 本地依赖编排
-├── project_info.md               # 项目基础信息
-├── pyproject.toml                # Python 依赖与项目配置
-├── scripts/                      # 可执行脚本
-│   ├── db/                       # 数据库初始化脚本
-│   │   ├── init.sql              # 当前数据库表结构（DDL）
-│   │   └── schema.sql            # 初始化数据脚本
-├── src/                          # 应用源码
-│   ├── config.py                 # 全局配置
-│   ├── database.py               # 数据库初始化入口
-│   ├── main.py                   # FastAPI 应用入口
-│   ├── api/                      # HTTP API 分层
-│   │   ├── routes/               # 路由层
-│   │   │   ├── llm.py
-│   │   │   ├── mq.py
-│   │   │   └── parse.py
-│   │   └── schemas/              # HTTP 请求/响应模型
-│   │       ├── mq.py
-│   │       └── parse.py
-│   ├── cache/                    # 缓存客户端与缓存基础设施
-│   │   └── redis_client.py       # Redis 客户端
-│   ├── core/                     # 核心能力与基础设施
-│   │   ├── database.py
-│   │   ├── llm/                  # LLM 抽象、工厂与厂商适配
-│   │   │   ├── factory.py
-│   │   │   ├── interfaces.py
-│   │   │   └── providers/        # LLM 提供方实现
-│   │   ├── pipeline/             # 文档解析业务流水线编排
-│   │   │   ├── constants.py       # 解析任务状态、通知文案等流水线常量
-│   │   │   ├── error_codes.py
-│   │   │   ├── models.py
-│   │   │   └── parse_task_pipeline.py
-│   │   ├── prompts/              # LLM 提示词模板
-│   │   │   └── markdown_enhancement.py
-│   │   ├── markdown_parser/      # Markdown 解析与增强编排
-│   │   │   ├── image_extractor.py
-│   │   │   ├── llm_integration.py
-│   │   │   ├── models.py
-│   │   │   ├── orchestrator.py
-│   │   │   ├── parser.py
-│   │   │   ├── provider_clients.py
-│   │   │   └── scanner.py
-│   │   ├── mq/                   # MQ 中台核心实现
-│   │   │   ├── factory.py        # MQFactory
-│   │   │   ├── interfaces.py
-│   │   │   ├── message.py        # AbstractMessage / MessagePayload
-│   │   │   ├── topic_admin.py    # Topic 初始化逻辑
-│   │   │   ├── consumers/        # MQ 消费者
-│   │   │   │   └── parse_task_consumer.py
-│   │   │   ├── messages/         # MQ 业务消息
-│   │   │   │   ├── parse_task.py
-│   │   │   │   ├── parse_result.py
-│   │   │   │   ├── cache_sync.py
-│   │   │   │   └── usage_report.py
-│   │   │   └── vendors/          # MQ 厂商适配
-│   │   │       ├── rabbitmq_adapter.py
-│   │   │       └── kafka/        # Kafka 适配与 Topic 管理
-│   │   │           ├── kafka_adapter.py
-│   │   │           └── topic_admin.py
-│   │   ├── parser/               # 文档解析器抽象与实现
-│   │   │   ├── base.py
-│   │   │   ├── factory.py
-│   │   │   ├── pdf/              # PDF 解析服务与后端
-│   │   │   │   ├── base.py
-│   │   │   │   ├── models.py
-│   │   │   │   ├── service.py
-│   │   │   │   └── backends/     # PDF 解析后端实现
-│   │   │   │       ├── mineru_backend.py
-│   │   │   │       └── naive_backend.py
-│   │   │   └── providers/        # 多格式解析器实现
-│   │   │       ├── html_parser.py
-│   │   │       ├── pdf_parser.py
-│   │   │       └── word_parser.py
-│   │   ├── splitter/             # 文本切分与嵌入流水线
-│   │   │   ├── base.py
-│   │   │   ├── chunking_engine.py
-│   │   │   ├── embedding_pipeline.py
-│   │   │   ├── models.py
-│   │   │   ├── pipeline_chunker.py
-│   │   │   ├── rule_chunker.py
-│   │   │   └── semantic_chunker.py
-│   │   ├── chunk_fact_storage/   # Chunk SQL 事实存储
-│   │   │   ├── constants.py
-│   │   │   ├── exceptions.py
-│   │   │   ├── models.py
-│   │   │   └── repository.py
-│   │   ├── qdrant_vector_storage/ # Qdrant 向量索引存储
-│   │   │   ├── bucket_router.py
-│   │   │   ├── constants.py
-│   │   │   ├── exceptions.py
-│   │   │   ├── models.py
-│   │   │   ├── point_factory.py
-│   │   │   └── qdrant_store.py
-│   │   └── vector_storage/       # 向量存储编排层
-│   │       ├── compensation_pipeline.py
-│   │       ├── constants.py
-│   │       ├── draft_factory.py
-│   │       ├── exceptions.py
-│   │       ├── facade.py
-│   │       ├── factory.py
-│   │       ├── management_pipeline.py
-│   │       ├── models.py
-│   │       ├── pipeline.py
-│   │       ├── repair_policy.py
-│   │       └── _transaction.py
-│   ├── models/                   # ORM 模型
-│   │   ├── chunk_record.py
-│   │   ├── db_models.py
-│   │   ├── parse_task.py
-│   │   ├── system_provider.py
-│   │   ├── usage_log.py
-│   │   └── user_llm_config.py
-│   ├── services/                 # 服务层
-│   │   ├── mq_service.py
-│   │   ├── parse_task_service.py
-│   │   ├── cache_sync_service.py
-│   │   ├── config_reader_service.py
-│   │   ├── usage_log_service.py
-│   │   └── storage/              # 对象存储抽象与实现
-│   │       ├── base.py
-│   │       ├── factory.py
-│   │       ├── minio_storage.py
-│   │       └── oss_storage.py
-│   └── utils/                    # 通用工具函数
-│       ├── file_downloader.py
-│       ├── logger.py
-│       └── text_formatter.py
-└── tests/                        # 测试目录
-    ├── README.md                 # pytest 统一入口（marker/集成测试开关）
-    ├── conftest.py               # 测试分层与运行约定
-    ├── unit/                     # 单元测试 (Mock 驱动)
-    │   ├── api/                  # API 层单元测试
-    │   ├── core/                 # 核心模块单元测试
-    │   │   ├── llm/              # LLM 模块单元测试
-    │   │   ├── mq/               # MQ 模块单元测试
-    │   │   ├── parser/           # 解析器模块单元测试
-    │   │   ├── chunk_fact_storage/ # Chunk 事实存储单元测试
-    │   │   ├── pipeline/         # 解析流水线单元测试
-    │   │   ├── qdrant_vector_storage/ # Qdrant 存储单元测试
-    │   │   ├── splitter/         # 切分模块单元测试
-    │   │   └── vector_storage/   # 向量存储编排单元测试
-    │   └── services/             # 服务层单元测试
-    └── integration/              # 集成测试
-        ├── api/                  # API 层集成测试
-        ├── core/                 # 核心模块集成测试
-        │   ├── llm/              # LLM 模块集成测试
-        │   ├── markdown_parser/  # Markdown 解析集成测试
-        │   ├── qdrant_vector_storage/ # Qdrant 存储集成测试
-        │   ├── splitter/         # 切分模块集成测试
-        │   └── vector_storage/   # 向量存储编排集成测试
-        ├── services/             # 服务层集成测试
-        └── test_connectivity.py
-```
+## Primary Code Entrypoints
 
-## 配置约定
+- Application entry: [src/main.py](src/main.py)
+- Runtime settings: [src/config.py](src/config.py)
+- Current database structure: [scripts/db/init.sql](scripts/db/init.sql)
+- Unit tests: [tests/unit](tests/unit)
+- Integration tests: [tests/integration](tests/integration)
 
-- 所有运行时配置统一从 [src/config.py](src/config.py) 的 `Settings` 读取。
-- 本地环境变量样例参考 [.env.example](.env.example)。
-- 当前数据库表结构以 [scripts/db/init.sql](scripts/db/init.sql) 为准。
-- 不要硬编码敏感信息；新增配置时同步更新 `Settings` 和 `.env.example`。
+## Documentation Map
 
-## 工作方式
+Use these directories as the source of truth for project knowledge.
 
-- 先读现有结构，再落代码，不基于想象扩目录。
-- 优先做与当前仓库约定一致的最小改动。
-- 涉及 MQ、配置、启动流程、脚本目录时，以本文件和 `mq-middleware` skill 为准。
+| Need | Read |
+| --- | --- |
+| Overall architecture, module boundaries, project tree | [docs/architecture](docs/architecture) |
+| Technical design and implementation status | [docs/design](docs/design) |
+| Coding conventions, schema rules, workflow conventions | [docs/conventions](docs/conventions) |
+| Current iteration plans and task checklists | [docs/plans](docs/plans) |
+| API contracts, error codes, data models, generated references | [docs/reference](docs/reference) |
+
+## Architecture
+
+Read [docs/architecture](docs/architecture) before changing module boundaries or cross-module behavior.
+
+Key documents:
+
+- [Project structure](docs/architecture/project_structure.md)
+- [File parser module](docs/architecture/file_parser_module.md)
+- [Chunking module](docs/architecture/chunking_module.md)
+- [Vectorization module](docs/architecture/vectorization_module.md)
+
+## Design Documents
+
+Read [docs/design](docs/design) for technical design and implementation status.
+
+Design documents should state one of these statuses when applicable:
+
+- `Draft`: still under discussion.
+- `Approved`: ready for implementation.
+- `Implemented`: completed and verified.
+
+Legacy feature documents that have not yet been moved may still exist under older `docs/` subdirectories. Prefer moving or linking them into `docs/design` when touching them.
+
+## Conventions
+
+Read [docs/conventions](docs/conventions) before changing shared rules.
+
+| Topic | Read |
+| --- | --- |
+| Naming conventions | [docs/conventions/naming_conventions.md](docs/conventions/naming_conventions.md) |
+| Runtime configuration | [src/config.py](src/config.py), [.env.example](.env.example) |
+| Current database structure | [scripts/db/init.sql](scripts/db/init.sql) |
+| MQ contracts and topics | [src/core/mq](src/core/mq), [docs/reference](docs/reference) |
+| Module boundaries | [docs/architecture](docs/architecture) |
+| Test scope and markers | [tests/README.md](tests/README.md) |
+
+- All runtime configuration must go through `Settings` in [src/config.py](src/config.py).
+- Environment examples belong in [.env.example](.env.example).
+- [scripts/db/init.sql](scripts/db/init.sql) is the current source of truth for database tables, columns, indexes, and comments.
+- Do not hardcode secrets or credentials.
+- Use existing project patterns before adding new abstractions.
+- For MQ changes, follow the MQ middleware conventions and existing message contracts.
+
+## Plans
+
+Read [docs/plans](docs/plans) for current iteration plans, task lists, and operational test plans.
+
+Plans are expected to change frequently. Keep stable architecture and long-lived conventions out of this directory.
+
+## Reference
+
+Read [docs/reference](docs/reference) for contracts and generated or semi-generated reference material.
+
+Good candidates: API contracts, MQ message contracts, error code tables, data model references, and external integration notes.
+
+## Working Rules
+
+- Read the relevant docs before editing code.
+- Make the smallest change that matches the existing architecture.
+- Keep documentation updates close to the kind of knowledge being changed.
+- If a structural change affects project layout, update [docs/architecture/project_structure.md](docs/architecture/project_structure.md).
+- If a parser-module change affects usage or extension rules, update [docs/architecture/file_parser_module.md](docs/architecture/file_parser_module.md).
+- If a feature design changes status, update its design document in [docs/design](docs/design).

@@ -7,9 +7,6 @@ from src.core.markdown_parser.models import ParseResult
 from src.core.mq.messages import ParseTaskMessage
 from src.core.pipeline import ParseTaskPipeline, PipelineStatus
 from src.core.pipeline.constants import (
-    DUPLICATE_FAILED_USER_MESSAGE,
-    DUPLICATE_SUCCESS_USER_MESSAGE,
-    INTERRUPTED_TASK_USER_MESSAGE,
     PARSE_TASK_STATUS_CREATED,
     PARSE_TASK_STATUS_FAILED,
     PARSE_TASK_STATUS_SUCCESS,
@@ -112,7 +109,8 @@ class TestParseTaskPipeline:
         mq_service.send.assert_awaited_once()
         sent_payload = mq_service.send.call_args.args[0].get_payload()
         assert sent_payload.task_status == PARSE_TASK_STATUS_SUCCESS
-        assert sent_payload.user_message == DUPLICATE_SUCCESS_USER_MESSAGE
+        assert sent_payload.failure_reason is None
+        assert not hasattr(sent_payload, "user_message")
         db.close.assert_awaited_once()
 
     async def test_execute_should_resend_failed_when_duplicate_failed(self):
@@ -140,7 +138,7 @@ class TestParseTaskPipeline:
         sent_payload = mq_service.send.call_args.args[0].get_payload()
         assert sent_payload.task_status == PARSE_TASK_STATUS_FAILED
         assert sent_payload.failure_reason == existing_log.failure_reason
-        assert sent_payload.user_message == DUPLICATE_FAILED_USER_MESSAGE
+        assert not hasattr(sent_payload, "user_message")
 
     async def test_execute_should_mark_existing_created_failed_and_notify_when_duplicate(self):
         existing_log = build_log(PARSE_TASK_STATUS_CREATED)
@@ -166,7 +164,7 @@ class TestParseTaskPipeline:
         sent_payload = mq_service.send.call_args.args[0].get_payload()
         assert sent_payload.task_status == PARSE_TASK_STATUS_FAILED
         assert sent_payload.failure_reason.startswith("INTERRUPTED_TASK:")
-        assert sent_payload.user_message == INTERRUPTED_TASK_USER_MESSAGE
+        assert not hasattr(sent_payload, "user_message")
 
     async def test_execute_should_fail_when_duplicate_log_not_found(self):
         db = build_db(None)

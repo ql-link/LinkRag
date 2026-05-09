@@ -45,7 +45,7 @@ class TestMQServiceSend:
 
         mock_sender.send.assert_called_once()
         call_kwargs = mock_sender.send.call_args
-        assert call_kwargs.kwargs["topic"] == "tolink.rag.parse_task"
+        assert call_kwargs.kwargs["topic"] == "tolink-document-pares"
         assert call_kwargs.kwargs["key"] == "pdf"  # routing_key = file_type
 
     async def test_send_cache_sync(self, mock_factory):

@@ -26,7 +26,7 @@ class MQService:
         await mq.send(msg)
 
         # 注册消费者并启动
-        await mq.subscribe("tolink.rag.parse_task", "parse-group", handler)
+        await mq.subscribe("tolink-document-pares", "parse-group", handler)
         await mq.start_consuming()
     """
 

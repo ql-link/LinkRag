@@ -19,7 +19,13 @@ import pytest
 from src.core.parser.pdf.backends.mineru_backend import MinerUBackend
 from src.core.parser.pdf.backends.naive_backend import NaivePdfBackend
 from src.core.parser.pdf.backends.opendataloader_backend import OpenDataLoaderBackend
+from src.core.parser.pdf.base import BasePdfBackend
 from src.core.parser.pdf.models import PdfImageAsset, PdfParseOptions
+from src.core.parser.pdf.registry import (
+    PdfBackendRegistry,
+    create_default_pdf_backend_registry,
+    register_pdf_backend,
+)
 from src.core.parser.pdf.service import PdfParserService
 
 # ── MinerU Backend Tests ──────────────────────────────────────────────
@@ -165,6 +171,40 @@ class TestOpenDataLoaderBackend:
 class TestPdfParserServiceRouting:
     """PdfParserService 后端路由测试。"""
 
+    def test_parse_should_use_registered_backend_when_backend_param_matches(self):
+        """传入后端名称匹配注册项时，应使用该可插拔后端解析。"""
+
+        class CustomPdfBackend(BasePdfBackend):
+            name = "custom"
+
+            def parse(self, file_stream: bytes, options):
+                self.metadata["custom_called"] = True
+                return "# Custom Markdown", []
+
+        registry = PdfBackendRegistry(default_backend="mineru", fallbacks="")
+        registry.register(CustomPdfBackend.name, CustomPdfBackend)
+        service = PdfParserService(registry=registry)
+
+        markdown, metadata = service.parse(b"fake-pdf-bytes", PdfParseOptions(backend="custom"))
+
+        assert markdown == "# Custom Markdown"
+        assert metadata["pdf_parser_backend"] == "custom"
+        assert metadata["custom_called"] is True
+
+    def test_default_registry_should_include_globally_registered_backend(self):
+        """通过全局注册入口注册的解析器，应出现在默认注册表中。"""
+
+        class GlobalCustomPdfBackend(BasePdfBackend):
+            name = "global_custom"
+
+            def parse(self, file_stream: bytes, options):
+                return "# Global Custom Markdown", []
+
+        register_pdf_backend(GlobalCustomPdfBackend.name, GlobalCustomPdfBackend)
+        registry = create_default_pdf_backend_registry()
+
+        assert "global_custom" in registry.available_backends()
+
     def test_auto_backend_order(self):
         """auto 模式应按 MinerU→OpenDataLoader→Naive 顺序。"""
         service = PdfParserService()
@@ -172,16 +212,25 @@ class TestPdfParserServiceRouting:
         assert order == ["mineru", "opendataloader", "naive"]
 
     def test_mineru_backend_order(self):
-        """mineru 模式应有 Naive 兜底。"""
+        """mineru 模式默认只调用 MinerU API。"""
+        service = PdfParserService()
+        order = service._build_backend_order("mineru")
+        assert order == ["mineru"]
+
+    def test_opendataloader_backend_order(self):
+        """opendataloader 模式默认只调用显式指定的本地解析器。"""
+        service = PdfParserService()
+        order = service._build_backend_order("opendataloader")
+        assert order == ["opendataloader"]
+
+    def test_configured_fallback_backend_order(self, monkeypatch):
+        """只有显式配置 PDF_PARSER_FALLBACKS 时才启用兜底解析器。"""
+        from src.config import settings
+
+        monkeypatch.setattr(settings, "PDF_PARSER_FALLBACKS", "naive")
         service = PdfParserService()
         order = service._build_backend_order("mineru")
         assert order == ["mineru", "naive"]
-
-    def test_opendataloader_backend_order(self):
-        """opendataloader 模式应有 Naive 兜底。"""
-        service = PdfParserService()
-        order = service._build_backend_order("opendataloader")
-        assert order == ["opendataloader", "naive"]
 
     def test_naive_backend_order(self):
         """naive 模式应仅有 Naive。"""

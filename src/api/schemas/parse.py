@@ -21,7 +21,7 @@ class TaskSubmitRequest(BaseModel):
         "upload_auto", title="触发方式", description="upload_auto/manual_retry"
     )
     pdf_parser_backend: str = Field(
-        "opendataloader",
+        "mineru",
         title="PDF解析器",
         description="可选 PDF 解析器: mineru/opendataloader/naive",
         validation_alias=AliasChoices("pdf_parser_backend", "parser_backend"),

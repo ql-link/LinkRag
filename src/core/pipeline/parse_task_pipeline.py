@@ -24,10 +24,7 @@ from src.core.markdown_parser import ParseResult
 from src.core.mq.messages.parse_result import ParseResultMessage
 from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.core.pipeline.constants import (
-    DUPLICATE_FAILED_USER_MESSAGE,
-    DUPLICATE_SUCCESS_USER_MESSAGE,
     DUPLICATE_TASK_LOG_NOT_FOUND_DETAIL,
-    INTERRUPTED_TASK_USER_MESSAGE,
     PARSE_TASK_STATUS_CREATED,
     PARSE_TASK_STATUS_FAILED,
     PARSE_TASK_STATUS_SUCCESS,
@@ -436,7 +433,6 @@ class ParseTaskPipeline:
                 PARSE_TASK_STATUS_SUCCESS,
                 existing.parse_finished_at,
                 None,
-                user_message=DUPLICATE_SUCCESS_USER_MESSAGE,
                 log_record=existing,
                 db=db,
                 mark_failed_on_error=False,
@@ -445,13 +441,14 @@ class ParseTaskPipeline:
 
         if existing.task_status == PARSE_TASK_STATUS_FAILED:
             # 已失败的任务保留原失败原因，Java 侧收到后引导用户手动重新解析。
-            failure_reason = existing.failure_reason or DUPLICATE_FAILED_USER_MESSAGE
+            failure_reason = existing.failure_reason or build_failure_reason(
+                ParseFailureCode.DUPLICATE_TASK
+            )
             await self._send_parse_result(
                 payload,
                 PARSE_TASK_STATUS_FAILED,
                 existing.parse_finished_at,
                 failure_reason,
-                user_message=DUPLICATE_FAILED_USER_MESSAGE,
                 log_record=existing,
                 db=db,
                 mark_failed_on_error=False,
@@ -465,7 +462,6 @@ class ParseTaskPipeline:
             PARSE_TASK_STATUS_FAILED,
             existing.parse_finished_at,
             failure_reason,
-            user_message=INTERRUPTED_TASK_USER_MESSAGE,
             log_record=existing,
             db=db,
             mark_failed_on_error=False,
@@ -539,7 +535,7 @@ class ParseTaskPipeline:
         parser_kwargs = {}
         if payload.file_type.lower() == "pdf":
             parser_kwargs = {
-                "backend": payload.pdf_parser_backend or "opendataloader",
+                "backend": payload.pdf_parser_backend or "mineru",
                 "docling_force_ocr": bool(payload.docling_force_ocr),
                 "image_bucket": payload.image_bucket or payload.md_bucket,
                 "image_prefix": payload.image_prefix or payload.md_object_key,
@@ -637,7 +633,6 @@ class ParseTaskPipeline:
         parse_finished_at: datetime | None,
         failure_reason: str | None,
         *,
-        user_message: str | None = None,
         log_record: DocumentParsedLog | None = None,
         db: AsyncSession | None = None,
         mark_failed_on_error: bool = True,
@@ -649,7 +644,6 @@ class ParseTaskPipeline:
             task_status: 要通知 Java 的终态，通常为 success 或 failed。
             parse_finished_at: 解析完成时间；为空时使用当前时间兜底。
             failure_reason: 失败终态的业务原因，成功时为空。
-            user_message: 面向 Java 展示给用户的提示文案。
             log_record: 当前解析日志，发送失败且需要兜底时用于回写 failed。
             db: 当前数据库会话。
             mark_failed_on_error: 发送失败时是否把当前日志标记为通知失败。
@@ -668,7 +662,6 @@ class ParseTaskPipeline:
                 task_status=task_status,
                 failure_reason=failure_reason,
                 parse_finished_at=finished_at.isoformat(),
-                user_message=user_message,
             )
             await self._mq_service.send(message)
             return True

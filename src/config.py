@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     VECTOR_STORE_TYPE: str = "qdrant"
 
     # Qdrant
-    QDRANT_HOST: str = "36.213.180.176"
+    QDRANT_HOST: str = "43.138.176.52"
     QDRANT_PORT: int = 6333
     QDRANT_GRPC_PORT: int = 6334
     QDRANT_COLLECTION_NAME: str = "tolink_rag_collection"
@@ -124,8 +124,8 @@ class Settings(BaseSettings):
     MINIO_BUCKET_NAME: str = "tolink-rag-docs"
     MINIO_USE_SSL: bool = False
     LOCAL_DOCS_PATH: str = "./data/documents"
-    PDF_PARSER_BACKEND: str = "opendataloader"  # auto / mineru / opendataloader / naive
-    PDF_PARSER_FALLBACKS: str = "naive"
+    PDF_PARSER_BACKEND: str = "mineru"  # auto / mineru / opendataloader / naive
+    PDF_PARSER_FALLBACKS: str = ""
     MINERU_API_URL: str = ""  # mineru-api 服务地址，例如 http://localhost:8010 或云服务地址
     MINERU_API_KEY: Optional[str] = None  # MinerU 云服务专属 Token (如需)
     MINERU_TIMEOUT: int = 300  # MinerU API 请求超时（秒）
