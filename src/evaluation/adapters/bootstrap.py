@@ -26,3 +26,10 @@ def register_builtin_evaluables() -> None:
             backend="naive",
         )
     )
+    EvaluableRegistry.register(
+        ParserAdapter(
+            "pdf",
+            name="parser.pdf.opendataloader",
+            backend="opendataloader",
+        )
+    )

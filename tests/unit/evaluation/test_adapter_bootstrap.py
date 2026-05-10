@@ -13,11 +13,14 @@ def test_register_builtin_evaluables_should_register_pdf_parser_adapters():
 
     mineru = EvaluableRegistry.get("parser.pdf.mineru")
     naive = EvaluableRegistry.get("parser.pdf.naive")
+    opendataloader = EvaluableRegistry.get("parser.pdf.opendataloader")
 
     assert isinstance(mineru, ParserAdapter)
     assert isinstance(naive, ParserAdapter)
+    assert isinstance(opendataloader, ParserAdapter)
     assert mineru.stage == "parse"
     assert naive.stage == "parse"
+    assert opendataloader.stage == "parse"
 
 
 def test_register_builtin_evaluables_should_be_idempotent():
@@ -27,7 +30,11 @@ def test_register_builtin_evaluables_should_be_idempotent():
     register_builtin_evaluables()
 
     names = sorted(e.name for e in EvaluableRegistry.all())
-    assert names == ["parser.pdf.mineru", "parser.pdf.naive"]
+    assert names == [
+        "parser.pdf.mineru",
+        "parser.pdf.naive",
+        "parser.pdf.opendataloader",
+    ]
 
 
 def test_parser_only_pipeline_should_validate_with_builtin_registries():
