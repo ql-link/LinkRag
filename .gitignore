@@ -55,3 +55,6 @@ tests/api_keys.json
 
 # Logs
 *.log
+
+# Local research notes
+docs/

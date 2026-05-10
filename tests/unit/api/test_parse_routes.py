@@ -65,7 +65,7 @@ class TestParseRoutes:
 
         mock_mq_instance.send.assert_called_once()
         sent_msg = mock_mq_instance.send.call_args[0][0]
-        assert sent_msg.get_mq_name() == "tolink-document-pares"
+        assert sent_msg.get_mq_name() == "tolink.rag.parse_task"
         assert sent_msg.get_payload().task_id == "task_123"
         assert sent_msg.get_payload().original_file_id == 456
         assert sent_msg.get_payload().document_parse_task_id == 789
