@@ -21,6 +21,13 @@ This file is only the stable entry map for agents.
 - Unit tests: [tests/unit](tests/unit)
 - Integration tests: [tests/integration](tests/integration)
 
+## Runtime Environment
+
+- Use the project virtual environment under [.venv](.venv) for local commands, tests, and evaluation runs.
+- Prefer `.venv/bin/python -m pytest ...` and `.venv/bin/python -m src.evaluation ...` over system `python` / `python3`.
+- MinerU PDF parsing uses the cloud backend configured through runtime settings and environment variables.
+- Do not write MinerU API keys, tokens, or cloud credentials into docs, tests, or committed config files.
+
 ## Documentation Map
 
 Use these directories as the source of truth for project knowledge.
@@ -28,6 +35,7 @@ Use these directories as the source of truth for project knowledge.
 | Need | Read |
 | --- | --- |
 | Overall architecture, module boundaries, project tree | [docs/architecture](docs/architecture) |
+| Evaluation module structure and parsing quality assessment flow | [docs/architecture/evaluation_module.md](docs/architecture/evaluation_module.md), [tests/README.md](tests/README.md) |
 | Technical design and implementation status | [docs/design](docs/design) |
 | Coding conventions, schema rules, workflow conventions | [docs/conventions](docs/conventions) |
 | Current iteration plans and task checklists | [docs/plans](docs/plans) |
@@ -39,10 +47,13 @@ Read [docs/architecture](docs/architecture) before changing module boundaries or
 
 Key documents:
 
-- [Project structure](docs/architecture/project_structure.md)
-- [File parser module](docs/architecture/file_parser_module.md)
-- [Chunking module](docs/architecture/chunking_module.md)
-- [Vectorization module](docs/architecture/vectorization_module.md)
+| Topic | Read |
+| --- | --- |
+| Project tree and core file layout | [docs/architecture/project_structure.md](docs/architecture/project_structure.md) |
+| File parser module | [docs/architecture/file_parser_module.md](docs/architecture/file_parser_module.md) |
+| Chunking module | [docs/architecture/chunking_module.md](docs/architecture/chunking_module.md) |
+| Vectorization module | [docs/architecture/vectorization_module.md](docs/architecture/vectorization_module.md) |
+| Evaluation module | [docs/architecture/evaluation_module.md](docs/architecture/evaluation_module.md) |
 
 ## Design Documents
 

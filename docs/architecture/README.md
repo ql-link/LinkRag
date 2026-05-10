@@ -10,3 +10,4 @@ Start here when changing module ownership, cross-module contracts, or project st
 - [File parser module](file_parser_module.md)
 - [Chunking module](chunking_module.md)
 - [Vectorization module](vectorization_module.md)
+- [Evaluation module](evaluation_module.md)

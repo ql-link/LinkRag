@@ -1,0 +1,22 @@
+# parser_only.yaml — 只跑解析阶段评估（不含分片/向量化）
+dataset: parser_smoke
+stages:
+  - stage: parse
+    evaluables:
+      - parser.pdf.naive
+metrics:
+  include: ["parser.*"]
+  exclude: []
+runner:
+  runs_per_sample: 1
+  timeout_per_sample_s: 120
+  max_memory_mb: 2048
+  parallelism: 4
+  retry_eval_errors: 2
+report:
+  formats: [json, markdown]
+  output_dir: ./docs/evaluation_reports
+  baseline: auto
+hooks:
+  - logging
+  - progress

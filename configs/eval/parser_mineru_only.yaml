@@ -1,0 +1,22 @@
+# parser_mineru_only.yaml — 只跑 MinerU 云端解析评估
+dataset: parser_smoke
+stages:
+  - stage: parse
+    evaluables:
+      - parser.pdf.mineru
+metrics:
+  include: ["parser.*"]
+  exclude: []
+runner:
+  runs_per_sample: 1
+  timeout_per_sample_s: 300
+  max_memory_mb: 2048
+  parallelism: 2
+  retry_eval_errors: 1
+report:
+  formats: [json, markdown]
+  output_dir: ./docs/evaluation_reports
+  baseline: auto
+hooks:
+  - logging
+  - progress

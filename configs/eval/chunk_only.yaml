@@ -1,0 +1,23 @@
+# chunk_only.yaml — 只跑分片阶段评估
+dataset: chunker_smoke
+stages:
+  - stage: chunk
+    evaluables:
+      - chunker.rule
+      - chunker.semantic
+metrics:
+  include: ["chunk.*"]
+  exclude: []
+runner:
+  runs_per_sample: 3           # 多轮稳定性评估
+  timeout_per_sample_s: 60
+  max_memory_mb: 1024
+  parallelism: 4
+  retry_eval_errors: 2
+report:
+  formats: [json, markdown]
+  output_dir: ./docs/evaluation_reports
+  baseline: auto
+hooks:
+  - logging
+  - progress

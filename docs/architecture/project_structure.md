@@ -132,6 +132,18 @@ toLink-Rag/                         # 仓库根目录
 │   │       ├── pipeline.py
 │   │       ├── repair_policy.py
 │   │       └── _transaction.py
+│   ├── evaluation/               # 解析质量评估模块
+│   │   ├── cli.py                # 评估 CLI 入口
+│   │   ├── config.py             # 评估配置
+│   │   ├── contracts/            # 评估协议与共享数据结构
+│   │   ├── adapters/             # 被评估对象适配层
+│   │   ├── datasets/             # 数据集加载与 manifest 解析
+│   │   ├── evaluators/           # 评估器与对比逻辑
+│   │   ├── hooks/                # 日志与进度 Hook
+│   │   ├── metrics/              # Parser / Chunker 指标实现
+│   │   ├── reporters/            # JSON / Markdown 报告输出
+│   │   ├── runners/              # Pipeline 校验与评估编排
+│   │   └── storage/              # 评估结果持久化
 │   ├── models/                   # ORM 模型
 │   │   ├── chunk_record.py
 │   │   ├── db_models.py
@@ -157,6 +169,9 @@ toLink-Rag/                         # 仓库根目录
 └── tests/                        # 测试目录
     ├── README.md                 # pytest 统一入口（marker/集成测试开关）
     ├── conftest.py               # 测试分层与运行约定
+    ├── evaluation_datasets/      # 评估模块内置数据集与 manifest
+    │   ├── parser_smoke/
+    │   └── chunker_smoke/
     ├── unit/                     # 单元测试 (Mock 驱动)
     │   ├── api/                  # API 层单元测试
     │   ├── core/                 # 核心模块单元测试

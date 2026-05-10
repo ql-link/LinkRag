@@ -55,3 +55,8 @@ tests/api_keys.json
 
 # Logs
 *.log
+/tests/evaluation_datasets/parser_smoke/sample/
+/tests/evaluation_datasets/
+/docs/evaluation_reports/e1d6f9ba-5540-4197-9c4f-0c468a601fdf.md
+/docs/evaluation_reports/parse_202605102038.md
+/docs/evaluation_reports/parse_202605102050.md

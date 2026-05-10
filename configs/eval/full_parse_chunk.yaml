@@ -1,0 +1,37 @@
+# full_parse_chunk.yaml — 全链路：解析 → 增强 → 分片
+dataset: parser_smoke
+stages:
+  - stage: parse
+    evaluables:
+      - parser.pdf.mineru
+      - parser.pdf.naive
+      - parser.word
+      - parser.html
+
+  - stage: chunk
+    depends_on: [parse]
+    input_from: parse
+    evaluables:
+      - chunker.rule
+      - chunker.semantic
+metrics:
+  include: ["parse.*", "chunk.*"]
+  exclude: ["chunker.semantic.completeness_llm"]  # LLM 裁判默认关闭
+judges:
+  enabled: false
+runner:
+  runs_per_sample: 3
+  timeout_per_sample_s: 120
+  max_memory_mb: 2048
+  parallelism: 4
+  retry_eval_errors: 2
+isolation:
+  qdrant_collection_prefix: "eval_"
+  es_index_prefix: "eval_"
+report:
+  formats: [json, markdown]
+  output_dir: ./docs/evaluation_reports
+  baseline: auto
+hooks:
+  - logging
+  - progress
