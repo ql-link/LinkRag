@@ -10,9 +10,9 @@ class PdfParser(BaseParser):
     """PDF -> Markdown 解析入口，可通过 backend 参数选择具体解析器。
 
     支持的 backend:
-    - auto: MinerU → OpenDataLoader → Naive 全链路降级（推荐）
-    - mineru: MinerU HTTP API → Naive
-    - opendataloader: OpenDataLoader 本地解析 → Naive
+    - auto: MinerU → OpenDataLoader → Naive 全链路降级
+    - mineru: MinerU HTTP API（默认不回退到本地解析器）
+    - opendataloader: OpenDataLoader 本地解析（可通过 PDF_PARSER_FALLBACKS 配置回退）
     - naive: PyMuPDF (最快，质量最低)
     """
 
@@ -59,5 +59,7 @@ class PdfParser(BaseParser):
         self.metadata["pdf_info"] = doc.metadata
 
         if not markdown.strip():
-            markdown = "> [系统提示] 检测到纯图片/扫描版 PDF，物理提取文本为空。"
+            attempts = metadata.get("pdf_parser_attempts") or []
+            reason = attempts[-1].get("reason") if attempts else "empty result"
+            raise RuntimeError(f"PDF 解析失败: {reason}")
         return markdown.strip()

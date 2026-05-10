@@ -208,6 +208,7 @@ class TestParseTaskPipeline:
         mq_service.send.assert_awaited_once()
         sent_payload = mq_service.send.call_args.args[0].get_payload()
         assert sent_payload.task_status == PARSE_TASK_STATUS_SUCCESS
+        assert sent_payload.failure_reason is None
         assert sent_payload.user_message == DUPLICATE_SUCCESS_USER_MESSAGE
         db.close.assert_awaited_once()
 

@@ -12,7 +12,9 @@ class ParseResultPayload(MessagePayload):
 
     该载荷由 Python 解析服务发送给 Java 端，表示一次点击解析动作已经进入
     终态。success 表示 Markdown 转换、分片、向量化、ES 入库均已成功；
-    failed 表示任一环节失败。``user_message`` 用于承载可直接展示给用户的提示。
+    failed 表示任一环节失败。发送给 Java 的通知消息只包含解析结果业务字段；
+    异常或中断原因统一放在 ``failure_reason``，``user_message`` 用于承载
+    可直接展示给用户的提示。
     """
 
     task_id: str = Field(..., title="解析任务ID", description="document_parsed_log.task_id")
@@ -72,6 +74,19 @@ class ParseResultMessage(AbstractMessage):
         使用 task_id 作为路由键，便于 Java 端按解析任务维度关联请求与结果。
         """
         return self._payload.task_id
+
+    def serialize(self) -> str:
+        """序列化为 Java 端约定的解析结果通知。
+
+        ParseResultPayload 继承 MessagePayload 以复用校验体系，但发给 Java 的
+        消息体只保留解析结果业务字段，不输出 mq_type/mq_name 信封、
+        message_id/timestamp 或用户通知字段。
+        """
+        try:
+            payload = self._payload.model_dump(exclude={"message_id", "timestamp"})
+            return json.dumps(payload, ensure_ascii=False)
+        except Exception as exc:
+            raise MQSerializationError(f"消息序列化失败: {exc}") from exc
 
     @classmethod
     def build(

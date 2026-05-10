@@ -27,7 +27,7 @@ class ParseTaskPayload(MessagePayload):
         "upload_auto", title="触发方式", description="upload_auto/manual_retry"
     )
     pdf_parser_backend: Optional[str] = Field(
-        "opendataloader",
+        "mineru",
         title="PDF解析器",
         description="可选 PDF 解析器: mineru/opendataloader/naive",
         validation_alias=AliasChoices("pdf_parser_backend", "parser_backend"),
@@ -84,7 +84,7 @@ class ParseTaskMessage(AbstractMessage):
         md_bucket: str,
         md_object_key: str,
         trigger_mode: str = "upload_auto",
-        pdf_parser_backend: Optional[str] = "opendataloader",
+        pdf_parser_backend: Optional[str] = "mineru",
         docling_force_ocr: Optional[bool] = False,
         image_bucket: Optional[str] = None,
         image_prefix: Optional[str] = None,

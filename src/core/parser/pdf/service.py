@@ -9,10 +9,11 @@ import cv2
 import fitz
 import numpy as np
 
-from src.core.parser.pdf.backends.mineru_backend import MinerUBackend
-from src.core.parser.pdf.backends.naive_backend import NaivePdfBackend
-from src.core.parser.pdf.backends.opendataloader_backend import OpenDataLoaderBackend
 from src.core.parser.pdf.models import PdfBinaryAsset, PdfImageAsset, PdfParseOptions
+from src.core.parser.pdf.registry import (
+    PdfBackendRegistry,
+    create_default_pdf_backend_registry,
+)
 
 
 class PdfParserService:
@@ -29,12 +30,8 @@ class PdfParserService:
     MIN_IMAGE_WIDTH = 64
     MIN_IMAGE_HEIGHT = 64
 
-    def __init__(self) -> None:
-        self._backends = {
-            NaivePdfBackend.name: NaivePdfBackend,
-            OpenDataLoaderBackend.name: OpenDataLoaderBackend,
-            # MinerU 需要 API URL，在 _create_backend_instance 中动态实例化
-        }
+    def __init__(self, registry: PdfBackendRegistry | None = None) -> None:
+        self._registry = registry or create_default_pdf_backend_registry()
 
     def parse(self, file_stream: bytes, options: PdfParseOptions) -> tuple[str, dict]:
         metadata: dict = {
@@ -76,12 +73,10 @@ class PdfParserService:
                 }
             )
 
-        if not markdown:
-            markdown, binary_assets = NaivePdfBackend().parse(file_stream, options)
-            selected_backend = "naive"
-            metadata["pdf_parser_attempts"].append({"backend": "naive", "success": True})
-
-        metadata["pdf_parser_backend"] = selected_backend or "naive"
+        metadata["pdf_parser_backend"] = selected_backend
+        if not markdown or not markdown.strip():
+            metadata["image_assets"] = []
+            return markdown, metadata
 
         if options.storage and options.image_bucket and options.image_prefix:
             placeholder_count = self._count_placeholders(markdown, metadata["pdf_parser_backend"])
@@ -102,29 +97,11 @@ class PdfParserService:
         return markdown, metadata
 
     def _create_backend_instance(self, backend_name: str, options: PdfParseOptions):
-        """根据后端名称创建实例。MinerU 需要特殊处理（传入 API URL）。"""
-        if backend_name == MinerUBackend.name:
-            api_url = getattr(options, "mineru_api_url", None) or ""
-            api_key = getattr(options, "mineru_api_key", None)
-            timeout = getattr(options, "mineru_timeout", 300)
-            if not api_url:
-                return None
-            return MinerUBackend(api_url=api_url, api_key=api_key, timeout=timeout)
-
-        backend_cls = self._backends.get(backend_name)
-        if backend_cls is None:
-            return None
-        return backend_cls()
+        """根据后端名称从注册表创建实例。"""
+        return self._registry.create(backend_name, options)
 
     def _build_backend_order(self, backend: str) -> list[str]:
-        normalized = (backend or "naive").lower()
-        if normalized == "auto":
-            return ["mineru", "opendataloader", "naive"]
-        if normalized == "mineru":
-            return ["mineru", "naive"]
-        if normalized == "opendataloader":
-            return ["opendataloader", "naive"]
-        return ["naive"]
+        return self._registry.resolve_order(backend)
 
     def _count_placeholders(self, markdown: str, backend: str) -> int:
         pattern = self.PLACEHOLDER_PATTERNS.get(backend)

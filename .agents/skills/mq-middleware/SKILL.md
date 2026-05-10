@@ -11,7 +11,7 @@ when_to_use: "当用户要求接入 Kafka/RabbitMQ、发送或订阅消息、新
 
 强制同步要求：
 - 只要任务涉及 MQ 模块相关操作，必须在完成代码修改后同步检查并更新本 Skill 的“架构定位”。
-- MQ 模块相关操作包括但不限于：新增/修改/删除消息对象、Payload、消费者、Topic 初始化逻辑、厂商适配器、`MQFactory`、`MQService`、MQ 配置项、MQ 初始化脚本。
+- MQ 模块相关操作包括但不限于：新增/修改/删除消息对象、Payload、消费者、Topic 初始化逻辑、厂商适配器、`MQFactory`、`MQService`、MQ 配置项。
 - 如果新增 MQ 业务消息，必须把新消息文件同步补充到“当前已落地的 MQ 业务消息”清单。
 - 如果新增或调整 MQ 目录职责、入口文件、脚本、Topic 或厂商适配边界，必须同步更新“当前项目的职责边界”。
 - 如果本次修改没有改变架构定位中的清单或职责边界，应在交付说明中明确说明“已检查 mq-middleware Skill，无需更新架构定位”，避免遗漏维护动作。
@@ -26,12 +26,10 @@ when_to_use: "当用户要求接入 Kafka/RabbitMQ、发送或订阅消息、新
 - `src/services/mq_service.py`：业务侧统一发送/订阅入口，封装 `MQFactory -> Sender/Receiver` 调用链，支持 `send()`、`send_raw()`、`subscribe()`、`start_consuming()`、`stop_consuming()`、`close()`。
 - `src/core/mq/factory.py`：注册式单例工厂，根据 `MQ_VENDOR` 选择 Kafka / RabbitMQ 适配器，缓存 Sender/Receiver，并支持测试场景 `reset()`。
 - `src/core/mq/vendors/kafka/kafka_adapter.py`：Kafka 厂商适配器，底层封装 `aiokafka`，保持 Topic、ConsumerGroup、Offset 语义，消费成功后手动提交 offset。
-- `src/core/mq/vendors/kafka/topic_admin.py`：Kafka Topic Admin 实现，供脚本或部署流程使用。
+- `src/core/mq/vendors/kafka/topic_admin.py`：Kafka Topic Admin 实现，供 Kafka Topic 管理流程使用。
 - `src/core/mq/vendors/rabbitmq_adapter.py`：RabbitMQ 厂商适配器，底层封装 `aio-pika`，保持 Exchange、Queue、Binding、RoutingKey、手动 ACK 语义。
 - `src/core/mq/consumers/`：消息消费回调实现；当前文档解析消费者位于 `src/core/mq/consumers/parse_task_consumer.py`，启动入口为 `start_parse_consumer()`。
 - `src/core/mq/topic_admin.py`：应用启动阶段可调用的 Kafka Topic Admin 逻辑，当前由 `src/main.py` 在 `MQ_VENDOR=kafka` 且 `INIT_KAFKA_TOPICS_ON_STARTUP=true` 时调用。
-- `scripts/init_kafka_topics.py`：Kafka Topic 初始化 Python 脚本入口，当前导入 `src/core/mq/vendors/kafka/topic_admin.py`。
-- `scripts/init_kafka_topics.sh`：Kafka Topic 初始化 CLI 脚本入口。
 
 当前已落地的 MQ 业务消息有 4 类：
 - `src/core/mq/messages/parse_task.py`：`ParseTaskMessage` / `ParseTaskPayload`，Topic 为 `tolink.rag.parse_task`，用于文档解析任务投递。
@@ -132,8 +130,7 @@ class YourMessage(AbstractMessage):
 - Payload 只放业务最小必要字段，不塞大对象、不塞文件二进制内容
 
 ## 5. Topic 初始化
-当前项目支持两种方式初始化 Kafka Topics：
-- 手动脚本：`scripts/init_kafka_topics.py`
+当前项目支持在应用启动时可选初始化 Kafka Topics：
 - 启动时可选初始化：`src/main.py` 的 lifespan 中调用 `src/core/mq/topic_admin.py`
 
 相关约定：

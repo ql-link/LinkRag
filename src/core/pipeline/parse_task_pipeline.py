@@ -606,7 +606,9 @@ class ParseTaskPipeline:
 
         if existing.task_status == PARSE_TASK_STATUS_FAILED:
             # 已失败的任务保留原失败原因，Java 侧收到后引导用户手动重新解析。
-            failure_reason = existing.failure_reason or DUPLICATE_FAILED_USER_MESSAGE
+            failure_reason = existing.failure_reason or build_failure_reason(
+                ParseFailureCode.DUPLICATE_TASK
+            )
             await self._send_parse_result_or_raise(
                 payload,
                 PARSE_TASK_STATUS_FAILED,
@@ -694,7 +696,7 @@ class ParseTaskPipeline:
         parser_kwargs = {}
         if payload.file_type.lower() == "pdf":
             parser_kwargs = {
-                "backend": payload.pdf_parser_backend or "opendataloader",
+                "backend": payload.pdf_parser_backend or "mineru",
                 "docling_force_ocr": bool(payload.docling_force_ocr),
                 "image_bucket": payload.image_bucket or payload.md_bucket,
                 "image_prefix": payload.image_prefix or payload.md_object_key,

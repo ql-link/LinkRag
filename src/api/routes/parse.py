@@ -27,7 +27,7 @@ router = APIRouter(
 async def extract_sync(
     file: UploadFile = File(...),
     file_type: str = Form(...),
-    pdf_parser_backend: str = Form("opendataloader", alias="parser_backend"),
+    pdf_parser_backend: str = Form("mineru", alias="parser_backend"),
     docling_force_ocr: bool = Form(False),
     image_bucket: str | None = Form(None),
     image_prefix: str | None = Form(None),

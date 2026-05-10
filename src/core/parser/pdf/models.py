@@ -29,7 +29,7 @@ class PdfImageAsset:
 
 @dataclass(slots=True)
 class PdfParseOptions:
-    backend: str = "naive"
+    backend: str = "mineru"
     image_bucket: Optional[str] = None
     image_prefix: Optional[str] = None
     storage: Optional[BaseObjectStorage] = None

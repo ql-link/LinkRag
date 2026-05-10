@@ -11,7 +11,6 @@ from src.core.mq.messages import ParseTaskMessage
 from src.core.mq.vendors.kafka.kafka_adapter import KafkaReceiver
 from src.core.pipeline import ParseTaskPipeline
 from src.core.pipeline.constants import (
-    DUPLICATE_SUCCESS_USER_MESSAGE,
     PARSE_TASK_STATUS_CREATED,
     PARSE_TASK_STATUS_FAILED,
     PARSE_TASK_STATUS_SUCCESS,
@@ -463,4 +462,5 @@ async def test_kafka_receiver_should_commit_when_duplicate_success_is_resent():
     storage.upload_bytes.assert_not_called()
     sent_payload = mq_service.send.call_args.args[0].get_payload()
     assert sent_payload.task_status == PARSE_TASK_STATUS_SUCCESS
-    assert sent_payload.user_message == DUPLICATE_SUCCESS_USER_MESSAGE
+    assert sent_payload.failure_reason is None
+    assert not hasattr(sent_payload, "user_message")
