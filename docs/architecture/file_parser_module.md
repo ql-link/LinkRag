@@ -95,6 +95,7 @@ MINERU_TIMEOUT=300
 - `PDF_PARSER_BACKEND`：调用方未传 `backend` 时使用，当前默认 `mineru`。
 - `PDF_PARSER_FALLBACKS`：逗号分隔的兜底后端列表；留空表示不自动回退本地解析器。
 - `MINERU_*`：MinerU API 调用配置。
+- `MINIO_PUBLIC_ENDPOINT`：可选公网 MinIO endpoint；当 MQ 解析任务使用 MinerU 官方云端时，流水线会尝试生成预签名源文件 URL 并传给 MinerU，减少本服务到 MinerU 的重复上传。当前主流程仍会先下载源文件字节用于解析入口校验、页数元数据和失败回退。
 
 ## 5. 使用方式
 
@@ -142,6 +143,19 @@ await ParseTaskService.aprocess(file_bytes, "pdf", backend="naive")
 await ParseTaskService.aprocess(file_bytes, "pdf", backend="auto")
 ```
 
+MinerU 官方云端后端还支持传入 `source_file_url`：
+
+```python
+await ParseTaskService.aprocess(
+    file_bytes,
+    "pdf",
+    backend="mineru",
+    source_file_url="https://example.com/presigned/document.pdf",
+)
+```
+
+仅当 `MINERU_API_KEY` 已配置且 `MINERU_API_URL` 指向 `mineru.net` 时，`source_file_url` 会触发 URL 直拉模式；否则仍走本地 HTTP API 或云端文件上传路径。
+
 MQ 解析任务通过 `pdf_parser_backend` 指定：
 
 ```json
@@ -156,6 +170,23 @@ MQ 解析任务通过 `pdf_parser_backend` 指定：
 ### 5.4 图片资产输出
 
 PDF 解析可传 `image_bucket`、`image_prefix` 配合对象存储输出图片资产；完整流水线中，这些参数通常由 `ParseTaskPipeline` 从 MQ payload 和 Markdown 输出路径中组装。
+
+### 5.5 MinerU 云端 URL 直拉
+
+MQ 解析任务使用 `mineru` 后端时，`ParseTaskPipeline` 会尝试通过对象存储生成源文件预签名 URL：
+
+```text
+ParseTaskPipeline
+  -> BaseObjectStorage.generate_presigned_url()
+  -> PdfParser(source_file_url=...)
+  -> MinerUBackend._call_cloud_api_by_url()
+```
+
+该优化的边界：
+
+- 只对 MinerU 官方云端后端生效。
+- 存储层无法生成 URL、URL 不可外部访问或非云端 MinerU 配置时自动回到原有上传路径。
+- MinIO 私有部署如需让 MinerU 云端访问，应配置 `MINIO_PUBLIC_ENDPOINT`，用于替换预签名 URL 中的内网 endpoint。
 
 ## 6. 新增文件格式解析器
 

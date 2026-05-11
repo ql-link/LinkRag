@@ -191,14 +191,32 @@ class EvaluationRunner:
 
         # 趋势对比：保存当前 run 前加载 baseline，避免把本次运行当作自己的基准。
         baseline = await self.store.load_baseline(self.dataset.name)
-        await self.store.save_run(eval_run)
 
         # 渲染报告
+        report_outputs: list[str] = []
         for reporter in self.reporters:
             try:
-                reporter.render(eval_run, baseline=baseline)
+                if hasattr(self.store, "save_report"):
+                    content, format_name, content_type = reporter.render_bytes(
+                        eval_run,
+                        baseline=baseline,
+                    )
+                    report_key = await self.store.save_report(
+                        self.dataset.name,
+                        run_id,
+                        format_name,
+                        content,
+                        content_type,
+                    )
+                    report_outputs.append(f"{getattr(self.store, 'bucket', '')}/{report_key}".lstrip("/"))
+                else:
+                    report_outputs.append(reporter.render(eval_run, baseline=baseline))
             except Exception as exc:
                 logger.error("Reporter %s 渲染失败: %s", type(reporter).__name__, exc)
+        if report_outputs:
+            eval_run.extra["reports"] = report_outputs
+
+        await self.store.save_run(eval_run)
 
         elapsed = round(time.perf_counter() - t_start, 2)
         await self._broadcast(EvalEvent(

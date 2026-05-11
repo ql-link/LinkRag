@@ -19,7 +19,7 @@ src/core/splitter/
 
 ```text
 ParseTaskPipeline
-  -> _chunk_markdown()
+  -> _run_chunking()
     -> ChunkingEngine
       -> MarkdownParser
       -> BaseChunker
@@ -106,13 +106,14 @@ MarkdownElement[]
 
 ### 4.1 解析流水线中的使用
 
-`ParseTaskPipeline._chunk_markdown` 会优先使用上游已经生成的 `ParseResult`：
+`ParseTaskPipeline._run_chunking` 会优先使用上游已经生成的 `ParseResult`：
 
 ```python
-chunks = ParseTaskPipeline._chunk_markdown(
+chunks = await pipeline._run_chunking(
     markdown=markdown,
-    source_file=md_object_key,
     parse_result=parse_result,
+    payload=payload,
+    db=db,
 )
 ```
 

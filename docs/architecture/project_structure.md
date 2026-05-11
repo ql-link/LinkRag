@@ -28,6 +28,9 @@ toLink-Rag/                         # 仓库根目录
 ├── docker-compose.yml            # 本地依赖编排
 ├── project_info.md               # 项目基础信息
 ├── pyproject.toml                # Python 依赖与项目配置
+├── configs/                      # 本地评估和运行配置
+│   └── eval/                     # 解析评估 Pipeline YAML
+│       └── parser_opendataloader_only.yaml
 ├── scripts/                      # 可执行脚本
 │   ├── db/                       # 数据库初始化脚本
 │   │   ├── init.sql              # 当前数据库表结构（DDL）
@@ -38,6 +41,7 @@ toLink-Rag/                         # 仓库根目录
 │   ├── main.py                   # FastAPI 应用入口
 │   ├── api/                      # HTTP API 分层
 │   │   ├── routes/               # 路由层
+│   │   │   ├── internal.py       # 内部 LLM 配置/用量查询接口
 │   │   │   ├── llm.py
 │   │   │   ├── mq.py
 │   │   │   └── parse.py
@@ -45,9 +49,14 @@ toLink-Rag/                         # 仓库根目录
 │   │       ├── mq.py
 │   │       └── parse.py
 │   ├── cache/                    # 缓存客户端与缓存基础设施
+│   │   ├── cache_manager.py      # CacheBackend / CacheManager 抽象
 │   │   └── redis_client.py       # Redis 客户端
 │   ├── core/                     # 核心能力与基础设施
 │   │   ├── database.py
+│   │   ├── exceptions.py
+│   │   ├── es_index_storage/     # 文件级 Elasticsearch 入库阶段
+│   │   │   ├── models.py
+│   │   │   └── pipeline.py
 │   │   ├── llm/                  # LLM 抽象、工厂与厂商适配
 │   │   │   ├── factory.py
 │   │   │   ├── interfaces.py
@@ -56,7 +65,9 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── constants.py       # 解析任务状态、通知文案等流水线常量
 │   │   │   ├── error_codes.py
 │   │   │   ├── models.py
-│   │   │   └── parse_task_pipeline.py
+│   │   │   ├── parse_task_pipeline.py
+│   │   │   ├── post_process_constants.py
+│   │   │   └── post_process_repository.py
 │   │   ├── prompts/              # LLM 提示词模板
 │   │   │   └── markdown_enhancement.py
 │   │   ├── markdown_parser/      # Markdown 解析与增强编排
@@ -175,6 +186,7 @@ toLink-Rag/                         # 仓库根目录
     ├── unit/                     # 单元测试 (Mock 驱动)
     │   ├── api/                  # API 层单元测试
     │   ├── core/                 # 核心模块单元测试
+    │   │   ├── es_index_storage/ # ES 入库阶段单元测试
     │   │   ├── llm/              # LLM 模块单元测试
     │   │   ├── mq/               # MQ 模块单元测试
     │   │   ├── parser/           # 解析器模块单元测试
@@ -189,6 +201,7 @@ toLink-Rag/                         # 仓库根目录
         ├── core/                 # 核心模块集成测试
         │   ├── llm/              # LLM 模块集成测试
         │   ├── markdown_parser/  # Markdown 解析集成测试
+        │   ├── mq/               # MQ 解析流水线集成测试
         │   ├── qdrant_vector_storage/ # Qdrant 存储集成测试
         │   ├── splitter/         # 切分模块集成测试
         │   └── vector_storage/   # 向量存储编排集成测试

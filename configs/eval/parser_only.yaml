@@ -1,5 +1,7 @@
 # parser_only.yaml — 只跑解析阶段评估（不含分片/向量化）
 dataset: parser_smoke
+dataset_version: latest
+split: test
 stages:
   - stage: parse
     evaluables:
@@ -15,7 +17,6 @@ runner:
   retry_eval_errors: 2
 report:
   formats: [json, markdown]
-  output_dir: ./docs/evaluation_reports
   baseline: auto
 hooks:
   - logging

@@ -8,7 +8,25 @@ EvalSample 是评估的最小粒度单元，EvalDataset 是样本集合的迭代
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol, Iterator
+from typing import Callable, Protocol, Iterator
+
+
+@dataclass(frozen=True)
+class RemoteObjectRef:
+    """远端对象引用。
+
+    Attributes:
+        bucket:       对象所在 bucket。
+        key:          对象 key。
+        content_type: 对象 MIME 类型，可为空。
+        size:         对象大小，可为空。
+        etag:         对象 etag，可为空。
+    """
+    bucket: str
+    key: str
+    content_type: str | None = None
+    size: int | None = None
+    etag: str | None = None
 
 
 @dataclass
@@ -33,13 +51,16 @@ class EvalSample:
     sample_id: str
     file_path: str | None
     file_bytes: bytes | None = None
+    remote_file: RemoteObjectRef | None = None
     file_type: str = ""
     domain: str | None = None
     language: str | None = None
     difficulty: str | None = None
     ground_truth: dict = field(default_factory=dict)
+    ground_truth_refs: dict[str, RemoteObjectRef] = field(default_factory=dict)
     tags: list[str] = field(default_factory=list)
     extra: dict = field(default_factory=dict)
+    byte_loader: Callable[["EvalSample"], bytes] | None = field(default=None, repr=False, compare=False)
 
     def load_bytes(self) -> bytes:
         """加载文件内容（优先使用内联 bytes，否则从 file_path 读取）。
@@ -53,10 +74,15 @@ class EvalSample:
         """
         if self.file_bytes is not None:
             return self.file_bytes
+        if self.byte_loader is not None:
+            self.file_bytes = self.byte_loader(self)
+            return self.file_bytes
         if self.file_path:
             with open(self.file_path, "rb") as f:
                 return f.read()
-        raise ValueError(f"样本 {self.sample_id!r} 既无 file_bytes 也无 file_path")
+        raise ValueError(
+            f"样本 {self.sample_id!r} 既无 file_bytes / file_path，也无远端加载器"
+        )
 
 
 class EvalDataset(Protocol):

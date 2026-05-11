@@ -38,7 +38,6 @@ Use these directories as the source of truth for project knowledge.
 | Evaluation module structure and parsing quality assessment flow | [docs/architecture/evaluation_module.md](docs/architecture/evaluation_module.md), [tests/README.md](tests/README.md) |
 | Technical design and implementation status | [docs/design](docs/design) |
 | Coding conventions, schema rules, workflow conventions | [docs/conventions](docs/conventions) |
-| Current iteration plans and task checklists | [docs/plans](docs/plans) |
 | API contracts, error codes, data models, generated references | [docs/reference](docs/reference) |
 
 ## Architecture
@@ -86,12 +85,6 @@ Read [docs/conventions](docs/conventions) before changing shared rules.
 - Do not hardcode secrets or credentials.
 - Use existing project patterns before adding new abstractions.
 - For MQ changes, follow the MQ middleware conventions and existing message contracts.
-
-## Plans
-
-Read [docs/plans](docs/plans) for current iteration plans, task lists, and operational test plans.
-
-Plans are expected to change frequently. Keep stable architecture and long-lived conventions out of this directory.
 
 ## Reference
 

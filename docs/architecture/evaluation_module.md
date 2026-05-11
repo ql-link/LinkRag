@@ -100,11 +100,11 @@ The normal execution path is:
 
 1. `python -m src.evaluation run -c <pipeline.yaml>` enters through [src/evaluation/cli.py](../../src/evaluation/cli.py).
 2. `EvalPipeline` loads and validates YAML stage definitions from `configs/eval/`.
-3. `FileSystemDataset` loads dataset metadata and samples from `tests/evaluation_datasets/`.
+3. `MinioDataset` loads dataset metadata from remote `manifest.yaml` in MinIO bucket `test_set`.
 4. `EvaluationRunner` executes configured stages in topological order.
 5. `EvaluableRegistry` resolves configured adapters by name.
 6. Evaluators dispatch metrics from `MetricRegistry`.
-7. `FilesystemResultStore` writes run artifacts.
+7. `MinioResultStore` writes run artifacts, reports, and baseline pointers to MinIO.
 8. JSON and Markdown reporters render final reports.
 
 ## Dataset and Config Layout
@@ -114,9 +114,10 @@ The evaluation module relies on two repo-level companion areas:
 | Area | Purpose |
 | --- | --- |
 | `configs/eval/` | declarative pipeline definitions such as parser-only or parse-plus-chunk runs |
-| `tests/evaluation_datasets/` | small built-in datasets and manifests for smoke and local verification |
+| `test_set/datasets/` | remote evaluation datasets, manifests, samples, and ground truth in MinIO |
+| `test_set/runs/`, `test_set/reports/`, `test_set/baselines/` | remote run records, rendered reports, and baseline pointers |
 
-This keeps evaluation configuration and sample assets outside production source code while still versioning them with the repository.
+This keeps evaluation configuration in the repository while moving sample assets and run artifacts to remote MinIO storage.
 
 ## Relationship To The Architecture Draft
 

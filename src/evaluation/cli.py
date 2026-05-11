@@ -36,9 +36,25 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Pipeline YAML 配置文件路径",
     )
     run_p.add_argument(
+        "--dataset",
+        default=None,
+        help="数据集名称（覆盖 Pipeline YAML dataset 字段）",
+    )
+    run_p.add_argument(
+        "--dataset-version",
+        default=None,
+        help="远端数据集版本（默认 EvalConfig.EVAL_DATASET_DEFAULT_VERSION）",
+    )
+    run_p.add_argument(
+        "--split",
+        choices=["test", "validation"],
+        default=None,
+        help="数据集 split（默认 EvalConfig.EVAL_DATASET_SPLIT）",
+    )
+    run_p.add_argument(
         "--dataset-dir", "-d",
         default=None,
-        help="数据集目录（覆盖 EvalConfig.EVAL_DATASET_DIR）",
+        help="本地数据集目录（仅 EVAL_DATASET_BACKEND=filesystem 时生效）",
     )
     run_p.add_argument(
         "--output-dir", "-o",
@@ -94,8 +110,8 @@ async def _cmd_run(args: argparse.Namespace) -> int:
     from src.evaluation.adapters.bootstrap import register_builtin_evaluables
     from src.evaluation.config import eval_config
     from src.evaluation.runners.pipeline import EvalPipeline
-    from src.evaluation.datasets.loader import FileSystemDataset
-    from src.evaluation.storage.filesystem import FilesystemResultStore
+    from src.evaluation.datasets.factory import DatasetFactory
+    from src.evaluation.storage.factory import ResultStoreFactory
     from src.evaluation.reporters.json_reporter import JsonReporter
     from src.evaluation.reporters.markdown_reporter import MarkdownReporter
     from src.evaluation.hooks.logging_hook import LoggingHook
@@ -113,26 +129,28 @@ async def _cmd_run(args: argparse.Namespace) -> int:
     if args.parallelism:
         pipeline.runner_cfg.parallelism = args.parallelism
     output_dir = args.output_dir or pipeline.report_cfg.output_dir
-    store_dir = args.store_dir or eval_config.EVAL_STORE_DIR
-
-    # 加载数据集
-    import os
-    dataset_dir = args.dataset_dir or eval_config.EVAL_DATASET_DIR
-    manifest_path = os.path.join(dataset_dir, pipeline.dataset_name, "manifest.yaml")
-    dataset = FileSystemDataset(manifest_path)
+    dataset_name = args.dataset or pipeline.dataset_name
+    dataset_version = args.dataset_version or pipeline.dataset_version
+    dataset_split = args.split or pipeline.dataset_split
+    dataset = DatasetFactory.create(
+        dataset_name=dataset_name,
+        version=dataset_version,
+        split=dataset_split,
+        dataset_dir=args.dataset_dir,
+    )
 
     # 构建 Reporter 列表
     reporters = []
     for fmt in args.format:
         if fmt == "json":
-            reporters.append(JsonReporter(output_dir=output_dir))
+            reporters.append(JsonReporter(output_dir=None))
         elif fmt == "markdown":
-            reporters.append(MarkdownReporter(output_dir=output_dir))
+            reporters.append(MarkdownReporter(output_dir=None))
 
     # 构建 Hook 列表
     hooks = [LoggingHook(), ProgressHook()]
 
-    store = FilesystemResultStore(store_dir=store_dir)
+    store = ResultStoreFactory.create()
     runner = EvaluationRunner(
         pipeline=pipeline,
         dataset=dataset,
@@ -145,17 +163,16 @@ async def _cmd_run(args: argparse.Namespace) -> int:
     result = await runner.run()
     print(f"\n✅ 评估完成: run_id={result.summary.run_id}")
     print(f"   样本: {result.summary.sample_count}，成功: {result.summary.success_count}")
-    print(f"   报告已输出至: {output_dir}")
+    print("   报告已输出至远端 ResultStore")
     return 0
 
 
 async def _cmd_list(args: argparse.Namespace) -> int:
     """执行 list 命令。"""
     from src.evaluation.config import eval_config
-    from src.evaluation.storage.filesystem import FilesystemResultStore
+    from src.evaluation.storage.factory import ResultStoreFactory
 
-    store_dir = args.store_dir or eval_config.EVAL_STORE_DIR
-    store = FilesystemResultStore(store_dir=store_dir)
+    store = ResultStoreFactory.create()
 
     filters = {}
     if args.dataset:
@@ -183,13 +200,12 @@ async def _cmd_list(args: argparse.Namespace) -> int:
 async def _cmd_report(args: argparse.Namespace) -> int:
     """执行 report 命令（从已有 run 重新渲染报告）。"""
     from src.evaluation.config import eval_config
-    from src.evaluation.storage.filesystem import FilesystemResultStore
+    from src.evaluation.storage.factory import ResultStoreFactory
     from src.evaluation.reporters.json_reporter import JsonReporter
     from src.evaluation.reporters.markdown_reporter import MarkdownReporter
 
-    store_dir = args.store_dir or eval_config.EVAL_STORE_DIR
     output_dir = args.output_dir or eval_config.EVAL_REPORT_DIR
-    store = FilesystemResultStore(store_dir=store_dir)
+    store = ResultStoreFactory.create()
 
     run = await store.load_run(args.run_id)
     if run is None:

@@ -86,12 +86,16 @@ class EvalPipeline:
         self,
         dataset_name: str,
         stages: list[StageConfig],
+        dataset_version: str | None = None,
+        dataset_split: str | None = None,
         metrics: MetricsConfig | None = None,
         runner_cfg: RunnerConfig | None = None,
         report_cfg: ReportConfig | None = None,
         hooks: list[str] | None = None,
     ) -> None:
         self.dataset_name = dataset_name
+        self.dataset_version = dataset_version
+        self.dataset_split = dataset_split
         self.stages = stages
         self.metrics = metrics or MetricsConfig()
         self.runner_cfg = runner_cfg or RunnerConfig()
@@ -161,6 +165,8 @@ class EvalPipeline:
 
         return cls(
             dataset_name=raw["dataset"],
+            dataset_version=raw.get("dataset_version"),
+            dataset_split=raw.get("split"),
             stages=stages,
             metrics=metrics,
             runner_cfg=runner_cfg,

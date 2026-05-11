@@ -18,6 +18,11 @@ class EvalConfig(BaseSettings):
     """
 
     # ── 数据集 ─────────────────────────────────────────────────────────────────
+    EVAL_DATASET_BACKEND: str = "minio"
+    EVAL_DATASET_BUCKET: str = "test_set"
+    EVAL_DATASET_PREFIX: str = "datasets"
+    EVAL_DATASET_DEFAULT_VERSION: str = "latest"
+    EVAL_DATASET_SPLIT: str = "test"
     EVAL_DATASET_DIR: str = "./tests/evaluation_datasets"
 
     # ── 报告 ───────────────────────────────────────────────────────────────────
@@ -41,9 +46,17 @@ class EvalConfig(BaseSettings):
     EVAL_ES_INDEX_PREFIX: str = "eval_"
 
     # ── 存储后端 ───────────────────────────────────────────────────────────────
-    EVAL_STORE_BACKEND: str = "filesystem"   # filesystem | mysql
+    EVAL_STORE_BACKEND: str = "minio"   # minio | filesystem | mysql
     EVAL_STORE_DIR: str = "./.eval_store"
     EVAL_MYSQL_DSN: Optional[str] = None     # 独立连接，不复用业务 DB session
+    EVAL_RESULT_BUCKET: str = "test_set"
+    EVAL_RUN_PREFIX: str = "runs"
+    EVAL_REPORT_PREFIX: str = "reports"
+    EVAL_BASELINE_PREFIX: str = "baselines"
+    EVAL_MINIO_ENDPOINT: str = "localhost:9000"
+    EVAL_MINIO_ACCESS_KEY: str = "minioadmin"
+    EVAL_MINIO_SECRET_KEY: str = "minioadmin"
+    EVAL_MINIO_USE_SSL: bool = False
 
     # ── 质量门禁（CI 场景）────────────────────────────────────────────────────
     EVAL_GATE_ENABLED: bool = False

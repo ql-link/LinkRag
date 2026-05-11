@@ -22,9 +22,10 @@ class BaseReporter(ABC):
         output_dir: 报告输出目录，自动创建。
     """
 
-    def __init__(self, output_dir: str = "./docs/evaluation_reports") -> None:
+    def __init__(self, output_dir: str | None = "./docs/evaluation_reports") -> None:
         self.output_dir = output_dir
-        os.makedirs(output_dir, exist_ok=True)
+        if output_dir is not None:
+            os.makedirs(output_dir, exist_ok=True)
 
     @abstractmethod
     def render(self, run: "EvalRun", baseline: "EvalRun | None" = None) -> str:
@@ -36,6 +37,15 @@ class BaseReporter(ABC):
 
         Returns:
             str: 输出文件的绝对路径。
+        """
+        ...
+
+    @abstractmethod
+    def render_bytes(self, run: "EvalRun", baseline: "EvalRun | None" = None) -> tuple[bytes, str, str]:
+        """渲染报告为 bytes，用于远端 ResultStore 上传。
+
+        Returns:
+            tuple[bytes, str, str]: content, format_name, content_type。
         """
         ...
 

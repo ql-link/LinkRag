@@ -1,5 +1,7 @@
 # full_parse_chunk.yaml — 全链路：解析 → 增强 → 分片
 dataset: parser_smoke
+dataset_version: latest
+split: test
 stages:
   - stage: parse
     evaluables:
@@ -30,7 +32,6 @@ isolation:
   es_index_prefix: "eval_"
 report:
   formats: [json, markdown]
-  output_dir: ./docs/evaluation_reports
   baseline: auto
 hooks:
   - logging

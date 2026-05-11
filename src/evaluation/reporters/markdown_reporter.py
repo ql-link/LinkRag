@@ -62,9 +62,19 @@ class MarkdownReporter(BaseReporter):
         Returns:
             str: 输出 Markdown 文件的绝对路径。
         """
-        lines: list[str] = []
+        if self.output_dir is None:
+            raise ValueError("MarkdownReporter.render 需要 output_dir；远端上传请使用 render_bytes")
+        content, _, _ = self.render_bytes(run, baseline)
+        run_dt = datetime.fromtimestamp(run.summary.created_at)
+        module_name = _module_name(run)
+        file_path = os.path.join(self.output_dir, f"{module_name}_{run_dt:%Y%m%d%H%M}.md")
+        with open(file_path, "w", encoding="utf-8") as f:
+            f.write(content.decode("utf-8"))
 
-        # ── 标题与元信息 ──────────────────────────────────────────────────────
+        return os.path.abspath(file_path)
+
+    def render_bytes(self, run: "EvalRun", baseline: "EvalRun | None" = None) -> tuple[bytes, str, str]:
+        lines: list[str] = []
         run_dt = datetime.fromtimestamp(run.summary.created_at)
         ts = run_dt.strftime("%Y-%m-%d %H:%M:%S")
         module_name = _module_name(run)
@@ -148,11 +158,7 @@ class MarkdownReporter(BaseReporter):
             lines.append("")
 
         content = "\n".join(lines)
-        file_path = os.path.join(self.output_dir, f"{module_name}_{run_dt:%Y%m%d%H%M}.md")
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(content)
-
-        return os.path.abspath(file_path)
+        return content.encode("utf-8"), "markdown", "text/markdown; charset=utf-8"
 
 
 def _module_name(run: "EvalRun") -> str:

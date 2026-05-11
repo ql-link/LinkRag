@@ -1,5 +1,7 @@
 # chunk_only.yaml — 只跑分片阶段评估
 dataset: chunker_smoke
+dataset_version: latest
+split: test
 stages:
   - stage: chunk
     evaluables:
@@ -16,7 +18,6 @@ runner:
   retry_eval_errors: 2
 report:
   formats: [json, markdown]
-  output_dir: ./docs/evaluation_reports
   baseline: auto
 hooks:
   - logging
