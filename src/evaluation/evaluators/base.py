@@ -94,11 +94,13 @@ class BaseEvaluator:
         aggregate_metrics = registry.aggregate_metrics_for(self.scope)
 
         # 阶段一：逐样本计算 SampleMetric（O(n × m)，n=样本数，m=指标数）
-        for _evaluable_name, outputs in outputs_by_evaluable.items():
+        for evaluable_name, outputs in outputs_by_evaluable.items():
             for output, sample in zip(outputs, samples):
                 for metric in sample_metrics:
                     try:
                         result = metric.compute(output, sample)
+                        result.detail.setdefault("sample_id", sample.sample_id)
+                        result.detail.setdefault("evaluable_name", evaluable_name)
                         sample_results.append(result)
                     except Exception as exc:
                         # 指标自身异常不影响整体评估，记录并跳过
@@ -109,10 +111,12 @@ class BaseEvaluator:
                         )
 
         # 阶段二：全量后调用 AggregateMetric
-        for _evaluable_name, outputs in outputs_by_evaluable.items():
+        for evaluable_name, outputs in outputs_by_evaluable.items():
             for metric in aggregate_metrics:
                 try:
                     result = metric.compute(outputs, samples)
+                    result.detail.setdefault("evaluable_name", evaluable_name)
+                    result.detail.setdefault("sample_count", len(samples))
                     aggregate_results.append(result)
                 except Exception as exc:
                     import logging

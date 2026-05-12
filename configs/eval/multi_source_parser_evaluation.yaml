@@ -1,0 +1,27 @@
+# multi_source_parser_evaluation.yaml — PDF / Word / HTML Markdown 解析评估
+dataset: multi_source_parser_eval
+dataset_version: latest
+split: test
+stages:
+  - stage: parse
+    evaluables:
+      - parser.pdf.mineru
+      - parser.pdf.naive
+      - parser.pdf.opendataloader
+      - parser.word
+      - parser.html
+metrics:
+  include: ["parser.*"]
+  exclude: []
+runner:
+  runs_per_sample: 1
+  timeout_per_sample_s: 300
+  max_memory_mb: 2048
+  parallelism: 2
+  retry_eval_errors: 1
+report:
+  formats: [json, html]
+  baseline: auto
+hooks:
+  - logging
+  - progress

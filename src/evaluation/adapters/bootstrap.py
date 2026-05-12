@@ -12,24 +12,18 @@ def register_builtin_evaluables() -> None:
     Registration is idempotent because ``EvaluableRegistry.register`` overwrites
     an existing name with the same logical adapter.
     """
+    _register_parser_adapter("pdf", "parser.pdf.mineru", backend="mineru")
+    _register_parser_adapter("pdf", "parser.pdf.naive", backend="naive")
+    _register_parser_adapter("pdf", "parser.pdf.opendataloader", backend="opendataloader")
+    _register_parser_adapter("docx", "parser.word")
+    _register_parser_adapter("html", "parser.html")
+
+
+def _register_parser_adapter(file_type: str, name: str, **parser_kwargs) -> None:
     EvaluableRegistry.register(
         ParserAdapter(
-            "pdf",
-            name="parser.pdf.mineru",
-            backend="mineru",
-        )
-    )
-    EvaluableRegistry.register(
-        ParserAdapter(
-            "pdf",
-            name="parser.pdf.naive",
-            backend="naive",
-        )
-    )
-    EvaluableRegistry.register(
-        ParserAdapter(
-            "pdf",
-            name="parser.pdf.opendataloader",
-            backend="opendataloader",
+            file_type,
+            name=name,
+            **parser_kwargs,
         )
     )

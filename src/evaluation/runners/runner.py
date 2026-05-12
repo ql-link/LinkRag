@@ -19,6 +19,7 @@ import uuid
 from typing import TYPE_CHECKING
 
 from src.evaluation.adapters.registry import EvaluableRegistry
+from src.evaluation.artifacts.top3_archiver import Top3Archiver
 from src.evaluation.contracts.hook import (
     EvalEvent, EVENT_RUN_START, EVENT_STAGE_START,
     EVENT_SAMPLE_DONE, EVENT_STAGE_DONE, EVENT_RUN_COMPLETE, EVENT_ERROR,
@@ -150,6 +151,7 @@ class EvaluationRunner:
             for sample in samples
         ]
         await asyncio.gather(*tasks, return_exceptions=True)
+        _sort_outputs_by_sample_order(all_stage_outputs, samples)
 
         run_summary.success_count = sum(
             1 for stage_outs in all_stage_outputs.values()
@@ -187,6 +189,15 @@ class EvaluationRunner:
                 })
 
         eval_run.metrics = all_metric_results
+        eval_run.sample_outputs = _serialize_stage_outputs(all_stage_outputs)
+        await self._save_parsed_results(eval_run, all_stage_outputs, samples)
+        if "parse" in all_stage_outputs and hasattr(self.store, "save_artifact"):
+            eval_run.extra["archives"] = await Top3Archiver().archive(
+                run=eval_run,
+                samples=samples,
+                outputs_by_evaluable=all_stage_outputs["parse"],
+                store=self.store,
+            )
         run_summary.status = "done"
 
         # 趋势对比：保存当前 run 前加载 baseline，避免把本次运行当作自己的基准。
@@ -303,6 +314,11 @@ class EvaluationRunner:
 
                     # 仅保留最后一轮输出用于指标计算（多轮稳定性由专用指标处理）
                     if last_output is not None:
+                        last_output.extras.setdefault("sample", {
+                            "file_type": sample.file_type,
+                            "tags": sample.tags,
+                            "extra": sample.extra,
+                        })
                         all_stage_outputs[stage_cfg.stage][evaluable_name].append(last_output)
 
                     await self._broadcast(EvalEvent(
@@ -328,3 +344,87 @@ class EvaluationRunner:
                 await hook.on_event(event)
             except Exception as exc:
                 logger.warning("Hook %s 处理事件 %s 异常: %s", type(hook).__name__, event.event_type, exc)
+
+    async def _save_parsed_results(
+        self,
+        eval_run: EvalRun,
+        all_stage_outputs: dict,
+        samples: list["EvalSample"],
+    ) -> None:
+        if not hasattr(self.store, "save_parsed_result"):
+            return
+        parse_outputs = all_stage_outputs.get("parse", {})
+        errors: list[dict] = []
+        refs: list[dict] = []
+        sample_by_id = {sample.sample_id: sample for sample in samples}
+        for evaluable_name, outputs in parse_outputs.items():
+            for output in outputs:
+                if not output.success or not isinstance(output.payload, str):
+                    continue
+                try:
+                    saved = await self.store.save_parsed_result(
+                        eval_run.summary.dataset_name,
+                        eval_run.summary.run_id,
+                        output.sample_id,
+                        evaluable_name,
+                        output.payload,
+                        {
+                            "sample_id": output.sample_id,
+                            "evaluable_name": evaluable_name,
+                            "elapsed_ms": output.elapsed_ms,
+                            "metadata": output.extras.get("metadata", {}),
+                            "sample": output.extras.get("sample", {}),
+                            "source_ref": (
+                                sample_by_id[output.sample_id].remote_file.key
+                                if output.sample_id in sample_by_id and sample_by_id[output.sample_id].remote_file
+                                else None
+                            ),
+                        },
+                    )
+                    refs.append({
+                        "sample_id": output.sample_id,
+                        "evaluable_name": evaluable_name,
+                        **saved,
+                    })
+                except Exception as exc:
+                    errors.append({
+                        "sample_id": output.sample_id,
+                        "evaluable_name": evaluable_name,
+                        "error": str(exc),
+                    })
+        eval_run.extra["parsed_results"] = refs
+        if errors:
+            eval_run.extra["parsed_result_errors"] = errors
+
+
+def _sort_outputs_by_sample_order(all_stage_outputs: dict, samples: list["EvalSample"]) -> None:
+    order = {sample.sample_id: index for index, sample in enumerate(samples)}
+    for stage_outputs in all_stage_outputs.values():
+        for evaluable_name, outputs in stage_outputs.items():
+            stage_outputs[evaluable_name] = sorted(
+                outputs,
+                key=lambda output: order.get(output.sample_id, len(order)),
+            )
+
+
+def _serialize_stage_outputs(all_stage_outputs: dict) -> list[dict]:
+    serialized: list[dict] = []
+    for stage_name, outputs_by_evaluable in all_stage_outputs.items():
+        for evaluable_name, outputs in outputs_by_evaluable.items():
+            for output in outputs:
+                serialized.append({
+                    "stage": stage_name,
+                    "evaluable_name": evaluable_name,
+                    "sample_id": output.sample_id,
+                    "elapsed_ms": output.elapsed_ms,
+                    "success": output.success,
+                    "error": output.error,
+                    "error_type": output.error_type,
+                    "payload_preview": (
+                        output.payload[:500]
+                        if isinstance(output.payload, str)
+                        else None
+                    ),
+                    "extras": output.extras,
+                })
+    return serialized

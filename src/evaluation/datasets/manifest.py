@@ -23,6 +23,7 @@ manifest.yaml 格式示例：
 from __future__ import annotations
 
 import os
+import posixpath
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -32,6 +33,8 @@ from src.evaluation.contracts.dataset import EvalSample, RemoteObjectRef
 
 
 ALLOWED_REMOTE_SPLITS = {"test", "validation"}
+ALLOWED_PARSER_FILE_TYPES = {"pdf", "doc", "docx", "html", "htm"}
+DEFAULT_GROUND_TRUTH_EXTENSION = ".md"
 
 
 @dataclass
@@ -40,6 +43,18 @@ class StorageManifest:
     backend: str
     bucket: str
     prefix: str = ""
+
+
+@dataclass
+class DiscoveryManifest:
+    """manifest.yaml 中的自动样本发现配置。"""
+    enabled: bool = False
+    test_set_dir: str = "test_set"
+    ground_truth_dir: str = "ground_truth"
+    match_strategy: str = "same_stem"
+    ground_truth_extension: str = DEFAULT_GROUND_TRUTH_EXTENSION
+    include_file_types: list[str] = field(default_factory=lambda: ["pdf", "docx", "html"])
+    recursive: bool = True
 
 
 @dataclass
@@ -92,6 +107,9 @@ class ManifestSchema:
     version: str
     description: str = ""
     storage: StorageManifest | None = None
+    discovery: DiscoveryManifest | None = None
+    defaults: dict[str, Any] = field(default_factory=dict)
+    sample_overrides: dict[str, dict[str, Any]] = field(default_factory=dict)
     samples: list[SampleManifestEntry] = field(default_factory=list)
 
 
@@ -127,13 +145,20 @@ def load_manifest(manifest_source: str | bytes, source_type: str = "path") -> Ma
     if not isinstance(raw, dict):
         raise ValueError(f"manifest 格式错误: 顶层应为 dict，实际为 {type(raw)}")
 
-    for required_key in ("name", "version", "samples"):
+    for required_key in ("name", "version"):
         if required_key not in raw:
             raise ValueError(f"manifest 缺少必填字段: {required_key!r}")
 
     storage = _parse_storage(raw.get("storage"))
+    discovery = _parse_discovery(raw.get("discovery"))
+    defaults = _parse_mapping(raw.get("defaults", {}), field_name="defaults")
+    sample_overrides = _parse_sample_overrides(raw.get("sample_overrides", {}))
+    raw_samples = raw.get("samples", [])
+    if not raw_samples and not (discovery and discovery.enabled):
+        raise ValueError("manifest 缺少 samples，且未启用 discovery")
+
     samples: list[SampleManifestEntry] = []
-    for idx, entry in enumerate(raw.get("samples", [])):
+    for idx, entry in enumerate(raw_samples):
         if not isinstance(entry, dict):
             raise ValueError(f"manifest samples[{idx}] 格式错误: 应为 dict")
         if "id" not in entry:
@@ -142,6 +167,7 @@ def load_manifest(manifest_source: str | bytes, source_type: str = "path") -> Ma
             raise ValueError(f"manifest samples[{idx}] 缺少 'file' 字段")
         if "file_type" not in entry:
             raise ValueError(f"manifest samples[{idx}] 缺少 'file_type' 字段")
+        _validate_parser_sample_entry(entry, idx)
         split = entry.get("split")
         if storage is not None:
             if split not in ALLOWED_REMOTE_SPLITS:
@@ -169,8 +195,117 @@ def load_manifest(manifest_source: str | bytes, source_type: str = "path") -> Ma
         version=str(raw["version"]),
         description=raw.get("description", ""),
         storage=storage,
+        discovery=discovery,
+        defaults=defaults,
+        sample_overrides=sample_overrides,
         samples=samples,
     )
+
+
+def discover_manifest_samples(
+    manifest: ManifestSchema,
+    object_keys: list[str],
+) -> list[SampleManifestEntry]:
+    """Discover samples by matching source files to ground truth Markdown.
+
+    The object keys can be absolute MinIO keys under ``manifest.storage.prefix``.
+    Returned ``SampleManifestEntry`` objects keep keys relative to the dataset
+    prefix so existing ``_to_remote_ref`` logic can prepend the prefix once.
+    """
+    discovery = manifest.discovery
+    if discovery is None or not discovery.enabled:
+        return []
+    if manifest.storage is None:
+        raise ValueError("discovery 目前仅支持带 storage 的 MinIO manifest")
+    if discovery.match_strategy != "same_stem":
+        raise ValueError("discovery.match_strategy 目前仅支持 same_stem")
+
+    relative_keys = sorted(
+        _strip_prefix(key, manifest.storage.prefix)
+        for key in object_keys
+        if _strip_prefix(key, manifest.storage.prefix)
+    )
+    source_keys = [
+        key for key in relative_keys
+        if _is_discoverable_source(key, discovery)
+    ]
+    ground_truth_keys = [
+        key for key in relative_keys
+        if key.startswith(f"{discovery.ground_truth_dir.strip('/')}/")
+        and key.lower().endswith(discovery.ground_truth_extension.lower())
+    ]
+
+    samples: list[SampleManifestEntry] = []
+    matched_gt: set[str] = set()
+    errors: list[str] = []
+    for source_key in source_keys:
+        gt_key = _match_ground_truth_by_stem(source_key, ground_truth_keys, discovery)
+        if gt_key is None:
+            errors.append(f"{source_key} 缺少同名标准 Markdown")
+            continue
+        matched_gt.add(gt_key)
+        sample_id = posixpath.splitext(posixpath.basename(source_key))[0]
+        merged = {**manifest.defaults, **manifest.sample_overrides.get(sample_id, {})}
+        file_type = str(merged.get("file_type") or _file_type_from_key(source_key))
+        entry = SampleManifestEntry(
+            id=sample_id,
+            file=ObjectManifestRef(key=source_key),
+            file_type=file_type,
+            split=merged.get("split", "test"),
+            domain=merged.get("domain"),
+            language=merged.get("language"),
+            difficulty=merged.get("difficulty"),
+            ground_truth={
+                "markdown": ObjectManifestRef(
+                    key=gt_key,
+                    content_type="text/markdown",
+                )
+            },
+            tags=list(merged.get("tags", [])),
+            extra={
+                k: v for k, v in merged.items()
+                if k not in {
+                    "file_type", "split", "domain", "language", "difficulty",
+                    "ground_truth", "tags",
+                }
+            },
+        )
+        _validate_discovered_sample(entry)
+        samples.append(entry)
+
+    if errors:
+        raise ValueError("discovery 样本配对失败: " + "; ".join(errors))
+
+    orphan_ground_truth = sorted(set(ground_truth_keys) - matched_gt)
+    if orphan_ground_truth:
+        for sample in samples:
+            sample.extra.setdefault("discovery_warnings", []).extend(
+                f"孤立标准 Markdown: {key}" for key in orphan_ground_truth
+            )
+    return samples
+
+
+def _match_ground_truth_by_stem(
+    source_key: str,
+    ground_truth_keys: list[str],
+    discovery: DiscoveryManifest,
+) -> str | None:
+    source_dir = discovery.test_set_dir.strip("/")
+    truth_dir = discovery.ground_truth_dir.strip("/")
+    relative_source = source_key[len(source_dir):].lstrip("/")
+    source_parent = posixpath.dirname(relative_source)
+    stem = posixpath.splitext(posixpath.basename(source_key))[0]
+    expected = posixpath.join(truth_dir, source_parent, f"{stem}{discovery.ground_truth_extension}")
+    if expected in ground_truth_keys:
+        return expected
+
+    fallback = [
+        key for key in ground_truth_keys
+        if posixpath.splitext(posixpath.basename(key))[0] == stem
+    ]
+    if len(fallback) > 1:
+        raise ValueError(f"源文件 {source_key} 找到多个同名标准 Markdown: {fallback}")
+    return fallback[0] if fallback else None
 
 
 def manifest_to_eval_samples(
@@ -274,6 +409,111 @@ def _parse_storage(raw: Any) -> StorageManifest | None:
         bucket=bucket,
         prefix=str(raw.get("prefix", "")).strip("/"),
     )
+
+
+def _parse_discovery(raw: Any) -> DiscoveryManifest | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError("manifest discovery 字段必须为 dict")
+    include_file_types = [
+        str(item).lower().lstrip(".")
+        for item in raw.get("include_file_types", ["pdf", "docx", "html"])
+    ]
+    invalid = sorted(set(include_file_types) - ALLOWED_PARSER_FILE_TYPES)
+    if invalid:
+        raise ValueError(f"discovery.include_file_types 包含不支持的格式: {invalid}")
+    ground_truth_extension = str(
+        raw.get("ground_truth_extension", DEFAULT_GROUND_TRUTH_EXTENSION)
+    )
+    if not ground_truth_extension.startswith("."):
+        ground_truth_extension = f".{ground_truth_extension}"
+    return DiscoveryManifest(
+        enabled=bool(raw.get("enabled", False)),
+        test_set_dir=str(raw.get("test_set_dir", "test_set")).strip("/"),
+        ground_truth_dir=str(raw.get("ground_truth_dir", "ground_truth")).strip("/"),
+        match_strategy=str(raw.get("match_strategy", "same_stem")),
+        ground_truth_extension=ground_truth_extension,
+        include_file_types=include_file_types,
+        recursive=bool(raw.get("recursive", True)),
+    )
+
+
+def _parse_mapping(raw: Any, field_name: str) -> dict[str, Any]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"manifest {field_name} 字段必须为 dict")
+    return dict(raw)
+
+
+def _parse_sample_overrides(raw: Any) -> dict[str, dict[str, Any]]:
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("manifest sample_overrides 字段必须为 dict")
+    overrides: dict[str, dict[str, Any]] = {}
+    for sample_id, override in raw.items():
+        if not isinstance(override, dict):
+            raise ValueError(f"manifest sample_overrides.{sample_id} 必须为 dict")
+        overrides[str(sample_id)] = dict(override)
+    return overrides
+
+
+def _validate_parser_sample_entry(entry: dict[str, Any], idx: int) -> None:
+    file_type = str(entry.get("file_type", "")).lower().lstrip(".")
+    if file_type not in ALLOWED_PARSER_FILE_TYPES:
+        raise ValueError(
+            f"manifest samples[{idx}].file_type 不支持: {entry.get('file_type')!r}"
+        )
+    ground_truth = entry.get("ground_truth", {})
+    if not isinstance(ground_truth, dict) or "markdown" not in ground_truth:
+        raise ValueError(f"manifest samples[{idx}].ground_truth.markdown 缺失")
+    tags = entry.get("tags", [])
+    if tags is not None and not isinstance(tags, list):
+        raise ValueError(f"manifest samples[{idx}].tags 必须为 list")
+    for numeric_key in ("page_count", "length_hint", "file_size"):
+        if numeric_key in entry and entry[numeric_key] is not None:
+            try:
+                value = int(entry[numeric_key])
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"manifest samples[{idx}].{numeric_key} 必须为非负数") from exc
+            if value < 0:
+                raise ValueError(f"manifest samples[{idx}].{numeric_key} 必须为非负数")
+
+
+def _validate_discovered_sample(entry: SampleManifestEntry) -> None:
+    if entry.split not in ALLOWED_REMOTE_SPLITS:
+        raise ValueError(f"discovery sample {entry.id!r}.split 必须为 test 或 validation")
+    if entry.file_type.lower() not in ALLOWED_PARSER_FILE_TYPES:
+        raise ValueError(f"discovery sample {entry.id!r}.file_type 不支持: {entry.file_type}")
+
+
+def _is_discoverable_source(key: str, discovery: DiscoveryManifest) -> bool:
+    source_dir = discovery.test_set_dir.strip("/")
+    if not key.startswith(f"{source_dir}/"):
+        return False
+    relative = key[len(source_dir):].lstrip("/")
+    if not discovery.recursive and "/" in relative:
+        return False
+    file_type = _file_type_from_key(key)
+    return file_type in set(discovery.include_file_types)
+
+
+def _file_type_from_key(key: str) -> str:
+    return posixpath.splitext(key)[1].lower().lstrip(".")
+
+
+def _strip_prefix(key: str, prefix: str) -> str:
+    clean_key = str(key).strip("/")
+    clean_prefix = str(prefix).strip("/")
+    if not clean_prefix:
+        return clean_key
+    if clean_key == clean_prefix:
+        return ""
+    if clean_key.startswith(f"{clean_prefix}/"):
+        return clean_key[len(clean_prefix) + 1:]
+    return clean_key
 
 
 def _parse_object_ref(raw: Any, field_name: str) -> str | ObjectManifestRef:

@@ -44,15 +44,32 @@ class JsonReporter(BaseReporter):
 
     def _build_report(self, run: "EvalRun", baseline: "EvalRun | None" = None) -> dict:
         output: dict = {
-            "run_id": run.summary.run_id,
-            "dataset_name": run.summary.dataset_name,
-            "status": run.summary.status,
-            "created_at": run.summary.created_at,
-            "sample_count": run.summary.sample_count,
-            "success_count": run.summary.success_count,
+            "run": {
+                "run_id": run.summary.run_id,
+                "dataset_name": run.summary.dataset_name,
+                "status": run.summary.status,
+                "created_at": run.summary.created_at,
+                "sample_count": run.summary.sample_count,
+                "success_count": run.summary.success_count,
+            },
             "metrics": run.metrics,
+            "sample_results": run.sample_outputs,
+            "comparison": _comparison_from_extra(run.extra),
+            "archives": run.extra.get("archives", {}),
+            "parsed_results": run.extra.get("parsed_results", []),
+            "reports": run.extra.get("reports", []),
         }
         if baseline is not None:
             output["baseline_run_id"] = baseline.summary.run_id
             output["deltas"] = self._compute_deltas(run.metrics, baseline.metrics)
         return output
+
+
+def _comparison_from_extra(extra: dict) -> dict:
+    comparison: dict = {}
+    for key, value in extra.items():
+        if key.startswith("stage_result.") and isinstance(value, dict):
+            stage = key.replace("stage_result.", "")
+            if value.get("comparison"):
+                comparison[stage] = value["comparison"]
+    return comparison

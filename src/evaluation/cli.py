@@ -69,7 +69,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run_p.add_argument(
         "--format", "-f",
         nargs="+",
-        choices=["json", "markdown"],
+        choices=["json", "markdown", "html"],
         default=["json", "markdown"],
         help="报告格式（可多选）",
     )
@@ -96,7 +96,7 @@ def _build_parser() -> argparse.ArgumentParser:
     report_p.add_argument(
         "--format", "-f",
         nargs="+",
-        choices=["json", "markdown"],
+        choices=["json", "markdown", "html"],
         default=["markdown"],
     )
     report_p.add_argument("--output-dir", default=None)
@@ -114,6 +114,7 @@ async def _cmd_run(args: argparse.Namespace) -> int:
     from src.evaluation.storage.factory import ResultStoreFactory
     from src.evaluation.reporters.json_reporter import JsonReporter
     from src.evaluation.reporters.markdown_reporter import MarkdownReporter
+    from src.evaluation.reporters.html_reporter import HtmlReporter
     from src.evaluation.hooks.logging_hook import LoggingHook
     from src.evaluation.hooks.progress_hook import ProgressHook
     from src.evaluation.runners.runner import EvaluationRunner
@@ -146,6 +147,8 @@ async def _cmd_run(args: argparse.Namespace) -> int:
             reporters.append(JsonReporter(output_dir=None))
         elif fmt == "markdown":
             reporters.append(MarkdownReporter(output_dir=None))
+        elif fmt == "html":
+            reporters.append(HtmlReporter(output_dir=None))
 
     # 构建 Hook 列表
     hooks = [LoggingHook(), ProgressHook()]
@@ -203,6 +206,7 @@ async def _cmd_report(args: argparse.Namespace) -> int:
     from src.evaluation.storage.factory import ResultStoreFactory
     from src.evaluation.reporters.json_reporter import JsonReporter
     from src.evaluation.reporters.markdown_reporter import MarkdownReporter
+    from src.evaluation.reporters.html_reporter import HtmlReporter
 
     output_dir = args.output_dir or eval_config.EVAL_REPORT_DIR
     store = ResultStoreFactory.create()
@@ -219,8 +223,10 @@ async def _cmd_report(args: argparse.Namespace) -> int:
     for fmt in args.format:
         if fmt == "json":
             path = JsonReporter(output_dir=output_dir).render(run, baseline)
-        else:
+        elif fmt == "markdown":
             path = MarkdownReporter(output_dir=output_dir).render(run, baseline)
+        else:
+            path = HtmlReporter(output_dir=output_dir).render(run, baseline)
         print(f"✅ 报告已生成: {path}")
 
     return 0
@@ -234,6 +240,15 @@ def _register_builtin_metrics() -> None:
     from src.evaluation.metrics.parser.md_structure import (
         HeadingRetentionMetric, TableRetentionMetric, ImageRetentionMetric,
     )
+    from src.evaluation.metrics.parser.text_completeness import TextCompletenessMetric
+    from src.evaluation.metrics.parser.heading_quality import (
+        HeadingCoverageMetric, HeadingLevelAccuracyMetric,
+    )
+    from src.evaluation.metrics.parser.image_quality import ImageQualityMetric as ParserImageQualityMetric
+    from src.evaluation.metrics.parser.table_quality import TableQualityMetric
+    from src.evaluation.metrics.parser.quality_score import (
+        ParserSampleQualityMetric, ParserTotalScoreMetric, TopSampleRankingMetric,
+    )
     from src.evaluation.metrics.chunker.length_dist import ChunkLengthDistMetric
     from src.evaluation.metrics.chunker.boundary import (
         CrossHeadingRateMetric, TableBreakCountMetric, CodeBreakCountMetric,
@@ -246,6 +261,14 @@ def _register_builtin_metrics() -> None:
     MetricRegistry.register_sample(HeadingRetentionMetric())
     MetricRegistry.register_sample(TableRetentionMetric())
     MetricRegistry.register_sample(ImageRetentionMetric())
+    MetricRegistry.register_sample(TextCompletenessMetric())
+    MetricRegistry.register_sample(HeadingCoverageMetric())
+    MetricRegistry.register_sample(HeadingLevelAccuracyMetric())
+    MetricRegistry.register_sample(ParserImageQualityMetric())
+    MetricRegistry.register_sample(TableQualityMetric())
+    MetricRegistry.register_sample(ParserSampleQualityMetric())
+    MetricRegistry.register_aggregate(ParserTotalScoreMetric())
+    MetricRegistry.register_aggregate(TopSampleRankingMetric())
     # chunk scope — AggregateMetric
     MetricRegistry.register_aggregate(ChunkLengthDistMetric())
     MetricRegistry.register_aggregate(CrossHeadingRateMetric())

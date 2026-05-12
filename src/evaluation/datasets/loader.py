@@ -13,7 +13,12 @@ import os
 from typing import Iterator
 
 from src.evaluation.contracts.dataset import EvalSample
-from .manifest import ManifestSchema, load_manifest, manifest_to_eval_samples
+from .manifest import (
+    ManifestSchema,
+    discover_manifest_samples,
+    load_manifest,
+    manifest_to_eval_samples,
+)
 
 
 class FileSystemDataset:
@@ -166,6 +171,19 @@ class MinioDataset:
                 f"远端 manifest name={self._manifest.name!r} 与请求数据集 {dataset_name!r} 不一致"
             )
 
+        if self._manifest.discovery and self._manifest.discovery.enabled:
+            discovered = discover_manifest_samples(
+                self._manifest,
+                object_keys=self._list_dataset_objects(self._manifest.storage.prefix),
+            )
+            explicit_by_id = {sample.id: sample for sample in self._manifest.samples}
+            discovered_by_id = {sample.id: sample for sample in discovered}
+            discovered_by_id.update(explicit_by_id)
+            self._manifest.samples = [
+                discovered_by_id[sample_id]
+                for sample_id in sorted(discovered_by_id)
+            ]
+
         self._samples = manifest_to_eval_samples(
             self._manifest,
             base_dir=None,
@@ -229,6 +247,11 @@ class MinioDataset:
 
     def _load_text(self, ref) -> str:
         return self._object_storage.download_bytes(ref.bucket, ref.key).decode("utf-8")
+
+    def _list_dataset_objects(self, prefix: str) -> list[str]:
+        if not hasattr(self._object_storage, "list_objects"):
+            raise ValueError("当前 object_storage 不支持 discovery 所需的 list_objects")
+        return self._object_storage.list_objects(self._bucket, prefix)
 
     @staticmethod
     def _apply_filter(samples: list[EvalSample], **criteria) -> list[EvalSample]:

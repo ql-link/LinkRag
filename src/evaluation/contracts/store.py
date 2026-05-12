@@ -109,3 +109,26 @@ class ResultStore(Protocol):
             EvalRun | None: 基准运行记录，不存在时返回 None。
         """
         ...
+
+    async def save_artifact(
+        self,
+        dataset_name: str,
+        run_id: str,
+        relative_path: str,
+        content: bytes,
+        content_type: str,
+    ) -> str:
+        """保存评估复盘材料并返回对象引用。"""
+        ...
+
+    async def save_parsed_result(
+        self,
+        dataset_name: str,
+        run_id: str,
+        sample_id: str,
+        evaluable_name: str,
+        markdown: str,
+        metadata: dict,
+    ) -> dict:
+        """保存单样本解析 Markdown 与元数据。"""
+        ...

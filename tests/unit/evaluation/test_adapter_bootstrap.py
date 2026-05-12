@@ -6,7 +6,7 @@ from src.evaluation.metrics.registry import MetricRegistry
 from src.evaluation.runners.pipeline import EvalPipeline
 
 
-def test_register_builtin_evaluables_should_register_pdf_parser_adapters():
+def test_register_builtin_evaluables_should_register_parser_adapters():
     EvaluableRegistry.clear()
 
     register_builtin_evaluables()
@@ -14,13 +14,19 @@ def test_register_builtin_evaluables_should_register_pdf_parser_adapters():
     mineru = EvaluableRegistry.get("parser.pdf.mineru")
     naive = EvaluableRegistry.get("parser.pdf.naive")
     opendataloader = EvaluableRegistry.get("parser.pdf.opendataloader")
+    word = EvaluableRegistry.get("parser.word")
+    html = EvaluableRegistry.get("parser.html")
 
     assert isinstance(mineru, ParserAdapter)
     assert isinstance(naive, ParserAdapter)
     assert isinstance(opendataloader, ParserAdapter)
+    assert isinstance(word, ParserAdapter)
+    assert isinstance(html, ParserAdapter)
     assert mineru.stage == "parse"
     assert naive.stage == "parse"
     assert opendataloader.stage == "parse"
+    assert word.stage == "parse"
+    assert html.stage == "parse"
 
 
 def test_register_builtin_evaluables_should_be_idempotent():
@@ -34,6 +40,8 @@ def test_register_builtin_evaluables_should_be_idempotent():
         "parser.pdf.mineru",
         "parser.pdf.naive",
         "parser.pdf.opendataloader",
+        "parser.html",
+        "parser.word",
     ]
 
 
