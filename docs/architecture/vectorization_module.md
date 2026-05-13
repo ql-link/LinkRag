@@ -47,8 +47,6 @@ ParseTaskPipeline
         -> QdrantIndexStore.ensure_collection()
         -> QdrantIndexStore.upsert_points()
         -> ChunkRepository.mark_indexed()
-    -> EsIndexingPipeline.index_for_parse_task()
-    -> PostProcessPipelineRepository.mark_es_success()
 ```
 
 ## 2. 核心角色
@@ -62,7 +60,6 @@ ParseTaskPipeline
 | `VectorStorageCompensationPipeline` | `vector_storage/compensation_pipeline.py` | 删除失败、INDEXING 卡住、FAILED 重建 |
 | `ChunkDraftFactory` | `vector_storage/draft_factory.py` | 生成 chunk_id、content_hash、bucket_id、chunk_type |
 | `EsIndexingPipeline` | `es_index_storage/pipeline.py` | 文件级 Elasticsearch 入库，按 Chunk 写入 ES |
-| `PostProcessPipelineRepository` | `pipeline/post_process_repository.py` | 记录分片、向量化、ES 入库各阶段状态和耗时 |
 | `ChunkRepository` | `chunk_fact_storage/repository.py` | MySQL Chunk 真值表读写和状态机 |
 | `BucketRouter` | `qdrant_vector_storage/bucket_router.py` | 按 `user_id` 路由到 Qdrant collection |
 | `QdrantIndexStore` | `qdrant_vector_storage/qdrant_store.py` | Qdrant collection、point 写入、删除、查询 |
@@ -155,16 +152,7 @@ result = await vector_storage.store_chunks(
 
 部分 Chunk 失败不会直接抛到解析主流程，而是通过结果汇总表达。
 
-向量索引成功后，解析流水线会继续执行文件级 ES 入库：
-
-```python
-es_result = await es_indexing_pipeline.index_for_parse_task(
-    payload=payload,
-    chunks=chunks,
-)
-```
-
-`document_post_process_pipeline` 会记录 `chunking_status`、`vectorizing_status`、`es_indexing_status`、失败阶段和各阶段耗时。只有 Markdown 上传、分片、向量化和 ES 入库全部成功后，流水线才发送 `parse_result` success。
+当前主流程在 Markdown 上传、分片和向量索引完成后发送 `parse_result` success。向量索引中的部分 Chunk 失败通过 `ChunkIndexingResult.failed_chunk_ids` 返回并记录日志，不单独维护后处理状态表。
 
 ### 4.2 直接创建 Facade
 
@@ -306,7 +294,7 @@ Embedding 客户端由 `ModelFactory` 创建，必须支持 `CapabilityType.EMBE
 - 删除采用 `DELETING -> DELETED`，失败进入 `DELETE_FAILED`。
 - Qdrant 写入成功但 MySQL 回写失败时，通过补偿流程修复。
 - 自动补偿不应无限重试所有失败；显式重建由 `reindex_failed_chunks` 控制。
-- 文件级后处理按 `chunking -> vectorizing -> es_indexing` 顺序推进，任一阶段失败会写入 `document_post_process_pipeline` 并通知解析失败。
+- 文件级后处理按 `chunking -> vectorizing` 顺序推进；分片失败会通知解析失败，向量索引中的部分 Chunk 失败通过 `ChunkIndexingResult.failed_chunk_ids` 汇总。
 
 ## 8. 测试建议
 

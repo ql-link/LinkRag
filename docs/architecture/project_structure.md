@@ -30,14 +30,25 @@ toLink-Rag/                         # 仓库根目录
 ├── pyproject.toml                # Python 依赖与项目配置
 ├── configs/                      # 本地评估和运行配置
 │   └── eval/                     # 解析评估 Pipeline YAML
-│       └── parser_opendataloader_only.yaml
+│       ├── chunk_only.yaml
+│       ├── full_parse_chunk.yaml
+│       ├── multi_source_parser_evaluation.yaml
+│       ├── parser_mineru_only.yaml
+│       └── parser_only.yaml
+├── docs/                         # 项目文档
+│   ├── architecture/             # 稳定架构与模块边界说明
+│   ├── conventions/              # 编码、命名和运行约定
+│   ├── design/                   # 技术设计和实现状态记录
+│   │   ├── evaluation_minio_remote_storage/
+│   │   └── multi_source_parser_evaluation/
+│   └── reference/                # API、错误码、数据模型等参考资料
 ├── scripts/                      # 可执行脚本
 │   ├── db/                       # 数据库初始化脚本
 │   │   ├── init.sql              # 当前数据库表结构（DDL）
 │   │   └── schema.sql            # 初始化数据脚本
 ├── src/                          # 应用源码
 │   ├── config.py                 # 全局配置
-│   ├── database.py               # 数据库初始化入口
+│   ├── database.py               # 统一异步数据库入口
 │   ├── main.py                   # FastAPI 应用入口
 │   ├── api/                      # HTTP API 分层
 │   │   ├── routes/               # 路由层
@@ -52,7 +63,7 @@ toLink-Rag/                         # 仓库根目录
 │   │   ├── cache_manager.py      # CacheBackend / CacheManager 抽象
 │   │   └── redis_client.py       # Redis 客户端
 │   ├── core/                     # 核心能力与基础设施
-│   │   ├── database.py
+│   │   ├── database.py           # 兼容转发层，运行期入口使用 src/database.py
 │   │   ├── exceptions.py
 │   │   ├── es_index_storage/     # 文件级 Elasticsearch 入库阶段
 │   │   │   ├── models.py
@@ -65,9 +76,7 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── constants.py       # 解析任务状态、通知文案等流水线常量
 │   │   │   ├── error_codes.py
 │   │   │   ├── models.py
-│   │   │   ├── parse_task_pipeline.py
-│   │   │   ├── post_process_constants.py
-│   │   │   └── post_process_repository.py
+│   │   │   └── parse_task_pipeline.py
 │   │   ├── prompts/              # LLM 提示词模板
 │   │   │   └── markdown_enhancement.py
 │   │   ├── markdown_parser/      # Markdown 解析与增强编排
@@ -148,13 +157,14 @@ toLink-Rag/                         # 仓库根目录
 │   │   ├── config.py             # 评估配置
 │   │   ├── contracts/            # 评估协议与共享数据结构
 │   │   ├── adapters/             # 被评估对象适配层
+│   │   ├── artifacts/            # Top 3 等复盘材料归档
 │   │   ├── datasets/             # 数据集加载与 manifest 解析
 │   │   ├── evaluators/           # 评估器与对比逻辑
 │   │   ├── hooks/                # 日志与进度 Hook
 │   │   ├── metrics/              # Parser / Chunker 指标实现
-│   │   ├── reporters/            # JSON / Markdown 报告输出
+│   │   ├── reporters/            # JSON / Markdown / HTML 报告输出
 │   │   ├── runners/              # Pipeline 校验与评估编排
-│   │   └── storage/              # 评估结果持久化
+│   │   └── storage/              # 文件系统 / MinIO 评估结果持久化
 │   ├── models/                   # ORM 模型
 │   │   ├── chunk_record.py
 │   │   ├── db_models.py
@@ -184,6 +194,7 @@ toLink-Rag/                         # 仓库根目录
     │   ├── parser_smoke/
     │   └── chunker_smoke/
     ├── unit/                     # 单元测试 (Mock 驱动)
+    │   ├── test_database_entrypoint.py # 数据库入口兼容层测试
     │   ├── api/                  # API 层单元测试
     │   ├── core/                 # 核心模块单元测试
     │   │   ├── es_index_storage/ # ES 入库阶段单元测试
@@ -195,6 +206,7 @@ toLink-Rag/                         # 仓库根目录
     │   │   ├── qdrant_vector_storage/ # Qdrant 存储单元测试
     │   │   ├── splitter/         # 切分模块单元测试
     │   │   └── vector_storage/   # 向量存储编排单元测试
+    │   ├── evaluation/           # 评估模块单元测试
     │   └── services/             # 服务层单元测试
     └── integration/              # 集成测试
         ├── api/                  # API 层集成测试

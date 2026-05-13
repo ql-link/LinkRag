@@ -227,18 +227,25 @@ class MinioDataset:
     def _resolve_version(self, dataset_name: str, version: str) -> str:
         if version != "latest":
             return version
-        latest_key = self._join_key(self._prefix, dataset_name, "latest.json")
-        try:
-            import json
+        import json
 
-            raw = self._object_storage.download_bytes(self._bucket, latest_key).decode("utf-8")
-            latest = json.loads(raw)
-            return str(latest["version"])
-        except FileNotFoundError:
-            return version
+        for latest_key in self._candidate_latest_keys(dataset_name):
+            try:
+                raw = self._object_storage.download_bytes(self._bucket, latest_key).decode("utf-8")
+                latest = json.loads(raw)
+                return str(latest["version"])
+            except FileNotFoundError:
+                continue
+        return version
 
     def _manifest_key(self, dataset_name: str, version: str) -> str:
-        return self._join_key(self._prefix, dataset_name, version, "manifest.yaml")
+        for key in self._candidate_manifest_keys(dataset_name, version):
+            try:
+                self._object_storage.download_bytes(self._bucket, key)
+                return key
+            except FileNotFoundError:
+                continue
+        return self._candidate_manifest_keys(dataset_name, version)[0]
 
     def _load_sample_bytes(self, sample: EvalSample) -> bytes:
         if sample.remote_file is None:
@@ -275,6 +282,19 @@ class MinioDataset:
     @staticmethod
     def _join_key(*parts: str) -> str:
         return "/".join(str(part).strip("/") for part in parts if str(part).strip("/"))
+
+    def _candidate_latest_keys(self, dataset_name: str) -> list[str]:
+        return [
+            self._join_key(self._prefix, dataset_name, "latest.json"),
+            self._join_key(self._prefix, "latest.json"),
+        ]
+
+    def _candidate_manifest_keys(self, dataset_name: str, version: str) -> list[str]:
+        return [
+            self._join_key(self._prefix, dataset_name, version, "manifest.yaml"),
+            self._join_key(self._prefix, version, "manifest.yaml"),
+            self._join_key(self._prefix, "manifest.yaml"),
+        ]
 
     def __repr__(self) -> str:
         return (

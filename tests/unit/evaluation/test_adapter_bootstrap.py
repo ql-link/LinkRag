@@ -37,10 +37,10 @@ def test_register_builtin_evaluables_should_be_idempotent():
 
     names = sorted(e.name for e in EvaluableRegistry.all())
     assert names == [
+        "parser.html",
         "parser.pdf.mineru",
         "parser.pdf.naive",
         "parser.pdf.opendataloader",
-        "parser.html",
         "parser.word",
     ]
 

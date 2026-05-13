@@ -13,10 +13,6 @@ from src.api.routes import llm, internal, parse, mq
 from src.cache.redis_client import redis_client
 from src.database import init_database, close_database
 
-# 引入文档解析模块的数据库依赖
-from src.core.database import engine
-from src.models.parse_task import Base
-
 # MQ 工厂（生命周期管理）
 from src.core.mq.factory import MQFactory
 from src.core.mq.topic_admin import ensure_topics

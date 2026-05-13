@@ -71,7 +71,9 @@ def _anchors_match(
     expected_index: int,
     actual_index: int,
 ) -> bool:
-    if expected.nearest_heading and expected.nearest_heading == actual.nearest_heading:
+    if expected.nearest_heading:
+        if expected.nearest_heading != actual.nearest_heading:
+            return False
         return True
     if expected.alt and expected.alt == actual.alt:
         return True

@@ -22,7 +22,8 @@ The module follows the direction defined in [architecture_design.md](../architec
 - adapting parser and chunker implementations into a unified evaluable interface
 - executing evaluation runs with hooks, progress reporting, and result persistence
 - computing parser and chunker metrics
-- rendering evaluation reports in JSON and Markdown
+- rendering evaluation reports in JSON, Markdown, and static HTML
+- archiving parser review artifacts such as parsed Markdown, metrics JSON, and Top 3 review packs
 
 `src/evaluation` should not:
 
@@ -47,10 +48,14 @@ src/evaluation/
 │   ├── metric.py
 │   └── store.py
 ├── adapters/                      # wraps parser/chunker implementations as evaluables
+│   ├── bootstrap.py
 │   ├── chunker_adapter.py
 │   ├── parser_adapter.py
 │   └── registry.py
+├── artifacts/                     # review artifact archiving
+│   └── top3_archiver.py
 ├── datasets/                      # dataset loading and manifest parsing
+│   ├── factory.py
 │   ├── loader.py
 │   └── manifest.py
 ├── evaluators/                    # stage-specific metric aggregation
@@ -67,11 +72,19 @@ src/evaluation/
 │   │   ├── boundary.py
 │   │   └── length_dist.py
 │   └── parser/
+│       ├── heading_quality.py
+│       ├── image_quality.py
 │       ├── latency.py
 │       ├── md_structure.py
-│       └── stability.py
+│       ├── normalization.py
+│       ├── quality_score.py
+│       ├── stability.py
+│       ├── structure_extractors.py
+│       ├── table_quality.py
+│       └── text_completeness.py
 ├── reporters/                     # report renderers
 │   ├── base.py
+│   ├── html_reporter.py
 │   ├── json_reporter.py
 │   └── markdown_reporter.py
 ├── runners/                       # pipeline validation and run orchestration
@@ -79,7 +92,10 @@ src/evaluation/
 │   ├── pipeline.py
 │   └── runner.py
 └── storage/                       # run result persistence
-    └── filesystem.py
+    ├── factory.py
+    ├── filesystem.py
+    ├── minio_object_storage.py
+    └── minio_result_store.py
 ```
 
 ## Layer Mapping
@@ -104,8 +120,8 @@ The normal execution path is:
 4. `EvaluationRunner` executes configured stages in topological order.
 5. `EvaluableRegistry` resolves configured adapters by name.
 6. Evaluators dispatch metrics from `MetricRegistry`.
-7. `MinioResultStore` writes run artifacts, reports, and baseline pointers to MinIO.
-8. JSON and Markdown reporters render final reports.
+7. `MinioResultStore` writes run artifacts, reports, parsed Markdown, and baseline pointers to MinIO.
+8. JSON, Markdown, and HTML reporters render final reports.
 
 ## Dataset and Config Layout
 
@@ -125,9 +141,8 @@ This keeps evaluation configuration in the repository while moving sample assets
 
 - dedicated `judges/` implementations
 - embedding evaluation stages and metrics
-- optional HTML reporter
 - alternate result stores such as MySQL
-- richer built-in dataset filtering and notification hooks
+- notification hooks beyond logging/progress
 
 When extending `src/evaluation`, prefer aligning new work with the draft direction instead of introducing parallel patterns.
 

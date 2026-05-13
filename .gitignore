@@ -28,6 +28,7 @@ env/
 venv/
 
 # IDE
+.DS_Store
 .idea/
 .vscode/
 *.swp
