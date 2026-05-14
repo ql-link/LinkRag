@@ -8,6 +8,7 @@ toLink-Rag/                         # 仓库根目录
 │   └── skills/                   # 项目专用 Agent 技能
 │       ├── agents-tree-sync/     # AGENTS.md 目录树同步规则
 │       ├── auto-test/            # 自动化测试生成工作流
+│       ├── branch-pr-workflow/   # dev 分支交付收口与 PR 创建工作流
 │       ├── code-annotator/       # 代码注释生成工作流
 │       ├── code-review-and-quality/ # 代码审查与质量门禁
 │       ├── contract-guard/       # 跨模块公共契约校验

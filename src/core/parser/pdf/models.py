@@ -28,10 +28,24 @@ class PdfImageAsset:
 
 
 @dataclass(slots=True)
+class PdfPreparedImageAsset:
+    page_number: int
+    index: int
+    object_key: str
+    url: str
+    content_type: str
+    content: bytes
+    width: int | None = None
+    height: int | None = None
+    source_path: str | None = None
+
+
+@dataclass(slots=True)
 class PdfParseOptions:
     backend: str = "mineru"
     image_bucket: Optional[str] = None
     image_prefix: Optional[str] = None
+    image_upload_async: bool = True
     storage: Optional[BaseObjectStorage] = None
     source_file_url: Optional[str] = None
     docling_force_ocr: bool = False

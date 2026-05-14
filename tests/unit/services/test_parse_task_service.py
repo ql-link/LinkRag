@@ -87,6 +87,8 @@ class TestParseTaskService:
         mock_orchestrator.aenhance_parse_result.assert_awaited_once_with(
             "cleaned markdown",
             source_file="source.pdf",
+            enable_image_enhancement=True,
+            image_bytes_by_url={},
         )
         assert mock_clean.call_count == 2
         assert result["markdown"] == "enhanced markdown"
@@ -96,6 +98,93 @@ class TestParseTaskService:
             "markdown_enhanced": True,
         }
         assert isinstance(result["time_cost_ms"], int)
+
+    @patch("src.services.parse_task_service.MarkdownEnhancementOrchestrator")
+    @patch("src.services.parse_task_service.MarkdownParser")
+    @patch("src.services.parse_task_service.ParserFactory.get_parser")
+    async def test_aprocess_should_skip_image_enhancement_when_async_upload_pending(
+        self,
+        mock_get_parser,
+        mock_markdown_parser_cls,
+        mock_orchestrator_cls,
+    ):
+        mock_parser = MagicMock()
+        mock_parser.parse.return_value = " raw markdown "
+        mock_parser.extract_metadata.return_value = {
+            "pages_or_length": 2,
+            "image_upload_async": True,
+        }
+        mock_get_parser.return_value = mock_parser
+        mock_orchestrator = MagicMock()
+        enhanced_parse_result = MagicMock()
+        enhanced_parse_result.to_markdown.return_value = " enhanced markdown "
+        mock_orchestrator.aenhance_parse_result = AsyncMock(return_value=enhanced_parse_result)
+        mock_orchestrator_cls.return_value = mock_orchestrator
+        final_parse_result = ParseResult(elements=[], tables=[], images=[], source_file="source.pdf")
+        mock_markdown_parser_cls.return_value.parse.return_value = final_parse_result
+
+        with patch(
+            "src.services.parse_task_service.TextFormatter.clean",
+            side_effect=["cleaned markdown", "enhanced markdown"],
+        ):
+            await ParseTaskService.aprocess(
+                b"file bytes",
+                "pdf",
+                source_file="source.pdf",
+                backend="mineru",
+            )
+
+        mock_orchestrator.aenhance_parse_result.assert_awaited_once_with(
+            "cleaned markdown",
+            source_file="source.pdf",
+            enable_image_enhancement=False,
+            image_bytes_by_url={},
+        )
+
+    @patch("src.services.parse_task_service.MarkdownEnhancementOrchestrator")
+    @patch("src.services.parse_task_service.MarkdownParser")
+    @patch("src.services.parse_task_service.ParserFactory.get_parser")
+    async def test_aprocess_should_use_memory_images_when_async_upload_pending(
+        self,
+        mock_get_parser,
+        mock_markdown_parser_cls,
+        mock_orchestrator_cls,
+    ):
+        image_bytes_by_url = {"http://minio/image.png": (b"image-bytes", "image/png")}
+        mock_parser = MagicMock()
+        mock_parser.parse.return_value = " raw markdown "
+        mock_parser.extract_metadata.return_value = {
+            "pages_or_length": 2,
+            "image_upload_async": True,
+            "_image_bytes_by_url": image_bytes_by_url,
+        }
+        mock_get_parser.return_value = mock_parser
+        mock_orchestrator = MagicMock()
+        enhanced_parse_result = MagicMock()
+        enhanced_parse_result.to_markdown.return_value = " enhanced markdown "
+        mock_orchestrator.aenhance_parse_result = AsyncMock(return_value=enhanced_parse_result)
+        mock_orchestrator_cls.return_value = mock_orchestrator
+        final_parse_result = ParseResult(elements=[], tables=[], images=[], source_file="source.pdf")
+        mock_markdown_parser_cls.return_value.parse.return_value = final_parse_result
+
+        with patch(
+            "src.services.parse_task_service.TextFormatter.clean",
+            side_effect=["cleaned markdown", "enhanced markdown"],
+        ):
+            result = await ParseTaskService.aprocess(
+                b"file bytes",
+                "pdf",
+                source_file="source.pdf",
+                backend="mineru",
+            )
+
+        mock_orchestrator.aenhance_parse_result.assert_awaited_once_with(
+            "cleaned markdown",
+            source_file="source.pdf",
+            enable_image_enhancement=True,
+            image_bytes_by_url=image_bytes_by_url,
+        )
+        assert "_image_bytes_by_url" not in result["metadata"]
 
     @patch("src.services.parse_task_service.MarkdownEnhancementOrchestrator")
     @patch("src.services.parse_task_service.MarkdownParser")

@@ -19,16 +19,19 @@ class ParseTaskService:
             file_type,
             parser_kwargs,
         )
+        metadata = parser.extract_metadata()
+        image_bytes_by_url = metadata.pop("_image_bytes_by_url", {})
         cleaned_markdown = TextFormatter.clean(raw_markdown)
 
         orchestrator = MarkdownEnhancementOrchestrator()
         enhanced_parse_result = await orchestrator.aenhance_parse_result(
             cleaned_markdown,
             source_file=source_file,
+            enable_image_enhancement=bool(image_bytes_by_url) or not metadata.get("image_upload_async", False),
+            image_bytes_by_url=image_bytes_by_url,
         )
         final_markdown = TextFormatter.clean(enhanced_parse_result.to_markdown())
         final_parse_result = MarkdownParser().parse(final_markdown, source_file=source_file)
-        metadata = parser.extract_metadata()
         metadata["markdown_enhanced"] = final_markdown != cleaned_markdown
 
         time_cost_ms = int((time.time() - start_time) * 1000)
