@@ -1,6 +1,6 @@
 # Vectorization Module
 
-本文说明 Chunk 向量化与向量存储模块的架构、使用方式，以及新增或修改向量存储逻辑的方法。
+本文说明 Chunk 向量化、向量存储、文件级 ES 入库和后处理状态模块的架构、使用方式，以及新增或修改索引逻辑的方法。
 
 ## 1. 模块框架
 
@@ -18,6 +18,10 @@ src/core/vector_storage/
 ├── models.py                      # 请求和结果模型
 └── repair_policy.py               # 补偿决策
 
+src/core/es_index_storage/
+├── models.py                      # ES 入库结果模型
+└── pipeline.py                    # 文件级 Elasticsearch 入库阶段
+
 src/core/chunk_fact_storage/
 ├── constants.py                   # Chunk 状态常量
 ├── models.py                      # Chunk 真值草稿模型
@@ -34,6 +38,11 @@ src/core/qdrant_vector_storage/
 
 ```text
 ParseTaskPipeline
+  -> ParseTaskService.aprocess()
+  -> upload markdown
+  -> document_post_process_pipeline: PROCESSING
+  -> _run_chunking()
+  -> document_post_process_pipeline.chunking_status = SUCCESS
   -> _store_chunk_vectors()
     -> VectorStorageFacade.store_chunks()
       -> VectorStoragePipeline.store_chunks()
@@ -43,6 +52,10 @@ ParseTaskPipeline
         -> QdrantIndexStore.ensure_collection()
         -> QdrantIndexStore.upsert_points()
         -> ChunkRepository.mark_indexed()
+  -> document_post_process_pipeline.vectorizing_status = SUCCESS
+  -> EsIndexingPipeline.index_for_parse_task()
+  -> document_post_process_pipeline.es_indexing_status = SUCCESS
+  -> parse_result success notification
 ```
 
 ## 2. 核心角色
@@ -58,6 +71,8 @@ ParseTaskPipeline
 | `ChunkRepository` | `chunk_fact_storage/repository.py` | MySQL Chunk 真值表读写和状态机 |
 | `BucketRouter` | `qdrant_vector_storage/bucket_router.py` | 按 `user_id` 路由到 Qdrant collection |
 | `QdrantIndexStore` | `qdrant_vector_storage/qdrant_store.py` | Qdrant collection、point 写入、删除、查询 |
+| `EsIndexingPipeline` | `es_index_storage/pipeline.py` | 将文件级 Chunk 内容写入 Elasticsearch |
+| `PostProcessPipelineRepository` | `pipeline/post_process_repository.py` | 维护 `document_post_process_pipeline` 文件级阶段状态 |
 
 ## 3. 数据模型
 
@@ -97,7 +112,24 @@ chunks: Sequence[Chunk]
 
 MySQL 是 Chunk 真值源，Qdrant 是向量索引副本。
 
-### 3.3 Qdrant Point
+### 3.3 文件级后处理状态
+
+`document_post_process_pipeline` 记录一次解析成功落 Markdown 后的后处理阶段状态：
+
+| 字段 | 含义 |
+| --- | --- |
+| `pipeline_status` | 整体状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
+| `chunking_status` | 分片阶段状态：`PENDING/SUCCESS/FAILED` |
+| `vectorizing_status` | 向量化/Qdrant 阶段状态：`PENDING/SUCCESS/FAILED` |
+| `es_indexing_status` | Elasticsearch 入库阶段状态：`PENDING/SUCCESS/FAILED` |
+| `failed_stage` | 失败阶段：`CHUNKING/VECTORIZING/ES_INDEXING` |
+| `recover_from_stage` | 重投或补偿时可恢复的阶段 |
+| `chunk_count` | 本次解析生成的 Chunk 数量 |
+| `*_duration_ms` | 各阶段耗时与总耗时 |
+
+解析日志 `document_parsed_log` 会先记录 Markdown 解析和上传成功；只有分片、向量化和 ES 入库都成功后，Python 才发送 parse_result `success` 通知给 Java。任一后处理阶段失败都会把 `document_post_process_pipeline` 标记为 `FAILED`，并发送 parse_result `failed`。
+
+### 3.4 Qdrant Point
 
 `IndexedPoint` 包含：
 
@@ -115,11 +147,33 @@ payload: {
 
 collection 名称由 `BucketRouter.collection_name(bucket_id)` 生成。
 
+### 3.5 Elasticsearch Document
+
+`EsIndexingPipeline` 使用 `ES_INDEX_NAME` 指定索引名，按 `task_id` 和 Chunk 顺序生成文档 ID：
+
+```text
+{task_id}-{chunk_index}
+```
+
+写入文档包含：
+
+- `task_id`
+- `original_file_id`
+- `document_parse_task_id`
+- `dataset_id`
+- `user_id`
+- `source_filename`
+- `chunk_index`
+- `content`
+- `start_line`
+- `end_line`
+- `metadata`
+
 ## 4. 使用方式
 
 ### 4.1 解析流水线中的使用
 
-`ParseTaskPipeline._store_chunk_vectors` 会解析 owner：
+解析流水线先分片，再进入向量化和 ES 入库。`ParseTaskPipeline._store_chunk_vectors` 会解析 owner：
 
 ```text
 user_id = payload.user_id
@@ -145,9 +199,29 @@ result = await vector_storage.store_chunks(
 - `failed_chunk_ids`
 - `embedding_model`
 
-部分 Chunk 失败不会直接抛到解析主流程，而是通过结果汇总表达。
+部分 Chunk 失败不会直接抛到解析主流程，而是通过结果汇总表达。当前文件级语义下，只要向量化存在失败 Chunk，整体 parse_result 会以 `failed` 通知 Java；全部 Chunk 向量化成功后才进入 ES 入库阶段。
 
-### 4.2 直接创建 Facade
+### 4.2 文件级 ES 入库
+
+`ParseTaskPipeline` 在向量化全部成功后调用：
+
+```python
+es_result = await EsIndexingPipeline().index_for_parse_task(
+    payload=payload,
+    chunks=chunks,
+)
+```
+
+`EsIndexingResult` 包含：
+
+- `total_items`
+- `indexed_items`
+- `failed_item_ids`
+- `failure_reason`
+
+`failed_item_ids` 为空且 `indexed_items == total_items` 时视为 ES 阶段成功。
+
+### 4.3 直接创建 Facade
 
 ```python
 from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
@@ -164,7 +238,7 @@ result = await facade.store_chunks(
 
 实际业务通常由 `ParseTaskPipeline._build_vector_storage()` 负责装配。
 
-### 4.3 修改 Chunk
+### 4.4 修改 Chunk
 
 ```python
 result = await facade.update_chunk(
@@ -180,7 +254,7 @@ result = await facade.update_chunk(
 - 使用原 `chunk_id` 覆盖 Qdrant point。
 - 成功后回写 `INDEXED`。
 
-### 4.4 删除 Chunk
+### 4.5 删除 Chunk
 
 ```python
 result = await facade.delete_chunks(["chunk-id-1", "chunk-id-2"])
@@ -193,7 +267,7 @@ result = await facade.delete_chunks(["chunk-id-1", "chunk-id-2"])
 - 成功后标记 `DELETED`。
 - 失败时标记 `DELETE_FAILED`。
 
-### 4.5 补偿
+### 4.6 补偿
 
 Facade 暴露补偿入口：
 
@@ -221,6 +295,10 @@ await facade.reindex_failed_chunks(chunk_ids)
 - `QDRANT_PORT`
 - `QDRANT_API_KEY`
 - `QDRANT_TIMEOUT_SECONDS`
+- `ES_HOST`
+- `ES_USER`
+- `ES_PASSWORD`
+- `ES_INDEX_NAME`
 
 Embedding 客户端由 `ModelFactory` 创建，必须支持 `CapabilityType.EMBEDDING`。
 
@@ -264,13 +342,27 @@ Embedding 客户端由 `ModelFactory` 创建，必须支持 `CapabilityType.EMBE
 3. 保持 `VectorStorageFacade` 对上游接口不变。
 4. 补齐单元测试和真实基础设施集成测试。
 
+### 6.5 修改 ES 入库阶段
+
+修改 `EsIndexingPipeline`，适用于：
+
+- ES index 创建参数。
+- 文件级 document payload。
+- 单 Chunk 写入失败的汇总策略。
+- ES 客户端认证和生命周期管理。
+
+ES 阶段只返回文件级 `EsIndexingResult`，不直接维护 `kb_document_chunk.es_status`；Chunk 级 ES 状态字段保留给更细粒度索引状态扩展。
+
 ## 7. 一致性原则
 
 - MySQL Chunk 记录是真值源。
 - Qdrant point 是可重建索引副本。
+- Elasticsearch document 是面向检索的文本索引副本。
+- `document_post_process_pipeline` 是文件级后处理阶段状态源。
 - 新增写入采用 `PENDING -> INDEXING -> INDEXED`。
 - 删除采用 `DELETING -> DELETED`，失败进入 `DELETE_FAILED`。
 - Qdrant 写入成功但 MySQL 回写失败时，通过补偿流程修复。
+- 解析结果成功通知只在 Markdown、分片、向量化和 ES 入库均成功后发送。
 - 自动补偿不应无限重试所有失败；显式重建由 `reindex_failed_chunks` 控制。
 
 ## 8. 测试建议
@@ -281,6 +373,8 @@ Embedding 客户端由 `ModelFactory` 创建，必须支持 `CapabilityType.EMBE
 .venv/bin/pytest tests/unit/core/vector_storage -q
 .venv/bin/pytest tests/unit/core/qdrant_vector_storage -q
 .venv/bin/pytest tests/unit/core/chunk_fact_storage -q
+.venv/bin/pytest tests/unit/core/es_index_storage -q
+.venv/bin/pytest tests/unit/core/pipeline/test_post_process_repository.py -q
 .venv/bin/pytest tests/integration/core/vector_storage -q
 ```
 
@@ -289,5 +383,7 @@ Embedding 客户端由 `ModelFactory` 创建，必须支持 `CapabilityType.EMBE
 - MySQL 状态流转。
 - embedding 批处理和缓存命中。
 - Qdrant collection 自动创建和 upsert。
+- ES 文件级索引创建和逐 Chunk 写入。
+- `document_post_process_pipeline` 阶段状态流转。
 - 部分失败时的 `failed_chunk_ids`。
 - 删除失败补偿和 INDEXING 卡住修复。

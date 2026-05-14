@@ -29,6 +29,21 @@ toLink-Rag/                         # 仓库根目录
 ├── docker-compose.yml            # 本地依赖编排
 ├── project_info.md               # 项目基础信息
 ├── pyproject.toml                # Python 依赖与项目配置
+├── docs/                         # 项目文档
+│   ├── architecture/             # 稳定架构和模块边界
+│   │   ├── project_structure.md
+│   │   ├── parse_task_pipeline_module.md
+│   │   ├── file_parser_module.md
+│   │   ├── markdown_parser_module.md
+│   │   ├── chunking_module.md
+│   │   ├── vectorization_module.md
+│   │   ├── mq_module.md
+│   │   ├── llm_module.md
+│   │   └── object_storage_module.md
+│   ├── conventions/              # 约定类文档
+│   ├── design/                   # 功能设计文档
+│   ├── plans/                    # 当前计划和执行清单
+│   └── reference/                # API、错误码、数据模型等参考
 ├── scripts/                      # 可执行脚本
 │   ├── db/                       # 数据库初始化脚本
 │   │   ├── init.sql              # 当前数据库表结构（DDL）
@@ -39,6 +54,7 @@ toLink-Rag/                         # 仓库根目录
 │   ├── main.py                   # FastAPI 应用入口
 │   ├── api/                      # HTTP API 分层
 │   │   ├── routes/               # 路由层
+│   │   │   ├── internal.py        # Java 管理端内部 LLM 配置/用量接口
 │   │   │   ├── llm.py
 │   │   │   ├── mq.py
 │   │   │   └── parse.py
@@ -57,6 +73,8 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── constants.py       # 解析任务状态、通知文案等流水线常量
 │   │   │   ├── error_codes.py
 │   │   │   ├── models.py
+│   │   │   ├── post_process_constants.py # 文件级后处理状态常量
+│   │   │   ├── post_process_repository.py # 后处理 pipeline 状态仓储
 │   │   │   └── parse_task_pipeline.py
 │   │   ├── prompts/              # LLM 提示词模板
 │   │   │   └── markdown_enhancement.py
@@ -114,6 +132,9 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── exceptions.py
 │   │   │   ├── models.py
 │   │   │   └── repository.py
+│   │   ├── es_index_storage/      # Elasticsearch 文件级索引阶段
+│   │   │   ├── models.py
+│   │   │   └── pipeline.py
 │   │   ├── qdrant_vector_storage/ # Qdrant 向量索引存储
 │   │   │   ├── bucket_router.py
 │   │   │   ├── constants.py
@@ -165,6 +186,7 @@ toLink-Rag/                         # 仓库根目录
     │   │   ├── mq/               # MQ 模块单元测试
     │   │   ├── parser/           # 解析器模块单元测试
     │   │   ├── chunk_fact_storage/ # Chunk 事实存储单元测试
+    │   │   ├── es_index_storage/ # ES 入库阶段单元测试
     │   │   ├── pipeline/         # 解析流水线单元测试
     │   │   ├── qdrant_vector_storage/ # Qdrant 存储单元测试
     │   │   ├── splitter/         # 切分模块单元测试

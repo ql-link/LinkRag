@@ -14,7 +14,7 @@ scripts/db/init.sql
 
 ## 2. Document Parse Tables
 
-### document_parse_task
+### document_parse_file
 
 用途：Java 侧文件解析任务表，记录一个原始文件当前解析任务关系。
 
@@ -52,7 +52,7 @@ ORM：`src/models/parse_task.py::DocumentParsedLog`
 | `id` | BIGINT UNSIGNED | 主键 |
 | `task_id` | VARCHAR(36) | 解析任务唯一 ID |
 | `document_original_file_id` | BIGINT UNSIGNED | 原始文件 ID |
-| `document_parse_task_id` | BIGINT UNSIGNED | 解析任务表 ID |
+| `document_parse_file_id` | BIGINT UNSIGNED | 文件解析表 ID |
 | `trigger_mode` | VARCHAR(20) | 触发方式 |
 | `task_status` | VARCHAR(16) | `created/success/failed` 等 |
 | `failure_reason` | VARCHAR(512) | 失败原因 |
@@ -69,7 +69,48 @@ ORM：`src/models/parse_task.py::DocumentParsedLog`
 
 - `uk_parse_task_id(task_id)`
 - `idx_parsed_log_original_status(document_original_file_id, task_status, updated_at)`
-- `idx_parsed_log_parse_task_status(document_parse_task_id, task_status, updated_at)`
+- `idx_parsed_log_parse_task_status(document_parse_file_id, task_status, updated_at)`
+
+代码和 API 中仍保留 `document_parse_task_id` 字段名作为历史兼容别名；数据库字段名和 ORM column 映射以 `document_parse_file_id` 为准。
+
+### document_post_process_pipeline
+
+用途：文件级解析后处理流程状态表，记录 Markdown 解析上传成功后的分片、向量化和 ES 入库状态。
+
+ORM：`src/models/parse_task.py::DocumentPostProcessPipeline`
+
+关键字段：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | BIGINT UNSIGNED | 主键 |
+| `document_parsed_log_id` | BIGINT UNSIGNED | 解析日志主键，唯一 |
+| `task_id` | VARCHAR(36) | 解析任务 ID |
+| `document_original_file_id` | BIGINT UNSIGNED | 原始文件 ID |
+| `document_parse_file_id` | BIGINT UNSIGNED | 文件解析表 ID |
+| `pipeline_status` | VARCHAR(20) | `PENDING/PROCESSING/SUCCESS/FAILED` |
+| `chunking_status` | VARCHAR(20) | `PENDING/SUCCESS/FAILED` |
+| `vectorizing_status` | VARCHAR(20) | `PENDING/SUCCESS/FAILED` |
+| `es_indexing_status` | VARCHAR(20) | `PENDING/SUCCESS/FAILED` |
+| `failed_stage` | VARCHAR(20) | `CHUNKING/VECTORIZING/ES_INDEXING` |
+| `recover_from_stage` | VARCHAR(20) | 下次恢复阶段 |
+| `failure_reason` | VARCHAR(512) | 最近一次失败原因 |
+| `chunk_count` | INT | 本次分片数量 |
+| `retry_count` / `last_retry_at` | INT / DATETIME | 重试次数和最近重试时间 |
+| `chunking_duration_ms` | BIGINT | 分片耗时 |
+| `vectorizing_duration_ms` | BIGINT | 向量化耗时 |
+| `es_indexing_duration_ms` | BIGINT | ES 入库耗时 |
+| `total_duration_ms` | BIGINT | 后处理总耗时 |
+| `started_at` / `finished_at` | DATETIME | 后处理开始和结束时间 |
+| `created_at` / `updated_at` | DATETIME | 创建和更新时间 |
+
+索引：
+
+- `uk_post_pipeline_parsed_log(document_parsed_log_id)`
+- `idx_post_pipeline_task_id(task_id)`
+- `idx_post_pipeline_parse_file(document_parse_file_id, updated_at)`
+- `idx_post_pipeline_status(pipeline_status, updated_at)`
+- `idx_post_pipeline_retry(pipeline_status, recover_from_stage, updated_at)`
 
 ## 3. Chunk Tables
 
@@ -199,7 +240,7 @@ ORM：`src/models/db_models.py::UsageLogDB`
 
 - `task_id`
 - `original_file_id`
-- `document_parse_task_id`
+- `document_parse_task_id`：历史兼容字段名，对应数据库 `document_parse_file.id`
 - `user_id`
 - `dataset_id`
 - `file_type`
@@ -303,3 +344,16 @@ Fields:
 - `bucket_id`
 - `vector`
 - `payload`
+
+### ES Indexing Result
+
+Defined in `src/core/es_index_storage/models.py`.
+
+Fields:
+
+- `total_items`
+- `indexed_items`
+- `failed_item_ids`
+- `failure_reason`
+
+`is_success` 为 `true` 的条件是 `failed_item_ids` 为空且 `indexed_items == total_items`。
