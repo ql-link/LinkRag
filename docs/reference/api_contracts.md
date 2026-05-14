@@ -32,6 +32,8 @@
 | `docling_force_ocr` | bool | 否 | 仅兼容旧 PDF 参数 |
 | `image_bucket` | string | 否 | PDF 图片输出 bucket |
 | `image_prefix` | string | 否 | PDF 图片输出 key 前缀 |
+| `source_file_url` | string | 否 | MinerU 精准解析 API 使用的源文件 URL；选择 `parser_backend=mineru` 时必须可被 MinerU 云端访问 |
+| `mineru_model_version` | string | 否 | MinerU 精准解析模型，默认 `vlm` |
 
 响应 `data`：
 

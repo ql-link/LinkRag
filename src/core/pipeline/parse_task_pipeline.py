@@ -209,18 +209,25 @@ class ParseTaskPipeline:
         await db.commit()
 
         try:
-            try:
-                # 从对象存储取回原文件。
-                file_bytes = await asyncio.to_thread(self._download_file, payload)
-            except Exception as exc:
-                # 原文件不可达时归类为源文件失败，并统一写终态、发通知。
-                return await self._handle_execution_failure(
-                    payload,
-                    log_record,
-                    db,
-                    ParseFailureCode.SOURCE_FILE_NOT_FOUND,
-                    exc,
+            if self._should_skip_source_download(payload):
+                logger.info(
+                    f"[ParseTaskPipeline] skip source download for MinerU URL API: "
+                    f"task_id={payload.task_id}"
                 )
+                file_bytes = b""
+            else:
+                try:
+                    # 从对象存储取回原文件。
+                    file_bytes = await asyncio.to_thread(self._download_file, payload)
+                except Exception as exc:
+                    # 原文件不可达时归类为源文件失败，并统一写终态、发通知。
+                    return await self._handle_execution_failure(
+                        payload,
+                        log_record,
+                        db,
+                        ParseFailureCode.SOURCE_FILE_NOT_FOUND,
+                        exc,
+                    )
 
             try:
                 # 调用解析服务生成 Markdown 和结构化结果。
@@ -683,6 +690,14 @@ class ParseTaskPipeline:
             object_key=payload.source_object_key,
         )
 
+    @staticmethod
+    def _should_skip_source_download(payload: ParseTaskPayload) -> bool:
+        """MinerU 精准解析使用远端 URL 拉取文件，无需先把 PDF 下载到本服务。"""
+        return (
+            payload.file_type.lower() == "pdf"
+            and (payload.pdf_parser_backend or "mineru").lower() == "mineru"
+        )
+
     async def _parse_file(self, file_bytes: bytes, payload: ParseTaskPayload) -> dict:
         """调用解析服务生成 Markdown 与结构化解析结果。
 
@@ -695,13 +710,19 @@ class ParseTaskPipeline:
         """
         parser_kwargs = {}
         if payload.file_type.lower() == "pdf":
+            pdf_backend = payload.pdf_parser_backend or "mineru"
             parser_kwargs = {
-                "backend": payload.pdf_parser_backend or "mineru",
+                "backend": pdf_backend,
                 "docling_force_ocr": bool(payload.docling_force_ocr),
                 "image_bucket": payload.image_bucket or payload.md_bucket,
                 "image_prefix": payload.image_prefix or payload.md_object_key,
                 "storage": self._storage,
             }
+            if pdf_backend.lower() == "mineru":
+                parser_kwargs["source_file_url"] = self._storage.build_object_url(
+                    bucket=payload.source_bucket,
+                    object_key=payload.source_object_key,
+                )
 
         return await ParseTaskService.aprocess(
             file_bytes,

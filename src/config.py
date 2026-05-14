@@ -126,9 +126,10 @@ class Settings(BaseSettings):
     LOCAL_DOCS_PATH: str = "./data/documents"
     PDF_PARSER_BACKEND: str = "mineru"  # auto / mineru / opendataloader / naive
     PDF_PARSER_FALLBACKS: str = ""
-    MINERU_API_URL: str = ""  # mineru-api 服务地址，例如 http://localhost:8010 或云服务地址
-    MINERU_API_KEY: Optional[str] = None  # MinerU 云服务专属 Token (如需)
+    MINERU_API_URL: str = ""  # MinerU 官方云端 V4 API 地址
+    MINERU_API_KEY: Optional[str] = None  # MinerU 云服务专属 Token
     MINERU_TIMEOUT: int = 300  # MinerU API 请求超时（秒）
+    MINERU_MODEL_VERSION: str = "vlm"  # pipeline / vlm / MinerU-HTML
 
 
     # ==========================================

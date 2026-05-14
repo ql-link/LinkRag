@@ -88,13 +88,14 @@ PDF_PARSER_FALLBACKS=
 MINERU_API_URL=https://mineru.net/api/v4/extract/task
 MINERU_API_KEY=...
 MINERU_TIMEOUT=300
+MINERU_MODEL_VERSION=vlm
 ```
 
 说明：
 
 - `PDF_PARSER_BACKEND`：调用方未传 `backend` 时使用，当前默认 `mineru`。
-- `PDF_PARSER_FALLBACKS`：逗号分隔的兜底后端列表；留空表示不自动回退本地解析器。
-- `MINERU_*`：MinerU API 调用配置。
+- `PDF_PARSER_FALLBACKS`：逗号分隔的兜底后端列表；留空表示不自动回退本地解析器。显式选择 `mineru` 时不会使用本地兜底后端。
+- `MINERU_*`：MinerU 官方精准解析 API 调用配置。`MINERU_MODEL_VERSION` 默认 `vlm`，可按官方支持切换为 `pipeline`、`vlm` 或 `MinerU-HTML`。
 
 ## 5. 使用方式
 
@@ -110,6 +111,7 @@ result = await ParseTaskService.aprocess(
     file_type="pdf",
     source_file="example.pdf",
     backend="mineru",
+    source_file_url="https://cdn.example.com/example.pdf",
 )
 
 markdown = result["markdown"]
@@ -126,7 +128,11 @@ time_cost_ms = result["time_cost_ms"]
 ```python
 from src.core.parser.factory import ParserFactory
 
-parser = ParserFactory.get_parser("pdf", backend="mineru")
+parser = ParserFactory.get_parser(
+    "pdf",
+    backend="mineru",
+    source_file_url="https://cdn.example.com/example.pdf",
+)
 markdown = parser.parse(file_bytes)
 metadata = parser.extract_metadata()
 ```
@@ -136,11 +142,18 @@ metadata = parser.extract_metadata()
 调用方可用 `backend` 覆盖默认后端：
 
 ```python
-await ParseTaskService.aprocess(file_bytes, "pdf", backend="mineru")
+await ParseTaskService.aprocess(
+    file_bytes,
+    "pdf",
+    backend="mineru",
+    source_file_url="https://cdn.example.com/example.pdf",
+)
 await ParseTaskService.aprocess(file_bytes, "pdf", backend="opendataloader")
 await ParseTaskService.aprocess(file_bytes, "pdf", backend="naive")
 await ParseTaskService.aprocess(file_bytes, "pdf", backend="auto")
 ```
+
+MinerU 后端只调用官方 V4 精准解析 API：`POST /api/v4/extract/task` 提交文件 URL 与 `model_version`，再通过 `GET /api/v4/extract/task/{task_id}` 轮询解析结果并下载结果 ZIP。该接口不支持直接上传本地 bytes，因此显式选择 `mineru` 时必须提供 `source_file_url`，且该 URL 必须能被 MinerU 云端访问。缺少 `MINERU_API_KEY`、`MINERU_API_URL` 或 `source_file_url` 时，该后端会直接失败并记录 `mineru_backend_error`，不会回退到本地 mineru-api。轮询策略会先立即查询一次，未完成时按 `1s -> 1.5s -> 2.25s` 退避，最大间隔 5s。
 
 MQ 解析任务通过 `pdf_parser_backend` 指定：
 
@@ -153,9 +166,15 @@ MQ 解析任务通过 `pdf_parser_backend` 指定：
 
 如果未传 `pdf_parser_backend`，默认使用 `mineru`。
 
+在 MQ 流水线中，当 `pdf_parser_backend="mineru"` 时，`ParseTaskPipeline` 会使用源文件的 `source_bucket` 与 `source_object_key` 通过对象存储构造 `source_file_url`，并跳过本服务下载源 PDF 的步骤。生产环境需保证该对象 URL 对 MinerU 云端可访问，否则精准解析任务会创建失败或轮询失败。
+
 ### 5.4 图片资产输出
 
 PDF 解析可传 `image_bucket`、`image_prefix` 配合对象存储输出图片资产；完整流水线中，这些参数通常由 `ParseTaskPipeline` 从 MQ payload 和 Markdown 输出路径中组装。
+
+MinerU 精准解析返回的 ZIP 中，Markdown 图片默认是 `images/xxx` 相对路径。`MinerUBackend` 会保留该相对路径作为图片资产的 `source_path`，`PdfParserService` 并发上传图片资产后再把 Markdown 中的相对路径替换为对象存储 URL。解析返回前会等待图片上传完成，保证 Markdown 中的 URL 可读。
+
+所有 PDF 图片上传路径都会收敛到同一套并发上传逻辑，包括 MinerU/OpenDataLoader 已提取的二进制图片、PyMuPDF 内嵌图、Naive 图片块、页渲染图片和视觉区域裁剪图片。对象存储层仍然是一张图片一个 object 上传，不使用单次批量上传；并发只用于降低多图上传的墙钟耗时。
 
 ## 6. 新增文件格式解析器
 

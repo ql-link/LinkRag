@@ -59,6 +59,8 @@ class PdfBackendRegistry:
             return [name for name in self.AUTO_BACKEND_ORDER if name in self._factories]
 
         primary = requested if requested in self._factories else self.default_backend
+        if primary == "mineru":
+            return [primary]
         order = [primary]
         for item in (self.fallbacks or "").split(","):
             fallback = item.strip().lower()

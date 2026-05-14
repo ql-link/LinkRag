@@ -381,7 +381,10 @@ class TestParseTaskPipeline:
             es_indexing_pipeline=es_pipeline,
         )
 
-        result = await pipeline.execute(build_payload())
+        payload = build_payload()
+        payload.pdf_parser_backend = "opendataloader"
+
+        result = await pipeline.execute(payload)
 
         assert result.status == PipelineStatus.SUCCESS
         assert result.chunk_count == 2
@@ -421,6 +424,58 @@ class TestParseTaskPipeline:
         )
         db.commit.assert_awaited()
         db.close.assert_awaited_once()
+
+    @patch(
+        "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess",
+        new_callable=AsyncMock,
+    )
+    @patch("src.core.pipeline.parse_task_pipeline.ParseTaskPipeline._chunk_markdown")
+    async def test_execute_should_skip_source_download_for_mineru_url_api(
+        self,
+        mock_chunk_markdown,
+        mock_aprocess,
+    ):
+        db = build_db(build_parse_task())
+        storage = MagicMock()
+        storage.build_object_url.side_effect = lambda bucket, object_key: (
+            f"http://minio/{bucket}/{object_key}"
+        )
+        storage.upload_bytes.side_effect = lambda **_kwargs: None
+        mq_service = MagicMock()
+        mq_service.send = AsyncMock()
+        vector_storage = AsyncMock()
+        vector_storage.store_chunks.return_value = ChunkIndexingResult(
+            total_chunks=1,
+            indexed_chunks=1,
+        )
+        es_pipeline = FakeEsIndexingPipeline(EsIndexingResult(total_items=1, indexed_items=1))
+        post_repo = FakePostProcessRepository()
+        mock_aprocess.return_value = {
+            "markdown": "parsed content",
+            "parse_result": MagicMock(),
+            "metadata": {"pages_or_length": 0},
+            "time_cost_ms": 120,
+        }
+        mock_chunk_markdown.return_value = [MagicMock()]
+        pipeline = ParseTaskPipeline(
+            storage=storage,
+            session_factory=FakeAsyncSessionFactory(db),
+            mq_service=mq_service,
+            vector_storage=vector_storage,
+            post_process_repository=post_repo,
+            es_indexing_pipeline=es_pipeline,
+        )
+
+        result = await pipeline.execute(build_payload())
+
+        assert result.status == PipelineStatus.SUCCESS
+        storage.download_bytes.assert_not_called()
+        mock_aprocess.assert_awaited_once()
+        assert mock_aprocess.await_args.args[0] == b""
+        assert (
+            mock_aprocess.await_args.kwargs["source_file_url"]
+            == "http://minio/source-bucket/uploads/test.pdf"
+        )
 
     @patch(
         "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess",

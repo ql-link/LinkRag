@@ -70,3 +70,4 @@ class TestParseRoutes:
         assert sent_msg.get_payload().original_file_id == 456
         assert sent_msg.get_payload().document_parse_task_id == 789
         assert sent_msg.get_payload().file_type == "pdf"
+        assert sent_msg.get_payload().pdf_parser_backend == "mineru"
