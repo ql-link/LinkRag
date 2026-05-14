@@ -85,17 +85,22 @@ PDF 默认解析器由 `src/config.py` 和 `.env` 控制：
 ```env
 PDF_PARSER_BACKEND=mineru
 PDF_PARSER_FALLBACKS=
+PDF_IMAGE_UPLOAD_ASYNC=true
+PDF_IMAGE_ENHANCEMENT_MEMORY_MAX_IMAGES=20
+PDF_IMAGE_ENHANCEMENT_MEMORY_MAX_BYTES=52428800
 MINERU_API_URL=https://mineru.net/api/v4/extract/task
 MINERU_API_KEY=...
 MINERU_TIMEOUT=300
+MINERU_MODEL_VERSION=vlm
 ```
 
 说明：
 
 - `PDF_PARSER_BACKEND`：调用方未传 `backend` 时使用，当前默认 `mineru`。
-- `PDF_PARSER_FALLBACKS`：逗号分隔的兜底后端列表；留空表示不自动回退本地解析器。
-- `MINERU_*`：MinerU API 调用配置。
-- `MINIO_PUBLIC_ENDPOINT`：可选公网 MinIO endpoint；当 MQ 解析任务使用 MinerU 官方云端时，流水线会尝试生成预签名源文件 URL 并传给 MinerU，减少本服务到 MinerU 的重复上传。当前主流程仍会先下载源文件字节用于解析入口校验、页数元数据和失败回退。
+- `PDF_PARSER_FALLBACKS`：逗号分隔的兜底后端列表；留空表示不自动回退本地解析器。显式选择 `mineru` 时不会使用本地兜底后端。
+- `PDF_IMAGE_UPLOAD_ASYNC`：是否将 PDF 图片上传切到后台线程执行。默认 `true`，主链路会先生成最终图片 URL 并返回 Markdown，不等待 MinIO 上传完成。
+- `PDF_IMAGE_ENHANCEMENT_MEMORY_MAX_IMAGES` / `PDF_IMAGE_ENHANCEMENT_MEMORY_MAX_BYTES`：图片增强可直接使用的解析阶段内存图片上限，避免大 PDF 占用过多 worker 内存。
+- `MINERU_*`：MinerU 官方精准解析 API 调用配置。`MINERU_MODEL_VERSION` 默认 `vlm`，可按官方支持切换为 `pipeline`、`vlm` 或 `MinerU-HTML`。
 
 ## 5. 使用方式
 
@@ -111,6 +116,7 @@ result = await ParseTaskService.aprocess(
     file_type="pdf",
     source_file="example.pdf",
     backend="mineru",
+    source_file_url="https://cdn.example.com/example.pdf",
 )
 
 markdown = result["markdown"]
@@ -127,7 +133,11 @@ time_cost_ms = result["time_cost_ms"]
 ```python
 from src.core.parser.factory import ParserFactory
 
-parser = ParserFactory.get_parser("pdf", backend="mineru")
+parser = ParserFactory.get_parser(
+    "pdf",
+    backend="mineru",
+    source_file_url="https://cdn.example.com/example.pdf",
+)
 markdown = parser.parse(file_bytes)
 metadata = parser.extract_metadata()
 ```
@@ -137,24 +147,18 @@ metadata = parser.extract_metadata()
 调用方可用 `backend` 覆盖默认后端：
 
 ```python
-await ParseTaskService.aprocess(file_bytes, "pdf", backend="mineru")
+await ParseTaskService.aprocess(
+    file_bytes,
+    "pdf",
+    backend="mineru",
+    source_file_url="https://cdn.example.com/example.pdf",
+)
 await ParseTaskService.aprocess(file_bytes, "pdf", backend="opendataloader")
 await ParseTaskService.aprocess(file_bytes, "pdf", backend="naive")
 await ParseTaskService.aprocess(file_bytes, "pdf", backend="auto")
 ```
 
-MinerU 官方云端后端还支持传入 `source_file_url`：
-
-```python
-await ParseTaskService.aprocess(
-    file_bytes,
-    "pdf",
-    backend="mineru",
-    source_file_url="https://example.com/presigned/document.pdf",
-)
-```
-
-仅当 `MINERU_API_KEY` 已配置且 `MINERU_API_URL` 指向 `mineru.net` 时，`source_file_url` 会触发 URL 直拉模式；否则仍走本地 HTTP API 或云端文件上传路径。
+MinerU 后端只调用官方 V4 精准解析 API：`POST /api/v4/extract/task` 提交文件 URL 与 `model_version`，再通过 `GET /api/v4/extract/task/{task_id}` 轮询解析结果并下载结果 ZIP。该接口不支持直接上传本地 bytes，因此显式选择 `mineru` 时必须提供 `source_file_url`，且该 URL 必须能被 MinerU 云端访问。缺少 `MINERU_API_KEY`、`MINERU_API_URL` 或 `source_file_url` 时，该后端会直接失败并记录 `mineru_backend_error`，不会回退到本地 mineru-api。轮询策略会先立即查询一次，未完成时按 `1s -> 1.5s -> 2.25s` 退避，最大间隔 5s。
 
 MQ 解析任务通过 `pdf_parser_backend` 指定：
 
@@ -167,26 +171,17 @@ MQ 解析任务通过 `pdf_parser_backend` 指定：
 
 如果未传 `pdf_parser_backend`，默认使用 `mineru`。
 
+在 MQ 流水线中，当 `pdf_parser_backend="mineru"` 时，`ParseTaskPipeline` 会使用源文件的 `source_bucket` 与 `source_object_key` 通过对象存储构造 `source_file_url`，并跳过本服务下载源 PDF 的步骤。生产环境需保证该对象 URL 对 MinerU 云端可访问，否则精准解析任务会创建失败或轮询失败。
+
 ### 5.4 图片资产输出
 
 PDF 解析可传 `image_bucket`、`image_prefix` 配合对象存储输出图片资产；完整流水线中，这些参数通常由 `ParseTaskPipeline` 从 MQ payload 和 Markdown 输出路径中组装。
 
-### 5.5 MinerU 云端 URL 直拉
+MinerU 精准解析返回的 ZIP 中，Markdown 图片默认是 `images/xxx` 相对路径。`MinerUBackend` 会保留该相对路径作为图片资产的 `source_path`，`PdfParserService` 会先同步生成最终对象 key 与 URL，再把 Markdown 中的相对路径替换为对象存储 URL。
 
-MQ 解析任务使用 `mineru` 后端时，`ParseTaskPipeline` 会尝试通过对象存储生成源文件预签名 URL：
+所有 PDF 图片上传路径都会收敛到同一套图片准备逻辑，包括 MinerU/OpenDataLoader 已提取的二进制图片、PyMuPDF 内嵌图、Naive 图片块、页渲染图片和视觉区域裁剪图片。对象存储层仍然是一张图片一个 object 上传，不使用单次批量上传；当 `PDF_IMAGE_UPLOAD_ASYNC=true` 时，主链路只负责生成 URL 并提交后台上传任务，不等待 MinIO 上传完成，因此 Markdown 中的图片链接会经历一个短暂的最终一致性窗口。
 
-```text
-ParseTaskPipeline
-  -> BaseObjectStorage.generate_presigned_url()
-  -> PdfParser(source_file_url=...)
-  -> MinerUBackend._call_cloud_api_by_url()
-```
-
-该优化的边界：
-
-- 只对 MinerU 官方云端后端生效。
-- 存储层无法生成 URL、URL 不可外部访问或非云端 MinerU 配置时自动回到原有上传路径。
-- MinIO 私有部署如需让 MinerU 云端访问，应配置 `MINIO_PUBLIC_ENDPOINT`，用于替换预签名 URL 中的内网 endpoint。
+图片增强不会依赖 MinIO 图片已上传完成。`PdfParserService` 会把受限数量的图片 bytes 作为进程内临时映射交给 `ParseTaskService`，`ProviderVisionClient` 优先使用内存图片进行视觉模型调用，只有内存映射缺失时才回退读取 Markdown 中的图片 URL。该内存映射不会写入最终 metadata、MQ 或数据库。
 
 ## 6. 新增文件格式解析器
 

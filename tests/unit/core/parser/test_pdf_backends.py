@@ -1,16 +1,18 @@
-"""MinerU 和 Marker 后端的单元测试。
+"""MinerU 和 PDF 后端的单元测试。
 
 测试策略：
-- MinerU: Mock HTTP 请求，验证 API 调用逻辑和降级行为
-- Marker: Mock marker-pdf 库，验证模型加载和解析逻辑
+- MinerU: Mock 官方云端精准解析 API，验证 URL 投递、轮询和结果下载逻辑
+- OpenDataLoader: Mock opendataloader 库，验证本地解析逻辑
 - Service: 验证 backend 路由和降级链路
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
+import io
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+import zipfile
 
 import cv2
 import numpy as np
@@ -20,23 +22,42 @@ from src.core.parser.pdf.backends.mineru_backend import MinerUBackend
 from src.core.parser.pdf.backends.naive_backend import NaivePdfBackend
 from src.core.parser.pdf.backends.opendataloader_backend import OpenDataLoaderBackend
 from src.core.parser.pdf.base import BasePdfBackend
-from src.core.parser.pdf.models import PdfImageAsset, PdfParseOptions
+from src.core.parser.pdf.models import PdfBinaryAsset, PdfImageAsset, PdfParseOptions
 from src.core.parser.pdf.registry import (
     PdfBackendRegistry,
     create_default_pdf_backend_registry,
     register_pdf_backend,
 )
 from src.core.parser.pdf.service import PdfParserService
+from src.core.parser.providers.pdf_parser import PdfParser
+
+
+def _response(payload: dict, status_code: int = 200, content: bytes = b"") -> MagicMock:
+    response = MagicMock()
+    response.status_code = status_code
+    response.content = content
+    response.json.return_value = payload
+    response.raise_for_status = MagicMock()
+    return response
+
+
+def _build_mineru_zip(files: dict[str, bytes]) -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as zf:
+        for path, content in files.items():
+            zf.writestr(path, content)
+    return buffer.getvalue()
+
 
 # ── MinerU Backend Tests ──────────────────────────────────────────────
 
 
 class TestMinerUBackend:
-    """MinerU HTTP API 后端测试。"""
+    """MinerU 官方云端 API 后端测试。"""
 
     def test_returns_empty_when_api_url_not_configured(self):
         """API URL 为空时应返回空结果。"""
-        backend = MinerUBackend(api_url="")
+        backend = MinerUBackend(api_url="", api_key="token")
         md, assets = backend.parse(b"fake-pdf-bytes")
         assert md == ""
         assert assets == []
@@ -44,31 +65,111 @@ class TestMinerUBackend:
 
     def test_returns_empty_when_api_url_is_none(self):
         """API URL 为 None 时应返回空结果。"""
-        backend = MinerUBackend(api_url=None)
+        backend = MinerUBackend(api_url=None, api_key="token")
         md, assets = backend.parse(b"fake-pdf-bytes")
         assert md == ""
 
+    def test_returns_empty_when_api_key_not_configured(self):
+        """API Key 为空时不应回退到本地 mineru-api。"""
+        backend = MinerUBackend(api_url="http://localhost:8010")
+        md, assets = backend.parse(b"fake-pdf-bytes")
+
+        assert md == ""
+        assert assets == []
+        assert "MINERU_API_KEY 未配置" in backend.metadata["mineru_backend_error"]
+
     @patch("src.core.parser.pdf.backends.mineru_backend.httpx.Client")
-    def test_successful_api_call(self, mock_client_cls):
-        """模拟 API 成功返回 Markdown。"""
-        mock_response = MagicMock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "markdown": "# Test\n\nHello world",
-            "parse_method": "auto",
-        }
-        mock_response.raise_for_status = MagicMock()
+    @patch("src.core.parser.pdf.backends.mineru_backend.time.sleep", return_value=None)
+    def test_successful_cloud_api_call(self, _mock_sleep, mock_client_cls):
+        """模拟官方云端 API 成功返回 Markdown。"""
+        zip_bytes = _build_mineru_zip(
+            {
+                "result/document.md": b"# Test\n\nHello world",
+                "images/page-001.png": b"png-bytes",
+            }
+        )
+        create_response = _response(
+            {
+                "code": 0,
+                "data": {
+                    "task_id": "task-1",
+                },
+            }
+        )
+        poll_response = _response(
+            {
+                "code": 0,
+                "data": {
+                    "state": "done",
+                    "full_zip_url": "https://download.example/result.zip",
+                },
+            }
+        )
+        zip_response = _response({}, status_code=200, content=zip_bytes)
 
         mock_client = MagicMock()
-        mock_client.post.return_value = mock_response
+        mock_client.post.return_value = create_response
+        mock_client.get.side_effect = [poll_response, zip_response]
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
         mock_client_cls.return_value = mock_client
 
-        backend = MinerUBackend(api_url="http://localhost:8010")
-        md, assets = backend.parse(b"fake-pdf-bytes")
+        backend = MinerUBackend(api_url="https://mineru.net/api/v4/extract/task", api_key="token")
+        md, assets = backend.parse(
+            b"fake-pdf-bytes",
+            PdfParseOptions(
+                source_file_url="https://cdn.example/document.pdf",
+                mineru_model_version="vlm",
+            ),
+        )
+
         assert md == "# Test\n\nHello world"
+        assert len(assets) == 1
+        assert assets[0].content == b"png-bytes"
+        assert assets[0].source_path == "images/page-001.png"
         assert backend.metadata["mineru_api_status"] == 200
+        assert backend.metadata["mineru_task_id"] == "task-1"
+        mock_client.post.assert_called_once_with(
+            "https://mineru.net/api/v4/extract/task",
+            headers={
+                "Authorization": "Bearer token",
+                "Content-Type": "application/json",
+            },
+            json={
+                "url": "https://cdn.example/document.pdf",
+                "model_version": "vlm",
+            },
+        )
+        mock_client.put.assert_not_called()
+        assert mock_client.get.call_count == 2
+
+    def test_returns_empty_when_source_file_url_not_configured(self):
+        """精准解析 API 不支持直接上传本地 bytes，缺少 URL 时应失败。"""
+        backend = MinerUBackend(api_url="https://mineru.net/api/v4/extract/task", api_key="token")
+
+        md, assets = backend.parse(b"fake-pdf-bytes")
+
+        assert md == ""
+        assert assets == []
+        assert "source_file_url" in backend.metadata["mineru_backend_error"]
+
+    @patch("src.core.parser.providers.pdf_parser.PdfParserService.parse")
+    @patch("src.core.parser.providers.pdf_parser.fitz.open")
+    def test_pdf_parser_should_skip_local_pdf_open_for_mineru_url_api(
+        self,
+        mock_fitz_open,
+        mock_service_parse,
+    ):
+        """mineru URL API 场景允许空 bytes，避免为了本地元数据额外下载 PDF。"""
+        mock_service_parse.return_value = ("# Parsed", {"pdf_parser_backend": "mineru"})
+
+        parser = PdfParser(backend="mineru", source_file_url="https://cdn.example/document.pdf")
+        markdown = parser.parse(b"")
+
+        assert markdown == "# Parsed"
+        assert parser.metadata["pages_or_length"] == 0
+        assert parser.metadata["pdf_info"] == {}
+        mock_fitz_open.assert_not_called()
 
     @patch("src.core.parser.pdf.backends.mineru_backend.httpx.Client")
     def test_api_connection_error_returns_empty(self, mock_client_cls):
@@ -81,8 +182,11 @@ class TestMinerUBackend:
         mock_client.__exit__ = MagicMock(return_value=False)
         mock_client_cls.return_value = mock_client
 
-        backend = MinerUBackend(api_url="http://localhost:8010")
-        md, assets = backend.parse(b"fake-pdf-bytes")
+        backend = MinerUBackend(api_url="https://mineru.net/api/v4", api_key="token")
+        md, assets = backend.parse(
+            b"fake-pdf-bytes",
+            PdfParseOptions(source_file_url="https://cdn.example/document.pdf"),
+        )
         assert md == ""
         assert "mineru_backend_error" in backend.metadata
 
@@ -97,8 +201,11 @@ class TestMinerUBackend:
         mock_client.__exit__ = MagicMock(return_value=False)
         mock_client_cls.return_value = mock_client
 
-        backend = MinerUBackend(api_url="http://localhost:8010")
-        md, assets = backend.parse(b"fake-pdf-bytes")
+        backend = MinerUBackend(api_url="https://mineru.net/api/v4", api_key="token")
+        md, assets = backend.parse(
+            b"fake-pdf-bytes",
+            PdfParseOptions(source_file_url="https://cdn.example/document.pdf"),
+        )
         assert md == ""
         assert "超时" in backend.metadata.get("mineru_backend_error", "")
 
@@ -229,8 +336,17 @@ class TestPdfParserServiceRouting:
 
         monkeypatch.setattr(settings, "PDF_PARSER_FALLBACKS", "naive")
         service = PdfParserService()
+        order = service._build_backend_order("opendataloader")
+        assert order == ["opendataloader", "naive"]
+
+    def test_mineru_backend_should_ignore_local_fallbacks(self, monkeypatch):
+        """显式选择 mineru 时只走官方云端，不回退到本地解析器。"""
+        from src.config import settings
+
+        monkeypatch.setattr(settings, "PDF_PARSER_FALLBACKS", "opendataloader,naive")
+        service = PdfParserService()
         order = service._build_backend_order("mineru")
-        assert order == ["mineru", "naive"]
+        assert order == ["mineru"]
 
     def test_naive_backend_order(self):
         """naive 模式应仅有 Naive。"""
@@ -248,7 +364,11 @@ class TestPdfParserServiceRouting:
     def test_create_mineru_instance_with_url(self):
         """MinerU API URL 已配置时应返回 MinerUBackend 实例。"""
         service = PdfParserService()
-        options = PdfParseOptions(backend="mineru", mineru_api_url="http://localhost:8010")
+        options = PdfParseOptions(
+            backend="mineru",
+            mineru_api_url="https://mineru.net/api/v4",
+            mineru_api_key="token",
+        )
         instance = service._create_backend_instance("mineru", options)
         assert isinstance(instance, MinerUBackend)
 
@@ -347,6 +467,24 @@ class TestPdfParserServiceRouting:
         assert "http://minio/page-001-figure-01.png" in injected
         assert "images/page-001-figure-01.png" not in injected
 
+    def test_inject_image_references_should_replace_mineru_zip_image_refs(self):
+        service = PdfParserService()
+        markdown = "# 锁优化\n\n![](images/hash.jpg)\n\n正文内容"
+        image_assets = [
+            PdfImageAsset(
+                page_number=1,
+                index=1,
+                object_key="picture-page-001-01.jpg",
+                url="http://minio/picture-page-001-01.jpg",
+                source_path="images/hash.jpg",
+            )
+        ]
+
+        injected = service._inject_image_references(markdown, "mineru", image_assets)
+
+        assert "http://minio/picture-page-001-01.jpg" in injected
+        assert "images/hash.jpg" not in injected
+
     @patch("src.core.parser.pdf.service.fitz.open")
     def test_upload_images_should_extract_naive_image_blocks_without_page_render(
         self, mock_fitz_open
@@ -358,6 +496,7 @@ class TestPdfParserServiceRouting:
             backend="naive",
             image_bucket="rag-md",
             image_prefix="10002/10003/doc.md",
+            image_upload_async=False,
             storage=storage,
         )
         rng = np.random.default_rng(1)
@@ -410,6 +549,7 @@ class TestPdfParserServiceRouting:
             backend="naive",
             image_bucket="rag-md",
             image_prefix="10002/10003/doc.md",
+            image_upload_async=False,
             storage=storage,
         )
 
@@ -461,6 +601,68 @@ class TestPdfParserServiceRouting:
         assert uploaded["object_key"] == "10002/10003/image/doc/page-001-region-01.png"
         assert uploaded["content_type"] == "image/png"
         assert len(uploaded["content"]) > len(tiny_encoded.tobytes())
+
+    def test_upload_images_should_schedule_async_upload_without_waiting(self):
+        service = PdfParserService()
+        storage = MagicMock()
+        storage.build_object_url.side_effect = lambda bucket, key: f"http://minio/{bucket}/{key}"
+        options = PdfParseOptions(
+            backend="mineru",
+            image_bucket="rag-md",
+            image_prefix="10002/10003/doc.md",
+            image_upload_async=True,
+            storage=storage,
+        )
+        binary_assets = [
+            PdfBinaryAsset(
+                kind="picture",
+                page_number=1,
+                index=1,
+                ext="png",
+                content=b"fake-image-bytes" * 500,
+                source_path="images/demo.png",
+            )
+        ]
+
+        with patch.object(service, "_submit_async_uploads") as mock_submit:
+            image_assets = service._upload_images(
+                b"",
+                options,
+                backend="mineru",
+                placeholder_count=1,
+                binary_assets=binary_assets,
+            )
+
+        assert len(image_assets) == 1
+        assert image_assets[0].url == (
+            "http://minio/rag-md/10002/10003/image/doc/picture-page-001-01.png"
+        )
+        storage.upload_bytes.assert_not_called()
+        mock_submit.assert_called_once()
+
+    @patch("src.core.parser.pdf.service.fitz.open")
+    def test_upload_images_should_not_open_local_pdf_when_file_bytes_missing(self, mock_fitz_open):
+        service = PdfParserService()
+        storage = MagicMock()
+        storage.build_object_url.side_effect = lambda bucket, key: f"http://minio/{bucket}/{key}"
+        options = PdfParseOptions(
+            backend="mineru",
+            image_bucket="rag-md",
+            image_prefix="10002/10003/doc.md",
+            image_upload_async=True,
+            storage=storage,
+        )
+
+        image_assets = service._upload_images(
+            b"",
+            options,
+            backend="mineru",
+            placeholder_count=1,
+            binary_assets=[],
+        )
+
+        assert image_assets == []
+        mock_fitz_open.assert_not_called()
 
     def test_detect_visual_regions_should_exclude_table_bboxes(self):
         service = PdfParserService()

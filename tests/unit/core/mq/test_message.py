@@ -56,7 +56,7 @@ class TestParseTaskMessage:
             md_bucket="markdown-bucket",
             md_object_key="parsed/t-001.md",
         )
-        assert msg.get_mq_name() == "tolink-document-pares"
+        assert msg.get_mq_name() == "tolink.rag.parse_task"
         assert msg.get_mq_type() == "PARSE_TASK"
         assert msg.get_routing_key() == "pdf"
 
@@ -91,7 +91,7 @@ class TestParseTaskMessage:
         data = json.loads(serialized)
 
         assert data["mq_type"] == "PARSE_TASK"
-        assert data["mq_name"] == "tolink-document-pares"
+        assert data["mq_name"] == "tolink.rag.parse_task"
         assert data["payload"]["task_id"] == "t-002"
         assert data["payload"]["original_file_id"] == 2
         assert data["payload"]["pdf_parser_backend"] == "mineru"
@@ -105,7 +105,7 @@ class TestParseTaskMessage:
         assert parsed.source_filename == "doc.docx"
 
     def test_mq_name_constant(self):
-        assert ParseTaskMessage.get_mq_name() == "tolink-document-pares"
+        assert ParseTaskMessage.get_mq_name() == "tolink.rag.parse_task"
         assert ParseTaskMessage.get_mq_type() == "PARSE_TASK"
 
     def test_parse_msg_supports_flat_payload(self):
@@ -204,13 +204,14 @@ class TestParseResultMessage:
             "task_status": "success",
             "failure_reason": None,
             "parse_finished_at": "2026-04-28T10:00:08",
+            "user_message": None,
         }
         assert "mq_type" not in data
         assert "mq_name" not in data
         assert "payload" not in data
         parsed = ParseResultMessage.parse_msg(serialized)
         assert parsed.failure_reason is None
-        assert not hasattr(parsed, "user_message")
+        assert parsed.user_message is None
         assert msg.get_routing_key() == "9f6b7d7e-4e7b-4a3f-9f4d-8d2a1b6c7e90"
 
     def test_parse_msg_supports_payload_without_user_message(self):
@@ -234,7 +235,7 @@ class TestParseResultMessage:
         parsed = ParseResultMessage.parse_msg(raw)
 
         assert parsed.task_id == "t-legacy-result"
-        assert not hasattr(parsed, "user_message")
+        assert parsed.user_message is None
 
 
 class TestCacheSyncMessage:

@@ -24,6 +24,8 @@ class MarkdownEnhancementOrchestrator:
         self,
         markdown: str,
         source_file: str | None = None,
+        enable_image_enhancement: bool | None = None,
+        image_bytes_by_url: dict[str, tuple[bytes, str]] | None = None,
     ) -> ParseResult:
         """Parse markdown and enrich the structured result before materializing markdown again."""
         settings = _get_settings()
@@ -35,9 +37,16 @@ class MarkdownEnhancementOrchestrator:
             except Exception as exc:
                 logger.warning("Table enhancement skipped: %s", exc)
 
-        if settings.MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT and parse_result.images:
+        image_enhancement_enabled = settings.MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT
+        if enable_image_enhancement is not None:
+            image_enhancement_enabled = enable_image_enhancement
+
+        if image_enhancement_enabled and parse_result.images:
             try:
-                parse_result = await ImageDescriber(build_default_vision_client()).aprocess(parse_result)
+                parse_result = await ImageDescriber(build_default_vision_client()).aprocess(
+                    parse_result,
+                    image_bytes_by_url=image_bytes_by_url,
+                )
             except Exception as exc:
                 logger.warning("Image enhancement skipped: %s", exc)
 
