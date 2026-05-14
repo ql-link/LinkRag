@@ -51,7 +51,7 @@
 | --- | --- | --- | --- |
 | `task_id` | string | 必填 | 文档解析任务唯一标识 |
 | `original_file_id` | int | 必填 | 原始文件表主键 |
-| `document_parse_task_id` | int | 必填 | `document_parse_task.id` |
+| `document_parse_task_id` | int | 必填 | 历史兼容字段名，对应 `document_parse_file.id` |
 | `user_id` | int | 必填 | 文件所属用户 |
 | `dataset_id` | int | 必填 | 文件所属数据集 |
 | `file_type` | string | 必填 | 文件格式 |
@@ -62,7 +62,7 @@
 | `md_object_key` | string | 必填 | Markdown 输出对象 key |
 | `trigger_mode` | string | `upload_auto` | 触发方式 |
 | `pdf_parser_backend` | string | `mineru` | PDF 解析器 |
-| `docling_force_ocr` | bool | `false` | 兼容旧参数 |
+| `docling_force_ocr` | bool | `false` | 兼容旧参数；当前内置 PDF 后端不使用 Docling |
 | `image_bucket` | string/null | `null` | 图片输出 bucket |
 | `image_prefix` | string/null | `null` | 图片输出前缀 |
 
@@ -106,6 +106,24 @@
 | ParseResult | `tolink.rag.parse_result` | Python 解析终态通知 Java |
 | CacheSync | `tolink.rag.cache_sync` | 缓存同步 |
 | UsageReport | `tolink.rag.usage_report` | 用量上报 |
+
+### ParseResult 通知语义
+
+Python 发往 Java 的 `tolink.rag.parse_result` 消息不带 MQ 信封，消息体就是业务 payload。
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `task_id` | string | 解析任务 ID |
+| `original_file_id` | int | 原始文件 ID |
+| `document_parse_task_id` | int | 历史兼容字段名，对应 `document_parse_file.id` |
+| `dataset_id` | int | 数据集 ID |
+| `user_id` | int | 用户 ID |
+| `task_status` | string | `success/failed` |
+| `failure_reason` | string/null | 失败原因；成功时为空 |
+| `parse_finished_at` | string | 整体终态时间，ISO 8601 |
+| `user_message` | string/null | 可选用户提示 |
+
+`success` 表示 Markdown 已生成并上传，且分片、向量化和 ES 入库均完成。任一阶段失败都会发送 `failed`，并在 `failure_reason` 中携带业务化原因。
 
 ## 4. LLM API
 

@@ -33,6 +33,13 @@ CODE: 中文业务原因；底层详情
 | `RESULT_NOTIFY_FAILED` | 解析结果通知失败，请重新解析 | parse_result 终态通知 MQ 发送失败 |
 | `INTERNAL_UNKNOWN_ERROR` | 系统异常，请稍后重试 | 未归类内部异常 |
 
+后处理阶段还会生成以下文件级失败原因前缀，它们不是 `ParseFailureCode` 枚举成员，但会通过 `failure_reason` 发送给 Java：
+
+| Prefix | 含义 | 典型触发场景 |
+| --- | --- | --- |
+| `VECTORIZING_FAILED` | 向量化失败 | Chunk embedding、MySQL 真值写入或 Qdrant 写入存在失败 Chunk |
+| `ES_INDEXING_FAILED` | ES 入库失败 | Elasticsearch index 创建或 Chunk 文档写入失败 |
+
 ## 3. Parse Result 失败通知
 
 发送给 Java 的 parse result payload 字段：
@@ -46,7 +53,8 @@ CODE: 中文业务原因；底层详情
   "user_id": 10002,
   "task_status": "failed",
   "failure_reason": "PARSE_ENGINE_FAILED: 文件解析失败，请检查文件内容；...",
-  "parse_finished_at": "2026-04-28T10:00:08"
+  "parse_finished_at": "2026-04-28T10:00:08",
+  "user_message": "解析失败，请稍后重试"
 }
 ```
 
@@ -54,8 +62,9 @@ CODE: 中文业务原因；底层详情
 
 - 成功时 `failure_reason` 为 `null`。
 - 失败时异常详情放入 `failure_reason`。
-- 不添加用户通知字段。
+- `user_message` 为可选用户提示，成功或失败均可为空。
 - 不添加 `mq_type`、`mq_name`、`payload` 信封。
+- `success` 表示 Markdown、分片、向量化、ES 入库全部完成；任一阶段失败都发送 `failed`。
 
 ## 4. Module Exceptions
 

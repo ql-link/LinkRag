@@ -28,6 +28,7 @@ Use these directories as the source of truth for project knowledge.
 | Need | Read |
 | --- | --- |
 | Overall architecture, module boundaries, project tree | [docs/architecture](docs/architecture) |
+| End-to-end parse task pipeline and success/failure semantics | [docs/architecture/parse_task_pipeline_module.md](docs/architecture/parse_task_pipeline_module.md) |
 | Technical design and implementation status | [docs/design](docs/design) |
 | Coding conventions, schema rules, workflow conventions | [docs/conventions](docs/conventions) |
 | Current iteration plans and task checklists | [docs/plans](docs/plans) |
@@ -40,9 +41,14 @@ Read [docs/architecture](docs/architecture) before changing module boundaries or
 Key documents:
 
 - [Project structure](docs/architecture/project_structure.md)
+- [Parse task pipeline module](docs/architecture/parse_task_pipeline_module.md)
 - [File parser module](docs/architecture/file_parser_module.md)
+- [Markdown parser module](docs/architecture/markdown_parser_module.md)
 - [Chunking module](docs/architecture/chunking_module.md)
 - [Vectorization module](docs/architecture/vectorization_module.md)
+- [MQ module](docs/architecture/mq_module.md)
+- [LLM module](docs/architecture/llm_module.md)
+- [Object storage module](docs/architecture/object_storage_module.md)
 
 ## Design Documents
 
@@ -95,4 +101,5 @@ Good candidates: API contracts, MQ message contracts, error code tables, data mo
 - Keep documentation updates close to the kind of knowledge being changed.
 - If a structural change affects project layout, update [docs/architecture/project_structure.md](docs/architecture/project_structure.md).
 - If a parser-module change affects usage or extension rules, update [docs/architecture/file_parser_module.md](docs/architecture/file_parser_module.md).
+- If a Markdown parser/enhancement change affects structure extraction or LLM enhancement rules, update [docs/architecture/markdown_parser_module.md](docs/architecture/markdown_parser_module.md).
 - If a feature design changes status, update its design document in [docs/design](docs/design).
