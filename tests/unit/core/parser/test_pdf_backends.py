@@ -22,7 +22,7 @@ from src.core.parser.pdf.backends.mineru_backend import MinerUBackend
 from src.core.parser.pdf.backends.naive_backend import NaivePdfBackend
 from src.core.parser.pdf.backends.opendataloader_backend import OpenDataLoaderBackend
 from src.core.parser.pdf.base import BasePdfBackend
-from src.core.parser.pdf.models import PdfImageAsset, PdfParseOptions
+from src.core.parser.pdf.models import PdfBinaryAsset, PdfImageAsset, PdfParseOptions
 from src.core.parser.pdf.registry import (
     PdfBackendRegistry,
     create_default_pdf_backend_registry,
@@ -496,6 +496,7 @@ class TestPdfParserServiceRouting:
             backend="naive",
             image_bucket="rag-md",
             image_prefix="10002/10003/doc.md",
+            image_upload_async=False,
             storage=storage,
         )
         rng = np.random.default_rng(1)
@@ -548,6 +549,7 @@ class TestPdfParserServiceRouting:
             backend="naive",
             image_bucket="rag-md",
             image_prefix="10002/10003/doc.md",
+            image_upload_async=False,
             storage=storage,
         )
 
@@ -599,6 +601,68 @@ class TestPdfParserServiceRouting:
         assert uploaded["object_key"] == "10002/10003/image/doc/page-001-region-01.png"
         assert uploaded["content_type"] == "image/png"
         assert len(uploaded["content"]) > len(tiny_encoded.tobytes())
+
+    def test_upload_images_should_schedule_async_upload_without_waiting(self):
+        service = PdfParserService()
+        storage = MagicMock()
+        storage.build_object_url.side_effect = lambda bucket, key: f"http://minio/{bucket}/{key}"
+        options = PdfParseOptions(
+            backend="mineru",
+            image_bucket="rag-md",
+            image_prefix="10002/10003/doc.md",
+            image_upload_async=True,
+            storage=storage,
+        )
+        binary_assets = [
+            PdfBinaryAsset(
+                kind="picture",
+                page_number=1,
+                index=1,
+                ext="png",
+                content=b"fake-image-bytes" * 500,
+                source_path="images/demo.png",
+            )
+        ]
+
+        with patch.object(service, "_submit_async_uploads") as mock_submit:
+            image_assets = service._upload_images(
+                b"",
+                options,
+                backend="mineru",
+                placeholder_count=1,
+                binary_assets=binary_assets,
+            )
+
+        assert len(image_assets) == 1
+        assert image_assets[0].url == (
+            "http://minio/rag-md/10002/10003/image/doc/picture-page-001-01.png"
+        )
+        storage.upload_bytes.assert_not_called()
+        mock_submit.assert_called_once()
+
+    @patch("src.core.parser.pdf.service.fitz.open")
+    def test_upload_images_should_not_open_local_pdf_when_file_bytes_missing(self, mock_fitz_open):
+        service = PdfParserService()
+        storage = MagicMock()
+        storage.build_object_url.side_effect = lambda bucket, key: f"http://minio/{bucket}/{key}"
+        options = PdfParseOptions(
+            backend="mineru",
+            image_bucket="rag-md",
+            image_prefix="10002/10003/doc.md",
+            image_upload_async=True,
+            storage=storage,
+        )
+
+        image_assets = service._upload_images(
+            b"",
+            options,
+            backend="mineru",
+            placeholder_count=1,
+            binary_assets=[],
+        )
+
+        assert image_assets == []
+        mock_fitz_open.assert_not_called()
 
     def test_detect_visual_regions_should_exclude_table_bboxes(self):
         service = PdfParserService()

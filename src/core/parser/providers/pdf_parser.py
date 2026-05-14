@@ -21,6 +21,7 @@ class PdfParser(BaseParser):
         backend: str | None = None,
         image_bucket: str | None = None,
         image_prefix: str | None = None,
+        image_upload_async: bool | None = None,
         storage=None,
         source_file_url: str | None = None,
         docling_force_ocr: bool = False,
@@ -33,6 +34,9 @@ class PdfParser(BaseParser):
         self.backend = (backend or settings.PDF_PARSER_BACKEND).lower()
         self.image_bucket = image_bucket
         self.image_prefix = image_prefix
+        self.image_upload_async = (
+            settings.PDF_IMAGE_UPLOAD_ASYNC if image_upload_async is None else bool(image_upload_async)
+        )
         self.storage = storage
         self.source_file_url = source_file_url
         self.docling_force_ocr = bool(docling_force_ocr)
@@ -54,6 +58,7 @@ class PdfParser(BaseParser):
                 backend=self.backend,
                 image_bucket=self.image_bucket,
                 image_prefix=self.image_prefix,
+                image_upload_async=self.image_upload_async,
                 storage=self.storage,
                 source_file_url=self.source_file_url,
                 docling_force_ocr=self.docling_force_ocr,

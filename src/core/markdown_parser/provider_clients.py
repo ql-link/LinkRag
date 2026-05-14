@@ -173,16 +173,24 @@ class ProviderVisionClient(VisionClient):
         self._prompt_template = prompt_template
         self._model_name = resolved_model_name
 
-    def describe_images(self, image_urls, source_file=None):
+    def describe_images(self, image_urls, source_file=None, image_bytes_by_url=None):
         raise RuntimeError("ProviderVisionClient only supports async usage. Please call `adescribe_images`.")
 
-    async def adescribe_images(self, image_urls: list[str], source_file: str | None = None) -> dict[str, str]:
+    async def adescribe_images(
+        self,
+        image_urls: list[str],
+        source_file: str | None = None,
+        image_bytes_by_url: dict[str, tuple[bytes, str]] | None = None,
+    ) -> dict[str, str]:
         results: dict[str, str] = {}
         source_context = f"\n来源文件: {_guess_source_file(source_file)}" if source_file else ""
 
         for image_url in image_urls:
             try:
-                image_bytes, _mime_type = _load_image_bytes(image_url, source_file)
+                if image_bytes_by_url and image_url in image_bytes_by_url:
+                    image_bytes, _mime_type = image_bytes_by_url[image_url]
+                else:
+                    image_bytes, _mime_type = _load_image_bytes(image_url, source_file)
             except Exception as exc:
                 logger.warning("Load image failed for %s: %s", image_url, exc)
                 continue

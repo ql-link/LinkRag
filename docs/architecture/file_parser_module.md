@@ -85,6 +85,9 @@ PDF 默认解析器由 `src/config.py` 和 `.env` 控制：
 ```env
 PDF_PARSER_BACKEND=mineru
 PDF_PARSER_FALLBACKS=
+PDF_IMAGE_UPLOAD_ASYNC=true
+PDF_IMAGE_ENHANCEMENT_MEMORY_MAX_IMAGES=20
+PDF_IMAGE_ENHANCEMENT_MEMORY_MAX_BYTES=52428800
 MINERU_API_URL=https://mineru.net/api/v4/extract/task
 MINERU_API_KEY=...
 MINERU_TIMEOUT=300
@@ -95,6 +98,8 @@ MINERU_MODEL_VERSION=vlm
 
 - `PDF_PARSER_BACKEND`：调用方未传 `backend` 时使用，当前默认 `mineru`。
 - `PDF_PARSER_FALLBACKS`：逗号分隔的兜底后端列表；留空表示不自动回退本地解析器。显式选择 `mineru` 时不会使用本地兜底后端。
+- `PDF_IMAGE_UPLOAD_ASYNC`：是否将 PDF 图片上传切到后台线程执行。默认 `true`，主链路会先生成最终图片 URL 并返回 Markdown，不等待 MinIO 上传完成。
+- `PDF_IMAGE_ENHANCEMENT_MEMORY_MAX_IMAGES` / `PDF_IMAGE_ENHANCEMENT_MEMORY_MAX_BYTES`：图片增强可直接使用的解析阶段内存图片上限，避免大 PDF 占用过多 worker 内存。
 - `MINERU_*`：MinerU 官方精准解析 API 调用配置。`MINERU_MODEL_VERSION` 默认 `vlm`，可按官方支持切换为 `pipeline`、`vlm` 或 `MinerU-HTML`。
 
 ## 5. 使用方式
@@ -172,9 +177,11 @@ MQ 解析任务通过 `pdf_parser_backend` 指定：
 
 PDF 解析可传 `image_bucket`、`image_prefix` 配合对象存储输出图片资产；完整流水线中，这些参数通常由 `ParseTaskPipeline` 从 MQ payload 和 Markdown 输出路径中组装。
 
-MinerU 精准解析返回的 ZIP 中，Markdown 图片默认是 `images/xxx` 相对路径。`MinerUBackend` 会保留该相对路径作为图片资产的 `source_path`，`PdfParserService` 并发上传图片资产后再把 Markdown 中的相对路径替换为对象存储 URL。解析返回前会等待图片上传完成，保证 Markdown 中的 URL 可读。
+MinerU 精准解析返回的 ZIP 中，Markdown 图片默认是 `images/xxx` 相对路径。`MinerUBackend` 会保留该相对路径作为图片资产的 `source_path`，`PdfParserService` 会先同步生成最终对象 key 与 URL，再把 Markdown 中的相对路径替换为对象存储 URL。
 
-所有 PDF 图片上传路径都会收敛到同一套并发上传逻辑，包括 MinerU/OpenDataLoader 已提取的二进制图片、PyMuPDF 内嵌图、Naive 图片块、页渲染图片和视觉区域裁剪图片。对象存储层仍然是一张图片一个 object 上传，不使用单次批量上传；并发只用于降低多图上传的墙钟耗时。
+所有 PDF 图片上传路径都会收敛到同一套图片准备逻辑，包括 MinerU/OpenDataLoader 已提取的二进制图片、PyMuPDF 内嵌图、Naive 图片块、页渲染图片和视觉区域裁剪图片。对象存储层仍然是一张图片一个 object 上传，不使用单次批量上传；当 `PDF_IMAGE_UPLOAD_ASYNC=true` 时，主链路只负责生成 URL 并提交后台上传任务，不等待 MinIO 上传完成，因此 Markdown 中的图片链接会经历一个短暂的最终一致性窗口。
+
+图片增强不会依赖 MinIO 图片已上传完成。`PdfParserService` 会把受限数量的图片 bytes 作为进程内临时映射交给 `ParseTaskService`，`ProviderVisionClient` 优先使用内存图片进行视觉模型调用，只有内存映射缺失时才回退读取 Markdown 中的图片 URL。该内存映射不会写入最终 metadata、MQ 或数据库。
 
 ## 6. 新增文件格式解析器
 

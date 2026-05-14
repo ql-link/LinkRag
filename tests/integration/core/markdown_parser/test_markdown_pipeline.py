@@ -179,6 +179,25 @@ class TestProviderBackedClients(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(base64.b64decode(sent_image_base64), image_bytes)
         self.assertIn("docs/example.md", sent_prompt)
 
+    async def test_provider_vision_client_prefers_memory_image_bytes(self):
+        provider = FakeVisionProvider()
+        client = ProviderVisionClient(provider=provider, model_name="fake-vl-model")
+        image_url = "http://minio/rag-md/image/doc/picture.png"
+        image_bytes = b"memory-image-binary"
+
+        with patch("src.core.markdown_parser.provider_clients.urlopen") as mock_urlopen:
+            result = await client.adescribe_images(
+                [image_url],
+                source_file="docs/example.md",
+                image_bytes_by_url={image_url: (image_bytes, "image/png")},
+            )
+
+        self.assertEqual(result[image_url], "图片展示了一枚简洁的测试图标。")
+        self.assertEqual(len(provider.calls), 1)
+        sent_image_base64, _sent_prompt = provider.calls[0]
+        self.assertEqual(base64.b64decode(sent_image_base64), image_bytes)
+        mock_urlopen.assert_not_called()
+
 
 class TestAsyncOrchestration(unittest.IsolatedAsyncioTestCase):
     async def test_async_describers_merge_content(self):

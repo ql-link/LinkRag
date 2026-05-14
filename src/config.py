@@ -126,6 +126,9 @@ class Settings(BaseSettings):
     LOCAL_DOCS_PATH: str = "./data/documents"
     PDF_PARSER_BACKEND: str = "mineru"  # auto / mineru / opendataloader / naive
     PDF_PARSER_FALLBACKS: str = ""
+    PDF_IMAGE_UPLOAD_ASYNC: bool = True  # 是否后台异步上传 PDF 图片资产
+    PDF_IMAGE_ENHANCEMENT_MEMORY_MAX_IMAGES: int = 20  # 图片增强最多使用多少张内存图片
+    PDF_IMAGE_ENHANCEMENT_MEMORY_MAX_BYTES: int = 50 * 1024 * 1024  # 图片增强内存图片总量上限
     MINERU_API_URL: str = ""  # MinerU 官方云端 V4 API 地址
     MINERU_API_KEY: Optional[str] = None  # MinerU 云服务专属 Token
     MINERU_TIMEOUT: int = 300  # MinerU API 请求超时（秒）

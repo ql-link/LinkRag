@@ -15,11 +15,19 @@ logger = logging.getLogger(__name__)
 class VisionClient(ABC):
     """Image description contract."""
 
-    def describe_images(self, image_urls: List[str], source_file: str | None = None) -> Dict[str, str]:
+    def describe_images(
+        self,
+        image_urls: List[str],
+        source_file: str | None = None,
+        image_bytes_by_url: dict[str, tuple[bytes, str]] | None = None,
+    ) -> Dict[str, str]:
         raise NotImplementedError("Synchronous image description is not implemented")
 
     async def adescribe_images(
-        self, image_urls: List[str], source_file: str | None = None
+        self,
+        image_urls: List[str],
+        source_file: str | None = None,
+        image_bytes_by_url: dict[str, tuple[bytes, str]] | None = None,
     ) -> Dict[str, str]:
         raise NotImplementedError("Asynchronous image description is not implemented")
 
@@ -44,14 +52,28 @@ class ImageDescriber:
 
         return self._merge_descriptions(parse_result, descriptions)
 
-    async def aprocess(self, parse_result: ParseResult) -> ParseResult:
+    async def aprocess(
+        self,
+        parse_result: ParseResult,
+        image_bytes_by_url: dict[str, tuple[bytes, str]] | None = None,
+    ) -> ParseResult:
         if not parse_result.images:
             return parse_result
 
         unique_urls = list(dict.fromkeys(img.url for img in parse_result.images))
 
         try:
-            descriptions = await self._vision_client.adescribe_images(unique_urls, parse_result.source_file)
+            if image_bytes_by_url is None:
+                descriptions = await self._vision_client.adescribe_images(
+                    unique_urls,
+                    parse_result.source_file,
+                )
+            else:
+                descriptions = await self._vision_client.adescribe_images(
+                    unique_urls,
+                    parse_result.source_file,
+                    image_bytes_by_url=image_bytes_by_url,
+                )
         except Exception as exc:
             logger.error("VisionClient async request failed, skip image enrichment: %s", exc)
             return parse_result
