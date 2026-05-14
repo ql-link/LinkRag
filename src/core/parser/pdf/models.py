@@ -33,7 +33,9 @@ class PdfParseOptions:
     image_bucket: Optional[str] = None
     image_prefix: Optional[str] = None
     storage: Optional[BaseObjectStorage] = None
+    source_file_url: Optional[str] = None
     docling_force_ocr: bool = False
     mineru_api_url: Optional[str] = None
     mineru_api_key: Optional[str] = None
     mineru_timeout: int = 300
+    mineru_model_version: str = "vlm"
