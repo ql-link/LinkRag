@@ -138,7 +138,7 @@ pdf_parser_backend == "mineru"
 
 - 不要在 MQ consumer 中直接拼接业务流程，业务编排应留在 `ParseTaskPipeline`。
 - 解析成功通知必须晚于 Markdown、分片、向量化和 ES 入库全部完成。
-- 新增阶段时应同步更新 `document_post_process_pipeline`、`docs/reference/data_models.md` 和 `docs/reference/error_codes.md`。
+- 新增阶段时应同步更新 `document_post_process_pipeline` 表结构、`docs/reference/mysql_schema.md` 和 `docs/reference/error_codes.md`。
 - 重投场景必须保持幂等，不应重复解析同一 `task_id`。
 
 ## 8. 测试建议
