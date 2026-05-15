@@ -24,8 +24,9 @@ toLink-Rag/                         # 仓库根目录
 │       ├── tdd/                  # 测试驱动开发工作流
 │       └── technical-design/     # 技术设计生成工作流
 ├── .env.example                  # 环境变量样例
-├── AGENTS.md                     # 项目级 Agent 说明
-├── README.md                     # 项目说明
+├── AGENTS.md                     # 项目级 Agent 入口（与 CLAUDE.md 内容同步）
+├── CLAUDE.md                     # 项目统一入口：使用说明 + 文档目录
+├── README.md                     # 面向用户的项目介绍
 ├── docker-compose.yml            # 本地依赖编排
 ├── project_info.md               # 项目基础信息
 ├── pyproject.toml                # Python 依赖与项目配置
@@ -40,10 +41,10 @@ toLink-Rag/                         # 仓库根目录
 │   │   ├── mq_module.md
 │   │   ├── llm_module.md
 │   │   └── object_storage_module.md
-│   ├── conventions/              # 约定类文档
-│   ├── design/                   # 功能设计文档
-│   ├── plans/                    # 当前计划和执行清单
-│   └── reference/                # API、错误码、数据模型等参考
+│   ├── conventions/              # 命名、配置、测试等约定
+│   ├── reference/                # API、消息契约、数据模型、错误码
+│   ├── guides/                   # 使用、部署、运维等场景化指南
+│   └── development/              # 分支、提交、PR 等开发流程
 ├── scripts/                      # 可执行脚本
 │   ├── db/                       # 数据库初始化脚本
 │   │   ├── init.sql              # 当前数据库表结构（DDL）
