@@ -48,10 +48,12 @@ ParseTaskPipeline
       -> VectorStoragePipeline.store_chunks()
         -> ChunkDraftFactory
         -> ChunkRepository.bulk_insert_pending()
-        -> ChunkEmbeddingPipeline.aembed_chunks()
-        -> QdrantIndexStore.ensure_collection()
-        -> QdrantIndexStore.upsert_points()
-        -> ChunkRepository.mark_indexed()
+        -> 按 chunk_index 顺序处理每个 chunk
+          -> ChunkRepository.mark_indexing()
+          -> ChunkEmbeddingPipeline.aembed_chunks([chunk])
+          -> QdrantIndexStore.ensure_collection()
+          -> QdrantIndexStore.upsert_points()
+          -> ChunkRepository.mark_indexed()
   -> document_post_process_pipeline.vectorizing_status = SUCCESS
   -> EsIndexingPipeline.index_for_parse_task()
   -> document_post_process_pipeline.es_indexing_status = SUCCESS

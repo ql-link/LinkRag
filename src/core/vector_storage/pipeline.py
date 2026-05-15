@@ -8,12 +8,13 @@ from collections.abc import Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from src.config import settings
 from src.core.chunk_fact_storage import ChunkRepository
 from src.core.chunk_fact_storage.constants import CHUNK_STATUS_INDEXING, CHUNK_STATUS_PENDING
 from src.core.qdrant_vector_storage import IndexedPoint, QdrantIndexStore
 from src.core.qdrant_vector_storage.point_factory import indexed_point_from_draft
 from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
-from src.core.splitter.models import EmbeddedChunk
+from src.core.splitter.models import Chunk, EmbeddedChunk
 from src.utils.logger import logger
 
 from ._transaction import TransactionalPipelineMixin
@@ -40,6 +41,9 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         repository: ChunkRepository,
         qdrant_store: QdrantIndexStore,
         embedding_pipeline: ChunkEmbeddingPipeline,
+        retry_limit: int | None = None,
+        retry_interval_seconds: int | None = None,
+        max_inline_retry_sleep_seconds: int = 5,
     ) -> None:
         """
             初始化主写入服务，并注入事务工厂、仓储、向量索引与 embedding 依赖。
@@ -59,6 +63,19 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         self.repository = repository
         self.qdrant_store = qdrant_store
         self.embedding_pipeline = embedding_pipeline
+        self.retry_limit = max(
+            0,
+            retry_limit
+            if retry_limit is not None
+            else getattr(settings, "CHUNK_INDEX_RETRY_LIMIT", 0),
+        )
+        self.retry_interval_seconds = max(
+            0,
+            retry_interval_seconds
+            if retry_interval_seconds is not None
+            else getattr(settings, "CHUNK_INDEX_RETRY_INTERVAL_SECONDS", 0),
+        )
+        self.max_inline_retry_sleep_seconds = max(0, max_inline_retry_sleep_seconds)
 
     async def store_chunks(
         self,
@@ -87,78 +104,175 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
             logger.exception(f"[VectorStoragePipeline] Failed to build drafts: {exc}")
             return ChunkIndexingResult(total_chunks=len(request.chunks), indexed_chunks=0)
 
-        chunk_ids = [draft.chunk_id for draft in drafts]
-        pending_result, embedding_result = await asyncio.gather(
-            self._insert_pending(drafts),
-            self.embedding_pipeline.aembed_chunks(request.chunks),
-            return_exceptions=True,
-        )
-
-        if isinstance(pending_result, Exception) or isinstance(embedding_result, Exception):
-            error_msg = self._merge_stage_error(pending_result, embedding_result)
-            if not isinstance(pending_result, Exception):
-                await self._safe_mark_failed(
-                    chunk_ids,
-                    error_msg,
-                    expected_status=CHUNK_STATUS_PENDING,
-                )
-            logger.error(f"[VectorStoragePipeline] Initial storage stage failed: {error_msg}")
-            return ChunkIndexingResult(
-                total_chunks=len(drafts),
-                indexed_chunks=0,
-                failed_chunk_ids=chunk_ids,
-            )
-
-        embedded_chunks = embedding_result
-        embedding_model = self._resolve_embedding_model(embedded_chunks)
-
         try:
-            indexing_count = await self._mark_indexing(chunk_ids, embedding_model=embedding_model)
-            if indexing_count != len(chunk_ids):
-                logger.warning(
-                    "[VectorStoragePipeline] Skipped indexing because pending rowcount "
-                    f"{indexing_count} != {len(chunk_ids)} for chunks {chunk_ids}."
-                )
-                return ChunkIndexingResult(
-                    total_chunks=len(drafts),
-                    indexed_chunks=0,
-                    failed_chunk_ids=chunk_ids,
-                    embedding_model=embedding_model,
-                )
-            points = self._build_index_points(drafts, embedded_chunks)
-            await self._ensure_and_upsert(points)
-            indexed_count = await self._mark_indexed(chunk_ids, embedding_model=embedding_model)
-            if indexed_count != len(chunk_ids):
-                logger.warning(
-                    "[VectorStoragePipeline] Skipped stale index completion because rowcount "
-                    f"{indexed_count} != {len(chunk_ids)} for chunks {chunk_ids}."
-                )
-                return ChunkIndexingResult(
-                    total_chunks=len(drafts),
-                    indexed_chunks=0,
-                    failed_chunk_ids=chunk_ids,
-                    embedding_model=embedding_model,
-                )
+            await self._insert_pending(drafts)
         except Exception as exc:
-            error_msg = str(exc)
-            await self._safe_mark_failed(
-                chunk_ids,
-                error_msg,
-                expected_status=CHUNK_STATUS_INDEXING,
-            )
-            logger.exception(f"[VectorStoragePipeline] Failed to index chunks: {error_msg}")
+            logger.exception(f"[VectorStoragePipeline] Failed to insert pending chunks: {exc}")
             return ChunkIndexingResult(
                 total_chunks=len(drafts),
                 indexed_chunks=0,
-                failed_chunk_ids=chunk_ids,
-                embedding_model=embedding_model,
+                failed_chunk_ids=[draft.chunk_id for draft in drafts],
             )
+
+        indexed_count = 0
+        embedding_model: str | None = None
+
+        for draft, chunk in self._ordered_draft_chunk_pairs(drafts, request.chunks):
+            try:
+                # A document is successful only after every chunk reaches INDEXED.
+                # The retry boundary is one chunk, so already indexed chunks are
+                # not redone when the current chunk hits a transient failure.
+                embedding_model = await self._index_single_chunk_with_retry(draft, chunk)
+                indexed_count += 1
+            except Exception as exc:
+                logger.exception(
+                    "[VectorStoragePipeline] Stopped document indexing at chunk "
+                    f"{draft.chunk_id}: {exc}"
+                )
+                return ChunkIndexingResult(
+                    total_chunks=len(drafts),
+                    indexed_chunks=indexed_count,
+                    failed_chunk_ids=[draft.chunk_id],
+                    embedding_model=embedding_model,
+                )
 
         return ChunkIndexingResult(
             total_chunks=len(drafts),
-            indexed_chunks=len(drafts),
+            indexed_chunks=indexed_count,
             embedding_model=embedding_model,
         )
+
+    def _ordered_draft_chunk_pairs(
+        self,
+        drafts: Sequence[StoredChunkDraft],
+        chunks: Sequence[Chunk],
+    ) -> list[tuple[StoredChunkDraft, Chunk]]:
+        """
+            按 `chunk_index` 升序返回 draft/chunk 配对，缺失时回退到输入顺序。
+
+        Args:
+            drafts: 已入库的 chunk 草稿。
+            chunks: 与草稿输入顺序对应的原始 chunk。
+
+        Returns:
+            list[tuple[StoredChunkDraft, Chunk]]: 稳定排序后的 draft/chunk 配对。
+        """
+        pairs = list(zip(drafts, chunks))
+        return [
+            pair
+            for _, pair in sorted(
+                enumerate(pairs),
+                key=lambda item: (
+                    item[1][0].chunk_index is None,
+                    item[1][0].chunk_index if item[1][0].chunk_index is not None else item[0],
+                    item[0],
+                ),
+            )
+        ]
+
+    async def _index_single_chunk_with_retry(
+        self,
+        draft: StoredChunkDraft,
+        chunk: Chunk,
+    ) -> str | None:
+        """
+            对单个 chunk 执行向量化和 Qdrant 写入，失败时仅重试当前 chunk。
+
+        Args:
+            draft: 当前 chunk 的存储草稿。
+            chunk: 需要向量化的原始 chunk。
+
+        Returns:
+            str | None: 当前 chunk 实际使用的 embedding 模型。
+        """
+        last_error: Exception | None = None
+        indexing_marked = False
+
+        for attempt in range(self.retry_limit + 1):
+            try:
+                if not indexing_marked:
+                    # 只有第一次进入当前 chunk 时做 PENDING -> INDEXING。
+                    # 后续重试复用 INDEXING checkpoint，避免被 expected_status=PENDING 挡住。
+                    indexing_count = await self._mark_indexing(
+                        [draft.chunk_id],
+                        embedding_model=None,
+                    )
+                    if indexing_count != 1:
+                        raise RuntimeError(
+                            "Skipped indexing because pending rowcount "
+                            f"{indexing_count} != 1 for chunk {draft.chunk_id}."
+                        )
+                    indexing_marked = True
+                return await self._index_single_chunk(draft, chunk)
+            except Exception as exc:
+                last_error = exc
+                if attempt >= self.retry_limit:
+                    break
+
+                sleep_seconds = self._retry_sleep_seconds()
+                logger.warning(
+                    "[VectorStoragePipeline] Chunk indexing failed, retrying: "
+                    f"chunk_id={draft.chunk_id}, "
+                    f"attempt={attempt + 1}/{self.retry_limit + 1}, "
+                    f"sleep_seconds={sleep_seconds}, error={exc}"
+                )
+                if sleep_seconds > 0:
+                    await asyncio.sleep(sleep_seconds)
+
+        error_msg = str(last_error) if last_error else "unknown chunk indexing failure"
+        # 失败状态只落到当前 chunk；已完成 chunk 保持 INDEXED，后续 chunk 保持 PENDING。
+        await self._safe_mark_failed([draft.chunk_id], error_msg)
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError(error_msg)
+
+    async def _index_single_chunk(
+        self,
+        draft: StoredChunkDraft,
+        chunk: Chunk,
+    ) -> str | None:
+        """
+            执行单个 chunk 的 `PENDING -> INDEXING -> INDEXED` 闭环。
+
+        Args:
+            draft: 当前 chunk 的存储草稿。
+            chunk: 需要向量化的原始 chunk。
+
+        Returns:
+            str | None: 当前 chunk 实际使用的 embedding 模型。
+        """
+        chunk_ids = [draft.chunk_id]
+
+        embedded_chunks = await self.embedding_pipeline.aembed_chunks([chunk])
+        if len(embedded_chunks) != 1:
+            raise ValueError(
+                "Embedded chunk count does not match current chunk: "
+                f"{len(embedded_chunks)} != 1 for chunk {draft.chunk_id}."
+            )
+
+        embedding_model = self._resolve_embedding_model(embedded_chunks)
+        point = indexed_point_from_draft(draft, embedded_chunks[0])
+        await self._ensure_and_upsert([point])
+
+        indexed_count = await self._mark_indexed(chunk_ids, embedding_model=embedding_model)
+        if indexed_count != 1:
+            raise RuntimeError(
+                "Skipped stale index completion because rowcount "
+                f"{indexed_count} != 1 for chunk {draft.chunk_id}."
+            )
+
+        return embedding_model
+
+    def _retry_sleep_seconds(self) -> float:
+        """
+            返回当前 chunk 内联重试等待时间，并避免长时间阻塞 MQ 流程。
+
+        Returns:
+            float: 实际 sleep 秒数。
+        """
+        if self.retry_interval_seconds <= 0:
+            return 0
+        return float(min(self.retry_interval_seconds, self.max_inline_retry_sleep_seconds))
 
     async def _insert_pending(self, drafts: Sequence[StoredChunkDraft]) -> None:
         """
@@ -170,7 +284,9 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         Returns:
             None.
         """
-        await self._run_in_transaction(lambda session: self.repository.bulk_insert_pending(session, drafts))
+        await self._run_in_transaction(
+            lambda session: self.repository.bulk_insert_pending(session, drafts)
+        )
 
     async def _mark_indexing(
         self,
