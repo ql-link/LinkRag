@@ -27,10 +27,12 @@ router = APIRouter(
 async def extract_sync(
     file: UploadFile = File(...),
     file_type: str = Form(...),
-    pdf_parser_backend: str = Form("opendataloader", alias="parser_backend"),
+    pdf_parser_backend: str = Form("mineru", alias="parser_backend"),
     docling_force_ocr: bool = Form(False),
     image_bucket: str | None = Form(None),
     image_prefix: str | None = Form(None),
+    source_file_url: str | None = Form(None),
+    mineru_model_version: str = Form("vlm"),
 ):
     """同步解析文档"""
     try:
@@ -39,6 +41,8 @@ async def extract_sync(
         if file_type.lower() == "pdf":
             parser_kwargs["backend"] = pdf_parser_backend
             parser_kwargs["docling_force_ocr"] = docling_force_ocr
+            parser_kwargs["source_file_url"] = source_file_url
+            parser_kwargs["mineru_model_version"] = mineru_model_version
             if image_bucket and image_prefix:
                 parser_kwargs["image_bucket"] = image_bucket
                 parser_kwargs["image_prefix"] = image_prefix

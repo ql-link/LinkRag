@@ -39,8 +39,8 @@ async def test_should_upsert_retrieve_and_delete_point_when_real_qdrant_enabled(
     bucket_router = BucketRouter(bucket_count=1, prefix=collection_prefix)
     store = QdrantIndexStore(
         bucket_router=bucket_router,
-        host="36.213.180.176",
-        port=6333,
+        host=settings.QDRANT_HOST,
+        port=settings.QDRANT_PORT,
         api_key=getattr(settings, "QDRANT_API_KEY", None),
     )
     collection_name = bucket_router.collection_name(0)

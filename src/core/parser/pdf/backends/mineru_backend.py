@@ -1,4 +1,4 @@
-"""MinerU HTTP API 后端：通过调用独立部署的 mineru-api 服务实现高质量 PDF 解析。
+"""MinerU 精准解析 API 后端：通过官方云服务实现高质量 PDF 解析。
 
 核心优势：
 - VLM + OCR 双引擎，109 种语言 OCR 识别
@@ -7,8 +7,8 @@
 - 跨页表格合并、多栏布局、扫描件/手写体支持
 
 接口契约：
-- mineru-api 提供 POST /file_parse (同步) 和 POST /tasks (异步)
-- 本后端使用 POST /file_parse 同步接口
+- 只支持 MinerU 官方 V4 云端 API。
+- 本后端提交公网可访问文件 URL，轮询 task_id 结果并下载结果 ZIP。
 
 时间复杂度 O(n)，n 为 PDF 页数，受限于远端服务处理速度。
 """
@@ -17,8 +17,7 @@ from __future__ import annotations
 
 import io
 import re
-import tempfile
-from pathlib import Path
+import time
 from typing import Any
 
 import httpx
@@ -33,7 +32,7 @@ _IMAGE_PATTERN = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 
 
 class MinerUBackend(BasePdfBackend):
-    """通过 HTTP API 调用 mineru-api 服务的解析后端。"""
+    """通过 MinerU 官方云端 API 调用解析服务的后端。"""
 
     name = "mineru"
 
@@ -51,78 +50,51 @@ class MinerUBackend(BasePdfBackend):
     def parse(self, file_stream: bytes, options: Any = None) -> tuple[str, list[PdfBinaryAsset]]:
         if not self._api_url:
             self.metadata["mineru_backend_error"] = "MINERU_API_URL 未配置"
-            logger.warning("[MinerU] API URL 未配置，跳过此后端")
+            logger.warning("[MinerU Cloud] API URL 未配置，跳过此后端")
+            return "", []
+        if not self._api_key:
+            self.metadata["mineru_backend_error"] = "MINERU_API_KEY 未配置，MinerU 后端仅支持官方云端 API"
+            logger.warning("[MinerU Cloud] API Key 未配置，跳过此后端")
             return "", []
 
+        source_file_url = getattr(options, "source_file_url", None)
+        if not source_file_url:
+            self.metadata["mineru_backend_error"] = (
+                "MinerU 精准解析 API 需要 source_file_url，且该 URL 必须能被 MinerU 云端访问"
+            )
+            logger.warning("[MinerU Cloud] source_file_url 未配置，无法调用精准解析 API")
+            return "", []
+
+        model_version = getattr(options, "mineru_model_version", "vlm") or "vlm"
+
         try:
-            markdown, assets = self._call_api(file_stream)
+            markdown, assets = self._call_cloud_api(source_file_url, model_version)
             return markdown, assets
         except httpx.TimeoutException:
             self.metadata["mineru_backend_error"] = "API 请求超时"
-            logger.error(f"[MinerU] API 请求超时 (timeout={self._timeout}s)")
+            logger.error(f"[MinerU Cloud] API 请求超时 (timeout={self._timeout}s)")
             return "", []
         except httpx.ConnectError as exc:
             self.metadata["mineru_backend_error"] = f"无法连接 API: {exc}"
-            logger.error(f"[MinerU] 无法连接 mineru-api: {self._api_url}")
+            logger.error(f"[MinerU Cloud] 无法连接 MinerU API: {self._api_url}")
             return "", []
         except Exception as exc:
             self.metadata["mineru_backend_error"] = str(exc)
-            logger.error(f"[MinerU] 解析异常: {exc}")
+            logger.error(f"[MinerU Cloud] 解析异常: {exc}")
             return "", []
 
-    def _call_api(self, file_stream: bytes) -> tuple[str, list[PdfBinaryAsset]]:
-        """根据配置自动判断走本地开源接口还是云端官方 V4 接口。"""
-        # 如果配置了 API Key，且 URL 包含 mineru.net，则走 V4 官方云端逻辑
-        if self._api_key and "mineru.net" in self._api_url:
-            return self._call_cloud_api(file_stream)
-            
-        # 否则默认走本地开源版本的单步直传接口
-        return self._call_local_api(file_stream)
-
-    def _call_local_api(self, file_stream: bytes) -> tuple[str, list[PdfBinaryAsset]]:
-        """调用本地开源 mineru-api 的 POST /file_parse 同步接口。"""
-        # MinerU 云端 API 提供了 /api/v1/extract 接口或其他路径，如果使用官网接口，需要使用其实际开放平台路径
-        # 若是官网推荐的本地镜像或开源版本，接口一般为 /file_parse 或 /extract
-        url = f"{self._api_url}/file_parse"
-        
-        # 处理可能的文件提交路径差异（兼容云端与开源版）
-        if "mineru.net" in self._api_url or "extract" in self._api_url:
-             # 如果配置了特定的云端路径，可能需要调整上传的文件参数名 (此处默认兼容其官方开源版)
-             pass
-             
-        files = {"file": ("document.pdf", io.BytesIO(file_stream), "application/pdf")}
-        data = {"parse_method": "auto", "is_json_md_dump": "true"}
-        
-        headers = {}
-        if self._api_key:
-            headers["Authorization"] = f"Bearer {self._api_key}"
-
-        with httpx.Client(timeout=self._timeout) as client:
-            response = client.post(url, files=files, data=data, headers=headers)
-            response.raise_for_status()
-
-        result = response.json()
-        markdown = self._extract_markdown(result)
-        assets = self._extract_assets(result)
-
-        self.metadata["mineru_api_status"] = response.status_code
-        self.metadata["mineru_parse_method"] = result.get("parse_method", "unknown")
-        logger.info(
-            f"[MinerU] 本地解析完成, parse_method={result.get('parse_method')}, "
-            f"markdown_length={len(markdown)}, assets_count={len(assets)}"
-        )
-        return markdown, assets
-
-    def _call_cloud_api(self, file_stream: bytes) -> tuple[str, list[PdfBinaryAsset]]:
-        """调用 MinerU 官方 V4 云端接口。
+    def _call_cloud_api(
+        self,
+        source_file_url: str,
+        model_version: str,
+    ) -> tuple[str, list[PdfBinaryAsset]]:
+        """调用 MinerU 官方 V4 精准解析接口。
         
         流程：
-        1. POST /api/v4/file-urls/batch 获取上传链接和 batch_id
-        2. PUT 提交 file_stream 到获取到的 URL
-        3. 轮询 GET /api/v4/extract-results/batch/{batch_id} 直到 state == done
-        4. 下载 full_zip_url 并解压提取 Markdown
+        1. POST /api/v4/extract/task 提交文件 URL 获取 task_id
+        2. 轮询 GET /api/v4/extract/task/{task_id} 直到 state == done
+        3. 下载 full_zip_url 并解压提取 Markdown
         """
-        import time
         import zipfile
         
         headers = {
@@ -130,48 +102,31 @@ class MinerUBackend(BasePdfBackend):
             "Content-Type": "application/json"
         }
         
-        # 补全基础 URL，防止用户只配了主域名
-        base_url = self._api_url
-        if not base_url.endswith("/api/v4"):
-             # 如果用户配了 /api/v4/extract/task，则向上取到 /api/v4
-             if "/api/v4" in base_url:
-                 base_url = base_url.split("/api/v4")[0] + "/api/v4"
-             else:
-                 base_url = base_url.rstrip("/") + "/api/v4"
+        task_url = self._build_task_url()
         
         with httpx.Client(timeout=self._timeout) as client:
-            # 1. 申请上传链接
-            apply_url = f"{base_url}/file-urls/batch"
-            apply_data = {
-                "files": [{"name": "document.pdf", "data_id": "doc1"}],
-                "model_version": "vlm"
+            create_data = {
+                "url": source_file_url,
+                "model_version": model_version,
             }
-            logger.info(f"[MinerU Cloud] 正在申请上传链接: {apply_url}")
-            apply_resp = client.post(apply_url, headers=headers, json=apply_data)
-            apply_resp.raise_for_status()
-            apply_res = apply_resp.json()
+            logger.info(f"[MinerU Cloud] 正在创建精准解析任务: {task_url}")
+            create_resp = client.post(task_url, headers=headers, json=create_data)
+            create_resp.raise_for_status()
+            create_res = create_resp.json()
             
-            if apply_res.get("code") != 0:
-                raise Exception(f"申请上传链接失败: {apply_res.get('msg')}")
+            if create_res.get("code") != 0:
+                raise Exception(f"创建精准解析任务失败: {create_res.get('msg')}")
                 
-            batch_id = apply_res["data"]["batch_id"]
-            upload_url = apply_res["data"]["file_urls"][0]
-            
-            # 2. 上传文件
-            logger.info(f"[MinerU Cloud] 正在上传文件到 OSS... batch_id={batch_id}")
-            upload_resp = client.put(upload_url, content=file_stream)
-            upload_resp.raise_for_status()
-            
-            # 3. 轮询结果
-            poll_url = f"{base_url}/extract-results/batch/{batch_id}"
+            task_id = create_res["data"]["task_id"]
+            poll_url = f"{task_url}/{task_id}"
             poll_headers = {"Authorization": headers["Authorization"]}
             
-            logger.info("[MinerU Cloud] 文件上传完毕，开始轮询云端解析结果...")
+            logger.info(f"[MinerU Cloud] 任务创建成功，开始轮询解析结果: task_id={task_id}")
             start_time = time.time()
             full_zip_url = None
+            poll_interval = 1.0
             
             while time.time() - start_time < self._timeout:
-                time.sleep(5)
                 poll_resp = client.get(poll_url, headers=poll_headers)
                 poll_resp.raise_for_status()
                 poll_res = poll_resp.json()
@@ -180,22 +135,22 @@ class MinerUBackend(BasePdfBackend):
                     logger.warning(f"轮询警告: {poll_res.get('msg')}")
                     continue
                     
-                extract_result = poll_res["data"].get("extract_result", [])
-                if not extract_result:
-                    continue
-                    
-                file_state = extract_result[0]
-                state = file_state.get("state")
+                task_state = poll_res.get("data", {})
+                state = task_state.get("state")
                 
                 if state == "done":
-                    full_zip_url = file_state.get("full_zip_url")
+                    full_zip_url = task_state.get("full_zip_url")
                     logger.info("[MinerU Cloud] 解析成功！")
                     break
                 elif state == "failed":
-                    raise Exception(f"云端解析失败: {file_state.get('err_msg')}")
+                    raise Exception(f"云端解析失败: {task_state.get('err_msg')}")
                 else:
-                    progress = file_state.get("extract_progress", {})
+                    progress = task_state.get("extract_progress", {})
                     logger.info(f"[MinerU Cloud] 解析中 ({progress.get('extracted_pages', 0)}/{progress.get('total_pages', 0)})...")
+                    remaining_time = self._timeout - (time.time() - start_time)
+                    if remaining_time > 0:
+                        time.sleep(min(poll_interval, remaining_time))
+                        poll_interval = min(poll_interval * 1.5, 5.0)
                     
             if not full_zip_url:
                 raise Exception(f"云端解析超时 ({self._timeout}s)")
@@ -225,16 +180,27 @@ class MinerUBackend(BasePdfBackend):
                         page_number=idx, # 云端没有页码，暂用 idx
                         index=idx,
                         ext=ext,
-                        content=img_bytes
+                        content=img_bytes,
+                        source_path=img_path,
                     ))
             
             self.metadata["mineru_api_status"] = 200
+            self.metadata["mineru_task_id"] = task_id
+            self.metadata["mineru_model_version"] = model_version
             return markdown, assets
 
-    def _extract_markdown(self, result: dict) -> str:
-        """从 mineru-api 返回结构中提取 Markdown 文本。
+    def _build_task_url(self) -> str:
+        """兼容域名、/api/v4 和完整 /api/v4/extract/task 三种配置。"""
+        if self._api_url.endswith("/api/v4/extract/task"):
+            return self._api_url
+        if "/api/v4" in self._api_url:
+            return self._api_url.split("/api/v4")[0] + "/api/v4/extract/task"
+        return f"{self._api_url.rstrip('/')}/api/v4/extract/task"
 
-        mineru-api 的返回格式可能为:
+    def _extract_markdown(self, result: dict) -> str:
+        """从 MinerU 返回结构中提取 Markdown 文本。
+
+        兼容的返回格式可能为:
         1. {"markdown": "...", ...}
         2. {"md_content": "...", ...}
         3. {"content_list": [...], ...} (JSON 结构化)
@@ -294,10 +260,10 @@ class MinerUBackend(BasePdfBackend):
 
         MinerU 通常会把图片保存到本地目录或返回 Base64。
         这里提取 content_list 中的 image 类型项。
-        由于 MinerU 通过 HTTP API 调用，图片 URL 已在 Markdown 中以相对路径引用，
+        由于 MinerU 云端结果通常已在 Markdown 中保留图片路径引用，
         无需单独收集二进制资产——图片引用保留在 Markdown 文本中即可。
         """
-        # MinerU HTTP API 模式下，图片以 URL/路径形式直接内联在 Markdown 中，
+        # MinerU 云端模式下，图片以 URL/路径形式直接内联在 Markdown 中，
         # 不需要额外收集 PdfBinaryAsset。
         # 如果需要将图片上传到自有对象存储，应在 service.py 层通过正则匹配图片链接后处理。
         return []

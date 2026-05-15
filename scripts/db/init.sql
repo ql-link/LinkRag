@@ -160,7 +160,7 @@ CREATE TABLE IF NOT EXISTS document_original_file (
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '知识库原始文档上传记录表';
 
 -- 9. 文件解析表
-CREATE TABLE IF NOT EXISTS document_parse_task (
+CREATE TABLE IF NOT EXISTS document_parse_file (
     id                         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '文件解析表主键',
     document_original_file_id  BIGINT UNSIGNED NOT NULL COMMENT '原文件主键，对应 document_original_file.id',
     dataset_id                 BIGINT UNSIGNED NOT NULL COMMENT '所属数据集ID',
@@ -181,7 +181,7 @@ CREATE TABLE IF NOT EXISTS document_parsed_log (
     id                         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '解析任务记录主键',
     task_id                    VARCHAR(36) NOT NULL COMMENT '解析任务业务唯一标识(UUID)',
     document_original_file_id  BIGINT UNSIGNED NOT NULL COMMENT '原文件主键，对应 document_original_file.id',
-    document_parse_task_id     BIGINT UNSIGNED DEFAULT NULL COMMENT '文件解析表主键，对应 document_parse_task.id',
+    document_parse_file_id     BIGINT UNSIGNED DEFAULT NULL COMMENT '文件解析表主键，对应 document_parse_file.id',
     trigger_mode               VARCHAR(20) NOT NULL COMMENT '触发方式: upload_auto/manual_retry',
     task_status                VARCHAR(16) NOT NULL DEFAULT 'created' COMMENT '任务状态: created/success/failed',
     failure_reason             VARCHAR(512) DEFAULT NULL COMMENT '解析失败原因',
@@ -198,10 +198,48 @@ CREATE TABLE IF NOT EXISTS document_parsed_log (
 
     UNIQUE KEY uk_parse_task_id (task_id),
     INDEX idx_parsed_log_original_status (document_original_file_id, task_status, updated_at),
-    INDEX idx_parsed_log_parse_task_status (document_parse_task_id, task_status, updated_at)
+    INDEX idx_parsed_log_parse_task_status (document_parse_file_id, task_status, updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '文件解析任务日志表';
 
--- 11. 文档 Chunk 真值记录表
+-- 11. 文件级解析后处理流程状态表
+CREATE TABLE IF NOT EXISTS document_post_process_pipeline (
+    id                         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '解析后处理流程主键',
+    document_parsed_log_id      BIGINT UNSIGNED NOT NULL COMMENT '解析日志主键，对应 document_parsed_log.id',
+    task_id                    VARCHAR(36) NOT NULL COMMENT '解析任务业务唯一标识，对应 document_parsed_log.task_id',
+    document_original_file_id   BIGINT UNSIGNED NOT NULL COMMENT '原文件主键，对应 document_original_file.id',
+    document_parse_file_id      BIGINT UNSIGNED DEFAULT NULL COMMENT '文件解析表主键，对应 document_parse_file.id',
+
+    pipeline_status             VARCHAR(20) NOT NULL DEFAULT 'PENDING' COMMENT '流程状态: PENDING/PROCESSING/SUCCESS/FAILED',
+    chunking_status             VARCHAR(20) NOT NULL DEFAULT 'PENDING' COMMENT '分片状态: PENDING/SUCCESS/FAILED',
+    vectorizing_status          VARCHAR(20) NOT NULL DEFAULT 'PENDING' COMMENT '向量化状态: PENDING/SUCCESS/FAILED',
+    es_indexing_status          VARCHAR(20) NOT NULL DEFAULT 'PENDING' COMMENT 'ES入库状态: PENDING/SUCCESS/FAILED',
+
+    failed_stage                VARCHAR(20) DEFAULT NULL COMMENT '失败阶段: CHUNKING/VECTORIZING/ES_INDEXING',
+    recover_from_stage          VARCHAR(20) DEFAULT NULL COMMENT '下次恢复阶段: CHUNKING/VECTORIZING/ES_INDEXING',
+    failure_reason              VARCHAR(512) DEFAULT NULL COMMENT '最近一次失败原因摘要',
+
+    chunk_count                 INT NOT NULL DEFAULT 0 COMMENT '本次分片数量',
+    retry_count                 INT NOT NULL DEFAULT 0 COMMENT '已重试次数',
+    last_retry_at               DATETIME DEFAULT NULL COMMENT '最近一次重试时间',
+
+    chunking_duration_ms        BIGINT DEFAULT NULL COMMENT '分片耗时，单位毫秒',
+    vectorizing_duration_ms     BIGINT DEFAULT NULL COMMENT '向量化耗时，单位毫秒',
+    es_indexing_duration_ms     BIGINT DEFAULT NULL COMMENT 'ES入库耗时，单位毫秒',
+    total_duration_ms           BIGINT DEFAULT NULL COMMENT '后处理流程总耗时，单位毫秒',
+
+    started_at                  DATETIME DEFAULT NULL COMMENT '后处理开始时间',
+    finished_at                 DATETIME DEFAULT NULL COMMENT '后处理结束时间',
+    created_at                  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at                  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+
+    UNIQUE KEY uk_post_pipeline_parsed_log (document_parsed_log_id),
+    KEY idx_post_pipeline_task_id (task_id),
+    KEY idx_post_pipeline_parse_file (document_parse_file_id, updated_at),
+    KEY idx_post_pipeline_status (pipeline_status, updated_at),
+    KEY idx_post_pipeline_retry (pipeline_status, recover_from_stage, updated_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '文件级解析后处理流程状态表';
+
+-- 12. 文档 Chunk 真值记录表
 CREATE TABLE IF NOT EXISTS kb_document_chunk (
     id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '物理主键ID',
     chunk_id        VARCHAR(128) NOT NULL COMMENT 'Chunk业务唯一键，对应Qdrant Point ID',
@@ -246,7 +284,8 @@ ALTER TABLE chat_conversation AUTO_INCREMENT = 10000;
 ALTER TABLE chat_message AUTO_INCREMENT = 10000;
 ALTER TABLE llm_usage_log AUTO_INCREMENT = 10000;
 ALTER TABLE document_original_file AUTO_INCREMENT = 10000;
-ALTER TABLE document_parse_task AUTO_INCREMENT = 10000;
+ALTER TABLE document_parse_file AUTO_INCREMENT = 10000;
 ALTER TABLE document_parsed_log AUTO_INCREMENT = 10000;
+ALTER TABLE document_post_process_pipeline AUTO_INCREMENT = 10000;
 ALTER TABLE knowledge_file_config AUTO_INCREMENT = 10000;
 ALTER TABLE kb_document_chunk AUTO_INCREMENT = 10000;

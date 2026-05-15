@@ -2,17 +2,30 @@ from __future__ import annotations
 
 import mimetypes
 import re
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
+import logging
 
 import cv2
 import fitz
 import numpy as np
 
-from src.core.parser.pdf.backends.mineru_backend import MinerUBackend
-from src.core.parser.pdf.backends.naive_backend import NaivePdfBackend
-from src.core.parser.pdf.backends.opendataloader_backend import OpenDataLoaderBackend
-from src.core.parser.pdf.models import PdfBinaryAsset, PdfImageAsset, PdfParseOptions
+from src.config import settings
+from src.core.parser.pdf.models import (
+    PdfBinaryAsset,
+    PdfImageAsset,
+    PdfParseOptions,
+    PdfPreparedImageAsset,
+)
+from src.core.parser.pdf.registry import (
+    PdfBackendRegistry,
+    create_default_pdf_backend_registry,
+)
+
+
+logger = logging.getLogger(__name__)
 
 
 class PdfParserService:
@@ -28,13 +41,14 @@ class PdfParserService:
     MIN_IMAGE_BYTES = 2048
     MIN_IMAGE_WIDTH = 64
     MIN_IMAGE_HEIGHT = 64
+    BACKGROUND_UPLOAD_WORKERS = 8
+    _background_upload_executor = ThreadPoolExecutor(
+        max_workers=BACKGROUND_UPLOAD_WORKERS,
+        thread_name_prefix="pdf-image-upload",
+    )
 
-    def __init__(self) -> None:
-        self._backends = {
-            NaivePdfBackend.name: NaivePdfBackend,
-            OpenDataLoaderBackend.name: OpenDataLoaderBackend,
-            # MinerU 需要 API URL，在 _create_backend_instance 中动态实例化
-        }
+    def __init__(self, registry: PdfBackendRegistry | None = None) -> None:
+        self._registry = registry or create_default_pdf_backend_registry()
 
     def parse(self, file_stream: bytes, options: PdfParseOptions) -> tuple[str, dict]:
         metadata: dict = {
@@ -76,55 +90,41 @@ class PdfParserService:
                 }
             )
 
-        if not markdown:
-            markdown, binary_assets = NaivePdfBackend().parse(file_stream, options)
-            selected_backend = "naive"
-            metadata["pdf_parser_attempts"].append({"backend": "naive", "success": True})
-
-        metadata["pdf_parser_backend"] = selected_backend or "naive"
+        metadata["pdf_parser_backend"] = selected_backend
+        if not markdown or not markdown.strip():
+            metadata["image_assets"] = []
+            metadata["image_upload_async"] = False
+            return markdown, metadata
 
         if options.storage and options.image_bucket and options.image_prefix:
             placeholder_count = self._count_placeholders(markdown, metadata["pdf_parser_backend"])
-            image_assets = self._upload_images(
+            prepared_assets = self._prepare_image_uploads(
                 file_stream,
                 options,
                 backend=metadata["pdf_parser_backend"],
                 placeholder_count=placeholder_count,
                 binary_assets=binary_assets,
             )
+            image_assets = [self._to_image_asset(asset) for asset in prepared_assets]
             markdown = self._inject_image_references(
                 markdown, metadata["pdf_parser_backend"], image_assets
             )
             metadata["image_assets"] = [asdict(asset) for asset in image_assets]
+            metadata["_image_bytes_by_url"] = self._build_image_bytes_by_url(prepared_assets)
+            metadata["image_upload_async"] = bool(options.image_upload_async and image_assets)
+            self._handle_prepared_image_uploads(options, prepared_assets)
         else:
             metadata["image_assets"] = []
+            metadata["image_upload_async"] = False
 
         return markdown, metadata
 
     def _create_backend_instance(self, backend_name: str, options: PdfParseOptions):
-        """根据后端名称创建实例。MinerU 需要特殊处理（传入 API URL）。"""
-        if backend_name == MinerUBackend.name:
-            api_url = getattr(options, "mineru_api_url", None) or ""
-            api_key = getattr(options, "mineru_api_key", None)
-            timeout = getattr(options, "mineru_timeout", 300)
-            if not api_url:
-                return None
-            return MinerUBackend(api_url=api_url, api_key=api_key, timeout=timeout)
-
-        backend_cls = self._backends.get(backend_name)
-        if backend_cls is None:
-            return None
-        return backend_cls()
+        """根据后端名称从注册表创建实例。"""
+        return self._registry.create(backend_name, options)
 
     def _build_backend_order(self, backend: str) -> list[str]:
-        normalized = (backend or "naive").lower()
-        if normalized == "auto":
-            return ["mineru", "opendataloader", "naive"]
-        if normalized == "mineru":
-            return ["mineru", "naive"]
-        if normalized == "opendataloader":
-            return ["opendataloader", "naive"]
-        return ["naive"]
+        return self._registry.resolve_order(backend)
 
     def _count_placeholders(self, markdown: str, backend: str) -> int:
         pattern = self.PLACEHOLDER_PATTERNS.get(backend)
@@ -141,157 +141,269 @@ class PdfParserService:
         placeholder_count: int,
         binary_assets: list[PdfBinaryAsset],
     ) -> list[PdfImageAsset]:
-        image_assets: list[PdfImageAsset] = []
+        prepared_assets = self._prepare_image_uploads(
+            file_stream,
+            options,
+            backend=backend,
+            placeholder_count=placeholder_count,
+            binary_assets=binary_assets,
+        )
+        image_assets = self._handle_prepared_image_uploads(options, prepared_assets)
+        return image_assets
 
-        # 优先使用 Docling 已提取的图片/表格/页图资产
-        if binary_assets:
-            for asset in binary_assets:
-                object_key = self._build_image_object_key(
-                    options.image_prefix,
-                    f"{asset.kind}-page-{asset.page_number:03d}-{asset.index:02d}.{asset.ext}",
-                )
-                content_type = mimetypes.types_map.get(f".{asset.ext}", "image/png")
-                options.storage.upload_bytes(
-                    bucket=options.image_bucket,
-                    object_key=object_key,
-                    content=asset.content,
-                    content_type=content_type,
-                )
-                url = options.storage.build_object_url(options.image_bucket, object_key)
-                image_size = self._get_image_size(asset.content)
-                image_assets.append(
-                    PdfImageAsset(
-                        page_number=asset.page_number,
-                        index=asset.index,
-                        object_key=object_key,
-                        url=url,
-                        width=image_size[0],
-                        height=image_size[1],
-                        source_path=asset.source_path,
-                    )
-                )
+    def _handle_prepared_image_uploads(
+        self,
+        options: PdfParseOptions,
+        prepared_assets: list[PdfPreparedImageAsset],
+    ) -> list[PdfImageAsset]:
+        image_assets = [self._to_image_asset(asset) for asset in prepared_assets]
+        if not prepared_assets:
             return image_assets
+        if options.image_upload_async:
+            self._submit_async_uploads(options, prepared_assets)
+            return image_assets
+        self._upload_prepared_assets_concurrently(options, prepared_assets)
+        return image_assets
+
+    def _prepare_image_uploads(
+        self,
+        file_stream: bytes,
+        options: PdfParseOptions,
+        *,
+        backend: str,
+        placeholder_count: int,
+        binary_assets: list[PdfBinaryAsset],
+    ) -> list[PdfPreparedImageAsset]:
+        if binary_assets:
+            return self._prepare_binary_assets(
+                options,
+                binary_assets,
+            )
+
+        # MinerU URL API 场景不会携带本地 PDF bytes；此时只能依赖云端 ZIP 中已返回的图片资产。
+        if not file_stream:
+            return []
 
         doc = fitz.open(stream=file_stream, filetype="pdf")
+        try:
+            collected_assets: list[PdfBinaryAsset] = []
 
-        # Docling 没有资产时，回退 PyMuPDF 抽内嵌图
-        for page_index, page in enumerate(doc, start=1):
-            images = page.get_images(full=True)
-            for image_index, image in enumerate(images, start=1):
-                xref = image[0]
-                extracted = doc.extract_image(xref)
-                if not extracted:
-                    continue
-                ext = (extracted.get("ext") or "png").lower()
-                image_bytes = extracted["image"]
-                if not self._is_meaningful_image(image_bytes):
-                    continue
-                object_key = self._build_image_object_key(
-                    options.image_prefix,
-                    f"page-{page_index:03d}-image-{image_index:02d}.{ext}",
-                )
-                content_type = mimetypes.types_map.get(f".{ext}", "image/png")
-                options.storage.upload_bytes(
-                    bucket=options.image_bucket,
-                    object_key=object_key,
-                    content=image_bytes,
-                    content_type=content_type,
-                )
-                url = options.storage.build_object_url(options.image_bucket, object_key)
-                image_assets.append(
-                    PdfImageAsset(
-                        page_number=page_index,
-                        index=image_index,
-                        object_key=object_key,
-                        url=url,
-                        width=self._get_image_size(image_bytes)[0],
-                        height=self._get_image_size(image_bytes)[1],
-                    )
-                )
-
-        if not image_assets and backend == "naive":
             for page_index, page in enumerate(doc, start=1):
-                image_blocks = [
-                    block
-                    for block in page.get_text("dict").get("blocks", [])
-                    if block.get("type") == 1
-                ]
-                image_blocks.sort(
-                    key=lambda block: (
-                        round(block["bbox"][1], 1),
-                        round(block["bbox"][0], 1),
-                        round(block["bbox"][2], 1),
-                    )
-                )
-                for image_index, block in enumerate(image_blocks, start=1):
-                    image_bytes = block.get("image")
-                    if not image_bytes:
+                images = page.get_images(full=True)
+                for image_index, image in enumerate(images, start=1):
+                    xref = image[0]
+                    extracted = doc.extract_image(xref)
+                    if not extracted:
                         continue
+                    ext = (extracted.get("ext") or "png").lower()
+                    image_bytes = extracted["image"]
                     if not self._is_meaningful_image(image_bytes):
                         continue
-                    ext = (block.get("ext") or "png").lower()
-                    object_key = self._build_image_object_key(
-                        options.image_prefix,
-                        f"page-{page_index:03d}-block-{image_index:02d}.{ext}",
-                    )
-                    content_type = mimetypes.types_map.get(f".{ext}", "image/png")
-                    options.storage.upload_bytes(
-                        bucket=options.image_bucket,
-                        object_key=object_key,
-                        content=image_bytes,
-                        content_type=content_type,
-                    )
-                    url = options.storage.build_object_url(options.image_bucket, object_key)
-                    image_assets.append(
-                        PdfImageAsset(
+                    collected_assets.append(
+                        PdfBinaryAsset(
+                            kind="image",
                             page_number=page_index,
                             index=image_index,
-                            object_key=object_key,
-                            url=url,
-                            width=self._get_image_size(image_bytes)[0],
-                            height=self._get_image_size(image_bytes)[1],
+                            ext=ext,
+                            content=image_bytes,
                         )
                     )
 
-            if not image_assets:
-                image_assets = self._upload_rendered_visual_regions(doc, options)
-
-            return image_assets
-
-        # 如果 PDF 没有内嵌图片（常见于纯矢量页/扫描页），但 Markdown 有图片占位符，
-        # 则按页渲染为图片上传，确保 Markdown 可引用可视内容。
-        if not image_assets and placeholder_count > 0:
-            for page_index, page in enumerate(doc, start=1):
-                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
-                image_bytes = pix.tobytes("png")
-                object_key = self._build_image_object_key(
-                    options.image_prefix,
-                    f"page-{page_index:03d}-render.png",
+            if collected_assets:
+                return self._prepare_binary_assets(
+                    options,
+                    collected_assets,
+                    filename_builder=lambda asset: (
+                        f"page-{asset.page_number:03d}-image-{asset.index:02d}.{asset.ext}"
+                    ),
                 )
-                options.storage.upload_bytes(
-                    bucket=options.image_bucket,
-                    object_key=object_key,
-                    content=image_bytes,
-                    content_type="image/png",
-                )
-                url = options.storage.build_object_url(options.image_bucket, object_key)
-                image_assets.append(
-                    PdfImageAsset(
-                        page_number=page_index,
-                        index=1,
-                        object_key=object_key,
-                        url=url,
-                        width=pix.width,
-                        height=pix.height,
+
+            if backend == "naive":
+                block_assets: list[PdfBinaryAsset] = []
+                for page_index, page in enumerate(doc, start=1):
+                    image_blocks = [
+                        block
+                        for block in page.get_text("dict").get("blocks", [])
+                        if block.get("type") == 1
+                    ]
+                    image_blocks.sort(
+                        key=lambda block: (
+                            round(block["bbox"][1], 1),
+                            round(block["bbox"][0], 1),
+                            round(block["bbox"][2], 1),
+                        )
                     )
+                    for image_index, block in enumerate(image_blocks, start=1):
+                        image_bytes = block.get("image")
+                        if not image_bytes:
+                            continue
+                        if not self._is_meaningful_image(image_bytes):
+                            continue
+                        ext = (block.get("ext") or "png").lower()
+                        block_assets.append(
+                            PdfBinaryAsset(
+                                kind="block",
+                                page_number=page_index,
+                                index=image_index,
+                                ext=ext,
+                                content=image_bytes,
+                            )
+                        )
+
+                if block_assets:
+                    return self._prepare_binary_assets(
+                        options,
+                        block_assets,
+                        filename_builder=lambda asset: (
+                            f"page-{asset.page_number:03d}-block-{asset.index:02d}.{asset.ext}"
+                        ),
+                    )
+
+                return self._prepare_rendered_visual_regions(doc, options)
+
+            if placeholder_count > 0:
+                rendered_assets: list[PdfBinaryAsset] = []
+                for page_index, page in enumerate(doc, start=1):
+                    pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
+                    image_bytes = pix.tobytes("png")
+                    rendered_assets.append(
+                        PdfBinaryAsset(
+                            kind="render",
+                            page_number=page_index,
+                            index=1,
+                            ext="png",
+                            content=image_bytes,
+                        )
+                    )
+                return self._prepare_binary_assets(
+                    options,
+                    rendered_assets,
+                    filename_builder=lambda asset: f"page-{asset.page_number:03d}-render.png",
                 )
 
-        return image_assets
+            return []
+        finally:
+            close = getattr(doc, "close", None)
+            if callable(close):
+                close()
 
-    def _upload_rendered_visual_regions(
+    def _prepare_binary_assets(
+        self,
+        options: PdfParseOptions,
+        binary_assets: list[PdfBinaryAsset],
+        filename_builder: Callable[[PdfBinaryAsset], str] | None = None,
+    ) -> list[PdfPreparedImageAsset]:
+        prepared_assets: list[PdfPreparedImageAsset] = []
+        for asset in binary_assets:
+            filename = (
+                filename_builder(asset)
+                if filename_builder is not None
+                else f"{asset.kind}-page-{asset.page_number:03d}-{asset.index:02d}.{asset.ext}"
+            )
+            object_key = self._build_image_object_key(
+                options.image_prefix,
+                filename,
+            )
+            content_type = mimetypes.types_map.get(f".{asset.ext}", "image/png")
+            url = options.storage.build_object_url(options.image_bucket, object_key)
+            image_size = self._get_image_size(asset.content)
+            prepared_assets.append(
+                PdfPreparedImageAsset(
+                    page_number=asset.page_number,
+                    index=asset.index,
+                    object_key=object_key,
+                    url=url,
+                    content_type=content_type,
+                    content=asset.content,
+                    width=image_size[0],
+                    height=image_size[1],
+                    source_path=asset.source_path,
+                )
+            )
+        return prepared_assets
+
+    def _upload_prepared_assets_concurrently(
+        self,
+        options: PdfParseOptions,
+        prepared_assets: list[PdfPreparedImageAsset],
+    ) -> None:
+        """并发上传已准备好的图片资产，并阻塞等待完成。"""
+
+        def upload_one(asset: PdfPreparedImageAsset) -> None:
+            self._upload_prepared_asset(options, asset)
+
+        max_workers = min(self.BACKGROUND_UPLOAD_WORKERS, max(1, len(prepared_assets)))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            list(executor.map(upload_one, prepared_assets))
+
+    def _submit_async_uploads(
+        self,
+        options: PdfParseOptions,
+        prepared_assets: list[PdfPreparedImageAsset],
+    ) -> None:
+        for asset in prepared_assets:
+            future = self._background_upload_executor.submit(
+                self._upload_prepared_asset,
+                options,
+                asset,
+            )
+            future.add_done_callback(
+                lambda done, object_key=asset.object_key: self._log_upload_failure(done, object_key)
+            )
+
+    @staticmethod
+    def _log_upload_failure(done, object_key: str) -> None:
+        exc = done.exception()
+        if exc is not None:
+            logger.exception("Async PDF image upload failed for %s: %s", object_key, exc)
+
+    @staticmethod
+    def _upload_prepared_asset(
+        options: PdfParseOptions,
+        asset: PdfPreparedImageAsset,
+    ) -> None:
+        options.storage.upload_bytes(
+            bucket=options.image_bucket,
+            object_key=asset.object_key,
+            content=asset.content,
+            content_type=asset.content_type,
+        )
+
+    @staticmethod
+    def _to_image_asset(asset: PdfPreparedImageAsset) -> PdfImageAsset:
+        return PdfImageAsset(
+            page_number=asset.page_number,
+            index=asset.index,
+            object_key=asset.object_key,
+            url=asset.url,
+            width=asset.width,
+            height=asset.height,
+            source_path=asset.source_path,
+        )
+
+    @staticmethod
+    def _build_image_bytes_by_url(
+        prepared_assets: list[PdfPreparedImageAsset],
+    ) -> dict[str, tuple[bytes, str]]:
+        image_bytes_by_url: dict[str, tuple[bytes, str]] = {}
+        max_images = max(0, settings.PDF_IMAGE_ENHANCEMENT_MEMORY_MAX_IMAGES)
+        max_bytes = max(0, settings.PDF_IMAGE_ENHANCEMENT_MEMORY_MAX_BYTES)
+        total_bytes = 0
+
+        for asset in prepared_assets:
+            if len(image_bytes_by_url) >= max_images:
+                break
+            next_total = total_bytes + len(asset.content)
+            if next_total > max_bytes:
+                break
+            image_bytes_by_url[asset.url] = (asset.content, asset.content_type)
+            total_bytes = next_total
+        return image_bytes_by_url
+
+    def _prepare_rendered_visual_regions(
         self, doc: fitz.Document, options: PdfParseOptions
-    ) -> list[PdfImageAsset]:
-        image_assets: list[PdfImageAsset] = []
+    ) -> list[PdfPreparedImageAsset]:
+        binary_assets: list[PdfBinaryAsset] = []
         for page_index, page in enumerate(doc, start=1):
             pix = page.get_pixmap(matrix=fitz.Matrix(2, 2), alpha=False)
             page_image = np.frombuffer(pix.samples, dtype=np.uint8).reshape(
@@ -316,28 +428,22 @@ class PdfParserService:
                 image_bytes = encoded.tobytes()
                 if not self._is_meaningful_image(image_bytes):
                     continue
-                object_key = self._build_image_object_key(
-                    options.image_prefix,
-                    f"page-{page_index:03d}-region-{region_index:02d}.png",
-                )
-                options.storage.upload_bytes(
-                    bucket=options.image_bucket,
-                    object_key=object_key,
-                    content=image_bytes,
-                    content_type="image/png",
-                )
-                url = options.storage.build_object_url(options.image_bucket, object_key)
-                image_assets.append(
-                    PdfImageAsset(
+                binary_assets.append(
+                    PdfBinaryAsset(
+                        kind="region",
                         page_number=page_index,
                         index=region_index,
-                        object_key=object_key,
-                        url=url,
-                        width=w,
-                        height=h,
+                        ext="png",
+                        content=image_bytes,
                     )
                 )
-        return image_assets
+        return self._prepare_binary_assets(
+            options,
+            binary_assets,
+            filename_builder=lambda asset: (
+                f"page-{asset.page_number:03d}-region-{asset.index:02d}.png"
+            ),
+        )
 
     def _detect_visual_regions(
         self,
@@ -553,7 +659,7 @@ class PdfParserService:
             return markdown
 
         remaining = list(image_assets)
-        if backend == "opendataloader":
+        if backend in {"opendataloader", "mineru"}:
             markdown = self._replace_existing_image_urls(markdown, remaining)
 
         pattern = self.PLACEHOLDER_PATTERNS.get(backend)

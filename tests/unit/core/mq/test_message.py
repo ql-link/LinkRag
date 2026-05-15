@@ -70,7 +70,7 @@ class TestParseTaskMessage:
         assert payload.source_bucket == "source-bucket"
         assert payload.source_object_key == "uploads/test.pdf"
         assert payload.md_object_key == "parsed/t-001.md"
-        assert payload.pdf_parser_backend == "opendataloader"
+        assert payload.pdf_parser_backend == "mineru"
 
     def test_serialize_deserialize_roundtrip(self):
         """序列化 → 反序列化闭环"""
@@ -94,7 +94,7 @@ class TestParseTaskMessage:
         assert data["mq_name"] == "tolink.rag.parse_task"
         assert data["payload"]["task_id"] == "t-002"
         assert data["payload"]["original_file_id"] == 2
-        assert data["payload"]["pdf_parser_backend"] == "opendataloader"
+        assert data["payload"]["pdf_parser_backend"] == "mineru"
         assert "parser_backend" not in data["payload"]
 
         # 反序列化
@@ -130,7 +130,7 @@ class TestParseTaskMessage:
         assert parsed.task_id == "t-flat"
         assert parsed.original_file_id == 3
         assert parsed.source_object_key == "uploads/test.pdf"
-        assert parsed.pdf_parser_backend == "opendataloader"
+        assert parsed.pdf_parser_backend == "mineru"
 
     def test_parse_msg_supports_legacy_parser_backend_field(self):
         raw = json.dumps(
@@ -179,6 +179,63 @@ class TestParseResultMessage:
         assert parsed.task_id == "t-001"
         assert parsed.task_status == "success"
         assert parsed.failure_reason is None
+
+    def test_build_should_only_include_java_contract_fields(self):
+        msg = ParseResultMessage.build(
+            task_id="9f6b7d7e-4e7b-4a3f-9f4d-8d2a1b6c7e90",
+            original_file_id=10001,
+            document_parse_task_id=10002,
+            dataset_id=10003,
+            user_id=10002,
+            task_status="success",
+            failure_reason=None,
+            parse_finished_at="2026-04-28T10:00:08",
+        )
+
+        serialized = msg.serialize()
+        data = json.loads(serialized)
+
+        assert data == {
+            "task_id": "9f6b7d7e-4e7b-4a3f-9f4d-8d2a1b6c7e90",
+            "original_file_id": 10001,
+            "document_parse_task_id": 10002,
+            "dataset_id": 10003,
+            "user_id": 10002,
+            "task_status": "success",
+            "failure_reason": None,
+            "parse_finished_at": "2026-04-28T10:00:08",
+            "user_message": None,
+        }
+        assert "mq_type" not in data
+        assert "mq_name" not in data
+        assert "payload" not in data
+        parsed = ParseResultMessage.parse_msg(serialized)
+        assert parsed.failure_reason is None
+        assert parsed.user_message is None
+        assert msg.get_routing_key() == "9f6b7d7e-4e7b-4a3f-9f4d-8d2a1b6c7e90"
+
+    def test_parse_msg_supports_payload_without_user_message(self):
+        raw = json.dumps(
+            {
+                "mq_type": "PARSE_RESULT",
+                "mq_name": "tolink.rag.parse_result",
+                "payload": {
+                    "task_id": "t-legacy-result",
+                    "original_file_id": 1,
+                    "document_parse_task_id": 10,
+                    "dataset_id": 30,
+                    "user_id": 20,
+                    "task_status": "failed",
+                    "failure_reason": "parse failed",
+                    "parse_finished_at": "2026-04-29T10:00:00+00:00",
+                },
+            }
+        )
+
+        parsed = ParseResultMessage.parse_msg(raw)
+
+        assert parsed.task_id == "t-legacy-result"
+        assert parsed.user_message is None
 
 
 class TestCacheSyncMessage:

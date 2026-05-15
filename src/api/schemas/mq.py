@@ -9,7 +9,7 @@ class SendParseTaskRequest(BaseModel):
     task_id: str = Field(..., title="任务ID", description="文档解析任务唯一标识")
     original_file_id: int = Field(..., title="原始文件ID", description="原始文件表主键")
     document_parse_task_id: int = Field(
-        ..., title="文件解析表ID", description="document_parse_task 表主键"
+        ..., title="文件解析表ID", description="document_parse_file 表主键，字段名保持历史兼容"
     )
     user_id: int = Field(..., title="用户ID", description="文件所属用户ID")
     dataset_id: int = Field(..., title="数据集ID", description="文件所属数据集ID")
@@ -23,7 +23,7 @@ class SendParseTaskRequest(BaseModel):
         "upload_auto", title="触发方式", description="upload_auto/manual_retry"
     )
     pdf_parser_backend: str = Field(
-        "opendataloader",
+        "mineru",
         title="PDF解析器",
         description="可选 PDF 解析器: mineru/opendataloader/naive",
         validation_alias=AliasChoices("pdf_parser_backend", "parser_backend"),

@@ -1,5 +1,5 @@
 import hashlib
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 
@@ -119,15 +119,9 @@ async def test_should_store_rule_splitter_output_with_real_embedding_pipeline(
     engine = ChunkingEngine(chunker=ASTAwareChunker(), parser=FakeParser(parse_result))
     final_embedder = RoutedEmbedder(
         {
-            (
-                "# Intro\n\nalpha body",
-                "| h | v |\n|---|---|\n| k | 1 |",
-                "## Details\n\nbeta body",
-            ): [
-                [0.1, 0.2],
-                [0.3, 0.4],
-                [0.5, 0.6],
-            ]
+            ("# Intro\n\nalpha body",): [[0.1, 0.2]],
+            ("| h | v |\n|---|---|\n| k | 1 |",): [[0.3, 0.4]],
+            ("## Details\n\nbeta body",): [[0.5, 0.6]],
         },
         model_name="integration-embed-v1",
     )
@@ -138,8 +132,8 @@ async def test_should_store_rule_splitter_output_with_real_embedding_pipeline(
         batch_size=8,
     )
     repository = AsyncMock()
-    repository.mark_indexing.return_value = 3
-    repository.mark_indexed.return_value = 3
+    repository.mark_indexing.return_value = 1
+    repository.mark_indexed.return_value = 1
     qdrant_store = AsyncMock()
     bucket_router = BucketRouter(bucket_count=16, prefix="kb_bucket")
     service = VectorStoragePipeline(
@@ -167,7 +161,11 @@ async def test_should_store_rule_splitter_output_with_real_embedding_pipeline(
         "| h | v |\n|---|---|\n| k | 1 |",
         "## Details\n\nbeta body",
     ]
-    assert [chunk.metadata["source_file"] for chunk in chunks] == ["linked.md", "linked.md", "linked.md"]
+    assert [chunk.metadata["source_file"] for chunk in chunks] == [
+        "linked.md",
+        "linked.md",
+        "linked.md",
+    ]
     assert [chunk.metadata["chunk_index"] for chunk in chunks] == [0, 1, 2]
 
     assert result.total_chunks == 3
@@ -182,7 +180,11 @@ async def test_should_store_rule_splitter_output_with_real_embedding_pipeline(
         "chunk-rule-2",
         "chunk-rule-3",
     ]
-    assert [draft.bucket_id for draft in inserted_drafts] == [expected_bucket, expected_bucket, expected_bucket]
+    assert [draft.bucket_id for draft in inserted_drafts] == [
+        expected_bucket,
+        expected_bucket,
+        expected_bucket,
+    ]
     assert [draft.chunk_type for draft in inserted_drafts] == ["mixed", "table", "mixed"]
     assert [draft.chunk_index for draft in inserted_drafts] == [0, 1, 2]
     assert [draft.content_hash for draft in inserted_drafts] == [
@@ -191,24 +193,56 @@ async def test_should_store_rule_splitter_output_with_real_embedding_pipeline(
         hashlib.sha256("## Details\n\nbeta body".encode("utf-8")).hexdigest(),
     ]
 
-    repository.mark_indexing.assert_awaited_once_with(
-        mock_session,
-        ["chunk-rule-1", "chunk-rule-2", "chunk-rule-3"],
-        embedding_model="integration-embed-v1",
-        expected_status=CHUNK_STATUS_PENDING,
-    )
-    repository.mark_indexed.assert_awaited_once_with(
-        mock_session,
-        ["chunk-rule-1", "chunk-rule-2", "chunk-rule-3"],
-        embedding_model="integration-embed-v1",
-        expected_status=CHUNK_STATUS_INDEXING,
-    )
+    assert repository.mark_indexing.await_args_list == [
+        call(
+            mock_session,
+            ["chunk-rule-1"],
+            embedding_model=None,
+            expected_status=CHUNK_STATUS_PENDING,
+        ),
+        call(
+            mock_session,
+            ["chunk-rule-2"],
+            embedding_model=None,
+            expected_status=CHUNK_STATUS_PENDING,
+        ),
+        call(
+            mock_session,
+            ["chunk-rule-3"],
+            embedding_model=None,
+            expected_status=CHUNK_STATUS_PENDING,
+        ),
+    ]
+    assert repository.mark_indexed.await_args_list == [
+        call(
+            mock_session,
+            ["chunk-rule-1"],
+            embedding_model="integration-embed-v1",
+            expected_status=CHUNK_STATUS_INDEXING,
+        ),
+        call(
+            mock_session,
+            ["chunk-rule-2"],
+            embedding_model="integration-embed-v1",
+            expected_status=CHUNK_STATUS_INDEXING,
+        ),
+        call(
+            mock_session,
+            ["chunk-rule-3"],
+            embedding_model="integration-embed-v1",
+            expected_status=CHUNK_STATUS_INDEXING,
+        ),
+    ]
     repository.mark_failed.assert_not_awaited()
 
-    qdrant_store.ensure_collection.assert_awaited_once_with(bucket_id=expected_bucket, vector_size=2)
-    qdrant_store.upsert_points.assert_awaited_once_with(
-        bucket_id=expected_bucket,
-        points=[
+    qdrant_store.ensure_collection.assert_has_awaits(
+        [
+            call(bucket_id=expected_bucket, vector_size=2),
+            call(bucket_id=expected_bucket, vector_size=2),
+            call(bucket_id=expected_bucket, vector_size=2),
+        ]
+    )
+    expected_points = [
             IndexedPoint(
                 chunk_id="chunk-rule-1",
                 bucket_id=expected_bucket,
@@ -242,21 +276,31 @@ async def test_should_store_rule_splitter_output_with_real_embedding_pipeline(
                     "doc_id": 2002,
                 },
             ),
-        ],
-    )
+    ]
+    assert qdrant_store.upsert_points.await_args_list == [
+        call(bucket_id=expected_bucket, points=[expected_points[0]]),
+        call(bucket_id=expected_bucket, points=[expected_points[1]]),
+        call(bucket_id=expected_bucket, points=[expected_points[2]]),
+    ]
     assert final_embedder.calls == [
         {
-            "texts": (
-                "# Intro\n\nalpha body",
-                "| h | v |\n|---|---|\n| k | 1 |",
-                "## Details\n\nbeta body",
-            ),
+            "texts": ("# Intro\n\nalpha body",),
+            "model": "integration-embed-v1",
+            "kwargs": {},
+        },
+        {
+            "texts": ("| h | v |\n|---|---|\n| k | 1 |",),
+            "model": "integration-embed-v1",
+            "kwargs": {},
+        },
+        {
+            "texts": ("## Details\n\nbeta body",),
             "model": "integration-embed-v1",
             "kwargs": {},
         }
     ]
-    assert embedding_pipeline.last_stats.total_chunks == 3
-    assert embedding_pipeline.last_stats.cache_misses == 3
+    assert embedding_pipeline.last_stats.total_chunks == 1
+    assert embedding_pipeline.last_stats.cache_misses == 1
 
 
 @pytest.mark.asyncio
@@ -334,13 +378,8 @@ async def test_should_store_structured_semantic_splitter_output_with_real_embedd
     engine = ChunkingEngine(chunker=chunker, parser=FakeParser(parse_result))
     final_embedder = RoutedEmbedder(
         {
-            (
-                "# Intro\n\nalpha one two",
-                "alpha three four\n\nbeta five six\n\nbeta seven eight",
-            ): [
-                [0.11, 0.22],
-                [0.33, 0.44],
-            ]
+            ("# Intro\n\nalpha one two",): [[0.11, 0.22]],
+            ("alpha three four\n\nbeta five six\n\nbeta seven eight",): [[0.33, 0.44]],
         },
         model_name="semantic-final-embed-v1",
     )
@@ -351,8 +390,8 @@ async def test_should_store_structured_semantic_splitter_output_with_real_embedd
         batch_size=8,
     )
     repository = AsyncMock()
-    repository.mark_indexing.return_value = 2
-    repository.mark_indexed.return_value = 2
+    repository.mark_indexing.return_value = 1
+    repository.mark_indexed.return_value = 1
     qdrant_store = AsyncMock()
     bucket_router = BucketRouter(bucket_count=32, prefix="kb_bucket")
     service = VectorStoragePipeline(
@@ -402,22 +441,39 @@ async def test_should_store_structured_semantic_splitter_output_with_real_embedd
         "alpha three four\n\nbeta five six\n\nbeta seven eight",
     ]
 
-    repository.mark_indexing.assert_awaited_once_with(
-        mock_session,
-        ["chunk-sem-1", "chunk-sem-2"],
-        embedding_model="semantic-final-embed-v1",
-        expected_status=CHUNK_STATUS_PENDING,
-    )
-    repository.mark_indexed.assert_awaited_once_with(
-        mock_session,
-        ["chunk-sem-1", "chunk-sem-2"],
-        embedding_model="semantic-final-embed-v1",
-        expected_status=CHUNK_STATUS_INDEXING,
-    )
-    qdrant_store.ensure_collection.assert_awaited_once_with(bucket_id=expected_bucket, vector_size=2)
-    qdrant_store.upsert_points.assert_awaited_once_with(
-        bucket_id=expected_bucket,
-        points=[
+    assert repository.mark_indexing.await_args_list == [
+        call(
+            mock_session,
+            ["chunk-sem-1"],
+            embedding_model=None,
+            expected_status=CHUNK_STATUS_PENDING,
+        ),
+        call(
+            mock_session,
+            ["chunk-sem-2"],
+            embedding_model=None,
+            expected_status=CHUNK_STATUS_PENDING,
+        ),
+    ]
+    assert repository.mark_indexed.await_args_list == [
+        call(
+            mock_session,
+            ["chunk-sem-1"],
+            embedding_model="semantic-final-embed-v1",
+            expected_status=CHUNK_STATUS_INDEXING,
+        ),
+        call(
+            mock_session,
+            ["chunk-sem-2"],
+            embedding_model="semantic-final-embed-v1",
+            expected_status=CHUNK_STATUS_INDEXING,
+        ),
+    ]
+    assert qdrant_store.ensure_collection.await_args_list == [
+        call(bucket_id=expected_bucket, vector_size=2),
+        call(bucket_id=expected_bucket, vector_size=2),
+    ]
+    expected_points = [
             IndexedPoint(
                 chunk_id="chunk-sem-1",
                 bucket_id=expected_bucket,
@@ -440,8 +496,11 @@ async def test_should_store_structured_semantic_splitter_output_with_real_embedd
                     "doc_id": 9,
                 },
             ),
-        ],
-    )
+    ]
+    assert qdrant_store.upsert_points.await_args_list == [
+        call(bucket_id=expected_bucket, points=[expected_points[0]]),
+        call(bucket_id=expected_bucket, points=[expected_points[1]]),
+    ]
     assert semantic_embedder.calls == [
         {
             "texts": (
@@ -457,13 +516,15 @@ async def test_should_store_structured_semantic_splitter_output_with_real_embedd
     ]
     assert final_embedder.calls == [
         {
-            "texts": (
-                "# Intro\n\nalpha one two",
-                "alpha three four\n\nbeta five six\n\nbeta seven eight",
-            ),
+            "texts": ("# Intro\n\nalpha one two",),
+            "model": "semantic-final-embed-v1",
+            "kwargs": {},
+        },
+        {
+            "texts": ("alpha three four\n\nbeta five six\n\nbeta seven eight",),
             "model": "semantic-final-embed-v1",
             "kwargs": {},
         }
     ]
-    assert embedding_pipeline.last_stats.total_chunks == 2
+    assert embedding_pipeline.last_stats.total_chunks == 1
     assert embedding_pipeline.last_stats.embedding_model == "semantic-final-embed-v1"

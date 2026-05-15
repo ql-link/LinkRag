@@ -55,3 +55,8 @@ tests/api_keys.json
 
 # Logs
 *.log
+
+# Local evaluation datasets and generated reports
+/tests/evaluation_datasets/parser_smoke/sample/
+/tests/evaluation_datasets/
+/docs/evaluation_reports/

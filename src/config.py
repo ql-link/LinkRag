@@ -93,7 +93,7 @@ class Settings(BaseSettings):
     VECTOR_STORE_TYPE: str = "qdrant"
 
     # Qdrant
-    QDRANT_HOST: str = "36.213.180.176"
+    QDRANT_HOST: str = "43.138.176.52"
     QDRANT_PORT: int = 6333
     QDRANT_GRPC_PORT: int = 6334
     QDRANT_COLLECTION_NAME: str = "tolink_rag_collection"
@@ -124,11 +124,15 @@ class Settings(BaseSettings):
     MINIO_BUCKET_NAME: str = "tolink-rag-docs"
     MINIO_USE_SSL: bool = False
     LOCAL_DOCS_PATH: str = "./data/documents"
-    PDF_PARSER_BACKEND: str = "opendataloader"  # auto / mineru / opendataloader / naive
-    PDF_PARSER_FALLBACKS: str = "naive"
-    MINERU_API_URL: str = ""  # mineru-api 服务地址，例如 http://localhost:8010 或云服务地址
-    MINERU_API_KEY: Optional[str] = None  # MinerU 云服务专属 Token (如需)
+    PDF_PARSER_BACKEND: str = "mineru"  # auto / mineru / opendataloader / naive
+    PDF_PARSER_FALLBACKS: str = ""
+    PDF_IMAGE_UPLOAD_ASYNC: bool = True  # 是否后台异步上传 PDF 图片资产
+    PDF_IMAGE_ENHANCEMENT_MEMORY_MAX_IMAGES: int = 20  # 图片增强最多使用多少张内存图片
+    PDF_IMAGE_ENHANCEMENT_MEMORY_MAX_BYTES: int = 50 * 1024 * 1024  # 图片增强内存图片总量上限
+    MINERU_API_URL: str = ""  # MinerU 官方云端 V4 API 地址
+    MINERU_API_KEY: Optional[str] = None  # MinerU 云服务专属 Token
     MINERU_TIMEOUT: int = 300  # MinerU API 请求超时（秒）
+    MINERU_MODEL_VERSION: str = "vlm"  # pipeline / vlm / MinerU-HTML
 
 
     # ==========================================

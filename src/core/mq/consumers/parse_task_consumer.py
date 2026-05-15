@@ -14,7 +14,7 @@ from src.core.pipeline import ParseTaskPipeline
 from src.services.mq_service import MQService
 
 PARSE_TASK_TOPIC = ParseTaskMessage.MQ_NAME
-PARSE_TASK_GROUP = "tolink-document-pares"
+PARSE_TASK_GROUP = "tolink.rag.parse_task"
 
 
 async def handle_parse_task(message_body: str, metadata: Dict[str, Any]) -> None:
