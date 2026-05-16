@@ -17,11 +17,11 @@ src/core/pipeline/
 │   ├── notifier.py              # ParseResultNotifier: parse_result MQ 通知与兜底
 │   ├── source.py                # ParseSourceIO: 对象存储侧源文件下载 / Markdown 上传
 │   ├── validator.py             # ParseTaskGuard: 前置校验、MQ 重投与中断状态收敛
-│   └── _utils.py                # 子包内部共享小工具（now / duration_ms / 等）
-└── post_process/                # 文件级后处理子状态机（chunking → vectorizing → es_indexing）
-    ├── constants.py             # PIPELINE_STATUS_* / STAGE_STATUS_*
-    ├── models.py                # PostProcessStageResult / PostProcessResult
-    └── repository.py            # PostProcessPipelineRepository（document_post_process_pipeline 仓储）
+│   ├── _utils.py                # 子包内部共享小工具（now / duration_ms / 等）
+│   └── post_process/            # 文件级后处理子状态机（chunking → vectorizing → es_indexing）
+│       ├── constants.py         # PIPELINE_STATUS_* / STAGE_STATUS_*
+│       ├── models.py            # PostProcessStageResult / PostProcessResult
+│       └── repository.py        # PostProcessPipelineRepository（document_post_process_pipeline 仓储）
 ```
 
 `ParseTaskPipeline` 由 4 个协作者通过依赖注入组合而成：

@@ -15,7 +15,7 @@ from src.core.pipeline.parse_task.constants import (
     PARSE_TASK_STATUS_FAILED,
     PARSE_TASK_STATUS_SUCCESS,
 )
-from src.core.pipeline.post_process.constants import (
+from src.core.pipeline.parse_task.post_process.constants import (
     PIPELINE_STATUS_FAILED,
     PIPELINE_STATUS_PENDING,
     PIPELINE_STATUS_PROCESSING,

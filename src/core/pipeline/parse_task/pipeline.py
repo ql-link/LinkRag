@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from src.core.es_index_storage import EsIndexingPipeline, EsIndexingResult
 from src.core.markdown_parser import ParseResult
 from src.core.mq.messages.parse_task import ParseTaskPayload
-from src.core.pipeline.post_process.repository import PostProcessPipelineRepository
+from src.core.pipeline.parse_task.post_process.repository import PostProcessPipelineRepository
 from src.core.splitter import create_chunking_engine
 from src.core.splitter.models import Chunk
 from src.core.vector_storage import compose_vector_storage_facade

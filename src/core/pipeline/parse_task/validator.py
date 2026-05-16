@@ -9,7 +9,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.mq.messages.parse_task import ParseTaskPayload
-from src.core.pipeline.post_process.constants import (
+from src.core.pipeline.parse_task.post_process.constants import (
     PIPELINE_STATUS_FAILED,
     PIPELINE_STATUS_SUCCESS,
     POST_PROCESS_STAGE_CHUNKING,
@@ -17,7 +17,7 @@ from src.core.pipeline.post_process.constants import (
     POST_PROCESS_STAGE_VECTORIZING,
     STAGE_STATUS_SUCCESS,
 )
-from src.core.pipeline.post_process.repository import PostProcessPipelineRepository
+from src.core.pipeline.parse_task.post_process.repository import PostProcessPipelineRepository
 from src.models.parse_task import DocumentParseTask
 
 from ._utils import duration_ms, now

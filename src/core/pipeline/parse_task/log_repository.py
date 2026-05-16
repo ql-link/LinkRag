@@ -13,7 +13,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.mq.messages.parse_task import ParseTaskPayload
-from src.core.pipeline.post_process.repository import PostProcessPipelineRepository
+from src.core.pipeline.parse_task.post_process.repository import PostProcessPipelineRepository
 from src.models.parse_task import DocumentParsedLog, DocumentParseTask
 
 from ._utils import attach_pipeline_to_log, duration_ms, now
