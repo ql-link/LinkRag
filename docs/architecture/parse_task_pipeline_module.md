@@ -1,18 +1,45 @@
 # Parse Task Pipeline Module
 
-本文说明 `src/core/pipeline/parse_task_pipeline.py` 解析任务业务流水线的端到端职责、状态边界和失败语义。
+本文说明 `src/core/pipeline/parse_task/pipeline.py` 解析任务业务流水线的端到端职责、状态边界和失败语义。
 
 ## 1. 模块框架
 
+`pipeline/` 顶层按概念分两个子包：
+
 ```text
 src/core/pipeline/
-├── parse_task_pipeline.py       # 解析任务主编排
-├── constants.py                 # 解析任务状态和用户提示文案
-├── error_codes.py               # ParseFailureCode
-├── models.py                    # ParsePipelineResult / 后处理结果模型
-├── post_process_constants.py    # 文件级后处理状态常量
-└── post_process_repository.py   # document_post_process_pipeline 仓储
+├── parse_task/                  # 解析任务主编排
+│   ├── pipeline.py              # ParseTaskPipeline 主类（编排骨架）
+│   ├── constants.py             # 解析任务状态和用户提示文案
+│   ├── error_codes.py           # ParseFailureCode + build_failure_reason
+│   ├── models.py                # ParsePipelineResult / PipelineStatus
+│   ├── log_repository.py        # ParseLogRepository: document_parsed_log 仓储与终态写入
+│   ├── notifier.py              # ParseResultNotifier: parse_result MQ 通知与兜底
+│   ├── source.py                # ParseSourceIO: 对象存储侧源文件下载 / Markdown 上传
+│   ├── validator.py             # ParseTaskGuard: 前置校验、MQ 重投与中断状态收敛
+│   └── _utils.py                # 子包内部共享小工具（now / duration_ms / 等）
+└── post_process/                # 文件级后处理子状态机（chunking → vectorizing → es_indexing）
+    ├── constants.py             # PIPELINE_STATUS_* / STAGE_STATUS_*
+    ├── models.py                # PostProcessStageResult / PostProcessResult
+    └── repository.py            # PostProcessPipelineRepository（document_post_process_pipeline 仓储）
 ```
+
+`ParseTaskPipeline` 由 4 个协作者通过依赖注入组合而成：
+
+| 协作者 | 职责 |
+| --- | --- |
+| `ParseLogRepository` | `document_parsed_log` 创建、按 task_id 查询、success/failed 终态写入 |
+| `ParseSourceIO` | 源文件下载、Markdown 上传、MinerU URL 拼接、`should_skip_source_download` 判断 |
+| `ParseResultNotifier` | parse_result MQ 通知；通知失败时按策略兜底 `RESULT_NOTIFY_FAILED` |
+| `ParseTaskGuard` | 消息载荷一致性校验、重复 task_id 的终态补发、中断 pipeline 的失败收敛 |
+
+`ChunkingEngine` 与 `VectorStorageFacade` 由各自模块的工厂入口装配，不再由 pipeline 自己组装：
+
+| 工厂入口 | 位置 |
+| --- | --- |
+| `create_chunking_engine()` | `src/core/splitter/factory.py` |
+| `create_system_embedding_client()` / `LazyEmbeddingClient` | `src/core/splitter/factory.py` |
+| `compose_vector_storage_facade()` | `src/core/vector_storage/factory.py` |
 
 上游入口：
 
