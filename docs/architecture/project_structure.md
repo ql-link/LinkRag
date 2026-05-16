@@ -45,9 +45,14 @@ toLink-Rag/                         # 仓库根目录
 │   ├── reference/                # API、消息契约、数据模型、错误码
 │   ├── guides/                   # 使用、部署、运维等场景化指南
 │   └── development/              # 分支、提交、PR 等开发流程
+├── alembic.ini                   # Alembic 配置入口
+├── migrations/                   # Alembic 数据库迁移
+│   ├── env.py                    # 运行环境：DB URL + 合并 Base.metadata
+│   ├── script.py.mako            # 迁移文件模板
+│   └── versions/                 # 版本化迁移脚本（NNNN_YYYYMMDD_slug.py）
 ├── scripts/                      # 可执行脚本
 │   ├── db/                       # 数据库初始化脚本
-│   │   ├── init.sql              # 当前数据库表结构（DDL）
+│   │   ├── init.sql              # 当前数据库表结构（DDL，冷启动用；增量演进走 Alembic）
 │   │   └── schema.sql            # 初始化数据脚本
 ├── src/                          # 应用源码
 │   ├── config.py                 # 全局配置

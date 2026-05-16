@@ -46,8 +46,13 @@ scripts/check_docs_sync.py       # 检测脚本
 | `warning` | 违规时打印提示，不阻止 |
 
 当前规则集（19 条）的分级原则：
-- **error**：对外契约（DDL、MQ 消息、流水线终态、入口文档双向同步）
+- **error**：对外契约（DDL、MQ 消息、流水线终态、入口文档双向同步）；以及 ORM/init.sql 改动必须伴随 Alembic 迁移（`db-migration-required`）
 - **warning**：内部模块行为变化（解析器、分块、向量化等）
+
+> `must_update` 支持 glob 模式（`*` / `**`）。例如 `db-migration-required`
+> 规则的 `must_update: migrations/versions/*.py` 意为：触发后只要本次变更
+> 集中存在任意 migration 文件即满足。普通路径（无通配符）退化为精确匹配，
+> 行为与旧版本一致。
 
 ## 安装本地 hook
 

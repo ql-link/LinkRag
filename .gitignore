@@ -60,3 +60,4 @@ tests/api_keys.json
 /tests/evaluation_datasets/parser_smoke/sample/
 /tests/evaluation_datasets/
 /docs/evaluation_reports/
+.claude/settings.local.json

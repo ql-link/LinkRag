@@ -287,5 +287,4 @@ ALTER TABLE document_original_file AUTO_INCREMENT = 10000;
 ALTER TABLE document_parse_file AUTO_INCREMENT = 10000;
 ALTER TABLE document_parsed_log AUTO_INCREMENT = 10000;
 ALTER TABLE document_post_process_pipeline AUTO_INCREMENT = 10000;
-ALTER TABLE knowledge_file_config AUTO_INCREMENT = 10000;
 ALTER TABLE kb_document_chunk AUTO_INCREMENT = 10000;
