@@ -98,6 +98,7 @@ git rebase dev   # 或 git merge dev，团队选一种
 - [ ] `pytest tests/unit` 全部通过
 - [ ] 改动覆盖了对应测试（新增/修改路径）
 - [ ] 涉及契约/配置/DDL 时，文档已同步（见 [CLAUDE.md](../../CLAUDE.md) 第五节）
+- [ ] **改动 `src/models/**.py` 或 `scripts/db/init.sql` 时，已新增对应 Alembic 迁移**（见 [数据库迁移规范](database_migrations.md)）
 - [ ] 不引入未使用的依赖
 
 ### 5. 创建 PR

@@ -209,7 +209,15 @@ def find_violations(rules: list[Rule], changed: set[str]) -> list[Violation]:
         triggers = sorted(p for p in changed if _matches_any(p, list(rule.when_changed)))
         if not triggers:
             continue
-        missing = sorted(doc for doc in rule.must_update if doc not in changed)
+        # Each entry in must_update is treated as a glob pattern. The rule
+        # is satisfied if at least one changed file matches the pattern; the
+        # entry is reported as "missing" otherwise. Plain paths (no wildcard)
+        # degrade to exact-match, preserving prior behavior.
+        missing = sorted(
+            pattern
+            for pattern in rule.must_update
+            if not any(_glob_to_regex(pattern).match(p) for p in changed)
+        )
         if missing:
             violations.append(Violation(rule=rule, triggers=triggers, missing=missing))
     return violations

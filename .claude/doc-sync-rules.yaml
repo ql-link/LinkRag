@@ -34,6 +34,19 @@ rules:
     severity: error
     rationale: 数据库 schema 是 Java/Python 双方契约，未同步会导致集成方误用字段。
 
+  - id: db-migration-required
+    description: ORM 模型或 init.sql 变更必须伴随 Alembic 迁移
+    when_changed:
+      - src/models/**/*.py
+      - scripts/db/init.sql
+    must_update:
+      - migrations/versions/*.py
+    severity: error
+    rationale: |
+      模型/DDL 变更若不写 Alembic 迁移，存量库会陷入 schema drift
+      (CI 用空库跑测试不会暴露，线上首条真实流量必炸)。must_update 为
+      glob，匹配 migrations/versions 下任意新增/修改的迁移文件即可。
+
   - id: qdrant-schema
     description: Qdrant 向量库实现变更
     when_changed:

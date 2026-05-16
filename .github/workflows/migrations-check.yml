@@ -1,0 +1,86 @@
+name: Alembic Migrations
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [dev, main]
+
+jobs:
+  upgrade-head:
+    name: Run alembic upgrade head on ephemeral MySQL
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: tolink_rag_db
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -proot --silent"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Install minimal deps
+        run: |
+          python -m pip install --upgrade pip
+          # 只装 migration 运行所需的最小集合，避免装整个 RAG 重依赖
+          pip install "alembic>=1.13.0" "SQLAlchemy>=2.0.0" "pymysql>=1.1.0" \
+                      "pydantic>=2.5.0" "pydantic-settings>=2.1.0" "loguru>=0.7.0" \
+                      "cryptography>=42.0.0"
+
+      - name: Wait for MySQL
+        run: |
+          for i in {1..30}; do
+            if mysqladmin ping -h 127.0.0.1 -uroot -proot --silent; then
+              echo "MySQL is up"; exit 0
+            fi
+            sleep 2
+          done
+          echo "MySQL failed to start"; exit 1
+
+      - name: Bootstrap schema from init.sql
+        env:
+          MYSQL_PWD: root
+        run: |
+          # 模拟"存量库"：先用 init.sql 建出当前生产形态的 schema。
+          # 注意 init.sql 已经使用新表名 document_parse_file，因此 0002 的
+          # rename 会走 no-op 分支；0003 的 CREATE 会因表已存在走 no-op 分支。
+          # 这恰好验证迁移的幂等性。
+          mysql -h 127.0.0.1 -P 3306 -uroot tolink_rag_db < scripts/db/init.sql
+
+      - name: Stamp baseline (0001)
+        env:
+          ALEMBIC_DATABASE_URL: mysql+pymysql://root:root@127.0.0.1:3306/tolink_rag_db
+          PYTHONPATH: ${{ github.workspace }}
+        run: alembic stamp 0001
+
+      - name: Run alembic upgrade head
+        env:
+          ALEMBIC_DATABASE_URL: mysql+pymysql://root:root@127.0.0.1:3306/tolink_rag_db
+          PYTHONPATH: ${{ github.workspace }}
+        run: alembic upgrade head
+
+      - name: Run alembic upgrade head again (idempotency)
+        env:
+          ALEMBIC_DATABASE_URL: mysql+pymysql://root:root@127.0.0.1:3306/tolink_rag_db
+          PYTHONPATH: ${{ github.workspace }}
+        run: alembic upgrade head
+
+      - name: Print final version
+        env:
+          ALEMBIC_DATABASE_URL: mysql+pymysql://root:root@127.0.0.1:3306/tolink_rag_db
+          PYTHONPATH: ${{ github.workspace }}
+        run: alembic current
