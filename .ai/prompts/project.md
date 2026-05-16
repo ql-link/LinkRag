@@ -79,6 +79,7 @@ uvicorn src.main:app --reload
 | 模块 | 文档 |
 | --- | --- |
 | 项目结构总览 | [project_structure.md](docs/architecture/project_structure.md) |
+| Pipeline 架构 | [pipeline_architecture.md](docs/architecture/pipeline_architecture.md) |
 | 解析任务流水线 | [parse_task_pipeline_module.md](docs/architecture/parse_task_pipeline_module.md) |
 | 文件解析 | [file_parser_module.md](docs/architecture/file_parser_module.md) |
 | Markdown 解析与增强 | [markdown_parser_module.md](docs/architecture/markdown_parser_module.md) |
