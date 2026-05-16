@@ -1,0 +1,6 @@
+# AI 资产软链接：声明类型，避免被工具误处理为普通文件。
+# 唯一物理来源是 .ai/，详见 scripts/setup_ai_links.py。
+.claude/skills    symlink
+.agent/skills     symlink
+CLAUDE.md         symlink
+AGENTS.md         symlink

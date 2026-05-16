@@ -172,23 +172,10 @@ rules:
       - docs/architecture/project_structure.md
     severity: warning
 
-  # ---- 入口文档双向同步 ----
-  - id: claude-md-mirror
-    description: CLAUDE.md 变化必须同步到 AGENTS.md
-    when_changed:
-      - CLAUDE.md
-    must_update:
-      - AGENTS.md
-    severity: error
-    rationale: CLAUDE.md 与 AGENTS.md 是 Claude/Codex 两套 Agent 的统一入口，必须字字一致。
-
-  - id: agents-md-mirror
-    description: AGENTS.md 变化必须同步到 CLAUDE.md
-    when_changed:
-      - AGENTS.md
-    must_update:
-      - CLAUDE.md
-    severity: error
+  # ---- 入口文档 ----
+  # CLAUDE.md 与 AGENTS.md 已通过 symlink 指向 .ai/prompts/project.md，
+  # 物理上同一份文件，无需再做内容镜像检查。
+  # 链接完整性由 scripts/check_ai_links.py 保障。
 
   # ---- 同步规则自身 ----
   - id: sync-rules-doc
