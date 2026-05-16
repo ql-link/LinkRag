@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.models.parse_task import DocumentParsedLog, DocumentPostProcessPipeline
 
-from .post_process_constants import (
+from .constants import (
     MAX_FAILURE_REASON_LENGTH,
     PIPELINE_STATUS_FAILED,
     PIPELINE_STATUS_PENDING,

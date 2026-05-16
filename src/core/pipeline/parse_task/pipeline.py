@@ -24,7 +24,7 @@ from src.core.llm.tokenizer import Tokenizer
 from src.core.markdown_parser import ParseResult
 from src.core.mq.messages.parse_result import ParseResultMessage
 from src.core.mq.messages.parse_task import ParseTaskPayload
-from src.core.pipeline.constants import (
+from src.core.pipeline.parse_task.constants import (
     DUPLICATE_FAILED_USER_MESSAGE,
     DUPLICATE_SUCCESS_USER_MESSAGE,
     DUPLICATE_TASK_LOG_NOT_FOUND_DETAIL,
@@ -34,9 +34,9 @@ from src.core.pipeline.constants import (
     PARSE_TASK_STATUS_SUCCESS,
     RESULT_NOTIFY_FAILED_DETAIL,
 )
-from src.core.pipeline.error_codes import ParseFailureCode, build_failure_reason
-from src.core.pipeline.models import ParsePipelineResult, PipelineStatus
-from src.core.pipeline.post_process_constants import (
+from src.core.pipeline.parse_task.error_codes import ParseFailureCode, build_failure_reason
+from src.core.pipeline.parse_task.models import ParsePipelineResult, PipelineStatus
+from src.core.pipeline.post_process.constants import (
     PIPELINE_STATUS_FAILED,
     PIPELINE_STATUS_SUCCESS,
     POST_PROCESS_STAGE_CHUNKING,
@@ -44,7 +44,7 @@ from src.core.pipeline.post_process_constants import (
     POST_PROCESS_STAGE_VECTORIZING,
     STAGE_STATUS_SUCCESS,
 )
-from src.core.pipeline.post_process_repository import PostProcessPipelineRepository
+from src.core.pipeline.post_process.repository import PostProcessPipelineRepository
 from src.core.splitter import (
     ASTAwareChunker,
     ChunkEmbeddingPipeline,
