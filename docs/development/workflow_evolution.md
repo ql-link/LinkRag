@@ -266,6 +266,6 @@ TD 新增的重要约束：**方法级变更总表中每个方法必须关联到
 ## 相关文档
 
 - 新工作流详细使用指南：[spec_as_test_workflow.md](spec_as_test_workflow.md)
-- Brief 生成 skill：[.ai/skills/pre-prd-requirement-analysis/SKILL.md](../../.ai/skills/pre-prd-requirement-analysis/SKILL.md)
-- Acceptance 生成 skill：[.ai/skills/prd-generator/SKILL.md](../../.ai/skills/prd-generator/SKILL.md)
+- Brief 生成 skill：[.ai/skills/brief-generator/SKILL.md](../../.ai/skills/brief-generator/SKILL.md)
+- Acceptance 生成 skill：[.ai/skills/acceptance-generator/SKILL.md](../../.ai/skills/acceptance-generator/SKILL.md)
 - TD 生成 skill：[.ai/skills/technical-design/SKILL.md](../../.ai/skills/technical-design/SKILL.md)

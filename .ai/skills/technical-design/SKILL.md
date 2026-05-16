@@ -48,8 +48,8 @@ when_to_use: 当用户明确要求"生成技术方案 / 生成技术实现文档
 
 若缺失任一上游产物：
 
-- 缺 brief.md → 转 `pre-prd-requirement-analysis`
-- 缺 acceptance.feature → 转 `acceptance-generator` (即 `prd-generator`)
+- 缺 brief.md → 转 `brief-generator`
+- 缺 acceptance.feature → 转 `acceptance-generator`
 
 不允许基于聊天记忆直接生成技术文档。
 

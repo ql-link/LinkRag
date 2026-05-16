@@ -1,7 +1,7 @@
 ---
-name: pre-prd-requirement-analysis
+name: brief-generator
 description: 当用户提出新需求、口头想法、初步框架，或要求"写个 brief / 需求理解 / 业务分析 / 先理清楚需求"时激活；输出面向开发者的 brief.md，覆盖需求摘要、业务流程、核心模块实现思路、风险、待确认问题五章；支持开发者审阅后通过对话迭代修订，直到开发者确认冻结，作为后续 acceptance.feature 生成的输入。若用户已基于 brief.md 提出修改、补充、疑问、回答待确认项，继续用本 skill 做迭代收敛。
-when_to_use: "当用户提出新需求、口头描述、初步想法、粗略框架，或要求'先分析'、'写个 brief'、'写个需求理解'、'搞清楚业务'、'看看影响哪些模块'时激活。若用户已拿到 brief.md 初稿继续回答待确认问题、补充范围、修正流程、要求继续完善，也继续使用本 skill。若用户已有冻结 brief 并明确要求'生成 acceptance / 生成验收 / 生成 Gherkin / 生成测试场景'，转 acceptance-generator (即原 prd-generator)。"
+when_to_use: "当用户提出新需求、口头描述、初步想法、粗略框架，或要求'先分析'、'写个 brief'、'写个需求理解'、'搞清楚业务'、'看看影响哪些模块'时激活。若用户已拿到 brief.md 初稿继续回答待确认问题、补充范围、修正流程、要求继续完善，也继续使用本 skill。若用户已有冻结 brief 并明确要求'生成 acceptance / 生成验收 / 生成 Gherkin / 生成测试场景'，转 acceptance-generator。"
 ---
 
 # Brief Generator
