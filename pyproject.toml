@@ -67,6 +67,7 @@ dev = [
     "black>=24.1.0",
     "isort>=5.13.0",
     "mypy>=1.8.0",
+    "reportlab>=4.0.0",
 ]
 mq-kafka = [
     "aiokafka>=0.11.0",
