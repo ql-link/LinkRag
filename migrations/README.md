@@ -29,5 +29,5 @@ alembic stamp <revision>
 ## 版本顺序
 
 - `0001_initial`：基线，对应当前 [scripts/db/init.sql](../scripts/db/init.sql) 的全表结构；`upgrade()` 为 no-op，仅作为版本锚点。
-- `0002_rename_parse_task_to_parse_file`：修复历史漂移 —— 把旧表 `document_parse_task` 改名为 `document_parse_file`，同步外键列。
-- `0003_add_post_process_pipeline`：补建 `document_post_process_pipeline` 表（init.sql 已含，但老库未执行）。
+
+> 此前的 3 处历史 schema drift（`document_parse_task` 改名、外键列改名、新增 `document_post_process_pipeline` 表）已由运维手工在存量库修复，不再需要专门的迁移脚本。后续所有 schema 变更从 `0001` 之后线性追加。

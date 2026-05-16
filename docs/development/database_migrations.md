@@ -4,7 +4,7 @@
 
 ## 为什么
 
-`scripts/db/init.sql` 只在空库冷启动时跑一次。改字段后若不写迁移，存量库不会自动 ALTER，CI 的临时库又看不出差异 —— 直到生产真实流量进来才会以 `Unknown column` 形式炸出。本项目过去发生过 3 处此类漂移（参见 [migrations/README.md](../../migrations/README.md) 中 `0002`/`0003` 的来历）。
+`scripts/db/init.sql` 只在空库冷启动时跑一次。改字段后若不写迁移，存量库不会自动 ALTER，CI 的临时库又看不出差异 —— 直到生产真实流量进来才会以 `Unknown column` 形式炸出。本项目过去发生过 3 处此类漂移（已由运维手工修复，存量库已与 init.sql 对齐）。
 
 ## 工作流
 

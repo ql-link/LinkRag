@@ -1,0 +1,28 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python -c \"import yaml; print\\('PyYAML:', yaml.__version__\\)\")",
+      "Bash(.venv/bin/python scripts/check_docs_sync.py --working)",
+      "Bash(echo \"退出码: $?\")",
+      "Bash(git check-ignore *)",
+      "Bash(git checkout *)",
+      "Bash(git add *)",
+      "Bash(git restore *)",
+      "Bash(.venv/bin/python scripts/check_docs_sync.py --staged)",
+      "Bash(git commit -m ' *)",
+      "Bash(git push *)",
+      "Bash(gh pr create --base dev --head refactor/docs-governance --title 'refactor\\(docs\\): 重构文档体系并引入自动同步治理机制' --body ' *)",
+      "Bash(git fetch *)",
+      "Bash(gh pr create --base dev --head claude/smoke-test-script --repo ql-link/LinkRag --title 'test\\(e2e\\): 增加可复用的解析 pipeline 端到端冒烟测试脚本' --body ' *)",
+      "Bash(.venv/bin/pip install *)",
+      "Bash(.venv/bin/alembic --version)",
+      "Bash(python3 -c \"import alembic; print\\(alembic.__version__\\)\")",
+      "Bash(pip install *)",
+      "Bash(alembic --version)",
+      "Bash(ALEMBIC_DATABASE_URL=\"sqlite:///dev/null\" alembic history)",
+      "Bash(PYTHONPATH=. ALEMBIC_DATABASE_URL=\"sqlite:///dev/null\" alembic history)",
+      "Bash(python3 scripts/check_docs_sync.py --staged)",
+      "Bash(git rm *)"
+    ]
+  }
+}

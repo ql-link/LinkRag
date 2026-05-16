@@ -55,10 +55,8 @@ jobs:
         env:
           MYSQL_PWD: root
         run: |
-          # 模拟"存量库"：先用 init.sql 建出当前生产形态的 schema。
-          # 注意 init.sql 已经使用新表名 document_parse_file，因此 0002 的
-          # rename 会走 no-op 分支；0003 的 CREATE 会因表已存在走 no-op 分支。
-          # 这恰好验证迁移的幂等性。
+          # 模拟"存量库"：先用 init.sql 建出当前生产形态的 schema，
+          # 然后 stamp 0001 锁定基线，再跑 upgrade head 验证迁移序列。
           mysql -h 127.0.0.1 -P 3306 -uroot tolink_rag_db < scripts/db/init.sql
 
       - name: Stamp baseline (0001)
