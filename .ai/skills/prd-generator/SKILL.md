@@ -1,285 +1,216 @@
 ---
 name: prd-generator
-description: 仅在已有 `pre_requirement_analysis.md` 且其中所有待确认需求已确认完毕后，将预分析结论生成面向 Agent/LLM 理解和后续技术设计使用的详细 PRD `requirement.md`，并在 `pre_requirement_analysis.md` 所在目录维护 `feature_info.md`。仅当用户明确提出分期要求或预分析文档已确认分期时，才在 PRD 中输出分期相关内容；否则不得写入“期次”“分期策略”“不分期”等字段或章节。用户只给出原始需求、问题描述或初步想法时，禁止使用本 skill。
-when_to_use: "仅当用户明确提供或指向已确认的 `pre_requirement_analysis.md`，并明确要求'生成 PRD'、'生成 requirement.md'、'基于预分析文档生成正式需求文档'、'生成给大模型/Agent 后续设计用的 PRD'时激活。用户说'帮我分析需求'、'整理需求'、'写个初步需求'但没有提供已确认预分析文档时，不激活本 skill，必须改用 pre-prd-requirement-analysis。"
+description: 仅当 brief.md 已由开发者确认冻结后，基于 brief.md 生成 Gherkin 格式的 acceptance.feature 验收契约，描述每条业务规则在"Given/When/Then"下的可机器验证断言；该文件后续由 pytest-bdd 等框架直接消费为自动化测试。本 skill 不输出散文 PRD（旧版 requirement.md 已废弃）。若用户尚未提供冻结的 brief.md，禁止使用本 skill。
+when_to_use: "仅当用户已有冻结的 docs/<需求名>/brief.md，并明确要求'生成 acceptance / 生成 Gherkin / 生成验收契约 / 生成测试场景 / 生成 acceptance.feature'时激活。若 brief.md 尚未冻结、待确认问题尚未收敛，必须先转回 pre-prd-requirement-analysis。若用户已有 brief.md + acceptance.feature 并要求技术方案，转 technical-design。"
 ---
 
-# PRD Generator
+# Acceptance Feature Generator
 
-## 1. 目的
+## 1. 定位
 
-本 skill 用于把已经完成预分析、并且所有待确认需求均已确认完毕的 `pre_requirement_analysis.md`，转化为面向 Agent/LLM 的结构化 PRD：`requirement.md`。
+本 skill 把已冻结的 `brief.md` 转化为 Gherkin 格式的 `acceptance.feature` 文件。
 
-这里的 PRD 不是面向业务汇报的泛产品文档，而是后续 `technical-design`、`implementation-execution`、测试生成和代码审查等 Agent/LLM 工作流的上游输入。它必须让另一个没有聊天上下文的大模型能够准确理解：
+`acceptance.feature` 是验收契约：每条业务规则写成 `Given / When / Then` 断言，由 pytest-bdd 等框架直接编译为自动化测试。它同时是：
 
-- 本次需求为什么做
-- 本次需求要做什么
-- 本次需求边界是什么
-- 谁参与、谁触发、谁感知结果
-- 主流程、异常流程和状态变化是什么
-- 哪些数据事实、业务对象和系统协作关系必须保留
-- 哪些内容必须延后到技术设计
-- 哪些问题仍待人工确认
+- **审核单位**：开发者审一条 Scenario = 审一道是非题，比审散文 PRD 快 5-10 倍
+- **LLM 实现输入**：消除自然语言模糊，LLM 偏离需求会被测试直接打脸
+- **可执行规约**：测试全绿 ≡ 代码满足验收
 
-本 skill 不处理原始需求。进入本 skill 前，必须已经存在并确认：
-
-`docs/[模块名称]/pre_requirement_analysis.md`
+本 skill **不输出** markdown 散文 PRD。原 `requirement.md` 模板已废弃。
 
 ## 2. 触发边界
 
-只有满足以下条件时，才允许使用本 skill：
+### 2.1 必须满足的前提
 
-1. 已完成 `pre-prd-requirement-analysis`
-2. 用户已提供或明确指向 `docs/[模块名称]/pre_requirement_analysis.md`
-3. 该预分析文档已由用户确认收敛，且文档中的待确认需求 / 待确认问题已经全部确认完毕
-4. 用户明确要求生成 PRD、正式需求文档、开发需求文档或面向 Agent/LLM 的需求文档
-5. 已确认或可从预分析文档中识别当前模块名称、业务域；只有用户明确要求分期或预分析文档已确认分期时才识别并输出当前期次
-6. 当前阶段是“PRD 生成 / 需求文档定稿”，不是直接实现或技术设计
+1. `docs/<需求名>/brief.md` 真实存在
+2. brief 已由开发者确认冻结（无"待确认问题"章节，或仅剩非阻塞项且用户确认保留）
+3. 用户明确要求生成 acceptance / Gherkin / 验收契约 / 测试场景
 
-以下情况禁止使用本 skill：
+### 2.2 禁止使用场景
 
-- 用户只给出原始需求、问题描述、故障链路或初步想法
-- 用户只说“分析需求”“整理需求”，但没有提供已确认的 `pre_requirement_analysis.md`
-- 预分析文档中仍有会阻塞范围、流程、状态、权限、异常处理或系统协作的关键问题
-- 预分析文档中仍存在任何未确认的需求项、待确认问题、下一轮优先确认项，或收敛状态不是“已收敛 / 已确认 / 无待确认”
-- 预分析文档未提出分期，但生成 PRD 时擅自拆分一期 / 二期 / 后续期次
-- 用户要求直接写技术方案、实现代码或测试
-
-如果缺少已确认的 `pre_requirement_analysis.md`，必须先转入 `pre-prd-requirement-analysis`。
-
-如果预分析文档存在任何未确认需求或待确认问题，必须先列出待确认项并要求用户确认，不能直接产出最终 `requirement.md`。
+- brief.md 不存在 → 转 `pre-prd-requirement-analysis`
+- brief.md 仍有阻塞性"待确认问题" → 转 `pre-prd-requirement-analysis` 继续收敛
+- 用户要求技术方案 / 接口设计 / 代码 → 转 `technical-design` 或 `implementation-execution`
+- 用户只是要改本 skill 模板
 
 ## 3. 必读文件
 
-执行本 skill 时，至少读取：
+执行前必读：
 
-1. `AGENTS.md`
-2. `project_info.md`
-3. 用户提供或指向的 `docs/[模块名称]/pre_requirement_analysis.md`
-4. `pre_requirement_analysis.md` 所在目录的 `feature_info.md`（若已存在）
-5. `.agents/skills/prd-generator/PRD.template.md`
+1. `docs/<需求名>/brief.md`（输入源）
+2. 同目录 `feature_info.md`（若已存在）
+3. `.ai/skills/prd-generator/acceptance.template.feature`（参考样例）
 
 按需补读：
 
-6. 同业务域历史模块目录中的 `requirement.md`
-7. 同业务域历史模块目录中的 `technical_design.md`
-8. 相关业务背景文档
-9. `docs/architecture/middleware_contract.md`（当需求边界涉及 MySQL / Redis / MQ / OSS / Qdrant / MinIO 等公共契约）
-
-注意：
-
-- 读取代码或公共契约的目的，是让 PRD 使用准确术语并识别边界，不是提前写技术实现方案
-- 若预分析文档已经足够清晰，不要扩大阅读范围制造不必要复杂度
+4. 同业务域历史模块的 `acceptance.feature`（学习现有命名、术语、step 约定）
+5. 项目已有的 step 实现库（`tests/acceptance/steps/` 或类似目录），避免重复实现 step
 
 ## 4. 输出位置
 
-输出文件固定为输入预分析文档所在目录下：
+固定为：
 
-`<pre_requirement_analysis.md 所在目录>/requirement.md`
+```
+docs/<需求名>/acceptance.feature
+```
 
-注意：
+要求：
 
-- 文件名仍使用 `requirement.md`
-- 文档内容结构必须遵循 `.agents/skills/prd-generator/PRD.template.md`
-- 模块名、业务域优先从 `pre_requirement_analysis.md` 和用户确认信息中提取
-- 未明确分期时，不得在 PRD 中输出“期次”“分期策略”“不分期”“后续期次规划”等分期相关字段或章节
-- 只有用户明确提出分期要求，或 `pre_requirement_analysis.md` 已确认分期时，才允许使用“一期 / 二期 / 后续期次”等表达
-- 不允许将 PRD 输出到 `docs/module-development-files/<domain>-<module-name>/<phase>/`，除非用户显式要求迁移或另存
-- 如果输入预分析文档所在目录不存在，应先报错说明输入路径无效，不能自行创建一个与输入不一致的新目录
+- 与 brief.md 同目录
+- 文件名固定为 `acceptance.feature`
+- 同时更新同目录 `feature_info.md`：状态改为 `acceptance 待审核`，列出当前 Scenario 数量、覆盖的主流程 / 异常 / 边界类别
 
-若目录中已有旧版 `requirement.md`：
+若目录已有旧版 `acceptance.feature`：
 
 - 先读旧版
-- 判断是覆盖、修订还是增量更新
-- 不允许无说明地重写并覆盖关键结论
+- 判断是增量补充、整体重写还是局部修订
+- 不允许无说明地覆盖关键 Scenario
 
-## 5. 同步维护文件
+## 5. 输出原则
 
-除 `requirement.md` 外，本 skill 还应同步维护 `pre_requirement_analysis.md` 所在目录的 `feature_info.md`。
+### 5.1 Gherkin 写作规则
 
-至少应回填：
+- 每个 `Feature:` 文件对应一次需求；多需求拆多个 `.feature` 文件
+- `Background:` 写公共前置条件（如"用户已登录"），不要重复写在每个 Scenario 里
+- `Scenario:` 每个对应一条业务规则，**正交**——两个 Scenario 不应该是同一规则的不同参数（用 `Scenario Outline + Examples` 表达）
+- `Given` 写前置状态（数据、配置、外部系统状态）
+- `When` 写触发动作（用户操作、消息到达、定时触发）
+- `Then` 写**可断言**的结果（具体的状态值、数据库行、消息发出、错误码）
+- `And / But` 用于扩展任一段
 
-- 当前状态：`PRD 生成中` / `PRD 待审核`
-- 复杂度等级（若可从预分析文档识别）
-- 关联预分析文档路径
-- 本次 PRD 路径；必须与预分析文档处于同一目录
-- 本次 PRD 摘要
-- 本次实际产出的文档清单
-- 推荐阅读顺序
-- 下一阶段建议：审核通过后进入 `technical-design`
+### 5.2 强制不模糊
 
-## 6. PRD 输出原则
+`Then` 之后必须是可机器验证的断言：
 
-`requirement.md` 必须优先满足“可被另一个 Agent/LLM 独立消费”的要求。
+- ✅ `Then task.status == FAILED`
+- ✅ `Then 接口返回 400 错误码 UNSUPPORTED_TYPE`
+- ✅ `Then MQ topic "parse-task" 收到一条消息 task_id=T1`
+- ❌ `Then 系统应正确处理`（不可验证）
+- ❌ `Then 用户体验良好`（不可验证）
+- ❌ `Then 适当返回错误`（模糊）
 
-写作原则：
+写不出可断言的 `Then` 时，说明 brief 阶段未把规则定义清楚——**停止生成 acceptance，回到 brief 阶段补充**。
 
-- 显式化上下文：不要依赖聊天记录、口头背景或隐含共识
-- 需求语言优先：描述业务事实、边界、流程和验收，不展开代码实现
-- 面向后续设计：清楚标注哪些内容会影响技术方案，但不替代技术方案
-- 结构稳定：章节标题、表格字段、状态描述尽量固定，便于大模型解析
-- 可验证：验收标准必须能被人工审核或测试验证
-- 保留不确定性：不能确定的内容写入“待确认问题”，不要用模糊措辞掩盖
+### 5.3 颗粒度控制
 
-禁止使用：
+- 单 `.feature` 文件目标 10-25 个 Scenario
+- 超过 30 个考虑：是否需求范围过大？是否可拆分？
+- 重复参数化场景必须用 `Scenario Outline + Examples`，不允许复制粘贴
+- Scenario 命名用业务语言，不写 "test_xxx"
 
-- “完善功能”
-- “优化体验”
-- “按需处理”
-- “相关逻辑”
-- “后续补充”
+### 5.4 必须覆盖的场景类型
 
-除非这些内容被明确放入“待确认问题”。
+针对每个 brief 中提到的业务流程或风险，至少覆盖：
 
-## 7. PRD 必备内容
+- **主流程 happy path**：最常见的成功路径
+- **异常路径**：每个 brief 风险表中的具体场景至少一个 Scenario
+- **边界条件**：边界值、空值、超限、并发
+- **幂等与重试**：可重试操作必须有重复触发 Scenario
+- **状态转换**：状态机的每条合法 / 非法转换
 
-`requirement.md` 必须至少包含：
+### 5.5 不进入 Gherkin 的内容
 
-1. 文档元信息与修订记录
-2. 给 Agent/LLM 的阅读说明
-3. 预分析输入摘要
-4. 业务背景、目标和非目标
-5. 角色、参与系统与职责边界
-6. 本次范围、明确不做和后续规划；仅当用户明确要求分期或预分析文档已确认分期时，才允许加入分期策略
-7. 主流程、异常流程、状态与结果
-8. 功能规格与验收标准
-9. 核心业务对象、数据事实和数据可见性
-10. 系统协作、外部依赖和中间件边界
-11. 非功能性需求与约束
-12. 面向 `technical-design` 的输入清单
-13. 待确认问题、风险和人工审核点
+- 非功能性需求（性能阈值、监控指标、部署细节）→ 留在 brief 末尾或独立 NFR 段
+- UI / UX 视觉细节 → 不属于业务规则
+- 实现细节（用什么数据库、什么算法）→ 留给 technical-design
+- 技术选型理由 → 留给 technical-design
 
-如果需求较轻，可以降低内容密度，但不要删除一级章节。
+## 6. 工作流程
 
-## 8. 工作步骤
-
-### 步骤 1：验证输入
+### 步骤 1：校验输入
 
 确认：
 
-- `pre_requirement_analysis.md` 路径真实存在
-- 预分析文档已明确业务目标
-- 预分析文档已明确本次需求边界
-- 预分析文档中所有待确认需求已确认完毕；若出现“待确认：”非空、“下一轮优先确认”非空、“收敛状态：待提问 / 待确认”等内容，不允许生成 PRD
-- 是否存在明确分期要求；如果没有，PRD 中不得出现“期次”“分期策略”“不分期”“后续期次规划”等分期相关内容
-- 预分析文档中的关键待确认问题不会阻塞 PRD
-- 输出位置可确定为 `pre_requirement_analysis.md` 所在目录；不得因分期信息额外改写输出目录
+- `docs/<需求名>/brief.md` 存在
+- brief 中无阻塞性"待确认问题"
+- 用户已明确要求生成 acceptance
 
-### 步骤 2：抽取预分析结论
+任一缺失，停止并说明，不允许"基于聊天记忆"凭空生成。
 
-从预分析文档提取：
+### 步骤 2：从 brief 抽取业务规则
 
-- 已确认结论
-- 用户明确取舍
-- 业务目标
-- 本次范围
-- 分期要求；仅当预分析文档或用户明确提出分期时才提取并写入 PRD，否则跳过
-- 非目标
-- 角色与参与方
-- 主流程与异常流程
-- 涉及的数据对象、状态和系统协作
-- 仍需遗留到 PRD 的待确认问题
+逐章扫描 brief：
 
-### 步骤 3：补齐 Agent/LLM 可理解上下文
+- 第 2 章业务流程 → 提取主流程 / 异常流程 Scenario
+- 第 3 章核心模块与实现思路 → 提取模块间协作 Scenario（消息、调用、状态推进）
+- 第 4 章风险 → 每条风险转化为至少一个 Scenario
+- 业务对象、状态、字段 → 沉淀到 `Background` 或 Scenario 前置条件
 
-必须把隐含信息转成显式描述：
+### 步骤 3：生成 Scenario 草稿
 
-- 每个角色是谁、能做什么、不能做什么
-- 每个状态由什么触发、代表什么结果、谁需要感知
-- 每个业务对象保存什么事实、不保存什么事实
-- 每个系统或模块在需求层面负责什么、不负责什么
-- 每个异常场景对用户或调用方的可见结果是什么
+按规则分组：
 
-### 步骤 4：沉淀技术设计输入
+```gherkin
+Feature: <需求名>
 
-在 PRD 中单独列出给 `technical-design` 使用的输入清单：
+  Background:
+    Given <公共前置条件>
 
-- 可能影响接口设计的业务动作
-- 可能影响数据模型的业务对象和事实
-- 可能涉及存储、缓存、对象存储、消息、向量检索等中间件的需求级边界
-- 可能涉及幂等、一致性、权限、安全、审计、可观测性的约束
-- 技术设计阶段必须继续确认的问题
+  # ==== 主流程 ====
+  Scenario: ...
 
-这些内容只能写到需求级边界，不要展开为最终实现方案。
+  # ==== 异常处理 ====
+  Scenario: ...
 
-### 步骤 5：更新文档状态
+  # ==== 幂等与重试 ====
+  Scenario: ...
 
-完成后：
+  # ==== 边界条件 ====
+  Scenario Outline: ...
+    Examples:
+      | ... |
+```
 
-1. 在 `pre_requirement_analysis.md` 所在目录写好 `requirement.md`
-2. 在同一目录更新 `feature_info.md`
-3. 将状态标记为 `PRD 待审核`
-4. 告知用户下一步是人工审核 PRD
-5. 等待用户确认，不允许直接进入 `technical-design`
+### 步骤 4：自检
 
-## 9. 提问门禁
+生成后逐条 Scenario 检查：
 
-以下问题如果不清楚，必须先向用户提问，不能直接产出最终 `requirement.md`：
+- 每个 `Then` 是否可机器验证
+- 是否所有规则都用 `Given / When / Then` 写出，没有遗留为散文
+- 是否覆盖 brief 风险表中所有具体场景
+- Scenario 之间是否正交，没有重复
+- 单文件 Scenario 数是否在 10-25 之间
 
-- 本次范围是否不明确
-- 是否分期不需要默认提问；除非预分析文档存在明显互斥范围、无法一次性交付且会阻塞 PRD，否则不询问也不输出分期内容
-- 谁能使用、谁不能使用不明确
-- 主流程或异常流程不明确
-- 关键状态、结果或数据归属不明确
-- 数据是否需要保存、保留多久、谁可见不明确
-- 是否涉及外部系统、回调、异步协作或跨系统状态同步不明确
-- 验收标准不明确
-- 不确定项会直接影响后续技术方案方向
-- `pre_requirement_analysis.md` 中仍存在未确认需求或待确认问题
+任一项不达标，修订后再展示给用户。
 
-提问规则：
+### 步骤 5：迭代收敛
 
-- 只问阻塞 PRD 的问题
-- 问题要短
-- 必须说明该问题影响哪个需求边界或后续技术设计输入
+展示给开发者后进入审核循环：
 
-## 10. 不允许写进 PRD 的内容
+1. 默认让用户审核全文，问"是否还有遗漏的边界 / 异常 / 规则"
+2. 用户反馈后：
+   - **读取当前 acceptance.feature**（不要凭记忆）
+   - 增删 / 修改对应 Scenario
+   - 不在文件中保留"修订记录"等元数据
+3. 用户明确说"OK 这版可以" / "冻结" / "进入下一阶段"后冻结
 
-以下内容不要提前写成最终设计：
+### 步骤 6：冻结
 
-- 具体 API 路径
-- Controller / Service / Repository / Adapter 类名
-- 表名、字段名、索引名
-- Redis key 设计
-- MQ topic / group 设计
-- OSS / MinIO object key 实现方案
-- Qdrant collection / point schema 设计
-- 事务、幂等、重试、补偿的具体实现
-- 包结构、模块拆分和代码调用链
+冻结时：
 
-如果这些内容已经出现在预分析文档中，只能在 PRD 的“技术设计输入”中以需求级约束表达。
+1. 更新 `feature_info.md`：状态改为 `acceptance 已冻结`，记录 Scenario 总数 + 分类计数
+2. 告知用户下一步：进入 `technical-design`
 
-## 11. 输出质量标准
+## 7. 输出质量标准
 
-合格的 `requirement.md` 必须做到：
+合格的 `acceptance.feature` 必须做到：
 
-- 另一个 Agent/LLM 不看聊天记录，也能准确复述本次需求
-- 后续 `technical-design` 能直接基于它识别接口、数据、中间件和风险问题
-- 能清楚区分“本次必须做”“明确不做”“后续再做”
-- 不在用户未要求分期时输出任何分期字段、分期策略或“不分期”说明
-- 能清楚列出主流程、异常流程、状态变化和验收标准
-- 不把 PRD 写成技术方案
-- 不把关键不确定性伪装成已确认结论
+- 另一个开发者读完，能理解所有业务规则
+- pytest-bdd 能加载并生成测试用例骨架（语法正确）
+- 每个 `Then` 都是可断言的具体状态 / 输出
+- 覆盖 brief 风险表中的所有具体场景
+- 没有"应正确处理"、"按需"、"适当"等模糊措辞
+- Scenario 之间正交，参数化场景用 Outline
 
-## 12. 推荐输出摘要
+不合格的信号：
 
-本 skill 完成后，对用户的摘要建议包含：
+- 出现散文段落（应该用 Gherkin 表达）
+- `Then` 是抽象描述而非具体断言
+- Scenario 数量 < 8（多半是覆盖不全）或 > 30（多半是需求过大或重复）
+- 引入了技术细节（表名、类名、接口路径）
 
-- 本次 PRD 路径；必须是 `pre_requirement_analysis.md` 同目录下的 `requirement.md`
-- 输入预分析文档路径
-- 本次范围摘要
-- 技术设计输入摘要
-- 当前待确认问题（如果有）
-- 下一步：人工审核 PRD，审核通过后再进入 `technical-design`
+## 8. 与其他 skill 的衔接
 
-## 13. 与其他 skill 的衔接
-
-- 进入前：必须先完成 `pre-prd-requirement-analysis`，并由用户提供或确认 `docs/[模块名称]/pre_requirement_analysis.md`
-- 结束后：等待人工审核
-- 审核通过后：再进入 `technical-design`
-
-禁止行为：
-
-- 未经 PRD 审核直接进入 `technical-design`
-- 未经审核直接进入 `implementation-execution`
-- 在本阶段代替 `technical-design` 提前产出实现方案
+- **进入前**：必须有冻结的 `brief.md`；缺失或未冻结 → 转 `pre-prd-requirement-analysis`
+- **冻结后**：转 `technical-design`，TD 直接读 `brief.md + acceptance.feature + 代码`
+- **不允许**：未冻结 brief 时生成 acceptance；输出散文 PRD 或 markdown 文档；在 acceptance 中写技术实现细节
