@@ -4,7 +4,7 @@
 真实写入 MinIO / MySQL / Qdrant / ES。
 
 用法:
-    .venv/bin/python scripts/smoke_parse_pipeline.py [--backend docling|mineru] [--keep]
+    .venv/bin/python scripts/smoke_parse_pipeline.py [--backend docling|mineru] [--pdf-path PATH] [--keep]
 
 默认 backend=mineru（依赖 MinerU 公网 API 拉取 MinIO URL）。
 --keep 表示保留测试产物（默认会清理）。
@@ -31,14 +31,13 @@ from sqlalchemy import delete
 from src.config import settings
 from src.core.mq.messages.parse_task import ParseTaskMessage
 from src.core.pipeline import ParseTaskPipeline, PipelineStatus
-from src.database import get_async_session_factory
+from src.database import close_database, get_async_session_factory
 from src.models.parse_task import (
     DocumentParsedLog,
     DocumentParseTask,
     DocumentPostProcessPipeline,
 )
 from src.services.storage.factory import StorageFactory
-
 
 # 用大数字 + 随机后缀，避免和真实业务行冲突。
 _TEST_ID_BASE = 9_900_000
@@ -112,12 +111,8 @@ async def cleanup(
                 DocumentPostProcessPipeline.task_id == task_id
             )
         )
-        await db.execute(
-            delete(DocumentParsedLog).where(DocumentParsedLog.task_id == task_id)
-        )
-        await db.execute(
-            delete(DocumentParseTask).where(DocumentParseTask.id == parse_task_id)
-        )
+        await db.execute(delete(DocumentParsedLog).where(DocumentParsedLog.task_id == task_id))
+        await db.execute(delete(DocumentParseTask).where(DocumentParseTask.id == parse_task_id))
         await db.commit()
         logger.info(f"cleaned DB rows for task_id={task_id}")
 
@@ -130,6 +125,14 @@ async def cleanup(
             logger.info(f"deleted {bucket}/{key}")
         except Exception as exc:
             logger.warning(f"failed to delete {bucket}/{key}: {exc}")
+
+
+async def close_runtime_resources(pipeline: ParseTaskPipeline) -> None:
+    """关闭冒烟脚本中懒加载的 MQ / DB 连接，避免退出时出现资源告警。"""
+    mq_service = getattr(pipeline, "_mq_service", None)
+    if mq_service is not None:
+        await mq_service.close()
+    await close_database()
 
 
 def _fmt_ms(ms: int | float | None) -> str:
@@ -156,7 +159,21 @@ def print_timing_report(stage_timings: list[tuple[str, int | None]], total_wall_
     print("=" * 50)
 
 
-async def main(backend: str, keep: bool) -> int:
+def load_pdf_bytes(pdf_path: str | None, task_id: str) -> tuple[bytes, str, int]:
+    """读取指定 PDF；未传入时生成默认冒烟测试 PDF。"""
+    t = time.time()
+    if pdf_path:
+        path = Path(pdf_path).expanduser()
+        pdf_bytes = path.read_bytes()
+        elapsed_ms = int((time.time() - t) * 1000)
+        return pdf_bytes, path.name, elapsed_ms
+
+    pdf_bytes = build_test_pdf(f"Smoke Test {task_id}")
+    elapsed_ms = int((time.time() - t) * 1000)
+    return pdf_bytes, f"{task_id}.pdf", elapsed_ms
+
+
+async def main(backend: str, keep: bool, pdf_path: str | None = None) -> int:
     suffix = uuid.uuid4().hex[:8]
     task_id = f"test_{suffix}"
     parse_task_id = _TEST_ID_BASE + int(suffix, 16) % 100_000
@@ -165,9 +182,12 @@ async def main(backend: str, keep: bool) -> int:
     dataset_id = 999_999
     src_bucket = "rag-raw"
     md_bucket = "rag-md"
-    src_key = f"smoke-test/{task_id}.pdf"
+    pdf_suffix = Path(pdf_path).suffix if pdf_path else ".pdf"
+    if not pdf_suffix:
+        pdf_suffix = ".pdf"
+    src_key = f"smoke-test/{task_id}{pdf_suffix}"
     md_key = f"smoke-test/{task_id}.md"
-    filename = f"{task_id}.pdf"
+    filename = Path(pdf_path).name if pdf_path else f"{task_id}.pdf"
 
     logger.info(
         f"smoke-test params: task_id={task_id} parse_task_id={parse_task_id} "
@@ -176,9 +196,7 @@ async def main(backend: str, keep: bool) -> int:
 
     # ===== 阶段 1：脚本侧准备 =====
     storage = StorageFactory.get_storage()
-    t = time.time()
-    pdf_bytes = build_test_pdf(f"Smoke Test {task_id}")
-    pdf_gen_ms = int((time.time() - t) * 1000)
+    pdf_bytes, filename, pdf_prepare_ms = load_pdf_bytes(pdf_path, task_id)
 
     t = time.time()
     storage.upload_bytes(
@@ -243,9 +261,7 @@ async def main(backend: str, keep: bool) -> int:
         from sqlalchemy import select
 
         log = (
-            await db.execute(
-                select(DocumentParsedLog).where(DocumentParsedLog.task_id == task_id)
-            )
+            await db.execute(select(DocumentParsedLog).where(DocumentParsedLog.task_id == task_id))
         ).scalar_one_or_none()
         pp = (
             await db.execute(
@@ -276,7 +292,7 @@ async def main(backend: str, keep: bool) -> int:
     engine_ms = result.time_cost_ms if result.status == PipelineStatus.SUCCESS else None
 
     stage_timings: list[tuple[str, int | None]] = [
-        ("[script] 生成测试 PDF", pdf_gen_ms),
+        ("[script] 准备源 PDF", pdf_prepare_ms),
         ("[script] 上传源 PDF 到 MinIO", upload_src_ms),
         ("[script] 插入 document_parse_file 行", insert_row_ms),
         (f"[pipeline] 解析+上传 markdown (parse_*)", parse_ms),
@@ -300,6 +316,7 @@ async def main(backend: str, keep: bool) -> int:
             md_bucket=md_bucket,
             md_key=md_key,
         )
+    await close_runtime_resources(pipeline)
 
     return exit_code
 
@@ -307,6 +324,7 @@ async def main(backend: str, keep: bool) -> int:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend", choices=["mineru", "docling"], default="mineru")
+    parser.add_argument("--pdf-path", help="使用指定本地 PDF，而不是自动生成测试 PDF")
     parser.add_argument("--keep", action="store_true", help="保留 DB / MinIO 测试产物")
     args = parser.parse_args()
-    sys.exit(asyncio.run(main(args.backend, args.keep)))
+    sys.exit(asyncio.run(main(args.backend, args.keep, args.pdf_path)))

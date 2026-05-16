@@ -41,6 +41,19 @@ def _response(payload: dict, status_code: int = 200, content: bytes = b"") -> Ma
     return response
 
 
+def _stream_response(content: bytes, chunks: int = 2) -> MagicMock:
+    response = _response({}, content=content)
+    step = max(1, len(content) // chunks)
+    response.iter_bytes.return_value = [
+        content[index : index + step] for index in range(0, len(content), step)
+    ]
+
+    stream = MagicMock()
+    stream.__enter__ = MagicMock(return_value=response)
+    stream.__exit__ = MagicMock(return_value=False)
+    return stream
+
+
 def _build_mineru_zip(files: dict[str, bytes]) -> bytes:
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as zf:
@@ -105,11 +118,10 @@ class TestMinerUBackend:
                 },
             }
         )
-        zip_response = _response({}, status_code=200, content=zip_bytes)
-
         mock_client = MagicMock()
         mock_client.post.return_value = create_response
-        mock_client.get.side_effect = [poll_response, zip_response]
+        mock_client.get.return_value = poll_response
+        mock_client.stream.return_value = _stream_response(zip_bytes)
         mock_client.__enter__ = MagicMock(return_value=mock_client)
         mock_client.__exit__ = MagicMock(return_value=False)
         mock_client_cls.return_value = mock_client
@@ -129,6 +141,8 @@ class TestMinerUBackend:
         assert assets[0].source_path == "images/page-001.png"
         assert backend.metadata["mineru_api_status"] == 200
         assert backend.metadata["mineru_task_id"] == "task-1"
+        assert backend.metadata["mineru_download_mode"] == "zip_stream"
+        assert backend.metadata["mineru_zip_download_bytes"] == len(zip_bytes)
         mock_client.post.assert_called_once_with(
             "https://mineru.net/api/v4/extract/task",
             headers={
@@ -141,7 +155,53 @@ class TestMinerUBackend:
             },
         )
         mock_client.put.assert_not_called()
-        assert mock_client.get.call_count == 2
+        mock_client.get.assert_called_once()
+        mock_client.stream.assert_called_once_with("GET", "https://download.example/result.zip")
+
+    @patch("src.core.parser.pdf.backends.mineru_backend.httpx.Client")
+    @patch("src.core.parser.pdf.backends.mineru_backend.time.sleep", return_value=None)
+    def test_cloud_api_should_use_markdown_url_when_available(self, _mock_sleep, mock_client_cls):
+        """MinerU 若返回 Markdown 直链，应跳过 ZIP 下载。"""
+        create_response = _response(
+            {
+                "code": 0,
+                "data": {
+                    "task_id": "task-1",
+                },
+            }
+        )
+        poll_response = _response(
+            {
+                "code": 0,
+                "data": {
+                    "state": "done",
+                    "markdown_url": "https://download.example/result.md",
+                },
+            }
+        )
+
+        mock_client = MagicMock()
+        mock_client.post.return_value = create_response
+        mock_client.get.return_value = poll_response
+        mock_client.stream.return_value = _stream_response(b"# Test\n\nHello world")
+        mock_client.__enter__ = MagicMock(return_value=mock_client)
+        mock_client.__exit__ = MagicMock(return_value=False)
+        mock_client_cls.return_value = mock_client
+
+        backend = MinerUBackend(api_url="https://mineru.net/api/v4/extract/task", api_key="token")
+        md, assets = backend.parse(
+            b"fake-pdf-bytes",
+            PdfParseOptions(
+                source_file_url="https://cdn.example/document.pdf",
+                mineru_model_version="vlm",
+            ),
+        )
+
+        assert md == "# Test\n\nHello world"
+        assert assets == []
+        assert backend.metadata["mineru_download_mode"] == "markdown_url"
+        assert backend.metadata["mineru_markdown_download_bytes"] == len(b"# Test\n\nHello world")
+        mock_client.stream.assert_called_once_with("GET", "https://download.example/result.md")
 
     def test_returns_empty_when_source_file_url_not_configured(self):
         """精准解析 API 不支持直接上传本地 bytes，缺少 URL 时应失败。"""

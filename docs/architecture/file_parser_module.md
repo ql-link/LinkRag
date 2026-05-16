@@ -158,7 +158,7 @@ await ParseTaskService.aprocess(file_bytes, "pdf", backend="naive")
 await ParseTaskService.aprocess(file_bytes, "pdf", backend="auto")
 ```
 
-MinerU 后端只调用官方 V4 精准解析 API：`POST /api/v4/extract/task` 提交文件 URL 与 `model_version`，再通过 `GET /api/v4/extract/task/{task_id}` 轮询解析结果并下载结果 ZIP。该接口不支持直接上传本地 bytes，因此显式选择 `mineru` 时必须提供 `source_file_url`，且该 URL 必须能被 MinerU 云端访问。缺少 `MINERU_API_KEY`、`MINERU_API_URL` 或 `source_file_url` 时，该后端会直接失败并记录 `mineru_backend_error`，不会回退到本地 mineru-api。轮询策略会先立即查询一次，未完成时按 `1s -> 1.5s -> 2.25s` 退避，最大间隔 5s。
+MinerU 后端只调用官方 V4 精准解析 API：`POST /api/v4/extract/task` 提交文件 URL 与 `model_version`，再通过 `GET /api/v4/extract/task/{task_id}` 轮询解析结果。若返回结果包含 Markdown 直链（如 `markdown_url` / `full_md_url` / `md_url`），优先直接下载 Markdown；否则流式下载 `full_zip_url` 并解压提取 Markdown 与图片资产。该接口不支持直接上传本地 bytes，因此显式选择 `mineru` 时必须提供 `source_file_url`，且该 URL 必须能被 MinerU 云端访问。缺少 `MINERU_API_KEY`、`MINERU_API_URL` 或 `source_file_url` 时，该后端会直接失败并记录 `mineru_backend_error`，不会回退到本地 mineru-api。轮询策略会先立即查询一次，未完成时按 `1s -> 1.5s -> 2.25s` 退避，最大间隔 5s。下载阶段会记录 `mineru_download_mode`、下载字节数与耗时，便于定位 CDN 传输瓶颈。
 
 MQ 解析任务通过 `pdf_parser_backend` 指定：
 

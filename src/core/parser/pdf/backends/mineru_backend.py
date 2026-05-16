@@ -26,7 +26,6 @@ from loguru import logger
 from src.core.parser.pdf.base import BasePdfBackend
 from src.core.parser.pdf.models import PdfBinaryAsset
 
-
 _DEFAULT_TIMEOUT_SECONDS = 300  # 长文档解析可能需要较长时间
 _IMAGE_PATTERN = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 
@@ -37,10 +36,10 @@ class MinerUBackend(BasePdfBackend):
     name = "mineru"
 
     def __init__(
-        self, 
-        api_url: str | None = None, 
+        self,
+        api_url: str | None = None,
         api_key: str | None = None,
-        timeout: int = _DEFAULT_TIMEOUT_SECONDS
+        timeout: int = _DEFAULT_TIMEOUT_SECONDS,
     ) -> None:
         super().__init__()
         self._api_url = (api_url or "").rstrip("/")
@@ -53,7 +52,9 @@ class MinerUBackend(BasePdfBackend):
             logger.warning("[MinerU Cloud] API URL 未配置，跳过此后端")
             return "", []
         if not self._api_key:
-            self.metadata["mineru_backend_error"] = "MINERU_API_KEY 未配置，MinerU 后端仅支持官方云端 API"
+            self.metadata["mineru_backend_error"] = (
+                "MINERU_API_KEY 未配置，MinerU 后端仅支持官方云端 API"
+            )
             logger.warning("[MinerU Cloud] API Key 未配置，跳过此后端")
             return "", []
 
@@ -89,21 +90,18 @@ class MinerUBackend(BasePdfBackend):
         model_version: str,
     ) -> tuple[str, list[PdfBinaryAsset]]:
         """调用 MinerU 官方 V4 精准解析接口。
-        
+
         流程：
         1. POST /api/v4/extract/task 提交文件 URL 获取 task_id
         2. 轮询 GET /api/v4/extract/task/{task_id} 直到 state == done
         3. 下载 full_zip_url 并解压提取 Markdown
         """
         import zipfile
-        
-        headers = {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json"
-        }
-        
+
+        headers = {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
+
         task_url = self._build_task_url()
-        
+
         with httpx.Client(timeout=self._timeout) as client:
             create_data = {
                 "url": source_file_url,
@@ -113,80 +111,99 @@ class MinerUBackend(BasePdfBackend):
             create_resp = client.post(task_url, headers=headers, json=create_data)
             create_resp.raise_for_status()
             create_res = create_resp.json()
-            
+
             if create_res.get("code") != 0:
                 raise Exception(f"创建精准解析任务失败: {create_res.get('msg')}")
-                
+
             task_id = create_res["data"]["task_id"]
             poll_url = f"{task_url}/{task_id}"
             poll_headers = {"Authorization": headers["Authorization"]}
-            
+
             logger.info(f"[MinerU Cloud] 任务创建成功，开始轮询解析结果: task_id={task_id}")
             start_time = time.time()
             full_zip_url = None
+            markdown_url = None
             poll_interval = 1.0
-            
+
             while time.time() - start_time < self._timeout:
                 poll_resp = client.get(poll_url, headers=poll_headers)
                 poll_resp.raise_for_status()
                 poll_res = poll_resp.json()
-                
+
                 if poll_res.get("code") != 0:
                     logger.warning(f"轮询警告: {poll_res.get('msg')}")
                     continue
-                    
+
                 task_state = poll_res.get("data", {})
                 state = task_state.get("state")
-                
+
                 if state == "done":
-                    full_zip_url = task_state.get("full_zip_url")
+                    full_zip_url, markdown_url = self._extract_result_urls(task_state)
                     logger.info("[MinerU Cloud] 解析成功！")
                     break
                 elif state == "failed":
                     raise Exception(f"云端解析失败: {task_state.get('err_msg')}")
                 else:
                     progress = task_state.get("extract_progress", {})
-                    logger.info(f"[MinerU Cloud] 解析中 ({progress.get('extracted_pages', 0)}/{progress.get('total_pages', 0)})...")
+                    logger.info(
+                        f"[MinerU Cloud] 解析中 ({progress.get('extracted_pages', 0)}/{progress.get('total_pages', 0)})..."
+                    )
                     remaining_time = self._timeout - (time.time() - start_time)
                     if remaining_time > 0:
                         time.sleep(min(poll_interval, remaining_time))
                         poll_interval = min(poll_interval * 1.5, 5.0)
-                    
-            if not full_zip_url:
+
+            if not full_zip_url and not markdown_url:
                 raise Exception(f"云端解析超时 ({self._timeout}s)")
-                
-            # 4. 下载并解压 ZIP
-            logger.info(f"[MinerU Cloud] 正在下载结果 ZIP...")
-            zip_resp = client.get(full_zip_url)
-            zip_resp.raise_for_status()
-            
+
+            if markdown_url:
+                markdown = self._download_markdown(client, markdown_url)
+                self.metadata["mineru_api_status"] = 200
+                self.metadata["mineru_task_id"] = task_id
+                self.metadata["mineru_model_version"] = model_version
+                self.metadata["mineru_download_mode"] = "markdown_url"
+                return markdown, []
+
+            # 4. 流式下载并解压 ZIP
+            zip_bytes = self._download_zip(client, full_zip_url)
+
             markdown = ""
             assets = []
-            
-            with zipfile.ZipFile(io.BytesIO(zip_resp.content)) as z:
+
+            with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
                 # 寻找 markdown 文件
                 md_files = [f for f in z.namelist() if f.endswith(".md")]
                 if md_files:
                     markdown = z.read(md_files[0]).decode("utf-8")
-                
+
                 # MinerU 云端 API 目前把图片放在 images 目录下
                 # 因为用户配置了 image_bucket 流程，所以我们把图片作为 PdfBinaryAsset 传出去
-                img_files = [f for f in z.namelist() if f.startswith("images/") and not f.endswith("/")]
+                img_files = [
+                    f for f in z.namelist() if f.startswith("images/") and not f.endswith("/")
+                ]
+                logger.info(
+                    "[MinerU Cloud] ZIP 解压结果: md_files={}, image_files={}",
+                    len(md_files),
+                    len(img_files),
+                )
                 for idx, img_path in enumerate(img_files, start=1):
                     img_bytes = z.read(img_path)
                     ext = img_path.split(".")[-1] if "." in img_path else "png"
-                    assets.append(PdfBinaryAsset(
-                        kind="picture",
-                        page_number=idx, # 云端没有页码，暂用 idx
-                        index=idx,
-                        ext=ext,
-                        content=img_bytes,
-                        source_path=img_path,
-                    ))
-            
+                    assets.append(
+                        PdfBinaryAsset(
+                            kind="picture",
+                            page_number=idx,  # 云端没有页码，暂用 idx
+                            index=idx,
+                            ext=ext,
+                            content=img_bytes,
+                            source_path=img_path,
+                        )
+                    )
+
             self.metadata["mineru_api_status"] = 200
             self.metadata["mineru_task_id"] = task_id
             self.metadata["mineru_model_version"] = model_version
+            self.metadata["mineru_download_mode"] = "zip_stream"
             return markdown, assets
 
     def _build_task_url(self) -> str:
@@ -196,6 +213,60 @@ class MinerUBackend(BasePdfBackend):
         if "/api/v4" in self._api_url:
             return self._api_url.split("/api/v4")[0] + "/api/v4/extract/task"
         return f"{self._api_url.rstrip('/')}/api/v4/extract/task"
+
+    def _extract_result_urls(self, task_state: dict[str, Any]) -> tuple[str | None, str | None]:
+        """兼容 MinerU 结果 URL 可能位于 data 或 extract_result 下的返回结构。"""
+        result = task_state.get("extract_result")
+        if not isinstance(result, dict):
+            result = {}
+
+        full_zip_url = task_state.get("full_zip_url") or result.get("full_zip_url")
+        markdown_url = (
+            task_state.get("full_md_url")
+            or task_state.get("markdown_url")
+            or task_state.get("md_url")
+            or result.get("full_md_url")
+            or result.get("markdown_url")
+            or result.get("md_url")
+        )
+        return full_zip_url, markdown_url
+
+    def _download_markdown(self, client: httpx.Client, markdown_url: str) -> str:
+        """下载 MinerU 直接返回的 Markdown 链接，避免不必要的 ZIP 传输。"""
+        logger.info("[MinerU Cloud] 正在下载 Markdown 结果...")
+        started_at = time.monotonic()
+        markdown_bytes = self._stream_download_bytes(client, markdown_url)
+        elapsed = time.monotonic() - started_at
+        self.metadata["mineru_markdown_download_bytes"] = len(markdown_bytes)
+        self.metadata["mineru_markdown_download_seconds"] = round(elapsed, 3)
+        logger.info(
+            "[MinerU Cloud] Markdown 下载完成: "
+            f"bytes={len(markdown_bytes)}, elapsed={elapsed:.2f}s"
+        )
+        return markdown_bytes.decode("utf-8")
+
+    def _download_zip(self, client: httpx.Client, full_zip_url: str) -> bytes:
+        """分块流式下载 ZIP，避免 httpx 一次性缓存整个响应后才进入解压阶段。"""
+        logger.info("[MinerU Cloud] 正在流式下载结果 ZIP...")
+        started_at = time.monotonic()
+        zip_bytes = self._stream_download_bytes(client, full_zip_url)
+        elapsed = time.monotonic() - started_at
+        self.metadata["mineru_zip_download_bytes"] = len(zip_bytes)
+        self.metadata["mineru_zip_download_seconds"] = round(elapsed, 3)
+        logger.info(
+            "[MinerU Cloud] ZIP 下载完成: " f"bytes={len(zip_bytes)}, elapsed={elapsed:.2f}s"
+        )
+        return zip_bytes
+
+    @staticmethod
+    def _stream_download_bytes(client: httpx.Client, url: str) -> bytes:
+        chunks: list[bytes] = []
+        with client.stream("GET", url) as response:
+            response.raise_for_status()
+            for chunk in response.iter_bytes():
+                if chunk:
+                    chunks.append(chunk)
+        return b"".join(chunks)
 
     def _extract_markdown(self, result: dict) -> str:
         """从 MinerU 返回结构中提取 Markdown 文本。
