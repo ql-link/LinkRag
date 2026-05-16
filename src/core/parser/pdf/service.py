@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import mimetypes
 import re
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
@@ -11,6 +12,7 @@ import logging
 import cv2
 import fitz
 import numpy as np
+from loguru import logger as timing_logger
 
 from src.config import settings
 from src.core.parser.pdf.models import (
@@ -23,7 +25,6 @@ from src.core.parser.pdf.registry import (
     PdfBackendRegistry,
     create_default_pdf_backend_registry,
 )
-
 
 logger = logging.getLogger(__name__)
 
@@ -74,7 +75,17 @@ class PdfParserService:
                 )
                 continue
 
+            backend_started_at = time.monotonic()
             markdown, binary_assets = backend_instance.parse(file_stream, options)
+            backend_elapsed = time.monotonic() - backend_started_at
+            timing_logger.info(
+                "[PdfParserService] backend parse completed: backend={} elapsed={:.2f}s "
+                "markdown_chars={} binary_assets={}",
+                backend_name,
+                backend_elapsed,
+                len(markdown or ""),
+                len(binary_assets),
+            )
             metadata.update(backend_instance.metadata)
             if markdown and markdown.strip():
                 selected_backend = backend_name
@@ -98,12 +109,22 @@ class PdfParserService:
 
         if options.storage and options.image_bucket and options.image_prefix:
             placeholder_count = self._count_placeholders(markdown, metadata["pdf_parser_backend"])
+            prepare_started_at = time.monotonic()
             prepared_assets = self._prepare_image_uploads(
                 file_stream,
                 options,
                 backend=metadata["pdf_parser_backend"],
                 placeholder_count=placeholder_count,
                 binary_assets=binary_assets,
+            )
+            prepare_elapsed = time.monotonic() - prepare_started_at
+            timing_logger.info(
+                "[PdfParserService] image assets prepared: backend={} elapsed={:.2f}s "
+                "prepared_assets={} total_bytes={}",
+                metadata["pdf_parser_backend"],
+                prepare_elapsed,
+                len(prepared_assets),
+                sum(len(asset.content) for asset in prepared_assets),
             )
             image_assets = [self._to_image_asset(asset) for asset in prepared_assets]
             markdown = self._inject_image_references(
@@ -112,7 +133,15 @@ class PdfParserService:
             metadata["image_assets"] = [asdict(asset) for asset in image_assets]
             metadata["_image_bytes_by_url"] = self._build_image_bytes_by_url(prepared_assets)
             metadata["image_upload_async"] = bool(options.image_upload_async and image_assets)
+            upload_started_at = time.monotonic()
             self._handle_prepared_image_uploads(options, prepared_assets)
+            upload_elapsed = time.monotonic() - upload_started_at
+            timing_logger.info(
+                "[PdfParserService] image upload scheduled: async={} elapsed={:.2f}s assets={}",
+                options.image_upload_async,
+                upload_elapsed,
+                len(prepared_assets),
+            )
         else:
             metadata["image_assets"] = []
             metadata["image_upload_async"] = False
