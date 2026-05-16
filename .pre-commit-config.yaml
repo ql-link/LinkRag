@@ -18,3 +18,12 @@ repos:
         always_run: true
         stages: [pre-commit]
         description: Block commits that change code without updating required docs.
+
+      - id: check-ai-links
+        name: AI asset symlinks check
+        entry: python scripts/check_ai_links.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+        description: Ensure .claude/.agent/CLAUDE.md/AGENTS.md remain symlinks into .ai/.
