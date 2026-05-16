@@ -113,6 +113,15 @@ class Settings(BaseSettings):
     ES_USER: Optional[str] = None
     ES_PASSWORD: Optional[str] = None
     ES_INDEX_NAME: str = "tolink_rag_index"
+    ES_INDEX_SHARDS: int = 3
+    ES_INDEX_REPLICAS: int = 1
+    ES_MAX_DOCUMENT_BYTES: int = 131072
+    ES_MAX_TOKEN_BATCH_BYTES: int = 5242880
+    ES_MAX_TOKEN_BATCH_CHUNKS: int = 500
+    ES_BULK_REQUEST_TIMEOUT_SECONDS: int = 30
+    ES_INDEXING_MAX_RETRY: int = 3
+    ES_SMOKE_ENABLED: bool = False
+    TOLINK_RUN_REAL_ES_INDEX_TESTS: bool = False
 
     # ==========================================
     # 存储 & 资源配置 (Storage & Resources)

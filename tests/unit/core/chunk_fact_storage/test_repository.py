@@ -31,6 +31,9 @@ class StubExecuteResult:
     def all(self):
         return self._records
 
+    def scalar(self):
+        return self._records[0] if self._records else None
+
 
 class CapturingSession:
     def __init__(self, *, rowcount: int = 0, records=None) -> None:
@@ -403,6 +406,41 @@ def test_should_decide_completed_when_vector_and_es_success():
     )
 
     assert decide_chunk_post_status(record) == ChunkPostStatus.COMPLETED
+
+
+@pytest.mark.asyncio
+async def test_should_count_es_not_success_chunks_by_doc_id():
+    repository = ChunkRepository()
+    session = CapturingSession(records=[3])
+
+    count = await repository.count_es_not_success_by_doc_id(session, doc_id=10)
+
+    assert count == 3
+    # doc_id + es_status != SUCCESS + 排除删除保护状态。
+    assert _where_criteria_count(session) == 3
+
+
+@pytest.mark.asyncio
+async def test_should_count_zero_when_no_pending_es_chunks():
+    repository = ChunkRepository()
+    session = CapturingSession(records=[])
+
+    assert await repository.count_es_not_success_by_doc_id(session, doc_id=10) == 0
+
+
+@pytest.mark.asyncio
+async def test_should_list_es_pending_or_failed_chunk_ids_by_doc_id():
+    repository = ChunkRepository()
+    session = CapturingSession(records=["chunk-1", "chunk-2"])
+
+    chunk_ids = await repository.list_es_pending_or_failed_chunk_ids_by_doc_id(
+        session,
+        doc_id=10,
+    )
+
+    assert chunk_ids == ["chunk-1", "chunk-2"]
+    # doc_id + es_status IN (PENDING, FAILED) + 排除删除保护状态。
+    assert _where_criteria_count(session) == 3
 
 
 def test_should_decide_processing_when_stage_status_is_pending():
