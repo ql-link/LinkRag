@@ -16,8 +16,8 @@ toLink-Rag/                         # 仓库根目录
 │       ├── implementation-execution/ # 需求实现执行流程
 │       ├── mq-middleware/        # MQ 中台开发规范
 │       ├── mysql-ddl-conventions/ # MySQL DDL 规范
-│       ├── prd-generator/        # PRD 生成工作流
-│       ├── pre-prd-requirement-analysis/ # 需求预分析工作流
+│       ├── acceptance-generator/ # Gherkin 验收契约生成工作流（替代旧版 PRD）
+│       ├── brief-generator/      # 需求 brief 生成工作流（替代旧版需求预分析）
 │       ├── run-all-tests/        # 全量测试运行工作流
 │       ├── skill-optimizer/      # 既有 Skill 优化工作流
 │       ├── swagger-annotation/   # Swagger 注解生成工作流
