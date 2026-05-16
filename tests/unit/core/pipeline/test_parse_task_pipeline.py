@@ -814,42 +814,15 @@ class TestParseTaskPipeline:
         assert result.indexed_chunks == 0
         assert result.failed_chunk_ids == ["chunk-0", "chunk-1"]
 
-    @patch("src.core.pipeline.parse_task.pipeline.create_vector_storage_facade")
-    async def test_build_vector_storage_should_defer_embedding_client_initialization(
-        self,
-        mock_create_vector_storage_facade,
-    ):
-        facade = MagicMock()
-        mock_create_vector_storage_facade.return_value = facade
-
-        with patch.object(
-            ParseTaskPipeline,
-            "_build_embedding_client",
-            side_effect=RuntimeError("missing embedding config"),
-        ) as mock_build_embedding_client:
-            result = ParseTaskPipeline._build_vector_storage()
-            embedding_pipeline = mock_create_vector_storage_facade.call_args.kwargs[
-                "embedding_pipeline"
-            ]
-
-            assert result is facade
-            mock_build_embedding_client.assert_not_called()
-
-            with pytest.raises(RuntimeError, match="missing embedding config"):
-                await embedding_pipeline.aembed_chunks(
-                    [Chunk(content="alpha", start_line=1, end_line=1)]
-                )
-            mock_build_embedding_client.assert_called_once()
-
-    @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._build_chunk_processor")
+    @patch("src.core.pipeline.parse_task.pipeline.create_chunking_engine")
     def test_chunk_markdown_should_use_process_parse_result_when_available(
         self,
-        mock_build_chunk_processor,
+        mock_create_chunking_engine,
     ):
         parse_result = ParseResult(elements=[], tables=[], images=[], source_file="source.md")
         processor = MagicMock()
         processor.process_parse_result.return_value = [MagicMock(), MagicMock(), MagicMock()]
-        mock_build_chunk_processor.return_value = processor
+        mock_create_chunking_engine.return_value = processor
 
         chunks = ParseTaskPipeline._chunk_markdown(
             "enhanced markdown",
@@ -862,14 +835,14 @@ class TestParseTaskPipeline:
         forwarded_parse_result = processor.process_parse_result.call_args.args[0]
         assert forwarded_parse_result.source_file == "parsed/t-001.md"
 
-    @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._build_chunk_processor")
+    @patch("src.core.pipeline.parse_task.pipeline.create_chunking_engine")
     def test_chunk_markdown_should_use_process_when_parse_result_is_absent(
         self,
-        mock_build_chunk_processor,
+        mock_create_chunking_engine,
     ):
         processor = MagicMock()
         processor.process.return_value = [MagicMock()]
-        mock_build_chunk_processor.return_value = processor
+        mock_create_chunking_engine.return_value = processor
 
         chunks = ParseTaskPipeline._chunk_markdown("enhanced markdown", "parsed/t-001.md")
 

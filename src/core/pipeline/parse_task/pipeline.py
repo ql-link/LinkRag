@@ -12,23 +12,13 @@ from typing import Any, Callable
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from src.config import settings
 from src.core.es_index_storage import EsIndexingPipeline, EsIndexingResult
-from src.core.llm.factory import ModelFactory
-from src.core.llm.interfaces import CapabilityType
-from src.core.llm.tokenizer import Tokenizer
 from src.core.markdown_parser import ParseResult
 from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.core.pipeline.post_process.repository import PostProcessPipelineRepository
-from src.core.splitter import (
-    ASTAwareChunker,
-    ChunkEmbeddingPipeline,
-    ChunkingEngine,
-    PercentileSemanticChunker,
-    StructuredSemanticChunker,
-)
+from src.core.splitter import create_chunking_engine
 from src.core.splitter.models import Chunk
-from src.core.vector_storage.factory import create_vector_storage_facade
+from src.core.vector_storage import compose_vector_storage_facade
 from src.core.vector_storage.models import ChunkIndexingResult
 from src.database import get_async_session_factory
 from src.models.parse_task import DocumentParsedLog
@@ -48,31 +38,6 @@ from .models import ParsePipelineResult, PipelineStatus
 from .notifier import ParseResultNotificationError, ParseResultNotifier
 from .source import ParseSourceIO
 from .validator import ParseTaskGuard
-
-
-class _LazyEmbeddingClient:
-    """延迟初始化 Embedding 客户端。
-
-    Chunk 索引并非解析终态通知的前置条件。延迟创建 Embedding 客户端可以避免
-    只做解析或测试主链路时因为向量配置缺失而提前失败。
-    """
-
-    def __init__(self, client_factory: Callable[[], Any]) -> None:
-        self._client_factory = client_factory
-        self._client: Any | None = None
-
-    def _get_client(self) -> Any:
-        if self._client is None:
-            self._client = self._client_factory()
-        return self._client
-
-    def has_capability(self, capability: CapabilityType) -> bool:
-        if capability == CapabilityType.EMBEDDING:
-            return True
-        return self._get_client().has_capability(capability)
-
-    async def embed(self, texts: str | list[str], model: str | None = None, **kwargs):
-        return await self._get_client().embed(texts=texts, model=model, **kwargs)
 
 
 class ParseTaskPipeline:
@@ -449,72 +414,9 @@ class ParseTaskPipeline:
         )
         return chunks
 
-    @classmethod
-    def _build_chunk_processor(cls) -> ChunkingEngine:
-        """构建 Markdown 分块处理器。"""
-        if not settings.CHUNKING_ENABLE_ADVANCED_PIPELINE:
-            return ChunkingEngine(chunker=ASTAwareChunker())
-
-        try:
-            embedder = cls._build_embedding_client()
-            semantic_chunker = PercentileSemanticChunker(
-                embedder=embedder,
-                tokenizer=Tokenizer(),
-                percentile=settings.CHUNKING_SEMANTIC_PERCENTILE,
-                min_chunk_tokens=settings.CHUNKING_MIN_CHUNK_TOKENS,
-                max_chunk_tokens=settings.CHUNKING_MAX_CHUNK_TOKENS,
-                overlap_tokens=settings.CHUNKING_OVERLAP_TOKENS,
-                min_distance_gate=settings.CHUNKING_MIN_DISTANCE_GATE,
-            )
-            chunker = StructuredSemanticChunker(
-                semantic_chunker=semantic_chunker,
-                heading_break_level=settings.CHUNKING_HEADING_BREAK_LEVEL,
-            )
-            return ChunkingEngine(chunker=chunker)
-        except Exception as exc:
-            logger.warning(
-                "[ParseTaskPipeline] advanced chunking init failed, fallback to rule chunking: {}",
-                exc,
-            )
-            return ChunkingEngine(chunker=ASTAwareChunker())
-
-    @classmethod
-    def _build_embedding_client(cls):
-        """构建系统级 Embedding 客户端。"""
-        if not settings.SYSTEM_LLM_API_KEY:
-            raise ValueError("SYSTEM_LLM_API_KEY is not configured")
-
-        embedder = ModelFactory().create_client(
-            provider_type=settings.SYSTEM_LLM_PROVIDER,
-            api_key=settings.SYSTEM_LLM_API_KEY,
-            api_base_url=settings.SYSTEM_LLM_API_BASE,
-            model_name=settings.SYSTEM_LLM_MODEL_EMBEDDING,
-            timeout_ms=settings.MARKDOWN_PARSER_LLM_TIMEOUT_MS,
-        )
-        if not embedder.has_capability(CapabilityType.EMBEDDING):
-            raise ValueError(
-                f"Configured provider '{settings.SYSTEM_LLM_PROVIDER}' does not support embedding"
-            )
-        return embedder
-
-    @classmethod
-    def _build_vector_storage(cls):
-        """构建向量存储门面。"""
-        embedding_pipeline = ChunkEmbeddingPipeline(
-            chunking_engine=ChunkingEngine(chunker=ASTAwareChunker()),
-            embedder=cls._build_lazy_embedding_client(),
-            embedding_model=settings.SYSTEM_LLM_MODEL_EMBEDDING,
-            batch_size=settings.CHUNK_INDEX_EMBED_BATCH_SIZE,
-        )
-        return create_vector_storage_facade(embedding_pipeline=embedding_pipeline)
-
-    @classmethod
-    def _build_lazy_embedding_client(cls) -> _LazyEmbeddingClient:
-        return _LazyEmbeddingClient(cls._build_embedding_client)
-
     def _get_vector_storage(self):
         if self._vector_storage is None:
-            self._vector_storage = self._build_vector_storage()
+            self._vector_storage = compose_vector_storage_facade()
         return self._vector_storage
 
     def _get_es_indexing_pipeline(self):
@@ -629,15 +531,14 @@ class ParseTaskPipeline:
             return None
         return user_id, set_id, doc_id
 
-    @classmethod
+    @staticmethod
     def _chunk_markdown(
-        cls,
         markdown: str,
         source_file: str | None,
         parse_result: ParseResult | None = None,
     ) -> list[Chunk]:
         """对 Markdown 进行分块。"""
-        processor = cls._build_chunk_processor()
+        processor = create_chunking_engine()
         if parse_result is None:
             return processor.process(markdown, source_file=source_file)
 
