@@ -25,27 +25,30 @@ defaults:
 rules:
   # ---- 数据库与索引 schema ----
   - id: mysql-schema
-    description: MySQL DDL 或 ORM 变更
+    description: ORM 模型变更（schema 源头）
     when_changed:
-      - scripts/db/init.sql
       - src/models/**/*.py
     must_update:
       - docs/reference/mysql_schema.md
     severity: error
-    rationale: 数据库 schema 是 Java/Python 双方契约，未同步会导致集成方误用字段。
+    rationale: |
+      ORM 模型是 schema 的权威源，变更必须同步对外摘要文档。
+      scripts/db/init.sql 是当前 head 的快照镜像，单独改动（清理、
+      格式化、修 bug）不强制触发；真实 schema 变更总是从模型开始，
+      此时模型路径会独立触发本规则。
 
   - id: db-migration-required
-    description: ORM 模型或 init.sql 变更必须伴随 Alembic 迁移
+    description: ORM 模型变更必须伴随 Alembic 迁移
     when_changed:
       - src/models/**/*.py
-      - scripts/db/init.sql
     must_update:
       - migrations/versions/*.py
     severity: error
     rationale: |
-      模型/DDL 变更若不写 Alembic 迁移，存量库会陷入 schema drift
-      (CI 用空库跑测试不会暴露，线上首条真实流量必炸)。must_update 为
-      glob，匹配 migrations/versions 下任意新增/修改的迁移文件即可。
+      模型变更若不写 Alembic 迁移，存量库会陷入 schema drift
+      (CI 用空库跑测试不会暴露，线上首条真实流量必炸)。must_update
+      为 glob，匹配 migrations/versions 下任意新增/修改的迁移文件即可。
+      init.sql 单文件清理不在此规则范围内（参考 mysql-schema 的 rationale）。
 
   - id: qdrant-schema
     description: Qdrant 向量库实现变更
