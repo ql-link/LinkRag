@@ -80,3 +80,30 @@ def create_vector_storage_facade(
         compensation_service=compensation_service,
         qdrant_store=resolved_qdrant_store,
     )
+
+
+def compose_vector_storage_facade(
+    *,
+    embedding_pipeline: ChunkEmbeddingPipeline | None = None,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+    bucket_router: BucketRouter | None = None,
+    repository: ChunkRepository | None = None,
+    qdrant_store: QdrantIndexStore | None = None,
+    qdrant_client: Any | None = None,
+) -> VectorStorageFacade:
+    """一站式装配：未传 embedding_pipeline 时按系统配置自动构造。
+
+    适合调用方只关心"我要一个开箱即用的 VectorStorageFacade"的场景。
+    """
+    if embedding_pipeline is None:
+        from src.core.splitter.factory import create_chunk_embedding_pipeline
+
+        embedding_pipeline = create_chunk_embedding_pipeline()
+    return create_vector_storage_facade(
+        embedding_pipeline=embedding_pipeline,
+        session_factory=session_factory,
+        bucket_router=bucket_router,
+        repository=repository,
+        qdrant_store=qdrant_store,
+        qdrant_client=qdrant_client,
+    )

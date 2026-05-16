@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 from src.core.mq.messages import ParseTaskMessage
-from src.core.pipeline.post_process_constants import (
+from src.core.pipeline.post_process.constants import (
     PIPELINE_STATUS_FAILED,
     PIPELINE_STATUS_PENDING,
     PIPELINE_STATUS_PROCESSING,
@@ -14,7 +14,7 @@ from src.core.pipeline.post_process_constants import (
     STAGE_STATUS_PENDING,
     STAGE_STATUS_SUCCESS,
 )
-from src.core.pipeline.post_process_repository import PostProcessPipelineRepository
+from src.core.pipeline.post_process.repository import PostProcessPipelineRepository
 from src.models.parse_task import DocumentParsedLog, DocumentPostProcessPipeline
 
 

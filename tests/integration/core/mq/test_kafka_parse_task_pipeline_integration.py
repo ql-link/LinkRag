@@ -10,12 +10,12 @@ from src.core.mq.consumers.parse_task_consumer import handle_parse_task
 from src.core.mq.messages import ParseTaskMessage
 from src.core.mq.vendors.kafka.kafka_adapter import KafkaReceiver
 from src.core.pipeline import ParseTaskPipeline
-from src.core.pipeline.constants import (
+from src.core.pipeline.parse_task.constants import (
     PARSE_TASK_STATUS_CREATED,
     PARSE_TASK_STATUS_FAILED,
     PARSE_TASK_STATUS_SUCCESS,
 )
-from src.core.pipeline.post_process_constants import (
+from src.core.pipeline.post_process.constants import (
     PIPELINE_STATUS_FAILED,
     PIPELINE_STATUS_PENDING,
     PIPELINE_STATUS_PROCESSING,
@@ -247,11 +247,11 @@ async def test_kafka_receiver_should_consume_parse_task_message_and_commit_after
             return_value=pipeline,
         ),
         patch(
-            "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess",
+            "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
             new=AsyncMock(return_value=parse_result),
         ),
         patch(
-            "src.core.pipeline.parse_task_pipeline.ParseTaskPipeline._chunk_markdown",
+            "src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown",
             return_value=[
                 MagicMock(content="alpha", start_line=1, end_line=1, metadata={}),
                 MagicMock(content="beta", start_line=2, end_line=2, metadata={}),
@@ -334,7 +334,7 @@ async def test_kafka_receiver_should_commit_when_pipeline_fails():
             return_value=pipeline,
         ),
         patch(
-            "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess",
+            "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
             new=AsyncMock(side_effect=RuntimeError("parse failed")),
         ),
     ):
