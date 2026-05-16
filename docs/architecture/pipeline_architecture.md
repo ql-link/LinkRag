@@ -25,25 +25,33 @@
 ```text
 src/core/pipeline/
 ├── __init__.py                  # 对外门面：ParseTaskPipeline / ParsePipelineResult / PipelineStatus
-├── parse_task/                  # 解析任务主编排
-│   ├── pipeline.py              # ParseTaskPipeline（编排骨架）
-│   ├── constants.py             # 解析任务状态字面量 + 用户提示文案
-│   ├── error_codes.py           # ParseFailureCode + build_failure_reason
-│   ├── models.py                # ParsePipelineResult / PipelineStatus
-│   ├── log_repository.py        # ParseLogRepository
-│   ├── notifier.py              # ParseResultNotifier + ParseResultNotificationError
-│   ├── source.py                # ParseSourceIO
-│   ├── validator.py             # ParseTaskGuard
-│   └── _utils.py                # 子包内部小工具（now / duration_ms / coerce_optional_int / 等）
-└── post_process/                # 文件级后处理子状态机
-    ├── constants.py             # PIPELINE_STATUS_* / STAGE_STATUS_* / POST_PROCESS_STAGE_*
-    ├── models.py                # PostProcessStageResult / PostProcessResult
-    └── repository.py            # PostProcessPipelineRepository
+└── parse_task/                  # 解析任务主编排
+    ├── pipeline.py              # ParseTaskPipeline（编排骨架）
+    ├── constants.py             # 解析任务状态字面量 + 用户提示文案
+    ├── error_codes.py           # ParseFailureCode + build_failure_reason
+    ├── models.py                # ParsePipelineResult / PipelineStatus
+    ├── log_repository.py        # ParseLogRepository
+    ├── notifier.py              # ParseResultNotifier + ParseResultNotificationError
+    ├── source.py                # ParseSourceIO
+    ├── validator.py             # ParseTaskGuard
+    ├── _utils.py                # 子包内部小工具（now / duration_ms / coerce_optional_int / 等）
+    └── post_process/            # 文件级后处理子状态机（parse_task 内部）
+        ├── constants.py         # PIPELINE_STATUS_* / STAGE_STATUS_* / POST_PROCESS_STAGE_*
+        ├── models.py            # PostProcessStageResult / PostProcessResult
+        └── repository.py        # PostProcessPipelineRepository
 ```
 
-### 2.1 为什么 `post_process/` 不挪到 vectorization
+后续如新增检索链路 pipeline，按相同模式在顶层添加 `retrieval/` 子包：
 
-虽然它服务的是 chunking → 向量化 → ES 这条链，但它的生命周期由 parse pipeline 创建并驱动（行级 `document_post_process_pipeline` 与 `document_parsed_log` 1:1 绑定），所以留在 `pipeline/` 下作为子状态机。
+```text
+src/core/pipeline/
+├── parse_task/    # 解析编排（含内部 post_process 子状态机）
+└── retrieval/     # 检索编排（未来）
+```
+
+### 2.1 为什么 `post_process/` 嵌在 `parse_task/` 下
+
+它的生命周期由 parse_task 创建并驱动（行级 `document_post_process_pipeline` 与 `document_parsed_log` 1:1 绑定），不是一个独立 pipeline，所以归属为 parse_task 的内部子状态机，而不是顶层 `pipeline/` 的并列子包。这样顶层只放真正的"独立 pipeline"，层级语义干净。
 
 ---
 
