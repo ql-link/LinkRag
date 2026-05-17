@@ -1,29 +1,33 @@
-import trafilatura
 from ..base import BaseParser
-from ...exceptions import ParseBaseException
+from ..html import HtmlParseOptions, HtmlParseService
+
 
 class HtmlParser(BaseParser):
-    """网页去噪提取正文逻辑"""
+    """HTML document parser that preserves RAG-relevant structure."""
+
+    def __init__(
+        self,
+        source_file_url: str | None = None,
+        image_prefix: str = "html-images",
+        mock_minio_base_url: str = "mock-minio://tolink-rag",
+        **_: object,
+    ):
+        super().__init__()
+        self.options = HtmlParseOptions(
+            source_file_url=source_file_url,
+            image_prefix=image_prefix,
+            mock_minio_base_url=mock_minio_base_url,
+        )
+        self.service = HtmlParseService(self.options)
 
     def parse(self, file_stream: bytes) -> str:
         self.validate_stream(file_stream)
 
-        # HTML 通常需要先解码为字符串，忽略无法解码的脏字符
-        html_content = file_stream.decode('utf-8', errors='ignore')
+        html_content = file_stream.decode("utf-8", errors="ignore")
+        result = self.service.parse(html_content)
 
-        # 使用 trafilatura 提取正文，并直接转为 Markdown
-        result = trafilatura.extract(
-            html_content,
-            output_format='markdown',
-            include_formatting=True,  # 保留加粗、斜体等内建格式
-            include_links=True  # 保留超链接
-        )
+        self.metadata.update(result.metadata)
+        if result.warnings:
+            self.metadata["warnings"] = result.warnings
 
-        if not result:
-            # 对应处理策略：如果全是广告脚本导致提取失败，抛出异常阻断
-            raise ParseBaseException("HTML 正文提取失败：未找到有效正文内容或噪音过大")
-
-        # 粗略估算长度指标（假设约 500 字符为一页的阅读量）
-        self.metadata['pages_or_length'] = (len(result) // 500) + 1
-
-        return result
+        return result.markdown
