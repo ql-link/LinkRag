@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from src.core.es_index_storage import EsIndexingResult
+from src.core.preprocessor.models import ChunkWithTokens, FileIndexMeta, FilePostIndexPlan
 from src.core.markdown_parser.models import ParseResult
 from src.core.mq.consumers.parse_task_consumer import handle_parse_task
 from src.core.mq.messages import ParseTaskMessage
@@ -105,9 +106,25 @@ def first_added_log(db):
 
 class FakeEsIndexingPipeline:
     def __init__(self, result: EsIndexingResult | None = None):
-        self.index_for_parse_task = AsyncMock(
+        self.write_es_index = AsyncMock(
             return_value=result or EsIndexingResult(total_items=2, indexed_items=2)
         )
+
+
+class FakePreprocessor:
+    def __init__(self) -> None:
+        plan = FilePostIndexPlan(
+            file_meta=FileIndexMeta(user_id=20, dataset_id=30, doc_id=1, task_id="t-kafka-success"),
+            chunks_with_tokens=[
+                ChunkWithTokens(
+                    chunk_id="chunk-1",
+                    chunk_index=0,
+                    coarse_tokens="alpha",
+                    fine_tokens="alpha",
+                )
+            ],
+        )
+        self.build_file_post_index_plan = AsyncMock(return_value=plan)
 
 
 class FakePostProcessRepository:
@@ -205,6 +222,7 @@ async def test_kafka_receiver_should_consume_parse_task_message_and_commit_after
         vector_storage=vector_storage,
         post_process_repository=FakePostProcessRepository(),
         es_indexing_pipeline=FakeEsIndexingPipeline(),
+        preprocessor=FakePreprocessor(),
     )
 
     message = ParseTaskMessage.build(

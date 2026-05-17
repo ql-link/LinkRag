@@ -5,6 +5,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from src.core.es_index_storage import EsIndexingResult
+from src.core.preprocessor.models import ChunkWithTokens, FileIndexMeta, FilePostIndexPlan
 from src.core.markdown_parser.models import ParseResult
 from src.core.mq.messages import ParseTaskMessage
 from src.core.pipeline import ParseTaskPipeline, PipelineStatus
@@ -178,7 +179,23 @@ class FakePostProcessRepository:
 class FakeEsIndexingPipeline:
     def __init__(self, result: EsIndexingResult | None = None):
         self.result = result or EsIndexingResult(total_items=1, indexed_items=1)
-        self.index_for_parse_task = AsyncMock(return_value=self.result)
+        self.write_es_index = AsyncMock(return_value=self.result)
+
+
+class FakePreprocessor:
+    def __init__(self, plan: FilePostIndexPlan | None = None):
+        self.plan = plan or FilePostIndexPlan(
+            file_meta=FileIndexMeta(user_id=20, dataset_id=30, doc_id=1, task_id="t-001"),
+            chunks_with_tokens=[
+                ChunkWithTokens(
+                    chunk_id="chunk-1",
+                    chunk_index=0,
+                    coarse_tokens="alpha",
+                    fine_tokens="alpha",
+                )
+            ],
+        )
+        self.build_file_post_index_plan = AsyncMock(return_value=self.plan)
 
 
 class TestParseTaskPipeline:
@@ -379,6 +396,7 @@ class TestParseTaskPipeline:
             vector_storage=vector_storage,
             post_process_repository=post_repo,
             es_indexing_pipeline=es_pipeline,
+            preprocessor=FakePreprocessor(),
         )
 
         payload = build_payload()
@@ -464,6 +482,7 @@ class TestParseTaskPipeline:
             vector_storage=vector_storage,
             post_process_repository=post_repo,
             es_indexing_pipeline=es_pipeline,
+            preprocessor=FakePreprocessor(),
         )
 
         result = await pipeline.execute(build_payload())
@@ -546,6 +565,7 @@ class TestParseTaskPipeline:
             vector_storage=vector_storage,
             post_process_repository=post_repo,
             es_indexing_pipeline=es_pipeline,
+            preprocessor=FakePreprocessor(),
         )
 
         with pytest.raises(RuntimeError, match="解析结果通知发送失败"):
@@ -725,6 +745,7 @@ class TestParseTaskPipeline:
             vector_storage=vector_storage,
             post_process_repository=post_repo,
             es_indexing_pipeline=es_pipeline,
+            preprocessor=FakePreprocessor(),
         )
 
         result = await pipeline.execute(build_payload())
