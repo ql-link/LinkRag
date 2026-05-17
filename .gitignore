@@ -66,3 +66,5 @@ tests/api_keys.json
 .claude/worktrees/
 # Claude Code per-user permission allowlist
 .claude/settings.local.json
+
+/requirements

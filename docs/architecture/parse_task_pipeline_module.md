@@ -56,7 +56,9 @@ StorageFactory / BaseObjectStorage
 ParseTaskService
 ChunkingEngine
 VectorStorageFacade
-EsIndexingPipeline
+Preprocessor / PreprocessorProtocol   # 预分词，构建 FilePostIndexPlan
+EsIndexingPipeline                    # 消费 FilePostIndexPlan 做 ES bulk 写入
+ChunkRepository                       # 预分词失败时批量标记 ES 失败，及空 plan 兜底计数
 MQService
 DocumentParsedLog / DocumentPostProcessPipeline
 ```
@@ -99,7 +101,9 @@ any classified failure
 | Markdown 上传 | `_upload_markdown()` | 上传 Markdown 到 payload 指定 bucket/key |
 | 分片 | `_run_chunking()` / `_chunk_markdown()` | 优先消费上游 `ParseResult`，否则重新解析 Markdown |
 | 向量化 | `_store_chunk_vectors()` | 通过 `VectorStorageFacade` 写 MySQL 真值和 Qdrant |
-| ES 入库 | `_get_es_indexing_pipeline()` | 通过 `EsIndexingPipeline` 写 Elasticsearch |
+| 预分词 | `_get_preprocessor()` / `_run_es_indexing()` | 通过 `Preprocessor.build_file_post_index_plan()` 将 doc 下 chunk 的 token 信息聚合为 `FilePostIndexPlan` |
+| ES 入库 | `_run_es_indexing()` / `_handle_pretokenize_failure()` | 消费 `FilePostIndexPlan` 调用 `EsIndexingPipeline.write_es_index()`；预分词失败则批量标记 chunk `es_status=FAILED` |
+| ES 失败收敛 | `_handle_es_failure()` / `_is_es_retry_exhausted()` | 递增 `document_post_process_pipeline.retry_count`；达到 `ES_INDEXING_MAX_RETRY` 上限后在失败原因追加 `retry_exhausted=true` |
 | 结果通知 | `_send_parse_result()` | 向 `tolink.rag.parse_result` 发送整体终态 |
 
 ## 4. 状态语义
@@ -122,6 +126,12 @@ any classified failure
 | `es_indexing_status` | `PENDING/SUCCESS/FAILED` |
 
 发送给 Java 的 parse_result `success` 是整体成功语义：Markdown、分片、向量化和 ES 入库均成功。任一阶段失败都会发送 `failed`。
+
+### ES 入库失败与重试计数
+
+ES 阶段失败时，`_handle_es_failure()` 在调用 `mark_es_failed` 前显式递增 `document_post_process_pipeline.retry_count`，并将 `pipeline_record.finished_at`（由 `mark_es_failed` 写入）作为通知时间戳。当 `retry_count >= settings.ES_INDEXING_MAX_RETRY`（默认 3）时，失败原因后会追加 `; retry_exhausted=true`，供下游监控判断是否放弃重试。
+
+预分词（`Preprocessor.build_file_post_index_plan()`）失败属于独立分支：直接将 doc 下所有 `es_status IN (PENDING, FAILED)` 的 chunk 标记为 `es_status=FAILED`，并返回合成的 `EsIndexingResult` 触发相同的 ES 失败路径。
 
 ## 5. MinerU URL 直拉
 
@@ -172,6 +182,7 @@ pdf_parser_backend == "mineru"
 
 ```bash
 .venv/bin/pytest tests/unit/core/pipeline/test_parse_task_pipeline.py -q
+.venv/bin/pytest tests/unit/core/pipeline/test_parse_task_pipeline_es.py -q
 .venv/bin/pytest tests/unit/core/pipeline/test_post_process_repository.py -q
 .venv/bin/pytest tests/integration/core/mq/test_kafka_parse_task_pipeline_integration.py -q
 ```
@@ -182,3 +193,5 @@ pdf_parser_backend == "mineru"
 - 重复 task 的补发、跳过和中断收敛。
 - 解析、上传、分片、向量化、ES 和通知失败。
 - MinerU 后端跳过源文件下载并注入 `source_file_url`。
+- 预分词失败时 chunk 批量标记 ES 失败。
+- ES 失败 retry_count 递增及 retry_exhausted 判断。
