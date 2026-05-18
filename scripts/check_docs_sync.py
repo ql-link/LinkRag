@@ -97,6 +97,7 @@ class Rule:
     must_update: tuple[str, ...]
     severity: str
     rationale: str
+    forbid_change: bool = False
 
 
 def load_rules(path: Path) -> list[Rule]:
@@ -123,9 +124,16 @@ def load_rules(path: Path) -> list[Rule]:
 
         when_changed = raw.get("when_changed") or []
         must_update = raw.get("must_update") or []
-        if not when_changed or not must_update:
+        forbid_change = bool(raw.get("forbid_change", False))
+        if not when_changed:
+            raise ValueError(f"Rule '{rule_id}' must have when_changed")
+        if not forbid_change and not must_update:
             raise ValueError(
-                f"Rule '{rule_id}' must have both when_changed and must_update"
+                f"Rule '{rule_id}' must have must_update (or set forbid_change: true)"
+            )
+        if forbid_change and must_update:
+            raise ValueError(
+                f"Rule '{rule_id}' cannot combine forbid_change with must_update"
             )
 
         severity = raw.get("severity", default_severity)
@@ -142,6 +150,7 @@ def load_rules(path: Path) -> list[Rule]:
                 must_update=tuple(must_update),
                 severity=severity,
                 rationale=raw.get("rationale", ""),
+                forbid_change=forbid_change,
             )
         )
     return rules
@@ -209,6 +218,11 @@ def find_violations(rules: list[Rule], changed: set[str]) -> list[Violation]:
         triggers = sorted(p for p in changed if _matches_any(p, list(rule.when_changed)))
         if not triggers:
             continue
+        if rule.forbid_change:
+            # The mere act of changing a forbidden file is the violation;
+            # there is no companion file to satisfy.
+            violations.append(Violation(rule=rule, triggers=triggers, missing=[]))
+            continue
         # Each entry in must_update is treated as a glob pattern. The rule
         # is satisfied if at least one changed file matches the pattern; the
         # entry is reported as "missing" otherwise. Plain paths (no wildcard)
@@ -258,7 +272,10 @@ def print_violations(violations: list[Violation], quiet: bool) -> None:
         print(f"{tag} {v.rule.id}: {v.rule.description}")
         if not quiet:
             for trigger in v.triggers:
-                print(f"  ↳ changed: {trigger}")
+                if v.rule.forbid_change:
+                    print(f"  ✗ forbidden change: {trigger}")
+                else:
+                    print(f"  ↳ changed: {trigger}")
         for doc in v.missing:
             print(f"  ✗ missing update: {doc}")
         if v.rule.rationale and not quiet:
