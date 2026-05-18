@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 from typing import Any, Protocol
 
 from sqlalchemy import select
@@ -14,7 +14,6 @@ from src.core.chunk_fact_storage.constants import (
     ES_STATUS_PENDING,
     VECTOR_STATUS_SUCCESS,
 )
-from src.core.chunk_fact_storage.repository import ChunkRepository
 from src.database import get_async_session_factory
 from src.models.chunk_record import ChunkRecordDB
 
@@ -38,12 +37,10 @@ class Preprocessor:
     def __init__(
         self,
         *,
-        chunk_repository: ChunkRepository | None = None,
         session_factory: Callable[[], Any] | None = None,
         tokenizer: ChunkTokenizer | None = None,
         tokenizer_factory: Callable[[], ChunkTokenizer] | None = None,
     ) -> None:
-        self._chunk_repository = chunk_repository or ChunkRepository()
         self._session_factory = session_factory or get_async_session_factory()
         self._tokenizer = tokenizer
         self._tokenizer_factory = tokenizer_factory or RagFlowTokenizer
@@ -69,16 +66,15 @@ class Preprocessor:
                     chunks_with_tokens=[],
                 )
 
-            chunk_ids = [record.chunk_id for record in records]
             try:
                 tokenizer = self._get_tokenizer()
                 chunks_with_tokens = [
                     self._tokenize_record(tokenizer, record) for record in records
                 ]
             except Exception as exc:
-                reason = self._format_failure_reason(exc)
-                await self._mark_pretokenize_failed(db, chunk_ids, reason)
-                raise PreprocessorError(reason) from exc
+                # 文件级 all-or-nothing：预分词失败只向上抛，不写任何 chunk
+                # es_status；失败语义由 _run_pretokenize 落文件级 pretokenize 终态。
+                raise PreprocessorError(self._format_failure_reason(exc)) from exc
 
             first = records[0]
             return FilePostIndexPlan(
@@ -134,21 +130,6 @@ class Preprocessor:
             coarse_tokens=coarse_tokens,
             fine_tokens=fine_tokens,
         )
-
-    async def _mark_pretokenize_failed(
-        self,
-        db: AsyncSession,
-        chunk_ids: Sequence[str],
-        reason: str,
-    ) -> None:
-        if not chunk_ids:
-            return
-        await self._chunk_repository.mark_es_failed(
-            db,
-            list(chunk_ids),
-            error_msg=f"pretokenize: {reason}",
-        )
-        await db.commit()
 
     @staticmethod
     def _format_failure_reason(exc: Exception) -> str:

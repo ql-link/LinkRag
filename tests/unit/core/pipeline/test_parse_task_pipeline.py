@@ -23,6 +23,7 @@ from src.core.pipeline.parse_task.post_process.constants import (
     PIPELINE_STATUS_PROCESSING,
     PIPELINE_STATUS_SUCCESS,
     POST_PROCESS_STAGE_CHUNKING,
+    POST_PROCESS_STAGE_PRETOKENIZE,
     POST_PROCESS_STAGE_VECTORIZING,
     STAGE_STATUS_FAILED,
     STAGE_STATUS_PENDING,
@@ -110,6 +111,7 @@ class FakePostProcessRepository:
             pipeline_status=pipeline_status,
             chunking_status=STAGE_STATUS_PENDING,
             vectorizing_status=STAGE_STATUS_PENDING,
+            pretokenize_status=STAGE_STATUS_PENDING,
             es_indexing_status=STAGE_STATUS_PENDING,
             failed_stage=None,
             recover_from_stage=None,
@@ -160,6 +162,18 @@ class FakePostProcessRepository:
         pipeline.vectorizing_status = STAGE_STATUS_FAILED
         pipeline.failed_stage = POST_PROCESS_STAGE_VECTORIZING
         pipeline.recover_from_stage = POST_PROCESS_STAGE_VECTORIZING
+        pipeline.failure_reason = reason
+
+    async def mark_pretokenize_success(self, db, pipeline, *, duration_ms):
+        self.calls.append("mark_pretokenize_success")
+        pipeline.pretokenize_status = STAGE_STATUS_SUCCESS
+
+    async def mark_pretokenize_failed(self, db, pipeline, *, reason, duration_ms, finished_at):
+        self.calls.append("mark_pretokenize_failed")
+        pipeline.pipeline_status = PIPELINE_STATUS_FAILED
+        pipeline.pretokenize_status = STAGE_STATUS_FAILED
+        pipeline.failed_stage = POST_PROCESS_STAGE_PRETOKENIZE
+        pipeline.recover_from_stage = POST_PROCESS_STAGE_PRETOKENIZE
         pipeline.failure_reason = reason
 
     async def mark_es_success(self, db, pipeline, *, duration_ms, total_duration_ms, finished_at):

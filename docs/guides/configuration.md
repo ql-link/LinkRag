@@ -51,6 +51,8 @@
 | `MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT` | `true` | 是否启用图片 LLM 增强 |
 | `CHUNKING_ENABLE_ADVANCED_PIPELINE` | `true` | 是否启用进阶分块流水线 |
 
+> 注：ES 入库失败即终态，无 ES 内部自动重试配置。原 `ES_INDEXING_MAX_RETRY` 已移除（用户侧重试由 `document_post_process_pipeline.retry_count` 记录，触发路径待后续需求接线）。
+
 ## MQ Topic 命名
 
 应用启动时需要这些 topic 存在或被自动创建（见 [mq_integration.md](mq_integration.md)）：

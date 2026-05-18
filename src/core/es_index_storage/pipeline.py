@@ -11,7 +11,6 @@ from elasticsearch import AsyncElasticsearch
 from src.config import settings
 from src.core.chunk_fact_storage.repository import ChunkRepository
 from src.core.preprocessor.models import FilePostIndexPlan
-from src.utils.logger import logger
 
 from .batcher import TokenBatch, TokenBatcher
 from .client import get_async_es_client
@@ -53,18 +52,20 @@ class EsIndexingPipeline:
         if total_items == 0:
             return EsIndexingResult(total_items=0, indexed_items=0)
 
-        all_chunk_ids = [chunk.chunk_id for chunk in plan.chunks_with_tokens]
         client = await self._resolve_client()
         try:
             await self._ensure_index(client)
         except Exception as exc:
-            reason = str(exc if isinstance(exc, EsBulkError) else EsBulkError(str(exc)))
-            await self._mark_all_failed(db, all_chunk_ids, reason)
+            # ensure_index 失败属文件级基础设施故障（ES 不可达/建索引失败），
+            # 不是某 chunk 写不进去：不标任何 chunk es_status，按文件级失败返回。
+            # failed_item_ids 留空（不暗示 chunk 级失败），is_success 仍为 False
+            # （indexed != total）。前缀 ensure_index: 供内部排障区分来源。
+            detail = exc.args[0] if isinstance(exc, EsBulkError) and exc.args else str(exc)
             return EsIndexingResult(
                 total_items=total_items,
                 indexed_items=0,
-                failed_item_ids=all_chunk_ids,
-                failure_reason=reason,
+                failed_item_ids=[],
+                failure_reason=f"ensure_index: {detail}",
             )
 
         batch_result = self._batcher.build_batches(plan)
@@ -193,16 +194,6 @@ class EsIndexingPipeline:
         for reason, chunk_ids in failed_by_reason.items():
             await self._chunk_repository.mark_es_failed(db, chunk_ids, error_msg=reason)
         await db.commit()
-
-    async def _mark_all_failed(self, db: Any, chunk_ids: list[str], reason: str) -> None:
-        try:
-            await self._chunk_repository.mark_es_failed(db, chunk_ids, error_msg=reason)
-            await db.commit()
-        except Exception as exc:
-            logger.warning(
-                "[EsIndexingPipeline] failed to mark plan chunks as ES failed: error={}",
-                exc,
-            )
 
     @staticmethod
     def _extract_error_reason(error: object) -> str:

@@ -70,9 +70,8 @@ def build_record(
     )
 
 
-def build_preprocessor(session: CapturingSession, *, tokenizer=None, repository=None):
+def build_preprocessor(session: CapturingSession, *, tokenizer=None):
     return Preprocessor(
-        chunk_repository=repository or AsyncMock(),
         session_factory=lambda: SessionContext(session),
         tokenizer=tokenizer or StaticTokenizer(),
     )
@@ -110,38 +109,28 @@ async def test_should_return_empty_plan_when_no_chunks_need_pretokenization():
     session.commit.assert_not_awaited()
 
 
-async def test_should_mark_all_loaded_chunks_failed_when_tokenizer_fails():
+async def test_should_raise_without_touching_chunk_when_tokenizer_fails():
+    """文件级 all-or-nothing：预分词失败只抛 PreprocessorError，零 DB 写、不标 chunk。"""
     session = CapturingSession(
         records=[
             build_record(chunk_id="chunk-1", chunk_index=0, content="contract"),
             build_record(chunk_id="chunk-2", chunk_index=1, content="payment"),
         ]
     )
-    repository = AsyncMock()
-    preprocessor = build_preprocessor(
-        session,
-        tokenizer=FailingTokenizer(),
-        repository=repository,
-    )
+    preprocessor = build_preprocessor(session, tokenizer=FailingTokenizer())
 
     with pytest.raises(PreprocessorError, match="tokenizer down"):
         await preprocessor.build_file_post_index_plan(doc_id=10, task_id="t-001")
 
-    repository.mark_es_failed.assert_awaited_once()
-    args, kwargs = repository.mark_es_failed.await_args
-    assert args[0] is session
-    assert args[1] == ["chunk-1", "chunk-2"]
-    assert kwargs["error_msg"].startswith("pretokenize:")
-    session.commit.assert_awaited_once()
+    # 失败路径零 DB 写：不 commit、不写任何 chunk es_status。
+    session.commit.assert_not_awaited()
 
 
-async def test_should_mark_failure_when_chunk_index_is_invalid():
+async def test_should_raise_when_chunk_index_is_invalid():
     session = CapturingSession(records=[build_record(chunk_index=None)])
-    repository = AsyncMock()
-    preprocessor = build_preprocessor(session, repository=repository)
+    preprocessor = build_preprocessor(session)
 
     with pytest.raises(PreprocessorError, match="invalid chunk_index"):
         await preprocessor.build_file_post_index_plan(doc_id=10, task_id="t-001")
 
-    repository.mark_es_failed.assert_awaited_once()
-    session.commit.assert_awaited_once()
+    session.commit.assert_not_awaited()

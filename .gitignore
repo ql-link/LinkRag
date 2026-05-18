@@ -68,3 +68,7 @@ tests/api_keys.json
 .claude/settings.local.json
 
 /requirements
+
+# 功能设计文档（本地工作产物，不推送）
+docs/预分词独立阶段/
+

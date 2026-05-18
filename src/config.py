@@ -119,7 +119,6 @@ class Settings(BaseSettings):
     ES_MAX_TOKEN_BATCH_BYTES: int = 5242880
     ES_MAX_TOKEN_BATCH_CHUNKS: int = 500
     ES_BULK_REQUEST_TIMEOUT_SECONDS: int = 30
-    ES_INDEXING_MAX_RETRY: int = 3
     ES_SMOKE_ENABLED: bool = False
     TOLINK_RUN_REAL_ES_INDEX_TESTS: bool = False
 

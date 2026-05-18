@@ -12,7 +12,6 @@ from typing import Any, Callable, Protocol
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from src.config import settings
 from src.core.chunk_fact_storage.repository import ChunkRepository
 from src.core.es_index_storage import EsIndexingPipeline, EsIndexingResult
 from src.core.markdown_parser import ParseResult
@@ -288,21 +287,51 @@ class ParseTaskPipeline:
                 duration_ms=duration_ms(vectorizing_started_at, vectorizing_finished_at),
             )
 
-            es_started_at = now()
-            es_result = await self._run_es_indexing(payload, pipeline_record, db)
-            es_finished_at = now()
-            if not es_result.is_success:
-                failure_reason = await self._handle_es_failure(
-                    pipeline_record,
-                    es_result,
+            # 预分词：一等独立阶段，文件级 all-or-nothing。失败即终态、不进入 ES、
+            # 不写任何 chunk es_status；成功则单趟扇出把内存 plan 交给 ES 消费。
+            pretokenize_started_at = now()
+            plan, pretokenize_failure = await self._run_pretokenize(
+                payload, pipeline_record, db, pretokenize_started_at
+            )
+            if pretokenize_failure is not None:
+                finished_at = now()
+                await self._post_process_repository.mark_pretokenize_failed(
                     db,
-                    es_started_at,
-                    es_finished_at,
+                    pipeline_record,
+                    reason=pretokenize_failure,
+                    duration_ms=duration_ms(pretokenize_started_at, finished_at),
+                    finished_at=finished_at,
                 )
                 await self._notifier.send_or_raise(
                     payload,
                     PARSE_TASK_STATUS_FAILED,
-                    pipeline_record.finished_at,
+                    finished_at,
+                    pretokenize_failure,
+                )
+                return ParsePipelineResult(
+                    status=PipelineStatus.FAILED,
+                    task_id=payload.task_id,
+                    chunk_count=len(chunks),
+                    vector_indexing_completed=True,
+                )
+
+            es_started_at = now()
+            es_result = await self._run_es_indexing(plan, db)
+            es_finished_at = now()
+            if not es_result.is_success:
+                finished_at = now()
+                failure_reason = es_result.failure_reason or self._build_es_failure_reason(es_result)
+                await self._post_process_repository.mark_es_failed(
+                    db,
+                    pipeline_record,
+                    reason=failure_reason,
+                    duration_ms=duration_ms(es_started_at, es_finished_at),
+                    finished_at=finished_at,
+                )
+                await self._notifier.send_or_raise(
+                    payload,
+                    PARSE_TASK_STATUS_FAILED,
+                    finished_at,
                     failure_reason,
                 )
                 return ParsePipelineResult(
@@ -447,17 +476,22 @@ class ParseTaskPipeline:
             from src.core.preprocessor.service import Preprocessor
         except Exception as exc:
             raise RuntimeError("preprocessor service is not available") from exc
-        self._preprocessor = Preprocessor(chunk_repository=self._chunk_repository)
+        self._preprocessor = Preprocessor()
         return self._preprocessor
 
-    async def _run_es_indexing(
+    async def _run_pretokenize(
         self,
         payload: ParseTaskPayload,
         pipeline_record: Any,
         db: AsyncSession,
-    ) -> EsIndexingResult:
-        """执行预分词与 ES 入库，区分预分词失败与 ES 入库失败。"""
-        _ = pipeline_record
+        pretokenize_started_at: Any,
+    ) -> tuple[FilePostIndexPlan | None, str | None]:
+        """独立预分词阶段：建 plan、空计划-pending 判定。
+
+        成功返回 (plan, None)（已 mark_pretokenize_success，单趟扇出交 ES）；
+        失败返回 (None, failure_reason)，写库与通知由 _run 统一处理。
+        全程不写任何 chunk es_status —— 文件级 all-or-nothing。
+        """
         doc_id = int(payload.original_file_id)
         try:
             plan = await self._get_preprocessor().build_file_post_index_plan(
@@ -465,74 +499,30 @@ class ParseTaskPipeline:
                 task_id=payload.task_id,
             )
         except Exception as exc:
-            return await self._handle_pretokenize_failure(doc_id, str(exc), db)
+            reason = str(exc)
+            if not reason.startswith("pretokenize:"):
+                reason = f"pretokenize: {reason}"
+            return None, reason
 
-        result = await self._get_es_indexing_pipeline().write_es_index(plan, db=db)
-        if result.total_items != 0:
-            return result
+        if len(plan.chunks_with_tokens) == 0:
+            pending = await self._chunk_repository.count_es_not_success_by_doc_id(db, doc_id)
+            if pending > 0:
+                return None, f"pretokenize: empty plan but {pending} chunks pending"
 
-        # 空 plan：由 pipeline 聚合 chunk 状态判定文件级 ES 是否完成。
-        pending_count = await self._chunk_repository.count_es_not_success_by_doc_id(db, doc_id)
-        if pending_count == 0:
-            return result
-        return EsIndexingResult(
-            total_items=pending_count,
-            indexed_items=0,
-            failed_item_ids=[],
-            failure_reason=f"pretokenize: empty plan but {pending_count} chunks pending",
-        )
-
-    async def _handle_pretokenize_failure(
-        self,
-        doc_id: int,
-        reason: str,
-        db: AsyncSession,
-    ) -> EsIndexingResult:
-        """预分词失败时把该 doc 下待处理 chunk 标记为 ES 失败。"""
-        error_msg = f"pretokenize: {reason}"
-        chunk_ids = await self._chunk_repository.list_es_pending_or_failed_chunk_ids_by_doc_id(
-            db,
-            doc_id,
-        )
-        if chunk_ids:
-            await self._chunk_repository.mark_es_failed(db, chunk_ids, error_msg=error_msg)
-            await db.commit()
-        return EsIndexingResult(
-            total_items=max(len(chunk_ids), 1),
-            indexed_items=0,
-            failed_item_ids=chunk_ids,
-            failure_reason=error_msg,
-        )
-
-    async def _handle_es_failure(
-        self,
-        pipeline_record: Any,
-        es_result: EsIndexingResult,
-        db: AsyncSession,
-        es_started_at: Any,
-        es_finished_at: Any,
-    ) -> str:
-        """写文件级 ES 失败状态，并在写入前显式递增 retry_count。"""
-        finished_at = now()
-        failure_reason = es_result.failure_reason or self._build_es_failure_reason(es_result)
-        pipeline_record.retry_count = int(getattr(pipeline_record, "retry_count", 0) or 0) + 1
-        if self._is_es_retry_exhausted(pipeline_record):
-            failure_reason = f"{failure_reason}; retry_exhausted=true"
-
-        await self._post_process_repository.mark_es_failed(
+        await self._post_process_repository.mark_pretokenize_success(
             db,
             pipeline_record,
-            reason=failure_reason,
-            duration_ms=duration_ms(es_started_at, es_finished_at),
-            finished_at=finished_at,
+            duration_ms=duration_ms(pretokenize_started_at, now()),
         )
-        return failure_reason
+        return plan, None
 
-    @staticmethod
-    def _is_es_retry_exhausted(pipeline_record: Any) -> bool:
-        """判断 ES 阶段失败次数是否达到配置上限。"""
-        retry_count = int(getattr(pipeline_record, "retry_count", 0) or 0)
-        return retry_count >= settings.ES_INDEXING_MAX_RETRY
+    async def _run_es_indexing(
+        self,
+        plan: FilePostIndexPlan,
+        db: AsyncSession,
+    ) -> EsIndexingResult:
+        """ES 入库：单趟扇出消费预分词产出的内存 plan，保持 chunk 级失败语义。"""
+        return await self._get_es_indexing_pipeline().write_es_index(plan, db=db)
 
     async def _store_chunk_vectors(
         self,
