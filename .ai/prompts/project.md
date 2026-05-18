@@ -17,8 +17,8 @@
 | 应用入口（FastAPI） | [src/main.py](src/main.py) |
 | 运行时配置 | [src/config.py](src/config.py) |
 | 数据库初始化入口 | [src/database.py](src/database.py) |
-| 数据库 DDL（权威来源） | [scripts/db/init.sql](scripts/db/init.sql) |
-| 数据库迁移（Alembic） | [migrations/](migrations/) |
+| 数据库 DDL baseline（0001 冻结快照，**不应改动**） | [scripts/db/init.sql](scripts/db/init.sql) |
+| 数据库迁移（Alembic，schema 演进的唯一入口） | [migrations/](migrations/) |
 | HTTP 路由 | [src/api/routes](src/api/routes) |
 | 核心业务模块 | [src/core](src/core) |
 | 单元测试 | [tests/unit](tests/unit) |
@@ -65,7 +65,7 @@ uvicorn src.main:app --reload
 
 - 所有运行时配置统一通过 [src/config.py](src/config.py) 的 `Settings` 加载。
 - 环境变量样例放在 [.env.example](.env.example)，不要硬编码密钥。
-- 数据库结构以 [scripts/db/init.sql](scripts/db/init.sql) 为权威，不要在文档中重复 DDL。
+- 数据库结构权威源是 **ORM 模型 + Alembic 迁移链**。[scripts/db/init.sql](scripts/db/init.sql) 是 0001 baseline 冻结快照，新增/修改字段一律只改 ORM + 写 migration，**不要**改 init.sql（CI 走 `init.sql → stamp 0001 → upgrade head`，重复加列会触发 MySQL `Duplicate column`）。
 
 ---
 
@@ -162,6 +162,7 @@ uvicorn src.main:app --reload
 | --- | --- | --- |
 | ORM 模型（`src/models/**.py`） | [docs/reference/mysql_schema.md](docs/reference/mysql_schema.md) | ❌ error |
 | ORM 模型（`src/models/**.py`） | [migrations/versions/*.py](migrations/versions/) 新增 Alembic 迁移（见 [database_migrations.md](docs/development/database_migrations.md)） | ❌ error |
+| `scripts/db/init.sql`（0001 baseline 冻结快照） | **禁止直接修改**；新字段一律走 ORM + Alembic 迁移（规则 id `init-sql-frozen`） | ❌ error |
 | Qdrant 向量库实现 | [docs/reference/qdrant_schema.md](docs/reference/qdrant_schema.md) | ⚠️ warning |
 | Elasticsearch 入库 | [docs/reference/elasticsearch_schema.md](docs/reference/elasticsearch_schema.md) | ⚠️ warning |
 | MQ 消息契约（`src/core/mq/messages/`） | [mq_integration.md](docs/guides/mq_integration.md) + [mq_module.md](docs/architecture/mq_module.md) | ❌ error |

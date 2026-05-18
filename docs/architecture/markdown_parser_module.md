@@ -79,6 +79,7 @@ ParseResult
 - `MARKDOWN_PARSER_TABLE_MODEL`
 - `MARKDOWN_PARSER_VISION_MODEL`
 - `MARKDOWN_PARSER_LLM_TIMEOUT_MS`
+- `MARKDOWN_PARSER_VISION_CONCURRENCY`
 
 表格增强使用文本能力；图片增强使用视觉能力。Provider 默认来自系统级 LLM 配置：
 
@@ -89,6 +90,9 @@ ParseResult
 - `SYSTEM_LLM_MODEL_VISION`
 
 PDF 解析阶段如果提供了 `image_bytes_by_url`，图片增强会优先使用内存图片 bytes；缺失时才回退读取 Markdown 中的图片 URL 或本地路径。
+
+图片增强通过 `ProviderVisionClient` 对同一批图片执行受控并发调用，最大并发数由
+`MARKDOWN_PARSER_VISION_CONCURRENCY` 控制，默认值为 `24`。单张图片加载或视觉模型调用失败时只跳过该图片描述，不阻断基础 Markdown 解析。非内存图片读取会通过线程执行，避免同步文件/URL 读取阻塞事件循环。
 
 ## 5. 使用方式
 
@@ -134,6 +138,7 @@ chunks = ChunkingEngine().process_parse_result(result)
 
 ```bash
 .venv/bin/pytest tests/integration/core/markdown_parser -q
+.venv/bin/pytest tests/unit/core/markdown_parser -q
 .venv/bin/pytest tests/integration/core/splitter/test_markdown_parser_to_splitter_integration.py -q
 ```
 
@@ -142,4 +147,5 @@ chunks = ChunkingEngine().process_parse_result(result)
 - 标题、段落、列表、代码块、表格、图片和公式块识别。
 - 行号和 `heading_trail` 传递。
 - 表格摘要和图片视觉描述合并。
+- 图片视觉增强的并发上限、失败隔离和内存图片优先级。
 - 增强失败时的降级行为。

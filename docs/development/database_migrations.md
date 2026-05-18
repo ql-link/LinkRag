@@ -2,7 +2,10 @@
 
 本项目使用 [Alembic](https://alembic.sqlalchemy.org/) 管理 MySQL schema 演进。本文档面向**日常开发者**，覆盖从 0 到 1 的使用路径、典型场景与常见坑。
 
-> 强制规则：改动 `src/models/**.py` 或 `scripts/db/init.sql` 时，PR 必须包含一个新的 `migrations/versions/*.py` 文件，否则 [doc-sync CI](doc_sync.md) 会以 `error` 拦截（规则 id：`db-migration-required`）。
+> 强制规则：
+>
+> - 改动 `src/models/**.py`（schema 变更源头）时，PR 必须包含一个新的 `migrations/versions/*.py` 文件，否则 [doc-sync CI](doc_sync.md) 会以 `error` 拦截（规则 id：`db-migration-required`）。
+> - `scripts/db/init.sql` 是 **0001 baseline 冻结快照**，引入 Alembic 之后**不应再改动**。CI 走 `init.sql → stamp 0001 → upgrade head`，新字段同时落在 init.sql 与 migration 会触发 MySQL `1060 Duplicate column`（规则 id：`init-sql-frozen`，error 级别拦截）。
 
 ---
 
@@ -24,7 +27,7 @@
 ┌──────────────────┐         ┌──────────────────────┐
 │  ORM 模型变更    │  +      │   migrations/        │
 │  src/models/*.py │ ─────▶  │   versions/*.py      │
-│  init.sql 同步   │         │   （线性 NNNN 递增） │
+│ （init.sql 冻结）│         │   （线性 NNNN 递增） │
 └──────────────────┘         └──────────┬───────────┘
                                         │ alembic upgrade head
                                         ▼
@@ -72,15 +75,16 @@ alembic stamp 0001
 ### 3.3 全新空库（冷启动）
 
 ```bash
-# 方式 A：走 init.sql + stamp（推荐，与现有部署流程一致）
+# 推荐：init.sql 建 baseline → stamp 0001 → upgrade head 跑后续增量
 mysql -h HOST -P 3306 -u USER -p tolink_rag_db < scripts/db/init.sql
-alembic stamp head    # 当前形态已是 head，直接 stamp 到最新
-
-# 方式 B：从空库一路 upgrade（适合长期演进的小项目，本项目暂不用）
-alembic upgrade head
+export ALEMBIC_DATABASE_URL="mysql+pymysql://USER:PASS@HOST:3306/tolink_rag_db"
+alembic stamp 0001     # init.sql 描述的形态等同于 0001
+alembic upgrade head   # 把后续所有增量迁移按顺序跑出来
 ```
 
-> 选 A 的原因：init.sql 里有完整的索引、AUTO_INCREMENT、COMMENT、字符集声明，比 autogenerate 出来的更精细。
+这正是 [migrations-check.yml](../../.github/workflows/migrations-check.yml) 在 CI 上跑的流程，**开发者本地、测试、生产、CI 走同一条路径**。
+
+> 不要用 `stamp head`：在 init.sql 被冻结为 0001 baseline 的约定下，head 形态 = 0001 + 所有迁移，单跑 init.sql 还差着所有 0002+ 的变更。
 
 ---
 
@@ -89,9 +93,8 @@ alembic upgrade head
 ### 4.1 改字段 / 加字段 / 加索引
 
 ```bash
-# 1. 改 ORM 模型 + 同步 init.sql（保持冷启动文档准确）
+# 1. 只改 ORM 模型；不要改 scripts/db/init.sql（它是 0001 baseline 冻结快照）
 vim src/models/parse_task.py
-vim scripts/db/init.sql
 
 # 2. 让 Alembic diff 出差异并生成迁移骨架
 #    （需要本机能连上一个已 stamp 到 head 的 MySQL）
@@ -234,9 +237,10 @@ def upgrade():
 ### 6.4 init.sql 的定位
 
 - **不是**版本化的 DDL 源
-- **是**冷启动文档：记录"当 head 是 NNNN 时，完整 schema 长这样"
-- 改字段时**同步更新** init.sql，保持其与最新 head 一致
-- doc-sync 规则 `mysql-schema` 强制：改 init.sql 也要改 [docs/reference/mysql_schema.md](../reference/mysql_schema.md)
+- **是** 0001 baseline 冻结快照：记录"项目引入 Alembic 那一刻的 schema 形态"
+- 引入 Alembic 之后 **不应再修改 init.sql**；任何 schema 演进只通过 ORM + `migrations/versions/*.py`
+- 想看最新 schema：跑一遍 `alembic upgrade head` 后 `mysqldump` 或 `SHOW CREATE TABLE`；不要回读 init.sql 当 head 状态
+- 仅有的合法改动场景：未来某次主动 rebase baseline（把若干迁移 squash 进新的 0001/init.sql，并明确说明），由 reviewer 显式判断；默认 PR 不允许碰这个文件，由规则 `init-sql-frozen` 强制拦截
 
 ---
 
@@ -262,11 +266,18 @@ def upgrade():
 
 **做法**：rebase 时把后合入的那个 PR 的 `down_revision` 改成前一个 PR 的 revision。或显式合并：`alembic merge -m "merge heads" <rev1> <rev2>`（一般不推荐，破坏线性）。
 
-### 7.4 改了 ORM 但忘改 init.sql
+### 7.4 误改了 init.sql（PR #27 真实事故）
 
-**症状**：doc-sync CI 报 `mysql-schema` warning，新部署的库 schema 与 ORM 不一致。
+**症状**：`alembic upgrade head` 报 `1060 Duplicate column name 'XXX'`，CI 在 `migrations-check.yml` 失败：
 
-**做法**：每次写迁移时同步改 init.sql。可以把迁移的 `upgrade()` 中的 DDL 翻译过去。
+```
+[SQL: ALTER TABLE ... ADD COLUMN xxx ...]
+(Background on this error at: https://sqlalche.me/e/20/e3q8)
+```
+
+**原因**：在 init.sql 的 CREATE TABLE 中加入新列的同时又写了 `add_column` 的 migration。CI 走 `init.sql → stamp 0001 → upgrade head`：建表时已经有这列，migration 再加一次就重复。
+
+**做法**：从 init.sql 撤掉新列定义；只保留 migration。规则 `init-sql-frozen` 会在 pre-commit / CI 拦住这类改动，正常情况下不会走到这一步。
 
 ### 7.5 server_default 写法
 
