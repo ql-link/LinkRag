@@ -82,6 +82,9 @@ mq-all = [
     "confluent-kafka>=2.6.0",
     "aio-pika>=9.4.0",
 ]
+pretokenization = [
+    "infinity-sdk>=0.7.0; python_version >= '3.11'",
+]
 
 [build-system]
 requires = ["hatchling"]

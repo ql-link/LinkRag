@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -19,6 +19,7 @@ from .constants import (
     PIPELINE_STATUS_SUCCESS,
     POST_PROCESS_STAGE_CHUNKING,
     POST_PROCESS_STAGE_ES_INDEXING,
+    POST_PROCESS_STAGE_PRETOKENIZE,
     POST_PROCESS_STAGE_VECTORIZING,
     STAGE_STATUS_FAILED,
     STAGE_STATUS_PENDING,
@@ -54,6 +55,7 @@ class PostProcessPipelineRepository:
             pipeline_status=PIPELINE_STATUS_PENDING,
             chunking_status=STAGE_STATUS_PENDING,
             vectorizing_status=STAGE_STATUS_PENDING,
+            pretokenize_status=STAGE_STATUS_PENDING,
             es_indexing_status=STAGE_STATUS_PENDING,
         )
         db.add(pipeline)
@@ -102,6 +104,9 @@ class PostProcessPipelineRepository:
         pipeline.failed_stage = None
         pipeline.recover_from_stage = None
         pipeline.failure_reason = None
+        # 不变量：各阶段 *_status 与 retry_count/last_retry_at 不在重置集内。
+        # 前者跨重投持久，恢复推断据此回到首个非 SUCCESS 阶段；
+        # 后两者是用户侧重试计数（仅 claim_failed_for_retry 写）。
         await db.commit()
 
     async def mark_chunking_success(
@@ -166,6 +171,36 @@ class PostProcessPipelineRepository:
             duration_ms=duration_ms,
         )
 
+    async def mark_pretokenize_success(
+        self,
+        db: AsyncSession,
+        pipeline: DocumentPostProcessPipeline,
+        *,
+        duration_ms: int | None,
+    ) -> None:
+        pipeline.pretokenize_status = STAGE_STATUS_SUCCESS
+        pipeline.pretokenize_duration_ms = duration_ms
+        pipeline.failure_reason = None
+        await db.commit()
+
+    async def mark_pretokenize_failed(
+        self,
+        db: AsyncSession,
+        pipeline: DocumentPostProcessPipeline,
+        *,
+        reason: str,
+        duration_ms: int | None,
+        finished_at: datetime,
+    ) -> None:
+        await self._mark_failed(
+            db,
+            pipeline,
+            stage=POST_PROCESS_STAGE_PRETOKENIZE,
+            reason=reason,
+            finished_at=finished_at,
+            duration_ms=duration_ms,
+        )
+
     async def mark_es_success(
         self,
         db: AsyncSession,
@@ -203,6 +238,36 @@ class PostProcessPipelineRepository:
             duration_ms=duration_ms,
         )
 
+    async def claim_failed_for_retry(
+        self,
+        db: AsyncSession,
+        task_id: str,
+    ) -> bool:
+        """用户前端触发重试时认领一个 FAILED 流水线。
+
+        计数在"认领重试"动作处自增（对照
+        ChunkRepository.claim_failed_for_reindex），不在失败处、不在模块内。
+        retry_count/last_retry_at 是本仓库**唯一**写入点；其余路径禁止写。
+
+        预留：本期不接入任何触发路径（handle_duplicate 未改、无新 MQ/接口
+        契约）。recover_from_stage 不重置——续跑据其从首个非 SUCCESS 阶段恢复。
+        """
+        stmt = (
+            update(self.model_cls)
+            .where(self.model_cls.task_id == task_id)
+            .where(self.model_cls.pipeline_status == PIPELINE_STATUS_FAILED)
+            .values(
+                retry_count=self.model_cls.retry_count + 1,
+                last_retry_at=func.now(),
+                pipeline_status=PIPELINE_STATUS_PROCESSING,
+                failed_stage=None,
+                failure_reason=None,
+            )
+        )
+        result = await db.execute(stmt)
+        await db.commit()
+        return bool(result.rowcount)
+
     async def _mark_failed(
         self,
         db: AsyncSession,
@@ -219,6 +284,9 @@ class PostProcessPipelineRepository:
         elif stage == POST_PROCESS_STAGE_VECTORIZING:
             pipeline.vectorizing_status = STAGE_STATUS_FAILED
             pipeline.vectorizing_duration_ms = duration_ms
+        elif stage == POST_PROCESS_STAGE_PRETOKENIZE:
+            pipeline.pretokenize_status = STAGE_STATUS_FAILED
+            pipeline.pretokenize_duration_ms = duration_ms
         elif stage == POST_PROCESS_STAGE_ES_INDEXING:
             pipeline.es_indexing_status = STAGE_STATUS_FAILED
             pipeline.es_indexing_duration_ms = duration_ms

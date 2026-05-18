@@ -14,6 +14,7 @@ from src.core.pipeline.parse_task.post_process.constants import (
     PIPELINE_STATUS_SUCCESS,
     POST_PROCESS_STAGE_CHUNKING,
     POST_PROCESS_STAGE_ES_INDEXING,
+    POST_PROCESS_STAGE_PRETOKENIZE,
     POST_PROCESS_STAGE_VECTORIZING,
     STAGE_STATUS_SUCCESS,
 )
@@ -207,6 +208,14 @@ class ParseTaskGuard:
                 duration_ms=elapsed_ms,
                 finished_at=finished_at,
             )
+        elif recover_stage == POST_PROCESS_STAGE_PRETOKENIZE:
+            await self._post_process_repository.mark_pretokenize_failed(
+                db,
+                pipeline_record,
+                reason=failure_reason,
+                duration_ms=elapsed_ms,
+                finished_at=finished_at,
+            )
         else:
             await self._post_process_repository.mark_es_failed(
                 db,
@@ -223,4 +232,6 @@ class ParseTaskGuard:
             return POST_PROCESS_STAGE_CHUNKING
         if getattr(pipeline_record, "vectorizing_status", None) != STAGE_STATUS_SUCCESS:
             return POST_PROCESS_STAGE_VECTORIZING
+        if getattr(pipeline_record, "pretokenize_status", None) != STAGE_STATUS_SUCCESS:
+            return POST_PROCESS_STAGE_PRETOKENIZE
         return POST_PROCESS_STAGE_ES_INDEXING

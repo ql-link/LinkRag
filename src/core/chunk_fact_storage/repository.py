@@ -286,6 +286,40 @@ class ChunkRepository:
             protect_delete_statuses=True,
         )
 
+    async def count_es_not_success_by_doc_id(
+        self,
+        db: AsyncSession,
+        doc_id: int,
+    ) -> int:
+        """Count non-deleted chunks for a doc that have not completed ES indexing."""
+
+        stmt = (
+            select(func.count())
+            .select_from(self.model_cls)
+            .where(self.model_cls.doc_id == doc_id)
+            .where(self.model_cls.es_status != ES_STATUS_SUCCESS)
+            .where(self.model_cls.status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
+        )
+        result = await db.execute(stmt)
+        return int(result.scalar() or 0)
+
+    async def list_es_pending_or_failed_chunk_ids_by_doc_id(
+        self,
+        db: AsyncSession,
+        doc_id: int,
+    ) -> list[str]:
+        """List non-deleted chunks of a doc still pending or failed for ES indexing."""
+
+        stmt = (
+            select(self.model_cls.chunk_id)
+            .where(self.model_cls.doc_id == doc_id)
+            .where(self.model_cls.es_status.in_((ES_STATUS_PENDING, ES_STATUS_FAILED)))
+            .where(self.model_cls.status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
+            .order_by(self.model_cls.chunk_index.asc())
+        )
+        result = await db.execute(stmt)
+        return list(result.scalars().all())
+
     async def update_chunk_for_reindex(
         self,
         db: AsyncSession,

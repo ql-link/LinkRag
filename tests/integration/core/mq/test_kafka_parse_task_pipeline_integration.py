@@ -5,12 +5,14 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from src.core.es_index_storage import EsIndexingResult
+from src.core.preprocessor.models import ChunkWithTokens, FileIndexMeta, FilePostIndexPlan
 from src.core.markdown_parser.models import ParseResult
 from src.core.mq.consumers.parse_task_consumer import handle_parse_task
 from src.core.mq.messages import ParseTaskMessage
 from src.core.mq.vendors.kafka.kafka_adapter import KafkaReceiver
 from src.core.pipeline import ParseTaskPipeline
 from src.core.pipeline.parse_task.constants import (
+    DUPLICATE_SUCCESS_USER_MESSAGE,
     PARSE_TASK_STATUS_CREATED,
     PARSE_TASK_STATUS_FAILED,
     PARSE_TASK_STATUS_SUCCESS,
@@ -22,6 +24,7 @@ from src.core.pipeline.parse_task.post_process.constants import (
     PIPELINE_STATUS_SUCCESS,
     POST_PROCESS_STAGE_CHUNKING,
     POST_PROCESS_STAGE_ES_INDEXING,
+    POST_PROCESS_STAGE_PRETOKENIZE,
     POST_PROCESS_STAGE_VECTORIZING,
     STAGE_STATUS_FAILED,
     STAGE_STATUS_PENDING,
@@ -105,9 +108,25 @@ def first_added_log(db):
 
 class FakeEsIndexingPipeline:
     def __init__(self, result: EsIndexingResult | None = None):
-        self.index_for_parse_task = AsyncMock(
+        self.write_es_index = AsyncMock(
             return_value=result or EsIndexingResult(total_items=2, indexed_items=2)
         )
+
+
+class FakePreprocessor:
+    def __init__(self) -> None:
+        plan = FilePostIndexPlan(
+            file_meta=FileIndexMeta(user_id=20, dataset_id=30, doc_id=1, task_id="t-kafka-success"),
+            chunks_with_tokens=[
+                ChunkWithTokens(
+                    chunk_id="chunk-1",
+                    chunk_index=0,
+                    coarse_tokens="alpha",
+                    fine_tokens="alpha",
+                )
+            ],
+        )
+        self.build_file_post_index_plan = AsyncMock(return_value=plan)
 
 
 class FakePostProcessRepository:
@@ -119,6 +138,7 @@ class FakePostProcessRepository:
             pipeline_status=pipeline_status,
             chunking_status=STAGE_STATUS_PENDING,
             vectorizing_status=STAGE_STATUS_PENDING,
+            pretokenize_status=STAGE_STATUS_PENDING,
             es_indexing_status=STAGE_STATUS_PENDING,
             failed_stage=None,
             recover_from_stage=None,
@@ -164,6 +184,17 @@ class FakePostProcessRepository:
         pipeline.recover_from_stage = POST_PROCESS_STAGE_VECTORIZING
         pipeline.failure_reason = reason
 
+    async def mark_pretokenize_success(self, db, pipeline, *, duration_ms):
+        pipeline.pretokenize_status = STAGE_STATUS_SUCCESS
+        pipeline.pretokenize_duration_ms = duration_ms
+
+    async def mark_pretokenize_failed(self, db, pipeline, *, reason, duration_ms, finished_at):
+        pipeline.pipeline_status = PIPELINE_STATUS_FAILED
+        pipeline.pretokenize_status = STAGE_STATUS_FAILED
+        pipeline.failed_stage = POST_PROCESS_STAGE_PRETOKENIZE
+        pipeline.recover_from_stage = POST_PROCESS_STAGE_PRETOKENIZE
+        pipeline.failure_reason = reason
+
     async def mark_es_success(self, db, pipeline, *, duration_ms, total_duration_ms, finished_at):
         pipeline.pipeline_status = PIPELINE_STATUS_SUCCESS
         pipeline.es_indexing_status = STAGE_STATUS_SUCCESS
@@ -205,6 +236,7 @@ async def test_kafka_receiver_should_consume_parse_task_message_and_commit_after
         vector_storage=vector_storage,
         post_process_repository=FakePostProcessRepository(),
         es_indexing_pipeline=FakeEsIndexingPipeline(),
+        preprocessor=FakePreprocessor(),
     )
 
     message = ParseTaskMessage.build(
@@ -260,10 +292,7 @@ async def test_kafka_receiver_should_consume_parse_task_message_and_commit_after
     ):
         await receiver._consume_loop()
 
-    storage.download_bytes.assert_called_once_with(
-        bucket="source-bucket",
-        object_key="uploads/test.pdf",
-    )
+    storage.download_bytes.assert_not_called()
     storage.upload_bytes.assert_called_once()
     receiver._consumer.commit.assert_awaited_once()
     mock_chunk_markdown.assert_called_once_with(
@@ -463,4 +492,4 @@ async def test_kafka_receiver_should_commit_when_duplicate_success_is_resent():
     sent_payload = mq_service.send.call_args.args[0].get_payload()
     assert sent_payload.task_status == PARSE_TASK_STATUS_SUCCESS
     assert sent_payload.failure_reason is None
-    assert not hasattr(sent_payload, "user_message")
+    assert sent_payload.user_message == DUPLICATE_SUCCESS_USER_MESSAGE

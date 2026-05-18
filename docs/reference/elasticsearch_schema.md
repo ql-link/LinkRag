@@ -80,7 +80,8 @@ is_success = (not failed_item_ids) and (indexed_items == total_items)
 ## 写入策略
 
 - **逐条写入**：当前实现遍历 chunks 调用 `client.index(...)`，**未启用 bulk API**。如需提高吞吐应在 pipeline 层引入 `helpers.async_bulk`。
-- **错误隔离**：单条失败不中断整批，记录到 `failed_item_ids`。
+- **错误隔离**：单条 chunk 写失败不中断整批，记录到 `failed_item_ids`，对应 chunk 标 `es_status=FAILED`，`failure_reason` 以 `ES_INDEXING_FAILED:` 前缀。
+- **基础设施故障文件级处理**：`_ensure_index` 失败（ES 不可达 / 建索引失败）属文件级故障，**不标任何 chunk es_status**，返回 `failed_item_ids=[]` 且 `failure_reason` 以 `ensure_index:` 前缀，`is_success=False`（`indexed != total`）。
 - **文件级粒度上报**：Pipeline 只返回文件级结果，Chunk 级 ES 详情不下发到上层。
 
 ## 一致性约束
