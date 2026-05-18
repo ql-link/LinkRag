@@ -28,15 +28,31 @@ scripts/check_docs_sync.py       # 检测脚本
 
 ```yaml
 - id: mysql-schema                            # 唯一标识
-  description: MySQL DDL 或 ORM 变更         # 简短说明
+  description: ORM 模型变更                   # 简短说明
   when_changed:                                # 触发条件（任一命中）
-    - scripts/db/init.sql
     - src/models/**/*.py
   must_update:                                 # 必须同步（任一缺失即违规）
     - docs/reference/mysql_schema.md
   severity: error                              # error 阻止 / warning 提醒
   rationale: 数据库 schema 是契约...           # 为什么这条规则重要
 ```
+
+也支持把某些文件标记为「冻结」——任何改动都视为违规（用 `forbid_change: true`，
+与 `must_update` 互斥）：
+
+```yaml
+- id: init-sql-frozen
+  description: scripts/db/init.sql 是 0001 baseline 冻结快照，禁止直接修改
+  when_changed:
+    - scripts/db/init.sql
+  forbid_change: true
+  severity: error
+  rationale: |
+    CI 走 init.sql → stamp 0001 → upgrade head，新字段同时落在 init.sql
+    与 migration 会触发 MySQL 1060 Duplicate column。
+```
+
+违规时打印的不是 "missing update" 而是 "forbidden change"。
 
 ### Severity 取值
 
@@ -45,8 +61,8 @@ scripts/check_docs_sync.py       # 检测脚本
 | `error` | 违规时退出码 1，阻止 commit / merge |
 | `warning` | 违规时打印提示，不阻止 |
 
-当前规则集（19 条）的分级原则：
-- **error**：对外契约（DDL、MQ 消息、流水线终态、入口文档双向同步）；以及 ORM/init.sql 改动必须伴随 Alembic 迁移（`db-migration-required`）
+当前规则集的分级原则：
+- **error**：对外契约（DDL、MQ 消息、流水线终态、入口文档双向同步）、ORM 改动必须伴随 Alembic 迁移（`db-migration-required`）、baseline 冻结文件保护（`init-sql-frozen`）
 - **warning**：内部模块行为变化（解析器、分块、向量化等）
 
 > `must_update` 支持 glob 模式（`*` / `**`）。例如 `db-migration-required`
