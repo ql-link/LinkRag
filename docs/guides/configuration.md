@@ -17,6 +17,7 @@
 | 分块策略 | `CHUNKING_*` | 调整分块参数时 |
 | 向量存储 | `VECTOR_STORE_TYPE`, `QDRANT_*`, `ES_*`, `CHUNK_INDEX_*` | 始终（选择 Qdrant 或 ES） |
 | 对象存储 | `STORAGE_TYPE`, `MINIO_*`, `LOCAL_DOCS_PATH` | 始终 |
+| 解析临时目录 | `PARSE_TEMP_DIR` | 始终（流式下载落盘目录） |
 | PDF 解析 | `PDF_PARSER_*`, `MINERU_*`, `DOCLING_*` | 处理 PDF 时 |
 | MQ | `MQ_VENDOR`, `KAFKA_*`, `RABBITMQ_*`, `*_TOPIC` | 始终 |
 | CORS | `CORS_ORIGINS` | 前端跨域时 |
@@ -42,6 +43,7 @@
 | `MQ_VENDOR` | `kafka` | 切换 Kafka / RabbitMQ |
 | `VECTOR_STORE_TYPE` | `qdrant` | 切换 Qdrant / Elasticsearch |
 | `STORAGE_TYPE` | `minio` | 切换 MinIO / 本地存储 |
+| `PARSE_TEMP_DIR` | `/tmp/tolink-rag-parse` | 解析任务源文件临时落盘目录。流式下载在此创建临时文件；解析为 markdown 后立即清理；worker 启动时清空兜底。不预设最小容量，沿用部署机系统盘大小；写满会归类为 `TEMP_DISK_FULL` 错误码。扩消费者时容量需要 ≥ 单文件上限 × 并发数 |
 | `PDF_PARSER_BACKEND` | `mineru` | PDF 解析后端：`auto` / `mineru` / `opendataloader` / `naive` |
 | `PDF_PARSER_FALLBACKS` | 空 | 逗号分隔回退链，空表示不回退 |
 | `PDF_IMAGE_UPLOAD_ASYNC` | `true` | PDF 图片是否异步上传，关闭后主链路同步等待 |

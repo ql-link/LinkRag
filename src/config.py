@@ -125,6 +125,10 @@ class Settings(BaseSettings):
     # ==========================================
     # 存储 & 资源配置 (Storage & Resources)
     # ==========================================
+    # 解析任务源文件临时落盘目录：流式下载在此创建临时文件，markdown 拿到后立即清理；
+    # worker 启动时由 src/main.py lifespan 调用 temp_workspace.ensure_clean_on_startup 清空兜底。
+    PARSE_TEMP_DIR: str = "/tmp/tolink-rag-parse"
+
     STORAGE_TYPE: str = "minio"  # minio / local
     MINIO_ENDPOINT: str = "localhost:9000"
     MINIO_ACCESS_KEY: str = "minioadmin"

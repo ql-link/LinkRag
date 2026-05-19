@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-import tempfile
+from pathlib import Path
 
 import fitz
 
@@ -17,12 +17,17 @@ class NaivePdfBackend(BasePdfBackend):
         re.IGNORECASE | re.DOTALL,
     )
 
-    def parse(self, file_stream: bytes, options=None) -> tuple[str, list[PdfBinaryAsset]]:
-        markdown = self._extract_with_pymupdf4llm(file_stream)
+    def parse(self, source: Path | None, options=None) -> tuple[str, list[PdfBinaryAsset]]:
+        # ``source is None`` 仅在 MinerU 旁路出现，且本 backend 不会被旁路选中调用；
+        # 防御性返回空，让上层 fallback 决策。
+        if source is None:
+            return "", []
+        markdown = self._extract_with_pymupdf4llm(source)
         if markdown:
             return self._postprocess_markdown(markdown), []
 
-        doc = fitz.open(stream=file_stream, filetype="pdf")
+        # 用 ``filename=`` 走 mmap，避免一次性把整份 PDF 读进内存。
+        doc = fitz.open(filename=str(source))
         markdown_lines = []
         for page_num, page in enumerate(doc):
             page_markdown = self._extract_page_markdown(page_num, page)
@@ -149,18 +154,16 @@ class NaivePdfBackend(BasePdfBackend):
 
         return "\n".join(normalized_lines)
 
-    def _extract_with_pymupdf4llm(self, file_stream: bytes) -> str:
+    def _extract_with_pymupdf4llm(self, source: Path) -> str:
         try:
             import pymupdf4llm
         except Exception:
             return ""
 
         try:
-            with tempfile.NamedTemporaryFile(suffix=".pdf") as temp_file:
-                temp_file.write(file_stream)
-                temp_file.flush()
-                markdown = pymupdf4llm.to_markdown(temp_file.name)
-                return markdown if isinstance(markdown, str) else ""
+            # pymupdf4llm 原生支持基于路径，无需再落一份临时拷贝。
+            markdown = pymupdf4llm.to_markdown(str(source))
+            return markdown if isinstance(markdown, str) else ""
         except Exception as exc:
             self.metadata["naive_backend_error"] = str(exc)
             return ""

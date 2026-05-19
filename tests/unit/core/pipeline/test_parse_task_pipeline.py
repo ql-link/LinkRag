@@ -234,7 +234,7 @@ class TestParseTaskPipeline:
         assert result.should_ack is True
         assert result.skip_reason is None
         db.rollback.assert_awaited_once()
-        storage.download_bytes.assert_not_called()
+        storage.download_to_path.assert_not_called()
         storage.upload_bytes.assert_not_called()
         mq_service.send.assert_awaited_once()
         sent_payload = mq_service.send.call_args.args[0].get_payload()
@@ -261,7 +261,7 @@ class TestParseTaskPipeline:
         result = await pipeline.execute(build_payload())
 
         assert result.status == PipelineStatus.FAILED
-        storage.download_bytes.assert_not_called()
+        storage.download_to_path.assert_not_called()
         storage.upload_bytes.assert_not_called()
         assert post_repo.pipeline.pipeline_status == PIPELINE_STATUS_FAILED
         assert post_repo.pipeline.failed_stage == POST_PROCESS_STAGE_CHUNKING
@@ -292,7 +292,7 @@ class TestParseTaskPipeline:
         result = await pipeline.execute(build_payload())
 
         assert result.status == PipelineStatus.FAILED
-        storage.download_bytes.assert_not_called()
+        storage.download_to_path.assert_not_called()
         storage.upload_bytes.assert_not_called()
         mq_service.send.assert_awaited_once()
         sent_payload = mq_service.send.call_args.args[0].get_payload()
@@ -320,7 +320,7 @@ class TestParseTaskPipeline:
         assert result.status == PipelineStatus.FAILED
         assert existing_log.task_status == PARSE_TASK_STATUS_FAILED
         assert existing_log.failure_reason.startswith("INTERRUPTED_TASK:")
-        storage.download_bytes.assert_not_called()
+        storage.download_to_path.assert_not_called()
         storage.upload_bytes.assert_not_called()
         mq_service.send.assert_awaited_once()
         sent_payload = mq_service.send.call_args.args[0].get_payload()
@@ -384,7 +384,7 @@ class TestParseTaskPipeline:
         db = build_db(build_parse_task())
         events = []
         storage = MagicMock()
-        storage.download_bytes.return_value = b"pdf bytes"
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf bytes")
         storage.upload_bytes.side_effect = lambda **kwargs: events.append("upload")
         mq_service = MagicMock()
         mq_service.send = AsyncMock(side_effect=lambda message: events.append("send"))
@@ -430,10 +430,10 @@ class TestParseTaskPipeline:
         assert log_record.parsed_bucket_name == "markdown-bucket"
         assert log_record.parsed_object_key == "parsed/t-001.md"
         assert log_record.parsed_file_url == "oss://markdown-bucket/parsed/t-001.md"
-        storage.download_bytes.assert_called_once_with(
-            bucket="source-bucket",
-            object_key="uploads/test.pdf",
-        )
+        storage.download_to_path.assert_called_once()
+        download_call = storage.download_to_path.call_args
+        assert download_call.kwargs.get("bucket") == "source-bucket"
+        assert download_call.kwargs.get("object_key") == "uploads/test.pdf"
         storage.upload_bytes.assert_called_once()
         mq_service.send.assert_awaited_once()
         assert events == ["upload", "vector", "send"]
@@ -502,9 +502,10 @@ class TestParseTaskPipeline:
         result = await pipeline.execute(build_payload())
 
         assert result.status == PipelineStatus.SUCCESS
-        storage.download_bytes.assert_not_called()
+        storage.download_to_path.assert_not_called()
         mock_aprocess.assert_awaited_once()
-        assert mock_aprocess.await_args.args[0] == b""
+        # MinerU 旁路语义已从 ``file_bytes == b""`` 改为 ``source_path is None``。
+        assert mock_aprocess.await_args.args[0] is None
         assert (
             mock_aprocess.await_args.kwargs["source_file_url"]
             == "http://minio/source-bucket/uploads/test.pdf"
@@ -517,7 +518,7 @@ class TestParseTaskPipeline:
     async def test_execute_should_mark_failed_and_notify_when_parse_fails(self, mock_aprocess):
         db = build_db(build_parse_task())
         storage = MagicMock()
-        storage.download_bytes.return_value = b"pdf bytes"
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf bytes")
         mq_service = MagicMock()
         mq_service.send = AsyncMock()
         mock_aprocess.side_effect = RuntimeError("parse failed")
@@ -555,7 +556,7 @@ class TestParseTaskPipeline:
     ):
         db = build_db(build_parse_task())
         storage = MagicMock()
-        storage.download_bytes.return_value = b"pdf bytes"
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf bytes")
         mq_service = MagicMock()
         mq_service.send = AsyncMock(side_effect=RuntimeError("mq down"))
         vector_storage = AsyncMock()
@@ -599,7 +600,7 @@ class TestParseTaskPipeline:
     ):
         db = build_db(build_parse_task())
         storage = MagicMock()
-        storage.download_bytes.return_value = b"pdf bytes"
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf bytes")
         mq_service = MagicMock()
         mq_service.send = AsyncMock(side_effect=RuntimeError("mq down"))
         mock_aprocess.side_effect = RuntimeError("parse failed")
@@ -631,7 +632,7 @@ class TestParseTaskPipeline:
     ):
         db = build_db(build_parse_task())
         storage = MagicMock()
-        storage.download_bytes.return_value = b"pdf bytes"
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf bytes")
         mq_service = MagicMock()
         mq_service.send = AsyncMock()
         vector_storage = AsyncMock()
@@ -676,7 +677,7 @@ class TestParseTaskPipeline:
     ):
         db = build_db(build_parse_task())
         storage = MagicMock()
-        storage.download_bytes.return_value = b"pdf bytes"
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf bytes")
         mq_service = MagicMock()
         mq_service.send = AsyncMock()
         vector_storage = AsyncMock()
@@ -728,7 +729,7 @@ class TestParseTaskPipeline:
     ):
         db = build_db(build_parse_task())
         storage = MagicMock()
-        storage.download_bytes.return_value = b"pdf bytes"
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf bytes")
         mq_service = MagicMock()
         mq_service.send = AsyncMock()
         vector_storage = AsyncMock()

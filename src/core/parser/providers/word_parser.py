@@ -1,14 +1,22 @@
+from pathlib import Path
+
 import docx
-from io import BytesIO
+
 from ..base import BaseParser
 
 
 class WordParser(BaseParser):
-    """docx -> Markdown 转换逻辑 (增强版：支持表格与安全标题解析)"""
+    """docx -> Markdown 转换逻辑 (增强版：支持表格与安全标题解析)。
 
-    def parse(self, file_stream: bytes) -> str:
-        self.validate_stream(file_stream)
-        doc = docx.Document(BytesIO(file_stream))
+    入参从 ``bytes`` 切换为 ``Path``：python-docx 原生支持基于路径打开，避免在内存中
+    构造 ``BytesIO(file_stream)`` 副本。
+    """
+
+    def parse(self, source: Path | None) -> str:
+        self.validate_source(source)
+        if source is None:
+            raise ValueError("WordParser 不支持 source=None 入参")
+        doc = docx.Document(str(source))
         md_lines = []
 
         # 1. 解析普通段落

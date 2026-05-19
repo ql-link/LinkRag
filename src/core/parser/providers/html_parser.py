@@ -1,15 +1,25 @@
+from pathlib import Path
+
 import trafilatura
+
 from ..base import BaseParser
 from ...exceptions import ParseBaseException
 
-class HtmlParser(BaseParser):
-    """网页去噪提取正文逻辑"""
 
-    def parse(self, file_stream: bytes) -> str:
-        self.validate_stream(file_stream)
+class HtmlParser(BaseParser):
+    """网页去噪提取正文逻辑。
+
+    入参从 ``bytes`` 切换为 ``Path``：直接 ``read_text`` 让操作系统层走流式 IO，避免
+    构造完整 bytes 副本再 ``decode``。
+    """
+
+    def parse(self, source: Path | None) -> str:
+        self.validate_source(source)
+        if source is None:
+            raise ValueError("HtmlParser 不支持 source=None 入参")
 
         # HTML 通常需要先解码为字符串，忽略无法解码的脏字符
-        html_content = file_stream.decode('utf-8', errors='ignore')
+        html_content = Path(source).read_text(encoding="utf-8", errors="ignore")
 
         # 使用 trafilatura 提取正文，并直接转为 Markdown
         result = trafilatura.extract(

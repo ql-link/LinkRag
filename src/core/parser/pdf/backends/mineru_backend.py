@@ -18,6 +18,7 @@ from __future__ import annotations
 import io
 import re
 import time
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -46,7 +47,10 @@ class MinerUBackend(BasePdfBackend):
         self._api_key = api_key
         self._timeout = timeout
 
-    def parse(self, file_stream: bytes, options: Any = None) -> tuple[str, list[PdfBinaryAsset]]:
+    def parse(self, source: Path | None, options: Any = None) -> tuple[str, list[PdfBinaryAsset]]:
+        # MinerU 云端 API 仅依赖 options.source_file_url，不读取本地 source；保留入参对齐
+        # 协议签名即可。
+        _ = source
         if not self._api_url:
             self.metadata["mineru_backend_error"] = "MINERU_API_URL 未配置"
             logger.warning("[MinerU Cloud] API URL 未配置，跳过此后端")
