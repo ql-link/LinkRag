@@ -14,6 +14,9 @@ class ParseFailureCode(str, Enum):
     DUPLICATE_TASK = "DUPLICATE_TASK"
     INTERRUPTED_TASK = "INTERRUPTED_TASK"
     SOURCE_FILE_NOT_FOUND = "SOURCE_FILE_NOT_FOUND"
+    # worker 本机磁盘满时单独建码，区别于对象存储侧"源文件不可达"的 SOURCE_FILE_NOT_FOUND，
+    # 避免运维排查方向被误导。触发条件：流式下载阶段捕获 OSError errno=ENOSPC。
+    TEMP_DISK_FULL = "TEMP_DISK_FULL"
     UNSUPPORTED_FILE_TYPE = "UNSUPPORTED_FILE_TYPE"
     PARSE_ENGINE_FAILED = "PARSE_ENGINE_FAILED"
     PARSED_FILE_UPLOAD_FAILED = "PARSED_FILE_UPLOAD_FAILED"
@@ -26,6 +29,7 @@ FAILURE_REASON_TEXT: dict[ParseFailureCode, str] = {
     ParseFailureCode.DUPLICATE_TASK: "解析任务已被处理，请勿重复提交",
     ParseFailureCode.INTERRUPTED_TASK: "解析任务中断，请重新解析",
     ParseFailureCode.SOURCE_FILE_NOT_FOUND: "原始文件不存在或无法访问",
+    ParseFailureCode.TEMP_DISK_FULL: "服务器临时磁盘空间不足，请联系运维",
     ParseFailureCode.UNSUPPORTED_FILE_TYPE: "当前文件类型暂不支持解析",
     ParseFailureCode.PARSE_ENGINE_FAILED: "文件解析失败，请检查文件内容",
     ParseFailureCode.PARSED_FILE_UPLOAD_FAILED: "解析结果保存失败，请重新解析",
