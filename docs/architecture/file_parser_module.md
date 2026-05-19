@@ -53,11 +53,17 @@ HTML 内部调用链：
 ```text
 HtmlParser
   -> HtmlParseService
-    -> BeautifulSoup DOM
+    -> BeautifulSoup DOM（去噪声/隐藏/全部 HTML 注释）
+    -> trafilatura 定位正文（仅取正文纯文本作信号，不取其结构输出）
+    -> 文本重合度映射回 soup 容器（低置信分级回退：语义容器 -> 整篇 body）
     -> HtmlMarkdownRenderer
       -> HtmlTableProcessor
       -> HtmlImageRewriter
 ```
+
+混合方案：trafilatura 负责"哪一块是正文 / 去站点样板 / 空内容(None)识别"，最终 Markdown
+仍由自研渲染器在我们清理后的完好 DOM 上生成（表格/图片保真）。trafilatura 返回 None 或
+渲染根正文低于保守下限时抛 `ParseBaseException`，经 pipeline 映射 `PARSE_ENGINE_FAILED`。
 
 ## 2. 核心角色
 
@@ -67,7 +73,7 @@ HtmlParser
 | `ParserFactory` | `factory.py` | 根据 `file_type` 返回具体解析器 |
 | `ParseTaskService` | `src/services/parse_task_service.py` | 业务推荐入口，解析后执行 Markdown 清洗和增强 |
 | `HtmlParser` | `providers/html_parser.py` | HTML 格式入口，解码文件流并适配 HTML 专用服务 |
-| `HtmlParseService` | `html/service.py` | 构建 DOM、移除噪声节点、编排 Markdown 渲染 |
+| `HtmlParseService` | `html/service.py` | 构建并清理 DOM（含删全部 HTML 注释）、trafilatura 定位正文/去样板、文本重合度映射回 soup 容器（低置信分级回退）、空内容判定、编排 Markdown 渲染 |
 | `HtmlMarkdownRenderer` | `html/renderer.py` | 按 DOM 顺序渲染标题、段落、列表、代码块、图片和表格 |
 | `HtmlTableProcessor` | `html/table_processor.py` | 将普通表格输出为 Markdown table，将复杂表格输出为记录式 Markdown |
 | `HtmlImageRewriter` | `html/image_rewriter.py` | 将图片 URL 绝对化，并生成模拟对象存储路径 |
@@ -89,7 +95,7 @@ HtmlParser
 | --- | --- | --- |
 | `pdf` | `PdfParser` | PDF 入口，内部按参数选择后端 |
 | `docx` / `doc` | `WordParser` | Word 段落和表格转 Markdown |
-| `html` / `htm` | `HtmlParser` | 基于 BeautifulSoup DOM 去噪并结构化转 Markdown |
+| `html` / `htm` | `HtmlParser` | trafilatura 定位正文/去样板 + 自研渲染器结构化转 Markdown（表格/图片保真） |
 
 当前 PDF 后端：
 

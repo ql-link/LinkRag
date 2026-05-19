@@ -60,8 +60,7 @@ class HtmlMarkdownRenderer:
         if name == "pre":
             return self.render_code_block(node)
         if name == "blockquote":
-            text = self.render_children(node)
-            return "\n".join(f"> {line}" if line else ">" for line in text.splitlines())
+            return self.render_blockquote(node)
         if name == "br":
             return "\n"
         if name == "hr":
@@ -153,6 +152,29 @@ class HtmlMarkdownRenderer:
             for continuation in content_lines[1:]:
                 lines.append(f"  {continuation}".rstrip())
         return "\n".join(lines)
+
+    def render_blockquote(self, node: Tag) -> str:
+        # 代码块不能被 "> " 行前缀包裹，否则 fenced code 围栏失效（实测阮一峰样本）。
+        # 因此按子节点切分：pre/code 作为独立块原样输出，其余文本才加引用前缀。
+        blocks: list[str] = []
+        quoted: list[str] = []
+
+        def flush_quoted() -> None:
+            text = self._join_blocks(quoted)
+            quoted.clear()
+            if text:
+                blocks.append(
+                    "\n".join(f"> {line}" if line else ">" for line in text.splitlines())
+                )
+
+        for child in node.children:
+            if isinstance(child, Tag) and child.name.lower() == "pre":
+                flush_quoted()
+                blocks.append(self.render_code_block(child))
+            else:
+                quoted.append(self.render_node(child))
+        flush_quoted()
+        return self._join_blocks(blocks)
 
     def render_code_block(self, node: Tag) -> str:
         code = node.find("code")

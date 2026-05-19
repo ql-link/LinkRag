@@ -76,6 +76,16 @@ uvicorn src.main:app --host 0.0.0.0 --port 8000
 3. **多副本与扩缩容**：FastAPI 进程可水平扩展；Kafka 消费者通过 consumer group 自动分配 partition，消费侧扩缩容时关注 `PARSE_TASK_PARTITIONS` 是否足够。
 4. **初始化 topic**：生产环境建议把 `INIT_KAFKA_TOPICS_ON_STARTUP=false`，topic 由部署流程或运维侧显式创建，避免应用启动时副作用。
 
+## Python 依赖变更
+
+HTML 解析采用 trafilatura（正文定位/去样板/空内容识别）混合方案：
+
+- 主依赖新增 `trafilatura>=2.0.0`（纯 Python，依赖 lxml，已为现有传递依赖）。
+- 移除曾短期引入的 `readability-lxml`（已废弃方案，不再使用）。
+
+部署/CI 需 `pip install -e ".[dev]"` 重新安装依赖，确保镜像内含 trafilatura；
+否则 HTML 文件解析会在导入期失败。无需额外系统库或二进制。
+
 ## 数据库初始化
 
 `scripts/db/init.sql` 是当前 schema 的权威来源。首次部署或重置：
