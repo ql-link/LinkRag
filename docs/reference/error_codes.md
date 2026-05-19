@@ -128,5 +128,5 @@ CODE: 中文业务原因；底层详情
 
 辅助状态：
 
-- `vector_status`: `PENDING/SUCCESS/FAILED`
+- `dense_vector_status`: `PENDING/SUCCESS/FAILED`
 - `es_status`: `PENDING/SUCCESS/FAILED`

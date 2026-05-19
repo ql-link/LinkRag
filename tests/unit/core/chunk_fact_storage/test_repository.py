@@ -11,9 +11,9 @@ from src.core.chunk_fact_storage.constants import (
     ES_STATUS_FAILED,
     ES_STATUS_PENDING,
     ES_STATUS_SUCCESS,
-    VECTOR_STATUS_FAILED,
-    VECTOR_STATUS_PENDING,
-    VECTOR_STATUS_SUCCESS,
+    DENSE_VECTOR_STATUS_FAILED,
+    DENSE_VECTOR_STATUS_PENDING,
+    DENSE_VECTOR_STATUS_SUCCESS,
 )
 from src.core.chunk_fact_storage.models import ChunkPostStatus, FactChunkDraft, decide_chunk_post_status
 from src.core.chunk_fact_storage.repository import ChunkRepository
@@ -80,9 +80,9 @@ async def test_should_record_vector_success_when_mark_indexed():
     await repository.mark_indexed(session, ["chunk-1"], embedding_model="embed-v1")
 
     values = _values_by_key(session)
-    assert values["vector_status"] == VECTOR_STATUS_SUCCESS
-    assert values["vector_error_msg"] is None
-    assert values["embedding_model"] == "embed-v1"
+    assert values["dense_vector_status"] == DENSE_VECTOR_STATUS_SUCCESS
+    assert values["dense_vector_error_msg"] is None
+    assert values["dense_vector_model"] == "embed-v1"
 
 
 @pytest.mark.asyncio
@@ -93,8 +93,8 @@ async def test_should_record_vector_failure_when_mark_failed():
     await repository.mark_failed(session, ["chunk-1"], error_msg="embedding timeout")
 
     values = _values_by_key(session)
-    assert values["vector_status"] == VECTOR_STATUS_FAILED
-    assert values["vector_error_msg"] == "embedding timeout"
+    assert values["dense_vector_status"] == DENSE_VECTOR_STATUS_FAILED
+    assert values["dense_vector_error_msg"] == "embedding timeout"
     assert values["error_msg"] == "embedding timeout"
 
 
@@ -136,7 +136,7 @@ async def test_should_insert_pending_records_when_bulk_insert_pending_with_draft
     record = session.added[0]
     assert record.chunk_id == "chunk-1"
     assert record.content == "alpha"
-    assert record.vector_status == VECTOR_STATUS_PENDING
+    assert record.dense_vector_status == DENSE_VECTOR_STATUS_PENDING
     assert record.es_status == ES_STATUS_PENDING
 
 
@@ -186,11 +186,11 @@ async def test_should_record_vector_pending_when_mark_indexing():
 
     values = _values_by_key(session)
     assert values["status"] == CHUNK_STATUS_INDEXING
-    assert values["vector_status"] == VECTOR_STATUS_PENDING
-    assert values["vector_error_msg"] is None
+    assert values["dense_vector_status"] == DENSE_VECTOR_STATUS_PENDING
+    assert values["dense_vector_error_msg"] is None
     assert values["es_status"] == ES_STATUS_PENDING
     assert values["es_error_msg"] is None
-    assert values["embedding_model"] == "embed-v1"
+    assert values["dense_vector_model"] == "embed-v1"
 
 
 @pytest.mark.asyncio
@@ -259,8 +259,8 @@ async def test_should_claim_failed_for_reindex_and_reset_vector_stage():
     assert claimed is True
     assert values["status"] == CHUNK_STATUS_INDEXING
     assert values["error_msg"] is None
-    assert values["vector_status"] == VECTOR_STATUS_PENDING
-    assert values["vector_error_msg"] is None
+    assert values["dense_vector_status"] == DENSE_VECTOR_STATUS_PENDING
+    assert values["dense_vector_error_msg"] is None
     assert values["es_status"] == ES_STATUS_PENDING
     assert "retry_count" in values
     assert "last_retry_at" in values
@@ -298,8 +298,8 @@ async def test_should_prepare_reindex_when_update_chunk_for_reindex():
     assert values["content"] == "new text"
     assert values["content_hash"] == "new-hash"
     assert values["status"] == CHUNK_STATUS_INDEXING
-    assert values["vector_status"] == VECTOR_STATUS_PENDING
-    assert values["vector_error_msg"] is None
+    assert values["dense_vector_status"] == DENSE_VECTOR_STATUS_PENDING
+    assert values["dense_vector_error_msg"] is None
     assert values["es_status"] == ES_STATUS_PENDING
     assert values["es_error_msg"] is None
 
@@ -324,7 +324,7 @@ async def test_should_update_truth_fields_only_when_update_chunk_metadata():
     assert values["content"] == "same text"
     assert values["chunk_type"] == "heading"
     assert "status" not in values
-    assert "vector_status" not in values
+    assert "dense_vector_status" not in values
 
 
 @pytest.mark.asyncio
@@ -371,7 +371,7 @@ def test_should_decide_vector_failed_when_vector_status_failed():
         user_id=1,
         content="a",
         content_hash="a",
-        vector_status=VECTOR_STATUS_FAILED,
+        dense_vector_status=DENSE_VECTOR_STATUS_FAILED,
         es_status=ES_STATUS_SUCCESS,
     )
 
@@ -386,7 +386,7 @@ def test_should_decide_es_failed_when_vector_success_but_es_failed():
         user_id=1,
         content="a",
         content_hash="a",
-        vector_status=VECTOR_STATUS_SUCCESS,
+        dense_vector_status=DENSE_VECTOR_STATUS_SUCCESS,
         es_status=ES_STATUS_FAILED,
     )
 
@@ -401,7 +401,7 @@ def test_should_decide_completed_when_vector_and_es_success():
         user_id=1,
         content="a",
         content_hash="a",
-        vector_status=VECTOR_STATUS_SUCCESS,
+        dense_vector_status=DENSE_VECTOR_STATUS_SUCCESS,
         es_status=ES_STATUS_SUCCESS,
     )
 
@@ -451,7 +451,7 @@ def test_should_decide_processing_when_stage_status_is_pending():
         user_id=1,
         content="a",
         content_hash="a",
-        vector_status=VECTOR_STATUS_SUCCESS,
+        dense_vector_status=DENSE_VECTOR_STATUS_SUCCESS,
         es_status=ES_STATUS_PENDING,
     )
 

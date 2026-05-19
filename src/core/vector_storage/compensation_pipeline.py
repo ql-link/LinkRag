@@ -142,7 +142,7 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
                 if decision == RepairDecision.LIGHTWEIGHT_STATUS_REPAIR:
                     repaired = await self._mark_indexed(
                         [record.chunk_id],
-                        embedding_model=record.embedding_model,
+                        embedding_model=record.dense_vector_model,
                     )
                     if repaired:
                         affected_chunks += 1
@@ -200,7 +200,7 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
 
                 repaired = await self._mark_indexed(
                     [record.chunk_id],
-                    embedding_model=record.embedding_model,
+                    embedding_model=record.dense_vector_model,
                 )
                 if repaired:
                     affected_chunks += 1

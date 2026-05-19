@@ -199,7 +199,7 @@ result = await vector_storage.store_chunks(
 - `total_chunks`
 - `indexed_chunks`
 - `failed_chunk_ids`
-- `embedding_model`
+- `dense_vector_model`
 
 部分 Chunk 失败不会直接抛到解析主流程，而是通过结果汇总表达。当前文件级语义下，只要向量化存在失败 Chunk，整体 parse_result 会以 `failed` 通知 Java；全部 Chunk 向量化成功后才进入 ES 入库阶段。
 

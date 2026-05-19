@@ -321,9 +321,9 @@ ORM：[`ChunkRecordDB`](../../src/models/chunk_record.py)
 | `error_msg` | VARCHAR(512) | 主状态失败原因 |
 | `retry_count` | INT | 已执行的补偿重试次数 |
 | `last_retry_at` | DATETIME | 最近一次补偿重试时间 |
-| `embedding_model` | VARCHAR(128) | 实际使用的 embedding 模型 |
-| `vector_status` | VARCHAR(16) | `PENDING` / `SUCCESS` / `FAILED` |
-| `vector_error_msg` | VARCHAR(512) | 向量化失败原因 |
+| `dense_vector_model` | VARCHAR(128) | 实际使用的稠密向量模型 |
+| `dense_vector_status` | VARCHAR(16) | `PENDING` / `SUCCESS` / `FAILED` |
+| `dense_vector_error_msg` | VARCHAR(512) | 向量化失败原因 |
 | `es_status` | VARCHAR(16) | `PENDING` / `SUCCESS` / `FAILED` |
 | `es_error_msg` | VARCHAR(512) | ES 索引失败原因 |
 | `create_time` / `update_time` | DATETIME | 创建 / 更新时间 |
@@ -332,7 +332,7 @@ ORM：[`ChunkRecordDB`](../../src/models/chunk_record.py)
 - `uk_chunk_id(chunk_id)`
 - `idx_user_set(user_id, set_id)`
 - `idx_bucket_status(bucket_id, status)`
-- `idx_bucket_vector_status(bucket_id, vector_status)`
+- `idx_bucket_dense_vector_status(bucket_id, dense_vector_status)`
 - `idx_bucket_es_status(bucket_id, es_status)`
 - `idx_doc_id(doc_id)`
 - `idx_chunk_type(chunk_type)`

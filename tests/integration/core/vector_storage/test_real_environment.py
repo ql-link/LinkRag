@@ -160,7 +160,7 @@ async def test_should_store_update_and_delete_chunks_into_real_mysql_and_qdrant_
 
         assert [record.status for record in records] == ["INDEXED", "INDEXED"]
         assert [record.bucket_id for record in records] == [0, 0]
-        assert [record.embedding_model for record in records] == [
+        assert [record.dense_vector_model for record in records] == [
             "real-env-test-embedding",
             "real-env-test-embedding",
         ]

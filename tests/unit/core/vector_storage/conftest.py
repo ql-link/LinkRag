@@ -126,7 +126,7 @@ def failed_chunk_record() -> ChunkRecordDB:
         chunk_index=0,
         status="FAILED",
         retry_count=0,
-        embedding_model=None,
+        dense_vector_model=None,
     )
 
 
@@ -146,7 +146,7 @@ def indexing_chunk_record() -> ChunkRecordDB:
         chunk_index=2,
         status="INDEXING",
         retry_count=1,
-        embedding_model="persisted-model",
+        dense_vector_model="persisted-model",
     )
 
 
@@ -166,7 +166,7 @@ def delete_failed_chunk_record() -> ChunkRecordDB:
         chunk_index=3,
         status="DELETE_FAILED",
         retry_count=1,
-        embedding_model="persisted-model",
+        dense_vector_model="persisted-model",
     )
 
 
@@ -186,7 +186,7 @@ def deleting_chunk_record() -> ChunkRecordDB:
         chunk_index=4,
         status="DELETING",
         retry_count=1,
-        embedding_model="persisted-model",
+        dense_vector_model="persisted-model",
     )
 
 

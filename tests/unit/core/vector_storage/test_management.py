@@ -50,7 +50,7 @@ def indexed_chunk_record() -> ChunkRecordDB:
         chunk_index=2,
         status="INDEXED",
         retry_count=0,
-        embedding_model="old-model",
+        dense_vector_model="old-model",
     )
 
 

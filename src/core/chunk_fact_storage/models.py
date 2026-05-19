@@ -5,10 +5,10 @@ from enum import Enum
 
 from .constants import (
     CHUNK_STATUS_PENDING,
+    DENSE_VECTOR_STATUS_FAILED,
+    DENSE_VECTOR_STATUS_SUCCESS,
     ES_STATUS_FAILED,
     ES_STATUS_SUCCESS,
-    VECTOR_STATUS_FAILED,
-    VECTOR_STATUS_SUCCESS,
 )
 
 
@@ -37,13 +37,13 @@ class ChunkPostStatus(str, Enum):
 
 def decide_chunk_post_status(record: object) -> ChunkPostStatus:
     """根据阶段状态判断 chunk 后置处理结果，不再依赖模糊生命周期状态。"""
-    vector_status = getattr(record, "vector_status", None)
+    dense_vector_status = getattr(record, "dense_vector_status", None)
     es_status = getattr(record, "es_status", None)
 
-    if vector_status == VECTOR_STATUS_FAILED:
+    if dense_vector_status == DENSE_VECTOR_STATUS_FAILED:
         return ChunkPostStatus.VECTOR_FAILED
-    if vector_status == VECTOR_STATUS_SUCCESS and es_status == ES_STATUS_FAILED:
+    if dense_vector_status == DENSE_VECTOR_STATUS_SUCCESS and es_status == ES_STATUS_FAILED:
         return ChunkPostStatus.ES_FAILED
-    if vector_status == VECTOR_STATUS_SUCCESS and es_status == ES_STATUS_SUCCESS:
+    if dense_vector_status == DENSE_VECTOR_STATUS_SUCCESS and es_status == ES_STATUS_SUCCESS:
         return ChunkPostStatus.COMPLETED
     return ChunkPostStatus.PROCESSING
