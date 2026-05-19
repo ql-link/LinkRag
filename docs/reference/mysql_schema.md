@@ -273,7 +273,7 @@ ORM：[`DocumentPostProcessPipeline`](../../src/models/parse_task.py)
 | `pipeline_status` | VARCHAR(20) | `PENDING` / `PROCESSING` / `SUCCESS` / `FAILED` |
 | `chunking_status` | VARCHAR(20) | `PENDING` / `SUCCESS` / `FAILED` |
 | `vectorizing_status` | VARCHAR(20) | `PENDING` / `SUCCESS` / `FAILED` |
-| `pretokenize_status` | VARCHAR(20) | `PENDING` / `SUCCESS` / `FAILED`（预分词阶段状态） |
+| `pretokenize_status` | VARCHAR(20) | 预分词状态：`PENDING` / `SUCCESS` / `FAILED`（COMMENT 由迁移 0003 补齐） |
 | `es_indexing_status` | VARCHAR(20) | `PENDING` / `SUCCESS` / `FAILED` |
 | `failed_stage` | VARCHAR(20) | `CHUNKING` / `VECTORIZING` / `PRETOKENIZE` / `ES_INDEXING` |
 | `recover_from_stage` | VARCHAR(20) | 下次恢复阶段（首个非 SUCCESS 阶段，同上枚举） |
@@ -283,7 +283,7 @@ ORM：[`DocumentPostProcessPipeline`](../../src/models/parse_task.py)
 | `last_retry_at` | DATETIME | 用户侧最近一次重试时间 |
 | `chunking_duration_ms` | BIGINT | 分片耗时 |
 | `vectorizing_duration_ms` | BIGINT | 向量化耗时 |
-| `pretokenize_duration_ms` | BIGINT | 预分词耗时 |
+| `pretokenize_duration_ms` | BIGINT | 预分词耗时，单位毫秒（COMMENT 由迁移 0003 补齐） |
 | `es_indexing_duration_ms` | BIGINT | ES 入库耗时 |
 | `total_duration_ms` | BIGINT | 总耗时 |
 | `started_at` / `finished_at` | DATETIME | 开始 / 结束时间 |
