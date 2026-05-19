@@ -94,7 +94,7 @@ HtmlParser
 | 文件类型 | 解析器 | 说明 |
 | --- | --- | --- |
 | `pdf` | `PdfParser` | PDF 入口，内部按参数选择后端 |
-| `docx` / `doc` | `WordParser` | Word 段落和表格转 Markdown |
+| `docx` | `WordParser` | mammoth 转语义 HTML + 复用 HTML 渲染引擎（标题/列表/表格/图片保真，跳过 trafilatura）；legacy `.doc`/非 OOXML 快速失败 |
 | `html` / `htm` | `HtmlParser` | trafilatura 定位正文/去样板 + 自研渲染器结构化转 Markdown（表格/图片保真） |
 
 当前 PDF 后端：
@@ -298,7 +298,7 @@ register_pdf_backend(
 
 修改 Word 或 HTML：
 
-- Word：`src/core/parser/providers/word_parser.py`
+- Word：`src/core/parser/providers/word_parser.py`（适配层：mammoth→语义 HTML→复用 `src/core/parser/html` 渲染引擎，跳过 trafilatura；内嵌图经 mammoth 钩子转模拟 MinIO 路径）
 - HTML 入口：`src/core/parser/providers/html_parser.py`
 - HTML 内部流程：`src/core/parser/html/service.py`
 - HTML 表格：`src/core/parser/html/table_processor.py`
