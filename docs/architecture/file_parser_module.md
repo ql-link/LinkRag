@@ -56,10 +56,14 @@ PdfParser
 
 约定：
 
-- 通用解析器实现 `parse(file_stream: bytes) -> str`，返回 Markdown 字符串。
-- PDF 后端实现 `parse(file_stream, options)`，并声明唯一 `name`。
+- 通用解析器实现 `parse(source: Path | None) -> str`，返回 Markdown 字符串。`source is None`
+  仅在 MinerU URL 旁路下合法，由具体 provider 自行决定是否拒绝。
+- PDF 后端实现 `parse(source: Path | None, options)`，并声明唯一 `name`。
 - 解析器元数据写入 `self.metadata`，通过 `extract_metadata()` 读取。
 - PDF 后端返回 `tuple[str, list[PdfBinaryAsset]]`。
+- "解析任务 OOM 风险治理"治理后，协议层不再接受 `bytes` 入参——pipeline 在调用前已通过
+  `ParseSourceIO.download_to_path` 把对象存储源文件流式落到 `PARSE_TEMP_DIR/parse-*.tmp`，
+  避免源文件以完整 bytes 形态全量驻留内存。
 
 ## 3. 当前支持的解析器
 

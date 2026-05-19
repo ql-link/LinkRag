@@ -119,13 +119,16 @@ class Settings(BaseSettings):
     ES_MAX_TOKEN_BATCH_BYTES: int = 5242880
     ES_MAX_TOKEN_BATCH_CHUNKS: int = 500
     ES_BULK_REQUEST_TIMEOUT_SECONDS: int = 30
-    ES_INDEXING_MAX_RETRY: int = 3
     ES_SMOKE_ENABLED: bool = False
     TOLINK_RUN_REAL_ES_INDEX_TESTS: bool = False
 
     # ==========================================
     # 存储 & 资源配置 (Storage & Resources)
     # ==========================================
+    # 解析任务源文件临时落盘目录：流式下载在此创建临时文件，markdown 拿到后立即清理；
+    # worker 启动时由 src/main.py lifespan 调用 temp_workspace.ensure_clean_on_startup 清空兜底。
+    PARSE_TEMP_DIR: str = "/tmp/tolink-rag-parse"
+
     STORAGE_TYPE: str = "minio"  # minio / local
     MINIO_ENDPOINT: str = "localhost:9000"
     MINIO_ACCESS_KEY: str = "minioadmin"

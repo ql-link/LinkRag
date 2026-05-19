@@ -16,13 +16,18 @@ from src.core.parser.pdf.models import PdfBinaryAsset
 class OpenDataLoaderBackend(BasePdfBackend):
     """OpenDataLoader 本地后端。
 
-    官方 Python API 只接收文件路径，因此这里会把内存中的 PDF 临时落盘。
+    官方 Python API 只接收文件路径；本次治理后 pipeline 已经把源文件流式下载到本地临时
+    文件，这里直接复用该路径，不再额外写一份 ``temp_dir/document.pdf`` 副本。
     """
 
     name = "opendataloader"
     _PAGE_NUMBER_PATTERN = re.compile(r"page[-_ ]?(\d+)", re.IGNORECASE)
 
-    def parse(self, file_stream: bytes, options: Any = None) -> tuple[str, list[PdfBinaryAsset]]:
+    def parse(self, source: Path | None, options: Any = None) -> tuple[str, list[PdfBinaryAsset]]:
+        if source is None:
+            # 本 backend 不参与 MinerU URL 旁路；source 缺省视为不可解析。
+            self.metadata["opendataloader_backend_error"] = "source path 缺失"
+            return "", []
         try:
             opendataloader_pdf = importlib.import_module("opendataloader_pdf")
         except ImportError as exc:
@@ -39,16 +44,16 @@ class OpenDataLoaderBackend(BasePdfBackend):
             return "", []
 
         try:
+            # 仅借用 temp_dir 隔离 output_dir / image_dir；输入 PDF 直接复用 pipeline 已经
+            # 落盘的 ``source`` 路径，避免再写一份完整 bytes。
             with tempfile.TemporaryDirectory(prefix="opendataloader-") as temp_dir:
                 temp_path = Path(temp_dir)
-                pdf_path = temp_path / "document.pdf"
                 output_dir = temp_path / "output"
                 image_dir = output_dir / "images"
-                pdf_path.write_bytes(file_stream)
                 output_dir.mkdir(parents=True, exist_ok=True)
 
                 opendataloader_pdf.convert(
-                    input_path=[str(pdf_path)],
+                    input_path=[str(source)],
                     output_dir=str(output_dir),
                     format="markdown-with-images",
                     image_output="external",

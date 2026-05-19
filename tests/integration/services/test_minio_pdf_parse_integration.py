@@ -1,12 +1,16 @@
 """
 MinIO PDF 解析链路集成测试
 
-从指定 MinIO 源路径读取 PDF，走本地解析链路生成 Markdown，并上传到目标路径。
+从指定 MinIO 源路径**流式下载** PDF 到 PARSE_TEMP_DIR 临时文件，走本地解析链路生成
+Markdown，并上传到目标路径。下载-解析-清理顺序与生产 ParseTaskPipeline 保持一致。
 """
+
+from pathlib import Path
 
 import pytest
 
 from src.config import settings
+from src.core.pipeline.parse_task import temp_workspace
 from src.services.parse_task_service import ParseTaskService
 from src.services.storage.factory import StorageFactory
 
@@ -45,23 +49,33 @@ async def test_parse_pdf_from_minio_and_upload_markdown(
     monkeypatch.setattr(settings, "MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT", False)
 
     storage = StorageFactory.get_storage()
-    file_bytes = storage.download_bytes(
-        bucket=SOURCE_BUCKET,
-        object_key=source_object_key,
-    )
 
-    assert file_bytes
-    assert file_bytes.startswith(b"%PDF")
+    # 与生产 pipeline 一致：流式下载到临时文件，验证完后立即清理。
+    temp_dir = Path(settings.PARSE_TEMP_DIR)
+    temp_workspace.ensure_clean_on_startup(temp_dir)
+    source_path = temp_workspace.create_temp_file("integ", temp_dir)
+    try:
+        storage.download_to_path(
+            bucket=SOURCE_BUCKET,
+            object_key=source_object_key,
+            dst=source_path,
+        )
+        assert source_path.stat().st_size > 0
+        with open(source_path, "rb") as fp:
+            head = fp.read(4)
+        assert head == b"%PDF"
 
-    result = await ParseTaskService.aprocess(
-        file_bytes,
-        "pdf",
-        source_file=source_object_key,
-        backend="naive",
-        image_bucket=TARGET_BUCKET,
-        image_prefix=target_object_key,
-        storage=storage,
-    )
+        result = await ParseTaskService.aprocess(
+            source_path,
+            "pdf",
+            source_file=source_object_key,
+            backend="naive",
+            image_bucket=TARGET_BUCKET,
+            image_prefix=target_object_key,
+            storage=storage,
+        )
+    finally:
+        temp_workspace.safe_unlink(source_path)
     markdown = result["markdown"]
     image_assets = result["metadata"]["image_assets"]
 
@@ -83,9 +97,17 @@ async def test_parse_pdf_from_minio_and_upload_markdown(
         content=markdown.encode("utf-8"),
         content_type="text/markdown; charset=utf-8",
     )
-    uploaded = storage.download_bytes(
-        bucket=TARGET_BUCKET,
-        object_key=target_object_key,
-    )
 
-    assert uploaded.decode("utf-8") == markdown
+    # 验证 markdown 已成功落到对象存储：再次流式下载到独立临时路径并比对。
+    verify_path = temp_workspace.create_temp_file("integ-verify", temp_dir)
+    try:
+        storage.download_to_path(
+            bucket=TARGET_BUCKET,
+            object_key=target_object_key,
+            dst=verify_path,
+        )
+        uploaded = verify_path.read_text(encoding="utf-8")
+    finally:
+        temp_workspace.safe_unlink(verify_path)
+
+    assert uploaded == markdown

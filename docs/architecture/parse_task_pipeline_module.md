@@ -15,10 +15,11 @@ src/core/pipeline/
 │   ├── models.py                # ParsePipelineResult / PipelineStatus
 │   ├── log_repository.py        # ParseLogRepository: document_parsed_log 仓储与终态写入
 │   ├── notifier.py              # ParseResultNotifier: parse_result MQ 通知与兜底
-│   ├── source.py                # ParseSourceIO: 对象存储侧源文件下载 / Markdown 上传
+│   ├── source.py                # ParseSourceIO: 对象存储侧源文件流式下载到 Path / Markdown 上传
+│   ├── temp_workspace.py        # PARSE_TEMP_DIR 启动清理、临时文件分配、safe_unlink 幂等
 │   ├── validator.py             # ParseTaskGuard: 前置校验、MQ 重投与中断状态收敛
 │   ├── _utils.py                # 子包内部共享小工具（now / duration_ms / 等）
-│   └── post_process/            # 文件级后处理子状态机（chunking → vectorizing → es_indexing）
+│   └── post_process/            # 文件级后处理子状态机（chunking → vectorizing → pretokenize → es_indexing）
 │       ├── constants.py         # PIPELINE_STATUS_* / STAGE_STATUS_*
 │       ├── models.py            # PostProcessStageResult / PostProcessResult
 │       └── repository.py        # PostProcessPipelineRepository（document_post_process_pipeline 仓储）
@@ -56,9 +57,9 @@ StorageFactory / BaseObjectStorage
 ParseTaskService
 ChunkingEngine
 VectorStorageFacade
-Preprocessor / PreprocessorProtocol   # 预分词，构建 FilePostIndexPlan
+Preprocessor / PreprocessorProtocol   # 预分词独立阶段，构建 FilePostIndexPlan；失败仅抛 PreprocessorError，不写 chunk
 EsIndexingPipeline                    # 消费 FilePostIndexPlan 做 ES bulk 写入
-ChunkRepository                       # 预分词失败时批量标记 ES 失败，及空 plan 兜底计数
+ChunkRepository                       # 空 plan 兜底计数 count_es_not_success_by_doc_id（预分词失败不再标 chunk）
 MQService
 DocumentParsedLog / DocumentPostProcessPipeline
 ```
@@ -96,14 +97,13 @@ any classified failure
 | 幂等屏障 | `_create_log_record()` | 先插入 `document_parsed_log`，依赖 task_id 唯一索引阻止重复解析 |
 | 重投处理 | `_handle_duplicate_task()` | 对已有终态补发通知；对中断后处理收敛为可恢复失败 |
 | 上下文校验 | `_validate_parse_task()` | 校验 MQ payload 与 Java 侧 `document_parse_file` 记录一致 |
-| 源文件处理 | `_should_skip_source_download()` / `_download_file()` | MinerU URL API 可跳过本服务下载；其他后端下载源文件 bytes |
+| 源文件处理 | `ParseSourceIO.should_skip_source_download()` / `ParseSourceIO.download_to_path()` + `temp_workspace.create_temp_file()` + `temp_workspace.safe_unlink()` | MinerU URL API 跳过本地下载（`source_path=None`）；其他后端流式下载到 `PARSE_TEMP_DIR/parse-{task_id}-{rand}.tmp`，拿到 markdown 后立即 `safe_unlink` 早删，外层 `finally` 二次兜底。下载阶段 `OSError errno=ENOSPC` 归类 `TEMP_DISK_FULL`，其他下载异常归类 `SOURCE_FILE_NOT_FOUND` |
 | 文件解析 | `_parse_file()` | 调用 `ParseTaskService.aprocess()`，PDF 后端参数来自 payload |
 | Markdown 上传 | `_upload_markdown()` | 上传 Markdown 到 payload 指定 bucket/key |
 | 分片 | `_run_chunking()` / `_chunk_markdown()` | 优先消费上游 `ParseResult`，否则重新解析 Markdown |
 | 向量化 | `_store_chunk_vectors()` | 通过 `VectorStorageFacade` 写 MySQL 真值和 Qdrant |
-| 预分词 | `_get_preprocessor()` / `_run_es_indexing()` | 通过 `Preprocessor.build_file_post_index_plan()` 将 doc 下 chunk 的 token 信息聚合为 `FilePostIndexPlan` |
-| ES 入库 | `_run_es_indexing()` / `_handle_pretokenize_failure()` | 消费 `FilePostIndexPlan` 调用 `EsIndexingPipeline.write_es_index()`；预分词失败则批量标记 chunk `es_status=FAILED` |
-| ES 失败收敛 | `_handle_es_failure()` / `_is_es_retry_exhausted()` | 递增 `document_post_process_pipeline.retry_count`；达到 `ES_INDEXING_MAX_RETRY` 上限后在失败原因追加 `retry_exhausted=true` |
+| 预分词（一等独立阶段） | `_run_pretokenize()` / `_get_preprocessor()` | `Preprocessor.build_file_post_index_plan()` 聚合 doc 下 chunk token 为内存 `FilePostIndexPlan`（单趟扇出，不持久化）。文件级 all-or-nothing：成功 `mark_pretokenize_success`；失败返回 `(None, reason)`，由 `_run` 统一 `mark_pretokenize_failed` + 通知 Java FAILED，**不写任何 chunk es_status** |
+| ES 入库 | `_run_es_indexing()` | 仅消费内存 `FilePostIndexPlan` 调用 `EsIndexingPipeline.write_es_index()`，保持 chunk 级失败语义；`_ensure_index` 等基础设施故障按文件级处理（不标 chunk，`ensure_index:` 前缀）。失败由 `_run` 统一 `mark_es_failed` + 通知，**不计数、不设上限、不写 retry_exhausted** |
 | 结果通知 | `_send_parse_result()` | 向 `tolink.rag.parse_result` 发送整体终态 |
 
 ## 4. 状态语义
@@ -123,15 +123,20 @@ any classified failure
 | `pipeline_status` | `PENDING/PROCESSING/SUCCESS/FAILED` |
 | `chunking_status` | `PENDING/SUCCESS/FAILED` |
 | `vectorizing_status` | `PENDING/SUCCESS/FAILED` |
+| `pretokenize_status` | `PENDING/SUCCESS/FAILED` |
 | `es_indexing_status` | `PENDING/SUCCESS/FAILED` |
 
-发送给 Java 的 parse_result `success` 是整体成功语义：Markdown、分片、向量化和 ES 入库均成功。任一阶段失败都会发送 `failed`。
+阶段顺序：`CHUNKING → VECTORIZING(dense/Qdrant) → PRETOKENIZE → ES_INDEXING`。发送给 Java 的 parse_result `success` 是整体成功语义：Markdown、分片、向量化、预分词与 ES 入库均成功。任一阶段失败都会发送 `failed`。
 
-### ES 入库失败与重试计数
+### 失败即终态与恢复入口（无 ES 内部自动重试）
 
-ES 阶段失败时，`_handle_es_failure()` 在调用 `mark_es_failed` 前显式递增 `document_post_process_pipeline.retry_count`，并将 `pipeline_record.finished_at`（由 `mark_es_failed` 写入）作为通知时间戳。当 `retry_count >= settings.ES_INDEXING_MAX_RETRY`（默认 3）时，失败原因后会追加 `; retry_exhausted=true`，供下游监控判断是否放弃重试。
+任一阶段失败即终态：只把结果写入 `document_post_process_pipeline`（阶段状态 FAILED、`failed_stage`、`recover_from_stage`、`failure_reason`、`finished_at`、耗时）并通知 Java `failed`。系统**不计数、不设上限、不写 retry_exhausted、不自动重试**。
 
-预分词（`Preprocessor.build_file_post_index_plan()`）失败属于独立分支：直接将 doc 下所有 `es_status IN (PENDING, FAILED)` 的 chunk 标记为 `es_status=FAILED`，并返回合成的 `EsIndexingResult` 触发相同的 ES 失败路径。
+- **预分词失败**（`_run_pretokenize` 捕获 `PreprocessorError`，或空 plan 但仍有未完成 chunk）：`mark_pretokenize_failed` 落 `pretokenize_status=FAILED` + `recover_from_stage=PRETOKENIZE`；**绝不写任何 chunk es_status**（文件级 all-or-nothing）。
+- **ES 基础设施故障**（`_ensure_index` 等）：文件级，不标 chunk，`failure_reason` 以 `ensure_index:` 前缀。
+- **ES chunk 级写失败**：逐 chunk 标 `es_status=FAILED`，文件级 `es_indexing_status=FAILED`，前缀 `ES_INDEXING_FAILED:`。
+- **恢复入口** `_infer_recover_stage()` 取首个非 SUCCESS 阶段（chunking→vectorizing→pretokenize→es）。`pretokenize_status` 不被 `mark_processing` 清，恢复推断据此回 `PRETOKENIZE`。
+- **用户侧重试**：`document_post_process_pipeline.retry_count`/`last_retry_at` 保留，语义为用户前端触发重试的计数；仅由预留方法 `claim_failed_for_retry`（对照 `ChunkRepository.claim_failed_for_reindex`）在认领重试时 +1，模块/失败处理器/`mark_processing` 一律不写。**本期仅提供该方法、不接线任何触发路径**。
 
 ## 5. MinerU URL 直拉
 
@@ -164,17 +169,19 @@ pdf_parser_backend == "mineru"
 - `RESULT_NOTIFY_FAILED`
 - `INTERNAL_UNKNOWN_ERROR`
 
-后处理阶段还会构造文件级失败原因：
+后处理阶段还会构造文件级失败原因，并以来源前缀区分（纯内部排障，Java 仅展示不解析）：
 
 - `VECTORIZING_FAILED`
-- `ES_INDEXING_FAILED`
+- `pretokenize:`（预分词失败 / 空 plan 但仍有未完成 chunk）
+- `ensure_index:`（ES 确保索引存在等基础设施故障）
+- `ES_INDEXING_FAILED:`（ES bulk chunk 级写失败）
 
 失败原因统一写入 `failure_reason`，最大长度按数据库字段控制为 512。
 
 ## 7. 修改原则
 
 - 不要在 MQ consumer 中直接拼接业务流程，业务编排应留在 `ParseTaskPipeline`。
-- 解析成功通知必须晚于 Markdown、分片、向量化和 ES 入库全部完成。
+- 解析成功通知必须晚于 Markdown、分片、向量化、预分词和 ES 入库全部完成。
 - 新增阶段时应同步更新 `document_post_process_pipeline` 表结构、`docs/reference/mysql_schema.md` 和 `docs/reference/error_codes.md`。
 - 重投场景必须保持幂等，不应重复解析同一 `task_id`。
 
@@ -192,6 +199,8 @@ pdf_parser_backend == "mineru"
 - 新任务正常全链路。
 - 重复 task 的补发、跳过和中断收敛。
 - 解析、上传、分片、向量化、ES 和通知失败。
-- MinerU 后端跳过源文件下载并注入 `source_file_url`。
-- 预分词失败时 chunk 批量标记 ES 失败。
-- ES 失败 retry_count 递增及 retry_exhausted 判断。
+- MinerU 后端跳过源文件下载并注入 `source_file_url`；旁路下 `source_path` 在整条链路中保持 `None`，不创建临时文件、不需要清理。
+- 预分词失败为文件级 all-or-nothing：落 `pretokenize_status=FAILED`，不写任何 chunk es_status。
+- ES 基础设施故障（`ensure_index`）文件级不标 chunk；ES chunk 级失败逐 chunk 标记。
+- 失败即终态：ES 失败不递增 retry_count、无 retry_exhausted；`mark_processing` 不清各阶段 `*_status`/`retry_count`。所有阶段失败均由 `_run` 统一写库+通知。
+- 恢复入口推断按首个非 SUCCESS 阶段，`pretokenize_status` 与其他阶段状态列一样跨重投持久。

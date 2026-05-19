@@ -259,7 +259,7 @@ ORM：[`DocumentParsedLog`](../../src/models/parse_task.py)
 
 ### `document_post_process_pipeline` — 文件级后处理流程状态
 
-记录 Markdown 上传成功后的**分片 → 向量化 → ES 入库**三段状态。
+记录 Markdown 上传成功后的**分片 → 向量化 → 预分词 → ES 入库**四段状态。
 
 ORM：[`DocumentPostProcessPipeline`](../../src/models/parse_task.py)
 
@@ -273,15 +273,17 @@ ORM：[`DocumentPostProcessPipeline`](../../src/models/parse_task.py)
 | `pipeline_status` | VARCHAR(20) | `PENDING` / `PROCESSING` / `SUCCESS` / `FAILED` |
 | `chunking_status` | VARCHAR(20) | `PENDING` / `SUCCESS` / `FAILED` |
 | `vectorizing_status` | VARCHAR(20) | `PENDING` / `SUCCESS` / `FAILED` |
+| `pretokenize_status` | VARCHAR(20) | 预分词状态：`PENDING` / `SUCCESS` / `FAILED`（COMMENT 由迁移 0003 补齐） |
 | `es_indexing_status` | VARCHAR(20) | `PENDING` / `SUCCESS` / `FAILED` |
-| `failed_stage` | VARCHAR(20) | `CHUNKING` / `VECTORIZING` / `ES_INDEXING` |
-| `recover_from_stage` | VARCHAR(20) | 下次恢复阶段 |
-| `failure_reason` | VARCHAR(512) | 最近一次失败原因 |
+| `failed_stage` | VARCHAR(20) | `CHUNKING` / `VECTORIZING` / `PRETOKENIZE` / `ES_INDEXING` |
+| `recover_from_stage` | VARCHAR(20) | 下次恢复阶段（首个非 SUCCESS 阶段，同上枚举） |
+| `failure_reason` | VARCHAR(512) | 最近一次失败原因（前缀 `pretokenize:` / `ensure_index:` / `ES_INDEXING_FAILED:`） |
 | `chunk_count` | INT | 本次分片数量 |
-| `retry_count` | INT | 已重试次数 |
-| `last_retry_at` | DATETIME | 最近一次重试时间 |
+| `retry_count` | INT | **用户侧重试次数**：用户前端触发重试时由 `claim_failed_for_retry` +1；模块/失败处不写 |
+| `last_retry_at` | DATETIME | 用户侧最近一次重试时间 |
 | `chunking_duration_ms` | BIGINT | 分片耗时 |
 | `vectorizing_duration_ms` | BIGINT | 向量化耗时 |
+| `pretokenize_duration_ms` | BIGINT | 预分词耗时，单位毫秒（COMMENT 由迁移 0003 补齐） |
 | `es_indexing_duration_ms` | BIGINT | ES 入库耗时 |
 | `total_duration_ms` | BIGINT | 总耗时 |
 | `started_at` / `finished_at` | DATETIME | 开始 / 结束时间 |

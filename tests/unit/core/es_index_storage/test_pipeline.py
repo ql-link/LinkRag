@@ -97,7 +97,9 @@ class TestEsIndexingPipeline:
         repo.mark_es_failed.assert_awaited_once()
         assert repo.mark_es_failed.await_args.args[1] == ["c-1"]
 
-    async def test_should_fail_all_chunks_when_ensure_index_fails(self):
+    async def test_should_fail_file_level_without_marking_chunks_when_ensure_index_fails(self):
+        # ensure_index 失败属文件级基础设施故障：不标任何 chunk，
+        # failed_item_ids 留空，failure_reason 以 ensure_index: 前缀，is_success False。
         client = build_client()
         client.indices.exists = AsyncMock(side_effect=RuntimeError("es down"))
         pipeline, repo = build_pipeline(client)
@@ -106,9 +108,9 @@ class TestEsIndexingPipeline:
         result = await pipeline.write_es_index(build_plan(2), db=db)
 
         assert result.is_success is False
-        assert result.failed_item_ids == ["c-0", "c-1"]
-        assert result.failure_reason.startswith("es_bulk:")
-        repo.mark_es_failed.assert_awaited_once()
+        assert result.failed_item_ids == []
+        assert result.failure_reason.startswith("ensure_index:")
+        repo.mark_es_failed.assert_not_awaited()
         client.bulk.assert_not_awaited()
 
     async def test_should_mark_validation_failures_before_bulk(self):

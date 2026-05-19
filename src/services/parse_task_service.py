@@ -1,5 +1,6 @@
 import asyncio
 import time
+from pathlib import Path
 
 from loguru import logger
 
@@ -9,18 +10,25 @@ from src.utils.text_formatter import TextFormatter
 
 
 class ParseTaskService:
-    """Core service: parse source files and orchestrate markdown enhancement."""
+    """Core service: parse source files and orchestrate markdown enhancement.
+
+    入参形态：``source_path: Path | None``。``None`` 仅在 MinerU URL 旁路下出现，由具体
+    parser 透传到云端 API。所有 provider 已经按路径打开，无需在本服务层把文件读成 bytes。
+    """
 
     @staticmethod
     async def aprocess(
-        file_stream: bytes, file_type: str, source_file: str | None = None, **parser_kwargs
+        source_path: Path | None,
+        file_type: str,
+        source_file: str | None = None,
+        **parser_kwargs,
     ) -> dict:
         start_time = time.time()
 
         parse_started_at = time.monotonic()
         parser, raw_markdown = await asyncio.to_thread(
             ParseTaskService._parse_markdown,
-            file_stream,
+            source_path,
             file_type,
             parser_kwargs,
         )
@@ -74,14 +82,17 @@ class ParseTaskService:
 
     @staticmethod
     def process_sync(
-        file_stream: bytes, file_type: str, source_file: str | None = None, **parser_kwargs
+        source_path: Path | None,
+        file_type: str,
+        source_file: str | None = None,
+        **parser_kwargs,
     ) -> dict:
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             return asyncio.run(
                 ParseTaskService.aprocess(
-                    file_stream,
+                    source_path,
                     file_type,
                     source_file=source_file,
                     **parser_kwargs,
@@ -92,7 +103,7 @@ class ParseTaskService:
         )
 
     @staticmethod
-    def _parse_markdown(file_stream: bytes, file_type: str, parser_kwargs: dict) -> tuple:
+    def _parse_markdown(source_path: Path | None, file_type: str, parser_kwargs: dict) -> tuple:
         parser = ParserFactory.get_parser(file_type, **parser_kwargs)
-        raw_markdown = parser.parse(file_stream)
+        raw_markdown = parser.parse(source_path)
         return parser, raw_markdown

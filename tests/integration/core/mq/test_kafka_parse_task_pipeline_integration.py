@@ -12,6 +12,7 @@ from src.core.mq.messages import ParseTaskMessage
 from src.core.mq.vendors.kafka.kafka_adapter import KafkaReceiver
 from src.core.pipeline import ParseTaskPipeline
 from src.core.pipeline.parse_task.constants import (
+    DUPLICATE_SUCCESS_USER_MESSAGE,
     PARSE_TASK_STATUS_CREATED,
     PARSE_TASK_STATUS_FAILED,
     PARSE_TASK_STATUS_SUCCESS,
@@ -23,6 +24,7 @@ from src.core.pipeline.parse_task.post_process.constants import (
     PIPELINE_STATUS_SUCCESS,
     POST_PROCESS_STAGE_CHUNKING,
     POST_PROCESS_STAGE_ES_INDEXING,
+    POST_PROCESS_STAGE_PRETOKENIZE,
     POST_PROCESS_STAGE_VECTORIZING,
     STAGE_STATUS_FAILED,
     STAGE_STATUS_PENDING,
@@ -136,6 +138,7 @@ class FakePostProcessRepository:
             pipeline_status=pipeline_status,
             chunking_status=STAGE_STATUS_PENDING,
             vectorizing_status=STAGE_STATUS_PENDING,
+            pretokenize_status=STAGE_STATUS_PENDING,
             es_indexing_status=STAGE_STATUS_PENDING,
             failed_stage=None,
             recover_from_stage=None,
@@ -181,6 +184,17 @@ class FakePostProcessRepository:
         pipeline.recover_from_stage = POST_PROCESS_STAGE_VECTORIZING
         pipeline.failure_reason = reason
 
+    async def mark_pretokenize_success(self, db, pipeline, *, duration_ms):
+        pipeline.pretokenize_status = STAGE_STATUS_SUCCESS
+        pipeline.pretokenize_duration_ms = duration_ms
+
+    async def mark_pretokenize_failed(self, db, pipeline, *, reason, duration_ms, finished_at):
+        pipeline.pipeline_status = PIPELINE_STATUS_FAILED
+        pipeline.pretokenize_status = STAGE_STATUS_FAILED
+        pipeline.failed_stage = POST_PROCESS_STAGE_PRETOKENIZE
+        pipeline.recover_from_stage = POST_PROCESS_STAGE_PRETOKENIZE
+        pipeline.failure_reason = reason
+
     async def mark_es_success(self, db, pipeline, *, duration_ms, total_duration_ms, finished_at):
         pipeline.pipeline_status = PIPELINE_STATUS_SUCCESS
         pipeline.es_indexing_status = STAGE_STATUS_SUCCESS
@@ -209,7 +223,7 @@ async def test_kafka_receiver_should_consume_parse_task_message_and_commit_after
     )
     db = build_db(record)
     storage = MagicMock()
-    storage.download_bytes.return_value = b"pdf-bytes"
+    storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf-bytes")
     mq_service = MagicMock()
     mq_service.send = AsyncMock()
     vector_storage = AsyncMock()
@@ -278,10 +292,7 @@ async def test_kafka_receiver_should_consume_parse_task_message_and_commit_after
     ):
         await receiver._consume_loop()
 
-    storage.download_bytes.assert_called_once_with(
-        bucket="source-bucket",
-        object_key="uploads/test.pdf",
-    )
+    storage.download_to_path.assert_not_called()
     storage.upload_bytes.assert_called_once()
     receiver._consumer.commit.assert_awaited_once()
     mock_chunk_markdown.assert_called_once_with(
@@ -308,7 +319,7 @@ async def test_kafka_receiver_should_commit_when_pipeline_fails():
     )
     db = build_db(record)
     storage = MagicMock()
-    storage.download_bytes.return_value = b"pdf-bytes"
+    storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf-bytes")
     mq_service = MagicMock()
     mq_service.send = AsyncMock()
 
@@ -420,7 +431,7 @@ async def test_kafka_receiver_should_commit_when_duplicate_created_is_marked_fai
     receiver._consumer.commit.assert_awaited_once()
     assert log_record.task_status == PARSE_TASK_STATUS_FAILED
     assert log_record.failure_reason.startswith("INTERRUPTED_TASK:")
-    storage.download_bytes.assert_not_called()
+    storage.download_to_path.assert_not_called()
     storage.upload_bytes.assert_not_called()
     mq_service.send.assert_awaited_once()
 
@@ -476,9 +487,9 @@ async def test_kafka_receiver_should_commit_when_duplicate_success_is_resent():
 
     receiver._consumer.commit.assert_awaited_once()
     assert log_record.task_status == PARSE_TASK_STATUS_SUCCESS
-    storage.download_bytes.assert_not_called()
+    storage.download_to_path.assert_not_called()
     storage.upload_bytes.assert_not_called()
     sent_payload = mq_service.send.call_args.args[0].get_payload()
     assert sent_payload.task_status == PARSE_TASK_STATUS_SUCCESS
     assert sent_payload.failure_reason is None
-    assert not hasattr(sent_payload, "user_message")
+    assert sent_payload.user_message == DUPLICATE_SUCCESS_USER_MESSAGE
