@@ -48,6 +48,7 @@
 | `PDF_PARSER_FALLBACKS` | 空 | 逗号分隔回退链，空表示不回退 |
 | `PDF_IMAGE_UPLOAD_ASYNC` | `true` | PDF 图片是否异步上传，关闭后主链路同步等待 |
 | `INIT_KAFKA_TOPICS_ON_STARTUP` | `false` | 应用启动时是否自动建 topic，生产建议保持 false |
+| `ES_INDEXING_RETRY_ENABLED` | `true` | 是否启动 ES 入库失败后台补偿重试 |
 | `TOLINK_RUN_REAL_VECTOR_STORAGE_TESTS` | `false` | 是否运行真实 MySQL+Qdrant 集成测试 |
 | `MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT` | `true` | 是否启用表格 LLM 增强 |
 | `MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT` | `true` | 是否启用图片 LLM 增强 |
@@ -78,6 +79,17 @@
 | `CHUNKING_EMBED_BATCH_SIZE` | 32 | 受向量服务并发上限约束 |
 
 详细分块策略见 [chunking_module.md](../architecture/chunking_module.md)。
+
+## ES 入库重试
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `ES_INDEXING_MAX_RETRY` | 3 | ES 入库文件级最大失败次数，达到后失败原因追加 `retry_exhausted=true` |
+| `ES_INDEXING_RETRY_ENABLED` | `true` | FastAPI 启动后是否运行后台 ES 补偿重试调度 |
+| `ES_INDEXING_RETRY_INTERVAL_SECONDS` | 300 | 后台调度扫描间隔 |
+| `ES_INDEXING_RETRY_BATCH_SIZE` | 20 | 单轮最多认领的 ES 失败后处理记录数 |
+
+调度器只处理 `document_post_process_pipeline` 中 `recover_from_stage=ES_INDEXING`、`es_indexing_status=FAILED` 且 `retry_count < ES_INDEXING_MAX_RETRY` 的记录。普通重试失败只更新数据库和日志；重试成功或达到上限时会沿用 `parse_result` topic 通知 Java。
 
 ## 配置加载与覆盖
 

@@ -48,14 +48,43 @@ class ParseResultNotifier:
 
         发送失败时记录日志，若指定了 ``log_record`` 与 ``db`` 则把当前日志兜底为 failed。
         """
+        sent = await self.send_fields(
+            task_id=payload.task_id,
+            original_file_id=payload.original_file_id,
+            document_parse_task_id=payload.document_parse_task_id,
+            dataset_id=payload.dataset_id,
+            user_id=payload.user_id,
+            task_status=task_status,
+            parse_finished_at=parse_finished_at,
+            failure_reason=failure_reason,
+            user_message=user_message,
+        )
+        if not sent and mark_failed_on_error and log_record is not None and db is not None:
+            await self._mark_result_notify_failed(payload, log_record, db)
+        return sent
+
+    async def send_fields(
+        self,
+        *,
+        task_id: str,
+        original_file_id: int,
+        document_parse_task_id: int,
+        dataset_id: int,
+        user_id: int,
+        task_status: str,
+        parse_finished_at: datetime | None,
+        failure_reason: str | None,
+        user_message: str | None = None,
+    ) -> bool:
+        """按已落库字段发送 parse_result，用于不持有完整 parse_task payload 的补偿链路。"""
         try:
             finished_at = parse_finished_at or now()
             message = ParseResultMessage.build(
-                task_id=payload.task_id,
-                original_file_id=payload.original_file_id,
-                document_parse_task_id=payload.document_parse_task_id,
-                dataset_id=payload.dataset_id,
-                user_id=payload.user_id,
+                task_id=task_id,
+                original_file_id=original_file_id,
+                document_parse_task_id=document_parse_task_id,
+                dataset_id=dataset_id,
+                user_id=user_id,
                 task_status=task_status,
                 failure_reason=failure_reason,
                 parse_finished_at=finished_at.isoformat(),
@@ -66,10 +95,8 @@ class ParseResultNotifier:
         except Exception as exc:
             logger.error(
                 f"[ParseResultNotifier] parse result MQ notification failed: "
-                f"task_id={payload.task_id}, status={task_status}, error={exc}"
+                f"task_id={task_id}, status={task_status}, error={exc}"
             )
-            if mark_failed_on_error and log_record is not None and db is not None:
-                await self._mark_result_notify_failed(payload, log_record, db)
             return False
 
     async def send_or_raise(

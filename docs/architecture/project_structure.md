@@ -57,7 +57,7 @@ toLink-Rag/                         # 仓库根目录
 ├── src/                          # 应用源码
 │   ├── config.py                 # 全局配置
 │   ├── database.py               # 数据库初始化入口
-│   ├── main.py                   # FastAPI 应用入口
+│   ├── main.py                   # FastAPI 应用入口（lifespan 初始化 MQ consumer 与 ES 重试调度）
 │   ├── api/                      # HTTP API 分层
 │   │   ├── routes/               # 路由层
 │   │   │   ├── internal.py        # Java 管理端内部 LLM 配置/用量接口
@@ -76,12 +76,15 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── interfaces.py
 │   │   │   └── providers/        # LLM 提供方实现
 │   │   ├── pipeline/             # 文档解析业务流水线编排
-│   │   │   ├── constants.py       # 解析任务状态、通知文案等流水线常量
-│   │   │   ├── error_codes.py
-│   │   │   ├── models.py
-│   │   │   ├── post_process_constants.py # 文件级后处理状态常量
-│   │   │   ├── post_process_repository.py # 后处理 pipeline 状态仓储
-│   │   │   └── parse_task_pipeline.py
+│   │   │   └── parse_task/        # 解析任务主编排与后处理补偿
+│   │   │       ├── pipeline.py    # ParseTaskPipeline 主流程
+│   │   │       ├── es_retry_service.py # ES 入库失败补偿重试服务
+│   │   │       ├── es_retry_scheduler.py # ES 入库失败后台调度
+│   │   │       ├── notifier.py    # parse_result 通知封装
+│   │   │       ├── validator.py   # 前置校验与重复消息处理
+│   │   │       └── post_process/  # 文件级后处理状态机
+│   │   │           ├── constants.py
+│   │   │           └── repository.py
 │   │   ├── prompts/              # LLM 提示词模板
 │   │   │   └── markdown_enhancement.py
 │   │   ├── markdown_parser/      # Markdown 解析与增强编排

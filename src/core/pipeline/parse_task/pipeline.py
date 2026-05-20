@@ -559,10 +559,33 @@ class ParseTaskPipeline:
         全程不写任何 chunk es_status —— 文件级 all-or-nothing。
         """
         doc_id = int(payload.original_file_id)
+        plan, failure = await self._build_file_post_index_plan_for_doc(
+            doc_id=doc_id,
+            task_id=payload.task_id,
+            db=db,
+        )
+        if failure is not None:
+            return None, failure
+
+        await self._post_process_repository.mark_pretokenize_success(
+            db,
+            pipeline_record,
+            duration_ms=duration_ms(pretokenize_started_at, now()),
+        )
+        return plan, None
+
+    async def _build_file_post_index_plan_for_doc(
+        self,
+        *,
+        doc_id: int,
+        task_id: str,
+        db: AsyncSession,
+    ) -> tuple[FilePostIndexPlan | None, str | None]:
+        """按已落库 doc/task 上下文重建 ES 入库内存 plan。"""
         try:
             plan = await self._get_preprocessor().build_file_post_index_plan(
                 doc_id=doc_id,
-                task_id=payload.task_id,
+                task_id=task_id,
             )
         except Exception as exc:
             reason = str(exc)
@@ -575,12 +598,29 @@ class ParseTaskPipeline:
             if pending > 0:
                 return None, f"pretokenize: empty plan but {pending} chunks pending"
 
-        await self._post_process_repository.mark_pretokenize_success(
-            db,
-            pipeline_record,
-            duration_ms=duration_ms(pretokenize_started_at, now()),
-        )
         return plan, None
+
+    async def _run_es_indexing_for_doc(
+        self,
+        *,
+        doc_id: int,
+        task_id: str,
+        db: AsyncSession,
+    ) -> EsIndexingResult:
+        """后台补偿入口：从已落库 doc/task 重建 plan 后只执行 ES 入库。"""
+        plan, failure = await self._build_file_post_index_plan_for_doc(
+            doc_id=doc_id,
+            task_id=task_id,
+            db=db,
+        )
+        if failure is not None:
+            return EsIndexingResult(
+                total_items=1,
+                indexed_items=0,
+                failed_item_ids=[],
+                failure_reason=failure,
+            )
+        return await self._run_es_indexing(plan, db)
 
     async def _run_es_indexing(
         self,
@@ -676,6 +716,10 @@ class ParseTaskPipeline:
 
     @staticmethod
     def _build_es_failure_reason(es_result: EsIndexingResult) -> str:
+        return ParseTaskPipeline.build_es_failure_reason(es_result)
+
+    @staticmethod
+    def build_es_failure_reason(es_result: EsIndexingResult) -> str:
         failed_count = len(es_result.failed_item_ids)
         return (
             "ES_INDEXING_FAILED: ES入库失败；"

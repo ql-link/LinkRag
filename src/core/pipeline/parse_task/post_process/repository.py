@@ -91,6 +91,58 @@ class PostProcessPipelineRepository:
         result = await db.execute(select(self.model_cls).where(self.model_cls.task_id == task_id))
         return result.scalar_one_or_none()
 
+    async def get_by_id(
+        self,
+        db: AsyncSession,
+        pipeline_id: int,
+    ) -> DocumentPostProcessPipeline | None:
+        result = await db.execute(select(self.model_cls).where(self.model_cls.id == pipeline_id))
+        return result.scalar_one_or_none()
+
+    async def list_es_retry_candidates(
+        self,
+        db: AsyncSession,
+        *,
+        limit: int,
+        max_retry: int,
+    ) -> list[DocumentPostProcessPipeline]:
+        stmt = (
+            select(self.model_cls)
+            .where(self.model_cls.pipeline_status == PIPELINE_STATUS_FAILED)
+            .where(self.model_cls.recover_from_stage == POST_PROCESS_STAGE_ES_INDEXING)
+            .where(self.model_cls.es_indexing_status == STAGE_STATUS_FAILED)
+            .where(self.model_cls.retry_count < max_retry)
+            .order_by(self.model_cls.updated_at.asc())
+            .limit(limit)
+        )
+        result = await db.execute(stmt)
+        return list(result.scalars().all())
+
+    async def claim_es_retry(
+        self,
+        db: AsyncSession,
+        pipeline_id: int,
+        *,
+        max_retry: int,
+    ) -> bool:
+        stmt = (
+            update(self.model_cls)
+            .where(self.model_cls.id == pipeline_id)
+            .where(self.model_cls.pipeline_status == PIPELINE_STATUS_FAILED)
+            .where(self.model_cls.recover_from_stage == POST_PROCESS_STAGE_ES_INDEXING)
+            .where(self.model_cls.es_indexing_status == STAGE_STATUS_FAILED)
+            .where(self.model_cls.retry_count < max_retry)
+            .values(
+                pipeline_status=PIPELINE_STATUS_PROCESSING,
+                finished_at=None,
+                failure_reason=None,
+                last_retry_at=func.now(),
+            )
+        )
+        result = await db.execute(stmt)
+        await db.commit()
+        return bool(result.rowcount)
+
     async def mark_processing(
         self,
         db: AsyncSession,

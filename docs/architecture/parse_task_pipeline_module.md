@@ -138,6 +138,12 @@ any classified failure
 - **恢复入口** `_infer_recover_stage()` 取首个非 SUCCESS 阶段（chunking→vectorizing→pretokenize→es）。`pretokenize_status` 不被 `mark_processing` 清，恢复推断据此回 `PRETOKENIZE`。
 - **用户侧重试**：`document_post_process_pipeline.retry_count`/`last_retry_at` 保留，语义为用户前端触发重试的计数；仅由预留方法 `claim_failed_for_retry`（对照 `ChunkRepository.claim_failed_for_reindex`）在认领重试时 +1，模块/失败处理器/`mark_processing` 一律不写。**本期仅提供该方法、不接线任何触发路径**。
 
+### ES 入库后台补偿
+
+应用启动后，`EsIndexRetryScheduler` 会按 `ES_INDEXING_RETRY_INTERVAL_SECONDS` 定时调用 `EsIndexRetryService`。该服务扫描 `pipeline_status=FAILED`、`recover_from_stage=ES_INDEXING`、`es_indexing_status=FAILED` 且 `retry_count < ES_INDEXING_MAX_RETRY` 的后处理记录，通过条件更新认领后只恢复 ES 入库阶段，不重跑文件解析、Markdown 上传、分块或 dense 向量化。
+
+重试成功时，服务调用 `mark_es_success()` 将后处理流水线收敛为 `SUCCESS`，并沿用原 `parse_result` topic 和原 `task_id` 补发 `success` 通知。重试失败但未达到上限时只更新失败状态、`retry_count` 和日志，不重复发送 failed；达到上限时失败原因追加 `retry_exhausted=true` 并补发 failed。后台调度可通过 `ES_INDEXING_RETRY_ENABLED=false` 关闭。
+
 ## 5. MinerU URL 直拉
 
 当 payload 满足：
@@ -198,9 +204,10 @@ pdf_parser_backend == "mineru"
 
 - 新任务正常全链路。
 - 重复 task 的补发、跳过和中断收敛。
-- 解析、上传、分片、向量化、ES 和通知失败。
+- 解析、上传、分片、向量化、预分词、ES 和通知失败。
 - MinerU 后端跳过源文件下载并注入 `source_file_url`；旁路下 `source_path` 在整条链路中保持 `None`，不创建临时文件、不需要清理。
 - 预分词失败为文件级 all-or-nothing：落 `pretokenize_status=FAILED`，不写任何 chunk es_status。
 - ES 基础设施故障（`ensure_index`）文件级不标 chunk；ES chunk 级失败逐 chunk 标记。
-- 失败即终态：ES 失败不递增 retry_count、无 retry_exhausted；`mark_processing` 不清各阶段 `*_status`/`retry_count`。所有阶段失败均由 `_run` 统一写库+通知。
+- 主流水线失败即终态：ES 首次失败不递增 retry_count、无 retry_exhausted；`mark_processing` 不清各阶段 `*_status`/`retry_count`。所有阶段失败均由 `_run` 统一写库+通知。
 - 恢复入口推断按首个非 SUCCESS 阶段，`pretokenize_status` 与其他阶段状态列一样跨重投持久。
+- ES 后台补偿重试候选筛选、条件认领、成功补发 success、未耗尽静默失败、耗尽后补发 failed。

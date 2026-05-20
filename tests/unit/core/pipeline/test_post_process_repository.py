@@ -233,3 +233,43 @@ class TestPostProcessPipelineRepository:
         claimed = await repo.claim_failed_for_retry(db, task_id="t-001")
 
         assert claimed is False
+        db.execute.assert_awaited_once()
+        db.commit.assert_awaited_once()
+
+    async def test_should_list_es_retry_candidates(self):
+        db = build_db()
+        candidate = build_pipeline()
+        result = MagicMock()
+        result.scalars.return_value.all.return_value = [candidate]
+        db.execute.return_value = result
+        repo = PostProcessPipelineRepository()
+
+        records = await repo.list_es_retry_candidates(db, limit=10, max_retry=3)
+
+        assert records == [candidate]
+        db.execute.assert_awaited_once()
+
+    async def test_should_claim_es_retry_when_record_is_still_retryable(self):
+        db = build_db()
+        result = MagicMock()
+        result.rowcount = 1
+        db.execute.return_value = result
+        repo = PostProcessPipelineRepository()
+
+        claimed = await repo.claim_es_retry(db, 200, max_retry=3)
+
+        assert claimed is True
+        db.execute.assert_awaited_once()
+        db.commit.assert_awaited_once()
+
+    async def test_should_skip_claim_es_retry_when_record_changed(self):
+        db = build_db()
+        result = MagicMock()
+        result.rowcount = 0
+        db.execute.return_value = result
+        repo = PostProcessPipelineRepository()
+
+        claimed = await repo.claim_es_retry(db, 200, max_retry=3)
+
+        assert claimed is False
+        db.commit.assert_awaited_once()
