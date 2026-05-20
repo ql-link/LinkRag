@@ -14,9 +14,6 @@ from .constants import (
     ES_STATUS_PENDING,
     ES_STATUS_SUCCESS,
     MAX_ERROR_MSG_LENGTH,
-    VECTOR_STATUS_FAILED,
-    VECTOR_STATUS_PENDING,
-    VECTOR_STATUS_SUCCESS,
 )
 __all__ = [
     "CHUNK_DELETE_ALLOWED_STATUSES",
@@ -39,9 +36,6 @@ __all__ = [
     "ES_STATUS_SUCCESS",
     "FactChunkDraft",
     "MAX_ERROR_MSG_LENGTH",
-    "VECTOR_STATUS_FAILED",
-    "VECTOR_STATUS_PENDING",
-    "VECTOR_STATUS_SUCCESS",
     "decide_chunk_post_status",
 ]
 

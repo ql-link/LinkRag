@@ -80,7 +80,7 @@ class TransactionalPipelineMixin:
             async with self.session_factory() as session:
                 records = await self.repository.get_by_chunk_ids(session, [chunk_id])
             record = records[0] if records else None
-            if record is None or record.status not in CHUNK_DELETE_PROTECTED_STATUSES:
+            if record is None or record.dense_vector_status not in CHUNK_DELETE_PROTECTED_STATUSES:
                 return
 
             bucket_id = record.bucket_id if record.bucket_id is not None else fallback_bucket_id
@@ -89,7 +89,7 @@ class TransactionalPipelineMixin:
             except Exception as exc:
                 await self._mark_delete_failed_after_stale_cleanup(
                     chunk_id=chunk_id,
-                    expected_status=record.status,
+                    expected_status=record.dense_vector_status,
                     error_msg=str(exc),
                 )
                 logger.warning(

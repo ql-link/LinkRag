@@ -121,6 +121,8 @@ async def test_should_store_update_and_delete_chunks_into_real_mysql_and_qdrant_
         embedding_pipeline=DeterministicEmbeddingPipeline(),
     )
     collection_name = bucket_router.collection_name(0)
+    original_sparse_enabled = settings.SPARSE_VECTOR_ENABLED
+    settings.SPARSE_VECTOR_ENABLED = False
 
     try:
         async with session_factory() as session:
@@ -158,9 +160,9 @@ async def test_should_store_update_and_delete_chunks_into_real_mysql_and_qdrant_
                 )
             ).scalars().all()
 
-        assert [record.status for record in records] == ["INDEXED", "INDEXED"]
+        assert [record.dense_vector_status for record in records] == ["INDEXED", "INDEXED"]
         assert [record.bucket_id for record in records] == [0, 0]
-        assert [record.embedding_model for record in records] == [
+        assert [record.dense_vector_model for record in records] == [
             "real-env-test-embedding",
             "real-env-test-embedding",
         ]
@@ -200,7 +202,7 @@ async def test_should_store_update_and_delete_chunks_into_real_mysql_and_qdrant_
                 )
             ).scalar_one()
 
-        assert updated_record.status == "INDEXED"
+        assert updated_record.dense_vector_status == "INDEXED"
         assert updated_record.content == updated_content
         assert updated_record.chunk_type == "heading"
         assert updated_record.start_line == 11
@@ -234,7 +236,7 @@ async def test_should_store_update_and_delete_chunks_into_real_mysql_and_qdrant_
                 )
             ).scalar_one()
 
-        assert deleted_record.status == "DELETED"
+        assert deleted_record.dense_vector_status == "DELETED"
         deleted_points = await client.retrieve(
             collection_name=collection_name,
             ids=[stored_chunk_ids[1]],
@@ -263,3 +265,4 @@ async def test_should_store_update_and_delete_chunks_into_real_mysql_and_qdrant_
                 await session.commit()
         with suppress(Exception):
             await engine.dispose()
+        settings.SPARSE_VECTOR_ENABLED = original_sparse_enabled
