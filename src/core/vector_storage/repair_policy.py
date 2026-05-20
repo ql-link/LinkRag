@@ -43,19 +43,27 @@ class RepairPolicy:
             return 0
         return min(limit, self.max_delete_retry_limit)
 
-    def decide_for_status(self, status: str, *, point_exists: bool | None = None) -> RepairDecision:
+    def decide_for_status(
+        self,
+        dense_vector_status: str,
+        *,
+        point_exists: bool | None = None,
+    ) -> RepairDecision:
         """Return the safest supported repair decision for a chunk lifecycle status."""
-        if status in {CHUNK_STATUS_DELETING, CHUNK_STATUS_DELETE_FAILED}:
+        if dense_vector_status in {CHUNK_STATUS_DELETING, CHUNK_STATUS_DELETE_FAILED}:
             return RepairDecision.AUTO_RETRY_DELETE
 
-        if status == CHUNK_STATUS_INDEXING and self.allow_stale_indexing_status_repair:
+        if (
+            dense_vector_status == CHUNK_STATUS_INDEXING
+            and self.allow_stale_indexing_status_repair
+        ):
             if point_exists is True:
                 return RepairDecision.LIGHTWEIGHT_STATUS_REPAIR
             if point_exists is False:
                 return RepairDecision.MANUAL_REINDEX_REQUIRED
             return RepairDecision.SKIP
 
-        if status == CHUNK_STATUS_FAILED:
+        if dense_vector_status == CHUNK_STATUS_FAILED:
             if self.allow_auto_reindex_failed:
                 return RepairDecision.LIGHTWEIGHT_STATUS_REPAIR
             return RepairDecision.MANUAL_REINDEX_REQUIRED

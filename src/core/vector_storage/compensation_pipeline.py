@@ -136,7 +136,7 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
                     chunk_id=record.chunk_id,
                 )
                 decision = self.repair_policy.decide_for_status(
-                    record.status,
+                    record.dense_vector_status,
                     point_exists=exists,
                 )
                 if decision == RepairDecision.LIGHTWEIGHT_STATUS_REPAIR:
@@ -277,7 +277,7 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
         record_map = {
             record.chunk_id: record
             for record in records
-            if record.status == CHUNK_STATUS_FAILED
+            if record.dense_vector_status == CHUNK_STATUS_FAILED
         }
         indexed_chunks = 0
         failed_chunk_ids: list[str] = [
@@ -353,7 +353,7 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
         record_map = {
             record.chunk_id: record
             for record in records
-            if record.status == CHUNK_STATUS_INDEXING
+            if record.dense_vector_status == CHUNK_STATUS_INDEXING
         }
         return (
             [record_map[chunk_id] for chunk_id in chunk_ids if chunk_id in record_map],

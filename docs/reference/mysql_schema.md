@@ -319,13 +319,17 @@ ORM：[`ChunkRecordDB`](../../src/models/chunk_record.py)
 | `chunk_type` | VARCHAR(32) | `paragraph` / `image` / `table` / `code_block` / `heading` / `mixed` / `text` |
 | `start_line` / `end_line` | INT | 源文档起止行号 |
 | `chunk_index` | INT | 文档内顺序编号 |
-| `status` | VARCHAR(16) | `PENDING` / `INDEXING` / `INDEXED` / `FAILED` / `DELETING` / `DELETED` / `DELETE_FAILED` |
-| `error_msg` | VARCHAR(512) | 主状态失败原因 |
-| `retry_count` | INT | 已执行的补偿重试次数 |
-| `last_retry_at` | DATETIME | 最近一次补偿重试时间 |
+| `dense_vector_status` | VARCHAR(16) | 稠密向量生命周期：`PENDING` / `INDEXING` / `INDEXED` / `FAILED` / `DELETING` / `DELETED` / `DELETE_FAILED` |
+| `dense_vector_error_msg` | VARCHAR(512) | 稠密向量最近一次写入或补偿失败原因 |
+| `dense_vector_retry_count` | INT | 稠密向量已执行的补偿重试次数 |
+| `dense_vector_last_retry_at` | DATETIME | 稠密向量最近一次补偿重试时间 |
 | `dense_vector_model` | VARCHAR(128) | 实际使用的稠密向量模型 |
-| `dense_vector_status` | VARCHAR(16) | `PENDING` / `SUCCESS` / `FAILED` |
-| `dense_vector_error_msg` | VARCHAR(512) | 向量化失败原因 |
+| `sparse_vector_status` | VARCHAR(16) | 稀疏向量生命周期：`PENDING` / `INDEXING` / `INDEXED` / `FAILED` / `DELETING` / `DELETED` / `DELETE_FAILED` |
+| `sparse_vector_model` | VARCHAR(128) | 实际使用的稀疏向量模型 |
+| `sparse_vector_nonzero_count` | INT | 稀疏向量非零维度数量 |
+| `sparse_vector_error_msg` | VARCHAR(512) | 稀疏向量失败原因 |
+| `sparse_vector_retry_count` | INT | 稀疏向量重试次数 |
+| `sparse_vector_last_retry_at` | DATETIME | 稀疏向量最近一次重试时间 |
 | `es_status` | VARCHAR(16) | `PENDING` / `SUCCESS` / `FAILED` |
 | `es_error_msg` | VARCHAR(512) | ES 索引失败原因 |
 | `create_time` / `update_time` | DATETIME | 创建 / 更新时间 |
@@ -333,8 +337,9 @@ ORM：[`ChunkRecordDB`](../../src/models/chunk_record.py)
 索引：
 - `uk_chunk_id(chunk_id)`
 - `idx_user_set(user_id, set_id)`
-- `idx_bucket_status(bucket_id, status)`
 - `idx_bucket_dense_vector_status(bucket_id, dense_vector_status)`
+- `idx_bucket_sparse_status(bucket_id, sparse_vector_status)`
+- `idx_doc_sparse_status(doc_id, sparse_vector_status)`
 - `idx_bucket_es_status(bucket_id, es_status)`
 - `idx_doc_id(doc_id)`
 - `idx_chunk_type(chunk_type)`

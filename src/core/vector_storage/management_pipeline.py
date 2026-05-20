@@ -86,7 +86,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
         end_line = request.end_line if request.end_line is not None else record.end_line
         chunk_index = request.chunk_index if request.chunk_index is not None else record.chunk_index
 
-        if record.status == CHUNK_STATUS_INDEXED and content_hash == record.content_hash:
+        if record.dense_vector_status == CHUNK_STATUS_INDEXED and content_hash == record.content_hash:
             if not self._truth_fields_changed(
                 record,
                 content=request.content,
@@ -511,7 +511,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
             records = await self.repository.get_by_chunk_ids(session, [chunk_id])
 
         record = records[0] if records else None
-        if record is None or record.status not in CHUNK_DELETE_PROTECTED_STATUSES:
+        if record is None or record.dense_vector_status not in CHUNK_DELETE_PROTECTED_STATUSES:
             return
 
         bucket_id = record.bucket_id if record.bucket_id is not None else fallback_bucket_id
@@ -522,7 +522,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
             await self._mark_delete_failed_for_status(
                 [chunk_id],
                 error_msg=error_msg,
-                expected_status=record.status,
+                expected_status=record.dense_vector_status,
             )
             logger.exception(
                 "[VectorStorageManagementPipeline] Failed to clean stale Qdrant point "

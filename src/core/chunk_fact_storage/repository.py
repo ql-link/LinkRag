@@ -18,10 +18,8 @@ from .constants import (
     CHUNK_STATUS_FAILED,
     CHUNK_STATUS_INDEXED,
     CHUNK_STATUS_INDEXING,
+    CHUNK_STATUS_PENDING,
     CHUNK_UPDATE_ALLOWED_STATUSES,
-    DENSE_VECTOR_STATUS_FAILED,
-    DENSE_VECTOR_STATUS_PENDING,
-    DENSE_VECTOR_STATUS_SUCCESS,
     ES_STATUS_FAILED,
     ES_STATUS_PENDING,
     ES_STATUS_SUCCESS,
@@ -29,7 +27,7 @@ from .constants import (
     SPARSE_VECTOR_STATUS_FAILED,
     SPARSE_VECTOR_STATUS_INDEXING,
     SPARSE_VECTOR_STATUS_PENDING,
-    SPARSE_VECTOR_STATUS_SUCCESS,
+    SPARSE_VECTOR_STATUS_INDEXED,
 )
 from .models import FactChunkDraft
 
@@ -60,8 +58,7 @@ class ChunkRepository:
                     start_line=draft.start_line,
                     end_line=draft.end_line,
                     chunk_index=draft.chunk_index,
-                    status=draft.status,
-                    dense_vector_status=DENSE_VECTOR_STATUS_PENDING,
+                    dense_vector_status=draft.dense_vector_status,
                     sparse_vector_status=SPARSE_VECTOR_STATUS_PENDING,
                     sparse_vector_retry_count=0,
                     es_status=ES_STATUS_PENDING,
@@ -106,7 +103,7 @@ class ChunkRepository:
         stmt = (
             select(self.model_cls)
             .where(self.model_cls.chunk_id.in_(chunk_ids))
-            .where(self.model_cls.status.in_(allowed_statuses))
+            .where(self.model_cls.dense_vector_status.in_(allowed_statuses))
         )
         result = await db.execute(stmt)
         records = result.scalars().all()
@@ -125,9 +122,7 @@ class ChunkRepository:
             return 0
 
         values: dict[str, object] = {
-            "status": CHUNK_STATUS_INDEXED,
-            "error_msg": None,
-            "dense_vector_status": DENSE_VECTOR_STATUS_SUCCESS,
+            "dense_vector_status": CHUNK_STATUS_INDEXED,
             "dense_vector_error_msg": None,
             "es_status": ES_STATUS_PENDING,
             "es_error_msg": None,
@@ -159,9 +154,7 @@ class ChunkRepository:
             db,
             chunk_ids,
             values={
-                "status": CHUNK_STATUS_FAILED,
-                "error_msg": truncated_error,
-                "dense_vector_status": DENSE_VECTOR_STATUS_FAILED,
+                "dense_vector_status": CHUNK_STATUS_FAILED,
                 "dense_vector_error_msg": truncated_error,
                 "es_status": ES_STATUS_PENDING,
                 "es_error_msg": None,
@@ -179,9 +172,7 @@ class ChunkRepository:
         expected_status: str | None = None,
     ) -> int:
         values: dict[str, object] = {
-            "status": CHUNK_STATUS_INDEXING,
-            "error_msg": None,
-            "dense_vector_status": DENSE_VECTOR_STATUS_PENDING,
+            "dense_vector_status": CHUNK_STATUS_INDEXING,
             "dense_vector_error_msg": None,
             "sparse_vector_status": SPARSE_VECTOR_STATUS_PENDING,
             "sparse_vector_error_msg": None,
@@ -233,7 +224,7 @@ class ChunkRepository:
         expected_status: str | None = None,
     ) -> int:
         values: dict[str, object] = {
-            "sparse_vector_status": SPARSE_VECTOR_STATUS_SUCCESS,
+            "sparse_vector_status": SPARSE_VECTOR_STATUS_INDEXED,
             "sparse_vector_error_msg": None,
             "sparse_vector_nonzero_count": nonzero_count,
         }
@@ -275,8 +266,8 @@ class ChunkRepository:
             select(func.count())
             .select_from(self.model_cls)
             .where(self.model_cls.doc_id == doc_id)
-            .where(self.model_cls.sparse_vector_status != SPARSE_VECTOR_STATUS_SUCCESS)
-            .where(self.model_cls.status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
+            .where(self.model_cls.sparse_vector_status != SPARSE_VECTOR_STATUS_INDEXED)
+            .where(self.model_cls.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
         )
         result = await db.execute(stmt)
         return int(result.scalar() or 0)
@@ -291,7 +282,7 @@ class ChunkRepository:
             select(self.model_cls)
             .where(self.model_cls.doc_id == doc_id)
             .where(self.model_cls.sparse_vector_status.in_(statuses))
-            .where(self.model_cls.status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
+            .where(self.model_cls.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
             .order_by(self.model_cls.chunk_index.asc())
         )
         result = await db.execute(stmt)
@@ -309,6 +300,7 @@ class ChunkRepository:
             return 0
 
         stmt = update(self.model_cls).where(self.model_cls.chunk_id.in_(chunk_ids))
+        stmt = stmt.where(self.model_cls.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
         if expected_status is not None:
             stmt = stmt.where(self.model_cls.sparse_vector_status == expected_status)
         result = await db.execute(stmt.values(**values))
@@ -328,9 +320,9 @@ class ChunkRepository:
 
         stmt = update(self.model_cls).where(self.model_cls.chunk_id.in_(chunk_ids))
         if expected_status is not None:
-            stmt = stmt.where(self.model_cls.status == expected_status)
+            stmt = stmt.where(self.model_cls.dense_vector_status == expected_status)
         elif protect_delete_statuses:
-            stmt = stmt.where(self.model_cls.status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
+            stmt = stmt.where(self.model_cls.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
 
         result = await db.execute(stmt.values(**values))
         return int(result.rowcount or 0)
@@ -346,8 +338,8 @@ class ChunkRepository:
             db,
             chunk_ids,
             values={
-                "status": CHUNK_STATUS_DELETED,
-                "error_msg": None,
+                "dense_vector_status": CHUNK_STATUS_DELETED,
+                "dense_vector_error_msg": None,
             },
             expected_status=expected_status,
         )
@@ -383,7 +375,6 @@ class ChunkRepository:
             db,
             chunk_ids,
             values={
-                "error_msg": truncated_error,
                 "es_status": ES_STATUS_FAILED,
                 "es_error_msg": truncated_error,
             },
@@ -421,7 +412,7 @@ class ChunkRepository:
             .select_from(self.model_cls)
             .where(self.model_cls.doc_id == doc_id)
             .where(self.model_cls.es_status != ES_STATUS_SUCCESS)
-            .where(self.model_cls.status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
+            .where(self.model_cls.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
         )
         result = await db.execute(stmt)
         return int(result.scalar() or 0)
@@ -437,7 +428,7 @@ class ChunkRepository:
             select(self.model_cls.chunk_id)
             .where(self.model_cls.doc_id == doc_id)
             .where(self.model_cls.es_status.in_((ES_STATUS_PENDING, ES_STATUS_FAILED)))
-            .where(self.model_cls.status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
+            .where(self.model_cls.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
             .order_by(self.model_cls.chunk_index.asc())
         )
         result = await db.execute(stmt)
@@ -458,7 +449,7 @@ class ChunkRepository:
         stmt = (
             update(self.model_cls)
             .where(self.model_cls.chunk_id == chunk_id)
-            .where(self.model_cls.status.in_(CHUNK_UPDATE_ALLOWED_STATUSES))
+            .where(self.model_cls.dense_vector_status.in_(CHUNK_UPDATE_ALLOWED_STATUSES))
             .values(
                 content=content,
                 content_hash=content_hash,
@@ -466,9 +457,7 @@ class ChunkRepository:
                 start_line=start_line,
                 end_line=end_line,
                 chunk_index=chunk_index,
-                status=CHUNK_STATUS_INDEXING,
-                error_msg=None,
-                dense_vector_status=DENSE_VECTOR_STATUS_PENDING,
+                dense_vector_status=CHUNK_STATUS_INDEXING,
                 dense_vector_error_msg=None,
                 sparse_vector_status=SPARSE_VECTOR_STATUS_PENDING,
                 sparse_vector_error_msg=None,
@@ -495,7 +484,7 @@ class ChunkRepository:
         stmt = (
             update(self.model_cls)
             .where(self.model_cls.chunk_id == chunk_id)
-            .where(self.model_cls.status.in_(CHUNK_UPDATE_ALLOWED_STATUSES))
+            .where(self.model_cls.dense_vector_status.in_(CHUNK_UPDATE_ALLOWED_STATUSES))
             .values(
                 content=content,
                 content_hash=content_hash,
@@ -503,7 +492,7 @@ class ChunkRepository:
                 start_line=start_line,
                 end_line=end_line,
                 chunk_index=chunk_index,
-                error_msg=None,
+                dense_vector_error_msg=None,
             )
         )
         result = await db.execute(stmt)
@@ -520,8 +509,8 @@ class ChunkRepository:
         stmt = (
             update(self.model_cls)
             .where(self.model_cls.chunk_id.in_(chunk_ids))
-            .where(self.model_cls.status.in_(CHUNK_DELETE_ALLOWED_STATUSES))
-            .values(status=CHUNK_STATUS_DELETING, error_msg=None)
+            .where(self.model_cls.dense_vector_status.in_(CHUNK_DELETE_ALLOWED_STATUSES))
+            .values(dense_vector_status=CHUNK_STATUS_DELETING, dense_vector_error_msg=None)
         )
         result = await db.execute(stmt)
         return int(result.rowcount or 0)
@@ -538,8 +527,8 @@ class ChunkRepository:
             db,
             chunk_ids,
             values={
-                "status": CHUNK_STATUS_DELETE_FAILED,
-                "error_msg": (error_msg or "")[:MAX_ERROR_MSG_LENGTH],
+                "dense_vector_status": CHUNK_STATUS_DELETE_FAILED,
+                "dense_vector_error_msg": (error_msg or "")[:MAX_ERROR_MSG_LENGTH],
             },
             expected_status=expected_status,
         )
@@ -552,11 +541,11 @@ class ChunkRepository:
         stmt = (
             update(self.model_cls)
             .where(self.model_cls.chunk_id == chunk_id)
-            .where(self.model_cls.status.in_(CHUNK_DELETE_RETRY_STATUSES))
+            .where(self.model_cls.dense_vector_status.in_(CHUNK_DELETE_RETRY_STATUSES))
             .values(
-                status=CHUNK_STATUS_DELETING,
-                error_msg=None,
-                last_retry_at=func.now(),
+                dense_vector_status=CHUNK_STATUS_DELETING,
+                dense_vector_error_msg=None,
+                dense_vector_last_retry_at=func.now(),
             )
         )
         result = await db.execute(stmt)
@@ -573,9 +562,9 @@ class ChunkRepository:
         stmt = (
             update(self.model_cls)
             .where(self.model_cls.chunk_id == chunk_id)
-            .where(self.model_cls.status == CHUNK_STATUS_INDEXING)
+            .where(self.model_cls.dense_vector_status == CHUNK_STATUS_INDEXING)
             .where(self.model_cls.update_time <= cutoff)
-            .values(last_retry_at=func.now())
+            .values(dense_vector_last_retry_at=func.now())
         )
         result = await db.execute(stmt)
         return bool(result.rowcount)
@@ -588,19 +577,17 @@ class ChunkRepository:
         stmt = (
             update(self.model_cls)
             .where(self.model_cls.chunk_id == chunk_id)
-            .where(self.model_cls.status == CHUNK_STATUS_FAILED)
+            .where(self.model_cls.dense_vector_status == CHUNK_STATUS_FAILED)
             .values(
-                status=CHUNK_STATUS_INDEXING,
-                error_msg=None,
-                dense_vector_status=DENSE_VECTOR_STATUS_PENDING,
+                dense_vector_status=CHUNK_STATUS_INDEXING,
                 dense_vector_error_msg=None,
                 sparse_vector_status=SPARSE_VECTOR_STATUS_PENDING,
                 sparse_vector_error_msg=None,
                 sparse_vector_nonzero_count=None,
                 es_status=ES_STATUS_PENDING,
                 es_error_msg=None,
-                retry_count=self.model_cls.retry_count + 1,
-                last_retry_at=func.now(),
+                dense_vector_retry_count=self.model_cls.dense_vector_retry_count + 1,
+                dense_vector_last_retry_at=func.now(),
             )
         )
         result = await db.execute(stmt)
@@ -616,10 +603,10 @@ class ChunkRepository:
         cutoff = datetime.utcnow() - timedelta(seconds=stale_after_seconds)
         stmt = (
             select(self.model_cls)
-            .where(self.model_cls.status.in_(CHUNK_DELETE_RETRY_STATUSES))
+            .where(self.model_cls.dense_vector_status.in_(CHUNK_DELETE_RETRY_STATUSES))
             .where(
                 or_(
-                    self.model_cls.status == CHUNK_STATUS_DELETE_FAILED,
+                    self.model_cls.dense_vector_status == CHUNK_STATUS_DELETE_FAILED,
                     self.model_cls.update_time <= cutoff,
                 )
             )
@@ -639,7 +626,7 @@ class ChunkRepository:
         cutoff = datetime.utcnow() - timedelta(seconds=stale_after_seconds)
         stmt = (
             select(self.model_cls)
-            .where(self.model_cls.status == CHUNK_STATUS_INDEXING)
+            .where(self.model_cls.dense_vector_status == CHUNK_STATUS_INDEXING)
             .where(self.model_cls.update_time <= cutoff)
             .order_by(self.model_cls.update_time.asc())
             .limit(limit)

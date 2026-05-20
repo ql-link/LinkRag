@@ -83,7 +83,7 @@ def sample_drafts() -> list[StoredChunkDraft]:
             start_line=1,
             end_line=2,
             chunk_index=0,
-            status=CHUNK_STATUS_PENDING,
+            dense_vector_status=CHUNK_STATUS_PENDING,
         ),
         StoredChunkDraft(
             chunk_id="chunk-2",
@@ -97,7 +97,7 @@ def sample_drafts() -> list[StoredChunkDraft]:
             start_line=3,
             end_line=4,
             chunk_index=1,
-            status=CHUNK_STATUS_PENDING,
+            dense_vector_status=CHUNK_STATUS_PENDING,
         ),
     ]
 
@@ -124,8 +124,8 @@ def failed_chunk_record() -> ChunkRecordDB:
         start_line=1,
         end_line=2,
         chunk_index=0,
-        status="FAILED",
-        retry_count=0,
+        dense_vector_status="FAILED",
+        dense_vector_retry_count=0,
         dense_vector_model=None,
     )
 
@@ -144,8 +144,8 @@ def indexing_chunk_record() -> ChunkRecordDB:
         start_line=10,
         end_line=12,
         chunk_index=2,
-        status="INDEXING",
-        retry_count=1,
+        dense_vector_status="INDEXING",
+        dense_vector_retry_count=1,
         dense_vector_model="persisted-model",
     )
 
@@ -164,8 +164,8 @@ def delete_failed_chunk_record() -> ChunkRecordDB:
         start_line=20,
         end_line=22,
         chunk_index=3,
-        status="DELETE_FAILED",
-        retry_count=1,
+        dense_vector_status="DELETE_FAILED",
+        dense_vector_retry_count=1,
         dense_vector_model="persisted-model",
     )
 
@@ -184,8 +184,8 @@ def deleting_chunk_record() -> ChunkRecordDB:
         start_line=30,
         end_line=32,
         chunk_index=4,
-        status="DELETING",
-        retry_count=1,
+        dense_vector_status="DELETING",
+        dense_vector_retry_count=1,
         dense_vector_model="persisted-model",
     )
 
