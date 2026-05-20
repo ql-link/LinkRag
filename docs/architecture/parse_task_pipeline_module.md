@@ -14,7 +14,7 @@ src/core/pipeline/
 │   ├── error_codes.py           # ParseFailureCode + build_failure_reason
 │   ├── models.py                # ParsePipelineResult / PipelineStatus
 │   ├── log_repository.py        # ParseLogRepository: document_parsed_log 仓储与终态写入
-│   ├── notifier.py              # ParseResultNotifier: parse_result MQ 通知与兜底
+│   ├── notifier.py              # ParseResultNotifier: parse_result MQ 通知与兜底；ParseResultNotificationError 继承 RetriableError，由消费框架做有限退避重试 + 死信兜底（见 mq_module.md §4.1）
 │   ├── source.py                # ParseSourceIO: 对象存储侧源文件流式下载到 Path / Markdown 上传
 │   ├── temp_workspace.py        # PARSE_TEMP_DIR 启动清理、临时文件分配、safe_unlink 幂等
 │   ├── validator.py             # ParseTaskGuard: 前置校验、MQ 重投与中断状态收敛

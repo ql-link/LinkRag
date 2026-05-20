@@ -168,6 +168,14 @@ class Settings(BaseSettings):
     RABBITMQ_EXCHANGE_TYPE: str = "direct"
     RABBITMQ_PREFETCH_COUNT: int = 10
 
+    # --- MQ 失败兜底（恒启用死信，不提供关闭开关）---
+    # 业务回调抛 RetriableError 子类时，最多重试 MQ_MAX_RETRIES 次，每次之间固定
+    # 退避 MQ_RETRY_BACKOFF_SECONDS；达上限或非 RetriableError 异常一律进入死信目标
+    # `<原 topic> + MQ_DLQ_SUFFIX`，并精确按 (topic, partition) 提交位点。
+    MQ_MAX_RETRIES: int = 3
+    MQ_RETRY_BACKOFF_SECONDS: float = 1.0
+    MQ_DLQ_SUFFIX: str = ".DLT"
+
     # ==========================================
     # 杂项配置 (Misc)
     # ==========================================

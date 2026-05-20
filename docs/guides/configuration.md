@@ -55,6 +55,18 @@
 
 > 注：ES 入库失败即终态，无 ES 内部自动重试配置。原 `ES_INDEXING_MAX_RETRY` 已移除（用户侧重试由 `document_post_process_pipeline.retry_count` 记录，触发路径待后续需求接线）。
 
+## MQ 失败兜底（重试 + 死信）
+
+消费框架对业务回调异常做有限退避重试 + 死信兜底；详细行为见 [mq_module.md §4.1](../architecture/mq_module.md#41-失败兜底重试--死信)。
+
+| 变量 | 默认 | 含义 |
+| --- | --- | --- |
+| `MQ_MAX_RETRIES` | `3` | 业务回调抛 `RetriableError` 子类时最多重试次数；超限后进死信 |
+| `MQ_RETRY_BACKOFF_SECONDS` | `1.0` | 重试之间固定退避秒数；单条消息最长阻塞 ≈ 此值 × `MQ_MAX_RETRIES` |
+| `MQ_DLQ_SUFFIX` | `.DLT` | 死信目标命名后缀（原 topic / queue + 后缀） |
+
+> 死信兜底恒启用，不提供关闭开关。死信目标在应用启动时由 `ensure_topics()`（Kafka）或 `RabbitMQReceiver.start()`（RabbitMQ）幂等创建。
+
 ## MQ Topic 命名
 
 应用启动时需要这些 topic 存在或被自动创建（见 [mq_integration.md](mq_integration.md)）：

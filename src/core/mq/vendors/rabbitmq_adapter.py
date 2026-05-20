@@ -17,6 +17,12 @@ from src.core.mq.exceptions import (
     MQSendError,
     MQConsumeError,
 )
+from src.core.mq.retry import (
+    DLQPublisher,
+    DispatchOutcome,
+    RetryPolicy,
+    dispatch_with_retry,
+)
 
 
 class RabbitMQSender(IMQSender):
@@ -191,12 +197,17 @@ class RabbitMQReceiver(IMQReceiver):
         durable: bool = True,
         auto_delete: bool = False,
         exclusive: bool = False,
+        retry_policy: RetryPolicy | None = None,
+        dlq_publisher: DLQPublisher | None = None,
     ):
         self._url = url
         self._prefetch_count = prefetch_count
         self._durable = durable
         self._auto_delete = auto_delete
         self._exclusive = exclusive
+        # 失败兜底依赖：由 MQFactory 注入；start() 时校验
+        self._retry_policy = retry_policy
+        self._dlq_publisher = dlq_publisher
 
         self._connection = None
         self._channel = None
@@ -230,12 +241,27 @@ class RabbitMQReceiver(IMQReceiver):
         )
 
     async def start(self) -> None:
-        """启动消费"""
+        """启动消费：声明 DLX + 死信队列后再绑定原队列消费。
+
+        关键改造点（修复 GitHub issue #22 P0，RabbitMQ 侧对齐 Kafka 行为）：
+        1. 启动期为每个订阅声明 ``<queue>.DLX`` 交换器 + ``<queue><MQ_DLQ_SUFFIX>``
+           死信队列，并把原队列声明附加 ``x-dead-letter-exchange`` 参数。
+        2. 弃用 ``message.process()`` 上下文管理器：原实现回调异常会自动 nack 重入队，
+           等价于无上限重试 + poison pill。改为手动 ack / nack，失败兜底走
+           ``dispatch_with_retry``：有限退避重试 → 超限投递死信 → 成功 ack。
+        3. 若死信投递失败，``message.nack(requeue=True)`` 让下次重新投递，不丢消息。
+        """
         if self._running:
             logger.warning("[RabbitMQ Consumer] 已在运行中")
             return
         if not self._subscriptions:
             raise MQConsumeError("没有注册任何订阅", vendor="rabbitmq")
+        if self._retry_policy is None or self._dlq_publisher is None:
+            raise MQConsumeError(
+                "RabbitMQReceiver 缺少 retry_policy / dlq_publisher，"
+                "应通过 MQFactory.get_receiver() 装配",
+                vendor="rabbitmq",
+            )
 
         try:
             import aio_pika
@@ -245,44 +271,78 @@ class RabbitMQReceiver(IMQReceiver):
             await self._channel.set_qos(prefetch_count=self._prefetch_count)
 
             for sub in self._subscriptions:
+                queue_name = sub["queue_name"]
+                # 死信装配：DLX exchange + DLT queue + 绑定，全部幂等声明（AMQP
+                # declare 在参数一致时为 no-op，重复启动安全）。
+                dlx_name = f"{queue_name}.DLX"
+                dlt_name = f"{queue_name}{self._retry_policy.dlq_suffix}"
+                dlx = await self._channel.declare_exchange(
+                    dlx_name,
+                    type=aio_pika.ExchangeType.DIRECT,
+                    durable=self._durable,
+                )
+                dlt_queue = await self._channel.declare_queue(
+                    dlt_name,
+                    durable=self._durable,
+                )
+                # routing_key 用原 queue 名，与死信发布时调用 sender.send(topic=dlt_name) 对齐
+                await dlt_queue.bind(dlx, routing_key=queue_name)
+
+                # 原队列声明附加 dead-letter 参数。注意：若环境中已有同名 queue 且
+                # 参数不一致会抛 PRECONDITION_FAILED，需运维一次性删除重建。
                 queue = await self._channel.declare_queue(
-                    sub["queue_name"],
+                    queue_name,
                     durable=self._durable,
                     auto_delete=self._auto_delete,
                     exclusive=self._exclusive,
+                    arguments={
+                        "x-dead-letter-exchange": dlx_name,
+                        "x-dead-letter-routing-key": queue_name,
+                    },
                 )
 
-                # 使用闭包绑定 callback
+                # 使用闭包绑定 callback / queue_name
                 cb = sub["callback"]
                 consumer_tag = sub["consumer_tag"]
 
                 async def _on_message(
                     message: aio_pika.IncomingMessage,
                     _cb=cb,
+                    _queue_name=queue_name,
                 ) -> None:
-                    async with message.process():
-                        body = message.body.decode("utf-8")
-                        metadata = {
-                            "queue": message.routing_key,
-                            "exchange": message.exchange or "",
-                            "routing_key": message.routing_key,
-                            "delivery_tag": message.delivery_tag,
-                            "message_id": message.message_id,
-                            "timestamp": (
-                                message.timestamp.timestamp()
-                                if message.timestamp else None
-                            ),
-                            "headers": dict(message.headers) if message.headers else {},
-                        }
-                        try:
-                            await _cb(body, metadata)
-                        except Exception as e:
-                            logger.error(
-                                f"[RabbitMQ] 业务回调异常: "
-                                f"queue={message.routing_key}, error={e}"
-                            )
-                            # message.process() 上下文管理器会自动 nack
-                            raise
+                    body = message.body.decode("utf-8")
+                    metadata = {
+                        "topic": _queue_name,
+                        "queue": _queue_name,
+                        "exchange": message.exchange or "",
+                        "routing_key": message.routing_key,
+                        "delivery_tag": message.delivery_tag,
+                        "message_id": message.message_id,
+                        "key": message.message_id,
+                        "timestamp": (
+                            message.timestamp.timestamp()
+                            if message.timestamp else None
+                        ),
+                        "headers": dict(message.headers) if message.headers else {},
+                    }
+
+                    outcome = await dispatch_with_retry(
+                        _cb,
+                        body=body,
+                        metadata=metadata,
+                        policy=self._retry_policy,
+                        dlq_publisher=self._dlq_publisher,
+                    )
+
+                    if outcome in (DispatchOutcome.OK, DispatchOutcome.DLQ_PUBLISHED):
+                        # 成功 / 已转死信：业务流转结束，确认消费
+                        await message.ack()
+                    else:
+                        # DLQ 投递本身失败：保留消息让下次重投，不丢
+                        logger.error(
+                            f"[RabbitMQ] DLT 投递失败 nack-requeue: queue={_queue_name}"
+                        )
+                        await message.nack(requeue=True)
 
                 await queue.consume(_on_message, consumer_tag=consumer_tag)
                 self._consumer_tags.append(consumer_tag)
