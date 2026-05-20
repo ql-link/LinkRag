@@ -129,5 +129,5 @@ CODE: 中文业务原因；底层详情
 
 辅助状态：
 
-- `dense_vector_status`: `PENDING/SUCCESS/FAILED`
+- `dense_vector_status`: `PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED`
 - `es_status`: `PENDING/SUCCESS/FAILED`

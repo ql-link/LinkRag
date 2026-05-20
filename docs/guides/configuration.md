@@ -15,7 +15,7 @@
 | 系统级 LLM | `SYSTEM_LLM_*` | 始终（兜底 LLM 调用） |
 | Markdown 增强 | `MARKDOWN_PARSER_*` | 调整解析增强行为时 |
 | 分块策略 | `CHUNKING_*` | 调整分块参数时 |
-| 向量存储 | `VECTOR_STORE_TYPE`, `QDRANT_*`, `ES_*`, `CHUNK_INDEX_*` | 始终（选择 Qdrant 或 ES） |
+| 向量存储 | `VECTOR_STORE_TYPE`, `QDRANT_*`, `ES_*`, `CHUNK_INDEX_*`, `SPARSE_VECTOR_*` | 始终（选择 Qdrant 或 ES，并配置稀疏向量） |
 | 对象存储 | `STORAGE_TYPE`, `MINIO_*`, `LOCAL_DOCS_PATH` | 始终 |
 | 解析临时目录 | `PARSE_TEMP_DIR` | 始终（流式下载落盘目录） |
 | PDF 解析 | `PDF_PARSER_*`, `MINERU_*`, `DOCLING_*` | 处理 PDF 时 |
@@ -42,6 +42,7 @@
 | --- | --- | --- |
 | `MQ_VENDOR` | `kafka` | 切换 Kafka / RabbitMQ |
 | `VECTOR_STORE_TYPE` | `qdrant` | 切换 Qdrant / Elasticsearch |
+| `SPARSE_VECTOR_ENABLED` | `true` | 是否在向量化阶段同步生成 BGE-M3 稀疏向量；关闭后保持旧 dense-only 语义 |
 | `STORAGE_TYPE` | `minio` | 切换 MinIO / 本地存储 |
 | `PARSE_TEMP_DIR` | `/tmp/tolink-rag-parse` | 解析任务源文件临时落盘目录。流式下载在此创建临时文件；解析为 markdown 后立即清理；worker 启动时清空兜底。不预设最小容量，沿用部署机系统盘大小；写满会归类为 `TEMP_DISK_FULL` 错误码。扩消费者时容量需要 ≥ 单文件上限 × 并发数 |
 | `PDF_PARSER_BACKEND` | `mineru` | PDF 解析后端：`auto` / `mineru` / `opendataloader` / `naive` |
@@ -78,6 +79,27 @@
 | `CHUNKING_EMBED_BATCH_SIZE` | 32 | 受向量服务并发上限约束 |
 
 详细分块策略见 [chunking_module.md](../architecture/chunking_module.md)。
+
+## 稀疏向量配置
+
+稀疏向量首期使用本地 `BAAI/bge-m3`，与稠密向量在同一个 chunk 向量化阶段执行。模型输入是 chunk 原文，不使用 ES 分词结果。
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `SPARSE_VECTOR_ENABLED` | `true` | 是否启用稀疏向量；关闭后只执行旧稠密向量流程 |
+| `SPARSE_VECTOR_PROVIDER` | `bge_m3` | 稀疏向量提供方；首期仅支持 `bge_m3` |
+| `SPARSE_VECTOR_MODEL_NAME` | `BAAI/bge-m3` | Hugging Face 模型名或本地模型目录 |
+| `SPARSE_VECTOR_MODEL_CACHE_DIR` | 空 | 模型缓存目录，空值使用默认 Hugging Face 缓存 |
+| `SPARSE_VECTOR_LOCAL_FILES_ONLY` | `false` | 是否只使用本地已有模型文件 |
+| `SPARSE_VECTOR_DEVICE` | `auto` | 推理设备：`auto` / `cpu` / `cuda` / `cuda:n`；CPU 固定 fp32，CUDA 固定 fp16 |
+| `SPARSE_VECTOR_BATCH_SIZE` | `12` | BGE-M3 稀疏编码批大小 |
+| `SPARSE_VECTOR_MAX_LENGTH` | `8192` | 输入文本最大 token 长度 |
+| `SPARSE_VECTOR_QDRANT_VECTOR_NAME` | `sparse_text` | Qdrant named sparse vector 名称 |
+| `SPARSE_VECTOR_TOP_K` | `256` | 每条稀疏向量最多保留的非零 token 数；`0` 表示不截断 |
+| `SPARSE_VECTOR_MIN_WEIGHT` | `0.0` | 过滤低权重 token 的阈值 |
+| `TOLINK_RUN_REAL_SPARSE_VECTOR_TESTS` | `false` | 是否运行真实 BGE-M3 smoke 测试 |
+
+不再提供 `SPARSE_VECTOR_USE_FP16` 配置。推理精度只由 `SPARSE_VECTOR_DEVICE` 决定：CPU 使用 fp32，CUDA 使用 fp16。
 
 ## 配置加载与覆盖
 

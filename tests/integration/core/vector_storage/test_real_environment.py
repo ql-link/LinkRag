@@ -121,6 +121,8 @@ async def test_should_store_update_and_delete_chunks_into_real_mysql_and_qdrant_
         embedding_pipeline=DeterministicEmbeddingPipeline(),
     )
     collection_name = bucket_router.collection_name(0)
+    original_sparse_enabled = settings.SPARSE_VECTOR_ENABLED
+    settings.SPARSE_VECTOR_ENABLED = False
 
     try:
         async with session_factory() as session:
@@ -263,3 +265,4 @@ async def test_should_store_update_and_delete_chunks_into_real_mysql_and_qdrant_
                 await session.commit()
         with suppress(Exception):
             await engine.dispose()
+        settings.SPARSE_VECTOR_ENABLED = original_sparse_enabled

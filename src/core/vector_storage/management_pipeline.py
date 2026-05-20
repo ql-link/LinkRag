@@ -14,9 +14,17 @@ from src.core.chunk_fact_storage.constants import (
     CHUNK_STATUS_DELETING,
     CHUNK_STATUS_INDEXED,
     CHUNK_STATUS_INDEXING,
+    SPARSE_VECTOR_STATUS_INDEXING,
+    SPARSE_VECTOR_STATUS_PENDING,
 )
 from src.core.qdrant_vector_storage import IndexedPoint, QdrantIndexStore
-from src.core.qdrant_vector_storage.point_factory import chunk_from_fields, indexed_point_from_record
+from src.core.qdrant_vector_storage.point_factory import (
+    chunk_from_fields,
+    indexed_point_from_record,
+    sparse_indexed_point_from_record,
+)
+from src.config import settings
+from src.core.sparse_vector import SparseChunkVectorizationRequest, SparseVector, SparseVectorService
 from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
 from src.core.splitter.models import EmbeddedChunk
 from src.models.chunk_record import ChunkRecordDB
@@ -44,6 +52,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
         repository: ChunkRepository,
         qdrant_store: QdrantIndexStore,
         embedding_pipeline: ChunkEmbeddingPipeline,
+        sparse_vector_service: SparseVectorService | None = None,
     ) -> None:
         """
             初始化 chunk 管理服务，并注入数据库、向量索引与 embedding 依赖。
@@ -61,6 +70,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
         self.repository = repository
         self.qdrant_store = qdrant_store
         self.embedding_pipeline = embedding_pipeline
+        self.sparse_vector_service = sparse_vector_service
 
     async def update_chunk(self, request: ChunkUpdateRequest) -> ChunkMutationResult:
         """
@@ -148,7 +158,16 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
                     affected_chunks=0,
                     skipped_chunk_ids=[record.chunk_id],
                 )
-            point, embedding_model = await self._build_updated_point(
+            if self._sparse_enabled():
+                sparse_indexing = await self._mark_sparse_indexing(
+                    [record.chunk_id], model_name=self._sparse_model_name()
+                )
+                if sparse_indexing != 1:
+                    raise RuntimeError(
+                        "Skipped sparse update because rowcount "
+                        f"{sparse_indexing} != 1 for chunk {record.chunk_id}."
+                    )
+            point, embedding_model, sparse_vector = await self._build_updated_point(
                 record,
                 content=request.content,
                 chunk_type=chunk_type,
@@ -161,6 +180,26 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
                 vector_size=len(point.vector),
             )
             await self.qdrant_store.upsert_points(bucket_id=record.bucket_id, points=[point])
+            if sparse_vector is not None:
+                sparse_point = sparse_indexed_point_from_record(
+                    record, sparse_vector, vector_name=self.sparse_vector_service.vector_name
+                )
+                await self.qdrant_store.ensure_sparse_vector_schema(
+                    bucket_id=record.bucket_id, vector_name=sparse_point.vector_name
+                )
+                await self.qdrant_store.upsert_sparse_vectors(
+                    bucket_id=record.bucket_id, points=[sparse_point]
+                )
+                sparse_indexed = await self._mark_sparse_indexed(
+                    [record.chunk_id],
+                    model_name=self._sparse_model_name(),
+                    nonzero_count=len(sparse_vector.indices),
+                )
+                if sparse_indexed != 1:
+                    raise RuntimeError(
+                        "Skipped stale sparse update completion because rowcount "
+                        f"{sparse_indexed} != 1 for chunk {record.chunk_id}."
+                    )
             indexed = await self._mark_indexed([record.chunk_id], embedding_model=embedding_model)
             if not indexed:
                 await self._delete_qdrant_point_if_record_is_delete_state(
@@ -180,6 +219,8 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
         except Exception as exc:
             error_msg = str(exc)
             await self._mark_failed([record.chunk_id], error_msg=error_msg)
+            if self._sparse_enabled():
+                await self._mark_sparse_failed([record.chunk_id], error_msg=error_msg)
             logger.exception(
                 f"[VectorStorageManagementPipeline] Failed to update chunk {record.chunk_id}: {error_msg}"
             )
@@ -556,6 +597,68 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
             )
         )
 
+
+    def _sparse_enabled(self) -> bool:
+        """判断管理端重建流程是否需要同步 sparse vector。"""
+
+        return bool(getattr(settings, "SPARSE_VECTOR_ENABLED", False))
+
+    def _sparse_model_name(self) -> str | None:
+        """返回管理端重建使用的 sparse 模型名；未配置服务时返回 None。"""
+
+        return self.sparse_vector_service.model_name if self.sparse_vector_service else None
+
+    async def _mark_sparse_indexing(
+        self,
+        chunk_ids: Sequence[str],
+        *,
+        model_name: str | None,
+    ) -> int:
+        """把管理端重建目标的 sparse 子状态切换为 INDEXING。"""
+
+        if self.sparse_vector_service is None:
+            raise RuntimeError("SPARSE_VECTOR_ENABLED=true but sparse vector service is not configured.")
+        return await self._run_in_transaction_with_result(
+            lambda session: self.repository.mark_sparse_indexing(
+                session,
+                chunk_ids,
+                model_name=model_name,
+                expected_status=SPARSE_VECTOR_STATUS_PENDING,
+            )
+        )
+
+    async def _mark_sparse_indexed(
+        self,
+        chunk_ids: Sequence[str],
+        *,
+        model_name: str | None,
+        nonzero_count: int,
+    ) -> int:
+        """把管理端重建目标的 sparse 子状态切换为 SUCCESS 并记录非零 token 数。"""
+
+        return await self._run_in_transaction_with_result(
+            lambda session: self.repository.mark_sparse_indexed(
+                session,
+                chunk_ids,
+                model_name=model_name,
+                nonzero_count=nonzero_count,
+                expected_status=SPARSE_VECTOR_STATUS_INDEXING,
+            )
+        )
+
+    async def _mark_sparse_failed(self, chunk_ids: Sequence[str], *, error_msg: str) -> bool:
+        """把管理端重建目标的 sparse 子状态标记为 FAILED。"""
+
+        affected_rows = await self._run_in_transaction_with_result(
+            lambda session: self.repository.mark_sparse_failed(
+                session,
+                chunk_ids,
+                error_msg=error_msg,
+                expected_status=None,
+            )
+        )
+        return affected_rows == len(chunk_ids)
+
     async def _build_updated_point(
         self,
         record: ChunkRecordDB,
@@ -565,7 +668,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
         start_line: int | None,
         end_line: int | None,
         chunk_index: int | None,
-    ) -> tuple[IndexedPoint, str | None]:
+    ) -> tuple[IndexedPoint, str | None, SparseVector | None]:
         """
             根据修改后的真值字段构造新的向量和 Qdrant point。
 
@@ -595,7 +698,21 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
 
         embedded_chunk: EmbeddedChunk = embedded_chunks[0]
         point = indexed_point_from_record(record, embedded_chunk)
-        return point, embedded_chunk.embedding_model
+        sparse_vector = None
+        if self._sparse_enabled():
+            sparse_vector = await self.sparse_vector_service.vectorize_chunk(
+                SparseChunkVectorizationRequest(
+                    chunk_id=record.chunk_id,
+                    content=content,
+                    doc_id=record.doc_id,
+                    bucket_id=record.bucket_id,
+                    user_id=record.user_id,
+                    set_id=record.set_id,
+                    task_id=str(record.doc_id),
+                    chunk_index=chunk_index,
+                )
+            )
+        return point, embedded_chunk.embedding_model, sparse_vector
 
     def _truth_fields_changed(
         self,

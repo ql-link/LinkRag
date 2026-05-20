@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.config import settings
 from src.core.chunk_fact_storage.constants import CHUNK_STATUS_PENDING
 from src.core.splitter.models import Chunk, EmbeddedChunk
 from src.core.vector_storage.models import StoredChunkDraft
@@ -38,6 +39,11 @@ class StubSessionFactory:
 
     async def __aexit__(self, exc_type, exc, tb) -> bool:
         return False
+
+
+@pytest.fixture(autouse=True)
+def disable_sparse_vector_by_default(monkeypatch):
+    monkeypatch.setattr(settings, "SPARSE_VECTOR_ENABLED", False)
 
 
 @pytest.fixture

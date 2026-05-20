@@ -108,6 +108,22 @@ class Settings(BaseSettings):
     CHUNK_INDEX_RETRY_INTERVAL_SECONDS: int = 300
     CHUNK_INDEX_INDEXING_STALE_SECONDS: int = 900
 
+    # Sparse vector / local BGE-M3
+    SPARSE_VECTOR_ENABLED: bool = True
+    SPARSE_VECTOR_PROVIDER: str = "bge_m3"
+    SPARSE_VECTOR_MODEL_NAME: str = "BAAI/bge-m3"
+    SPARSE_VECTOR_MODEL_CACHE_DIR: Optional[str] = None
+    SPARSE_VECTOR_LOCAL_FILES_ONLY: bool = False
+    SPARSE_VECTOR_DEVICE: str = "auto"
+    SPARSE_VECTOR_BATCH_SIZE: int = 12
+    SPARSE_VECTOR_MAX_LENGTH: int = 8192
+    SPARSE_VECTOR_QDRANT_VECTOR_NAME: str = "sparse_text"
+    SPARSE_VECTOR_TOP_K: int = 256
+    SPARSE_VECTOR_MIN_WEIGHT: float = 0.0
+    SPARSE_VECTOR_RETRY_LIMIT: int = 3
+    SPARSE_VECTOR_INDEXING_STALE_SECONDS: int = 900
+    TOLINK_RUN_REAL_SPARSE_VECTOR_TESTS: bool = False
+
     # Elasticsearch
     ES_HOST: str = "http://localhost:9200"
     ES_USER: Optional[str] = None

@@ -3,7 +3,9 @@ from unittest.mock import AsyncMock, call
 import pytest
 
 from src.core.chunk_fact_storage.constants import CHUNK_STATUS_INDEXING, CHUNK_STATUS_PENDING
-from src.core.qdrant_vector_storage import IndexedPoint
+from src.core.qdrant_vector_storage import IndexedPoint, SparseIndexedPoint
+from src.config import settings
+from src.core.sparse_vector import SparseVector
 from src.core.vector_storage import VectorStoragePipeline
 from src.core.vector_storage.models import ChunkStorageRequest
 
@@ -385,3 +387,87 @@ async def test_should_report_current_failed_when_mark_indexed_rowcount_is_incomp
     assert result.failed_chunk_ids == ["chunk-1"]
     assert result.embedding_model is None
     mock_qdrant_store.upsert_points.assert_awaited_once()
+
+
+
+@pytest.mark.asyncio
+async def test_should_index_dense_and_sparse_vectors_when_sparse_enabled(
+    mock_session_factory,
+    mock_draft_factory,
+    mock_repository,
+    mock_qdrant_store,
+    mock_embedding_pipeline,
+    mock_session,
+    monkeypatch,
+    sample_chunks,
+    sample_drafts,
+    sample_embedded_chunks,
+):
+    monkeypatch.setattr(settings, "SPARSE_VECTOR_ENABLED", True)
+    sparse_service = AsyncMock()
+    sparse_service.model_name = "BAAI/bge-m3"
+    sparse_service.vector_name = "sparse_text"
+    sparse_vector = SparseVector(indices=[1, 5], values=[0.2, 0.8])
+    sparse_service.vectorize_chunk.return_value = sparse_vector
+    mock_draft_factory.build_drafts.return_value = [sample_drafts[0]]
+    service = VectorStoragePipeline(
+        session_factory=mock_session_factory,
+        draft_factory=mock_draft_factory,
+        repository=mock_repository,
+        qdrant_store=mock_qdrant_store,
+        embedding_pipeline=mock_embedding_pipeline,
+        sparse_vector_service=sparse_service,
+        retry_limit=0,
+        retry_interval_seconds=0,
+    )
+    mock_repository.mark_indexing.return_value = 1
+    mock_repository.mark_sparse_indexing.return_value = 1
+    mock_repository.mark_sparse_indexed.return_value = 1
+    mock_repository.mark_indexed.return_value = 1
+    mock_embedding_pipeline.aembed_chunks.return_value = [sample_embedded_chunks[0]]
+
+    result = await service.store_chunks(ChunkStorageRequest(user_id=7, set_id=8, doc_id=9, chunks=[sample_chunks[0]]))
+
+    assert result.total_chunks == 1
+    assert result.indexed_chunks == 1
+    assert result.failed_chunk_ids == []
+    mock_repository.mark_sparse_indexing.assert_awaited_once_with(
+        mock_session,
+        ["chunk-1"],
+        model_name="BAAI/bge-m3",
+        expected_status="PENDING",
+    )
+    sparse_service.vectorize_chunk.assert_awaited_once()
+    sparse_request = sparse_service.vectorize_chunk.await_args.args[0]
+    assert sparse_request.content == "alpha"
+    assert sparse_request.chunk_id == "chunk-1"
+    mock_qdrant_store.ensure_collection.assert_awaited_once_with(bucket_id=11, vector_size=2)
+    mock_qdrant_store.upsert_points.assert_awaited_once()
+    mock_qdrant_store.ensure_sparse_vector_schema.assert_awaited_once_with(
+        bucket_id=11,
+        vector_name="sparse_text",
+    )
+    mock_qdrant_store.upsert_sparse_vectors.assert_awaited_once()
+    sparse_point = mock_qdrant_store.upsert_sparse_vectors.await_args.kwargs["points"][0]
+    assert sparse_point == SparseIndexedPoint(
+        chunk_id="chunk-1",
+        bucket_id=11,
+        vector_name="sparse_text",
+        sparse_vector=sparse_vector,
+        payload={"chunk_id": "chunk-1", "user_id": 7, "set_id": 8, "doc_id": 9},
+    )
+    mock_repository.mark_sparse_indexed.assert_awaited_once_with(
+        mock_session,
+        ["chunk-1"],
+        model_name="BAAI/bge-m3",
+        nonzero_count=2,
+        expected_status="INDEXING",
+    )
+    mock_repository.mark_indexed.assert_awaited_once_with(
+        mock_session,
+        ["chunk-1"],
+        embedding_model="embed-v1",
+        expected_status=CHUNK_STATUS_INDEXING,
+    )
+    mock_repository.mark_failed.assert_not_awaited()
+    mock_repository.mark_sparse_failed.assert_not_awaited()

@@ -64,7 +64,7 @@ Collection 名称示例：`kb_bucket_0`, `kb_bucket_1`, ..., `kb_bucket_127`。
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `id` | string | Point ID = `chunk_id`，与 MySQL `kb_document_chunk.chunk_id` 一致 |
-| `vector` | float[] | embedding 向量，长度由当前模型决定 |
+| `vector` | float[] / named sparse vector | 稠密 embedding 向量；启用稀疏向量后，同一 point 还会写入 named sparse vector，默认名称 `sparse_text` |
 | `payload` | object | 业务标识，见下表 |
 
 ### Payload 字段
@@ -92,18 +92,27 @@ user_id, set_id, doc_id
 
 `QdrantStore` 内部维护 `_payload_index_ready_collections` 集合，确保 payload index 在进程生命周期内只为每个 collection 创建一次。重启进程后会再次创建，Qdrant 端已存在时不影响。
 
+### Sparse Vector
+
+启用 BGE-M3 稀疏向量后，`QdrantIndexStore.ensure_sparse_vector_schema` 会在既有 bucket collection 上确认 named sparse vector schema，默认 vector name 为 `sparse_text`。
+
+写入时使用 `QdrantIndexStore.upsert_sparse_vectors`，通过 Qdrant `update_vectors` 对同一 `point_id=chunk_id` 追加或覆盖 sparse vector，不覆盖已存在的 dense vector 与 payload。
+
 ## 一致性约束
 
 - **MySQL 为真值**：`kb_document_chunk` 是 Chunk 真值表，可从中重建 Qdrant 数据。
 - **id 一致**：`chunk_id` 同时作为 MySQL UK 与 Qdrant Point ID。
 - **bucket_id 同步**：MySQL 的 `bucket_id` 字段必须与 Qdrant 实际 collection 一致，由统一的 `BucketRouter` 计算。
-- **状态分离**：`kb_document_chunk.dense_vector_status` 是向量侧状态，`es_status` 是 ES 侧状态，**不与 Qdrant 实际存在状态同步**——失败重试时以 MySQL 状态决定是否重做。
+- **状态分离**：`kb_document_chunk.dense_vector_status`、`sparse_vector_status` 是向量侧状态，`es_status` 是 ES 侧状态，**不与 Qdrant 实际存在状态同步**——失败重试时以 MySQL 状态决定是否重做。
+- **稀疏向量一致性**：同一 chunk 的 dense 和 sparse 使用相同 Point ID；Qdrant 写入成功但 MySQL 回写失败时，以 MySQL 状态阻断文件级成功和后续检索返回。
 
 ## 常见操作
 
 | 操作 | 实现位置 |
 | --- | --- |
 | 写入 Chunk 向量 | `QdrantStore.upsert_points` |
+| 写入 Chunk 稀疏向量 | `QdrantStore.upsert_sparse_vectors` |
+| 确认稀疏向量 schema | `QdrantStore.ensure_sparse_vector_schema` |
 | 检查 Chunk 是否存在 | `QdrantStore.point_exists` |
 | 删除 Chunk | `QdrantStore.delete_points` |
 | 用户路由 | `BucketRouter.route_user(user_id)` |
