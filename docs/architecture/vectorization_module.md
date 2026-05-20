@@ -51,8 +51,12 @@ ParseTaskPipeline
         -> 按 chunk_index 顺序处理每个 chunk
           -> ChunkRepository.mark_indexing()
           -> ChunkEmbeddingPipeline.aembed_chunks([chunk])
+          -> SparseVectorService.vectorize_chunk([chunk 原文])（开启时）
           -> QdrantIndexStore.ensure_collection()
           -> QdrantIndexStore.upsert_points()
+          -> QdrantIndexStore.ensure_sparse_vector_schema()（开启时）
+          -> QdrantIndexStore.upsert_sparse_vectors()（开启时）
+          -> ChunkRepository.mark_sparse_indexed()（开启时）
           -> ChunkRepository.mark_indexed()
   -> document_post_process_pipeline.vectorizing_status = SUCCESS
   -> EsIndexingPipeline.index_for_parse_task()
@@ -65,6 +69,7 @@ ParseTaskPipeline
 | 组件 | 文件 | 职责 |
 | --- | --- | --- |
 | `ChunkEmbeddingPipeline` | `splitter/embedding_pipeline.py` | 批量生成 Chunk embedding，支持缓存和统计 |
+| `SparseVectorService` | `sparse_vector/pipeline.py` | 使用 BGE-M3 对 chunk 原文生成稀疏向量 |
 | `VectorStorageFacade` | `vector_storage/facade.py` | 向上游暴露统一入口 |
 | `VectorStoragePipeline` | `vector_storage/pipeline.py` | 新增 Chunk 的 MySQL + Qdrant 写入闭环 |
 | `VectorStorageManagementPipeline` | `vector_storage/management_pipeline.py` | Chunk 修改、删除 |
@@ -112,7 +117,16 @@ chunks: Sequence[Chunk]
 | `DELETED` | 删除完成 |
 | `DELETE_FAILED` | 删除失败，等待补偿 |
 
-MySQL 是 Chunk 真值源，Qdrant 是向量索引副本。
+MySQL 是 Chunk 真值源，Qdrant 是向量索引副本。启用稀疏向量后，文件级向量化成功要求每个有效 chunk 同时满足 `dense_vector_status=INDEXED` 与 `sparse_vector_status=INDEXED`。
+
+稀疏向量子状态：
+
+| 状态 | 含义 |
+| --- | --- |
+| `PENDING` | 等待稀疏向量处理 |
+| `INDEXING` | 正在生成或写入 BGE-M3 稀疏向量 |
+| `INDEXED` | 稀疏向量已写入 Qdrant，MySQL 已确认 |
+| `FAILED` | 稀疏模型调用、Qdrant 写入或状态回写失败 |
 
 ### 3.3 文件级后处理状态
 
@@ -121,9 +135,9 @@ MySQL 是 Chunk 真值源，Qdrant 是向量索引副本。
 | 字段 | 含义 |
 | --- | --- |
 | `pipeline_status` | 整体状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
-| `chunking_status` | 分片阶段状态：`PENDING/SUCCESS/FAILED` |
-| `vectorizing_status` | 向量化/Qdrant 阶段状态：`PENDING/SUCCESS/FAILED` |
-| `es_indexing_status` | Elasticsearch 入库阶段状态：`PENDING/SUCCESS/FAILED` |
+| `chunking_status` | 分片阶段状态：`PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED` |
+| `vectorizing_status` | 向量化/Qdrant 阶段状态：`PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED` |
+| `es_indexing_status` | Elasticsearch 入库阶段状态：`PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED` |
 | `failed_stage` | 失败阶段：`CHUNKING/VECTORIZING/ES_INDEXING` |
 | `recover_from_stage` | 重投或补偿时可恢复的阶段 |
 | `chunk_count` | 本次解析生成的 Chunk 数量 |
@@ -148,6 +162,8 @@ payload: {
 ```
 
 collection 名称由 `BucketRouter.collection_name(bucket_id)` 生成。
+
+启用稀疏向量时，`SparseIndexedPoint` 使用同一 `chunk_id` 作为 Point ID，并通过 named sparse vector（默认 `sparse_text`）写入 BGE-M3 lexical weights。稀疏向量写入使用局部 vector update，不覆盖 dense vector。
 
 ### 3.5 Elasticsearch Document
 
@@ -199,7 +215,7 @@ result = await vector_storage.store_chunks(
 - `total_chunks`
 - `indexed_chunks`
 - `failed_chunk_ids`
-- `embedding_model`
+- `dense_vector_model`
 
 部分 Chunk 失败不会直接抛到解析主流程，而是通过结果汇总表达。当前文件级语义下，只要向量化存在失败 Chunk，整体 parse_result 会以 `failed` 通知 Java；全部 Chunk 向量化成功后才进入 ES 入库阶段。
 

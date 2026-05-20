@@ -4,11 +4,11 @@ from dataclasses import dataclass
 from enum import Enum
 
 from .constants import (
+    CHUNK_STATUS_FAILED,
+    CHUNK_STATUS_INDEXED,
     CHUNK_STATUS_PENDING,
     ES_STATUS_FAILED,
     ES_STATUS_SUCCESS,
-    VECTOR_STATUS_FAILED,
-    VECTOR_STATUS_SUCCESS,
 )
 
 
@@ -25,7 +25,7 @@ class FactChunkDraft:
     start_line: int | None
     end_line: int | None
     chunk_index: int | None
-    status: str = CHUNK_STATUS_PENDING
+    dense_vector_status: str = CHUNK_STATUS_PENDING
 
 
 class ChunkPostStatus(str, Enum):
@@ -36,14 +36,14 @@ class ChunkPostStatus(str, Enum):
 
 
 def decide_chunk_post_status(record: object) -> ChunkPostStatus:
-    """根据阶段状态判断 chunk 后置处理结果，不再依赖模糊生命周期状态。"""
-    vector_status = getattr(record, "vector_status", None)
+    """根据 dense 向量生命周期与 ES 子状态判断 chunk 后置处理结果。"""
+    dense_vector_status = getattr(record, "dense_vector_status", None)
     es_status = getattr(record, "es_status", None)
 
-    if vector_status == VECTOR_STATUS_FAILED:
+    if dense_vector_status == CHUNK_STATUS_FAILED:
         return ChunkPostStatus.VECTOR_FAILED
-    if vector_status == VECTOR_STATUS_SUCCESS and es_status == ES_STATUS_FAILED:
+    if dense_vector_status == CHUNK_STATUS_INDEXED and es_status == ES_STATUS_FAILED:
         return ChunkPostStatus.ES_FAILED
-    if vector_status == VECTOR_STATUS_SUCCESS and es_status == ES_STATUS_SUCCESS:
+    if dense_vector_status == CHUNK_STATUS_INDEXED and es_status == ES_STATUS_SUCCESS:
         return ChunkPostStatus.COMPLETED
     return ChunkPostStatus.PROCESSING

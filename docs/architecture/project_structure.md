@@ -179,7 +179,6 @@ toLink-Rag/                         # 仓库根目录
 │   │       ├── minio_storage.py
 │   │       └── oss_storage.py
 │   └── utils/                    # 通用工具函数
-│       ├── file_downloader.py
 │       ├── logger.py
 │       └── text_formatter.py
 └── tests/                        # 测试目录

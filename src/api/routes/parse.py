@@ -5,12 +5,16 @@
 异步任务通过 MQ 中台投递，由消费端异步处理。
 """
 
+from pathlib import Path
+
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 
+from src.config import settings
 from src.services.parse_task_service import ParseTaskService
 from src.services.mq_service import MQService
 from src.services.storage.factory import StorageFactory
 from src.core.mq.messages import ParseTaskMessage
+from src.core.pipeline.parse_task import temp_workspace
 from src.api.schemas.parse import TaskSubmitRequest, TaskSubmitResponse
 
 router = APIRouter(
@@ -35,8 +39,10 @@ async def extract_sync(
     mineru_model_version: str = Form("vlm"),
 ):
     """同步解析文档"""
+    # multipart upload 接到 bytes 后，统一落到 PARSE_TEMP_DIR 转成 Path 喂给协议化的
+    # parser；与 MQ 主流程保持同一份临时文件生命周期约束，finally 兜底清理。
+    upload_path: Path | None = None
     try:
-        file_stream = await file.read()
         parser_kwargs = {}
         if file_type.lower() == "pdf":
             parser_kwargs["backend"] = pdf_parser_backend
@@ -48,8 +54,20 @@ async def extract_sync(
                 parser_kwargs["image_prefix"] = image_prefix
                 parser_kwargs["storage"] = StorageFactory.get_storage()
 
+        task_id = file.filename or "extract_sync"
+        upload_path = temp_workspace.create_temp_file(task_id, Path(settings.PARSE_TEMP_DIR))
+        upload_path.parent.mkdir(parents=True, exist_ok=True)
+        # FastAPI UploadFile 内部已经走 SpooledTemporaryFile，这里仅在边界处把句柄落地为
+        # 协议要求的 Path；分块写入避免一次性 .read() 把大文件全量读进内存。
+        with open(upload_path, "wb") as fp:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                fp.write(chunk)
+
         result = await ParseTaskService.aprocess(
-            file_stream,
+            upload_path,
             file_type,
             source_file=file.filename,
             **parser_kwargs,
@@ -70,6 +88,8 @@ async def extract_sync(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        temp_workspace.safe_unlink(upload_path)
 
 
 @router.post(

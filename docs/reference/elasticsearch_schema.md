@@ -88,7 +88,7 @@ is_success = (not failed_item_ids) and (indexed_items == total_items)
 
 - **MySQL 为真值**：`kb_document_chunk.es_status` 是 ES 侧的状态权威。ES 实际数据可能因为重试/失败而暂时不一致，以 MySQL 状态决定补偿动作。
 - **重建链路**：`kb_document_chunk` → `EsIndexingPipeline.index_for_parse_task` 可全量重建 ES。
-- **删除一致性**：Chunk 删除时需同时清理 MySQL、Qdrant、ES 三处。当前实现见 `kb_document_chunk.status=DELETING/DELETED`。
+- **删除一致性**：Chunk 删除时需同时清理 MySQL、Qdrant、ES 三处。当前实现见 `kb_document_chunk.dense_vector_status=DELETING/DELETED`。
 
 ## 连接配置
 

@@ -10,9 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.chunk_fact_storage.constants import (
     CHUNK_DELETE_PROTECTED_STATUSES,
+    CHUNK_STATUS_INDEXED,
     ES_STATUS_FAILED,
     ES_STATUS_PENDING,
-    VECTOR_STATUS_SUCCESS,
 )
 from src.database import get_async_session_factory
 from src.models.chunk_record import ChunkRecordDB
@@ -95,9 +95,9 @@ class Preprocessor:
         stmt = (
             select(ChunkRecordDB)
             .where(ChunkRecordDB.doc_id == doc_id)
-            .where(ChunkRecordDB.vector_status == VECTOR_STATUS_SUCCESS)
+            .where(ChunkRecordDB.dense_vector_status == CHUNK_STATUS_INDEXED)
             .where(ChunkRecordDB.es_status.in_((ES_STATUS_PENDING, ES_STATUS_FAILED)))
-            .where(ChunkRecordDB.status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
+            .where(ChunkRecordDB.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
             .order_by(ChunkRecordDB.chunk_index.asc())
         )
         result = await db.execute(stmt)

@@ -69,7 +69,7 @@ def build_default_topic_specs() -> list[TopicSpec]:
     min_insync_replicas = _env_int("MIN_INSYNC_REPLICAS", 1)
     max_message_bytes = _env_int("MAX_MESSAGE_BYTES", 1048576)
 
-    return [
+    business_specs = [
         TopicSpec(
             name=os.getenv("PARSE_TASK_TOPIC", "tolink.rag.parse_task"),
             partitions=_env_int("PARSE_TASK_PARTITIONS", 1),
@@ -103,6 +103,23 @@ def build_default_topic_specs() -> list[TopicSpec]:
             max_message_bytes=max_message_bytes,
         ),
     ]
+    # 为每个业务 topic 同规格创建对应死信 topic（<原 topic> + MQ_DLQ_SUFFIX）：
+    # - 与业务 topic 同 replication / min_insync_replicas，避免死信比正常消息更脆弱
+    # - 与业务 topic 同 retention，死信用于排查重放，过短反而埋雷
+    # - 应用启动期幂等创建，业务回调首次触发死信不会因为 topic 不存在而失败
+    dlq_suffix = os.getenv("MQ_DLQ_SUFFIX", settings.MQ_DLQ_SUFFIX)
+    dlt_specs = [
+        TopicSpec(
+            name=spec.name + dlq_suffix,
+            partitions=spec.partitions,
+            replication_factor=spec.replication_factor,
+            retention_ms=spec.retention_ms,
+            min_insync_replicas=spec.min_insync_replicas,
+            max_message_bytes=spec.max_message_bytes,
+        )
+        for spec in business_specs
+    ]
+    return business_specs + dlt_specs
 
 
 def ensure_topics() -> list[str]:

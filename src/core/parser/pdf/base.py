@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from pathlib import Path
 
 
 class BasePdfBackend(ABC):
@@ -12,5 +13,5 @@ class BasePdfBackend(ABC):
         self.metadata: dict = {}
 
     @abstractmethod
-    def parse(self, file_stream: bytes, options):
-        """将 PDF 字节流解析为 Markdown，并返回可选的二进制资产。"""
+    def parse(self, source: Path | None, options):
+        """将本地 PDF 文件（或 None，仅 MinerU URL 旁路）解析为 Markdown。"""

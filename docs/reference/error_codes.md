@@ -26,7 +26,8 @@ CODE: 中文业务原因；底层详情
 | `INVALID_TASK_CONTEXT` | 解析任务上下文不一致，请联系管理员确认 | Java 表记录不存在，或 payload 与数据库记录的文件、用户、数据集不一致 |
 | `DUPLICATE_TASK` | 解析任务已被处理，请勿重复提交 | 重复 task 命中既有终态记录 |
 | `INTERRUPTED_TASK` | 解析任务中断，请重新解析 | 重复 task 命中非终态日志 |
-| `SOURCE_FILE_NOT_FOUND` | 原始文件不存在或无法访问 | 对象存储下载源文件失败 |
+| `SOURCE_FILE_NOT_FOUND` | 原始文件不存在或无法访问 | 对象存储下载源文件失败（对象 404 / 网络异常 / 权限） |
+| `TEMP_DISK_FULL` | 服务器临时磁盘空间不足，请联系运维 | 流式下载阶段 worker 本机 `PARSE_TEMP_DIR` 所在盘写满，捕获 `OSError errno=ENOSPC` |
 | `UNSUPPORTED_FILE_TYPE` | 当前文件类型暂不支持解析 | `ParserFactory` 不支持文件类型 |
 | `PARSE_ENGINE_FAILED` | 文件解析失败，请检查文件内容 | 文件解析、Markdown 增强、分片失败 |
 | `PARSED_FILE_UPLOAD_FAILED` | 解析结果保存失败，请重新解析 | Markdown 上传对象存储失败 |
@@ -128,5 +129,5 @@ CODE: 中文业务原因；底层详情
 
 辅助状态：
 
-- `vector_status`: `PENDING/SUCCESS/FAILED`
+- `dense_vector_status`: `PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED`
 - `es_status`: `PENDING/SUCCESS/FAILED`

@@ -93,7 +93,12 @@ class DocumentPostProcessPipeline(Base):
     pipeline_status = Column(String(20), nullable=False, default="PENDING")
     chunking_status = Column(String(20), nullable=False, default="PENDING")
     vectorizing_status = Column(String(20), nullable=False, default="PENDING")
-    pretokenize_status = Column(String(20), nullable=False, default="PENDING")
+    pretokenize_status = Column(
+        String(20),
+        nullable=False,
+        default="PENDING",
+        comment="预分词状态: PENDING/SUCCESS/FAILED",
+    )
     es_indexing_status = Column(String(20), nullable=False, default="PENDING")
 
     failed_stage = Column(String(20), nullable=True)
@@ -106,7 +111,11 @@ class DocumentPostProcessPipeline(Base):
 
     chunking_duration_ms = Column(BIGINT, nullable=True)
     vectorizing_duration_ms = Column(BIGINT, nullable=True)
-    pretokenize_duration_ms = Column(BIGINT, nullable=True)
+    pretokenize_duration_ms = Column(
+        BIGINT,
+        nullable=True,
+        comment="预分词耗时，单位毫秒",
+    )
     es_indexing_duration_ms = Column(BIGINT, nullable=True)
     total_duration_ms = Column(BIGINT, nullable=True)
 

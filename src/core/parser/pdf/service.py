@@ -51,7 +51,13 @@ class PdfParserService:
     def __init__(self, registry: PdfBackendRegistry | None = None) -> None:
         self._registry = registry or create_default_pdf_backend_registry()
 
-    def parse(self, file_stream: bytes, options: PdfParseOptions) -> tuple[str, dict]:
+    def parse(self, source: Path | None, options: PdfParseOptions) -> tuple[str, dict]:
+        """根据 backend 链路解析 PDF。
+
+        ``source is None`` 仅在 MinerU URL 旁路下合法：此时 backends 不读取本地文件，
+        仅依赖 ``options.source_file_url`` 调云端 API。其他 backend 接到 ``None`` 会
+        在自己的逻辑里返回空字符串触发 fallback。
+        """
         metadata: dict = {
             "pdf_parser_requested_backend": options.backend,
             "pdf_parser_attempts": [],
@@ -76,7 +82,7 @@ class PdfParserService:
                 continue
 
             backend_started_at = time.monotonic()
-            markdown, binary_assets = backend_instance.parse(file_stream, options)
+            markdown, binary_assets = backend_instance.parse(source, options)
             backend_elapsed = time.monotonic() - backend_started_at
             timing_logger.info(
                 "[PdfParserService] backend parse completed: backend={} elapsed={:.2f}s "
@@ -111,7 +117,7 @@ class PdfParserService:
             placeholder_count = self._count_placeholders(markdown, metadata["pdf_parser_backend"])
             prepare_started_at = time.monotonic()
             prepared_assets = self._prepare_image_uploads(
-                file_stream,
+                source,
                 options,
                 backend=metadata["pdf_parser_backend"],
                 placeholder_count=placeholder_count,
@@ -163,7 +169,7 @@ class PdfParserService:
 
     def _upload_images(
         self,
-        file_stream: bytes,
+        source: Path | None,
         options: PdfParseOptions,
         *,
         backend: str,
@@ -171,7 +177,7 @@ class PdfParserService:
         binary_assets: list[PdfBinaryAsset],
     ) -> list[PdfImageAsset]:
         prepared_assets = self._prepare_image_uploads(
-            file_stream,
+            source,
             options,
             backend=backend,
             placeholder_count=placeholder_count,
@@ -196,7 +202,7 @@ class PdfParserService:
 
     def _prepare_image_uploads(
         self,
-        file_stream: bytes,
+        source: Path | None,
         options: PdfParseOptions,
         *,
         backend: str,
@@ -209,11 +215,12 @@ class PdfParserService:
                 binary_assets,
             )
 
-        # MinerU URL API 场景不会携带本地 PDF bytes；此时只能依赖云端 ZIP 中已返回的图片资产。
-        if not file_stream:
+        # MinerU URL API 场景不携带本地 PDF；此时只能依赖云端 ZIP 中已返回的图片资产。
+        if source is None:
             return []
 
-        doc = fitz.open(stream=file_stream, filetype="pdf")
+        # 用 ``filename=`` 走 mmap，避免一次性把整份 PDF 读进内存。
+        doc = fitz.open(filename=str(source))
         try:
             collected_assets: list[PdfBinaryAsset] = []
 

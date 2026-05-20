@@ -223,7 +223,7 @@ async def test_kafka_receiver_should_consume_parse_task_message_and_commit_after
     )
     db = build_db(record)
     storage = MagicMock()
-    storage.download_bytes.return_value = b"pdf-bytes"
+    storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf-bytes")
     mq_service = MagicMock()
     mq_service.send = AsyncMock()
     vector_storage = AsyncMock()
@@ -292,7 +292,7 @@ async def test_kafka_receiver_should_consume_parse_task_message_and_commit_after
     ):
         await receiver._consume_loop()
 
-    storage.download_bytes.assert_not_called()
+    storage.download_to_path.assert_not_called()
     storage.upload_bytes.assert_called_once()
     receiver._consumer.commit.assert_awaited_once()
     mock_chunk_markdown.assert_called_once_with(
@@ -319,7 +319,7 @@ async def test_kafka_receiver_should_commit_when_pipeline_fails():
     )
     db = build_db(record)
     storage = MagicMock()
-    storage.download_bytes.return_value = b"pdf-bytes"
+    storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf-bytes")
     mq_service = MagicMock()
     mq_service.send = AsyncMock()
 
@@ -431,7 +431,7 @@ async def test_kafka_receiver_should_commit_when_duplicate_created_is_marked_fai
     receiver._consumer.commit.assert_awaited_once()
     assert log_record.task_status == PARSE_TASK_STATUS_FAILED
     assert log_record.failure_reason.startswith("INTERRUPTED_TASK:")
-    storage.download_bytes.assert_not_called()
+    storage.download_to_path.assert_not_called()
     storage.upload_bytes.assert_not_called()
     mq_service.send.assert_awaited_once()
 
@@ -487,7 +487,7 @@ async def test_kafka_receiver_should_commit_when_duplicate_success_is_resent():
 
     receiver._consumer.commit.assert_awaited_once()
     assert log_record.task_status == PARSE_TASK_STATUS_SUCCESS
-    storage.download_bytes.assert_not_called()
+    storage.download_to_path.assert_not_called()
     storage.upload_bytes.assert_not_called()
     sent_payload = mq_service.send.call_args.args[0].get_payload()
     assert sent_payload.task_status == PARSE_TASK_STATUS_SUCCESS
