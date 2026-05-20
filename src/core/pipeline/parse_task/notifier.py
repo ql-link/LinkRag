@@ -7,6 +7,7 @@ from datetime import datetime
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.mq.exceptions import RetriableError
 from src.core.mq.messages.parse_result import ParseResultMessage
 from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.models.parse_task import DocumentParsedLog
@@ -21,8 +22,13 @@ from .error_codes import ParseFailureCode, build_failure_reason
 from .log_repository import ParseLogRepository
 
 
-class ParseResultNotificationError(RuntimeError):
-    """Raised when parse_result notification cannot be delivered."""
+class ParseResultNotificationError(RetriableError):
+    """Raised when parse_result notification cannot be delivered.
+
+    继承自 ``RetriableError``：解析终态已确定，仅"回发 parse_result 通知"链路
+    暂时不可用——属于值得消费框架有限次退避重投补发的场景。框架层据此分流，
+    达上限后由死信兜底（不再无限重试堵死 partition）。
+    """
 
 
 class ParseResultNotifier:

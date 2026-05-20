@@ -9,6 +9,7 @@ from src.core.preprocessor.models import ChunkWithTokens, FileIndexMeta, FilePos
 from src.core.markdown_parser.models import ParseResult
 from src.core.mq.messages import ParseTaskMessage
 from src.core.pipeline import ParseTaskPipeline, PipelineStatus
+from src.core.pipeline.parse_task.notifier import ParseResultNotificationError
 from src.core.pipeline.parse_task.constants import (
     DUPLICATE_FAILED_USER_MESSAGE,
     DUPLICATE_SUCCESS_USER_MESSAGE,
@@ -583,7 +584,7 @@ class TestParseTaskPipeline:
             preprocessor=FakePreprocessor(),
         )
 
-        with pytest.raises(RuntimeError, match="解析结果通知发送失败"):
+        with pytest.raises(ParseResultNotificationError, match="解析结果通知发送失败"):
             await pipeline.execute(build_payload())
 
         log_record = db.add.call_args.args[0]
@@ -612,7 +613,7 @@ class TestParseTaskPipeline:
             post_process_repository=post_repo,
         )
 
-        with pytest.raises(RuntimeError, match="解析结果通知发送失败"):
+        with pytest.raises(ParseResultNotificationError, match="解析结果通知发送失败"):
             await pipeline.execute(build_payload())
 
         log_record = db.add.call_args.args[0]
