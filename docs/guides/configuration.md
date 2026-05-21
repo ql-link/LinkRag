@@ -55,7 +55,22 @@
 | `MARKDOWN_PARSER_VISION_CONCURRENCY` | `24` | 图片视觉增强最大并发数，可降为 `16` / `8` / `1` 控制限流风险 |
 | `CHUNKING_ENABLE_ADVANCED_PIPELINE` | `true` | 是否启用进阶分块流水线 |
 
-> 注：ES 入库失败即终态，无 ES 内部自动重试配置。原 `ES_INDEXING_MAX_RETRY` 已移除（用户侧重试由 `document_post_process_pipeline.retry_count` 记录，触发路径待后续需求接线）。
+> 注：ES 入库失败即终态，无 ES 内部自动重试配置。原 `ES_INDEXING_MAX_RETRY` 已移除；用户侧重试由 `trigger_mode=manual_retry` 触发，并通过 `document_post_process_pipeline.retry_count` 记录。
+
+## Elasticsearch
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `ES_HOST` | `http://localhost:9200` | ES 地址，含 schema |
+| `ES_USER` / `ES_PASSWORD` | 空 | ES 鉴权账号密码，未启用鉴权时可为空 |
+| `ES_INDEX_NAME` | `tolink_rag_index` | Chunk 预分词索引名 |
+| `ES_INDEX_SHARDS` / `ES_INDEX_REPLICAS` | `3` / `1` | 索引分片与副本数 |
+| `ES_MAX_DOCUMENT_BYTES` | `131072` | 单条 ES 文档大小上限 |
+| `ES_MAX_TOKEN_BATCH_BYTES` | `5242880` | 单批 token 文档字节上限 |
+| `ES_MAX_TOKEN_BATCH_CHUNKS` | `500` | 单批最多 chunk 数 |
+| `ES_BULK_REQUEST_TIMEOUT_SECONDS` | `30` | bulk 请求超时 |
+| `ES_SMOKE_ENABLED` | `false` | 是否启用 ES 冒烟检查 |
+| `TOLINK_RUN_REAL_ES_INDEX_TESTS` | `false` | 是否运行真实 ES 集成测试 |
 
 ## MQ 失败兜底（重试 + 死信）
 

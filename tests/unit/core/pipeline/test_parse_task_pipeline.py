@@ -24,6 +24,7 @@ from src.core.pipeline.parse_task.post_process.constants import (
     PIPELINE_STATUS_PROCESSING,
     PIPELINE_STATUS_SUCCESS,
     POST_PROCESS_STAGE_CHUNKING,
+    POST_PROCESS_STAGE_ES_INDEXING,
     POST_PROCESS_STAGE_PRETOKENIZE,
     POST_PROCESS_STAGE_VECTORIZING,
     STAGE_STATUS_FAILED,
@@ -77,6 +78,17 @@ def build_db(parse_task):
     result.scalar_one_or_none.return_value = parse_task
     db.execute.return_value = result
     return db
+
+
+def configure_duplicate_retry_db(db, existing_log, *, extra_duplicate_reads: int = 0):
+    values = [existing_log, build_parse_task()] + [existing_log] * extra_duplicate_reads
+    db.execute.side_effect = [_scalar_result(value) for value in values]
+
+
+def _scalar_result(value):
+    result = MagicMock()
+    result.scalar_one_or_none.return_value = value
+    return result
 
 
 def build_parse_task():
@@ -133,6 +145,20 @@ class FakePostProcessRepository:
     async def get_by_log_id(self, db, document_parsed_log_id):
         self.calls.append("get_by_log_id")
         return self.pipeline
+
+    async def get_by_task_id(self, db, task_id):
+        self.calls.append("get_by_task_id")
+        return self.pipeline
+
+    async def claim_failed_for_retry(self, db, task_id):
+        self.calls.append("claim_failed_for_retry")
+        if self.pipeline.pipeline_status != PIPELINE_STATUS_FAILED:
+            return False
+        self.pipeline.retry_count = getattr(self.pipeline, "retry_count", 0) + 1
+        self.pipeline.pipeline_status = PIPELINE_STATUS_PROCESSING
+        self.pipeline.failed_stage = None
+        self.pipeline.failure_reason = None
+        return True
 
     async def mark_processing(self, db, pipeline, *, started_at):
         self.calls.append("mark_processing")
@@ -218,6 +244,7 @@ class TestParseTaskPipeline:
         existing_log = build_log(PARSE_TASK_STATUS_SUCCESS)
         db = build_db(existing_log)
         db.flush.side_effect = IntegrityError("duplicate", None, None)
+        configure_duplicate_retry_db(db, existing_log)
         storage = MagicMock()
         mq_service = MagicMock()
         mq_service.send = AsyncMock()
@@ -248,6 +275,7 @@ class TestParseTaskPipeline:
         existing_log = build_log(PARSE_TASK_STATUS_SUCCESS)
         db = build_db(existing_log)
         db.flush.side_effect = IntegrityError("duplicate", None, None)
+        configure_duplicate_retry_db(db, existing_log)
         storage = MagicMock()
         mq_service = MagicMock()
         mq_service.send = AsyncMock()
@@ -774,6 +802,126 @@ class TestParseTaskPipeline:
         sent_payload = mq_service.send.call_args.args[0].get_payload()
         assert sent_payload.task_status == PARSE_TASK_STATUS_FAILED
         assert sent_payload.failure_reason == "es down"
+
+    async def test_manual_retry_should_resume_from_pretokenize_without_reparsing(self):
+        existing_log = build_log(PARSE_TASK_STATUS_SUCCESS)
+        db = build_db(existing_log)
+        db.flush.side_effect = IntegrityError("duplicate", None, None)
+        configure_duplicate_retry_db(db, existing_log, extra_duplicate_reads=1)
+        storage = MagicMock()
+        mq_service = MagicMock()
+        mq_service.send = AsyncMock()
+        post_repo = FakePostProcessRepository(PIPELINE_STATUS_FAILED)
+        post_repo.pipeline.chunking_status = STAGE_STATUS_SUCCESS
+        post_repo.pipeline.vectorizing_status = STAGE_STATUS_SUCCESS
+        post_repo.pipeline.pretokenize_status = STAGE_STATUS_FAILED
+        post_repo.pipeline.failed_stage = POST_PROCESS_STAGE_PRETOKENIZE
+        post_repo.pipeline.recover_from_stage = POST_PROCESS_STAGE_PRETOKENIZE
+        post_repo.pipeline.chunk_count = 2
+        es_pipeline = FakeEsIndexingPipeline(EsIndexingResult(total_items=1, indexed_items=1))
+        preprocessor = FakePreprocessor()
+        pipeline = ParseTaskPipeline(
+            storage=storage,
+            session_factory=FakeAsyncSessionFactory(db),
+            mq_service=mq_service,
+            post_process_repository=post_repo,
+            es_indexing_pipeline=es_pipeline,
+            preprocessor=preprocessor,
+        )
+        payload = build_payload()
+        payload.trigger_mode = "manual_retry"
+
+        result = await pipeline.execute(payload)
+
+        assert result.status == PipelineStatus.SUCCESS
+        assert result.chunk_count == 2
+        assert post_repo.calls.count("claim_failed_for_retry") == 1
+        assert "mark_pretokenize_success" in post_repo.calls
+        assert "mark_es_success" in post_repo.calls
+        storage.download_to_path.assert_not_called()
+        storage.upload_bytes.assert_not_called()
+        preprocessor.build_file_post_index_plan.assert_awaited_once_with(
+            doc_id=1,
+            task_id="t-001",
+        )
+        es_pipeline.write_es_index.assert_awaited_once()
+        sent_payload = mq_service.send.call_args.args[0].get_payload()
+        assert sent_payload.task_status == PARSE_TASK_STATUS_SUCCESS
+
+    async def test_manual_retry_should_resume_es_failure_from_pretokenize_without_reparsing(self):
+        existing_log = build_log(PARSE_TASK_STATUS_SUCCESS)
+        db = build_db(existing_log)
+        db.flush.side_effect = IntegrityError("duplicate", None, None)
+        configure_duplicate_retry_db(db, existing_log)
+        storage = MagicMock()
+        mq_service = MagicMock()
+        mq_service.send = AsyncMock()
+        post_repo = FakePostProcessRepository(PIPELINE_STATUS_FAILED)
+        post_repo.pipeline.chunking_status = STAGE_STATUS_SUCCESS
+        post_repo.pipeline.vectorizing_status = STAGE_STATUS_SUCCESS
+        post_repo.pipeline.pretokenize_status = STAGE_STATUS_SUCCESS
+        post_repo.pipeline.es_indexing_status = STAGE_STATUS_FAILED
+        post_repo.pipeline.failed_stage = POST_PROCESS_STAGE_ES_INDEXING
+        post_repo.pipeline.recover_from_stage = POST_PROCESS_STAGE_ES_INDEXING
+        post_repo.pipeline.chunk_count = 2
+        chunk_repository = AsyncMock()
+        es_pipeline = FakeEsIndexingPipeline(EsIndexingResult(total_items=1, indexed_items=1))
+        preprocessor = FakePreprocessor()
+        pipeline = ParseTaskPipeline(
+            storage=storage,
+            session_factory=FakeAsyncSessionFactory(db),
+            mq_service=mq_service,
+            post_process_repository=post_repo,
+            es_indexing_pipeline=es_pipeline,
+            preprocessor=preprocessor,
+            chunk_repository=chunk_repository,
+        )
+        payload = build_payload()
+        payload.trigger_mode = "manual_retry"
+
+        result = await pipeline.execute(payload)
+
+        assert result.status == PipelineStatus.SUCCESS
+        assert result.chunk_count == 2
+        storage.download_to_path.assert_not_called()
+        storage.upload_bytes.assert_not_called()
+        chunk_repository.mark_es_retrying.assert_not_awaited()
+        preprocessor.build_file_post_index_plan.assert_awaited_once_with(
+            doc_id=1,
+            task_id="t-001",
+        )
+        es_pipeline.write_es_index.assert_awaited_once()
+
+    async def test_manual_retry_should_only_reuse_duplicate_path_for_unresumable_chunking_failure(self):
+        existing_log = build_log(PARSE_TASK_STATUS_SUCCESS)
+        db = build_db(existing_log)
+        db.flush.side_effect = IntegrityError("duplicate", None, None)
+        configure_duplicate_retry_db(db, existing_log, extra_duplicate_reads=1)
+        storage = MagicMock()
+        mq_service = MagicMock()
+        mq_service.send = AsyncMock()
+        post_repo = FakePostProcessRepository(PIPELINE_STATUS_FAILED)
+        post_repo.pipeline.chunking_status = STAGE_STATUS_FAILED
+        post_repo.pipeline.failed_stage = POST_PROCESS_STAGE_CHUNKING
+        post_repo.pipeline.recover_from_stage = POST_PROCESS_STAGE_CHUNKING
+        pipeline = ParseTaskPipeline(
+            storage=storage,
+            session_factory=FakeAsyncSessionFactory(db),
+            mq_service=mq_service,
+            post_process_repository=post_repo,
+        )
+        payload = build_payload()
+        payload.trigger_mode = "manual_retry"
+
+        result = await pipeline.execute(payload)
+
+        assert result.status == PipelineStatus.FAILED
+        assert "claim_failed_for_retry" not in post_repo.calls
+        storage.download_to_path.assert_not_called()
+        storage.upload_bytes.assert_not_called()
+        sent_payload = mq_service.send.call_args.args[0].get_payload()
+        assert sent_payload.task_status == PARSE_TASK_STATUS_FAILED
+        assert sent_payload.user_message == DUPLICATE_FAILED_USER_MESSAGE
 
     @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown")
     async def test_run_chunking_should_return_full_chunk_list_without_storing_vectors(

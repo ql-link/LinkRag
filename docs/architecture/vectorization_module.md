@@ -79,7 +79,7 @@ ParseTaskPipeline
 | `BucketRouter` | `qdrant_vector_storage/bucket_router.py` | 按 `user_id` 路由到 Qdrant collection |
 | `QdrantIndexStore` | `qdrant_vector_storage/qdrant_store.py` | Qdrant collection、point 写入、删除、查询 |
 | `EsIndexingPipeline` | `es_index_storage/pipeline.py` | 将文件级 Chunk 内容写入 Elasticsearch |
-| `PostProcessPipelineRepository` | `pipeline/post_process_repository.py` | 维护 `document_post_process_pipeline` 文件级阶段状态 |
+| `PostProcessPipelineRepository` | `pipeline/parse_task/post_process/repository.py` | 维护 `document_post_process_pipeline` 文件级阶段状态 |
 
 ## 3. 数据模型
 
@@ -135,15 +135,16 @@ MySQL 是 Chunk 真值源，Qdrant 是向量索引副本。启用稀疏向量后
 | 字段 | 含义 |
 | --- | --- |
 | `pipeline_status` | 整体状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
-| `chunking_status` | 分片阶段状态：`PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED` |
-| `vectorizing_status` | 向量化/Qdrant 阶段状态：`PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED` |
-| `es_indexing_status` | Elasticsearch 入库阶段状态：`PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED` |
-| `failed_stage` | 失败阶段：`CHUNKING/VECTORIZING/ES_INDEXING` |
-| `recover_from_stage` | 重投或补偿时可恢复的阶段 |
+| `chunking_status` | 分片阶段状态：`PENDING/SUCCESS/FAILED` |
+| `vectorizing_status` | 向量化/Qdrant 阶段状态：`PENDING/SUCCESS/FAILED` |
+| `pretokenize_status` | ES 预分词阶段状态：`PENDING/SUCCESS/FAILED` |
+| `es_indexing_status` | Elasticsearch 入库阶段状态：`PENDING/SUCCESS/FAILED` |
+| `failed_stage` | 失败阶段：`CHUNKING/VECTORIZING/PRETOKENIZE/ES_INDEXING` |
+| `recover_from_stage` | 用户手动重试时可恢复的阶段 |
 | `chunk_count` | 本次解析生成的 Chunk 数量 |
 | `*_duration_ms` | 各阶段耗时与总耗时 |
 
-解析日志 `document_parsed_log` 会先记录 Markdown 解析和上传成功；只有分片、向量化和 ES 入库都成功后，Python 才发送 parse_result `success` 通知给 Java。任一后处理阶段失败都会把 `document_post_process_pipeline` 标记为 `FAILED`，并发送 parse_result `failed`。
+解析日志 `document_parsed_log` 会先记录 Markdown 解析和上传成功；只有分片、向量化、预分词和 ES 入库都成功后，Python 才发送 parse_result `success` 通知给 Java。任一后处理阶段失败都会把 `document_post_process_pipeline` 标记为 `FAILED`，并发送 parse_result `failed`。
 
 ### 3.4 Qdrant Point
 

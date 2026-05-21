@@ -249,8 +249,7 @@ class PostProcessPipelineRepository:
         ChunkRepository.claim_failed_for_reindex），不在失败处、不在模块内。
         retry_count/last_retry_at 是本仓库**唯一**写入点；其余路径禁止写。
 
-        预留：本期不接入任何触发路径（handle_duplicate 未改、无新 MQ/接口
-        契约）。recover_from_stage 不重置——续跑据其从首个非 SUCCESS 阶段恢复。
+        recover_from_stage 不重置——续跑据其从首个非 SUCCESS 阶段恢复。
         """
         stmt = (
             update(self.model_cls)

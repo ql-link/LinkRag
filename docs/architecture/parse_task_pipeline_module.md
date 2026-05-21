@@ -136,7 +136,7 @@ any classified failure
 - **ES 基础设施故障**（`_ensure_index` 等）：文件级，不标 chunk，`failure_reason` 以 `ensure_index:` 前缀。
 - **ES chunk 级写失败**：逐 chunk 标 `es_status=FAILED`，文件级 `es_indexing_status=FAILED`，前缀 `ES_INDEXING_FAILED:`。
 - **恢复入口** `_infer_recover_stage()` 取首个非 SUCCESS 阶段（chunking→vectorizing→pretokenize→es）。`pretokenize_status` 不被 `mark_processing` 清，恢复推断据此回 `PRETOKENIZE`。
-- **用户侧重试**：`document_post_process_pipeline.retry_count`/`last_retry_at` 保留，语义为用户前端触发重试的计数；仅由预留方法 `claim_failed_for_retry`（对照 `ChunkRepository.claim_failed_for_reindex`）在认领重试时 +1，模块/失败处理器/`mark_processing` 一律不写。**本期仅提供该方法、不接线任何触发路径**。
+- **用户侧重试**：Java 重新投递同一个 `task_id` 且 `trigger_mode=manual_retry` 时，pipeline 认领原 FAILED 后处理记录，`claim_failed_for_retry` 将 `retry_count` +1 并写 `last_retry_at`。当前只对已完成 Markdown/分片/向量化后的后处理失败做断点续跑：`PRETOKENIZE` 失败从预分词开始，`ES_INDEXING` 失败从预分词重建 plan 后进入 ES。ES plan 不持久化，重建时只选择 `es_status=PENDING/FAILED` 的 chunk，因此已成功写入 ES 的 chunk 不会重复执行。系统不启动后台 scheduler，也不按次数自动重试。
 
 ## 5. MinerU URL 直拉
 
@@ -198,9 +198,10 @@ pdf_parser_backend == "mineru"
 
 - 新任务正常全链路。
 - 重复 task 的补发、跳过和中断收敛。
-- 解析、上传、分片、向量化、ES 和通知失败。
+- 解析、上传、分片、向量化、预分词、ES 和通知失败。
 - MinerU 后端跳过源文件下载并注入 `source_file_url`；旁路下 `source_path` 在整条链路中保持 `None`，不创建临时文件、不需要清理。
 - 预分词失败为文件级 all-or-nothing：落 `pretokenize_status=FAILED`，不写任何 chunk es_status。
 - ES 基础设施故障（`ensure_index`）文件级不标 chunk；ES chunk 级失败逐 chunk 标记。
-- 失败即终态：ES 失败不递增 retry_count、无 retry_exhausted；`mark_processing` 不清各阶段 `*_status`/`retry_count`。所有阶段失败均由 `_run` 统一写库+通知。
+- 主流水线失败即终态：ES 首次失败不递增 retry_count、无 retry_exhausted；`mark_processing` 不清各阶段 `*_status`/`retry_count`。所有阶段失败均由 `_run` 统一写库+通知。
 - 恢复入口推断按首个非 SUCCESS 阶段，`pretokenize_status` 与其他阶段状态列一样跨重投持久。
+- 用户手动重试：`trigger_mode=manual_retry` + 相同 `task_id` 只认领 FAILED pipeline，`retry_count` 仅在认领时递增；预分词/ES 失败分别从预分词入口续跑，且只处理未完成 ES 的 chunk。

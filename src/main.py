@@ -48,15 +48,17 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     if settings.MQ_VENDOR.lower() == "kafka" and settings.INIT_KAFKA_TOPICS_ON_STARTUP:
         ensure_topics()
     await start_parse_consumer()
-    yield
-    # 关闭时清理（MQ 连接优先关闭，避免消息丢失）
     try:
-        mq_factory = MQFactory()
-        await mq_factory.close_all()
-    except Exception:
-        pass
-    await redis_client.close()
-    await close_database()
+        yield
+    finally:
+        # 关闭时清理（MQ 连接优先关闭，避免消息丢失）
+        try:
+            mq_factory = MQFactory()
+            await mq_factory.close_all()
+        except Exception:
+            pass
+        await redis_client.close()
+        await close_database()
 
 
 app = FastAPI(

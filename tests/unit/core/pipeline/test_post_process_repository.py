@@ -233,3 +233,5 @@ class TestPostProcessPipelineRepository:
         claimed = await repo.claim_failed_for_retry(db, task_id="t-001")
 
         assert claimed is False
+        db.execute.assert_awaited_once()
+        db.commit.assert_awaited_once()

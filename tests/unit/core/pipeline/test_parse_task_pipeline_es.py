@@ -72,6 +72,7 @@ class TestRunPretokenize:
     async def test_should_return_plan_and_mark_success_on_non_empty_plan(self):
         post_repo = AsyncMock()
         chunk_repository = AsyncMock()
+        chunk_repository.count_es_not_success_by_doc_id.return_value = 0
         plan = build_plan()
         pipeline = build_pipeline(
             preprocessor=build_preprocessor(plan=plan),
@@ -87,6 +88,7 @@ class TestRunPretokenize:
         assert failure is None
         post_repo.mark_pretokenize_success.assert_awaited_once()
         chunk_repository.mark_es_failed.assert_not_called()
+        chunk_repository.mark_es_retrying.assert_not_awaited()
 
     async def test_should_return_failure_reason_without_touching_chunk_on_tokenize_error(self):
         post_repo = AsyncMock()

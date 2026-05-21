@@ -53,6 +53,8 @@ Topic 名称由 toLink-Rag 的 `.env` 配置决定，业务方对接前需要从
 | `image_bucket` | string | ⬜ | PDF 图片输出 bucket |
 | `image_prefix` | string | ⬜ | PDF 图片输出 key 前缀 |
 
+`trigger_mode=manual_retry` 用于用户显式重试同一个 `task_id` 的已失败后处理流水线。Python 只会认领 `document_post_process_pipeline.pipeline_status=FAILED` 的记录，并从预分词或 ES 入库阶段断点续跑；不会后台自动重试，也不会重复解析源文件。
+
 ### 消息示例
 
 ```json

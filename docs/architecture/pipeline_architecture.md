@@ -146,9 +146,12 @@ def _chunk_markdown(markdown, source_file, parse_result=None):
 | --- | --- | --- |
 | chunking | `mark_chunking_success` | `mark_chunking_failed` |
 | vectorizing | `mark_vectorizing_success` | `mark_vectorizing_failed` |
+| pretokenize | `mark_pretokenize_success` | `mark_pretokenize_failed` |
 | es_indexing | `mark_es_success` | `mark_es_failed` |
 
 `ParseTaskGuard` 在处理"已 success 但 pipeline 仍 PROCESSING/PENDING"的中断场景时，会通过 `_infer_recover_stage` 推断恢复入口，调对应阶段的 `mark_*_failed`，把整体 pipeline 收敛到 FAILED 并填好 `recover_from_stage`。
+
+Java 以相同 `task_id` 重新投递 `trigger_mode=manual_retry` 时，`ParseTaskPipeline` 会认领 FAILED 后处理记录并从 `PRETOKENIZE` 或 `ES_INDEXING` 续跑；ES 续跑会先重建预分词 plan，只处理 ES 未完成的 chunk。系统不启动后台 ES 自动重试。
 
 ---
 

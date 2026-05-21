@@ -36,6 +36,7 @@ from src.services.storage.factory import StorageFactory
 from . import temp_workspace
 from ._utils import coerce_optional_int, duration_ms, get_pipeline_from_log, now
 from .constants import (
+    DUPLICATE_FAILED_USER_MESSAGE,
     PARSE_TASK_STATUS_FAILED,
     PARSE_TASK_STATUS_SUCCESS,
 )
@@ -43,6 +44,15 @@ from .error_codes import ParseFailureCode, build_failure_reason
 from .log_repository import ParseLogRepository
 from .models import ParsePipelineResult, PipelineStatus
 from .notifier import ParseResultNotificationError, ParseResultNotifier
+from .post_process.constants import (
+    PIPELINE_STATUS_FAILED,
+    PIPELINE_STATUS_PROCESSING,
+    POST_PROCESS_STAGE_CHUNKING,
+    POST_PROCESS_STAGE_ES_INDEXING,
+    POST_PROCESS_STAGE_PRETOKENIZE,
+    POST_PROCESS_STAGE_VECTORIZING,
+    STAGE_STATUS_SUCCESS,
+)
 from .source import ParseSourceIO
 from .validator import ParseTaskGuard
 
@@ -117,6 +127,8 @@ class ParseTaskPipeline:
         # 先写 created 日志作为幂等屏障，确保 Kafka 重投不会触发重复解析。
         log_record = await self._log_repository.create(payload, db)
         if log_record is None:
+            if self._is_manual_retry(payload):
+                return await self._retry_failed_post_process(payload, db)
             return await self._guard.handle_duplicate(payload, db)
 
         # 校验 MQ 消息没有串单或携带脏上下文。
@@ -258,167 +270,24 @@ class ParseTaskPipeline:
                 started_at=now(),
             )
 
-            try:
-                chunking_started_at = now()
-                chunks = await self._run_chunking(
-                    parse_result["markdown"],
-                    parse_result.get("parse_result"),
-                    payload,
-                    db,
-                )
-                chunking_finished_at = now()
-                await self._post_process_repository.mark_chunking_success(
-                    db,
-                    pipeline_record,
-                    chunk_count=len(chunks),
-                    duration_ms=duration_ms(chunking_started_at, chunking_finished_at),
-                )
-            except Exception as exc:
-                finished_at = now()
-                failure_reason = build_failure_reason(ParseFailureCode.PARSE_ENGINE_FAILED, str(exc))
-                await self._post_process_repository.mark_chunking_failed(
-                    db,
-                    pipeline_record,
-                    reason=failure_reason,
-                    duration_ms=duration_ms(locals().get("chunking_started_at"), finished_at),
-                    finished_at=finished_at,
-                )
-                await self._notifier.send_or_raise(
-                    payload,
-                    PARSE_TASK_STATUS_FAILED,
-                    finished_at,
-                    failure_reason,
-                )
-                return ParsePipelineResult(
-                    status=PipelineStatus.FAILED,
-                    task_id=payload.task_id,
-                    error=exc,
-                )
-
-            # 向量索引按 chunk 汇总结果，部分失败不阻断 Pipeline，但必须把状态返回给上层。
-            vectorizing_started_at = now()
-            vector_result = await self._store_chunk_vectors(chunks, payload, db)
-            vectorizing_finished_at = now()
-            vector_indexing_completed = self._is_vector_indexing_success(
-                vector_result,
-                len(chunks),
-            )
-            if not vector_indexing_completed:
-                logger.warning(
-                    "[ParseTaskPipeline] vector indexing partially failed: "
-                    "task_id={} total={} indexed={} failed={}",
-                    payload.task_id,
-                    vector_result.total_chunks,
-                    vector_result.indexed_chunks,
-                    vector_result.failed_chunk_ids,
-                )
-                finished_at = now()
-                failure_reason = self._build_vector_failure_reason(vector_result)
-                await self._post_process_repository.mark_vectorizing_failed(
-                    db,
-                    pipeline_record,
-                    reason=failure_reason,
-                    duration_ms=duration_ms(vectorizing_started_at, vectorizing_finished_at),
-                    finished_at=finished_at,
-                )
-                await self._notifier.send_or_raise(
-                    payload,
-                    PARSE_TASK_STATUS_FAILED,
-                    finished_at,
-                    failure_reason,
-                )
-                return ParsePipelineResult(
-                    status=PipelineStatus.FAILED,
-                    task_id=payload.task_id,
-                    chunk_count=len(chunks),
-                    vector_indexing_completed=False,
-                    failed_chunk_ids=vector_result.failed_chunk_ids,
-                )
-
-            await self._post_process_repository.mark_vectorizing_success(
-                db,
-                pipeline_record,
-                duration_ms=duration_ms(vectorizing_started_at, vectorizing_finished_at),
-            )
-
-            # 预分词：一等独立阶段，文件级 all-or-nothing。失败即终态、不进入 ES、
-            # 不写任何 chunk es_status；成功则单趟扇出把内存 plan 交给 ES 消费。
-            pretokenize_started_at = now()
-            plan, pretokenize_failure = await self._run_pretokenize(
-                payload, pipeline_record, db, pretokenize_started_at
-            )
-            if pretokenize_failure is not None:
-                finished_at = now()
-                await self._post_process_repository.mark_pretokenize_failed(
-                    db,
-                    pipeline_record,
-                    reason=pretokenize_failure,
-                    duration_ms=duration_ms(pretokenize_started_at, finished_at),
-                    finished_at=finished_at,
-                )
-                await self._notifier.send_or_raise(
-                    payload,
-                    PARSE_TASK_STATUS_FAILED,
-                    finished_at,
-                    pretokenize_failure,
-                )
-                return ParsePipelineResult(
-                    status=PipelineStatus.FAILED,
-                    task_id=payload.task_id,
-                    chunk_count=len(chunks),
-                    vector_indexing_completed=True,
-                )
-
-            es_started_at = now()
-            es_result = await self._run_es_indexing(plan, db)
-            es_finished_at = now()
-            if not es_result.is_success:
-                finished_at = now()
-                failure_reason = es_result.failure_reason or self._build_es_failure_reason(es_result)
-                await self._post_process_repository.mark_es_failed(
-                    db,
-                    pipeline_record,
-                    reason=failure_reason,
-                    duration_ms=duration_ms(es_started_at, es_finished_at),
-                    finished_at=finished_at,
-                )
-                await self._notifier.send_or_raise(
-                    payload,
-                    PARSE_TASK_STATUS_FAILED,
-                    finished_at,
-                    failure_reason,
-                )
-                return ParsePipelineResult(
-                    status=PipelineStatus.FAILED,
-                    task_id=payload.task_id,
-                    chunk_count=len(chunks),
-                    vector_indexing_completed=True,
-                )
-
-            finished_at = now()
-            await self._post_process_repository.mark_es_success(
-                db,
-                pipeline_record,
-                duration_ms=duration_ms(es_started_at, es_finished_at),
-                total_duration_ms=duration_ms(pipeline_record.started_at, finished_at),
-                finished_at=finished_at,
-            )
-
-            await self._notifier.send_or_raise(
-                payload,
-                PARSE_TASK_STATUS_SUCCESS,
-                finished_at,
-                None,
+            post_result = await self._run_post_process_from_stage(
+                payload=payload,
+                pipeline_record=pipeline_record,
+                db=db,
+                stage=POST_PROCESS_STAGE_CHUNKING,
+                markdown=parse_result["markdown"],
+                parse_result=parse_result.get("parse_result"),
             )
 
             return ParsePipelineResult(
-                status=PipelineStatus.SUCCESS,
+                status=post_result.status,
                 task_id=payload.task_id,
-                chunk_count=len(chunks),
+                chunk_count=post_result.chunk_count,
                 time_cost_ms=parse_result["time_cost_ms"],
                 page_count=parse_result["metadata"].get("pages_or_length", 0),
-                vector_indexing_completed=vector_indexing_completed,
-                failed_chunk_ids=vector_result.failed_chunk_ids,
+                vector_indexing_completed=post_result.vector_indexing_completed,
+                failed_chunk_ids=post_result.failed_chunk_ids,
+                error=post_result.error,
             )
         except Exception as exc:
             if isinstance(exc, ParseResultNotificationError):
@@ -470,6 +339,338 @@ class ParseTaskPipeline:
             task_id=payload.task_id,
             error=exc,
         )
+
+    async def _retry_failed_post_process(
+        self,
+        payload: ParseTaskPayload,
+        db: AsyncSession,
+    ) -> ParsePipelineResult:
+        """用户手动重试：认领已有失败后处理流水线，并从可恢复阶段续跑。"""
+        existing_log = await self._log_repository.get_by_task_id(payload.task_id, db)
+        if existing_log is None:
+            return ParsePipelineResult(
+                status=PipelineStatus.SKIPPED,
+                task_id=payload.task_id,
+                skip_reason="manual retry target log not found",
+            )
+
+        parse_task = await self._log_repository.get_parse_task(
+            payload.document_parse_task_id, db
+        )
+        validation_error = self._guard.validate(payload, parse_task)
+        if validation_error:
+            await self._notifier.send_or_raise(
+                payload,
+                PARSE_TASK_STATUS_FAILED,
+                existing_log.parse_finished_at,
+                validation_error,
+            )
+            return ParsePipelineResult(
+                status=PipelineStatus.FAILED,
+                task_id=payload.task_id,
+                error=RuntimeError(validation_error),
+            )
+
+        pipeline_record = await self._post_process_repository.get_by_log_id(db, existing_log.id)
+        if pipeline_record is None:
+            pipeline_record = await self._post_process_repository.get_by_task_id(db, payload.task_id)
+        if pipeline_record is None or pipeline_record.pipeline_status != PIPELINE_STATUS_FAILED:
+            return await self._guard.handle_duplicate(payload, db)
+
+        recover_stage = self._infer_post_process_stage(pipeline_record)
+        if recover_stage not in (
+            POST_PROCESS_STAGE_PRETOKENIZE,
+            POST_PROCESS_STAGE_ES_INDEXING,
+        ):
+            return await self._guard.handle_duplicate(payload, db)
+
+        claimed = await self._post_process_repository.claim_failed_for_retry(
+            db,
+            task_id=payload.task_id,
+        )
+        if not claimed:
+            return ParsePipelineResult(
+                status=PipelineStatus.SKIPPED,
+                task_id=payload.task_id,
+                skip_reason="manual retry target is no longer claimable",
+            )
+
+        pipeline_record = await self._post_process_repository.get_by_log_id(db, existing_log.id)
+        if pipeline_record is None:
+            pipeline_record = await self._post_process_repository.get_by_task_id(db, payload.task_id)
+        if pipeline_record is None:
+            return ParsePipelineResult(
+                status=PipelineStatus.FAILED,
+                task_id=payload.task_id,
+                error=RuntimeError("post-process pipeline row not found"),
+            )
+        pipeline_record.pipeline_status = PIPELINE_STATUS_PROCESSING
+        pipeline_record.finished_at = None
+        pipeline_record.failed_stage = None
+        pipeline_record.failure_reason = None
+
+        return await self._run_post_process_from_stage(
+            payload=payload,
+            pipeline_record=pipeline_record,
+            db=db,
+            stage=recover_stage,
+        )
+
+    async def _run_post_process_from_stage(
+        self,
+        *,
+        payload: ParseTaskPayload,
+        pipeline_record: Any,
+        db: AsyncSession,
+        stage: str,
+        markdown: str | None = None,
+        parse_result: ParseResult | None = None,
+    ) -> ParsePipelineResult:
+        """从指定检查点继续执行后处理。
+
+        ES 重试从 PRETOKENIZE 开始，因为 ES plan 不持久化；重建 plan 时会
+        自然过滤到 ES 状态仍为 PENDING/FAILED 的 chunk。
+        """
+        chunks: list[Chunk] | None = None
+        chunk_count = int(getattr(pipeline_record, "chunk_count", 0) or 0)
+
+        if stage == POST_PROCESS_STAGE_CHUNKING:
+            if markdown is None:
+                failure_reason = "manual_retry: markdown is required to resume chunking"
+                finished_at = now()
+                await self._post_process_repository.mark_chunking_failed(
+                    db,
+                    pipeline_record,
+                    reason=failure_reason,
+                    duration_ms=None,
+                    finished_at=finished_at,
+                )
+                await self._notifier.send_or_raise(
+                    payload,
+                    PARSE_TASK_STATUS_FAILED,
+                    finished_at,
+                    failure_reason,
+                    user_message=DUPLICATE_FAILED_USER_MESSAGE,
+                )
+                return ParsePipelineResult(
+                    status=PipelineStatus.FAILED,
+                    task_id=payload.task_id,
+                    error=RuntimeError(failure_reason),
+                )
+            try:
+                chunking_started_at = now()
+                chunks = await self._run_chunking(
+                    markdown,
+                    parse_result,
+                    payload,
+                    db,
+                )
+                chunking_finished_at = now()
+                chunk_count = len(chunks)
+                await self._post_process_repository.mark_chunking_success(
+                    db,
+                    pipeline_record,
+                    chunk_count=chunk_count,
+                    duration_ms=duration_ms(chunking_started_at, chunking_finished_at),
+                )
+            except Exception as exc:
+                finished_at = now()
+                failure_reason = build_failure_reason(ParseFailureCode.PARSE_ENGINE_FAILED, str(exc))
+                await self._post_process_repository.mark_chunking_failed(
+                    db,
+                    pipeline_record,
+                    reason=failure_reason,
+                    duration_ms=duration_ms(locals().get("chunking_started_at"), finished_at),
+                    finished_at=finished_at,
+                )
+                await self._notifier.send_or_raise(
+                    payload,
+                    PARSE_TASK_STATUS_FAILED,
+                    finished_at,
+                    failure_reason,
+                )
+                return ParsePipelineResult(
+                    status=PipelineStatus.FAILED,
+                    task_id=payload.task_id,
+                    error=exc,
+                )
+            stage = POST_PROCESS_STAGE_VECTORIZING
+
+        if stage == POST_PROCESS_STAGE_VECTORIZING:
+            if chunks is None:
+                failure_reason = "manual_retry: chunks are required to resume vectorizing"
+                finished_at = now()
+                await self._post_process_repository.mark_vectorizing_failed(
+                    db,
+                    pipeline_record,
+                    reason=failure_reason,
+                    duration_ms=None,
+                    finished_at=finished_at,
+                )
+                await self._notifier.send_or_raise(
+                    payload,
+                    PARSE_TASK_STATUS_FAILED,
+                    finished_at,
+                    failure_reason,
+                    user_message=DUPLICATE_FAILED_USER_MESSAGE,
+                )
+                return ParsePipelineResult(
+                    status=PipelineStatus.FAILED,
+                    task_id=payload.task_id,
+                    chunk_count=chunk_count,
+                    vector_indexing_completed=False,
+                    error=RuntimeError(failure_reason),
+                )
+
+            vectorizing_started_at = now()
+            vector_result = await self._store_chunk_vectors(chunks, payload, db)
+            vectorizing_finished_at = now()
+            vector_indexing_completed = self._is_vector_indexing_success(
+                vector_result,
+                len(chunks),
+            )
+            if not vector_indexing_completed:
+                logger.warning(
+                    "[ParseTaskPipeline] vector indexing partially failed: "
+                    "task_id={} total={} indexed={} failed={}",
+                    payload.task_id,
+                    vector_result.total_chunks,
+                    vector_result.indexed_chunks,
+                    vector_result.failed_chunk_ids,
+                )
+                finished_at = now()
+                failure_reason = self._build_vector_failure_reason(vector_result)
+                await self._post_process_repository.mark_vectorizing_failed(
+                    db,
+                    pipeline_record,
+                    reason=failure_reason,
+                    duration_ms=duration_ms(vectorizing_started_at, vectorizing_finished_at),
+                    finished_at=finished_at,
+                )
+                await self._notifier.send_or_raise(
+                    payload,
+                    PARSE_TASK_STATUS_FAILED,
+                    finished_at,
+                    failure_reason,
+                )
+                return ParsePipelineResult(
+                    status=PipelineStatus.FAILED,
+                    task_id=payload.task_id,
+                    chunk_count=len(chunks),
+                    vector_indexing_completed=False,
+                    failed_chunk_ids=vector_result.failed_chunk_ids,
+                )
+
+            await self._post_process_repository.mark_vectorizing_success(
+                db,
+                pipeline_record,
+                duration_ms=duration_ms(vectorizing_started_at, vectorizing_finished_at),
+            )
+            stage = POST_PROCESS_STAGE_PRETOKENIZE
+
+        if stage == POST_PROCESS_STAGE_ES_INDEXING:
+            stage = POST_PROCESS_STAGE_PRETOKENIZE
+
+        if stage != POST_PROCESS_STAGE_PRETOKENIZE:
+            failure_reason = f"manual_retry: unsupported recover stage {stage}"
+            return ParsePipelineResult(
+                status=PipelineStatus.FAILED,
+                task_id=payload.task_id,
+                chunk_count=chunk_count,
+                error=RuntimeError(failure_reason),
+            )
+
+        # 预分词：一等独立阶段，文件级 all-or-nothing。失败即终态、不进入 ES、
+        # 不写任何 chunk es_status；成功则单趟扇出把内存 plan 交给 ES 消费。
+        pretokenize_started_at = now()
+        plan, pretokenize_failure = await self._run_pretokenize(
+            payload, pipeline_record, db, pretokenize_started_at
+        )
+        if pretokenize_failure is not None:
+            finished_at = now()
+            await self._post_process_repository.mark_pretokenize_failed(
+                db,
+                pipeline_record,
+                reason=pretokenize_failure,
+                duration_ms=duration_ms(pretokenize_started_at, finished_at),
+                finished_at=finished_at,
+            )
+            await self._notifier.send_or_raise(
+                payload,
+                PARSE_TASK_STATUS_FAILED,
+                finished_at,
+                pretokenize_failure,
+            )
+            return ParsePipelineResult(
+                status=PipelineStatus.FAILED,
+                task_id=payload.task_id,
+                chunk_count=chunk_count,
+                vector_indexing_completed=True,
+            )
+
+        es_started_at = now()
+        es_result = await self._run_es_indexing(plan, db)
+        es_finished_at = now()
+        if not es_result.is_success:
+            finished_at = now()
+            failure_reason = es_result.failure_reason or self._build_es_failure_reason(es_result)
+            await self._post_process_repository.mark_es_failed(
+                db,
+                pipeline_record,
+                reason=failure_reason,
+                duration_ms=duration_ms(es_started_at, es_finished_at),
+                finished_at=finished_at,
+            )
+            await self._notifier.send_or_raise(
+                payload,
+                PARSE_TASK_STATUS_FAILED,
+                finished_at,
+                failure_reason,
+            )
+            return ParsePipelineResult(
+                status=PipelineStatus.FAILED,
+                task_id=payload.task_id,
+                chunk_count=chunk_count,
+                vector_indexing_completed=True,
+            )
+
+        finished_at = now()
+        await self._post_process_repository.mark_es_success(
+            db,
+            pipeline_record,
+            duration_ms=duration_ms(es_started_at, es_finished_at),
+            total_duration_ms=duration_ms(pipeline_record.started_at, finished_at),
+            finished_at=finished_at,
+        )
+
+        await self._notifier.send_or_raise(
+            payload,
+            PARSE_TASK_STATUS_SUCCESS,
+            finished_at,
+            None,
+        )
+
+        return ParsePipelineResult(
+            status=PipelineStatus.SUCCESS,
+            task_id=payload.task_id,
+            chunk_count=chunk_count,
+            vector_indexing_completed=True,
+        )
+
+    @staticmethod
+    def _is_manual_retry(payload: ParseTaskPayload) -> bool:
+        return (payload.trigger_mode or "").lower() == "manual_retry"
+
+    @staticmethod
+    def _infer_post_process_stage(pipeline_record: Any) -> str:
+        """Infer the first post-process stage that has not completed successfully."""
+        if getattr(pipeline_record, "chunking_status", None) != STAGE_STATUS_SUCCESS:
+            return POST_PROCESS_STAGE_CHUNKING
+        if getattr(pipeline_record, "vectorizing_status", None) != STAGE_STATUS_SUCCESS:
+            return POST_PROCESS_STAGE_VECTORIZING
+        if getattr(pipeline_record, "pretokenize_status", None) != STAGE_STATUS_SUCCESS:
+            return POST_PROCESS_STAGE_PRETOKENIZE
+        return POST_PROCESS_STAGE_ES_INDEXING
 
     async def _parse_file(
         self,
@@ -559,10 +760,33 @@ class ParseTaskPipeline:
         全程不写任何 chunk es_status —— 文件级 all-or-nothing。
         """
         doc_id = int(payload.original_file_id)
+        plan, failure = await self._build_file_post_index_plan_for_doc(
+            doc_id=doc_id,
+            task_id=payload.task_id,
+            db=db,
+        )
+        if failure is not None:
+            return None, failure
+
+        await self._post_process_repository.mark_pretokenize_success(
+            db,
+            pipeline_record,
+            duration_ms=duration_ms(pretokenize_started_at, now()),
+        )
+        return plan, None
+
+    async def _build_file_post_index_plan_for_doc(
+        self,
+        *,
+        doc_id: int,
+        task_id: str,
+        db: AsyncSession,
+    ) -> tuple[FilePostIndexPlan | None, str | None]:
+        """按已落库 doc/task 上下文重建 ES 入库内存 plan。"""
         try:
             plan = await self._get_preprocessor().build_file_post_index_plan(
                 doc_id=doc_id,
-                task_id=payload.task_id,
+                task_id=task_id,
             )
         except Exception as exc:
             reason = str(exc)
@@ -575,11 +799,6 @@ class ParseTaskPipeline:
             if pending > 0:
                 return None, f"pretokenize: empty plan but {pending} chunks pending"
 
-        await self._post_process_repository.mark_pretokenize_success(
-            db,
-            pipeline_record,
-            duration_ms=duration_ms(pretokenize_started_at, now()),
-        )
         return plan, None
 
     async def _run_es_indexing(
