@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import logging
 import mimetypes
@@ -159,11 +160,12 @@ class ProviderVisionClient(VisionClient):
         *,
         prompt_template: str = VISION_PROMPT_TEMPLATE,
         model_name: str | None = None,
+        max_concurrency: int | None = None,
     ) -> None:
         capability_type = _get_capability_type()
+        settings = _get_settings()
         resolved_model_name = model_name
         if provider is None:
-            settings = _get_settings()
             resolved_model_name = (
                 model_name or settings.MARKDOWN_PARSER_VISION_MODEL or settings.SYSTEM_LLM_MODEL_VISION
             )
@@ -172,6 +174,12 @@ class ProviderVisionClient(VisionClient):
             self._provider = provider
         self._prompt_template = prompt_template
         self._model_name = resolved_model_name
+        concurrency = (
+            max_concurrency
+            if max_concurrency is not None
+            else getattr(settings, "MARKDOWN_PARSER_VISION_CONCURRENCY", 24)
+        )
+        self._max_concurrency = self._normalize_concurrency(concurrency)
 
     def describe_images(self, image_urls, source_file=None, image_bytes_by_url=None):
         raise RuntimeError("ProviderVisionClient only supports async usage. Please call `adescribe_images`.")
@@ -182,31 +190,79 @@ class ProviderVisionClient(VisionClient):
         source_file: str | None = None,
         image_bytes_by_url: dict[str, tuple[bytes, str]] | None = None,
     ) -> dict[str, str]:
-        results: dict[str, str] = {}
-        source_context = f"\n来源文件: {_guess_source_file(source_file)}" if source_file else ""
+        if not image_urls:
+            return {}
 
-        for image_url in image_urls:
+        source_context = f"\n来源文件: {_guess_source_file(source_file)}" if source_file else ""
+        semaphore = asyncio.Semaphore(self._max_concurrency)
+        tasks = [
+            self._adescribe_one_image(
+                image_url=image_url,
+                source_file=source_file,
+                source_context=source_context,
+                image_bytes_by_url=image_bytes_by_url,
+                semaphore=semaphore,
+            )
+            for image_url in image_urls
+        ]
+        pairs = await asyncio.gather(*tasks)
+
+        return {
+            image_url: description
+            for image_url, description in pairs
+            if description
+        }
+
+    async def _adescribe_one_image(
+        self,
+        *,
+        image_url: str,
+        source_file: str | None,
+        source_context: str,
+        image_bytes_by_url: dict[str, tuple[bytes, str]] | None,
+        semaphore: asyncio.Semaphore,
+    ) -> tuple[str, str | None]:
+        async with semaphore:
             try:
                 if image_bytes_by_url and image_url in image_bytes_by_url:
                     image_bytes, _mime_type = image_bytes_by_url[image_url]
                 else:
-                    image_bytes, _mime_type = _load_image_bytes(image_url, source_file)
+                    image_bytes, _mime_type = await asyncio.to_thread(
+                        _load_image_bytes,
+                        image_url,
+                        source_file,
+                    )
+            except asyncio.CancelledError:
+                raise
             except Exception as exc:
-                logger.warning("Load image failed for %s: %s", image_url, exc)
-                continue
+                logger.warning("Image enhancement failed for %s: %s", image_url, exc)
+                return image_url, None
 
             image_base64 = base64.b64encode(image_bytes).decode("utf-8")
             prompt = self._prompt_template.format(source_context=source_context)
-            response = await self._provider.analyze_image(
-                image_base64=image_base64,
-                prompt=prompt,
-                model=self._model_name,
-            )
-            description = _clean_llm_text(response.content if response else "")
-            if description:
-                results[image_url] = description
+            analyze_kwargs = {"model": self._model_name} if self._model_name else {}
+            try:
+                response = await self._provider.analyze_image(
+                    image_base64=image_base64,
+                    prompt=prompt,
+                    **analyze_kwargs,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Image enhancement failed for %s: %s", image_url, exc)
+                return image_url, None
 
-        return results
+            description = _clean_llm_text(response.content if response else "")
+            return image_url, description or None
+
+    @staticmethod
+    def _normalize_concurrency(value: int | str | None) -> int:
+        try:
+            return max(1, int(value if value is not None else 1))
+        except (TypeError, ValueError):
+            logger.warning("Invalid image enhancement concurrency %r, fallback to 1", value)
+            return 1
 
 
 def build_default_table_client() -> ProviderTableClient:

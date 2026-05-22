@@ -16,16 +16,17 @@ toLink-Rag/                         # 仓库根目录
 │       ├── implementation-execution/ # 需求实现执行流程
 │       ├── mq-middleware/        # MQ 中台开发规范
 │       ├── mysql-ddl-conventions/ # MySQL DDL 规范
-│       ├── prd-generator/        # PRD 生成工作流
-│       ├── pre-prd-requirement-analysis/ # 需求预分析工作流
+│       ├── acceptance-generator/ # Gherkin 验收契约生成工作流（替代旧版 PRD）
+│       ├── brief-generator/      # 需求 brief 生成工作流（替代旧版需求预分析）
 │       ├── run-all-tests/        # 全量测试运行工作流
 │       ├── skill-optimizer/      # 既有 Skill 优化工作流
 │       ├── swagger-annotation/   # Swagger 注解生成工作流
 │       ├── tdd/                  # 测试驱动开发工作流
 │       └── technical-design/     # 技术设计生成工作流
 ├── .env.example                  # 环境变量样例
-├── AGENTS.md                     # 项目级 Agent 说明
-├── README.md                     # 项目说明
+├── AGENTS.md                     # 项目级 Agent 入口（与 CLAUDE.md 内容同步）
+├── CLAUDE.md                     # 项目统一入口：使用说明 + 文档目录
+├── README.md                     # 面向用户的项目介绍
 ├── docker-compose.yml            # 本地依赖编排
 ├── project_info.md               # 项目基础信息
 ├── pyproject.toml                # Python 依赖与项目配置
@@ -40,13 +41,18 @@ toLink-Rag/                         # 仓库根目录
 │   │   ├── mq_module.md
 │   │   ├── llm_module.md
 │   │   └── object_storage_module.md
-│   ├── conventions/              # 约定类文档
-│   ├── design/                   # 功能设计文档
-│   ├── plans/                    # 当前计划和执行清单
-│   └── reference/                # API、错误码、数据模型等参考
+│   ├── conventions/              # 命名、配置、测试等约定
+│   ├── reference/                # API、消息契约、数据模型、错误码
+│   ├── guides/                   # 使用、部署、运维等场景化指南
+│   └── development/              # 分支、提交、PR 等开发流程
+├── alembic.ini                   # Alembic 配置入口
+├── migrations/                   # Alembic 数据库迁移
+│   ├── env.py                    # 运行环境：DB URL + 合并 Base.metadata
+│   ├── script.py.mako            # 迁移文件模板
+│   └── versions/                 # 版本化迁移脚本（NNNN_YYYYMMDD_slug.py）
 ├── scripts/                      # 可执行脚本
 │   ├── db/                       # 数据库初始化脚本
-│   │   ├── init.sql              # 当前数据库表结构（DDL）
+│   │   ├── init.sql              # 当前数据库表结构（DDL，冷启动用；增量演进走 Alembic）
 │   │   └── schema.sql            # 初始化数据脚本
 ├── src/                          # 应用源码
 │   ├── config.py                 # 全局配置
@@ -173,7 +179,6 @@ toLink-Rag/                         # 仓库根目录
 │   │       ├── minio_storage.py
 │   │       └── oss_storage.py
 │   └── utils/                    # 通用工具函数
-│       ├── file_downloader.py
 │       ├── logger.py
 │       └── text_formatter.py
 └── tests/                        # 测试目录

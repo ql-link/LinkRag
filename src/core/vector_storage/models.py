@@ -84,7 +84,7 @@ class StoredChunkDraft:
     start_line: int | None
     end_line: int | None
     chunk_index: int | None
-    status: str = CHUNK_STATUS_PENDING
+    dense_vector_status: str = CHUNK_STATUS_PENDING
 
 
 @dataclass(slots=True)

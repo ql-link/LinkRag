@@ -60,3 +60,15 @@ tests/api_keys.json
 /tests/evaluation_datasets/parser_smoke/sample/
 /tests/evaluation_datasets/
 /docs/evaluation_reports/
+/blog/
+
+# Claude Code session worktrees (per-session local clones)
+.claude/worktrees/
+# Claude Code per-user permission allowlist
+.claude/settings.local.json
+
+/requirements
+
+# 功能设计文档（本地工作产物，不推送）
+docs/预分词独立阶段/
+

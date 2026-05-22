@@ -77,6 +77,7 @@ class Settings(BaseSettings):
     MARKDOWN_PARSER_TABLE_MODEL: Optional[str] = None
     MARKDOWN_PARSER_VISION_MODEL: Optional[str] = None
     MARKDOWN_PARSER_LLM_TIMEOUT_MS: int = 60000
+    MARKDOWN_PARSER_VISION_CONCURRENCY: int = 24
     CHUNKING_ENABLE_ADVANCED_PIPELINE: bool = True
     CHUNKING_HEADING_BREAK_LEVEL: int = 3
     CHUNKING_SEMANTIC_PERCENTILE: float = 95.0
@@ -108,15 +109,43 @@ class Settings(BaseSettings):
     CHUNK_INDEX_RETRY_INTERVAL_SECONDS: int = 300
     CHUNK_INDEX_INDEXING_STALE_SECONDS: int = 900
 
+    # Sparse vector / local BGE-M3
+    SPARSE_VECTOR_ENABLED: bool = True
+    SPARSE_VECTOR_PROVIDER: str = "bge_m3"
+    SPARSE_VECTOR_MODEL_NAME: str = "BAAI/bge-m3"
+    SPARSE_VECTOR_MODEL_CACHE_DIR: Optional[str] = None
+    SPARSE_VECTOR_LOCAL_FILES_ONLY: bool = False
+    SPARSE_VECTOR_DEVICE: str = "auto"
+    SPARSE_VECTOR_BATCH_SIZE: int = 12
+    SPARSE_VECTOR_MAX_LENGTH: int = 8192
+    SPARSE_VECTOR_QDRANT_VECTOR_NAME: str = "sparse_text"
+    SPARSE_VECTOR_TOP_K: int = 256
+    SPARSE_VECTOR_MIN_WEIGHT: float = 0.0
+    SPARSE_VECTOR_RETRY_LIMIT: int = 3
+    SPARSE_VECTOR_INDEXING_STALE_SECONDS: int = 900
+    TOLINK_RUN_REAL_SPARSE_VECTOR_TESTS: bool = False
+
     # Elasticsearch
     ES_HOST: str = "http://localhost:9200"
     ES_USER: Optional[str] = None
     ES_PASSWORD: Optional[str] = None
     ES_INDEX_NAME: str = "tolink_rag_index"
+    ES_INDEX_SHARDS: int = 3
+    ES_INDEX_REPLICAS: int = 1
+    ES_MAX_DOCUMENT_BYTES: int = 131072
+    ES_MAX_TOKEN_BATCH_BYTES: int = 5242880
+    ES_MAX_TOKEN_BATCH_CHUNKS: int = 500
+    ES_BULK_REQUEST_TIMEOUT_SECONDS: int = 30
+    ES_SMOKE_ENABLED: bool = False
+    TOLINK_RUN_REAL_ES_INDEX_TESTS: bool = False
 
     # ==========================================
     # 存储 & 资源配置 (Storage & Resources)
     # ==========================================
+    # 解析任务源文件临时落盘目录：流式下载在此创建临时文件，markdown 拿到后立即清理；
+    # worker 启动时由 src/main.py lifespan 调用 temp_workspace.ensure_clean_on_startup 清空兜底。
+    PARSE_TEMP_DIR: str = "/tmp/tolink-rag-parse"
+
     STORAGE_TYPE: str = "minio"  # minio / local
     MINIO_ENDPOINT: str = "localhost:9000"
     MINIO_ACCESS_KEY: str = "minioadmin"
@@ -155,6 +184,14 @@ class Settings(BaseSettings):
     RABBITMQ_EXCHANGE_NAME: str = ""
     RABBITMQ_EXCHANGE_TYPE: str = "direct"
     RABBITMQ_PREFETCH_COUNT: int = 10
+
+    # --- MQ 失败兜底（恒启用死信，不提供关闭开关）---
+    # 业务回调抛 RetriableError 子类时，最多重试 MQ_MAX_RETRIES 次，每次之间固定
+    # 退避 MQ_RETRY_BACKOFF_SECONDS；达上限或非 RetriableError 异常一律进入死信目标
+    # `<原 topic> + MQ_DLQ_SUFFIX`，并精确按 (topic, partition) 提交位点。
+    MQ_MAX_RETRIES: int = 3
+    MQ_RETRY_BACKOFF_SECONDS: float = 1.0
+    MQ_DLQ_SUFFIX: str = ".DLT"
 
     # ==========================================
     # 杂项配置 (Misc)

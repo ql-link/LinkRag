@@ -10,10 +10,19 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.config import settings
 from src.core.chunk_fact_storage import ChunkRepository
-from src.core.chunk_fact_storage.constants import CHUNK_STATUS_INDEXING, CHUNK_STATUS_PENDING
+from src.core.chunk_fact_storage.constants import (
+    CHUNK_STATUS_INDEXING,
+    CHUNK_STATUS_PENDING,
+    SPARSE_VECTOR_STATUS_INDEXING,
+    SPARSE_VECTOR_STATUS_PENDING,
+)
 from src.core.qdrant_vector_storage import IndexedPoint, QdrantIndexStore
-from src.core.qdrant_vector_storage.point_factory import indexed_point_from_draft
+from src.core.qdrant_vector_storage.point_factory import (
+    indexed_point_from_draft,
+    sparse_indexed_point_from_draft,
+)
 from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
+from src.core.sparse_vector import SparseChunkVectorizationRequest, SparseVectorService
 from src.core.splitter.models import Chunk, EmbeddedChunk
 from src.utils.logger import logger
 
@@ -41,6 +50,7 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         repository: ChunkRepository,
         qdrant_store: QdrantIndexStore,
         embedding_pipeline: ChunkEmbeddingPipeline,
+        sparse_vector_service: SparseVectorService | None = None,
         retry_limit: int | None = None,
         retry_interval_seconds: int | None = None,
         max_inline_retry_sleep_seconds: int = 5,
@@ -63,6 +73,7 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         self.repository = repository
         self.qdrant_store = qdrant_store
         self.embedding_pipeline = embedding_pipeline
+        self.sparse_vector_service = sparse_vector_service
         self.retry_limit = max(
             0,
             retry_limit
@@ -201,8 +212,18 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
                         raise RuntimeError(
                             "Skipped indexing because pending rowcount "
                             f"{indexing_count} != 1 for chunk {draft.chunk_id}."
-                        )
+                    )
                     indexing_marked = True
+                    if self._sparse_enabled():
+                        sparse_indexing_count = await self._mark_sparse_indexing(
+                            [draft.chunk_id],
+                            model_name=self._sparse_model_name(),
+                        )
+                        if sparse_indexing_count != 1:
+                            raise RuntimeError(
+                                "Skipped sparse indexing because rowcount "
+                                f"{sparse_indexing_count} != 1 for chunk {draft.chunk_id}."
+                            )
                 return await self._index_single_chunk(draft, chunk)
             except Exception as exc:
                 last_error = exc
@@ -222,6 +243,8 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         error_msg = str(last_error) if last_error else "unknown chunk indexing failure"
         # 失败状态只落到当前 chunk；已完成 chunk 保持 INDEXED，后续 chunk 保持 PENDING。
         await self._safe_mark_failed([draft.chunk_id], error_msg)
+        if self._sparse_enabled():
+            await self._safe_mark_sparse_failed([draft.chunk_id], error_msg)
         if last_error is not None:
             raise last_error
         raise RuntimeError(error_msg)
@@ -252,7 +275,46 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
 
         embedding_model = self._resolve_embedding_model(embedded_chunks)
         point = indexed_point_from_draft(draft, embedded_chunks[0])
+        sparse_vector = None
+        if self._sparse_enabled():
+            sparse_vector = await self.sparse_vector_service.vectorize_chunk(
+                SparseChunkVectorizationRequest(
+                    chunk_id=draft.chunk_id,
+                    content=draft.content,
+                    doc_id=draft.doc_id,
+                    bucket_id=draft.bucket_id,
+                    user_id=draft.user_id,
+                    set_id=draft.set_id,
+                    task_id=str(draft.doc_id),
+                    chunk_index=draft.chunk_index,
+                )
+            )
+
         await self._ensure_and_upsert([point])
+        if sparse_vector is not None:
+            sparse_point = sparse_indexed_point_from_draft(
+                draft,
+                sparse_vector,
+                vector_name=self.sparse_vector_service.vector_name,
+            )
+            await self.qdrant_store.ensure_sparse_vector_schema(
+                bucket_id=draft.bucket_id,
+                vector_name=sparse_point.vector_name,
+            )
+            await self.qdrant_store.upsert_sparse_vectors(
+                bucket_id=draft.bucket_id,
+                points=[sparse_point],
+            )
+            sparse_indexed_count = await self._mark_sparse_indexed(
+                chunk_ids,
+                model_name=self._sparse_model_name(),
+                nonzero_count=len(sparse_vector.indices),
+            )
+            if sparse_indexed_count != 1:
+                raise RuntimeError(
+                    "Skipped stale sparse index completion because rowcount "
+                    f"{sparse_indexed_count} != 1 for chunk {draft.chunk_id}."
+                )
 
         indexed_count = await self._mark_indexed(chunk_ids, embedding_model=embedding_model)
         if indexed_count != 1:
@@ -372,6 +434,75 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
                 )
         except Exception as exc:
             logger.exception(f"[VectorStoragePipeline] Failed to mark chunks as failed: {exc}")
+
+
+    def _sparse_enabled(self) -> bool:
+        """判断当前向量写入流程是否启用 sparse 子能力。"""
+
+        return bool(getattr(settings, "SPARSE_VECTOR_ENABLED", False))
+
+    def _sparse_model_name(self) -> str | None:
+        """返回 sparse 服务使用的模型名；未配置服务时返回 None。"""
+
+        return self.sparse_vector_service.model_name if self.sparse_vector_service else None
+
+    async def _mark_sparse_indexing(
+        self,
+        chunk_ids: Sequence[str],
+        *,
+        model_name: str | None,
+    ) -> int:
+        """把当前 chunk 的 sparse 子状态切换为 INDEXING。"""
+
+        if self.sparse_vector_service is None:
+            raise RuntimeError("SPARSE_VECTOR_ENABLED=true but sparse vector service is not configured.")
+        return await self._run_in_transaction_with_result(
+            lambda session: self.repository.mark_sparse_indexing(
+                session,
+                chunk_ids,
+                model_name=model_name,
+                expected_status=SPARSE_VECTOR_STATUS_PENDING,
+            )
+        )
+
+    async def _mark_sparse_indexed(
+        self,
+        chunk_ids: Sequence[str],
+        *,
+        model_name: str | None,
+        nonzero_count: int,
+    ) -> int:
+        """把当前 chunk 的 sparse 子状态切换为 SUCCESS 并记录非零 token 数。"""
+
+        return await self._run_in_transaction_with_result(
+            lambda session: self.repository.mark_sparse_indexed(
+                session,
+                chunk_ids,
+                model_name=model_name,
+                nonzero_count=nonzero_count,
+                expected_status=SPARSE_VECTOR_STATUS_INDEXING,
+            )
+        )
+
+    async def _safe_mark_sparse_failed(self, chunk_ids: Sequence[str], error_msg: str) -> None:
+        """尽力把 sparse 子状态标记为 FAILED，避免二次异常中断主失败流程。"""
+
+        try:
+            affected_rows = await self._run_in_transaction_with_result(
+                lambda session: self.repository.mark_sparse_failed(
+                    session,
+                    chunk_ids,
+                    error_msg=error_msg,
+                    expected_status=None,
+                )
+            )
+            if affected_rows != len(chunk_ids):
+                logger.warning(
+                    "[VectorStoragePipeline] Sparse failed status rowcount mismatch: "
+                    f"{affected_rows} != {len(chunk_ids)} for chunks {chunk_ids}."
+                )
+        except Exception as exc:
+            logger.exception(f"[VectorStoragePipeline] Failed to mark sparse chunks as failed: {exc}")
 
     async def _ensure_and_upsert(self, points: Sequence[IndexedPoint]) -> None:
         """

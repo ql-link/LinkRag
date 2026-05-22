@@ -174,7 +174,9 @@ uvicorn src.main:app --reload
 - [向量化模块](./docs/architecture/vectorization_module.md)
 - [API 约定](./docs/reference/api_contracts.md)
 - [错误码](./docs/reference/error_codes.md)
-- [数据模型](./docs/reference/data_models.md)
+- [MySQL Schema](./docs/reference/mysql_schema.md)
+- [Qdrant Schema](./docs/reference/qdrant_schema.md)
+- [Elasticsearch Schema](./docs/reference/elasticsearch_schema.md)
 - [命名约定](./docs/conventions/naming_conventions.md)
 
 ## 贡献指南

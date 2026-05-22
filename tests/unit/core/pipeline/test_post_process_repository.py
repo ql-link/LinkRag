@@ -2,19 +2,20 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 from src.core.mq.messages import ParseTaskMessage
-from src.core.pipeline.post_process_constants import (
+from src.core.pipeline.parse_task.post_process.constants import (
     PIPELINE_STATUS_FAILED,
     PIPELINE_STATUS_PENDING,
     PIPELINE_STATUS_PROCESSING,
     PIPELINE_STATUS_SUCCESS,
     POST_PROCESS_STAGE_CHUNKING,
     POST_PROCESS_STAGE_ES_INDEXING,
+    POST_PROCESS_STAGE_PRETOKENIZE,
     POST_PROCESS_STAGE_VECTORIZING,
     STAGE_STATUS_FAILED,
     STAGE_STATUS_PENDING,
     STAGE_STATUS_SUCCESS,
 )
-from src.core.pipeline.post_process_repository import PostProcessPipelineRepository
+from src.core.pipeline.parse_task.post_process.repository import PostProcessPipelineRepository
 from src.models.parse_task import DocumentParsedLog, DocumentPostProcessPipeline
 
 
@@ -158,3 +159,77 @@ class TestPostProcessPipelineRepository:
         )
         assert es.es_indexing_status == STAGE_STATUS_FAILED
         assert es.failed_stage == POST_PROCESS_STAGE_ES_INDEXING
+
+    async def test_create_for_log_should_init_pretokenize_pending(self):
+        db = build_db()
+        repo = PostProcessPipelineRepository()
+
+        pipeline = await repo.create_for_log(db, build_log(), build_payload())
+
+        assert pipeline.pretokenize_status == STAGE_STATUS_PENDING
+
+    async def test_mark_pretokenize_success_should_set_status_and_duration(self):
+        db = build_db()
+        repo = PostProcessPipelineRepository()
+        pipeline = build_pipeline()
+
+        await repo.mark_pretokenize_success(db, pipeline, duration_ms=42)
+
+        assert pipeline.pretokenize_status == STAGE_STATUS_SUCCESS
+        assert pipeline.pretokenize_duration_ms == 42
+        db.commit.assert_awaited_once()
+
+    async def test_mark_pretokenize_failed_should_set_status_and_recover_stage(self):
+        db = build_db()
+        repo = PostProcessPipelineRepository()
+        pipeline = build_pipeline()
+
+        await repo.mark_pretokenize_failed(
+            db,
+            pipeline,
+            reason="pretokenize: tokenizer down",
+            duration_ms=7,
+            finished_at=datetime.now(timezone.utc),
+        )
+
+        assert pipeline.pipeline_status == PIPELINE_STATUS_FAILED
+        assert pipeline.pretokenize_status == STAGE_STATUS_FAILED
+        assert pipeline.failed_stage == POST_PROCESS_STAGE_PRETOKENIZE
+        assert pipeline.recover_from_stage == POST_PROCESS_STAGE_PRETOKENIZE
+
+    async def test_mark_processing_should_not_clear_stage_status_or_retry_count(self):
+        db = build_db()
+        repo = PostProcessPipelineRepository()
+        pipeline = build_pipeline()
+        pipeline.pretokenize_status = STAGE_STATUS_FAILED
+        pipeline.retry_count = 3
+        pipeline.last_retry_at = datetime.now(timezone.utc)
+
+        await repo.mark_processing(db, pipeline, started_at=datetime.now(timezone.utc))
+
+        assert pipeline.pretokenize_status == STAGE_STATUS_FAILED
+        assert pipeline.retry_count == 3
+        assert pipeline.last_retry_at is not None
+        assert pipeline.failed_stage is None
+        assert pipeline.recover_from_stage is None
+
+    async def test_claim_failed_for_retry_should_increment_retry_count_for_failed_row(self):
+        # 预留方法：用户侧重试认领时唯一写 retry_count/last_retry_at 的入口。
+        db = build_db()
+        db.execute.return_value.rowcount = 1
+        repo = PostProcessPipelineRepository()
+
+        claimed = await repo.claim_failed_for_retry(db, task_id="t-001")
+
+        assert claimed is True
+        db.execute.assert_awaited_once()
+        db.commit.assert_awaited_once()
+
+    async def test_claim_failed_for_retry_should_return_false_when_no_failed_row(self):
+        db = build_db()
+        db.execute.return_value.rowcount = 0
+        repo = PostProcessPipelineRepository()
+
+        claimed = await repo.claim_failed_for_retry(db, task_id="t-001")
+
+        assert claimed is False

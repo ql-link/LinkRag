@@ -4,13 +4,14 @@ from .exceptions import (
     QdrantVectorStorageConfigurationError,
     QdrantVectorStorageError,
 )
-from .models import IndexedPoint
+from .models import IndexedPoint, SparseIndexedPoint
 from .qdrant_store import QdrantIndexStore
 
 __all__ = [
     "BucketRoute",
     "BucketRouter",
     "IndexedPoint",
+    "SparseIndexedPoint",
     "QdrantIndexStore",
     "QdrantStoreError",
     "QdrantVectorStorageConfigurationError",

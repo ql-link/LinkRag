@@ -7,10 +7,11 @@
 ```text
 src/core/mq/
 ├── interfaces.py              # IMQSender / IMQReceiver 抽象接口
-├── factory.py                 # MQFactory 注册式厂商工厂
+├── factory.py                 # MQFactory 注册式厂商工厂；装配 RetryPolicy / DLQ publisher
 ├── message.py                 # AbstractMessage / MessagePayload 基类
-├── topic_admin.py             # Kafka Topic 初始化与描述
-├── exceptions.py              # MQ 异常类型
+├── topic_admin.py             # Kafka Topic 初始化（含死信 *.DLT 同规格幂等创建）
+├── exceptions.py              # MQ 异常类型（含 RetriableError 可重试基类）
+├── retry.py                   # 厂商中立失败兜底编排：有限退避重试 + 死信投递
 ├── consumers/
 │   └── parse_task_consumer.py # 解析任务消费者启动入口
 ├── messages/
@@ -19,9 +20,9 @@ src/core/mq/
 │   ├── cache_sync.py          # 用户 LLM 配置缓存同步
 │   └── usage_report.py        # LLM 用量上报
 └── vendors/
-    ├── rabbitmq_adapter.py
+    ├── rabbitmq_adapter.py    # 启动声明 DLX/DLT；手动 ack/reject 走 retry 编排
     └── kafka/
-        ├── kafka_adapter.py
+        ├── kafka_adapter.py   # 精确 TopicPartition 提交；失败走 retry 编排
         └── topic_admin.py
 ```
 
@@ -95,6 +96,30 @@ Kafka Topic 初始化还会读取：
 - `MIN_INSYNC_REPLICAS`
 - `MAX_MESSAGE_BYTES`
 
+## 4.1 失败兜底（重试 + 死信）
+
+消费框架对业务回调异常做有限退避重试 + 死信兜底，业务消费者无需感知。设计与配置：
+
+- 异常分类：抛出 `src.core.mq.exceptions.RetriableError` 的子类（如
+  `ParseResultNotificationError`）表示"暂时性、值得重试"；其它从 Pipeline 兜底之外
+  逃出的异常视为终态，不重试直接进死信。
+- 编排：`src.core.mq.retry.dispatch_with_retry` 是厂商中立的核心；Kafka / RabbitMQ
+  receiver 失败路径都走它。
+- 死信目标命名：`<原 topic / queue> + MQ_DLQ_SUFFIX`（默认 `.DLT`）。
+  - Kafka：`topic_admin.build_default_topic_specs()` 为每个业务 topic 同规格创建 `.DLT`，
+    启动时随 `ensure_topics()` 幂等装配。
+  - RabbitMQ：`RabbitMQReceiver.start()` 期声明 `<queue>.DLX` 交换器 + 死信队列，
+    原队列声明附 `x-dead-letter-exchange` 参数。
+- 死信消息头携带 `x-original-topic` / `x-exception-class` / `x-exception-message` /
+  `x-retry-count` / `x-original-key` / `x-failed-at`，body 沿用原始字节不重新序列化。
+- Kafka 位点提交按 `{TopicPartition: offset + 1}` 精确提交（不再使用无参 commit，
+  避免坏消息被后续成功消息"静默跳过"导致丢数据）。
+- 重试计数仅存进程内存（不持久化）；进程重启后重新从 0 起算一轮上限内重试。
+- 配置项（来自 `Settings`，无开关项——死信兜底恒启用）：
+  - `MQ_MAX_RETRIES`（默认 3）
+  - `MQ_RETRY_BACKOFF_SECONDS`（默认 1.0）
+  - `MQ_DLQ_SUFFIX`（默认 `.DLT`）
+
 ## 5. 新增消息类型
 
 1. 在 `src/core/mq/messages/` 下新增消息文件。
@@ -125,6 +150,10 @@ Kafka Topic 初始化还会读取：
 
 - 消息序列化和反序列化。
 - 缺字段、非法 JSON、非对象消息的错误。
-- `MQFactory` 按配置选择厂商。
+- `MQFactory` 按配置选择厂商；retry policy / DLQ publisher 注入。
 - `MQService` 发送和订阅调用链。
-- Kafka Topic 初始化参数。
+- Kafka Topic 初始化参数（含 `.DLT` 同规格）。
+- `retry.dispatch_with_retry`：可重试退避、终态直进死信、死信投递失败保留消息。
+- `KafkaReceiver._commit_partition_offset` 精确提交、跨分区隔离。
+- `RabbitMQReceiver.start()` 声明 DLX/DLT；`_on_message` 手动 ack/reject。
+- 验收套件：`tests/acceptance/test_mq_dlq_poison_pill.py`。

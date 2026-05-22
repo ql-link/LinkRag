@@ -5,10 +5,12 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from src.core.es_index_storage import EsIndexingResult
+from src.core.preprocessor.models import ChunkWithTokens, FileIndexMeta, FilePostIndexPlan
 from src.core.markdown_parser.models import ParseResult
 from src.core.mq.messages import ParseTaskMessage
 from src.core.pipeline import ParseTaskPipeline, PipelineStatus
-from src.core.pipeline.constants import (
+from src.core.pipeline.parse_task.notifier import ParseResultNotificationError
+from src.core.pipeline.parse_task.constants import (
     DUPLICATE_FAILED_USER_MESSAGE,
     DUPLICATE_SUCCESS_USER_MESSAGE,
     INTERRUPTED_TASK_USER_MESSAGE,
@@ -16,12 +18,13 @@ from src.core.pipeline.constants import (
     PARSE_TASK_STATUS_FAILED,
     PARSE_TASK_STATUS_SUCCESS,
 )
-from src.core.pipeline.post_process_constants import (
+from src.core.pipeline.parse_task.post_process.constants import (
     PIPELINE_STATUS_FAILED,
     PIPELINE_STATUS_PENDING,
     PIPELINE_STATUS_PROCESSING,
     PIPELINE_STATUS_SUCCESS,
     POST_PROCESS_STAGE_CHUNKING,
+    POST_PROCESS_STAGE_PRETOKENIZE,
     POST_PROCESS_STAGE_VECTORIZING,
     STAGE_STATUS_FAILED,
     STAGE_STATUS_PENDING,
@@ -109,6 +112,7 @@ class FakePostProcessRepository:
             pipeline_status=pipeline_status,
             chunking_status=STAGE_STATUS_PENDING,
             vectorizing_status=STAGE_STATUS_PENDING,
+            pretokenize_status=STAGE_STATUS_PENDING,
             es_indexing_status=STAGE_STATUS_PENDING,
             failed_stage=None,
             recover_from_stage=None,
@@ -161,6 +165,18 @@ class FakePostProcessRepository:
         pipeline.recover_from_stage = POST_PROCESS_STAGE_VECTORIZING
         pipeline.failure_reason = reason
 
+    async def mark_pretokenize_success(self, db, pipeline, *, duration_ms):
+        self.calls.append("mark_pretokenize_success")
+        pipeline.pretokenize_status = STAGE_STATUS_SUCCESS
+
+    async def mark_pretokenize_failed(self, db, pipeline, *, reason, duration_ms, finished_at):
+        self.calls.append("mark_pretokenize_failed")
+        pipeline.pipeline_status = PIPELINE_STATUS_FAILED
+        pipeline.pretokenize_status = STAGE_STATUS_FAILED
+        pipeline.failed_stage = POST_PROCESS_STAGE_PRETOKENIZE
+        pipeline.recover_from_stage = POST_PROCESS_STAGE_PRETOKENIZE
+        pipeline.failure_reason = reason
+
     async def mark_es_success(self, db, pipeline, *, duration_ms, total_duration_ms, finished_at):
         self.calls.append("mark_es_success")
         pipeline.es_indexing_status = STAGE_STATUS_SUCCESS
@@ -178,7 +194,23 @@ class FakePostProcessRepository:
 class FakeEsIndexingPipeline:
     def __init__(self, result: EsIndexingResult | None = None):
         self.result = result or EsIndexingResult(total_items=1, indexed_items=1)
-        self.index_for_parse_task = AsyncMock(return_value=self.result)
+        self.write_es_index = AsyncMock(return_value=self.result)
+
+
+class FakePreprocessor:
+    def __init__(self, plan: FilePostIndexPlan | None = None):
+        self.plan = plan or FilePostIndexPlan(
+            file_meta=FileIndexMeta(user_id=20, dataset_id=30, doc_id=1, task_id="t-001"),
+            chunks_with_tokens=[
+                ChunkWithTokens(
+                    chunk_id="chunk-1",
+                    chunk_index=0,
+                    coarse_tokens="alpha",
+                    fine_tokens="alpha",
+                )
+            ],
+        )
+        self.build_file_post_index_plan = AsyncMock(return_value=self.plan)
 
 
 class TestParseTaskPipeline:
@@ -203,7 +235,7 @@ class TestParseTaskPipeline:
         assert result.should_ack is True
         assert result.skip_reason is None
         db.rollback.assert_awaited_once()
-        storage.download_bytes.assert_not_called()
+        storage.download_to_path.assert_not_called()
         storage.upload_bytes.assert_not_called()
         mq_service.send.assert_awaited_once()
         sent_payload = mq_service.send.call_args.args[0].get_payload()
@@ -230,7 +262,7 @@ class TestParseTaskPipeline:
         result = await pipeline.execute(build_payload())
 
         assert result.status == PipelineStatus.FAILED
-        storage.download_bytes.assert_not_called()
+        storage.download_to_path.assert_not_called()
         storage.upload_bytes.assert_not_called()
         assert post_repo.pipeline.pipeline_status == PIPELINE_STATUS_FAILED
         assert post_repo.pipeline.failed_stage == POST_PROCESS_STAGE_CHUNKING
@@ -261,7 +293,7 @@ class TestParseTaskPipeline:
         result = await pipeline.execute(build_payload())
 
         assert result.status == PipelineStatus.FAILED
-        storage.download_bytes.assert_not_called()
+        storage.download_to_path.assert_not_called()
         storage.upload_bytes.assert_not_called()
         mq_service.send.assert_awaited_once()
         sent_payload = mq_service.send.call_args.args[0].get_payload()
@@ -289,7 +321,7 @@ class TestParseTaskPipeline:
         assert result.status == PipelineStatus.FAILED
         assert existing_log.task_status == PARSE_TASK_STATUS_FAILED
         assert existing_log.failure_reason.startswith("INTERRUPTED_TASK:")
-        storage.download_bytes.assert_not_called()
+        storage.download_to_path.assert_not_called()
         storage.upload_bytes.assert_not_called()
         mq_service.send.assert_awaited_once()
         sent_payload = mq_service.send.call_args.args[0].get_payload()
@@ -341,10 +373,10 @@ class TestParseTaskPipeline:
         assert sent_payload.failure_reason.startswith("INVALID_TASK_CONTEXT:")
 
     @patch(
-        "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess",
+        "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
         new_callable=AsyncMock,
     )
-    @patch("src.core.pipeline.parse_task_pipeline.ParseTaskPipeline._chunk_markdown")
+    @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown")
     async def test_execute_should_parse_upload_mark_success_notify_chunk_and_store_vectors(
         self,
         mock_chunk_markdown,
@@ -353,7 +385,7 @@ class TestParseTaskPipeline:
         db = build_db(build_parse_task())
         events = []
         storage = MagicMock()
-        storage.download_bytes.return_value = b"pdf bytes"
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf bytes")
         storage.upload_bytes.side_effect = lambda **kwargs: events.append("upload")
         mq_service = MagicMock()
         mq_service.send = AsyncMock(side_effect=lambda message: events.append("send"))
@@ -379,6 +411,7 @@ class TestParseTaskPipeline:
             vector_storage=vector_storage,
             post_process_repository=post_repo,
             es_indexing_pipeline=es_pipeline,
+            preprocessor=FakePreprocessor(),
         )
 
         payload = build_payload()
@@ -398,10 +431,10 @@ class TestParseTaskPipeline:
         assert log_record.parsed_bucket_name == "markdown-bucket"
         assert log_record.parsed_object_key == "parsed/t-001.md"
         assert log_record.parsed_file_url == "oss://markdown-bucket/parsed/t-001.md"
-        storage.download_bytes.assert_called_once_with(
-            bucket="source-bucket",
-            object_key="uploads/test.pdf",
-        )
+        storage.download_to_path.assert_called_once()
+        download_call = storage.download_to_path.call_args
+        assert download_call.kwargs.get("bucket") == "source-bucket"
+        assert download_call.kwargs.get("object_key") == "uploads/test.pdf"
         storage.upload_bytes.assert_called_once()
         mq_service.send.assert_awaited_once()
         assert events == ["upload", "vector", "send"]
@@ -426,10 +459,10 @@ class TestParseTaskPipeline:
         db.close.assert_awaited_once()
 
     @patch(
-        "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess",
+        "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
         new_callable=AsyncMock,
     )
-    @patch("src.core.pipeline.parse_task_pipeline.ParseTaskPipeline._chunk_markdown")
+    @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown")
     async def test_execute_should_skip_source_download_for_mineru_url_api(
         self,
         mock_chunk_markdown,
@@ -464,27 +497,29 @@ class TestParseTaskPipeline:
             vector_storage=vector_storage,
             post_process_repository=post_repo,
             es_indexing_pipeline=es_pipeline,
+            preprocessor=FakePreprocessor(),
         )
 
         result = await pipeline.execute(build_payload())
 
         assert result.status == PipelineStatus.SUCCESS
-        storage.download_bytes.assert_not_called()
+        storage.download_to_path.assert_not_called()
         mock_aprocess.assert_awaited_once()
-        assert mock_aprocess.await_args.args[0] == b""
+        # MinerU 旁路语义已从 ``file_bytes == b""`` 改为 ``source_path is None``。
+        assert mock_aprocess.await_args.args[0] is None
         assert (
             mock_aprocess.await_args.kwargs["source_file_url"]
             == "http://minio/source-bucket/uploads/test.pdf"
         )
 
     @patch(
-        "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess",
+        "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
         new_callable=AsyncMock,
     )
     async def test_execute_should_mark_failed_and_notify_when_parse_fails(self, mock_aprocess):
         db = build_db(build_parse_task())
         storage = MagicMock()
-        storage.download_bytes.return_value = b"pdf bytes"
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf bytes")
         mq_service = MagicMock()
         mq_service.send = AsyncMock()
         mock_aprocess.side_effect = RuntimeError("parse failed")
@@ -511,10 +546,10 @@ class TestParseTaskPipeline:
         assert sent_payload.failure_reason.endswith("parse failed")
 
     @patch(
-        "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess",
+        "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
         new_callable=AsyncMock,
     )
-    @patch("src.core.pipeline.parse_task_pipeline.ParseTaskPipeline._chunk_markdown")
+    @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown")
     async def test_execute_should_mark_success_failed_when_result_send_fails(
         self,
         mock_chunk_markdown,
@@ -522,7 +557,7 @@ class TestParseTaskPipeline:
     ):
         db = build_db(build_parse_task())
         storage = MagicMock()
-        storage.download_bytes.return_value = b"pdf bytes"
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf bytes")
         mq_service = MagicMock()
         mq_service.send = AsyncMock(side_effect=RuntimeError("mq down"))
         vector_storage = AsyncMock()
@@ -546,9 +581,10 @@ class TestParseTaskPipeline:
             vector_storage=vector_storage,
             post_process_repository=post_repo,
             es_indexing_pipeline=es_pipeline,
+            preprocessor=FakePreprocessor(),
         )
 
-        with pytest.raises(RuntimeError, match="解析结果通知发送失败"):
+        with pytest.raises(ParseResultNotificationError, match="解析结果通知发送失败"):
             await pipeline.execute(build_payload())
 
         log_record = db.add.call_args.args[0]
@@ -556,7 +592,7 @@ class TestParseTaskPipeline:
         assert log_record.failure_reason is None
 
     @patch(
-        "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess",
+        "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
         new_callable=AsyncMock,
     )
     async def test_execute_should_keep_parse_failure_reason_when_failed_notify_fails(
@@ -565,7 +601,7 @@ class TestParseTaskPipeline:
     ):
         db = build_db(build_parse_task())
         storage = MagicMock()
-        storage.download_bytes.return_value = b"pdf bytes"
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf bytes")
         mq_service = MagicMock()
         mq_service.send = AsyncMock(side_effect=RuntimeError("mq down"))
         mock_aprocess.side_effect = RuntimeError("parse failed")
@@ -577,7 +613,7 @@ class TestParseTaskPipeline:
             post_process_repository=post_repo,
         )
 
-        with pytest.raises(RuntimeError, match="解析结果通知发送失败"):
+        with pytest.raises(ParseResultNotificationError, match="解析结果通知发送失败"):
             await pipeline.execute(build_payload())
 
         log_record = db.add.call_args.args[0]
@@ -586,10 +622,10 @@ class TestParseTaskPipeline:
         assert log_record.failure_reason.endswith("parse failed")
 
     @patch(
-        "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess",
+        "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
         new_callable=AsyncMock,
     )
-    @patch("src.core.pipeline.parse_task_pipeline.ParseTaskPipeline._chunk_markdown")
+    @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown")
     async def test_execute_should_mark_failed_and_notify_when_chunking_fails(
         self,
         mock_chunk_markdown,
@@ -597,7 +633,7 @@ class TestParseTaskPipeline:
     ):
         db = build_db(build_parse_task())
         storage = MagicMock()
-        storage.download_bytes.return_value = b"pdf bytes"
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf bytes")
         mq_service = MagicMock()
         mq_service.send = AsyncMock()
         vector_storage = AsyncMock()
@@ -631,10 +667,10 @@ class TestParseTaskPipeline:
         assert sent_payload.failure_reason.startswith("PARSE_ENGINE_FAILED:")
 
     @patch(
-        "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess",
+        "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
         new_callable=AsyncMock,
     )
-    @patch("src.core.pipeline.parse_task_pipeline.ParseTaskPipeline._chunk_markdown")
+    @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown")
     async def test_execute_should_return_success_with_vector_status_when_vector_indexing_partially_fails(
         self,
         mock_chunk_markdown,
@@ -642,7 +678,7 @@ class TestParseTaskPipeline:
     ):
         db = build_db(build_parse_task())
         storage = MagicMock()
-        storage.download_bytes.return_value = b"pdf bytes"
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf bytes")
         mq_service = MagicMock()
         mq_service.send = AsyncMock()
         vector_storage = AsyncMock()
@@ -683,10 +719,10 @@ class TestParseTaskPipeline:
         assert sent_payload.task_status == PARSE_TASK_STATUS_FAILED
 
     @patch(
-        "src.core.pipeline.parse_task_pipeline.ParseTaskService.aprocess",
+        "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
         new_callable=AsyncMock,
     )
-    @patch("src.core.pipeline.parse_task_pipeline.ParseTaskPipeline._chunk_markdown")
+    @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown")
     async def test_execute_should_mark_pipeline_failed_when_es_indexing_fails(
         self,
         mock_chunk_markdown,
@@ -694,7 +730,7 @@ class TestParseTaskPipeline:
     ):
         db = build_db(build_parse_task())
         storage = MagicMock()
-        storage.download_bytes.return_value = b"pdf bytes"
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf bytes")
         mq_service = MagicMock()
         mq_service.send = AsyncMock()
         vector_storage = AsyncMock()
@@ -725,6 +761,7 @@ class TestParseTaskPipeline:
             vector_storage=vector_storage,
             post_process_repository=post_repo,
             es_indexing_pipeline=es_pipeline,
+            preprocessor=FakePreprocessor(),
         )
 
         result = await pipeline.execute(build_payload())
@@ -738,7 +775,7 @@ class TestParseTaskPipeline:
         assert sent_payload.task_status == PARSE_TASK_STATUS_FAILED
         assert sent_payload.failure_reason == "es down"
 
-    @patch("src.core.pipeline.parse_task_pipeline.ParseTaskPipeline._chunk_markdown")
+    @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown")
     async def test_run_chunking_should_return_full_chunk_list_without_storing_vectors(
         self,
         mock_chunk_markdown,
@@ -814,42 +851,15 @@ class TestParseTaskPipeline:
         assert result.indexed_chunks == 0
         assert result.failed_chunk_ids == ["chunk-0", "chunk-1"]
 
-    @patch("src.core.pipeline.parse_task_pipeline.create_vector_storage_facade")
-    async def test_build_vector_storage_should_defer_embedding_client_initialization(
-        self,
-        mock_create_vector_storage_facade,
-    ):
-        facade = MagicMock()
-        mock_create_vector_storage_facade.return_value = facade
-
-        with patch.object(
-            ParseTaskPipeline,
-            "_build_embedding_client",
-            side_effect=RuntimeError("missing embedding config"),
-        ) as mock_build_embedding_client:
-            result = ParseTaskPipeline._build_vector_storage()
-            embedding_pipeline = mock_create_vector_storage_facade.call_args.kwargs[
-                "embedding_pipeline"
-            ]
-
-            assert result is facade
-            mock_build_embedding_client.assert_not_called()
-
-            with pytest.raises(RuntimeError, match="missing embedding config"):
-                await embedding_pipeline.aembed_chunks(
-                    [Chunk(content="alpha", start_line=1, end_line=1)]
-                )
-            mock_build_embedding_client.assert_called_once()
-
-    @patch("src.core.pipeline.parse_task_pipeline.ParseTaskPipeline._build_chunk_processor")
+    @patch("src.core.pipeline.parse_task.pipeline.create_chunking_engine")
     def test_chunk_markdown_should_use_process_parse_result_when_available(
         self,
-        mock_build_chunk_processor,
+        mock_create_chunking_engine,
     ):
         parse_result = ParseResult(elements=[], tables=[], images=[], source_file="source.md")
         processor = MagicMock()
         processor.process_parse_result.return_value = [MagicMock(), MagicMock(), MagicMock()]
-        mock_build_chunk_processor.return_value = processor
+        mock_create_chunking_engine.return_value = processor
 
         chunks = ParseTaskPipeline._chunk_markdown(
             "enhanced markdown",
@@ -862,14 +872,14 @@ class TestParseTaskPipeline:
         forwarded_parse_result = processor.process_parse_result.call_args.args[0]
         assert forwarded_parse_result.source_file == "parsed/t-001.md"
 
-    @patch("src.core.pipeline.parse_task_pipeline.ParseTaskPipeline._build_chunk_processor")
+    @patch("src.core.pipeline.parse_task.pipeline.create_chunking_engine")
     def test_chunk_markdown_should_use_process_when_parse_result_is_absent(
         self,
-        mock_build_chunk_processor,
+        mock_create_chunking_engine,
     ):
         processor = MagicMock()
         processor.process.return_value = [MagicMock()]
-        mock_build_chunk_processor.return_value = processor
+        mock_create_chunking_engine.return_value = processor
 
         chunks = ParseTaskPipeline._chunk_markdown("enhanced markdown", "parsed/t-001.md")
 

@@ -17,6 +17,13 @@ from .rule_chunker import ASTAwareChunker
 from .pipeline_chunker import StructuredSemanticChunker
 from .semantic_chunker import PercentileSemanticChunker, SemanticSplitter
 from .embedding_pipeline import ChunkEmbeddingPipeline
+from .factory import (
+    LazyEmbeddingClient,
+    create_chunk_embedding_pipeline,
+    create_chunking_engine,
+    create_lazy_system_embedding_client,
+    create_system_embedding_client,
+)
 
 __all__ = [
     "Chunk",
@@ -29,4 +36,9 @@ __all__ = [
     "PercentileSemanticChunker",
     "SemanticSplitter",
     "ChunkEmbeddingPipeline",
+    "LazyEmbeddingClient",
+    "create_chunk_embedding_pipeline",
+    "create_chunking_engine",
+    "create_lazy_system_embedding_client",
+    "create_system_embedding_client",
 ]

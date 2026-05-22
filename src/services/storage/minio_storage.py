@@ -1,4 +1,5 @@
 from io import BytesIO
+from pathlib import Path
 from urllib.parse import quote
 
 import boto3
@@ -32,9 +33,17 @@ class MinioStorage(BaseObjectStorage):
             config=Config(signature_version="s3v4"),
         )
 
-    def download_bytes(self, bucket: str, object_key: str) -> bytes:
-        response = self._client.get_object(Bucket=bucket, Key=object_key)
-        return response["Body"].read()
+    def download_to_path(self, bucket: str, object_key: str, dst: Path) -> None:
+        """boto3 ``download_fileobj`` 分块写盘（默认 8MB chunk），整个调用栈不持有整对象 bytes。
+
+        - 失败时 ``dst`` 可能是半成品文件，调用方负责 finally 清理。
+        - 磁盘满（``OSError`` errno=ENOSPC）让 SDK / 系统调用直接抛出，由 pipeline 分类为
+          ``TEMP_DISK_FULL``。
+        - 对象 404 / 网络异常抛 botocore 异常，由 pipeline 分类为 ``SOURCE_FILE_NOT_FOUND``。
+        """
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        with open(dst, "wb") as fp:
+            self._client.download_fileobj(Bucket=bucket, Key=object_key, Fileobj=fp)
 
     def upload_bytes(
         self,

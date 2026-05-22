@@ -53,6 +53,11 @@ def create_vector_storage_facade(
         client=qdrant_client,
         bucket_router=resolved_bucket_router,
     )
+    sparse_vector_service = None
+    if getattr(settings, "SPARSE_VECTOR_ENABLED", False):
+        from src.core.sparse_vector import create_sparse_vector_service_from_settings
+
+        sparse_vector_service = create_sparse_vector_service_from_settings()
 
     storage_service = VectorStoragePipeline(
         session_factory=resolved_session_factory,
@@ -60,18 +65,21 @@ def create_vector_storage_facade(
         repository=resolved_repository,
         qdrant_store=resolved_qdrant_store,
         embedding_pipeline=embedding_pipeline,
+        sparse_vector_service=sparse_vector_service,
     )
     management_service = VectorStorageManagementPipeline(
         session_factory=resolved_session_factory,
         repository=resolved_repository,
         qdrant_store=resolved_qdrant_store,
         embedding_pipeline=embedding_pipeline,
+        sparse_vector_service=sparse_vector_service,
     )
     compensation_service = VectorStorageCompensationPipeline(
         session_factory=resolved_session_factory,
         repository=resolved_repository,
         qdrant_store=resolved_qdrant_store,
         embedding_pipeline=embedding_pipeline,
+        sparse_vector_service=sparse_vector_service,
     )
 
     return VectorStorageFacade(
@@ -79,4 +87,31 @@ def create_vector_storage_facade(
         management_service=management_service,
         compensation_service=compensation_service,
         qdrant_store=resolved_qdrant_store,
+    )
+
+
+def compose_vector_storage_facade(
+    *,
+    embedding_pipeline: ChunkEmbeddingPipeline | None = None,
+    session_factory: async_sessionmaker[AsyncSession] | None = None,
+    bucket_router: BucketRouter | None = None,
+    repository: ChunkRepository | None = None,
+    qdrant_store: QdrantIndexStore | None = None,
+    qdrant_client: Any | None = None,
+) -> VectorStorageFacade:
+    """一站式装配：未传 embedding_pipeline 时按系统配置自动构造。
+
+    适合调用方只关心"我要一个开箱即用的 VectorStorageFacade"的场景。
+    """
+    if embedding_pipeline is None:
+        from src.core.splitter.factory import create_chunk_embedding_pipeline
+
+        embedding_pipeline = create_chunk_embedding_pipeline()
+    return create_vector_storage_facade(
+        embedding_pipeline=embedding_pipeline,
+        session_factory=session_factory,
+        bucket_router=bucket_router,
+        repository=repository,
+        qdrant_store=qdrant_store,
+        qdrant_client=qdrant_client,
     )

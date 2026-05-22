@@ -17,7 +17,7 @@ src/services/storage/
 ```text
 ParseTaskPipeline
   -> StorageFactory.get_storage()
-  -> download_bytes() / upload_bytes() / build_object_url()
+  -> download_to_path() / upload_bytes() / build_object_url()
 
 PdfParserService
   -> upload_bytes()
@@ -29,15 +29,18 @@ PdfParserService
 `BaseObjectStorage` 定义三个方法：
 
 ```python
-download_bytes(bucket: str, object_key: str) -> bytes
+download_to_path(bucket: str, object_key: str, dst: pathlib.Path) -> None
 upload_bytes(bucket: str, object_key: str, content: bytes, content_type: str) -> None
 build_object_url(bucket: str, object_key: str) -> str
 ```
 
 约定：
 
-- `download_bytes` 返回完整对象 bytes，由调用方校验格式。
-- `upload_bytes` 负责写入对象和 content type。
+- `download_to_path` 流式落盘，**实现必须保证整个调用栈不持有完整对象 bytes**，避免大文件
+  场景下 worker OOM。磁盘满（`OSError errno=ENOSPC`）允许向上抛，由调用方分类为
+  `TEMP_DISK_FULL`；对象 404 / 网络异常向上抛归类为 `SOURCE_FILE_NOT_FOUND`。原
+  `download_bytes` 已于"解析任务 OOM 风险治理"中下线。
+- `upload_bytes` 负责写入对象和 content type；markdown 上传体积小（KB 级），保持现状。
 - `build_object_url` 返回服务内部或外部可访问 URL；MinerU 官方云端解析依赖该 URL 可被外部访问。
 
 ## 3. 当前实现
@@ -68,11 +71,14 @@ MinIO endpoint 可带 `http://` 或 `https://`；不带 scheme 时由 `MINIO_USE
 
 ## 5. 在解析链路中的使用
 
-源文件：
+源文件（流式下载到 `PARSE_TEMP_DIR` 临时文件，解析完成后立即清理）：
 
 ```text
-ParseTaskPipeline._download_file()
-  -> storage.download_bytes(source_bucket, source_object_key)
+ParseTaskPipeline._run()
+  -> temp_workspace.create_temp_file(task_id, PARSE_TEMP_DIR)
+  -> storage.download_to_path(source_bucket, source_object_key, dst=tmp_path)
+  -> parser.parse(tmp_path)
+  -> temp_workspace.safe_unlink(tmp_path)  # 拿到 markdown 后早删；finally 兜底
 ```
 
 MinerU URL 直拉：
