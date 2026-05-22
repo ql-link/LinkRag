@@ -212,7 +212,7 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
                         raise RuntimeError(
                             "Skipped indexing because pending rowcount "
                             f"{indexing_count} != 1 for chunk {draft.chunk_id}."
-                    )
+                        )
                     indexing_marked = True
                     if self._sparse_enabled():
                         sparse_indexing_count = await self._mark_sparse_indexing(
