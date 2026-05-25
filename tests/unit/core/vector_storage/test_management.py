@@ -49,7 +49,6 @@ def indexed_chunk_record() -> ChunkRecordDB:
         end_line=12,
         chunk_index=2,
         dense_vector_status="INDEXED",
-        dense_vector_retry_count=0,
         dense_vector_model="old-model",
     )
 
@@ -322,7 +321,6 @@ async def test_should_delete_qdrant_point_when_update_completion_finds_delete_st
         content_hash=hashlib.sha256(b"new content").hexdigest(),
         chunk_type="paragraph",
         dense_vector_status=CHUNK_STATUS_DELETED,
-        dense_vector_retry_count=0,
     )
     mock_repository.get_updatable_by_chunk_ids.return_value = [indexed_chunk_record]
     mock_repository.update_chunk_for_reindex.return_value = 1
@@ -374,7 +372,6 @@ async def test_should_mark_delete_failed_when_stale_update_cleanup_fails(
         content_hash=hashlib.sha256(b"new content").hexdigest(),
         chunk_type="paragraph",
         dense_vector_status=CHUNK_STATUS_DELETED,
-        dense_vector_retry_count=0,
     )
     mock_repository.get_updatable_by_chunk_ids.return_value = [indexed_chunk_record]
     mock_repository.update_chunk_for_reindex.return_value = 1
@@ -472,7 +469,6 @@ async def test_should_mark_deleting_delete_points_and_mark_deleted_when_delete_c
         content_hash="hash-other",
         chunk_type="paragraph",
         dense_vector_status="INDEXED",
-        dense_vector_retry_count=0,
     )
     mock_repository.get_deletable_by_chunk_ids.return_value = [indexed_chunk_record, other_record]
     mock_repository.mark_deleting.return_value = 2
@@ -541,7 +537,6 @@ async def test_should_skip_delete_when_mark_deleting_rowcount_is_incomplete(
         content_hash="hash-other",
         chunk_type="paragraph",
         dense_vector_status="INDEXED",
-        dense_vector_retry_count=0,
     )
     mock_repository.get_deletable_by_chunk_ids.return_value = [indexed_chunk_record, other_record]
     mock_repository.mark_deleting.return_value = 1
@@ -578,7 +573,6 @@ async def test_should_skip_delete_completion_when_mark_deleted_rowcount_is_incom
         content_hash="hash-other",
         chunk_type="paragraph",
         dense_vector_status="INDEXED",
-        dense_vector_retry_count=0,
     )
     mock_repository.get_deletable_by_chunk_ids.return_value = [indexed_chunk_record, other_record]
     mock_repository.mark_deleting.return_value = 2
