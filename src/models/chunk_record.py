@@ -35,9 +35,6 @@ class ChunkRecordDB(Base):
         nullable=False,
         default=CHUNK_STATUS_PENDING,
     )
-    dense_vector_error_msg: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    dense_vector_retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    dense_vector_last_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     dense_vector_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     sparse_vector_status: Mapped[str] = mapped_column(
         String(16),
@@ -46,15 +43,11 @@ class ChunkRecordDB(Base):
     )
     sparse_vector_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     sparse_vector_nonzero_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    sparse_vector_error_msg: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    sparse_vector_retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    sparse_vector_last_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     es_status: Mapped[str] = mapped_column(
         String(16),
         nullable=False,
         default=ES_STATUS_PENDING,
     )
-    es_error_msg: Mapped[str | None] = mapped_column(String(512), nullable=True)
     create_time: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
     update_time: Mapped[datetime] = mapped_column(
         DateTime,

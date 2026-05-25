@@ -80,7 +80,6 @@ async def test_should_record_vector_success_when_mark_indexed():
 
     values = _values_by_key(session)
     assert values["dense_vector_status"] == CHUNK_STATUS_INDEXED
-    assert values["dense_vector_error_msg"] is None
     assert values["dense_vector_model"] == "embed-v1"
 
 
@@ -93,7 +92,6 @@ async def test_should_record_vector_failure_when_mark_failed():
 
     values = _values_by_key(session)
     assert values["dense_vector_status"] == CHUNK_STATUS_FAILED
-    assert values["dense_vector_error_msg"] == "embedding timeout"
 
 
 @pytest.mark.asyncio
@@ -163,7 +161,6 @@ async def test_should_record_es_success_when_mark_es_success():
 
     values = _values_by_key(session)
     assert values["es_status"] == ES_STATUS_SUCCESS
-    assert values["es_error_msg"] is None
 
 
 @pytest.mark.asyncio
@@ -175,8 +172,7 @@ async def test_should_record_es_failure_when_mark_es_failed():
 
     values = _values_by_key(session)
     assert values["es_status"] == ES_STATUS_FAILED
-    assert values["es_error_msg"] == "es timeout"
-    assert "dense_vector_error_msg" not in values
+    assert "dense_vector_status" not in values
 
 
 @pytest.mark.asyncio
@@ -188,7 +184,6 @@ async def test_should_record_es_pending_when_mark_es_retrying():
 
     values = _values_by_key(session)
     assert values["es_status"] == ES_STATUS_PENDING
-    assert values["es_error_msg"] is None
 
 
 @pytest.mark.asyncio
@@ -200,9 +195,7 @@ async def test_should_record_vector_pending_when_mark_indexing():
 
     values = _values_by_key(session)
     assert values["dense_vector_status"] == CHUNK_STATUS_INDEXING
-    assert values["dense_vector_error_msg"] is None
     assert values["es_status"] == ES_STATUS_PENDING
-    assert values["es_error_msg"] is None
     assert values["dense_vector_model"] == "embed-v1"
 
 
@@ -215,7 +208,6 @@ async def test_should_record_delete_failed_when_mark_delete_failed():
 
     values = _values_by_key(session)
     assert values["dense_vector_status"] == CHUNK_STATUS_DELETE_FAILED
-    assert values["dense_vector_error_msg"] == "qdrant down"
 
 
 @pytest.mark.asyncio
@@ -227,7 +219,6 @@ async def test_should_record_deleted_when_mark_deleted():
 
     values = _values_by_key(session)
     assert values["dense_vector_status"] == CHUNK_STATUS_DELETED
-    assert values["dense_vector_error_msg"] is None
 
 
 @pytest.mark.asyncio
@@ -240,8 +231,6 @@ async def test_should_claim_delete_retry_when_record_is_retryable():
     values = _values_by_key(session)
     assert claimed is True
     assert values["dense_vector_status"] == CHUNK_STATUS_DELETING
-    assert values["dense_vector_error_msg"] is None
-    assert "dense_vector_last_retry_at" in values
 
 
 @pytest.mark.asyncio
@@ -258,7 +247,7 @@ async def test_should_claim_stale_indexing_for_repair_without_changing_status():
     values = _values_by_key(session)
     assert claimed is True
     assert "dense_vector_status" not in values
-    assert "dense_vector_last_retry_at" in values
+    assert "update_time" in values
 
 
 @pytest.mark.asyncio
@@ -271,10 +260,7 @@ async def test_should_claim_failed_for_reindex_and_reset_vector_stage():
     values = _values_by_key(session)
     assert claimed is True
     assert values["dense_vector_status"] == CHUNK_STATUS_INDEXING
-    assert values["dense_vector_error_msg"] is None
     assert values["es_status"] == ES_STATUS_PENDING
-    assert "dense_vector_retry_count" in values
-    assert "dense_vector_last_retry_at" in values
 
 
 @pytest.mark.asyncio
@@ -309,9 +295,7 @@ async def test_should_prepare_reindex_when_update_chunk_for_reindex():
     assert values["content"] == "new text"
     assert values["content_hash"] == "new-hash"
     assert values["dense_vector_status"] == CHUNK_STATUS_INDEXING
-    assert values["dense_vector_error_msg"] is None
     assert values["es_status"] == ES_STATUS_PENDING
-    assert values["es_error_msg"] is None
 
 
 @pytest.mark.asyncio
@@ -345,7 +329,6 @@ async def test_should_record_deleting_when_mark_deleting():
 
     values = _values_by_key(session)
     assert values["dense_vector_status"] == CHUNK_STATUS_DELETING
-    assert values["dense_vector_error_msg"] is None
 
 
 @pytest.mark.asyncio
