@@ -283,7 +283,7 @@ flowchart LR
 - **方案一：稠密向量保持现状，在同一向量阶段新增 BGE-M3 稀疏向量。** 当前稠密向量模型配置和历史向量分布保持不变；当前 chunk 同步完成 dense vector 与 BGE-M3 sparse vector 的同 point 写入。该方案迁移风险较小，适合首期。
 - **方案二：稠密向量和稀疏向量统一使用 BGE-M3。** 同一次 BGE-M3 调用可同时产出 dense vector 和 sparse lexical weights，模型服务、batch、超时和版本记录更统一；但会改变现有稠密向量分布，通常需要历史向量重建、Qdrant collection 迁移或双写灰度，不建议首期直接采用。
 - **批处理语义：** 对同一批分片，模型输出数量必须与输入分片数量一致，并保持输入顺序或提供可回填的分片标识。输出缺失、顺序不可确认、格式异常时，本批应视为失败。
-- **写入一致性语义：** 稀疏向量复用现有稠密向量化策略，不追求 MySQL 与 Qdrant 的跨库事务。执行方式是：先保证分片真值和稀疏向量生命周期可被查询，再按 `chunk_index` 逐个 chunk 推进状态；当前 chunk 进入处理中后生成稀疏向量、按 `chunk_id` upsert Qdrant，upsert 成功后再把该 chunk 标记为稀疏向量 INDEXED。
+- **写入一致性语义：** 稀疏向量复用现有稠密向量化策略，不追求 MySQL 与 Qdrant 的跨库事务。执行方式是：先保证分片真值和稀疏向量状态可被查询，再按 `chunk_index` 逐个 chunk 推进；生成稀疏向量后按 `chunk_id` upsert Qdrant，upsert 成功后再把该 chunk 标记为稀疏向量 `SUCCESS`。
 - **部分失败语义：** 与现有稠密向量化一致，失败边界落在当前 chunk。当前 chunk 失败时，只把当前 chunk 标记为失败，已完成 chunk 保持成功，后续 chunk 保持待处理；文件级结果通过 `total_chunks / indexed_chunks / failed_chunk_ids` 或等价汇总判断。只有同一文件内所有 chunk 都完成稀疏向量 upsert，并且状态都回写为成功，向量阶段才允许对上游报告成功。
 - **增量续跑语义：** 重试入口拿到同一文件的分片列表后，应按 `chunk_index` 遍历分片状态；已完成稀疏向量化的分片跳过，遇到第一个未完成或失败分片时从该分片继续处理。
 - **失败影响：** 批量模型调用或批量入库中任一分片失败时，本轮文档稀疏向量化不算成功；需要记录失败分片位置，后续从失败分片继续。
@@ -303,9 +303,9 @@ flowchart LR
 - **核心对象：** 文件级向量阶段记录、分片、Qdrant 稠密向量 point、Qdrant 稀疏向量 point/vector。
 - **状态变化：**
   - 稀疏向量化不新增独立文件级 `sparse_indexing_status` 阶段；开启稀疏向量后，文件级 `vectorizing_status` 的成功语义扩展为 dense 和 sparse 均成功。
-  - 文件级向量阶段仍表达 `PENDING/PROCESSING/SUCCESS/FAILED`；其中 `SUCCESS` 要求全部有效 chunk 的 `dense_vector_status=INDEXED`，且 `sparse_vector_status=INDEXED`。
-  - 分片级必须新增独立 `sparse_vector_status`，状态表达为 `PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED`，用于从失败分片开始续跑。
-  - 分片级状态作为续跑判断依据：重试时按 `chunk_index` 顺序读取每个 chunk 的稀疏向量化状态，跳过已 `INDEXED` 的 chunk，从第一个未成功的 chunk 继续。文件级状态只做汇总，不作为唯一续跑依据。
+  - 文件级向量阶段仍表达 `PENDING/PROCESSING/SUCCESS/FAILED`；其中 `SUCCESS` 要求全部有效 chunk 的 `dense_vector_status=SUCCESS`，且 `sparse_vector_status=SUCCESS`。
+  - 分片级必须新增独立 `sparse_vector_status`，状态表达为 `PENDING/SUCCESS/FAILED`，用于从失败分片开始续跑。
+  - 分片级状态作为续跑判断依据：重试时按 `chunk_index` 顺序读取每个 chunk 的稀疏向量化状态，跳过已 `SUCCESS` 的 chunk，从第一个未成功的 chunk 继续。文件级状态只做汇总，不作为唯一续跑依据。
   - 不建议只复用现有 `dense_vector_status`，否则稠密向量成功和稀疏向量成功会混在一起，排障和补偿边界不清。
   - 增量续跑时，应以分片级稀疏向量生命周期判断是否跳过已完成分片，避免重复消耗模型额度。
 - **关键数据：**

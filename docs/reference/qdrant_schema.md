@@ -103,7 +103,7 @@ user_id, set_id, doc_id
 - **MySQL 为真值**：`kb_document_chunk` 是 Chunk 真值表，可从中重建 Qdrant 数据。
 - **id 一致**：`chunk_id` 同时作为 MySQL UK 与 Qdrant Point ID。
 - **bucket_id 同步**：MySQL 的 `bucket_id` 字段必须与 Qdrant 实际 collection 一致，由统一的 `BucketRouter` 计算。
-- **状态分离**：`kb_document_chunk.dense_vector_status`、`sparse_vector_status` 是向量侧状态，`es_status` 是 ES 侧状态，**不与 Qdrant 实际存在状态同步**——失败重试时以 MySQL 状态决定是否重做。
+- **状态分离**：`kb_document_chunk.dense_vector_status`、`sparse_vector_status` 是向量侧粗粒度状态（`PENDING/SUCCESS/FAILED`），`es_status` 是 ES 侧状态，**不与 Qdrant 实际存在状态同步**——失败重试时以 MySQL 状态决定是否重做。
 - **稀疏向量一致性**：同一 chunk 的 dense 和 sparse 使用相同 Point ID；Qdrant 写入成功但 MySQL 回写失败时，以 MySQL 状态阻断文件级成功和后续检索返回。
 
 ## 常见操作

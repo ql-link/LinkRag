@@ -12,7 +12,7 @@
 - MySQL 增加并使用独立 sparse 状态字段，作为跨库一致性的事实源。
 - 将 `kb_document_chunk` 中原稠密向量生命周期字段从通用命名修正为 `dense_vector_*`，避免与 sparse 状态字段混用。
 - 未新增独立的 dense 生成结果字段；`dense_vector_status` 直接承接原 `status` 的完整生命周期枚举。
-- `sparse_vector_status` 与 `dense_vector_status` 使用一致的生命周期枚举，成功入库统一表达为 `INDEXED`。
+- `sparse_vector_status` 与 `dense_vector_status` 使用一致的状态枚举，成功入库统一表达为 `SUCCESS`。
 
 ## 2. 主要落点
 
@@ -38,11 +38,11 @@
 ## 4. 一致性处理
 
 - MySQL 仍是 chunk 事实源。
-- `dense_vector_status/error_msg/retry_count/last_retry_at` 承接原稠密向量生命周期与补偿状态。
+- `dense_vector_status` 承接稠密向量粗粒度结果状态。
 - `sparse_vector_status/*` 表达稀疏向量生成与写入结果，不与 dense 字段混用。
-- dense 与 sparse 的成功态均为 `INDEXED`；文件级向量化成功要求两者均为 `INDEXED`。
+- dense 与 sparse 的成功态均为 `SUCCESS`；文件级向量化成功要求两者均为 `SUCCESS`。
 - Qdrant 写入成功但 MySQL 回写失败时，不把 chunk 或文件级向量化判定为成功。
-- sparse 状态回写会避开 `DELETING` / `DELETED` / `DELETE_FAILED` 等删除保护状态。
+- sparse 状态回写以 `PENDING/SUCCESS/FAILED` 三态收敛。
 - 重试时保持同一 `chunk_id` 幂等覆盖 Qdrant point，避免重复索引。
 
 ## 5. 验证结果

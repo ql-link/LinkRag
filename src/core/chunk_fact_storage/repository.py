@@ -167,7 +167,6 @@ class ChunkRepository:
         values: dict[str, object] = {
             "dense_vector_status": CHUNK_STATUS_INDEXING,
             "sparse_vector_status": SPARSE_VECTOR_STATUS_PENDING,
-            "sparse_vector_nonzero_count": None,
             "es_status": ES_STATUS_PENDING,
         }
         if embedding_model is not None:
@@ -191,7 +190,6 @@ class ChunkRepository:
     ) -> int:
         values: dict[str, object] = {
             "sparse_vector_status": SPARSE_VECTOR_STATUS_INDEXING,
-            "sparse_vector_nonzero_count": None,
         }
         if model_name is not None:
             values["sparse_vector_model"] = model_name
@@ -214,7 +212,6 @@ class ChunkRepository:
     ) -> int:
         values: dict[str, object] = {
             "sparse_vector_status": SPARSE_VECTOR_STATUS_INDEXED,
-            "sparse_vector_nonzero_count": nonzero_count,
         }
         if model_name is not None:
             values["sparse_vector_model"] = model_name
@@ -440,7 +437,6 @@ class ChunkRepository:
                 chunk_index=chunk_index,
                 dense_vector_status=CHUNK_STATUS_INDEXING,
                 sparse_vector_status=SPARSE_VECTOR_STATUS_PENDING,
-                sparse_vector_nonzero_count=None,
                 es_status=ES_STATUS_PENDING,
             )
         )
@@ -555,7 +551,6 @@ class ChunkRepository:
             .values(
                 dense_vector_status=CHUNK_STATUS_INDEXING,
                 sparse_vector_status=SPARSE_VECTOR_STATUS_PENDING,
-                sparse_vector_nonzero_count=None,
                 es_status=ES_STATUS_PENDING,
             )
         )

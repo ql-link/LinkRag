@@ -5,12 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from src.core.chunk_fact_storage.constants import (
-    CHUNK_STATUS_DELETE_FAILED,
-    CHUNK_STATUS_DELETING,
-    CHUNK_STATUS_FAILED,
-    CHUNK_STATUS_INDEXING,
-)
+from src.core.chunk_fact_storage.constants import CHUNK_STATUS_FAILED, CHUNK_STATUS_PENDING
 
 
 class RepairDecision(str, Enum):
@@ -26,9 +21,8 @@ class RepairDecision(str, Enum):
 class RepairPolicy:
     """Centralize which inconsistencies may be repaired automatically in this module.
 
-    The current policy mirrors the design docs: delete convergence is safe to retry
-    automatically, stale ``INDEXING`` can be handled by lightweight point-existence checks, and
-    explicit vectorization failures should not silently consume embedding capacity.
+    Chunk records only expose coarse vector states. Deletion and in-flight recovery
+    are handled outside the chunk fact status field.
     """
 
     max_delete_retry_limit: int = 100
@@ -50,13 +44,7 @@ class RepairPolicy:
         point_exists: bool | None = None,
     ) -> RepairDecision:
         """Return the safest supported repair decision for a chunk lifecycle status."""
-        if dense_vector_status in {CHUNK_STATUS_DELETING, CHUNK_STATUS_DELETE_FAILED}:
-            return RepairDecision.AUTO_RETRY_DELETE
-
-        if (
-            dense_vector_status == CHUNK_STATUS_INDEXING
-            and self.allow_stale_indexing_status_repair
-        ):
+        if dense_vector_status == CHUNK_STATUS_PENDING and self.allow_stale_indexing_status_repair:
             if point_exists is True:
                 return RepairDecision.LIGHTWEIGHT_STATUS_REPAIR
             if point_exists is False:

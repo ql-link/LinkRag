@@ -110,22 +110,17 @@ chunks: Sequence[Chunk]
 | 状态 | 含义 |
 | --- | --- |
 | `PENDING` | 真值记录已创建，等待进入索引 |
-| `INDEXING` | 正在写入向量索引 |
-| `INDEXED` | Qdrant point 已写入，MySQL 已确认 |
+| `SUCCESS` | Qdrant point 已写入，MySQL 已确认 |
 | `FAILED` | 向量化或索引失败 |
-| `DELETING` | 正在删除 Qdrant point |
-| `DELETED` | 删除完成 |
-| `DELETE_FAILED` | 删除失败，等待补偿 |
 
-MySQL 是 Chunk 真值源，Qdrant 是向量索引副本。启用稀疏向量后，文件级向量化成功要求每个有效 chunk 同时满足 `dense_vector_status=INDEXED` 与 `sparse_vector_status=INDEXED`。
+MySQL 是 Chunk 真值源，Qdrant 是向量索引副本。启用稀疏向量后，文件级向量化成功要求每个有效 chunk 同时满足 `dense_vector_status=SUCCESS` 与 `sparse_vector_status=SUCCESS`。
 
 稀疏向量子状态：
 
 | 状态 | 含义 |
 | --- | --- |
 | `PENDING` | 等待稀疏向量处理 |
-| `INDEXING` | 正在生成或写入 BGE-M3 稀疏向量 |
-| `INDEXED` | 稀疏向量已写入 Qdrant，MySQL 已确认 |
+| `SUCCESS` | 稀疏向量已写入 Qdrant，MySQL 已确认 |
 | `FAILED` | 稀疏模型调用、Qdrant 写入或状态回写失败 |
 
 ### 3.3 文件级后处理状态
@@ -135,9 +130,9 @@ MySQL 是 Chunk 真值源，Qdrant 是向量索引副本。启用稀疏向量后
 | 字段 | 含义 |
 | --- | --- |
 | `pipeline_status` | 整体状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
-| `chunking_status` | 分片阶段状态：`PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED` |
-| `vectorizing_status` | 向量化/Qdrant 阶段状态：`PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED` |
-| `es_indexing_status` | Elasticsearch 入库阶段状态：`PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED` |
+| `chunking_status` | 分片阶段状态：`PENDING/SUCCESS/FAILED` |
+| `vectorizing_status` | 向量化/Qdrant 阶段状态：`PENDING/SUCCESS/FAILED` |
+| `es_indexing_status` | Elasticsearch 入库阶段状态：`PENDING/SUCCESS/FAILED` |
 | `failed_stage` | 失败阶段：`CHUNKING/VECTORIZING/ES_INDEXING` |
 | `recover_from_stage` | 重投或补偿时可恢复的阶段 |
 | `chunk_count` | 本次解析生成的 Chunk 数量 |

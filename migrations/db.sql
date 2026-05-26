@@ -249,6 +249,9 @@ CREATE TABLE IF NOT EXISTS document_parse_pipeline (
 -- 经 migration 0004 引入稀疏向量字段；0005 把 status/error_msg/retry_count/last_retry_at/embedding_model
 --   重命名为 dense_vector_*，并删除冗余的 vector_status / vector_error_msg 与对应索引；
 -- 0006 删除 dense/sparse 的 retry_count/last_retry_at/error_msg 与 es_error_msg
+--   (重试治理与失败原因归 document_post_process_pipeline)；
+-- 0008 收敛 dense/sparse 状态为 PENDING/SUCCESS/FAILED，删除 sparse_vector_nonzero_count，
+--   并按实际查询路径重构索引。
 --   (重试治理与失败原因归 document_parse_pipeline)。
 CREATE TABLE IF NOT EXISTS kb_document_chunk (
     id                          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '物理主键ID',
@@ -263,24 +266,19 @@ CREATE TABLE IF NOT EXISTS kb_document_chunk (
     start_line                  INT DEFAULT NULL COMMENT 'Chunk在源文档中的起始行号',
     end_line                    INT DEFAULT NULL COMMENT 'Chunk在源文档中的结束行号',
     chunk_index                 INT DEFAULT NULL COMMENT '当前Chunk在文档内的顺序编号',
-    dense_vector_status         VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT '稠密向量生命周期状态: PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED',
+    dense_vector_status         VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT '稠密向量状态: PENDING/SUCCESS/FAILED',
     dense_vector_model          VARCHAR(128) DEFAULT NULL COMMENT '实际使用的稠密向量模型名称',
-    sparse_vector_status        VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT '稀疏向量生命周期状态: PENDING/INDEXING/INDEXED/FAILED',
+    sparse_vector_status        VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT '稀疏向量状态: PENDING/SUCCESS/FAILED',
     sparse_vector_model         VARCHAR(128) DEFAULT NULL COMMENT '实际使用的稀疏向量模型名称',
-    sparse_vector_nonzero_count INT DEFAULT NULL COMMENT '稀疏向量非零维度数量',
     es_status                   VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT 'ES索引状态: PENDING/SUCCESS/FAILED',
     create_time                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
     update_time                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
 
     UNIQUE KEY uk_chunk_id (chunk_id),
     KEY idx_user_set (user_id, set_id),
-    KEY idx_bucket_dense_vector_status (bucket_id, dense_vector_status),
-    KEY idx_bucket_sparse_status (bucket_id, sparse_vector_status),
+    KEY idx_doc_dense_status (doc_id, dense_vector_status),
     KEY idx_doc_sparse_status (doc_id, sparse_vector_status),
-    KEY idx_bucket_es_status (bucket_id, es_status),
-    KEY idx_doc_id (doc_id),
-    KEY idx_chunk_type (chunk_type),
-    KEY idx_content_hash (content_hash)
+    KEY idx_doc_es_status (doc_id, es_status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '文档Chunk真值记录表';
 
 -- 自增起始值统一为 10000
