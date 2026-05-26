@@ -49,7 +49,7 @@ def build_failure_reason(
     Args:
         code: 解析失败业务编码。
         detail: 可选底层异常详情，用于排查具体失败点。
-        max_length: 返回字符串最大长度，默认匹配 document_parsed_log.failure_reason。
+        max_length: 返回字符串最大长度，默认匹配 document_parse_pipeline.failure_reason。
 
     Returns:
         ``CODE: 中文原因；detail`` 格式的失败原因字符串。

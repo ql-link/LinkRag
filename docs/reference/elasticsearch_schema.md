@@ -75,7 +75,7 @@ ES 索引命名、文档结构与入库结果模型参考。
 is_success = (not failed_item_ids) and (indexed_items == total_items)
 ```
 
-任一失败 Chunk 都会导致 `is_success=False`，触发上层 `document_post_process_pipeline.es_indexing_status=FAILED`。
+任一失败 Chunk 都会导致 `is_success=False`，触发上层 `document_parse_pipeline.es_indexing_status=FAILED`。
 
 ## 写入策略
 

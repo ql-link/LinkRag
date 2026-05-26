@@ -40,9 +40,9 @@ src/core/qdrant_vector_storage/
 ParseTaskPipeline
   -> ParseTaskService.aprocess()
   -> upload markdown
-  -> document_post_process_pipeline: PROCESSING
+  -> document_parse_pipeline: PROCESSING
   -> _run_chunking()
-  -> document_post_process_pipeline.chunking_status = SUCCESS
+  -> document_parse_pipeline.chunking_status = SUCCESS
   -> _store_chunk_vectors()
     -> VectorStorageFacade.store_chunks()
       -> VectorStoragePipeline.store_chunks()
@@ -58,9 +58,9 @@ ParseTaskPipeline
           -> QdrantIndexStore.upsert_sparse_vectors()（开启时）
           -> ChunkRepository.mark_sparse_indexed()（开启时）
           -> ChunkRepository.mark_indexed()
-  -> document_post_process_pipeline.vectorizing_status = SUCCESS
+  -> document_parse_pipeline.vectorizing_status = SUCCESS
   -> EsIndexingPipeline.index_for_parse_task()
-  -> document_post_process_pipeline.es_indexing_status = SUCCESS
+  -> document_parse_pipeline.es_indexing_status = SUCCESS
   -> parse_result success notification
 ```
 
@@ -79,7 +79,7 @@ ParseTaskPipeline
 | `BucketRouter` | `qdrant_vector_storage/bucket_router.py` | 按 `user_id` 路由到 Qdrant collection |
 | `QdrantIndexStore` | `qdrant_vector_storage/qdrant_store.py` | Qdrant collection、point 写入、删除、查询 |
 | `EsIndexingPipeline` | `es_index_storage/pipeline.py` | 将文件级 Chunk 内容写入 Elasticsearch |
-| `PostProcessPipelineRepository` | `pipeline/post_process_repository.py` | 维护 `document_post_process_pipeline` 文件级阶段状态 |
+| `ParsePipelineRepository` | `pipeline/post_process_repository.py` | 维护 `document_parse_pipeline` 文件级阶段状态 |
 
 ## 3. 数据模型
 
@@ -125,7 +125,7 @@ MySQL 是 Chunk 真值源，Qdrant 是向量索引副本。启用稀疏向量后
 
 ### 3.3 文件级后处理状态
 
-`document_post_process_pipeline` 记录一次解析成功落 Markdown 后的后处理阶段状态：
+`document_parse_pipeline` 记录一次解析成功落 Markdown 后的后处理阶段状态：
 
 | 字段 | 含义 |
 | --- | --- |
@@ -138,7 +138,7 @@ MySQL 是 Chunk 真值源，Qdrant 是向量索引副本。启用稀疏向量后
 | `chunk_count` | 本次解析生成的 Chunk 数量 |
 | `*_duration_ms` | 各阶段耗时与总耗时 |
 
-解析日志 `document_parsed_log` 会先记录 Markdown 解析和上传成功；只有分片、向量化和 ES 入库都成功后，Python 才发送 parse_result `success` 通知给 Java。任一后处理阶段失败都会把 `document_post_process_pipeline` 标记为 `FAILED`，并发送 parse_result `failed`。
+解析日志 `document_parsed_log` 会先记录 Markdown 解析和上传成功；只有分片、向量化和 ES 入库都成功后，Python 才发送 parse_result `success` 通知给 Java。任一后处理阶段失败都会把 `document_parse_pipeline` 标记为 `FAILED`，并发送 parse_result `failed`。
 
 ### 3.4 Qdrant Point
 
@@ -371,7 +371,7 @@ ES 阶段只返回文件级 `EsIndexingResult`，不直接维护 `kb_document_ch
 - MySQL Chunk 记录是真值源。
 - Qdrant point 是可重建索引副本。
 - Elasticsearch document 是面向检索的文本索引副本。
-- `document_post_process_pipeline` 是文件级后处理阶段状态源。
+- `document_parse_pipeline` 是文件级后处理阶段状态源。
 - 新增写入采用 `PENDING -> INDEXING -> INDEXED`。
 - 删除采用 `DELETING -> DELETED`，失败进入 `DELETE_FAILED`。
 - Qdrant 写入成功但 MySQL 回写失败时，通过补偿流程修复。
@@ -397,6 +397,6 @@ ES 阶段只返回文件级 `EsIndexingResult`，不直接维护 `kb_document_ch
 - embedding 批处理和缓存命中。
 - Qdrant collection 自动创建和 upsert。
 - ES 文件级索引创建和逐 Chunk 写入。
-- `document_post_process_pipeline` 阶段状态流转。
+- `document_parse_pipeline` 阶段状态流转。
 - 部分失败时的 `failed_chunk_ids`。
 - 删除失败补偿和 INDEXING 卡住修复。

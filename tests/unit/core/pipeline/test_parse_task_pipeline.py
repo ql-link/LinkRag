@@ -14,7 +14,6 @@ from src.core.pipeline.parse_task.constants import (
     DUPLICATE_FAILED_USER_MESSAGE,
     DUPLICATE_SUCCESS_USER_MESSAGE,
     INTERRUPTED_TASK_USER_MESSAGE,
-    PARSE_TASK_STATUS_CREATED,
     PARSE_TASK_STATUS_FAILED,
     PARSE_TASK_STATUS_SUCCESS,
 )
@@ -24,6 +23,7 @@ from src.core.pipeline.parse_task.post_process.constants import (
     PIPELINE_STATUS_PROCESSING,
     PIPELINE_STATUS_SUCCESS,
     POST_PROCESS_STAGE_CHUNKING,
+    POST_PROCESS_STAGE_CLEANING,
     POST_PROCESS_STAGE_PRETOKENIZE,
     POST_PROCESS_STAGE_VECTORIZING,
     STAGE_STATUS_FAILED,
@@ -91,33 +91,42 @@ def build_parse_task():
     )
 
 
-def build_log(status: str, failure_reason: str | None = None):
+def build_log(
+    *,
+    parsed_object_key: str | None = None,
+):
     return DocumentParsedLog(
         id=100,
         task_id="t-001",
         document_original_file_id=1,
         document_parse_task_id=10,
         trigger_mode="upload_auto",
-        task_status=status,
-        failure_reason=failure_reason,
+        parsed_object_key=parsed_object_key,
     )
 
 
 class FakePostProcessRepository:
-    def __init__(self, pipeline_status: str = PIPELINE_STATUS_SUCCESS):
+    def __init__(
+        self,
+        pipeline_status: str = PIPELINE_STATUS_SUCCESS,
+        *,
+        cleaning_status: str = STAGE_STATUS_PENDING,
+        failure_reason: str | None = None,
+    ):
         self.pipeline = SimpleNamespace(
             id=200,
             document_parsed_log_id=100,
             task_id="t-001",
             pipeline_status=pipeline_status,
+            cleaning_status=cleaning_status,
             chunking_status=STAGE_STATUS_PENDING,
             vectorizing_status=STAGE_STATUS_PENDING,
             pretokenize_status=STAGE_STATUS_PENDING,
             es_indexing_status=STAGE_STATUS_PENDING,
             failed_stage=None,
             recover_from_stage=None,
-            failure_reason=None,
-            chunk_count=0,
+            failure_reason=failure_reason,
+            cleaning_duration_ms=None,
             started_at=None,
             finished_at=None,
         )
@@ -134,15 +143,33 @@ class FakePostProcessRepository:
         self.calls.append("get_by_log_id")
         return self.pipeline
 
-    async def mark_processing(self, db, pipeline, *, started_at):
-        self.calls.append("mark_processing")
+    async def mark_cleaning_started(self, db, pipeline, *, started_at):
+        self.calls.append("mark_cleaning_started")
         pipeline.pipeline_status = PIPELINE_STATUS_PROCESSING
         pipeline.started_at = started_at
 
-    async def mark_chunking_success(self, db, pipeline, *, chunk_count, duration_ms):
+    async def mark_cleaning_success(self, db, pipeline, *, duration_ms):
+        self.calls.append("mark_cleaning_success")
+        pipeline.cleaning_status = STAGE_STATUS_SUCCESS
+        pipeline.cleaning_duration_ms = duration_ms
+
+    async def mark_cleaning_failed(self, db, pipeline, *, reason, duration_ms, finished_at):
+        self.calls.append("mark_cleaning_failed")
+        pipeline.pipeline_status = PIPELINE_STATUS_FAILED
+        pipeline.cleaning_status = STAGE_STATUS_FAILED
+        pipeline.failed_stage = POST_PROCESS_STAGE_CLEANING
+        pipeline.recover_from_stage = POST_PROCESS_STAGE_CLEANING
+        pipeline.failure_reason = reason
+
+    async def mark_post_cleaning(self, db, pipeline, *, started_at):
+        self.calls.append("mark_post_cleaning")
+        pipeline.pipeline_status = PIPELINE_STATUS_PROCESSING
+        if pipeline.started_at is None:
+            pipeline.started_at = started_at
+
+    async def mark_chunking_success(self, db, pipeline, *, duration_ms):
         self.calls.append("mark_chunking_success")
         pipeline.chunking_status = STAGE_STATUS_SUCCESS
-        pipeline.chunk_count = chunk_count
         pipeline.chunking_duration_ms = duration_ms
 
     async def mark_chunking_failed(self, db, pipeline, *, reason, duration_ms, finished_at):
@@ -215,7 +242,7 @@ class FakePreprocessor:
 
 class TestParseTaskPipeline:
     async def test_execute_should_resend_success_when_duplicate_success(self):
-        existing_log = build_log(PARSE_TASK_STATUS_SUCCESS)
+        existing_log = build_log(parsed_object_key="parsed/t-001.md")
         db = build_db(existing_log)
         db.flush.side_effect = IntegrityError("duplicate", None, None)
         storage = MagicMock()
@@ -226,7 +253,7 @@ class TestParseTaskPipeline:
             storage=storage,
             session_factory=FakeAsyncSessionFactory(db),
             mq_service=mq_service,
-            post_process_repository=post_repo,
+            pipeline_repository=post_repo,
         )
 
         result = await pipeline.execute(build_payload())
@@ -245,18 +272,21 @@ class TestParseTaskPipeline:
         db.close.assert_awaited_once()
 
     async def test_execute_should_mark_pipeline_failed_when_duplicate_success_log_but_pipeline_processing(self):
-        existing_log = build_log(PARSE_TASK_STATUS_SUCCESS)
+        existing_log = build_log(parsed_object_key="parsed/t-001.md")
         db = build_db(existing_log)
         db.flush.side_effect = IntegrityError("duplicate", None, None)
         storage = MagicMock()
         mq_service = MagicMock()
         mq_service.send = AsyncMock()
-        post_repo = FakePostProcessRepository(PIPELINE_STATUS_PROCESSING)
+        post_repo = FakePostProcessRepository(
+            PIPELINE_STATUS_PROCESSING,
+            cleaning_status=STAGE_STATUS_SUCCESS,
+        )
         pipeline = ParseTaskPipeline(
             storage=storage,
             session_factory=FakeAsyncSessionFactory(db),
             mq_service=mq_service,
-            post_process_repository=post_repo,
+            pipeline_repository=post_repo,
         )
 
         result = await pipeline.execute(build_payload())
@@ -273,21 +303,22 @@ class TestParseTaskPipeline:
         assert sent_payload.user_message == INTERRUPTED_TASK_USER_MESSAGE
 
     async def test_execute_should_resend_failed_when_duplicate_failed(self):
-        existing_log = build_log(
-            PARSE_TASK_STATUS_FAILED,
-            "PARSE_ENGINE_FAILED: 文件解析失败，请检查文件内容",
-        )
+        existing_log = build_log()
         db = build_db(existing_log)
         db.flush.side_effect = IntegrityError("duplicate", None, None)
         storage = MagicMock()
         mq_service = MagicMock()
         mq_service.send = AsyncMock()
-        post_repo = FakePostProcessRepository()
+        post_repo = FakePostProcessRepository(
+            PIPELINE_STATUS_FAILED,
+            cleaning_status=STAGE_STATUS_FAILED,
+            failure_reason="PARSE_ENGINE_FAILED: 文件解析失败，请检查文件内容",
+        )
         pipeline = ParseTaskPipeline(
             storage=storage,
             session_factory=FakeAsyncSessionFactory(db),
             mq_service=mq_service,
-            post_process_repository=post_repo,
+            pipeline_repository=post_repo,
         )
 
         result = await pipeline.execute(build_payload())
@@ -298,29 +329,30 @@ class TestParseTaskPipeline:
         mq_service.send.assert_awaited_once()
         sent_payload = mq_service.send.call_args.args[0].get_payload()
         assert sent_payload.task_status == PARSE_TASK_STATUS_FAILED
-        assert sent_payload.failure_reason == existing_log.failure_reason
+        assert sent_payload.failure_reason == post_repo.pipeline.failure_reason
         assert sent_payload.user_message == DUPLICATE_FAILED_USER_MESSAGE
 
     async def test_execute_should_mark_existing_created_failed_and_notify_when_duplicate(self):
-        existing_log = build_log(PARSE_TASK_STATUS_CREATED)
+        existing_log = build_log()
         db = build_db(existing_log)
         db.flush.side_effect = IntegrityError("duplicate", None, None)
         storage = MagicMock()
         mq_service = MagicMock()
         mq_service.send = AsyncMock()
-        post_repo = FakePostProcessRepository()
+        post_repo = FakePostProcessRepository(PIPELINE_STATUS_PENDING)
         pipeline = ParseTaskPipeline(
             storage=storage,
             session_factory=FakeAsyncSessionFactory(db),
             mq_service=mq_service,
-            post_process_repository=post_repo,
+            pipeline_repository=post_repo,
         )
 
         result = await pipeline.execute(build_payload())
 
         assert result.status == PipelineStatus.FAILED
-        assert existing_log.task_status == PARSE_TASK_STATUS_FAILED
-        assert existing_log.failure_reason.startswith("INTERRUPTED_TASK:")
+        assert post_repo.pipeline.pipeline_status == PIPELINE_STATUS_FAILED
+        assert post_repo.pipeline.failed_stage == POST_PROCESS_STAGE_CLEANING
+        assert post_repo.pipeline.failure_reason.startswith("INTERRUPTED_TASK:")
         storage.download_to_path.assert_not_called()
         storage.upload_bytes.assert_not_called()
         mq_service.send.assert_awaited_once()
@@ -339,7 +371,7 @@ class TestParseTaskPipeline:
             storage=MagicMock(),
             session_factory=FakeAsyncSessionFactory(db),
             mq_service=mq_service,
-            post_process_repository=post_repo,
+            pipeline_repository=post_repo,
         )
 
         result = await pipeline.execute(build_payload())
@@ -357,16 +389,16 @@ class TestParseTaskPipeline:
             storage=MagicMock(),
             session_factory=FakeAsyncSessionFactory(db),
             mq_service=mq_service,
-            post_process_repository=post_repo,
+            pipeline_repository=post_repo,
         )
 
         result = await pipeline.execute(build_payload())
 
         assert result.status == PipelineStatus.FAILED
         assert result.should_ack is True
-        log_record = db.add.call_args.args[0]
-        assert log_record.task_status == PARSE_TASK_STATUS_FAILED
-        assert log_record.failure_reason.startswith("INVALID_TASK_CONTEXT:")
+        assert post_repo.pipeline.pipeline_status == PIPELINE_STATUS_FAILED
+        assert post_repo.pipeline.cleaning_status == STAGE_STATUS_FAILED
+        assert post_repo.pipeline.failure_reason.startswith("INVALID_TASK_CONTEXT:")
         mq_service.send.assert_awaited_once()
         sent_payload = mq_service.send.call_args.args[0].get_payload()
         assert sent_payload.task_status == PARSE_TASK_STATUS_FAILED
@@ -409,7 +441,7 @@ class TestParseTaskPipeline:
             session_factory=FakeAsyncSessionFactory(db),
             mq_service=mq_service,
             vector_storage=vector_storage,
-            post_process_repository=post_repo,
+            pipeline_repository=post_repo,
             es_indexing_pipeline=es_pipeline,
             preprocessor=FakePreprocessor(),
         )
@@ -426,7 +458,7 @@ class TestParseTaskPipeline:
         assert result.vector_indexing_completed is True
         assert result.failed_chunk_ids == []
         log_record = db.add.call_args.args[0]
-        assert log_record.task_status == PARSE_TASK_STATUS_SUCCESS
+        assert post_repo.pipeline.cleaning_status == STAGE_STATUS_SUCCESS
         assert log_record.parsed_filename == "test.md"
         assert log_record.parsed_bucket_name == "markdown-bucket"
         assert log_record.parsed_object_key == "parsed/t-001.md"
@@ -495,7 +527,7 @@ class TestParseTaskPipeline:
             session_factory=FakeAsyncSessionFactory(db),
             mq_service=mq_service,
             vector_storage=vector_storage,
-            post_process_repository=post_repo,
+            pipeline_repository=post_repo,
             es_indexing_pipeline=es_pipeline,
             preprocessor=FakePreprocessor(),
         )
@@ -528,17 +560,17 @@ class TestParseTaskPipeline:
             storage=storage,
             session_factory=FakeAsyncSessionFactory(db),
             mq_service=mq_service,
-            post_process_repository=post_repo,
+            pipeline_repository=post_repo,
         )
 
         result = await pipeline.execute(build_payload())
 
         assert result.status == PipelineStatus.FAILED
         assert result.should_ack is True
-        log_record = db.add.call_args.args[0]
-        assert log_record.task_status == PARSE_TASK_STATUS_FAILED
-        assert log_record.failure_reason.startswith("PARSE_ENGINE_FAILED:")
-        assert log_record.failure_reason.endswith("parse failed")
+        assert post_repo.pipeline.pipeline_status == PIPELINE_STATUS_FAILED
+        assert post_repo.pipeline.cleaning_status == STAGE_STATUS_FAILED
+        assert post_repo.pipeline.failure_reason.startswith("PARSE_ENGINE_FAILED:")
+        assert post_repo.pipeline.failure_reason.endswith("parse failed")
         mq_service.send.assert_awaited_once()
         sent_payload = mq_service.send.call_args.args[0].get_payload()
         assert sent_payload.task_status == PARSE_TASK_STATUS_FAILED
@@ -579,7 +611,7 @@ class TestParseTaskPipeline:
             session_factory=FakeAsyncSessionFactory(db),
             mq_service=mq_service,
             vector_storage=vector_storage,
-            post_process_repository=post_repo,
+            pipeline_repository=post_repo,
             es_indexing_pipeline=es_pipeline,
             preprocessor=FakePreprocessor(),
         )
@@ -587,9 +619,7 @@ class TestParseTaskPipeline:
         with pytest.raises(ParseResultNotificationError, match="解析结果通知发送失败"):
             await pipeline.execute(build_payload())
 
-        log_record = db.add.call_args.args[0]
-        assert log_record.task_status == PARSE_TASK_STATUS_SUCCESS
-        assert log_record.failure_reason is None
+        assert post_repo.pipeline.cleaning_status == STAGE_STATUS_SUCCESS
 
     @patch(
         "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
@@ -610,16 +640,16 @@ class TestParseTaskPipeline:
             storage=storage,
             session_factory=FakeAsyncSessionFactory(db),
             mq_service=mq_service,
-            post_process_repository=post_repo,
+            pipeline_repository=post_repo,
         )
 
         with pytest.raises(ParseResultNotificationError, match="解析结果通知发送失败"):
             await pipeline.execute(build_payload())
 
-        log_record = db.add.call_args.args[0]
-        assert log_record.task_status == PARSE_TASK_STATUS_FAILED
-        assert log_record.failure_reason.startswith("PARSE_ENGINE_FAILED:")
-        assert log_record.failure_reason.endswith("parse failed")
+        assert post_repo.pipeline.pipeline_status == PIPELINE_STATUS_FAILED
+        assert post_repo.pipeline.cleaning_status == STAGE_STATUS_FAILED
+        assert post_repo.pipeline.failure_reason.startswith("PARSE_ENGINE_FAILED:")
+        assert post_repo.pipeline.failure_reason.endswith("parse failed")
 
     @patch(
         "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
@@ -650,14 +680,13 @@ class TestParseTaskPipeline:
             session_factory=FakeAsyncSessionFactory(db),
             mq_service=mq_service,
             vector_storage=vector_storage,
-            post_process_repository=post_repo,
+            pipeline_repository=post_repo,
         )
 
         result = await pipeline.execute(build_payload())
 
         assert result.status == PipelineStatus.FAILED
-        log_record = db.add.call_args.args[0]
-        assert log_record.task_status == PARSE_TASK_STATUS_SUCCESS
+        assert post_repo.pipeline.cleaning_status == STAGE_STATUS_SUCCESS
         assert post_repo.pipeline.pipeline_status == PIPELINE_STATUS_FAILED
         assert post_repo.pipeline.failed_stage == POST_PROCESS_STAGE_CHUNKING
         vector_storage.store_chunks.assert_not_awaited()
@@ -700,7 +729,7 @@ class TestParseTaskPipeline:
             session_factory=FakeAsyncSessionFactory(db),
             mq_service=mq_service,
             vector_storage=vector_storage,
-            post_process_repository=post_repo,
+            pipeline_repository=post_repo,
             es_indexing_pipeline=FakeEsIndexingPipeline(),
         )
 
@@ -710,8 +739,7 @@ class TestParseTaskPipeline:
         assert result.chunk_count == 2
         assert result.vector_indexing_completed is False
         assert result.failed_chunk_ids == ["chunk-2"]
-        log_record = db.add.call_args.args[0]
-        assert log_record.task_status == PARSE_TASK_STATUS_SUCCESS
+        assert post_repo.pipeline.cleaning_status == STAGE_STATUS_SUCCESS
         assert post_repo.pipeline.pipeline_status == PIPELINE_STATUS_FAILED
         assert post_repo.pipeline.failed_stage == POST_PROCESS_STAGE_VECTORIZING
         mq_service.send.assert_awaited_once()
@@ -759,7 +787,7 @@ class TestParseTaskPipeline:
             session_factory=FakeAsyncSessionFactory(db),
             mq_service=mq_service,
             vector_storage=vector_storage,
-            post_process_repository=post_repo,
+            pipeline_repository=post_repo,
             es_indexing_pipeline=es_pipeline,
             preprocessor=FakePreprocessor(),
         )
@@ -769,8 +797,7 @@ class TestParseTaskPipeline:
         assert result.status == PipelineStatus.FAILED
         assert post_repo.pipeline.pipeline_status == PIPELINE_STATUS_FAILED
         assert post_repo.pipeline.failed_stage == "ES_INDEXING"
-        log_record = db.add.call_args.args[0]
-        assert log_record.task_status == PARSE_TASK_STATUS_SUCCESS
+        assert post_repo.pipeline.cleaning_status == STAGE_STATUS_SUCCESS
         sent_payload = mq_service.send.call_args.args[0].get_payload()
         assert sent_payload.task_status == PARSE_TASK_STATUS_FAILED
         assert sent_payload.failure_reason == "es down"

@@ -1,15 +1,20 @@
-"""Repository for file-level parse post-process pipeline state."""
+"""Repository for the document parse pipeline state machine.
+
+权威单源：``document_parse_pipeline`` 一张表覆盖端到端解析全状态机
+（CLEANING / CHUNKING / VECTORIZING / PRETOKENIZE / ES_INDEXING + pipeline_status）。
+``pipeline_status`` 翻转点统一收敛到本仓储。
+"""
 
 from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import func, select, update
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.mq.messages.parse_task import ParseTaskPayload
-from src.models.parse_task import DocumentParsedLog, DocumentPostProcessPipeline
+from src.models.parse_task import DocumentParsedLog, DocumentParsePipeline
 
 from .constants import (
     MAX_FAILURE_REASON_LENGTH,
@@ -18,6 +23,7 @@ from .constants import (
     PIPELINE_STATUS_PROCESSING,
     PIPELINE_STATUS_SUCCESS,
     POST_PROCESS_STAGE_CHUNKING,
+    POST_PROCESS_STAGE_CLEANING,
     POST_PROCESS_STAGE_ES_INDEXING,
     POST_PROCESS_STAGE_PRETOKENIZE,
     POST_PROCESS_STAGE_VECTORIZING,
@@ -27,12 +33,12 @@ from .constants import (
 )
 
 
-class PostProcessPipelineRepository:
-    """Encapsulates writes to the file-level post-process pipeline row."""
+class ParsePipelineRepository:
+    """Encapsulates writes to the document parse pipeline row."""
 
     def __init__(
         self,
-        model_cls: type[DocumentPostProcessPipeline] = DocumentPostProcessPipeline,
+        model_cls: type[DocumentParsePipeline] = DocumentParsePipeline,
     ) -> None:
         self.model_cls = model_cls
 
@@ -41,7 +47,7 @@ class PostProcessPipelineRepository:
         db: AsyncSession,
         log_record: DocumentParsedLog,
         payload: ParseTaskPayload,
-    ) -> DocumentPostProcessPipeline:
+    ) -> DocumentParsePipeline:
         """Create the one-to-one PENDING pipeline row for a parse log."""
         existing = await self.get_by_log_id(db, log_record.id)
         if existing is not None:
@@ -53,6 +59,7 @@ class PostProcessPipelineRepository:
             document_original_file_id=log_record.document_original_file_id,
             document_parse_file_id=payload.document_parse_task_id,
             pipeline_status=PIPELINE_STATUS_PENDING,
+            cleaning_status=STAGE_STATUS_PENDING,
             chunking_status=STAGE_STATUS_PENDING,
             vectorizing_status=STAGE_STATUS_PENDING,
             pretokenize_status=STAGE_STATUS_PENDING,
@@ -73,7 +80,7 @@ class PostProcessPipelineRepository:
         self,
         db: AsyncSession,
         document_parsed_log_id: int | None,
-    ) -> DocumentPostProcessPipeline | None:
+    ) -> DocumentParsePipeline | None:
         if document_parsed_log_id is None:
             return None
         result = await db.execute(
@@ -87,38 +94,86 @@ class PostProcessPipelineRepository:
         self,
         db: AsyncSession,
         task_id: str,
-    ) -> DocumentPostProcessPipeline | None:
+    ) -> DocumentParsePipeline | None:
         result = await db.execute(select(self.model_cls).where(self.model_cls.task_id == task_id))
         return result.scalar_one_or_none()
 
-    async def mark_processing(
+    async def mark_cleaning_started(
         self,
         db: AsyncSession,
-        pipeline: DocumentPostProcessPipeline,
+        pipeline: DocumentParsePipeline,
         *,
         started_at: datetime,
     ) -> None:
+        """开始文档清洗阶段：把整体 pipeline 翻成 PROCESSING 并清空上一轮失败。"""
         pipeline.pipeline_status = PIPELINE_STATUS_PROCESSING
         pipeline.started_at = started_at
         pipeline.finished_at = None
         pipeline.failed_stage = None
         pipeline.recover_from_stage = None
         pipeline.failure_reason = None
-        # 不变量：各阶段 *_status 与 retry_count/last_retry_at 不在重置集内。
-        # 前者跨重投持久，恢复推断据此回到首个非 SUCCESS 阶段；
-        # 后两者是用户侧重试计数（仅 claim_failed_for_retry 写）。
+        # 阶段 *_status 在跨重投时持久，恢复推断据此回到首个非 SUCCESS 阶段。
+        await db.commit()
+
+    async def mark_cleaning_success(
+        self,
+        db: AsyncSession,
+        pipeline: DocumentParsePipeline,
+        *,
+        duration_ms: int | None,
+    ) -> None:
+        pipeline.cleaning_status = STAGE_STATUS_SUCCESS
+        pipeline.cleaning_duration_ms = duration_ms
+        pipeline.failure_reason = None
+        await db.commit()
+
+    async def mark_cleaning_failed(
+        self,
+        db: AsyncSession,
+        pipeline: DocumentParsePipeline,
+        *,
+        reason: str,
+        duration_ms: int | None,
+        finished_at: datetime,
+    ) -> None:
+        await self._mark_failed(
+            db,
+            pipeline,
+            stage=POST_PROCESS_STAGE_CLEANING,
+            reason=reason,
+            finished_at=finished_at,
+            duration_ms=duration_ms,
+        )
+
+    async def mark_post_cleaning(
+        self,
+        db: AsyncSession,
+        pipeline: DocumentParsePipeline,
+        *,
+        started_at: datetime,
+    ) -> None:
+        """进入清洗后续阶段（分片+向量化+预分词+ES）的整体 PROCESSING 标记。
+
+        与 ``mark_cleaning_started`` 共用 ``pipeline_status=PROCESSING`` 语义，但
+        ``started_at`` 不重置——pipeline 整体起点仍为清洗开始时间。
+        """
+        pipeline.pipeline_status = PIPELINE_STATUS_PROCESSING
+        if pipeline.started_at is None:
+            pipeline.started_at = started_at
+        pipeline.finished_at = None
+        pipeline.failed_stage = None
+        pipeline.recover_from_stage = None
+        pipeline.failure_reason = None
         await db.commit()
 
     async def mark_chunking_success(
         self,
         db: AsyncSession,
-        pipeline: DocumentPostProcessPipeline,
+        pipeline: DocumentParsePipeline,
         *,
-        chunk_count: int,
         duration_ms: int | None,
     ) -> None:
         pipeline.chunking_status = STAGE_STATUS_SUCCESS
-        pipeline.chunk_count = chunk_count
         pipeline.chunking_duration_ms = duration_ms
         pipeline.failure_reason = None
         await db.commit()
@@ -126,7 +181,7 @@ class PostProcessPipelineRepository:
     async def mark_chunking_failed(
         self,
         db: AsyncSession,
-        pipeline: DocumentPostProcessPipeline,
+        pipeline: DocumentParsePipeline,
         *,
         reason: str,
         duration_ms: int | None,
@@ -144,7 +199,7 @@ class PostProcessPipelineRepository:
     async def mark_vectorizing_success(
         self,
         db: AsyncSession,
-        pipeline: DocumentPostProcessPipeline,
+        pipeline: DocumentParsePipeline,
         *,
         duration_ms: int | None,
     ) -> None:
@@ -156,7 +211,7 @@ class PostProcessPipelineRepository:
     async def mark_vectorizing_failed(
         self,
         db: AsyncSession,
-        pipeline: DocumentPostProcessPipeline,
+        pipeline: DocumentParsePipeline,
         *,
         reason: str,
         duration_ms: int | None,
@@ -174,7 +229,7 @@ class PostProcessPipelineRepository:
     async def mark_pretokenize_success(
         self,
         db: AsyncSession,
-        pipeline: DocumentPostProcessPipeline,
+        pipeline: DocumentParsePipeline,
         *,
         duration_ms: int | None,
     ) -> None:
@@ -186,7 +241,7 @@ class PostProcessPipelineRepository:
     async def mark_pretokenize_failed(
         self,
         db: AsyncSession,
-        pipeline: DocumentPostProcessPipeline,
+        pipeline: DocumentParsePipeline,
         *,
         reason: str,
         duration_ms: int | None,
@@ -204,7 +259,7 @@ class PostProcessPipelineRepository:
     async def mark_es_success(
         self,
         db: AsyncSession,
-        pipeline: DocumentPostProcessPipeline,
+        pipeline: DocumentParsePipeline,
         *,
         duration_ms: int | None,
         total_duration_ms: int | None,
@@ -223,7 +278,7 @@ class PostProcessPipelineRepository:
     async def mark_es_failed(
         self,
         db: AsyncSession,
-        pipeline: DocumentPostProcessPipeline,
+        pipeline: DocumentParsePipeline,
         *,
         reason: str,
         duration_ms: int | None,
@@ -238,47 +293,20 @@ class PostProcessPipelineRepository:
             duration_ms=duration_ms,
         )
 
-    async def claim_failed_for_retry(
-        self,
-        db: AsyncSession,
-        task_id: str,
-    ) -> bool:
-        """用户前端触发重试时认领一个 FAILED 流水线。
-
-        计数在"认领重试"动作处自增（对照
-        ChunkRepository.claim_failed_for_reindex），不在失败处、不在模块内。
-        retry_count/last_retry_at 是本仓库**唯一**写入点；其余路径禁止写。
-
-        预留：本期不接入任何触发路径（handle_duplicate 未改、无新 MQ/接口
-        契约）。recover_from_stage 不重置——续跑据其从首个非 SUCCESS 阶段恢复。
-        """
-        stmt = (
-            update(self.model_cls)
-            .where(self.model_cls.task_id == task_id)
-            .where(self.model_cls.pipeline_status == PIPELINE_STATUS_FAILED)
-            .values(
-                retry_count=self.model_cls.retry_count + 1,
-                last_retry_at=func.now(),
-                pipeline_status=PIPELINE_STATUS_PROCESSING,
-                failed_stage=None,
-                failure_reason=None,
-            )
-        )
-        result = await db.execute(stmt)
-        await db.commit()
-        return bool(result.rowcount)
-
     async def _mark_failed(
         self,
         db: AsyncSession,
-        pipeline: DocumentPostProcessPipeline,
+        pipeline: DocumentParsePipeline,
         *,
         stage: str,
         reason: str,
         finished_at: datetime,
         duration_ms: int | None,
     ) -> None:
-        if stage == POST_PROCESS_STAGE_CHUNKING:
+        if stage == POST_PROCESS_STAGE_CLEANING:
+            pipeline.cleaning_status = STAGE_STATUS_FAILED
+            pipeline.cleaning_duration_ms = duration_ms
+        elif stage == POST_PROCESS_STAGE_CHUNKING:
             pipeline.chunking_status = STAGE_STATUS_FAILED
             pipeline.chunking_duration_ms = duration_ms
         elif stage == POST_PROCESS_STAGE_VECTORIZING:
@@ -304,3 +332,7 @@ class PostProcessPipelineRepository:
         if started_at is None:
             return None
         return int((finished_at - started_at).total_seconds() * 1000)
+
+
+# Backward-compatible alias to keep legacy import sites short-circuit clean.
+PostProcessPipelineRepository = ParsePipelineRepository

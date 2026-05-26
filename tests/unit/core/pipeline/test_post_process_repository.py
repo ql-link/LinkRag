@@ -9,14 +9,15 @@ from src.core.pipeline.parse_task.post_process.constants import (
     PIPELINE_STATUS_SUCCESS,
     POST_PROCESS_STAGE_CHUNKING,
     POST_PROCESS_STAGE_ES_INDEXING,
+    POST_PROCESS_STAGE_CLEANING,
     POST_PROCESS_STAGE_PRETOKENIZE,
     POST_PROCESS_STAGE_VECTORIZING,
     STAGE_STATUS_FAILED,
     STAGE_STATUS_PENDING,
     STAGE_STATUS_SUCCESS,
 )
-from src.core.pipeline.parse_task.post_process.repository import PostProcessPipelineRepository
-from src.models.parse_task import DocumentParsedLog, DocumentPostProcessPipeline
+from src.core.pipeline.parse_task.post_process.repository import ParsePipelineRepository
+from src.models.parse_task import DocumentParsedLog, DocumentParsePipeline
 
 
 def build_db(existing=None):
@@ -55,12 +56,11 @@ def build_log():
         document_original_file_id=1,
         document_parse_task_id=10,
         trigger_mode="upload_auto",
-        task_status="created",
     )
 
 
 def build_pipeline():
-    return DocumentPostProcessPipeline(
+    return DocumentParsePipeline(
         id=200,
         document_parsed_log_id=100,
         task_id="t-001",
@@ -69,40 +69,69 @@ def build_pipeline():
     )
 
 
-class TestPostProcessPipelineRepository:
+class TestParsePipelineRepository:
     async def test_create_for_log_should_create_pending_pipeline_when_log_created(self):
         db = build_db()
-        repo = PostProcessPipelineRepository()
+        repo = ParsePipelineRepository()
 
         pipeline = await repo.create_for_log(db, build_log(), build_payload())
 
         db.add.assert_called_once()
         db.flush.assert_awaited_once()
         assert pipeline.pipeline_status == PIPELINE_STATUS_PENDING
+        assert pipeline.cleaning_status == STAGE_STATUS_PENDING
         assert pipeline.chunking_status == STAGE_STATUS_PENDING
         assert pipeline.vectorizing_status == STAGE_STATUS_PENDING
         assert pipeline.es_indexing_status == STAGE_STATUS_PENDING
         assert pipeline.document_parsed_log_id == 100
         assert pipeline.document_parse_file_id == 10
 
-    async def test_mark_processing_should_move_pipeline_to_processing(self):
+    async def test_mark_cleaning_started_should_move_pipeline_to_processing(self):
         db = build_db()
-        repo = PostProcessPipelineRepository()
+        repo = ParsePipelineRepository()
         pipeline = build_pipeline()
         started_at = datetime.now(timezone.utc)
 
-        await repo.mark_processing(db, pipeline, started_at=started_at)
+        await repo.mark_cleaning_started(db, pipeline, started_at=started_at)
 
         assert pipeline.pipeline_status == PIPELINE_STATUS_PROCESSING
         assert pipeline.started_at == started_at
         db.commit.assert_awaited_once()
 
-    async def test_mark_stage_success_should_record_file_level_progress(self):
+    async def test_mark_cleaning_success_should_set_parsing_success_and_duration(self):
         db = build_db()
-        repo = PostProcessPipelineRepository()
+        repo = ParsePipelineRepository()
         pipeline = build_pipeline()
 
-        await repo.mark_chunking_success(db, pipeline, chunk_count=3, duration_ms=12)
+        await repo.mark_cleaning_success(db, pipeline, duration_ms=88)
+
+        assert pipeline.cleaning_status == STAGE_STATUS_SUCCESS
+        assert pipeline.cleaning_duration_ms == 88
+
+    async def test_mark_cleaning_failed_should_set_parsing_failed_and_recover_stage(self):
+        db = build_db()
+        repo = ParsePipelineRepository()
+        pipeline = build_pipeline()
+
+        await repo.mark_cleaning_failed(
+            db,
+            pipeline,
+            reason="PARSE_ENGINE_FAILED: boom",
+            duration_ms=10,
+            finished_at=datetime.now(timezone.utc),
+        )
+
+        assert pipeline.pipeline_status == PIPELINE_STATUS_FAILED
+        assert pipeline.cleaning_status == STAGE_STATUS_FAILED
+        assert pipeline.failed_stage == POST_PROCESS_STAGE_CLEANING
+        assert pipeline.recover_from_stage == POST_PROCESS_STAGE_CLEANING
+
+    async def test_mark_stage_success_should_record_file_level_progress(self):
+        db = build_db()
+        repo = ParsePipelineRepository()
+        pipeline = build_pipeline()
+
+        await repo.mark_chunking_success(db, pipeline, duration_ms=12)
         await repo.mark_vectorizing_success(db, pipeline, duration_ms=34)
         await repo.mark_es_success(
             db,
@@ -113,7 +142,6 @@ class TestPostProcessPipelineRepository:
         )
 
         assert pipeline.chunking_status == STAGE_STATUS_SUCCESS
-        assert pipeline.chunk_count == 3
         assert pipeline.vectorizing_status == STAGE_STATUS_SUCCESS
         assert pipeline.es_indexing_status == STAGE_STATUS_SUCCESS
         assert pipeline.pipeline_status == PIPELINE_STATUS_SUCCESS
@@ -122,7 +150,7 @@ class TestPostProcessPipelineRepository:
 
     async def test_mark_stage_failed_should_record_failed_and_recover_stage(self):
         db = build_db()
-        repo = PostProcessPipelineRepository()
+        repo = ParsePipelineRepository()
         finished_at = datetime.now(timezone.utc)
 
         chunking = build_pipeline()
@@ -162,7 +190,7 @@ class TestPostProcessPipelineRepository:
 
     async def test_create_for_log_should_init_pretokenize_pending(self):
         db = build_db()
-        repo = PostProcessPipelineRepository()
+        repo = ParsePipelineRepository()
 
         pipeline = await repo.create_for_log(db, build_log(), build_payload())
 
@@ -170,7 +198,7 @@ class TestPostProcessPipelineRepository:
 
     async def test_mark_pretokenize_success_should_set_status_and_duration(self):
         db = build_db()
-        repo = PostProcessPipelineRepository()
+        repo = ParsePipelineRepository()
         pipeline = build_pipeline()
 
         await repo.mark_pretokenize_success(db, pipeline, duration_ms=42)
@@ -181,7 +209,7 @@ class TestPostProcessPipelineRepository:
 
     async def test_mark_pretokenize_failed_should_set_status_and_recover_stage(self):
         db = build_db()
-        repo = PostProcessPipelineRepository()
+        repo = ParsePipelineRepository()
         pipeline = build_pipeline()
 
         await repo.mark_pretokenize_failed(
@@ -197,39 +225,15 @@ class TestPostProcessPipelineRepository:
         assert pipeline.failed_stage == POST_PROCESS_STAGE_PRETOKENIZE
         assert pipeline.recover_from_stage == POST_PROCESS_STAGE_PRETOKENIZE
 
-    async def test_mark_processing_should_not_clear_stage_status_or_retry_count(self):
+    async def test_mark_post_cleaning_should_not_clear_stage_status(self):
         db = build_db()
-        repo = PostProcessPipelineRepository()
+        repo = ParsePipelineRepository()
         pipeline = build_pipeline()
         pipeline.pretokenize_status = STAGE_STATUS_FAILED
-        pipeline.retry_count = 3
-        pipeline.last_retry_at = datetime.now(timezone.utc)
+        pipeline.started_at = datetime.now(timezone.utc)
 
-        await repo.mark_processing(db, pipeline, started_at=datetime.now(timezone.utc))
+        await repo.mark_post_cleaning(db, pipeline, started_at=datetime.now(timezone.utc))
 
         assert pipeline.pretokenize_status == STAGE_STATUS_FAILED
-        assert pipeline.retry_count == 3
-        assert pipeline.last_retry_at is not None
         assert pipeline.failed_stage is None
         assert pipeline.recover_from_stage is None
-
-    async def test_claim_failed_for_retry_should_increment_retry_count_for_failed_row(self):
-        # 预留方法：用户侧重试认领时唯一写 retry_count/last_retry_at 的入口。
-        db = build_db()
-        db.execute.return_value.rowcount = 1
-        repo = PostProcessPipelineRepository()
-
-        claimed = await repo.claim_failed_for_retry(db, task_id="t-001")
-
-        assert claimed is True
-        db.execute.assert_awaited_once()
-        db.commit.assert_awaited_once()
-
-    async def test_claim_failed_for_retry_should_return_false_when_no_failed_row(self):
-        db = build_db()
-        db.execute.return_value.rowcount = 0
-        repo = PostProcessPipelineRepository()
-
-        claimed = await repo.claim_failed_for_retry(db, task_id="t-001")
-
-        assert claimed is False

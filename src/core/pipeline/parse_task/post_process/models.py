@@ -18,4 +18,3 @@ class PostProcessResult:
 
     success: bool
     failure_reason: str | None = None
-    chunk_count: int = 0

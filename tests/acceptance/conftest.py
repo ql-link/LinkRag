@@ -267,7 +267,7 @@ def pipeline_factory(
         pipeline._session_factory = _FakeSessionFactory(session)
         pipeline._mq_service = MagicMock()
         pipeline._vector_storage = MagicMock()
-        pipeline._post_process_repository = post_process_repository_stub
+        pipeline._pipeline_repository = post_process_repository_stub
         pipeline._es_indexing_pipeline = MagicMock()
         pipeline._preprocessor = MagicMock()
         pipeline._chunk_repository = MagicMock()
