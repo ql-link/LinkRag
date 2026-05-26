@@ -26,18 +26,20 @@
 ```mermaid
 flowchart TD
     A["ParseTaskConsumer 收到消息"] --> B{"is_retry?"}
-    B -->|false 首次| C["create new log + new pipeline 行（全 PENDING）"]
-    B -->|true 重试| D["严格校验 previous_task_id"]
-    D -->|校验失败| F["new log + new pipeline 落 FAILED + 通知 Java FAILED"]
-    D -->|校验通过| E["new log + new pipeline 行（复制旧行 SUCCESS 状态）<br/>旧 pipeline 行写 superseded_by_task_id"]
-    C --> P1["解析源文件 → 上传 markdown"]
-    E --> P2["跳过解析/上传<br/>复用 payload 带过来的 parsed_bucket/key"]
-    P1 --> Q["后处理：chunking → vectorizing → pretokenize → es_indexing → sparse_vectorizing"]
-    P2 --> Q
-    Q -->|按 recover_from_stage 跳过已 SUCCESS 阶段| Q
-    Q -->|任一阶段失败| F2["写阶段 FAILED + 通知 Java FAILED"]
-    Q -->|全成功| S["通知 Java SUCCESS"]
+    B -->|false 首次| C["create new log + new pipeline 行（6 阶段全 PENDING）"]
+    B -->|true 重试| D["validate_retry_context 严格校验"]
+    D -->|校验失败| F["create_failed_for_retry_validation<br/>pipeline.failed_stage=RETRY_VALIDATION + 通知 FAILED"]
+    D -->|校验通过| M["mark_superseded CAS UPDATE 旧 pipeline"]
+    M -->|rowcount=0 并发冲突| F
+    M -->|rowcount=1 抢占成功| E["create new log + new pipeline（继承旧 6 阶段 SUCCESS 状态）"]
+    C --> Q["6 阶段统一编排：parsing → chunking → vectorizing → pretokenize → es_indexing → sparse_vectorizing"]
+    E --> Q
+    Q -->|按 *_status==SUCCESS 跳过已成功阶段| Q
+    Q -->|任一阶段失败| F2["mark_*_failed: pipeline_status=FAILED + failed_stage=<阶段> + 通知 FAILED"]
+    Q -->|全 6 阶段 SUCCESS| S["pipeline_status=SUCCESS + 通知 Java SUCCESS"]
 ```
+
+> 流程图把 PARSING 作为 6 阶段中的首阶段显式画出（重试场景下通过 `parsing_status=SUCCESS` 自动跳过）；重试分支顺序为 validate → mark_superseded（CAS）→ create new rows。
 
 ### 2.2 流程详解
 
@@ -85,8 +87,8 @@ flowchart TD
 | 旧 log（按 `task_id=previous_task_id`）存在 | 同上 |
 | 旧 log `parsed_object_key` 非空（即上次 markdown 已成功落 OSS） | 同上 |
 | 旧 pipeline 行存在 | 同上 |
-| 旧 pipeline `pipeline_status == "FAILED"`（曾经跑过且后处理失败；隐含排除 SUCCESS / PROCESSING） | 同上 |
-| 旧 pipeline `recover_from_stage` 非空（即确实失败过） | 同上 |
+| 旧 pipeline `pipeline_status == "FAILED"`（曾经跑过且失败；隐含排除 SUCCESS / PROCESSING / PENDING） | 同上 |
+| 旧 pipeline `recover_from_stage` 非空 | 同上（防御性校验：理论上 pipeline_status=FAILED 必然 recover_from_stage 非空，但旧数据可能脏，留作 invariant 检查） |
 | 旧 pipeline `superseded_by_task_id IS NULL`（未被其它并发重试占走，CAS 第 1 层快速失败） | 同上 |
 | 消息 payload `parsed_bucket` / `parsed_object_key` 非空（重试必须由 Java 带过来） | 同上 |
 
@@ -200,8 +202,12 @@ flowchart TD
 - **位置**：`ParseTaskPipeline.execute` 与各阶段方法。
 - **职责**：入口分支、跳阶段执行、稀疏阶段编排。
 - **实现思路**：
-  - `execute` 开头读 `payload.is_retry`，true → 走 `_handle_retry_branch` 子路径（新增方法）：调用 `ParseTaskGuard.validate_retry_context()` → `_log_repository.create_for_retry()`（新增）→ `_post_process_repository.create_with_inherited_state()`（新增，详见 3.5）→ 更新旧 pipeline `superseded_by_task_id` → 跳过 `_parse_file` / `_upload_markdown` 直接进入后处理 try 块。
-  - 后处理 try 块在每个阶段调用前增加 `if pipeline_record.<stage>_status == SUCCESS: skip; continue`。
+  - `execute` 开头读 `payload.is_retry`，true → 走 `_handle_retry_branch` 子路径（新增方法）：
+    1. `ParseTaskGuard.validate_retry_context()` 校验通过，返回 `(old_log, old_pipeline)`。
+    2. `_post_process_repository.mark_superseded(old_pipeline, new_task_id, db)` **先抢占旧行**（CAS UPDATE WHERE superseded_by_task_id IS NULL），rowcount=1 才视为抢占成功；rowcount=0 视为并发冲突，直接抛 `RetryValidationError`（按"重试校验失败的落库形态"路径处理）。
+    3. 抢占成功后再 `_log_repository.create_for_retry()`（新增）→ `_post_process_repository.create_with_inherited_state()`（新增，详见 3.5）创建新 log + 新 pipeline 行。
+    4. 进入主 try 块，按 6 阶段统一跳过判定执行（parsing 也走 `parsing_status == SUCCESS` 判定，自动跳过）。
+  - 主 try 块在每个阶段调用前增加 `if pipeline_record.<stage>_status == SUCCESS: skip; continue`；否则 `mark_<stage>_started` → 执行 → `mark_<stage>_success`/`mark_<stage>_failed`。
   - vectorizing/pretokenize/es/sparse 各阶段方法签名一律不动；`execute` 主链路在重试且 chunking 被跳过时，调用新增辅助方法 `_load_chunks_from_db(doc_id, db) -> list[Chunk]` 把 chunk 真值表的 PENDING/FAILED 行组装成内存 list，赋给原 `chunks` 变量，下游照常消费。
   - 新增 `_run_sparse_vectorizing(payload, pipeline_record, db)`，结构对齐 `_run_pretokenize` / `_run_es_indexing`：成功 mark + 继续，失败 mark + 通知 + return FAILED。
   - `_infer_recover_stage` 阶段序列扩为 `CHUNKING → VECTORIZING → PRETOKENIZE → ES_INDEXING → SPARSE_VECTORIZING`，新增 `SPARSE_VECTORIZING` 阶段枚举（[constants.py](src/core/pipeline/parse_task/post_process/constants.py)）。
@@ -213,8 +219,8 @@ flowchart TD
 
 - **位置**：`ParseTaskGuard` 类。
 - **职责**：重试场景的严格校验。
-- **实现思路**：新增 `validate_retry_context(payload, db) -> tuple[OldLog, OldPipeline] | RetryValidationError`，覆盖第 2.2 节列出的全部校验项；返回旧 log + 旧 pipeline 行供编排层继承状态使用。
-- **关键决策**：校验失败统一抛 `RetryValidationError`（新增异常），由 `execute` 捕获后走"新 log 落 FAILED + 通知 FAILED"统一路径；不在 guard 内部直接写库或发通知，保持职责单一。
+- **实现思路**：新增 `validate_retry_context(payload, db) -> tuple[OldLog, OldPipeline]`，覆盖第 2.2 节列出的全部校验项；校验通过返回旧 log + 旧 pipeline 行供编排层继承状态与 mark_superseded 使用；校验失败抛 `RetryValidationError`（新增异常）。
+- **关键决策**：失败路径用异常表达而非 Result/union 类型（与 Python 社区习惯一致）；由 `execute` 捕获后走"create_failed_for_retry_validation + 通知 FAILED"统一路径；不在 guard 内部直接写库或发通知，保持职责单一。`mark_superseded` 的 CAS rowcount=0 也包装成 `RetryValidationError` 抛出，与校验失败共用下游路径。
 
 ### 3.5 仓储扩展（`log_repository.py` + `post_process/repository.py`）
 
@@ -226,9 +232,11 @@ flowchart TD
   - `ParseLogRepository.mark_success` / `mark_failed` 方法**整体废弃**（task_status 已删除），原调用点改为只写 `PostProcessPipelineRepository` 的 pipeline 状态翻转。
   - 新增 `ParseLogRepository.create_failed_for_retry_validation(payload, previous_task_id, db) -> DocumentParsedLog`：仅写 `retry_of_task_id` 与基础元数据；配套 `PostProcessPipelineRepository.create_failed_for_retry_validation(new_log_id, failure_reason, db)` 落 `pipeline_status=FAILED`、`failed_stage=RETRY_VALIDATION`、`failure_reason="RETRY_VALIDATION_FAILED:..."`、各阶段 `*_status=PENDING`、`started_at`=`finished_at`=now。
   - `PostProcessPipelineRepository.create_with_inherited_state(old_pipeline, new_log_id, db) -> DocumentPostProcessPipeline`：按 3.2 描述复制 6 个 `*_status`（含 `parsing_status`）的 SUCCESS 状态、PENDING 化失败阶段、清空 failure 字段、计算新 `recover_from_stage`、保留 SUCCESS 阶段的 `*_duration_ms`（含 `parsing_duration_ms`）。
-  - `PostProcessPipelineRepository.mark_superseded(old_pipeline, new_task_id, db)`：UPDATE 旧行 `superseded_by_task_id` 时 WHERE 子句必须带 `superseded_by_task_id IS NULL`（CAS 第 2 层兜底），返回 rowcount；编排层据 rowcount=0 判定并发冲突走"重试校验失败"路径。
-  - 新增 `mark_parsing_success` / `mark_parsing_failed` 编排首次分支解析阶段的状态翻转，与 chunking/dense/sparse 等其他阶段对称：失败时同事务写 `parsing_status=FAILED`、`pipeline_status=FAILED`、`failed_stage=PARSING`、`failure_reason="PARSING_FAILED:..."`。
+  - `PostProcessPipelineRepository.mark_superseded(old_pipeline, new_task_id, db)`：UPDATE 旧行 `superseded_by_task_id` 时 WHERE 子句必须带 `superseded_by_task_id IS NULL`（CAS 第 2 层兜底），返回 rowcount；rowcount=0 由调用方（编排层）抛 `RetryValidationError` 走统一失败路径（详见 3.3 _handle_retry_branch 顺序）。**调用顺序保证**：mark_superseded 必须在 create_for_retry / create_with_inherited_state **之前**调用，避免 CAS 失败后还要回滚已建的新行。
+  - 新增 `mark_<stage>_started`（6 个阶段对称：parsing/chunking/vectorizing/pretokenize/es_indexing/sparse_vectorizing）：把 `pipeline_status` 从 PENDING 翻为 PROCESSING（已是 PROCESSING 则 no-op）、本阶段 `*_status` 从 PENDING 翻为 PROCESSING，同事务写 `started_at`（首个阶段写 pipeline.started_at）。
+  - 新增 `mark_parsing_success` / `mark_parsing_failed` 与 chunking/dense/sparse 等其他阶段对称：失败时同事务写 `parsing_status=FAILED`、`pipeline_status=FAILED`、`failed_stage=PARSING`、`failure_reason="PARSING_FAILED:..."`。
   - 新增 `mark_sparse_vectorizing_success` / `mark_sparse_vectorizing_failed` 与 dense 对应方法对称。
+  - 现有 `mark_chunking_*` / `mark_vectorizing_*` / `mark_pretokenize_*` / `mark_es_*` 系列方法仅作以下兼容性调整：去除任何对 `log.task_status` / `log.failure_reason` 的写入（这些字段已删），其余语义保持不变。
   - `claim_failed_for_retry` 方法删除由独立 issue #42 处理，不在本期 brief 范围。
 - **关键决策**：所有状态翻转集中在 `PostProcessPipelineRepository`，`ParseLogRepository` 退化为纯产物写入；外部读取整体任务状态一律通过 pipeline 行；这是配套 issue #46 的实现侧落点。
 
@@ -237,9 +245,9 @@ flowchart TD
 - **位置**：`src/core/sparse_vector/indexing.py` 新增 `SparseIndexingPipeline` 类。底层稀疏向量能力（`SparseVectorService` 等）保留在 `src/core/sparse_vector/` 现有模块；新增的类承担"主流水线阶段编排"职责，与底层能力同包，对应 `EsIndexingPipeline` 在 ES 链路里的角色。
 - **职责**：文件级 all-or-nothing 批量构建稀疏向量并写 Qdrant。
 - **实现思路**：
-  - 输入：`doc_id`、`bucket_id`、（可选 `task_id` 用于日志）。
+  - 输入：`doc_id`、`bucket_id`（=知识库 bucket，用于 Qdrant collection 定位，从 payload.bucket_id 透传）、（可选 `task_id` 用于日志）。
   - **前置数据健康性校验**（进入实际处理前先做）：
-    - 按 `doc_id` 查 chunk 表总行数。若 `chunk_count == 0` → 视为状态严重不一致，抛文件级异常，落 FAILED + 通知 Java。
+    - 按 `doc_id` 查 chunk 表实际行数（COUNT(*)，不依赖已删除的 `chunk_count` 字段）。若行数 == 0 → 视为状态严重不一致，抛文件级异常，落 FAILED + 通知 Java。
     - 按 `doc_id + sparse_vector_status IN (PENDING, FAILED)` 反查待处理 chunk。若反查结果为空且总行数 > 0（全部已 INDEXED）→ 直接判 SUCCESS，不执行实际处理。
     - （可选更严格）反查到的 chunk 若 `vector_status != INDEXED` → 状态不一致，落 FAILED。
   - **主流程**：按 `doc_id` 查待处理 chunk → 批量调 `SparseVectorService.vectorize(chunk_texts)` 拿稀疏向量 → 调 `qdrant_store.ensure_sparse_vector_schema` → 批量 `upsert_sparse_vectors` → 批量 UPDATE chunk `sparse_vector_status=INDEXED`。
@@ -257,7 +265,7 @@ flowchart TD
 
 ### 3.8 测试覆盖
 
-- `tests/unit/core/pipeline/test_parse_task_pipeline.py`：增加首次/重试两套用例；重试覆盖"校验失败 → pipeline 落 FAILED + failed_stage=RETRY_VALIDATION"、"解析阶段失败 → pipeline failed_stage=PARSING + parsing_status=FAILED"、"重试跳过 chunking"、"重试从 sparse 起步"、"重试时旧 pipeline 被 superseded（CAS rowcount=1）"、"并发重试第二次 mark_superseded rowcount=0 走校验失败路径"、"pipeline_status 仅在全 6 阶段 SUCCESS 后才置 SUCCESS"。
+- `tests/unit/core/pipeline/test_parse_task_pipeline.py`：增加首次/重试两套用例；重试覆盖"校验失败 → pipeline 落 FAILED + failed_stage=RETRY_VALIDATION"、"解析阶段失败 → pipeline failed_stage=PARSING + parsing_status=FAILED"、"重试通过 parsing_status=SUCCESS 自动跳过 _parse_file/_upload_markdown"、"重试跳过 chunking 通过 *_status=SUCCESS"、"重试从 sparse 起步"、"mark_superseded CAS rowcount=1 抢占成功后才创建新行"、"mark_superseded CAS rowcount=0 直接走 RetryValidationError → create_failed_for_retry_validation 路径，新行不被创建过"、"pipeline_status PENDING→PROCESSING 在首个 mark_*_started 时翻转"、"pipeline_status 仅在全 6 阶段 SUCCESS 后才置 SUCCESS"。
 - 新增 `test_parse_task_pipeline_sparse.py`：sparse 阶段成功/失败/跳过/全 INDEXED 短路/chunk 总数 0 不一致。
 - `tests/unit/core/pipeline/test_post_process_repository.py`：`create_with_inherited_state` 各种状态组合、`mark_superseded` CAS 行为、`create_failed_for_retry_validation` 双表落库。
 - `tests/unit/core/pipeline/test_validator.py`：`validate_retry_context` 各校验失败路径（含 CAS 第 1 层快速失败）。
