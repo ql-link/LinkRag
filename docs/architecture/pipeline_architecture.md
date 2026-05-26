@@ -38,7 +38,7 @@ src/core/pipeline/
     └── post_process/            # 文件级后处理子状态机（parse_task 内部）
         ├── constants.py         # PIPELINE_STATUS_* / STAGE_STATUS_* / POST_PROCESS_STAGE_*
         ├── models.py            # PostProcessStageResult / PostProcessResult
-        └── repository.py        # PostProcessPipelineRepository
+        └── repository.py        # ParsePipelineRepository
 ```
 
 后续如新增检索链路 pipeline，按相同模式在顶层添加 `retrieval/` 子包：
@@ -51,7 +51,7 @@ src/core/pipeline/
 
 ### 2.1 为什么 `post_process/` 嵌在 `parse_task/` 下
 
-它的生命周期由 parse_task 创建并驱动（行级 `document_post_process_pipeline` 与 `document_parsed_log` 1:1 绑定），不是一个独立 pipeline，所以归属为 parse_task 的内部子状态机，而不是顶层 `pipeline/` 的并列子包。这样顶层只放真正的"独立 pipeline"，层级语义干净。
+它的生命周期由 parse_task 创建并驱动（行级 `document_parse_pipeline` 与 `document_parsed_log` 1:1 绑定），不是一个独立 pipeline，所以归属为 parse_task 的内部子状态机，而不是顶层 `pipeline/` 的并列子包。这样顶层只放真正的"独立 pipeline"，层级语义干净。
 
 ---
 
@@ -92,18 +92,18 @@ src/core/pipeline/
 
 | 协作者 | 输入依赖 | 主要职责 | 副作用 |
 | --- | --- | --- | --- |
-| `ParseLogRepository` | `PostProcessPipelineRepository` | `document_parsed_log` CRUD；首次创建时同步生成 `document_post_process_pipeline` 行 | MySQL |
+| `ParseLogRepository` | `ParsePipelineRepository` | `document_parsed_log` CRUD；首次创建时同步生成 `document_parse_pipeline` 行 | MySQL |
 | `ParseSourceIO` | `BaseObjectStorage` | 源文件下载、Markdown 上传、MinerU URL 构造、判断是否跳过下载 | OSS |
 | `ParseResultNotifier` | `MQService`, `ParseLogRepository` | 发 `parse_result` 终态消息；发送失败时把日志兜底为 `RESULT_NOTIFY_FAILED` | MQ + MySQL |
-| `ParseTaskGuard` | `ParseLogRepository`, `PostProcessPipelineRepository`, `ParseResultNotifier` | 消息载荷一致性校验；重复 task_id 终态补发；非终态 pipeline 收敛 | 通过依赖产生副作用 |
+| `ParseTaskGuard` | `ParseLogRepository`, `ParsePipelineRepository`, `ParseResultNotifier` | 消息载荷一致性校验；重复 task_id 终态补发；非终态 pipeline 收敛 | 通过依赖产生副作用 |
 
 依赖方向（自上而下）：
 
 ```text
 ParseTaskPipeline
    └── ParseTaskGuard
-         ├── ParseResultNotifier ── ParseLogRepository ── PostProcessPipelineRepository
-         └── PostProcessPipelineRepository
+         ├── ParseResultNotifier ── ParseLogRepository ── ParsePipelineRepository
+         └── ParsePipelineRepository
 ```
 
 ---
@@ -140,7 +140,7 @@ def _chunk_markdown(markdown, source_file, parse_result=None):
 
 ## 6. 后处理子状态机
 
-`document_post_process_pipeline` 行随 `document_parsed_log` 在 `ParseLogRepository.create()` 内同事务创建（1:1 绑定）。`PostProcessPipelineRepository` 提供按阶段写状态的细粒度入口：
+`document_parse_pipeline` 行随 `document_parsed_log` 在 `ParseLogRepository.create()` 内同事务创建（1:1 绑定）。`ParsePipelineRepository` 提供按阶段写状态的细粒度入口：
 
 | 阶段 | success 入口 | failed 入口 |
 | --- | --- | --- |
@@ -157,8 +157,8 @@ def _chunk_markdown(markdown, source_file, parse_result=None):
 ### 7.1 新增一个后处理阶段（例如知识图谱抽取）
 
 1. 在 `post_process/constants.py` 加阶段常量与状态字段名。
-2. `document_post_process_pipeline` 表加 `xxx_status` / `xxx_duration_ms` 字段（DDL 入 `scripts/db/init.sql`）。
-3. `PostProcessPipelineRepository` 加 `mark_xxx_success` / `mark_xxx_failed`。
+2. `document_parse_pipeline` 表加 `xxx_status` / `xxx_duration_ms` 字段（DDL 入 `scripts/db/init.sql`）。
+3. `ParsePipelineRepository` 加 `mark_xxx_success` / `mark_xxx_failed`。
 4. `ParseTaskPipeline._run` 在 ES 阶段之后追加新阶段，沿用现有的"failed → mark_xxx_failed + notifier.send_or_raise + return FAILED"模式。
 5. `ParseTaskGuard._infer_recover_stage` 加新阶段的判断顺序。
 6. 同步 [docs/reference/mysql_schema.md](../reference/mysql_schema.md)、[parse_task_pipeline_module.md](parse_task_pipeline_module.md)。

@@ -123,7 +123,12 @@ Python 发往 Java 的 `tolink.rag.parse_result` 消息不带 MQ 信封，消息
 | `parse_finished_at` | string | 整体终态时间，ISO 8601 |
 | `user_message` | string/null | 可选用户提示 |
 
-`success` 表示 Markdown 已生成并上传，且分片、向量化和 ES 入库均完成。任一阶段失败都会发送 `failed`，并在 `failure_reason` 中携带业务化原因。
+`success` 表示解析+上传、分片、向量化、预分词与 ES 入库均完成。任一阶段失败都会发送 `failed`，并在 `failure_reason` 中携带业务化原因。
+
+> **数据库权威单源**：整体任务状态以 `document_parse_pipeline.pipeline_status` 为准；`document_parsed_log.task_status` / `failure_reason` 已下线（migration 0007）。Java 侧若需直接查表，应读取：
+> - 整体任务是否成功 → `document_parse_pipeline.pipeline_status == SUCCESS`
+> - markdown 是否已上传 → `document_parsed_log.parsed_object_key IS NOT NULL`
+> - 失败原因 → `document_parse_pipeline.failure_reason`
 
 ## 4. LLM API
 

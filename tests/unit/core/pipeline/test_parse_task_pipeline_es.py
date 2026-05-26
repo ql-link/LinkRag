@@ -53,7 +53,7 @@ def build_pipeline(*, preprocessor=None, es_pipeline=None, chunk_repository=None
         storage=MagicMock(),
         session_factory=MagicMock(),
         mq_service=MagicMock(),
-        post_process_repository=post_repo or AsyncMock(),
+        pipeline_repository=post_repo or AsyncMock(),
         es_indexing_pipeline=es_pipeline,
         preprocessor=preprocessor,
         chunk_repository=chunk_repository,

@@ -4,8 +4,10 @@
 失败码及可落库失败原因由 ``error_codes.py`` 统一维护。
 """
 
-# document_parsed_log.task_status 使用的小写状态值，与现有数据库记录保持一致。
-PARSE_TASK_STATUS_CREATED = "created"
+# parse_result MQ 消息 task_status 字段使用的小写状态值（Java 端 API 契约）。
+# 注：``document_parsed_log.task_status`` 已下线，整体任务状态权威单源是
+# ``document_parse_pipeline.pipeline_status``。这里的常量仅用于
+# 与 Java 之间的 MQ 消息体兼容。
 PARSE_TASK_STATUS_SUCCESS = "success"
 PARSE_TASK_STATUS_FAILED = "failed"
 

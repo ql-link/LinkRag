@@ -52,7 +52,7 @@
 | `EsIndexingPipeline` | 将分片文本写入 ES | ES 事务不属于本需求处理范围；稀疏向量不依赖 ES 成功，也不消费 ES analyzer 的分词结果 | 明确排除 |
 | `QdrantIndexStore` | 管理 Qdrant collection 和 point | 稀疏向量落在同一 Qdrant collection，需要支持 sparse vector 或 named vector 结构 | 待技术设计确认 |
 | `kb_document_chunk` | 分片真值源 | 需要记录稀疏向量模型、状态或补偿依据 | 待技术设计确认 |
-| `document_post_process_pipeline` | 文件级后处理状态 | 向量阶段成功语义需要扩展为 dense 和 sparse 均成功；无需把 sparse 设计成 ES 后的独立文件级阶段 | 已纳入 |
+| `document_parse_pipeline` | 文件级后处理状态 | 向量阶段成功语义需要扩展为 dense 和 sparse 均成功；无需把 sparse 设计成 ES 后的独立文件级阶段 | 已纳入 |
 
 ### 3.2 现有流程关系
 
