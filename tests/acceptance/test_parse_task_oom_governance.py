@@ -20,11 +20,6 @@ from tests.acceptance.steps import (  # noqa: F401  (importing for side effects)
     temp_workspace_steps,
 )
 
-_FEATURE = (
-    Path(__file__).resolve().parents[2]
-    / "docs"
-    / "解析任务OOM风险治理"
-    / "acceptance.feature"
-)
+_FEATURE = Path(__file__).resolve().parent / "features" / "parse_task_oom_governance.feature"
 
 scenarios(str(_FEATURE))

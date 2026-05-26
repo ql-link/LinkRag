@@ -55,13 +55,14 @@ when_to_use: "当用户提出新需求、口头描述、初步想法、粗略框
 固定为：
 
 ```
-docs/<需求名称>/brief.md
+.specs/<feature-name>/brief.md
 ```
 
 要求：
 
-- 需求名称使用中文，与现有 `docs/` 目录约定一致。
-- 若用户未提供需求名称，从需求内容提取候选并向用户确认后再创建目录。
+- `.specs/` 整目录已 git-ignored，是 feature 临时工作目录；详见 [.specs/README.md](../../../.specs/README.md)。
+- feature 名称使用英文 kebab-case，与 `.specs/` 目录约定一致。
+- 若用户未提供 feature 名称，从需求内容提取候选并向用户确认后再创建目录。
 - 同目录同时维护 `feature_info.md`，记录当前阶段（如 `brief 迭代中` / `brief 已冻结`）、产物清单、推荐阅读顺序。
 - 若目录已存在 `brief.md`，先读旧版判断是修订还是覆盖，不允许无说明地重写关键结论。
 
@@ -147,7 +148,7 @@ flowchart TD
 
 - README、已有同业务域的 brief / technical_design
 - 相关模块目录、入口文件、状态枚举、消息契约
-- 公共契约（`docs/architecture/middleware_contract.md` 等）
+- 公共契约（`docs/internals/middleware_contract.md` 等）
 
 不做完整代码审查，**只读到能支撑模块草图为止**。不要把"读到了什么文件"写成独立章节，转化为对模块归属、复用边界的具体判断。
 

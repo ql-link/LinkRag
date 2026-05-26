@@ -1,7 +1,7 @@
 ---
 name: agents-tree-sync
 description: 当仓库内创建、删除、移动、重命名源码、脚本、配置、测试或 Agent/Skill 等核心项目目录，并且这些变更影响项目结构展示时，要求同步更新根目录 AGENTS.md 中的“当前项目结构”树。docs 目录下任何文件或目录结构变化都不触发本 skill。
-when_to_use: "当用户在非 docs 目录中创建、删除、移动、重命名文件或目录，或这些变更会影响 AGENTS.md 中的非 docs 项目结构树时激活。docs 目录下任何新增、删除、移动、重命名或修改都不激活本 skill。触发示例：'新增 src/core 模块'、'迁移 scripts 脚本'、'删除 tests 子目录'、'重命名 .agents/skills 下的 skill'"
+when_to_use: "当用户在非 docs 目录中创建、删除、移动、重命名文件或目录，或这些变更会影响 AGENTS.md 中的非 docs 项目结构树时激活。docs 目录下任何新增、删除、移动、重命名或修改都不激活本 skill。触发示例：'新增 src/core 模块'、'迁移 scripts 脚本'、'删除 tests 子目录'、'重命名 .ai/skills 下的 skill'"
 ---
 
 # AGENTS Tree Sync
@@ -16,7 +16,7 @@ when_to_use: "当用户在非 docs 目录中创建、删除、移动、重命名
 
 在以下情况必须同步更新 `AGENTS.md`：
 
-1. 在 `src/`、`scripts/`、`tests/`、`.agents/skills/` 等非 `docs/` 目录新增目录或核心文件
+1. 在 `src/`、`scripts/`、`tests/`、`.ai/skills/` 等非 `docs/` 目录新增目录或核心文件
 2. 在非 `docs/` 目录删除目录或核心文件
 3. 在非 `docs/` 目录移动或重命名目录/文件
 4. 调整非 `docs/` 目录职责，导致树上的注释不再准确
@@ -27,7 +27,7 @@ when_to_use: "当用户在非 docs 目录中创建、删除、移动、重命名
 
 1. `docs/` 下新增、删除、移动、重命名任何文件
 2. `docs/` 下新增、删除、移动、重命名任何目录
-3. `docs/module-development-files/` 下模块研发文档目录结构变化
+3. `.specs/` 下任何 feature 临时目录的变化（整目录 git-ignored）
 4. `docs/` 下文档内容修改
 5. 仅因 `docs/` 结构与 `AGENTS.md` 中展示不一致而想同步目录树
 
@@ -52,7 +52,7 @@ when_to_use: "当用户在非 docs 目录中创建、删除、移动、重命名
 
 - 不要为了“绝对完整”把所有测试文件、临时文件、IDE 文件都列出来。
 - 不要因为 `docs/` 目录下任何文件或目录结构变化而同步更新 `AGENTS.md`。
-- 即使用户新增、删除、移动或重命名 `docs/module-development-files/` 下的模块目录，也不要同步更新 `AGENTS.md`。
+- 即使用户在 `.specs/` 下新增、删除、移动或重命名任何 feature 工作目录，也不要同步更新 `AGENTS.md`。
 - 继续省略 `.git`、`.venv`、`.pytest_cache`、`__pycache__` 等运行时或缓存目录。
 - 优先保留用户当前已经确认过的展示风格，只做最小必要修改。
 - 如果用户明确要求“不要更新 AGENTS.md”，则遵从用户要求。
