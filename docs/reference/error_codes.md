@@ -33,6 +33,9 @@ CODE: 中文业务原因；底层详情
 | `PARSED_FILE_UPLOAD_FAILED` | 解析结果保存失败，请重新解析 | Markdown 上传对象存储失败 |
 | `RESULT_NOTIFY_FAILED` | 解析结果通知失败，请重新解析 | parse_result 终态通知 MQ 发送失败 |
 | `INTERNAL_UNKNOWN_ERROR` | 系统异常，请稍后重试 | 未归类内部异常 |
+| `PARSING_FAILED` | 文件解析阶段失败，请检查文件内容或重新解析 | 文档清洗（解析+上传）阶段统一失败前缀，对应 `failed_stage=CLEANING`（brief 称 `PARSING`） |
+| `SPARSE_VECTORIZING_FAILED` | 稀疏向量化失败，请稍后重试 | 稀疏向量阶段任一 chunk 失败、health-check 总数为 0、Qdrant 写入失败等 |
+| `RETRY_VALIDATION_FAILED` | 重试前置校验失败，请确认上次任务状态 | `ParseTaskGuard.validate_retry_context` 任一校验项不满足，或 `mark_superseded` CAS rowcount=0 |
 
 后处理阶段还会生成以下文件级失败原因前缀，它们不是 `ParseFailureCode` 枚举成员，但会通过 `failure_reason` 发送给 Java：
 

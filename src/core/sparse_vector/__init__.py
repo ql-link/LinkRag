@@ -12,6 +12,10 @@ from .exceptions import (
     SparseVectorOutputError,
 )
 from .factory import create_sparse_vector_service, create_sparse_vector_service_from_settings
+# 注意：``SparseIndexingPipeline`` / ``SparseIndexingError`` 不在此处导入，
+# 避免与 ``src.core.qdrant_vector_storage`` 形成循环导入（后者的 models 模块
+# 引用 ``sparse_vector.models``）。需要使用时请直接：
+#     from src.core.sparse_vector.indexing import SparseIndexingPipeline
 from .models import (
     SparseChunkResult,
     SparseChunkVectorizationRequest,

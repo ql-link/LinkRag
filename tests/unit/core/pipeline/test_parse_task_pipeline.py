@@ -123,10 +123,13 @@ class FakePostProcessRepository:
             vectorizing_status=STAGE_STATUS_PENDING,
             pretokenize_status=STAGE_STATUS_PENDING,
             es_indexing_status=STAGE_STATUS_PENDING,
+            sparse_vectorizing_status=STAGE_STATUS_PENDING,
             failed_stage=None,
             recover_from_stage=None,
             failure_reason=failure_reason,
             cleaning_duration_ms=None,
+            sparse_vectorizing_duration_ms=None,
+            superseded_by_task_id=None,
             started_at=None,
             finished_at=None,
         )
@@ -204,10 +207,11 @@ class FakePostProcessRepository:
         pipeline.recover_from_stage = POST_PROCESS_STAGE_PRETOKENIZE
         pipeline.failure_reason = reason
 
-    async def mark_es_success(self, db, pipeline, *, duration_ms, total_duration_ms, finished_at):
+    async def mark_es_success(self, db, pipeline, *, duration_ms, total_duration_ms=None, finished_at=None):
         self.calls.append("mark_es_success")
         pipeline.es_indexing_status = STAGE_STATUS_SUCCESS
-        pipeline.pipeline_status = PIPELINE_STATUS_SUCCESS
+        # 注意：pipeline_status=SUCCESS 翻转已下沉到 mark_sparse_vectorizing_success。
+        # 这里仅置阶段位（与新版仓储行为一致）。
 
     async def mark_es_failed(self, db, pipeline, *, reason, duration_ms, finished_at):
         self.calls.append("mark_es_failed")
@@ -216,6 +220,76 @@ class FakePostProcessRepository:
         pipeline.failed_stage = "ES_INDEXING"
         pipeline.recover_from_stage = "ES_INDEXING"
         pipeline.failure_reason = reason
+
+    # ------------------------------------------------------------------
+    # 6 阶段对称的 mark_*_started（新增）
+    # ------------------------------------------------------------------
+
+    def _mark_started(self, pipeline, *, stage_attr, started_at):
+        # 与真实仓储 _mark_started 对齐：PENDING/None → PROCESSING；其他态不动。
+        if pipeline.pipeline_status in (None, PIPELINE_STATUS_PENDING):
+            pipeline.pipeline_status = PIPELINE_STATUS_PROCESSING
+        setattr(pipeline, stage_attr, "PROCESSING")
+        if pipeline.started_at is None:
+            pipeline.started_at = started_at
+        pipeline.failed_stage = None
+        pipeline.recover_from_stage = None
+        pipeline.failure_reason = None
+
+    async def mark_chunking_started(self, db, pipeline, *, started_at):
+        self.calls.append("mark_chunking_started")
+        self._mark_started(pipeline, stage_attr="chunking_status", started_at=started_at)
+
+    async def mark_vectorizing_started(self, db, pipeline, *, started_at):
+        self.calls.append("mark_vectorizing_started")
+        self._mark_started(pipeline, stage_attr="vectorizing_status", started_at=started_at)
+
+    async def mark_pretokenize_started(self, db, pipeline, *, started_at):
+        self.calls.append("mark_pretokenize_started")
+        self._mark_started(pipeline, stage_attr="pretokenize_status", started_at=started_at)
+
+    async def mark_es_indexing_started(self, db, pipeline, *, started_at):
+        self.calls.append("mark_es_indexing_started")
+        self._mark_started(pipeline, stage_attr="es_indexing_status", started_at=started_at)
+
+    async def mark_sparse_vectorizing_started(self, db, pipeline, *, started_at):
+        self.calls.append("mark_sparse_vectorizing_started")
+        self._mark_started(pipeline, stage_attr="sparse_vectorizing_status", started_at=started_at)
+
+    async def mark_sparse_vectorizing_success(
+        self, db, pipeline, *, duration_ms, total_duration_ms, finished_at,
+    ):
+        self.calls.append("mark_sparse_vectorizing_success")
+        pipeline.sparse_vectorizing_status = STAGE_STATUS_SUCCESS
+        pipeline.sparse_vectorizing_duration_ms = duration_ms
+        # 整体 SUCCESS 翻转点：6 阶段全部完成的唯一标记位。
+        pipeline.pipeline_status = PIPELINE_STATUS_SUCCESS
+        pipeline.finished_at = finished_at
+
+    async def mark_sparse_vectorizing_failed(
+        self, db, pipeline, *, reason, duration_ms, finished_at,
+    ):
+        self.calls.append("mark_sparse_vectorizing_failed")
+        pipeline.pipeline_status = PIPELINE_STATUS_FAILED
+        pipeline.sparse_vectorizing_status = STAGE_STATUS_FAILED
+        pipeline.failed_stage = "SPARSE_VECTORIZING"
+        pipeline.recover_from_stage = "SPARSE_VECTORIZING"
+        pipeline.failure_reason = reason
+
+
+class FakeSparseIndexingPipeline:
+    """no-op SparseIndexingPipeline 测试替身：默认成功，可显式抛错。"""
+
+    def __init__(self, error: Exception | None = None):
+        self.error = error
+        self.calls: list[dict] = []
+
+    async def run(self, *, doc_id, bucket_id, task_id, db):
+        self.calls.append(
+            {"doc_id": doc_id, "bucket_id": bucket_id, "task_id": task_id}
+        )
+        if self.error is not None:
+            raise self.error
 
 
 class FakeEsIndexingPipeline:
@@ -444,6 +518,7 @@ class TestParseTaskPipeline:
             pipeline_repository=post_repo,
             es_indexing_pipeline=es_pipeline,
             preprocessor=FakePreprocessor(),
+            sparse_indexing_pipeline=FakeSparseIndexingPipeline(),
         )
 
         payload = build_payload()
@@ -530,6 +605,7 @@ class TestParseTaskPipeline:
             pipeline_repository=post_repo,
             es_indexing_pipeline=es_pipeline,
             preprocessor=FakePreprocessor(),
+            sparse_indexing_pipeline=FakeSparseIndexingPipeline(),
         )
 
         result = await pipeline.execute(build_payload())
@@ -614,6 +690,7 @@ class TestParseTaskPipeline:
             pipeline_repository=post_repo,
             es_indexing_pipeline=es_pipeline,
             preprocessor=FakePreprocessor(),
+            sparse_indexing_pipeline=FakeSparseIndexingPipeline(),
         )
 
         with pytest.raises(ParseResultNotificationError, match="解析结果通知发送失败"):

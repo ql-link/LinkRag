@@ -42,6 +42,18 @@ class ParseTaskPayload(MessagePayload):
     image_prefix: Optional[str] = Field(
         None, title="图片前缀", description="PDF 图片输出对象 key 前缀"
     )
+    # 重试链路字段：is_retry=False 时整条载荷与首次解析等价（老消息向后兼容）；
+    # is_retry=True 时 previous_task_id 必填，由编排层 _handle_retry_branch 消费。
+    is_retry: bool = Field(
+        False,
+        title="是否为重试任务",
+        description="True 表示本次为重试任务，需配合 previous_task_id；老消息缺省按首次解析处理",
+    )
+    previous_task_id: Optional[str] = Field(
+        None,
+        title="上一轮任务ID",
+        description="重试场景下指向上一轮失败的 task_id；首次解析必须为空",
+    )
 
     model_config = {"title": "文档解析任务载荷"}
 
@@ -88,6 +100,8 @@ class ParseTaskMessage(AbstractMessage):
         docling_force_ocr: Optional[bool] = False,
         image_bucket: Optional[str] = None,
         image_prefix: Optional[str] = None,
+        is_retry: bool = False,
+        previous_task_id: Optional[str] = None,
     ) -> "ParseTaskMessage":
         return cls(
             payload=ParseTaskPayload(
@@ -107,6 +121,8 @@ class ParseTaskMessage(AbstractMessage):
                 docling_force_ocr=docling_force_ocr,
                 image_bucket=image_bucket,
                 image_prefix=image_prefix,
+                is_retry=is_retry,
+                previous_task_id=previous_task_id,
             )
         )
 
