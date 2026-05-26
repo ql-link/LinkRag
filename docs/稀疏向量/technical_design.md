@@ -382,7 +382,7 @@ SPARSE_VECTOR_DEVICE=cpu
 
 ### 10.3 dense+sparse 联合一致性测试
 
-联合测试目标是验证“拿到 chunk 后，dense vector 与 sparse vector 在 Qdrant、MySQL 两侧的状态不会被误判为成功”。该测试不引入跨库事务，仍遵守现有一致性策略：Qdrant 是可重建索引副本，MySQL `kb_document_chunk` 是事实源；文件级成功只能由 MySQL 中每个 chunk 的 `dense_vector_status=INDEXED` 且 `sparse_vector_status=INDEXED` 汇总得到。
+联合测试目标是验证“拿到 chunk 后，dense vector 与 sparse vector 在 Qdrant、MySQL 两侧的状态不会被误判为成功”。该测试不引入跨库事务，仍遵守现有一致性策略：Qdrant 是可重建索引副本，MySQL `kb_document_chunk` 是事实源；文件级成功只能由 MySQL 中每个 chunk 的 `dense_vector_status=SUCCESS` 且 `sparse_vector_status=SUCCESS` 汇总得到。
 
 测试入口：
 
@@ -404,12 +404,12 @@ SPARSE_VECTOR_DEVICE=cpu
 
 | 场景 | 触发方式 | Qdrant 断言 | MySQL 断言 | 预期收敛 |
 | :--- | :--- | :--- | :--- | :--- |
-| 正常成功 | dense 和 sparse 均写入成功，状态回写成功 | 同一 `point_id=chunk_id` 同时存在 dense vector 与 sparse vector，payload 保留 `chunk_id/user_id/set_id/doc_id` | `dense_vector_status=INDEXED`，`sparse_vector_status=INDEXED`，`sparse_vector_nonzero_count>0` | chunk 与文件级向量阶段成功 |
-| dense 写入失败 | Qdrant dense upsert 抛错 | 不要求存在 point；不得写入 sparse | `dense_vector_status=FAILED`，`sparse_vector_status` 不得为 `INDEXED` | 当前 chunk 失败，后续 chunk 不推进 |
+| 正常成功 | dense 和 sparse 均写入成功，状态回写成功 | 同一 `point_id=chunk_id` 同时存在 dense vector 与 sparse vector，payload 保留 `chunk_id/user_id/set_id/doc_id` | `dense_vector_status=SUCCESS`，`sparse_vector_status=SUCCESS` | chunk 与文件级向量阶段成功 |
+| dense 写入失败 | Qdrant dense upsert 抛错 | 不要求存在 point；不得写入 sparse | `dense_vector_status=FAILED`，`sparse_vector_status` 不得为 `SUCCESS` | 当前 chunk 失败，后续 chunk 不推进 |
 | sparse 写入失败 | dense 已写入，sparse upsert 抛错 | 允许存在 dense orphan，但不得存在成功 sparse；重试仍使用同一 point 覆盖 | `dense_vector_status=FAILED`，`sparse_vector_status=FAILED`，错误包含 `SPARSE_QDRANT_UPSERT_FAILED` | MySQL 阻断成功，后续重试收敛 |
-| Qdrant 成功后 MySQL 回写失败 | dense+sparse 均已写入，`mark_*_indexed` 返回 0 行或 chunk 进入 `DELETING` | 允许存在短暂 Qdrant orphan | dense/sparse 状态不得进入 `INDEXED`，文件级 `vectorizing_status=FAILED` | MySQL 事实源阻断检索成功 |
-| 重试收敛 | 前次失败 chunk 重新处理 | 同一 `point_id` 被幂等覆盖，不产生重复 point | 失败 chunk 的 dense/sparse 状态变为 `INDEXED`，已成功 chunk 不重复调用模型 | 文件级向量阶段恢复成功 |
-| 读时过滤预留 | 人工构造 Qdrant 候选包含状态不一致 chunk | Qdrant 可返回候选 `chunk_id` | MySQL 回查只允许 `dense_vector_status=INDEXED` 且 dense/sparse 均 `INDEXED` 的 chunk 返回 | 未来 sparse/hybrid 检索不暴露不一致资产 |
+| Qdrant 成功后 MySQL 回写失败 | dense+sparse 均已写入，但 `mark_*_indexed` 返回 0 行 | 允许存在短暂 Qdrant orphan | dense/sparse 状态不得进入 `SUCCESS`，文件级 `vectorizing_status=FAILED` | MySQL 事实源阻断检索成功 |
+| 重试收敛 | 前次失败 chunk 重新处理 | 同一 `point_id` 被幂等覆盖，不产生重复 point | 失败 chunk 的 dense/sparse 状态变为 `SUCCESS`，已成功 chunk 不重复调用模型 | 文件级向量阶段恢复成功 |
+| 读时过滤预留 | 人工构造 Qdrant 候选包含状态不一致 chunk | Qdrant 可返回候选 `chunk_id` | MySQL 回查只允许 `dense_vector_status=SUCCESS` 且 dense/sparse 均 `SUCCESS` 的 chunk 返回 | 未来 sparse/hybrid 检索不暴露不一致资产 |
 
 断言边界：
 

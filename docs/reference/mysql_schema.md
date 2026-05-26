@@ -323,11 +323,10 @@ ORM：[`ChunkRecordDB`](../../src/models/chunk_record.py)
 | `chunk_type` | VARCHAR(32) | `paragraph` / `image` / `table` / `code_block` / `heading` / `mixed` / `text` |
 | `start_line` / `end_line` | INT | 源文档起止行号 |
 | `chunk_index` | INT | 文档内顺序编号 |
-| `dense_vector_status` | VARCHAR(16) | 稠密向量生命周期：`PENDING` / `INDEXING` / `INDEXED` / `FAILED` / `DELETING` / `DELETED` / `DELETE_FAILED` |
+| `dense_vector_status` | VARCHAR(16) | 稠密向量状态：`PENDING` / `SUCCESS` / `FAILED` |
 | `dense_vector_model` | VARCHAR(128) | 实际使用的稠密向量模型 |
-| `sparse_vector_status` | VARCHAR(16) | 稀疏向量生命周期：`PENDING` / `INDEXING` / `INDEXED` / `FAILED`（删除复用 `dense_vector_status`，本列不参与删除态） |
+| `sparse_vector_status` | VARCHAR(16) | 稀疏向量状态：`PENDING` / `SUCCESS` / `FAILED` |
 | `sparse_vector_model` | VARCHAR(128) | 实际使用的稀疏向量模型 |
-| `sparse_vector_nonzero_count` | INT | 稀疏向量非零维度数量 |
 | `es_status` | VARCHAR(16) | `PENDING` / `SUCCESS` / `FAILED` |
 | `create_time` / `update_time` | DATETIME | 创建 / 更新时间 |
 
@@ -336,13 +335,9 @@ ORM：[`ChunkRecordDB`](../../src/models/chunk_record.py)
 索引：
 - `uk_chunk_id(chunk_id)`
 - `idx_user_set(user_id, set_id)`
-- `idx_bucket_dense_vector_status(bucket_id, dense_vector_status)`
-- `idx_bucket_sparse_status(bucket_id, sparse_vector_status)`
+- `idx_doc_dense_status(doc_id, dense_vector_status)`
 - `idx_doc_sparse_status(doc_id, sparse_vector_status)`
-- `idx_bucket_es_status(bucket_id, es_status)`
-- `idx_doc_id(doc_id)`
-- `idx_chunk_type(chunk_type)`
-- `idx_content_hash(content_hash)`
+- `idx_doc_es_status(doc_id, es_status)`
 
 ---
 

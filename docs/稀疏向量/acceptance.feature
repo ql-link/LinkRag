@@ -17,15 +17,12 @@ Feature: BGE-M3 稀疏向量入库
     And BGE-M3 对 C1, C2, C3 均返回非空 sparse vector
     And 稠密向量对 C1, C2, C3 均生成成功
     When 系统执行 D1 的向量索引阶段
-    Then C1.dense_vector_status == INDEXED
-    And C2.dense_vector_status == INDEXED
-    And C3.dense_vector_status == INDEXED
-    And C1.sparse_vector_status == INDEXED
-    And C2.sparse_vector_status == INDEXED
-    And C3.sparse_vector_status == INDEXED
-    And C1.sparse_vector_nonzero_count > 0
-    And C2.sparse_vector_nonzero_count > 0
-    And C3.sparse_vector_nonzero_count > 0
+    Then C1.dense_vector_status == SUCCESS
+    And C2.dense_vector_status == SUCCESS
+    And C3.dense_vector_status == SUCCESS
+    And C1.sparse_vector_status == SUCCESS
+    And C2.sparse_vector_status == SUCCESS
+    And C3.sparse_vector_status == SUCCESS
     And D1.vectorizing_status == SUCCESS
 
   Scenario: 稀疏向量与稠密向量使用同一个 chunk_id 入库
@@ -43,9 +40,9 @@ Feature: BGE-M3 稀疏向量入库
     When 系统执行 D1 的向量索引阶段
     Then BGE-M3 不被调用
     And 不写入任何 sparse vector
-    And C1.dense_vector_status == INDEXED
-    And C2.dense_vector_status == INDEXED
-    And C3.dense_vector_status == INDEXED
+    And C1.dense_vector_status == SUCCESS
+    And C2.dense_vector_status == SUCCESS
+    And C3.dense_vector_status == SUCCESS
     And D1.vectorizing_status == SUCCESS
 
   Scenario: 稀疏向量生成使用 chunk 原文而不是 ES 分词结果
@@ -55,7 +52,7 @@ Feature: BGE-M3 稀疏向量入库
     When 系统为 C1 生成稀疏向量
     Then BGE-M3 收到的输入文本 == "合同编号 ABC-2026 的付款条款"
     And BGE-M3 没有收到 ES analyzer token 列表
-    And C1.sparse_vector_status == INDEXED
+    And C1.sparse_vector_status == SUCCESS
 
   Scenario: CPU 复用现有 BGE-M3 encoder 以 fp32 进行稀疏向量推理
     Given 稀疏向量功能开关为开启
@@ -68,8 +65,7 @@ Feature: BGE-M3 稀疏向量入库
     And BGE-M3 不启用 fp16
     And BGE-M3 使用 fp32 推理
     And BGE-M3 不占用 CUDA 设备
-    And C1.sparse_vector_status == INDEXED
-    And C1.sparse_vector_nonzero_count > 0
+    And C1.sparse_vector_status == SUCCESS
     And 稀疏向量推理设备配置接口允许将设备切换为 "cuda"
 
   # ==== 异常处理 ====
@@ -79,8 +75,8 @@ Feature: BGE-M3 稀疏向量入库
     And C1 的 dense 和 sparse 均已成功
     And C2 的稠密向量生成成功
     When BGE-M3 为 C2 生成稀疏向量时抛出模型异常
-    Then C1.dense_vector_status == INDEXED
-    And C1.sparse_vector_status == INDEXED
+    Then C1.dense_vector_status == SUCCESS
+    And C1.sparse_vector_status == SUCCESS
     And C2.dense_vector_status == FAILED
     And C2.sparse_vector_status == FAILED
     And C2.sparse_vector_error_msg 包含 "SPARSE_MODEL_EXCEPTION"
@@ -107,7 +103,6 @@ Feature: BGE-M3 稀疏向量入库
     When BGE-M3 对 C1 的 sparse 输出为空且原因是 <reason>
     Then C1.sparse_vector_status == FAILED
     And C1.sparse_vector_error_msg 包含 <reason>
-    And C1.sparse_vector_nonzero_count == null
     And D1.vectorizing_status == FAILED
 
     Examples:
@@ -141,8 +136,8 @@ Feature: BGE-M3 稀疏向量入库
 
   Scenario: 重试从失败 chunk 继续且跳过已完成 chunk
     Given 稀疏向量功能开关为开启
-    And C1.dense_vector_status == INDEXED
-    And C1.sparse_vector_status == INDEXED
+    And C1.dense_vector_status == SUCCESS
+    And C1.sparse_vector_status == SUCCESS
     And C2.dense_vector_status == FAILED
     And C2.sparse_vector_status == FAILED
     And C3.dense_vector_status == PENDING
@@ -150,8 +145,8 @@ Feature: BGE-M3 稀疏向量入库
     Then C1 不重新调用稠密向量模型
     And C1 不重新调用 BGE-M3
     And 系统从 C2 开始继续处理
-    And C2.sparse_vector_status == INDEXED
-    And C3.sparse_vector_status == INDEXED
+    And C2.sparse_vector_status == SUCCESS
+    And C3.sparse_vector_status == SUCCESS
     And D1.vectorizing_status == SUCCESS
 
   Scenario: 重复执行同一 chunk 写入不会生成重复索引
@@ -160,16 +155,15 @@ Feature: BGE-M3 稀疏向量入库
     When 系统再次处理 C1 且 BGE-M3 返回新的非空 sparse vector
     Then Qdrant 中 C1 仍只有一个 point_id=C1.chunk_id
     And C1 的 sparse vector 被覆盖为新结果
-    And C1.sparse_vector_status == INDEXED
-    And C1.sparse_vector_nonzero_count > 0
+    And C1.sparse_vector_status == SUCCESS
 
   Scenario: 状态回写被并发删除抢先时不能报告当前 chunk 成功
     Given 稀疏向量功能开关为开启
     And C1 的 dense vector 和 sparse vector 已写入 Qdrant
-    And C1 在状态回写前被标记为 DELETING
+    And C1 在状态回写前已不满足 PENDING 条件
     When 系统尝试完成 C1 的向量状态回写
-    Then C1.dense_vector_status != INDEXED
-    And C1.sparse_vector_status != INDEXED
+    Then C1.dense_vector_status != SUCCESS
+    And C1.sparse_vector_status != SUCCESS
     And D1.vectorizing_status == FAILED
     And C1 不会作为可检索成功资产返回
 
@@ -185,11 +179,11 @@ Feature: BGE-M3 稀疏向量入库
 
   Scenario: 未来稀疏检索候选必须经过 MySQL 状态回查
     Given Qdrant sparse 检索召回候选 C1, C2, C3
-    And C1.dense_vector_status == INDEXED
-    And C1.sparse_vector_status == INDEXED
-    And C2.dense_vector_status == INDEXED
+    And C1.dense_vector_status == SUCCESS
+    And C1.sparse_vector_status == SUCCESS
+    And C2.dense_vector_status == SUCCESS
     And C2.sparse_vector_status == FAILED
-    And C3.dense_vector_status == DELETED
+    And C3.dense_vector_status == FAILED
     When 检索链路按 chunk_id 回查 MySQL 状态
     Then 返回候选只包含 C1
     And 返回候选不包含 C2

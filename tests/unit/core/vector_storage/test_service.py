@@ -461,7 +461,7 @@ async def test_should_index_dense_and_sparse_vectors_when_sparse_enabled(
         ["chunk-1"],
         model_name="BAAI/bge-m3",
         nonzero_count=2,
-        expected_status="INDEXING",
+            expected_status="PENDING",
     )
     mock_repository.mark_indexed.assert_awaited_once_with(
         mock_session,

@@ -114,7 +114,7 @@ async def test_should_protect_delete_states_when_mark_sparse_indexed():
         ["chunk-1"],
         model_name="BAAI/bge-m3",
         nonzero_count=2,
-        expected_status="INDEXING",
+        expected_status="PENDING",
     )
 
     assert _where_criteria_count(session) == 3

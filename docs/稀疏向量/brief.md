@@ -67,7 +67,7 @@ flowchart TD
 
 - **位置**：chunk 真值存储与状态管理层。
 - **职责**：记录每个 chunk 的稀疏向量处理进度、失败原因、模型信息和可观测指标，为续跑与补偿提供依据。
-- **实现思路**：稀疏向量生命周期需要独立于现有稠密向量状态，避免 dense 成功和 sparse 成功混在一起。文件级向量状态做汇总判断，分片级 sparse 生命周期作为续跑判断依据。后续重试按 chunk 顺序跳过已 INDEXED 分片，从第一个未成功分片继续。
+- **实现思路**：稀疏向量状态需要独立于现有稠密向量状态，避免 dense 成功和 sparse 成功混在一起。文件级向量状态做汇总判断，分片级 sparse 状态作为续跑判断依据。后续重试按 chunk 顺序跳过已 `SUCCESS` 分片，从第一个未成功分片继续。
 - **关键决策**：不复用 dense 的状态字段表达 sparse 结果；否则排障、补偿和文件级成功边界都会变得不清晰。
 
 ### 3.5 一致性补偿与失败续跑
@@ -82,7 +82,7 @@ flowchart TD
 - **位置**：ES 入库与检索入口相关模块。
 - **职责**：本需求中不承担稀疏向量生成和事务处理，只作为后续混合检索的可能并行召回来源。
 - **实现思路**：稀疏向量生成不消费 ES 分词结果；ES 成功与否不作为 sparse 生成前置。首期不交付检索 API，也不暴露用户可见的 sparse/hybrid 检索开关；只在文档中明确未来读时规则：Qdrant 负责召回候选 `chunk_id`，MySQL 负责回查状态和原文。
-- **关键决策**：ES 的 analyzer token 空间与 BGE-M3 模型词表空间不同，不能混用。未来 dense 检索只返回 `dense_vector_status=INDEXED` 的记录；sparse 或 hybrid 检索还必须要求 `sparse_vector_status=INDEXED`。
+- **关键决策**：ES 的 analyzer token 空间与 BGE-M3 模型词表空间不同，不能混用。未来 dense 检索只返回 `dense_vector_status=SUCCESS` 的记录；sparse 或 hybrid 检索还必须要求 `sparse_vector_status=SUCCESS`。
 
 ## 4. 风险与不确定性
 
