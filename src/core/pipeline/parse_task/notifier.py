@@ -10,14 +10,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.mq.exceptions import RetriableError
 from src.core.mq.messages.parse_result import ParseResultMessage
 from src.core.mq.messages.parse_task import ParseTaskPayload
-from src.models.parse_task import DocumentParsedLog
+from src.core.pipeline.parse_task.post_process.constants import PIPELINE_STATUS_FAILED
+from src.core.pipeline.parse_task.post_process.repository import ParsePipelineRepository
+from src.models.parse_task import DocumentParsePipeline
 from src.services.mq_service import MQService
 
 from ._utils import now
-from .constants import (
-    PARSE_TASK_STATUS_FAILED,
-    RESULT_NOTIFY_FAILED_DETAIL,
-)
+from .constants import RESULT_NOTIFY_FAILED_DETAIL
 from .error_codes import ParseFailureCode, build_failure_reason
 from .log_repository import ParseLogRepository
 
@@ -34,9 +33,15 @@ class ParseResultNotificationError(RetriableError):
 class ParseResultNotifier:
     """封装 parse_result 终态通知与失败兜底。"""
 
-    def __init__(self, mq_service: MQService, log_repository: ParseLogRepository) -> None:
+    def __init__(
+        self,
+        mq_service: MQService,
+        log_repository: ParseLogRepository,
+        pipeline_repository: ParsePipelineRepository,
+    ) -> None:
         self._mq_service = mq_service
         self._log_repository = log_repository
+        self._pipeline_repository = pipeline_repository
 
     async def send(
         self,
@@ -46,13 +51,13 @@ class ParseResultNotifier:
         failure_reason: str | None,
         *,
         user_message: str | None = None,
-        log_record: DocumentParsedLog | None = None,
+        pipeline_record: DocumentParsePipeline | None = None,
         db: AsyncSession | None = None,
         mark_failed_on_error: bool = True,
     ) -> bool:
         """发送解析结果终态通知。
 
-        发送失败时记录日志，若指定了 ``log_record`` 与 ``db`` 则把当前日志兜底为 failed。
+        发送失败时记录日志，若指定了 ``pipeline_record`` 与 ``db`` 则把 pipeline 兜底为 FAILED。
         """
         try:
             finished_at = parse_finished_at or now()
@@ -74,8 +79,8 @@ class ParseResultNotifier:
                 f"[ParseResultNotifier] parse result MQ notification failed: "
                 f"task_id={payload.task_id}, status={task_status}, error={exc}"
             )
-            if mark_failed_on_error and log_record is not None and db is not None:
-                await self._mark_result_notify_failed(payload, log_record, db)
+            if mark_failed_on_error and pipeline_record is not None and db is not None:
+                await self._mark_result_notify_failed(payload, pipeline_record, db)
             return False
 
     async def send_or_raise(
@@ -102,11 +107,11 @@ class ParseResultNotifier:
     async def _mark_result_notify_failed(
         self,
         payload: ParseTaskPayload,
-        log_record: DocumentParsedLog,
+        pipeline_record: DocumentParsePipeline,
         db: AsyncSession,
     ) -> None:
-        """将"解析结果通知发送失败"兜底为解析失败终态。"""
-        if log_record.task_status == PARSE_TASK_STATUS_FAILED:
+        """将"解析结果通知发送失败"兜底为 pipeline FAILED。"""
+        if pipeline_record.pipeline_status == PIPELINE_STATUS_FAILED:
             logger.warning(
                 f"[ParseResultNotifier] keep failed status after result notification failure: "
                 f"task_id={payload.task_id}"
@@ -117,4 +122,10 @@ class ParseResultNotifier:
             ParseFailureCode.RESULT_NOTIFY_FAILED,
             RESULT_NOTIFY_FAILED_DETAIL,
         )
-        await self._log_repository.mark_failed(payload, log_record, failure_reason, db)
+        await self._pipeline_repository.mark_cleaning_failed(
+            db,
+            pipeline_record,
+            reason=failure_reason,
+            duration_ms=pipeline_record.cleaning_duration_ms,
+            finished_at=now(),
+        )
