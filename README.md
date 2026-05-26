@@ -168,25 +168,20 @@ uvicorn src.main:app --reload
 
 ## 技术文档
 
-- [项目架构](./docs/architecture)
-- [文件解析模块](./docs/architecture/file_parser_module.md)
-- [分片模块](./docs/architecture/chunking_module.md)
-- [向量化模块](./docs/architecture/vectorization_module.md)
-- [API 约定](./docs/reference/api_contracts.md)
-- [错误码](./docs/reference/error_codes.md)
-- [MySQL Schema](./docs/reference/mysql_schema.md)
-- [Qdrant Schema](./docs/reference/qdrant_schema.md)
-- [Elasticsearch Schema](./docs/reference/elasticsearch_schema.md)
-- [命名约定](./docs/conventions/naming_conventions.md)
+完整导航见 [docs/README.md](./docs/README.md)。常用入口：
+
+- [API 契约](./docs/api/http_contracts.md) / [MQ 契约](./docs/api/mq_contracts.md) / [错误码](./docs/api/error_codes.md)
+- [MySQL Schema](./docs/api/schemas/mysql.md) / [Qdrant Schema](./docs/api/schemas/qdrant.md) / [Elasticsearch Schema](./docs/api/schemas/elasticsearch.md)
+- [文件解析](./docs/internals/file_parser.md) / [分块](./docs/internals/chunking.md) / [向量化](./docs/internals/vectorization.md)
+- [部署](./docs/ops/deploy.md) / [配置](./docs/ops/configure.md)
 
 ## 贡献指南
 
 欢迎提交 Issue 和 Pull Request。提交前建议先阅读：
 
-- `AGENTS.md`
-- `docs/architecture`
-- `docs/conventions`
-- `tests/README.md`
+- [CLAUDE.md](./CLAUDE.md) — 项目使用入口
+- [docs/contributing.md](./docs/contributing.md) — 分支、提交、测试、迁移、文档同步
+- [tests/README.md](./tests/README.md)
 
 请确保新增配置、API、数据结构或模块边界变化时，同步更新相关文档。
 

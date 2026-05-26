@@ -28,8 +28,8 @@ when_to_use: 当用户明确要求"生成技术方案 / 生成技术实现文档
 
 **新版工作流的输入源**：
 
-1. `docs/<需求名>/brief.md`（业务理解 + 模块实现思路）
-2. `docs/<需求名>/acceptance.feature`（Gherkin 验收契约，机器可读的业务规则）
+1. `.specs/<feature-name>/brief.md`（业务理解 + 模块实现思路）
+2. `.specs/<feature-name>/acceptance.feature`（Gherkin 验收契约，机器可读的业务规则）
 3. 仓库真实代码、组件文档、公共契约
 
 **已废弃的输入源**：
@@ -42,8 +42,8 @@ when_to_use: 当用户明确要求"生成技术方案 / 生成技术实现文档
 
 只有满足以下条件时才允许使用本 skill：
 
-1. `docs/<需求名>/brief.md` 存在且已冻结
-2. `docs/<需求名>/acceptance.feature` 存在且已冻结
+1. `.specs/<feature-name>/brief.md` 存在且已冻结
+2. `.specs/<feature-name>/acceptance.feature` 存在且已冻结
 3. 用户明确要求生成技术文档、技术方案或 `technical_design.md`
 
 若缺失任一上游产物：
@@ -58,11 +58,11 @@ when_to_use: 当用户明确要求"生成技术方案 / 生成技术实现文档
 执行本 skill 时至少读取：
 
 1. `AGENTS.md`
-2. `docs/<需求名>/brief.md`
-3. `docs/<需求名>/acceptance.feature`
-4. `docs/<需求名>/feature_info.md`（若存在）
+2. `.specs/<feature-name>/brief.md`
+3. `.specs/<feature-name>/acceptance.feature`
+4. `.specs/<feature-name>/feature_info.md`（若存在）
 5. `.ai/skills/technical-design/technical_design.template.md`
-6. `docs/architecture/middleware_contract.md`（若存在）
+6. `docs/internals/middleware_contract.md`（若存在）
 
 按需补读：
 
@@ -85,12 +85,12 @@ when_to_use: 当用户明确要求"生成技术方案 / 生成技术实现文档
 固定为：
 
 ```
-docs/<需求名>/technical_design.md
+.specs/<feature-name>/technical_design.md
 ```
 
 要求：
 
-- 与 brief.md / acceptance.feature 同目录
+- 与 brief.md / acceptance.feature 同目录（`.specs/` 整目录 git-ignored，feature 临时工作目录；见 [.specs/README.md](../../../.specs/README.md)）
 - 文件名固定
 - 结构遵循 `.ai/skills/technical-design/technical_design.template.md`
 - 若已有旧版 TD：先读，判断修订 / 覆盖 / 增量，不允许无说明地重写关键技术结论

@@ -12,11 +12,6 @@ from pytest_bdd import scenarios
 # 加载到本测试模块，避免依赖全局 conftest 注册（保持作用域隔离）。
 from tests.acceptance.steps.mq_dlq_steps import *  # noqa: F401,F403
 
-_FEATURE = (
-    Path(__file__).resolve().parents[2]
-    / "docs"
-    / "MQ消费死信兜底"
-    / "acceptance.feature"
-)
+_FEATURE = Path(__file__).resolve().parent / "features" / "mq_dlq_poison_pill.feature"
 
 scenarios(str(_FEATURE))

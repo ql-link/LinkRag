@@ -2,15 +2,13 @@
 
 `toLink-Rag` 是基于 FastAPI 的 RAG 后端，负责文档解析、分块、向量化索引，并通过 MQ 与 Java 业务系统集成。
 
-本文件是项目的**统一入口**：上半部分给出运行与开发的最小必要信息，下半部分作为各模块文档的导航目录。
+本文件是**项目使用入口**，覆盖运行与开发的最小必要信息。文档导航与按角色查阅路线见 [docs/README.md](docs/README.md)。
 
 > 面向用户的产品介绍与完整快速开始见 [README.md](README.md)。
 
 ---
 
-## 一、项目使用
-
-### 1.1 主要代码入口
+## 一、代码入口
 
 | 入口 | 路径 |
 | --- | --- |
@@ -24,7 +22,9 @@
 | 单元测试 | [tests/unit](tests/unit) |
 | 集成测试 | [tests/integration](tests/integration) |
 
-### 1.2 快速启动（最小步骤）
+---
+
+## 二、快速启动
 
 ```bash
 # 1. 启动外部依赖
@@ -34,7 +34,7 @@ docker compose up -d
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
-# 3. 准备配置（按需修改 .env）
+# 3. 准备配置
 cp .env.example .env
 
 # 4. 初始化数据库
@@ -48,7 +48,9 @@ uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 
 完整步骤、依赖清单与可选项见 [README.md](README.md#快速开始)。
 
-### 1.3 常用命令
+---
+
+## 三、常用命令
 
 ```bash
 # 单元测试
@@ -59,122 +61,68 @@ uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 
 # 启动开发服务
 uvicorn src.main:app --reload
+
+# 文档同步自检
+python scripts/check_docs_sync.py --staged
 ```
 
-### 1.4 配置约定
+---
+
+## 四、配置约定
 
 - 所有运行时配置统一通过 [src/config.py](src/config.py) 的 `Settings` 加载。
 - 环境变量样例放在 [.env.example](.env.example)，不要硬编码密钥。
-- 数据库结构权威源是 **ORM 模型 + Alembic 迁移链**。[scripts/db/init.sql](scripts/db/init.sql) 是 0001 baseline 冻结快照，新增/修改字段一律只改 ORM + 写 migration，**不要**改 init.sql（CI 走 `init.sql → stamp 0001 → upgrade head`，重复加列会触发 MySQL `Duplicate column`）。
+- 数据库结构权威源是 **ORM 模型 + Alembic 迁移链**。[scripts/db/init.sql](scripts/db/init.sql) 是 0001 baseline 冻结快照，新增/修改字段一律只改 ORM + 写 migration，**不要**改 init.sql。
 
 ---
 
-## 二、文档目录
+## 五、文档体系
 
-按需阅读最小必要文档集合，不要把这里当作完整知识库。
+```
+docs/
+├── api/          对外契约（HTTP / MQ / Schema / 错误码）
+├── internals/    内部实现（模块、约定）
+├── ops/          部署与配置
+├── contributing.md   贡献者规范（分支、PR、测试、迁移、文档同步）
+└── README.md     按读者旅程的一页索引
 
-### 2.1 架构（`docs/architecture`）
+.specs/           feature 临时交付物（brief / acceptance / design / report）
+```
 
-模块级实现、边界、流程说明。修改模块行为或跨模块协作前必读。
+按角色查阅入口：
 
-| 模块 | 文档 |
+| 角色 | 看这里 |
 | --- | --- |
-| 项目结构总览 | [project_structure.md](docs/architecture/project_structure.md) |
-| Pipeline 架构 | [pipeline_architecture.md](docs/architecture/pipeline_architecture.md) |
-| 解析任务流水线 | [parse_task_pipeline_module.md](docs/architecture/parse_task_pipeline_module.md) |
-| 文件解析 | [file_parser_module.md](docs/architecture/file_parser_module.md) |
-| Markdown 解析与增强 | [markdown_parser_module.md](docs/architecture/markdown_parser_module.md) |
-| 分块 | [chunking_module.md](docs/architecture/chunking_module.md) |
-| 向量化 | [vectorization_module.md](docs/architecture/vectorization_module.md) |
-| MQ 中间件 | [mq_module.md](docs/architecture/mq_module.md) |
-| LLM | [llm_module.md](docs/architecture/llm_module.md) |
-| 对象存储 | [object_storage_module.md](docs/architecture/object_storage_module.md) |
+| 对接方 / 业务方 | [docs/api/](docs/api/) |
+| 内部开发者 | [docs/internals/](docs/internals/) |
+| 运维 / 部署方 | [docs/ops/](docs/ops/) |
+| 贡献者 | [docs/contributing.md](docs/contributing.md) |
 
-### 2.2 约定（`docs/conventions`）
-
-跨模块共享的命名、配置、测试规则。修改共享规则前必读。
-
-- [命名约定](docs/conventions/naming_conventions.md)
-
-### 2.3 参考（`docs/reference`）
-
-契约类与生成类资料：API、错误码、数据库与索引模式。修改对外契约时同步更新。
-
-- [API 契约](docs/reference/api_contracts.md)
-- [错误码](docs/reference/error_codes.md)
-- [MySQL Schema](docs/reference/mysql_schema.md) — 12 张业务表，按业务域分组
-- [Qdrant Schema](docs/reference/qdrant_schema.md) — 向量库 collection 与 payload
-- [Elasticsearch Schema](docs/reference/elasticsearch_schema.md) — 全文索引文档结构
-
-### 2.4 使用指南（`docs/guides`）
-
-部署、接入、调试、运维等场景化指南。
-
-- [部署指南](docs/guides/deployment.md)
-- [配置详解](docs/guides/configuration.md)
-- [MQ 集成指南](docs/guides/mq_integration.md)
-
-### 2.5 开发流程（`docs/development`）
-
-分支、提交、测试、PR、文档同步等贡献者规范。
-
-- [文档体系架构](docs/development/documentation_architecture.md) — 设计原则、目录职责、治理机制总览
-- [测试规范](docs/development/testing.md)
-- [代码风格](docs/development/code_style.md)
-- [分支与 PR 流程](docs/development/branching_and_pr.md)
-- [文档同步机制](docs/development/doc_sync.md) — 自动检测代码改动是否漏同步文档
+详细导航见 [docs/README.md](docs/README.md)。
 
 ---
 
-## 三、按任务查阅路线
+## 六、文档同步规则（机器强制）
 
-| 任务目标 | 先读 |
+只有这些规则会**阻止 commit / merge**。其他文档同步靠 PR 评审。
+
+| 改动 | 必须同步 |
 | --- | --- |
-| 理解整体架构与项目结构 | [docs/architecture](docs/architecture) |
-| 修改解析主流程、状态流转 | [parse_task_pipeline_module.md](docs/architecture/parse_task_pipeline_module.md) |
-| 新增/修改文件解析器 | [file_parser_module.md](docs/architecture/file_parser_module.md) |
-| 调整分块策略 | [chunking_module.md](docs/architecture/chunking_module.md) |
-| 调整向量化/索引 | [vectorization_module.md](docs/architecture/vectorization_module.md) |
-| 修改 MQ 契约或消费链 | [mq_module.md](docs/architecture/mq_module.md) |
-| 修改 API、错误码、数据模型 | [docs/reference](docs/reference) |
-| 修改命名、配置、测试约定 | [docs/conventions](docs/conventions) |
-| 部署、接入、运维 | [docs/guides](docs/guides) |
-| 开发流程、协作规范 | [docs/development](docs/development) |
+| `src/models/**.py` | [docs/api/schemas/mysql.md](docs/api/schemas/mysql.md) |
+| `src/models/**.py` | 新增 `migrations/versions/*.py` |
+| `scripts/db/init.sql` | **禁止修改**（0001 baseline 冻结） |
+| `src/core/mq/messages/**` | [docs/api/mq_contracts.md](docs/api/mq_contracts.md) + [docs/internals/mq.md](docs/internals/mq.md) |
+| `src/core/pipeline/**` | [docs/internals/parse_task_pipeline.md](docs/internals/parse_task_pipeline.md) |
+
+机器规则在 [.claude/doc-sync-rules.yaml](.claude/doc-sync-rules.yaml)，由 pre-commit 与 CI 强制。详见 [docs/contributing.md §五](docs/contributing.md#五文档同步规则)。
 
 ---
 
-## 四、工作规则
+## 七、工作规则（Agent / 开发者）
 
-- **改动前**：读与任务直接相关的最小文档集合；查阅第五节确认本次会触及哪些必须同步的文档。
+- **改动前**：按角色看 [docs/README.md](docs/README.md) 找到最小必要文档；查第六节确认本次会触发的同步规则。
 - **实现中**：优先复用现有模块边界、配置入口、错误处理；不为业务需求轻易改动 framework 层。
-- **改动后**：同步更新受影响的架构、约定或参考文档；不做无关扩写。
-- **提交前**：运行 `python scripts/check_docs_sync.py --staged` 自检；启用了 pre-commit hook 时会自动执行。
-- **校验时**：按改动范围运行对应测试；文档-only 改动至少检查 diff。
-- **MQ 改动**：遵循现有中间件约定与消息契约，必要时更新 [docs/reference](docs/reference)。
-
----
-
-## 五、文档同步规则
-
-下表是人读的规则总览。**机器执行版本**在 [.claude/doc-sync-rules.yaml](.claude/doc-sync-rules.yaml)，由 pre-commit 与 CI 强制（详见 [doc_sync.md](docs/development/doc_sync.md)）。
-
-| 改动范围 | 同步位置 | 强制级别 |
-| --- | --- | --- |
-| ORM 模型（`src/models/**.py`） | [docs/reference/mysql_schema.md](docs/reference/mysql_schema.md) | ❌ error |
-| ORM 模型（`src/models/**.py`） | [migrations/versions/*.py](migrations/versions/) 新增 Alembic 迁移（见 [database_migrations.md](docs/development/database_migrations.md)） | ❌ error |
-| `scripts/db/init.sql`（0001 baseline 冻结快照） | **禁止直接修改**；新字段一律走 ORM + Alembic 迁移（规则 id `init-sql-frozen`） | ❌ error |
-| Qdrant 向量库实现 | [docs/reference/qdrant_schema.md](docs/reference/qdrant_schema.md) | ⚠️ warning |
-| Elasticsearch 入库 | [docs/reference/elasticsearch_schema.md](docs/reference/elasticsearch_schema.md) | ⚠️ warning |
-| MQ 消息契约（`src/core/mq/messages/`） | [mq_integration.md](docs/guides/mq_integration.md) + [mq_module.md](docs/architecture/mq_module.md) | ❌ error |
-| 其他 MQ 模块代码 | [mq_module.md](docs/architecture/mq_module.md) | ⚠️ warning |
-| 解析器、Markdown、分块、向量化、LLM 等业务模块 | 对应 `docs/architecture/*_module.md` | ⚠️ warning |
-| 解析任务流水线状态机 | [parse_task_pipeline_module.md](docs/architecture/parse_task_pipeline_module.md) | ❌ error |
-| API 路由 / Schema | [docs/reference/api_contracts.md](docs/reference/api_contracts.md) | ⚠️ warning |
-| 运行时配置 / `.env.example` | [docs/guides/configuration.md](docs/guides/configuration.md) | ⚠️ warning |
-| 部署依赖 / `docker-compose.yml` | [docs/guides/deployment.md](docs/guides/deployment.md) | ⚠️ warning |
-| 顶层布局 / `pyproject.toml` / `src/main.py` | [docs/architecture/project_structure.md](docs/architecture/project_structure.md) | ⚠️ warning |
-| `.ai/` 资产（skills / prompts） | 通过 symlink 暴露到 `.claude/`、`.agent/`、`CLAUDE.md`、`AGENTS.md`；由 [scripts/check_ai_links.py](scripts/check_ai_links.py) 校验链接完整性 | ❌ error |
-
-> **`CLAUDE.md` 与 `AGENTS.md`** 已统一为 `.ai/prompts/project.md` 的 symlink，物理同一份文件，无需再做内容同步检查。新人 / 新 worktree 初始化运行：`python scripts/setup_ai_links.py`。
-
-**新增/调整规则**：编辑 `.claude/doc-sync-rules.yaml` 并运行 `python scripts/check_docs_sync.py --self-check` 验证；同步更新本表。
+- **改动后**：同步更新受影响的对外契约文档；内部模块文档按需更新。
+- **提交前**：运行 `python scripts/check_docs_sync.py --staged` 自检；pre-commit hook 会自动执行。
+- **校验**：按改动范围运行对应测试。
+- **CLAUDE.md / AGENTS.md** 已统一为 `.ai/prompts/project.md` 的 symlink，物理同一份文件。新人 / 新 worktree 初始化运行：`python scripts/setup_ai_links.py`。
