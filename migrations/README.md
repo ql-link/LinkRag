@@ -2,7 +2,7 @@
 
 本目录由 [Alembic](https://alembic.sqlalchemy.org/) 管理 toLink-Rag 数据库 schema 演进。
 
-详细说明见 [docs/development/database_migrations.md](../docs/development/database_migrations.md)。
+详细说明见 [docs/contributing.md §四](../docs/contributing.md#四数据库迁移alembic)。
 
 ## 常用命令
 

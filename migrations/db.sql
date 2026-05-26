@@ -184,15 +184,14 @@ CREATE TABLE IF NOT EXISTS document_parse_file (
     INDEX idx_parse_task_latest_task (latest_parse_task_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '文件解析表';
 
--- 10. 文件解析日志表
+-- 10. 文件解析产物快照表
+-- 经 migration 0007 把 task_status / failure_reason 下沉到 document_parse_pipeline
 CREATE TABLE IF NOT EXISTS document_parsed_log (
     id                         BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '解析任务记录主键',
     task_id                    VARCHAR(36) NOT NULL COMMENT '解析任务业务唯一标识(UUID)',
     document_original_file_id  BIGINT UNSIGNED NOT NULL COMMENT '原文件主键，对应 document_original_file.id',
     document_parse_file_id     BIGINT UNSIGNED DEFAULT NULL COMMENT '文件解析表主键，对应 document_parse_file.id',
     trigger_mode               VARCHAR(20) NOT NULL COMMENT '触发方式: upload_auto/manual_retry',
-    task_status                VARCHAR(16) NOT NULL DEFAULT 'created' COMMENT '任务状态: created/success/failed',
-    failure_reason             VARCHAR(512) DEFAULT NULL COMMENT '解析失败原因',
     parsed_filename            VARCHAR(255) DEFAULT NULL COMMENT '解析后文件名',
     parsed_bucket_name         VARCHAR(64) DEFAULT NULL COMMENT '解析结果文件桶名',
     parsed_object_key          VARCHAR(512) DEFAULT NULL COMMENT '解析结果文件对象Key',
@@ -205,51 +204,55 @@ CREATE TABLE IF NOT EXISTS document_parsed_log (
     updated_at                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
     UNIQUE KEY uk_parse_task_id (task_id),
-    INDEX idx_parsed_log_original_status (document_original_file_id, task_status, updated_at),
-    INDEX idx_parsed_log_parse_task_status (document_parse_file_id, task_status, updated_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '文件解析任务日志表';
+    INDEX idx_parsed_log_original_file (document_original_file_id, updated_at),
+    INDEX idx_parsed_log_parse_file (document_parse_file_id, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '文件解析产物快照表';
 
--- 11. 文件级解析后处理流程状态表
--- 经 migration 0002/0003 新增 pretokenize_status / pretokenize_duration_ms
-CREATE TABLE IF NOT EXISTS document_post_process_pipeline (
-    id                          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '解析后处理流程主键',
+-- 11. 文件解析流程状态表
+-- 经 migration 0002/0003 新增 pretokenize_status / pretokenize_duration_ms；
+-- 0007 重命名表（post_process → parse pipeline），新增 cleaning_status /
+-- cleaning_duration_ms（先前的"解析+上传"语义下沉为"文档清洗"阶段），
+-- 删除 chunk_count / retry_count / last_retry_at / idx_post_pipeline_retry。
+CREATE TABLE IF NOT EXISTS document_parse_pipeline (
+    id                          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '解析流程主键',
     document_parsed_log_id      BIGINT UNSIGNED NOT NULL COMMENT '解析日志主键，对应 document_parsed_log.id',
     task_id                     VARCHAR(36) NOT NULL COMMENT '解析任务业务唯一标识，对应 document_parsed_log.task_id',
     document_original_file_id   BIGINT UNSIGNED NOT NULL COMMENT '原文件主键，对应 document_original_file.id',
     document_parse_file_id      BIGINT UNSIGNED DEFAULT NULL COMMENT '文件解析表主键，对应 document_parse_file.id',
     pipeline_status             VARCHAR(20) NOT NULL DEFAULT 'PENDING' COMMENT '流程状态: PENDING/PROCESSING/SUCCESS/FAILED',
+    cleaning_status             VARCHAR(20) NOT NULL DEFAULT 'PENDING' COMMENT '文档清洗（解析+上传）阶段状态: PENDING/SUCCESS/FAILED',
     chunking_status             VARCHAR(20) NOT NULL DEFAULT 'PENDING' COMMENT '分片状态: PENDING/SUCCESS/FAILED',
     vectorizing_status          VARCHAR(20) NOT NULL DEFAULT 'PENDING' COMMENT '向量化状态: PENDING/SUCCESS/FAILED',
     pretokenize_status          VARCHAR(20) NOT NULL DEFAULT 'PENDING' COMMENT '预分词状态: PENDING/SUCCESS/FAILED',
     es_indexing_status          VARCHAR(20) NOT NULL DEFAULT 'PENDING' COMMENT 'ES入库状态: PENDING/SUCCESS/FAILED',
-    failed_stage                VARCHAR(20) DEFAULT NULL COMMENT '失败阶段: CHUNKING/VECTORIZING/PRETOKENIZE/ES_INDEXING',
-    recover_from_stage          VARCHAR(20) DEFAULT NULL COMMENT '下次恢复阶段: CHUNKING/VECTORIZING/PRETOKENIZE/ES_INDEXING',
+    failed_stage                VARCHAR(20) DEFAULT NULL COMMENT '失败阶段: CLEANING/CHUNKING/VECTORIZING/PRETOKENIZE/ES_INDEXING',
+    recover_from_stage          VARCHAR(20) DEFAULT NULL COMMENT '下次恢复阶段: CLEANING/CHUNKING/VECTORIZING/PRETOKENIZE/ES_INDEXING',
     failure_reason              VARCHAR(512) DEFAULT NULL COMMENT '最近一次失败原因摘要',
-    chunk_count                 INT NOT NULL DEFAULT 0 COMMENT '本次分片数量',
-    retry_count                 INT NOT NULL DEFAULT 0 COMMENT '用户侧重试次数',
-    last_retry_at               DATETIME DEFAULT NULL COMMENT '用户侧最近一次重试时间',
+    cleaning_duration_ms        BIGINT DEFAULT NULL COMMENT '文档清洗阶段耗时，单位毫秒',
     chunking_duration_ms        BIGINT DEFAULT NULL COMMENT '分片耗时，单位毫秒',
     vectorizing_duration_ms     BIGINT DEFAULT NULL COMMENT '向量化耗时，单位毫秒',
     pretokenize_duration_ms     BIGINT DEFAULT NULL COMMENT '预分词耗时，单位毫秒',
     es_indexing_duration_ms     BIGINT DEFAULT NULL COMMENT 'ES入库耗时，单位毫秒',
-    total_duration_ms           BIGINT DEFAULT NULL COMMENT '后处理流程总耗时，单位毫秒',
-    started_at                  DATETIME DEFAULT NULL COMMENT '后处理开始时间',
-    finished_at                 DATETIME DEFAULT NULL COMMENT '后处理结束时间',
+    total_duration_ms           BIGINT DEFAULT NULL COMMENT '流程总耗时，单位毫秒',
+    started_at                  DATETIME DEFAULT NULL COMMENT '流程开始时间',
+    finished_at                 DATETIME DEFAULT NULL COMMENT '流程结束时间',
     created_at                  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
     updated_at                  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
 
-    UNIQUE KEY uk_post_pipeline_parsed_log (document_parsed_log_id),
-    KEY idx_post_pipeline_task_id (task_id),
-    KEY idx_post_pipeline_parse_file (document_parse_file_id, updated_at),
-    KEY idx_post_pipeline_status (pipeline_status, updated_at),
-    KEY idx_post_pipeline_retry (pipeline_status, recover_from_stage, updated_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '文件级解析后处理流程状态表';
+    UNIQUE KEY uk_parse_pipeline_parsed_log (document_parsed_log_id),
+    KEY idx_parse_pipeline_task_id (task_id),
+    KEY idx_parse_pipeline_parse_file (document_parse_file_id, updated_at),
+    KEY idx_parse_pipeline_status (pipeline_status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '文件解析流程状态表';
 
 -- 12. 文档 Chunk 真值记录表
 -- 经 migration 0004 引入稀疏向量字段；0005 把 status/error_msg/retry_count/last_retry_at/embedding_model
 --   重命名为 dense_vector_*，并删除冗余的 vector_status / vector_error_msg 与对应索引；
 -- 0006 删除 dense/sparse 的 retry_count/last_retry_at/error_msg 与 es_error_msg
---   (重试治理与失败原因归 document_post_process_pipeline)。
+--   (重试治理与失败原因归 document_post_process_pipeline)；
+-- 0008 收敛 dense/sparse 状态为 PENDING/SUCCESS/FAILED，删除 sparse_vector_nonzero_count，
+--   并按实际查询路径重构索引。
+--   (重试治理与失败原因归 document_parse_pipeline)。
 CREATE TABLE IF NOT EXISTS kb_document_chunk (
     id                          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '物理主键ID',
     chunk_id                    VARCHAR(128) NOT NULL COMMENT 'Chunk业务唯一键，对应Qdrant Point ID',
@@ -263,24 +266,19 @@ CREATE TABLE IF NOT EXISTS kb_document_chunk (
     start_line                  INT DEFAULT NULL COMMENT 'Chunk在源文档中的起始行号',
     end_line                    INT DEFAULT NULL COMMENT 'Chunk在源文档中的结束行号',
     chunk_index                 INT DEFAULT NULL COMMENT '当前Chunk在文档内的顺序编号',
-    dense_vector_status         VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT '稠密向量生命周期状态: PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED',
+    dense_vector_status         VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT '稠密向量状态: PENDING/SUCCESS/FAILED',
     dense_vector_model          VARCHAR(128) DEFAULT NULL COMMENT '实际使用的稠密向量模型名称',
-    sparse_vector_status        VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT '稀疏向量生命周期状态: PENDING/INDEXING/INDEXED/FAILED',
+    sparse_vector_status        VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT '稀疏向量状态: PENDING/SUCCESS/FAILED',
     sparse_vector_model         VARCHAR(128) DEFAULT NULL COMMENT '实际使用的稀疏向量模型名称',
-    sparse_vector_nonzero_count INT DEFAULT NULL COMMENT '稀疏向量非零维度数量',
     es_status                   VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT 'ES索引状态: PENDING/SUCCESS/FAILED',
     create_time                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
     update_time                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
 
     UNIQUE KEY uk_chunk_id (chunk_id),
     KEY idx_user_set (user_id, set_id),
-    KEY idx_bucket_dense_vector_status (bucket_id, dense_vector_status),
-    KEY idx_bucket_sparse_status (bucket_id, sparse_vector_status),
+    KEY idx_doc_dense_status (doc_id, dense_vector_status),
     KEY idx_doc_sparse_status (doc_id, sparse_vector_status),
-    KEY idx_bucket_es_status (bucket_id, es_status),
-    KEY idx_doc_id (doc_id),
-    KEY idx_chunk_type (chunk_type),
-    KEY idx_content_hash (content_hash)
+    KEY idx_doc_es_status (doc_id, es_status)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '文档Chunk真值记录表';
 
 -- 自增起始值统一为 10000
@@ -294,5 +292,5 @@ ALTER TABLE llm_usage_log AUTO_INCREMENT = 10000;
 ALTER TABLE document_original_file AUTO_INCREMENT = 10000;
 ALTER TABLE document_parse_file AUTO_INCREMENT = 10000;
 ALTER TABLE document_parsed_log AUTO_INCREMENT = 10000;
-ALTER TABLE document_post_process_pipeline AUTO_INCREMENT = 10000;
+ALTER TABLE document_parse_pipeline AUTO_INCREMENT = 10000;
 ALTER TABLE kb_document_chunk AUTO_INCREMENT = 10000;

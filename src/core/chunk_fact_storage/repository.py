@@ -167,7 +167,6 @@ class ChunkRepository:
         values: dict[str, object] = {
             "dense_vector_status": CHUNK_STATUS_INDEXING,
             "sparse_vector_status": SPARSE_VECTOR_STATUS_PENDING,
-            "sparse_vector_nonzero_count": None,
             "es_status": ES_STATUS_PENDING,
         }
         if embedding_model is not None:
@@ -191,7 +190,6 @@ class ChunkRepository:
     ) -> int:
         values: dict[str, object] = {
             "sparse_vector_status": SPARSE_VECTOR_STATUS_INDEXING,
-            "sparse_vector_nonzero_count": None,
         }
         if model_name is not None:
             values["sparse_vector_model"] = model_name
@@ -214,7 +212,6 @@ class ChunkRepository:
     ) -> int:
         values: dict[str, object] = {
             "sparse_vector_status": SPARSE_VECTOR_STATUS_INDEXED,
-            "sparse_vector_nonzero_count": nonzero_count,
         }
         if model_name is not None:
             values["sparse_vector_model"] = model_name
@@ -242,6 +239,26 @@ class ChunkRepository:
             },
             expected_status=expected_status,
         )
+
+    async def count_by_doc_id(
+        self,
+        db: AsyncSession,
+        doc_id: int,
+    ) -> int:
+        """统计指定 doc_id 下未被删除态保护的 chunk 总数。
+
+        服务于 SparseIndexingPipeline 的健康性校验：若总数为 0 视为状态严重
+        不一致（chunking 应已落库），由上层文件级 all-or-nothing 兜底。
+        """
+
+        stmt = (
+            select(func.count())
+            .select_from(self.model_cls)
+            .where(self.model_cls.doc_id == doc_id)
+            .where(self.model_cls.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
+        )
+        result = await db.execute(stmt)
+        return int(result.scalar() or 0)
 
     async def count_sparse_not_success_by_doc_id(
         self,
@@ -440,7 +457,6 @@ class ChunkRepository:
                 chunk_index=chunk_index,
                 dense_vector_status=CHUNK_STATUS_INDEXING,
                 sparse_vector_status=SPARSE_VECTOR_STATUS_PENDING,
-                sparse_vector_nonzero_count=None,
                 es_status=ES_STATUS_PENDING,
             )
         )
@@ -555,7 +571,6 @@ class ChunkRepository:
             .values(
                 dense_vector_status=CHUNK_STATUS_INDEXING,
                 sparse_vector_status=SPARSE_VECTOR_STATUS_PENDING,
-                sparse_vector_nonzero_count=None,
                 es_status=ES_STATUS_PENDING,
             )
         )
