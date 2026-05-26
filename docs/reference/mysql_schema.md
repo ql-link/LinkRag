@@ -232,7 +232,7 @@ ORM：[`DocumentParseTask`](../../src/models/parse_task.py)
 
 ### `document_parsed_log` — 文件解析产物快照表
 
-每次触发解析产生一条，承担解析产物（Markdown 文件位置、解析起止时间）与触发上下文的快照。**整体任务状态的权威单源是 `document_parse_pipeline`**；本表不再保存 `task_status` / `failure_reason`（migration 0007 已下线）。
+每次触发解析产生一条，承担解析产物（Markdown 文件位置、解析起止时间）与触发上下文的快照。**整体任务状态的权威单源是 `document_parse_pipeline`**；本表不再保存 `task_status` / `failure_reason`（migration 0007 已下线）。重试链路通过 `retry_of_task_id` 串接（migration 0009 新增）。
 
 ORM：[`DocumentParsedLog`](../../src/models/parse_task.py)
 
@@ -250,18 +250,22 @@ ORM：[`DocumentParsedLog`](../../src/models/parse_task.py)
 | `parsed_at` | DATETIME | 解析时间 |
 | `parse_started_at` / `parse_finished_at` | DATETIME | Python 解析开始 / 结束时间 |
 | `parse_duration_ms` | BIGINT | 解析耗时 |
+| `retry_of_task_id` | VARCHAR(36) NULL | 重试链路上一轮 `task_id`；首次解析为 `NULL` |
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
 
 索引：
 - `uk_parse_task_id(task_id)`
 - `idx_parsed_log_original_file(document_original_file_id, updated_at)`
 - `idx_parsed_log_parse_file(document_parse_file_id, updated_at)`
+- `idx_parsed_log_retry_of(retry_of_task_id)`
 
 > **历史兼容字段名**：代码与 API 中 `document_parse_task_id` 与本表的 `document_parse_file_id` 等价（同一字段）。
 
 ### `document_parse_pipeline` — 文件解析流程状态表
 
-整体任务状态的**权威单源**，覆盖**解析+上传 → 分片 → 向量化 → 预分词 → ES 入库**五段状态机。
+整体任务状态的**权威单源**，覆盖**文档清洗 → 分片 → 向量化 → 预分词 → ES 入库 → 稀疏向量化**六段状态机。
+
+> **术语映射**：brief / acceptance 中的 `parsing_status` 与 `parsing_duration_ms` 在代码与 schema 中实际为 `cleaning_status` 与 `cleaning_duration_ms`（migration 0007 落地时选择 cleaning 词根）。统一重命名由 issue [#48](https://github.com/ql-link/LinkRag/issues/48) 跟踪。
 
 ORM：[`DocumentParsePipeline`](../../src/models/parse_task.py)
 
@@ -272,31 +276,39 @@ ORM：[`DocumentParsePipeline`](../../src/models/parse_task.py)
 | `task_id` | VARCHAR(36) | 解析任务 ID |
 | `document_original_file_id` | BIGINT UNSIGNED | 原文件 ID |
 | `document_parse_file_id` | BIGINT UNSIGNED | 文件解析表 ID |
-| `pipeline_status` | VARCHAR(20) | 整体任务状态：`PENDING` / `PROCESSING` / `SUCCESS` / `FAILED`（Java 侧判定"上次任务是否整体成功"的唯一字段） |
-| `parsing_status` | VARCHAR(20) | 解析+上传阶段状态：`PENDING` / `SUCCESS` / `FAILED` |
-| `chunking_status` | VARCHAR(20) | `PENDING` / `SUCCESS` / `FAILED` |
-| `vectorizing_status` | VARCHAR(20) | `PENDING` / `SUCCESS` / `FAILED` |
-| `pretokenize_status` | VARCHAR(20) | 预分词状态：`PENDING` / `SUCCESS` / `FAILED` |
-| `es_indexing_status` | VARCHAR(20) | `PENDING` / `SUCCESS` / `FAILED` |
-| `failed_stage` | VARCHAR(20) | `PARSING` / `CHUNKING` / `VECTORIZING` / `PRETOKENIZE` / `ES_INDEXING` |
-| `recover_from_stage` | VARCHAR(20) | 下次恢复阶段（首个非 SUCCESS 阶段，同上枚举） |
-| `failure_reason` | VARCHAR(512) | 整体失败原因摘要（含前缀 `PARSE_ENGINE_FAILED:` / `pretokenize:` / `ensure_index:` / `ES_INDEXING_FAILED:` 等） |
-| `parsing_duration_ms` | BIGINT | 解析+上传阶段耗时 |
+| `pipeline_status` | VARCHAR(20) | 整体任务状态：`PENDING` / `PROCESSING` / `SUCCESS` / `FAILED`（Java 侧判定"上次任务是否整体成功"的唯一字段；`SUCCESS` 翻转点为 sparse 阶段成功） |
+| `cleaning_status` | VARCHAR(20) | 文档清洗（=解析+上传 markdown）阶段状态：`PENDING` / `PROCESSING` / `SUCCESS` / `FAILED`（brief 称 `parsing_status`） |
+| `chunking_status` | VARCHAR(20) | `PENDING` / `PROCESSING` / `SUCCESS` / `FAILED` |
+| `vectorizing_status` | VARCHAR(20) | `PENDING` / `PROCESSING` / `SUCCESS` / `FAILED` |
+| `pretokenize_status` | VARCHAR(20) | 预分词状态：`PENDING` / `PROCESSING` / `SUCCESS` / `FAILED` |
+| `es_indexing_status` | VARCHAR(20) | `PENDING` / `PROCESSING` / `SUCCESS` / `FAILED` |
+| `sparse_vectorizing_status` | VARCHAR(20) | 稀疏向量阶段状态：`PENDING` / `PROCESSING` / `SUCCESS` / `FAILED`（migration 0009 新增） |
+| `failed_stage` | VARCHAR(20) | `CLEANING(PARSING)` / `CHUNKING` / `VECTORIZING` / `PRETOKENIZE` / `ES_INDEXING` / `SPARSE_VECTORIZING` / `RETRY_VALIDATION` |
+| `recover_from_stage` | VARCHAR(20) | 下次恢复阶段（首个非 SUCCESS 阶段，6 阶段顺序；`RETRY_VALIDATION` 不进入该序列） |
+| `failure_reason` | VARCHAR(512) | 整体失败原因摘要（含前缀 `PARSING_FAILED:` / `VECTORIZING_FAILED:` / `pretokenize:` / `ES_INDEXING_FAILED:` / `SPARSE_VECTORIZING_FAILED:` / `RETRY_VALIDATION_FAILED:` 等） |
+| `cleaning_duration_ms` | BIGINT | 文档清洗阶段耗时（brief 称 `parsing_duration_ms`） |
 | `chunking_duration_ms` | BIGINT | 分片耗时 |
 | `vectorizing_duration_ms` | BIGINT | 向量化耗时 |
 | `pretokenize_duration_ms` | BIGINT | 预分词耗时 |
 | `es_indexing_duration_ms` | BIGINT | ES 入库耗时 |
+| `sparse_vectorizing_duration_ms` | BIGINT | 稀疏向量阶段耗时（migration 0009 新增） |
 | `total_duration_ms` | BIGINT | 总耗时 |
+| `superseded_by_task_id` | VARCHAR(36) NULL | 被哪个新 `task_id` 接班（重试 CAS 第 2 层目标列；migration 0009 新增；`NULL` 表示未被接班） |
 | `started_at` / `finished_at` | DATETIME | 开始 / 结束时间 |
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
 
 索引：
-- `uk_post_pipeline_parsed_log(document_parsed_log_id)`
-- `idx_post_pipeline_task_id(task_id)`
-- `idx_post_pipeline_parse_file(document_parse_file_id, updated_at)`
-- `idx_post_pipeline_status(pipeline_status, updated_at)`
+- `uk_parse_pipeline_parsed_log(document_parsed_log_id)`
+- `idx_parse_pipeline_task_id(task_id)`
+- `idx_parse_pipeline_parse_file(document_parse_file_id, updated_at)`
+- `idx_parse_pipeline_status(pipeline_status, updated_at)`
+- `idx_parse_pipeline_superseded(superseded_by_task_id)`
 
-> **重试治理已下线**（migration 0007）：`chunk_count` / `retry_count` / `last_retry_at` 移除。chunk 数量由真值表 `kb_document_chunk` 为 source of truth；重试由 Java 端负责，重试链通过 `document_parse_file.latest_parse_task_id` 追溯。
+> **重试治理已下线**（migration 0007）：`chunk_count` / `retry_count` / `last_retry_at` 移除。chunk 数量由真值表 `kb_document_chunk` 为 source of truth；重试由 Java 端负责，重试链通过 `document_parsed_log.retry_of_task_id` 与 `document_parse_pipeline.superseded_by_task_id` 双向追溯（migration 0009）。
+>
+> **`pipeline_status=SUCCESS` 翻转点**：6 阶段全部 `*_status=SUCCESS` 后由 `mark_sparse_vectorizing_success` 唯一翻转；`mark_es_success` 不再触碰 `pipeline_status`。
+>
+> **重试 CAS 两层保护**：第 1 层（快速失败）在 `ParseTaskGuard.validate_retry_context` 通过 `SELECT superseded_by_task_id IS NULL` 校验；第 2 层（真正原子）在 `ParsePipelineRepository.mark_superseded` 通过 `UPDATE ... WHERE superseded_by_task_id IS NULL` 的 rowcount 仲裁。
 
 ---
 

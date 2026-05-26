@@ -1,4 +1,4 @@
-"""解析任务前置守卫：消息一致性校验与重投/中断兜底。"""
+"""解析任务前置守卫：消息一致性校验、重投/中断兜底、重试前置校验。"""
 
 from __future__ import annotations
 
@@ -16,11 +16,12 @@ from src.core.pipeline.parse_task.post_process.constants import (
     POST_PROCESS_STAGE_ES_INDEXING,
     POST_PROCESS_STAGE_CLEANING,
     POST_PROCESS_STAGE_PRETOKENIZE,
+    POST_PROCESS_STAGE_SPARSE_VECTORIZING,
     POST_PROCESS_STAGE_VECTORIZING,
     STAGE_STATUS_SUCCESS,
 )
 from src.core.pipeline.parse_task.post_process.repository import ParsePipelineRepository
-from src.models.parse_task import DocumentParseTask
+from src.models.parse_task import DocumentParsedLog, DocumentParsePipeline, DocumentParseTask
 
 from ._utils import duration_ms, now
 from .constants import (
@@ -35,6 +36,28 @@ from .error_codes import ParseFailureCode, build_failure_reason
 from .log_repository import ParseLogRepository
 from .models import ParsePipelineResult, PipelineStatus
 from .notifier import ParseResultNotifier
+
+
+# 重试校验失败的统一前缀；具体校验项追加在冒号后，便于 Java 端 / 运维侧排查。
+RETRY_VALIDATION_REASON_PREFIX = ParseFailureCode.RETRY_VALIDATION_FAILED.value
+
+
+class RetryValidationError(Exception):
+    """重试前置校验失败专用异常。
+
+    ``reason`` 形如 ``"RETRY_VALIDATION_FAILED:<具体校验项>"``，由编排层
+    ``_handle_retry_validation_failure`` 直接落库到 ``pipeline.failure_reason``
+    并作为通知载荷的 failure_reason。
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+def _retry_validation_reason(suffix: str) -> str:
+    """构造 ``RETRY_VALIDATION_FAILED:<具体校验项>`` 文本，统一前缀。"""
+    return f"{RETRY_VALIDATION_REASON_PREFIX}:{suffix}"
 
 
 class ParseTaskGuard:
@@ -220,7 +243,11 @@ class ParseTaskGuard:
 
     @staticmethod
     def _infer_recover_stage(pipeline_record: Any) -> str:
-        """根据阶段成功状态推断非终态 pipeline 的恢复入口。"""
+        """根据阶段成功状态推断非终态 pipeline 的恢复入口。
+
+        遵循 6 阶段顺序：cleaning → chunking → vectorizing → pretokenize →
+        es_indexing → sparse_vectorizing；返回首个非 SUCCESS 阶段名。
+        """
         if getattr(pipeline_record, "cleaning_status", None) != STAGE_STATUS_SUCCESS:
             return POST_PROCESS_STAGE_CLEANING
         if getattr(pipeline_record, "chunking_status", None) != STAGE_STATUS_SUCCESS:
@@ -229,4 +256,58 @@ class ParseTaskGuard:
             return POST_PROCESS_STAGE_VECTORIZING
         if getattr(pipeline_record, "pretokenize_status", None) != STAGE_STATUS_SUCCESS:
             return POST_PROCESS_STAGE_PRETOKENIZE
-        return POST_PROCESS_STAGE_ES_INDEXING
+        if getattr(pipeline_record, "es_indexing_status", None) != STAGE_STATUS_SUCCESS:
+            return POST_PROCESS_STAGE_ES_INDEXING
+        return POST_PROCESS_STAGE_SPARSE_VECTORIZING
+
+    async def validate_retry_context(
+        self,
+        payload: ParseTaskPayload,
+        db: AsyncSession,
+    ) -> tuple[DocumentParsedLog, DocumentParsePipeline]:
+        """重试场景的严格前置校验。
+
+        校验项顺序短路（任一项失败立即抛 RetryValidationError），返回
+        旧 log + 旧 pipeline 行供编排层做 mark_superseded（CAS 第 2 层）
+        与状态继承使用。
+
+        校验项与对应 reason 后缀（与 acceptance Outline 9 行一一对应）：
+
+        1. payload.previous_task_id 非空 → ``missing_previous_task_id``
+        2. payload.md_bucket / md_object_key 都非空 → ``missing_parsed_object_key_in_payload``
+        3. 旧 log（按 task_id=previous_task_id）存在 → ``previous_log_not_found``
+        4. 旧 log.parsed_object_key 非空 → ``previous_markdown_missing``
+        5. 旧 pipeline 行存在 → ``previous_pipeline_not_found``
+        6. 旧 pipeline.pipeline_status == FAILED → ``previous_pipeline_not_in_failed_state``
+        7. 旧 pipeline.recover_from_stage 非空 → ``missing_recover_from_stage``
+        8. 旧 pipeline.superseded_by_task_id IS NULL → ``already_superseded``
+           （CAS 第 1 层快速失败；第 2 层由 mark_superseded rowcount 兜底）
+        """
+        if not payload.previous_task_id:
+            raise RetryValidationError(_retry_validation_reason("missing_previous_task_id"))
+        if not (payload.md_bucket and payload.md_object_key):
+            raise RetryValidationError(
+                _retry_validation_reason("missing_parsed_object_key_in_payload")
+            )
+
+        old_log = await self._log_repository.get_by_task_id(payload.previous_task_id, db)
+        if old_log is None:
+            raise RetryValidationError(_retry_validation_reason("previous_log_not_found"))
+        if not old_log.parsed_object_key:
+            raise RetryValidationError(_retry_validation_reason("previous_markdown_missing"))
+
+        old_pipeline = await self._pipeline_repository.get_by_log_id(db, old_log.id)
+        if old_pipeline is None:
+            raise RetryValidationError(_retry_validation_reason("previous_pipeline_not_found"))
+        if old_pipeline.pipeline_status != PIPELINE_STATUS_FAILED:
+            raise RetryValidationError(
+                _retry_validation_reason("previous_pipeline_not_in_failed_state")
+            )
+        if old_pipeline.recover_from_stage is None:
+            raise RetryValidationError(_retry_validation_reason("missing_recover_from_stage"))
+        if old_pipeline.superseded_by_task_id is not None:
+            # CAS 第 1 层快速失败：本层 read-only 存在 TOCTOU 窗口，由 mark_superseded
+            # 的 rowcount 仲裁做真正原子保证；这里只是体验/早期短路。
+            raise RetryValidationError(_retry_validation_reason("already_superseded"))
+
+        return old_log, old_pipeline

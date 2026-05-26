@@ -108,18 +108,33 @@ any classified failure
 
 ## 4. 状态语义
 
-整体任务状态的**权威单源**是 `document_parse_pipeline.pipeline_status`，覆盖**解析+上传 → 分片 → 向量化 → 预分词 → ES 入库**五段状态机。`document_parsed_log` 退化为"文件解析产物快照表"，只承载解析产物（Markdown 文件位置、解析起止时间）与触发上下文。
+整体任务状态的**权威单源**是 `document_parse_pipeline.pipeline_status`，覆盖 **文档清洗 → 分片 → 向量化 → 预分词 → ES 入库 → 稀疏向量化** 六段状态机。`document_parsed_log` 退化为"文件解析产物快照表"，只承载解析产物（Markdown 文件位置、解析起止时间）与触发上下文；重试链路由 `retry_of_task_id` 串接（migration 0009）。
+
+> **术语对照表**（brief / acceptance ↔ 代码 / schema）：
+>
+> | brief / acceptance | 代码 / schema | 备注 |
+> | --- | --- | --- |
+> | `parsing_status` / `parsing_duration_ms` | `cleaning_status` / `cleaning_duration_ms` | migration 0007 落地时选择 cleaning 词根；统一重命名由 issue [#48](https://github.com/ql-link/LinkRag/issues/48) 跟踪 |
+> | `STAGE_PARSING` | `POST_PROCESS_STAGE_CLEANING` | 同上 |
+> | `mark_parsing_*` | `mark_cleaning_*` | 同上 |
 
 | 字段 | 状态 |
 | --- | --- |
 | `pipeline_status` | `PENDING/PROCESSING/SUCCESS/FAILED`（整体任务状态，Java 侧判定"上次任务是否整体成功"的唯一字段） |
-| `parsing_status` | `PENDING/SUCCESS/FAILED`（解析+上传阶段） |
-| `chunking_status` | `PENDING/SUCCESS/FAILED` |
-| `vectorizing_status` | `PENDING/SUCCESS/FAILED` |
-| `pretokenize_status` | `PENDING/SUCCESS/FAILED` |
-| `es_indexing_status` | `PENDING/SUCCESS/FAILED` |
+| `cleaning_status` | `PENDING/PROCESSING/SUCCESS/FAILED`（文档清洗=解析+上传阶段；brief 称 `parsing_status`） |
+| `chunking_status` | `PENDING/PROCESSING/SUCCESS/FAILED` |
+| `vectorizing_status` | `PENDING/PROCESSING/SUCCESS/FAILED` |
+| `pretokenize_status` | `PENDING/PROCESSING/SUCCESS/FAILED` |
+| `es_indexing_status` | `PENDING/PROCESSING/SUCCESS/FAILED` |
+| `sparse_vectorizing_status` | `PENDING/PROCESSING/SUCCESS/FAILED`（migration 0009 新增） |
+| `superseded_by_task_id` | `VARCHAR(36) NULL`（重试 CAS 第 2 层目标列；migration 0009 新增） |
 
-阶段顺序：`PARSING → CHUNKING → VECTORIZING(dense/Qdrant) → PRETOKENIZE → ES_INDEXING`。发送给 Java 的 parse_result `task_status=success` 是整体成功语义：解析+上传、分片、向量化、预分词与 ES 入库均成功。任一阶段失败都会发送 `task_status=failed`。
+阶段顺序：`CLEANING(PARSING) → CHUNKING → VECTORIZING(dense/Qdrant) → PRETOKENIZE → ES_INDEXING → SPARSE_VECTORIZING`。发送给 Java 的 parse_result `task_status=success` 是整体成功语义：6 阶段全部成功才算整体成功；任一阶段失败都会发送 `task_status=failed`。
+
+**`pipeline_status` 三态翻转**（整体唯一权威）：
+- **`PENDING → PROCESSING`**：首个 `mark_<stage>_started` 触发（幂等，已 PROCESSING 不重复翻转）。
+- **`* → SUCCESS`**：6 阶段全部 SUCCESS 后由 `mark_sparse_vectorizing_success` **唯一**翻转；`mark_es_success` 不再触碰 `pipeline_status`（本期重要变更，与 sparse 阶段对称）。
+- **`* → FAILED`**：任一阶段 `mark_<stage>_failed` 触发，同时写 `failed_stage` / `recover_from_stage` / `failure_reason` / `finished_at`。
 
 **Java 侧消费规则**：
 - 整体任务是否成功 → 读 `document_parse_pipeline.pipeline_status == SUCCESS`
@@ -130,12 +145,24 @@ any classified failure
 
 任一阶段失败即终态：只把结果写入 `document_parse_pipeline`（阶段状态 FAILED、`failed_stage`、`recover_from_stage`、`failure_reason`、`finished_at`、耗时）并通知 Java `failed`。系统**不计数、不设上限、不写 retry_exhausted、不自动重试**。
 
-- **解析+上传失败**：`mark_parsing_failed` 落 `parsing_status=FAILED` + `failed_stage=PARSING` + `recover_from_stage=PARSING`。`failure_reason` 含前缀 `INVALID_TASK_CONTEXT:` / `SOURCE_FILE_NOT_FOUND:` / `PARSE_ENGINE_FAILED:` / `PARSED_FILE_UPLOAD_FAILED:` / `INTERRUPTED_TASK:` / `INTERNAL_UNKNOWN_ERROR:` 等。
+- **文档清洗失败**：`mark_cleaning_failed` 落 `cleaning_status=FAILED` + `failed_stage=CLEANING` + `recover_from_stage=CLEANING`。`failure_reason` 含前缀 `INVALID_TASK_CONTEXT:` / `SOURCE_FILE_NOT_FOUND:` / `PARSE_ENGINE_FAILED:` / `PARSED_FILE_UPLOAD_FAILED:` / `INTERRUPTED_TASK:` / `INTERNAL_UNKNOWN_ERROR:` / `PARSING_FAILED:` 等。
 - **预分词失败**（`_run_pretokenize` 捕获 `PreprocessorError`，或空 plan 但仍有未完成 chunk）：`mark_pretokenize_failed` 落 `pretokenize_status=FAILED` + `recover_from_stage=PRETOKENIZE`；**绝不写任何 chunk es_status**（文件级 all-or-nothing）。
 - **ES 基础设施故障**（`_ensure_index` 等）：文件级，不标 chunk，`failure_reason` 以 `ensure_index:` 前缀。
 - **ES chunk 级写失败**：逐 chunk 标 `es_status=FAILED`，文件级 `es_indexing_status=FAILED`，前缀 `ES_INDEXING_FAILED:`。
-- **恢复入口** `_infer_recover_stage()` 取首个非 SUCCESS 阶段（parsing→chunking→vectorizing→pretokenize→es）。所有 `*_status` 跨重投持久，不被 `mark_parsing_started` / `mark_post_processing` 清空。
-- **用户侧重试**：重试由 Java 端负责，重试链通过 `document_parse_file.latest_parse_task_id` 追溯。Python 侧已不再维护 `retry_count` / `last_retry_at`（migration 0007 下线）。
+- **稀疏向量阶段失败**（`SparseIndexingPipeline.run` 抛 `SparseIndexingError`）：触发失败的 chunk 标 `sparse_vector_status=FAILED` 留审计痕迹；文件级 `mark_sparse_vectorizing_failed` 落 `sparse_vectorizing_status=FAILED` + `failed_stage=SPARSE_VECTORIZING`，前缀 `SPARSE_VECTORIZING_FAILED:`。
+- **恢复入口** `_infer_recover_stage()` 取首个非 SUCCESS 阶段（cleaning→chunking→vectorizing→pretokenize→es→sparse_vectorizing）。所有 `*_status` 跨重投持久，不被 `mark_<stage>_started` 清空（只清 `failed_stage` / `failure_reason` 等失败痕迹）。
+- **用户侧重试**：重试由 Java 端负责，重试链通过 `document_parsed_log.retry_of_task_id` 与 `document_parse_pipeline.superseded_by_task_id` 双向追溯（migration 0009）。Python 侧已不再维护 `retry_count` / `last_retry_at`（migration 0007 下线）。
+
+### 重试分支（`is_retry=true`）
+
+收到 `payload.is_retry=true` 时，`ParseTaskPipeline._run` 顶部进入重试分支：
+
+1. `ParseTaskGuard.validate_retry_context(payload, db)`：9 项严格校验（含 CAS 第 1 层快速失败 `superseded_by_task_id IS NULL`），失败抛 `RetryValidationError`。
+2. `ParsePipelineRepository.mark_superseded(old_pipeline, new_task_id)`：CAS 第 2 层真原子，`UPDATE ... WHERE superseded_by_task_id IS NULL` 依赖 rowcount 仲裁；rowcount=0 抛 `RetryValidationError("RETRY_VALIDATION_FAILED:concurrent_supersede")`。
+3. `ParseLogRepository.create_for_retry(...)` + `ParsePipelineRepository.create_with_inherited_state(old_pipeline, new_log)`：建新 log + 新 pipeline，复制 6 阶段 SUCCESS 状态与 duration，重置非 SUCCESS 阶段。
+4. 进入 6 阶段循环，跳过继承到的 SUCCESS 阶段、从首个非 SUCCESS 阶段恢复执行；chunking 被跳过时由 `_load_chunks_from_db(doc_id)` 反查 chunk 真值表（谓词 `dense_vector_status IN (PENDING, FAILED)`）组装 `list[Chunk]` 喂给下游。
+
+校验或 CAS 失败时走 `_handle_retry_validation_failure`：双表落 FAILED 终态（`pipeline_status=FAILED` + `failed_stage=RETRY_VALIDATION` + 前缀 `RETRY_VALIDATION_FAILED:`），不更新任何旧表行，通知 Java FAILED。
 
 ## 5. MinerU URL 直拉
 

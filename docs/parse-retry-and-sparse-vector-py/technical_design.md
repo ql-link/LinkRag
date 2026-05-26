@@ -77,7 +77,7 @@ toLink-Rag/
 │   └── models/
 │       └── parse_task.py                                        # [修改] log 新增 retry_of_task_id；pipeline 新增 sparse_vectorizing_status/_duration_ms / superseded_by_task_id
 ├── migrations/versions/
-│   └── 0008_20260527_add_retry_link_and_sparse_stage.py         # [新增] 增字段 + 索引
+│   └── 0009_20260527_add_retry_link_and_sparse_stage.py         # [新增] 增字段 + 索引
 ├── tests/
 │   ├── unit/core/pipeline/
 │   │   ├── test_parse_task_pipeline.py                          # [测试修改] 6 阶段统一跳过 + 重试分支 + CAS
@@ -191,7 +191,7 @@ class ParseTaskPayload(BaseModel):
 
 ### 6.3 数据与存储设计
 
-**migration 0008** 增量 DDL：
+**migration 0009** 增量 DDL：
 
 ```sql
 -- document_parsed_log
@@ -470,7 +470,7 @@ ALTER TABLE document_parse_pipeline
 | dense 失败语义（不在本次主改动，回归覆盖） | `test_parse_task_pipeline.py::test_vectorizing_partial_failure_terminates`、`...retry_skips_indexed` | dense 失败/重试 Scenario | 现有逻辑 + chunk 状态断言 |
 | `_handle_retry_validation_failure` | `test_parse_task_pipeline.py::test_validation_failure_double_table_record` | validate 校验失败统一落 FAILED | log + pipeline 双表落、不更新旧行、通知 FAILED |
 | `notifier`（不变） | `test_parse_task_pipeline.py::test_notify_body_minimal` | 重试成功通知不回带 retry 信息 | 通知体 == {task_id, status} |
-| migration 0008 | `tests/integration/.../test_migration_0008.py` | 数据库 schema 通过 Alembic 落地 | 字段/索引存在；init.sql 未改 |
+| migration 0009 | `tests/integration/.../test_migration_0009.py` | 数据库 schema 通过 Alembic 落地 | 字段/索引存在；init.sql 未改 |
 
 ### 10.2 Scenario 覆盖自检
 
@@ -496,7 +496,7 @@ ALTER TABLE document_parse_pipeline
 | sparse 健康性校验 Outline (×2) | `SparseIndexingPipeline.run`（前置） | `test_sparse_health_check[...]` | ✅ |
 | 重试跳过 chunking 反查为空判不一致 | `_load_chunks_from_db` | `test_load_chunks_empty_marks_failed` | ✅ |
 | 重试成功通知不回带 retry 信息 | `ParseResultNotifier.send`（不变） | `test_notify_body_minimal` | ✅ |
-| Schema 通过 Alembic 落地 | migration 0008 | `test_migration_0008` | ✅ |
+| Schema 通过 Alembic 落地 | migration 0009 | `test_migration_0009` | ✅ |
 
 **结论**：22 Scenario 全覆盖，无遗漏。
 
@@ -525,7 +525,7 @@ ALTER TABLE document_parse_pipeline
 
 **发布顺序**：
 
-1. 合入 migration 0008（仅增列 + 索引，不破坏现有行）
+1. 合入 migration 0009（仅增列 + 索引，不破坏现有行）
 2. 部署本期 Python 改动（payload 增字段向后兼容，旧消息可继续消费）
 3. Java 端按 issue #46 Body 中说明完成对接（读 pipeline_status / parsed_object_key），开始投递 `is_retry=true` 消息
 
@@ -556,7 +556,7 @@ ALTER TABLE document_parse_pipeline
 
 ## 13. 实施顺序
 
-1. **DB**：新增 ORM 字段 + migration 0008；本地 upgrade 验证。
+1. **DB**：新增 ORM 字段 + migration 0009；本地 upgrade 验证。
 2. **MQ payload**：新增 `is_retry` / `previous_task_id`；补 payload 单测。
 3. **Repository 扩展**：新增 5 个 `mark_*_started`（cleaning 已存在）、sparse 系列、`mark_superseded`、`create_with_inherited_state`、`create_failed_for_retry_validation`；补 `test_parse_pipeline_repository.py`。
 4. **Validator**：新增 `validate_retry_context` + `RetryValidationError`；补 9 路径单测。
@@ -577,7 +577,7 @@ ALTER TABLE document_parse_pipeline
 - [x] **Q1 命名映射**：本期方案 A（代码保持 `cleaning_*`，测试做术语映射）；统一重命名由 issue [#48](https://github.com/ql-link/LinkRag/issues/48) 跟踪
 - [x] **Q2 `mark_es_success` 翻转上移**：拆分语义 — `mark_es_success` 只置 `es_indexing_status`；`pipeline_status=SUCCESS` 翻转下沉到 `mark_sparse_vectorizing_success`；补回归测试 `test_es_success_does_not_flip_pipeline`
 - [x] **Q3 chunk 真值表写入时机**：本期 PR 显式依赖并行分支已 merge；若并行分支未合入，本期不能 merge
-- [x] **Q4 Java 端发布节奏**：Java 等待 Python 部署完成（migration 0008 → Python 部署 → Java 开始投 `is_retry=true`），需 Java 团队确认
+- [x] **Q4 Java 端发布节奏**：Java 等待 Python 部署完成（migration 0009 → Python 部署 → Java 开始投 `is_retry=true`），需 Java 团队确认
 
 ### 14.2 待人工 review
 

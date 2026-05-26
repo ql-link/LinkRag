@@ -52,8 +52,17 @@ Topic 名称由 toLink-Rag 的 `.env` 配置决定，业务方对接前需要从
 | `docling_force_ocr` | bool | ⬜ | 仅 Docling 后端生效 |
 | `image_bucket` | string | ⬜ | PDF 图片输出 bucket |
 | `image_prefix` | string | ⬜ | PDF 图片输出 key 前缀 |
+| `is_retry` | bool | ⬜ | `false`（默认）表示首次解析；`true` 表示用户触发的重试任务。老消息缺省默认 `false`，与首次解析路径完全等价（migration 0009 新增） |
+| `previous_task_id` | string | ⬜ | `is_retry=true` 时必填，指向上一轮失败任务的 `task_id`；Python 端 `ParseTaskGuard.validate_retry_context` 会严格校验上一轮记录存在且 markdown 已成功上传 |
+
+> **重试链路约束**（与 [parse_task_pipeline_module.md §4 重试分支](../architecture/parse_task_pipeline_module.md) 配套）：
+> - 重试请求由 Java 端在判定旧任务 `pipeline_status=FAILED` 且 `parsed_object_key IS NOT NULL` 后发起；Python 端不计数、不限次。
+> - 重试请求的 `md_bucket` / `md_object_key` 必须与上轮一致（Java 直接回填）；否则 `validate_retry_context` 拒绝。
+> - Python 通过 CAS 第 2 层（`mark_superseded` UPDATE rowcount）仲裁并发重试，失败方仍会建一行 `pipeline_status=FAILED` + `failed_stage=RETRY_VALIDATION` 的审计记录，并通过 parse_result 主题通知 Java FAILED。
 
 ### 消息示例
+
+首次解析：
 
 ```json
 {
@@ -72,6 +81,27 @@ Topic 名称由 toLink-Rag 的 `.env` 配置决定，业务方对接前需要从
   "pdf_parser_backend": "mineru",
   "image_bucket": "tolink-rag-docs",
   "image_prefix": "images/2026/05/16/doc-001/"
+}
+```
+
+重试任务（Java 直接回填上轮 markdown 坐标）：
+
+```json
+{
+  "task_id": "task-20260527-002",
+  "original_file_id": 12345,
+  "document_parse_task_id": 67890,
+  "user_id": 1001,
+  "dataset_id": 2001,
+  "file_type": "pdf",
+  "source_bucket": "tolink-rag-docs",
+  "source_object_key": "raw/2026/05/16/doc-001.pdf",
+  "source_filename": "技术规范.pdf",
+  "md_bucket": "tolink-rag-docs",
+  "md_object_key": "parsed/2026/05/16/doc-001.md",
+  "trigger_mode": "manual_retry",
+  "is_retry": true,
+  "previous_task_id": "task-20260516-001"
 }
 ```
 

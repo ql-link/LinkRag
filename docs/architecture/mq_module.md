@@ -62,8 +62,8 @@ FastAPI lifespan
 
 | 消息 | 默认 Topic/Queue | 方向 | 说明 |
 | --- | --- | --- | --- |
-| `ParseTaskMessage` | `tolink-document-pares` | Java -> Python | 触发文档解析任务 |
-| `ParseResultMessage` | `tolink.rag.parse_result` | Python -> Java | 回传解析整体终态 |
+| `ParseTaskMessage` | `tolink-document-pares` | Java -> Python | 触发文档解析任务（含首次解析与重试，由 `is_retry` + `previous_task_id` 区分；详见 [mq_integration.md §ParseTaskPayload](../guides/mq_integration.md)） |
+| `ParseResultMessage` | `tolink.rag.parse_result` | Python -> Java | 回传解析整体终态（重试任务的通知体 **不** 回带 `previous_task_id` / `retry_of_task_id`，Java 自有映射） |
 | `CacheSyncMessage` | `tolink.rag.cache_sync` | Java -> Python | 失效或刷新用户 LLM 配置缓存 |
 | `UsageReportMessage` | `tolink.rag.usage_report` | Python -> Java/统计侧 | 上报 LLM 调用用量 |
 
