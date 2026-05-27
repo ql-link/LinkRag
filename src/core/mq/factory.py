@@ -5,12 +5,13 @@ MQFactory 注册式工厂
 根据配置 (MQ_VENDOR) 自动创建对应厂商的 Sender/Receiver 实例。
 单例模式，全局共享同一组连接实例。
 """
-from typing import Dict, Optional, Type, Any
+from typing import Awaitable, Callable, Dict, Optional, Type, Any
 
 from loguru import logger
 
 from src.core.mq.interfaces import IMQSender, IMQReceiver, MQVendorType
 from src.core.mq.exceptions import MQConfigError
+from src.core.mq.retry import DLQPublisher, RetryPolicy
 
 
 class MQFactory:
@@ -37,6 +38,7 @@ class MQFactory:
     _sender_cache: Optional[IMQSender] = None
     _receiver_cache: Optional[IMQReceiver] = None
     _current_vendor: Optional[str] = None
+    _retry_policy_cache: Optional[RetryPolicy] = None
 
     def __new__(cls) -> "MQFactory":
         if cls._instance is None:
@@ -46,6 +48,7 @@ class MQFactory:
             cls._instance._sender_cache = None
             cls._instance._receiver_cache = None
             cls._instance._current_vendor = None
+            cls._instance._retry_policy_cache = None
             cls._instance._register_defaults()
         return cls._instance
 
@@ -222,10 +225,47 @@ class MQFactory:
         else:
             kwargs = {}
 
+        # 注入失败兜底编排依赖（retry policy + DLQ 投递回调）：让 receiver 在
+        # 业务回调异常时走 src.core.mq.retry.dispatch_with_retry，而不是裸 try/except。
+        kwargs.setdefault("retry_policy", self.get_retry_policy())
+        kwargs.setdefault("dlq_publisher", self.get_dlq_publisher())
+
         kwargs.update(overrides)
         self._receiver_cache = receiver_cls(**kwargs)
         logger.info(f"[MQFactory] 创建 Receiver: vendor={vendor}")
         return self._receiver_cache
+
+    def get_retry_policy(self) -> RetryPolicy:
+        """从 Settings 装配 RetryPolicy，进程内缓存复用。"""
+        if self._retry_policy_cache is not None:
+            return self._retry_policy_cache
+        from src.config import settings
+        self._retry_policy_cache = RetryPolicy(
+            max_retries=int(getattr(settings, "MQ_MAX_RETRIES", 3)),
+            backoff_seconds=float(getattr(settings, "MQ_RETRY_BACKOFF_SECONDS", 1.0)),
+            dlq_suffix=str(getattr(settings, "MQ_DLQ_SUFFIX", ".DLT")),
+        )
+        return self._retry_policy_cache
+
+    def get_dlq_publisher(self) -> DLQPublisher:
+        """返回死信投递回调，复用 ``get_sender()`` 的 producer 连接。
+
+        签名见 :data:`src.core.mq.retry.DLQPublisher`：
+        ``(dlt_topic, body_bytes, headers, original_key) -> Awaitable[None]``。
+        """
+        async def _publish(
+            topic: str,
+            body: bytes,
+            headers: Dict[str, str],
+            key: Optional[str],
+        ) -> None:
+            sender = self.get_sender()
+            # 业务消息默认以 utf-8 文本流转；死信沿用同一序列化路径，便于消费侧统一
+            # 处理。极端二进制场景未来需要扩展 IMQSender.send_bytes 接口。
+            text = body.decode("utf-8", errors="replace")
+            await sender.send(topic=topic, message=text, key=key, headers=headers)
+
+        return _publish
 
     def list_vendors(self) -> list[str]:
         """列出所有已注册的厂商"""
@@ -240,6 +280,7 @@ class MQFactory:
             await self._receiver_cache.stop()
             self._receiver_cache = None
         self._current_vendor = None
+        self._retry_policy_cache = None
         logger.info("[MQFactory] 所有 MQ 连接已关闭")
 
     @classmethod

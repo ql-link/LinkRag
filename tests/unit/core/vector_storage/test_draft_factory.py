@@ -54,7 +54,7 @@ def test_should_build_drafts_with_hash_and_metadata_when_chunk_fields_are_comple
     assert drafts[0].content_hash == hashlib.sha256(b"first chunk").hexdigest()
     assert drafts[0].chunk_type == "paragraph"
     assert drafts[0].chunk_index == 7
-    assert drafts[0].status == CHUNK_STATUS_PENDING
+    assert drafts[0].dense_vector_status == CHUNK_STATUS_PENDING
 
     assert drafts[1].chunk_type == "mixed"
     assert drafts[1].chunk_index is None

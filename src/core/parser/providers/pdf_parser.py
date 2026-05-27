@@ -1,3 +1,5 @@
+from pathlib import Path
+
 import fitz
 
 from src.config import settings
@@ -12,8 +14,11 @@ class PdfParser(BaseParser):
     支持的 backend:
     - auto: MinerU → OpenDataLoader → Naive 全链路降级
     - mineru: MinerU HTTP API（默认不回退到本地解析器）
-    - opendataloader: OpenDataLoader 本地解析（当前默认，可通过 PDF_PARSER_FALLBACKS 配置回退）
+    - opendataloader: OpenDataLoader 本地解析
     - naive: PyMuPDF (最快，质量最低)
+
+    入参从 ``bytes`` 切换为 ``Path | None``。``source is None`` 仅在"mineru 后端 +
+    远端 URL 旁路"下合法（旧实现使用 ``file_stream == b""`` 表达同一语义）。
     """
 
     def __init__(
@@ -46,14 +51,20 @@ class PdfParser(BaseParser):
         self.mineru_model_version = mineru_model_version or settings.MINERU_MODEL_VERSION
         self._service = PdfParserService()
 
-    def parse(self, file_stream: bytes) -> str:
-        can_skip_local_pdf = self.backend == "mineru" and bool(self.source_file_url) and not file_stream
+    def parse(self, source: Path | None) -> str:
+        # 旁路判定：mineru 后端 + 已有远端 URL + source 缺省时跳过本地 PDF 解析步骤。
+        # 这里 ``source is None`` 与旧实现的 ``not file_stream`` 等价（旧路径用 b"" 表达旁路）。
+        can_skip_local_pdf = (
+            self.backend == "mineru"
+            and bool(self.source_file_url)
+            and source is None
+        )
         doc = None
         if not can_skip_local_pdf:
-            self.validate_stream(file_stream)
-            doc = fitz.open(stream=file_stream, filetype="pdf")
+            self.validate_source(source)
+            doc = fitz.open(filename=str(source))
         markdown, metadata = self._service.parse(
-            file_stream,
+            source,
             PdfParseOptions(
                 backend=self.backend,
                 image_bucket=self.image_bucket,

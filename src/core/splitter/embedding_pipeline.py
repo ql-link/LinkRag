@@ -7,7 +7,10 @@ import asyncio
 import hashlib
 from typing import TYPE_CHECKING, Any, MutableMapping
 
+import httpx
+
 from src.core.markdown_parser import ParseResult
+from src.utils.logger import logger
 
 from .models import EmbeddedChunk, EmbeddingPipelineStats
 
@@ -144,10 +147,28 @@ class ChunkEmbeddingPipeline:
             batch = pending_items[start : start + self.batch_size]
             batch_count += 1
 
-            response = await self.embedder.embed(
-                texts=[chunk.content for _, _, chunk in batch],
-                model=self.embedding_model,
-            )
+            try:
+                response = await self.embedder.embed(
+                    texts=[chunk.content for _, _, chunk in batch],
+                    model=self.embedding_model,
+                )
+            except httpx.HTTPStatusError as exc:
+                # 提取完整响应 body，方便区分 batch size / token 长度 / 鉴权 / 模型名等不同 400 原因
+                try:
+                    body = exc.response.text
+                except Exception:
+                    body = "<unable to read response body>"
+                logger.error(
+                    "[ChunkEmbeddingPipeline] Embedding API request failed: "
+                    "status={} url={} batch_index={} batch_size={} model={} body={}",
+                    exc.response.status_code,
+                    str(exc.request.url),
+                    start,
+                    len(batch),
+                    self.embedding_model,
+                    body,
+                )
+                raise
             resolved_model = getattr(response, "model", resolved_model)
             embeddings = getattr(response, "embeddings", None) or []
             if len(embeddings) != len(batch):

@@ -38,6 +38,7 @@ dependencies = [
     "beautifulsoup4>=4.12.0",
     "trafilatura>=2.0.0",
     "mammoth>=1.6.0",
+    "FlagEmbedding>=1.4.0",
     "python-docx>=1.1.0",
     "chromadb>=0.4.22",
     "openai>=1.10.0",
@@ -66,6 +67,7 @@ dependencies = [
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.23.0",
+    "pytest-bdd>=7.0.0",
     "httpx>=0.26.0",
     "black>=24.1.0",
     "isort>=5.13.0",
@@ -83,6 +85,9 @@ mq-all = [
     "aiokafka>=0.11.0",
     "confluent-kafka>=2.6.0",
     "aio-pika>=9.4.0",
+]
+pretokenization = [
+    "infinity-sdk>=0.7.0; python_version >= '3.11'",
 ]
 
 [build-system]

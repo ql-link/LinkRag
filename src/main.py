@@ -2,6 +2,7 @@
 toLink-RAG API 服务入口
 """
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncGenerator
 
 from fastapi import FastAPI
@@ -21,6 +22,8 @@ from src.models.parse_task import Base
 from src.core.mq.factory import MQFactory
 from src.core.mq.topic_admin import ensure_topics
 from src.core.mq.consumers.parse_task_consumer import start_parse_consumer
+# 解析任务临时落盘目录治理：启动时清空 PARSE_TEMP_DIR，回收上次异常退出残留的临时文件。
+from src.core.pipeline.parse_task import temp_workspace
 
 
 @asynccontextmanager
@@ -39,6 +42,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # 启动时初始化
     await redis_client.initialize()
     await init_database()
+    # 在拉起消费者之前清空临时落盘目录：兜底回收上次进程异常退出残留的源文件副本，
+    # 失败让 worker 启动失败暴露问题，避免后续 download_to_path 永远失败但运维无感知。
+    temp_workspace.ensure_clean_on_startup(Path(settings.PARSE_TEMP_DIR))
     if settings.MQ_VENDOR.lower() == "kafka" and settings.INIT_KAFKA_TOPICS_ON_STARTUP:
         ensure_topics()
     await start_parse_consumer()

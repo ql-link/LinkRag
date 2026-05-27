@@ -35,7 +35,7 @@ from src.database import close_database, get_async_session_factory
 from src.models.parse_task import (
     DocumentParsedLog,
     DocumentParseTask,
-    DocumentPostProcessPipeline,
+    DocumentParsePipeline,
 )
 from src.services.storage.factory import StorageFactory
 
@@ -60,7 +60,7 @@ def build_test_pdf(title: str) -> bytes:
         "",
         "Section 2: Verification points",
         "- document_parsed_log row reaches success terminal state.",
-        "- document_post_process_pipeline row reaches SUCCESS.",
+        "- document_parse_pipeline row reaches SUCCESS.",
         "- ParseResultMessage emitted with task_status=success.",
     ]
     y = 690
@@ -107,8 +107,8 @@ async def cleanup(
     factory = get_async_session_factory()
     async with factory() as db:
         await db.execute(
-            delete(DocumentPostProcessPipeline).where(
-                DocumentPostProcessPipeline.task_id == task_id
+            delete(DocumentParsePipeline).where(
+                DocumentParsePipeline.task_id == task_id
             )
         )
         await db.execute(delete(DocumentParsedLog).where(DocumentParsedLog.task_id == task_id))
@@ -265,20 +265,20 @@ async def main(backend: str, keep: bool, pdf_path: str | None = None) -> int:
         ).scalar_one_or_none()
         pp = (
             await db.execute(
-                select(DocumentPostProcessPipeline).where(
-                    DocumentPostProcessPipeline.task_id == task_id
+                select(DocumentParsePipeline).where(
+                    DocumentParsePipeline.task_id == task_id
                 )
             )
         ).scalar_one_or_none()
         logger.info(
-            f"DB state: parsed_log.task_status={log.task_status if log else None} "
-            f"failure_reason={getattr(log, 'failure_reason', None)} | "
+            f"DB state: parsed_log.parsed_object_key={getattr(log, 'parsed_object_key', None)} | "
             f"post_process.pipeline_status="
             f"{getattr(pp, 'pipeline_status', None)} "
+            f"parsing={getattr(pp, 'cleaning_status', None)} "
             f"chunking={getattr(pp, 'chunking_status', None)} "
             f"vectorizing={getattr(pp, 'vectorizing_status', None)} "
             f"es={getattr(pp, 'es_indexing_status', None)} "
-            f"chunk_count={getattr(pp, 'chunk_count', None)}"
+            f"failure_reason={getattr(pp, 'failure_reason', None)}"
         )
 
     # 组装阶段表

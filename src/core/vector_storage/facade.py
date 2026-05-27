@@ -9,6 +9,7 @@ from src.core.splitter.models import Chunk
 
 from .models import (
     ChunkDeleteRequest,
+    ChunkIndexingRequest,
     ChunkIndexingResult,
     ChunkMutationResult,
     ChunkStorageRequest,
@@ -82,6 +83,19 @@ class VectorStorageFacade:
                 doc_id=doc_id,
                 chunks=list(chunks),
             )
+        )
+
+    async def index_document_chunks(
+        self,
+        *,
+        user_id: int,
+        set_id: int,
+        doc_id: int,
+    ) -> ChunkIndexingResult:
+        """索引已经落库的 chunk 真值记录，不创建新的 chunk 行。"""
+
+        return await self.storage_service.index_document_chunks(
+            ChunkIndexingRequest(user_id=user_id, set_id=set_id, doc_id=doc_id)
         )
 
     async def update_chunk(

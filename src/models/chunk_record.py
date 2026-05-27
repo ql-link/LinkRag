@@ -7,7 +7,11 @@ from datetime import datetime
 from sqlalchemy import BigInteger, DateTime, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from src.core.chunk_fact_storage.constants import CHUNK_STATUS_PENDING, ES_STATUS_PENDING, VECTOR_STATUS_PENDING
+from src.core.chunk_fact_storage.constants import (
+    CHUNK_STATUS_PENDING,
+    ES_STATUS_PENDING,
+    SPARSE_VECTOR_STATUS_PENDING,
+)
 from src.models.db_models import Base
 
 
@@ -26,27 +30,23 @@ class ChunkRecordDB(Base):
     start_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
     end_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
     chunk_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    status: Mapped[str] = mapped_column(
+    dense_vector_status: Mapped[str] = mapped_column(
         String(16),
         nullable=False,
         default=CHUNK_STATUS_PENDING,
     )
-    error_msg: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    retry_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    last_retry_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
-    embedding_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    vector_status: Mapped[str] = mapped_column(
+    dense_vector_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    sparse_vector_status: Mapped[str] = mapped_column(
         String(16),
         nullable=False,
-        default=VECTOR_STATUS_PENDING,
+        default=SPARSE_VECTOR_STATUS_PENDING,
     )
-    vector_error_msg: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    sparse_vector_model: Mapped[str | None] = mapped_column(String(128), nullable=True)
     es_status: Mapped[str] = mapped_column(
         String(16),
         nullable=False,
         default=ES_STATUS_PENDING,
     )
-    es_error_msg: Mapped[str | None] = mapped_column(String(512), nullable=True)
     create_time: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
     update_time: Mapped[datetime] = mapped_column(
         DateTime,
@@ -57,10 +57,7 @@ class ChunkRecordDB(Base):
 
     __table_args__ = (
         Index("idx_user_set", "user_id", "set_id"),
-        Index("idx_bucket_status", "bucket_id", "status"),
-        Index("idx_bucket_vector_status", "bucket_id", "vector_status"),
-        Index("idx_bucket_es_status", "bucket_id", "es_status"),
-        Index("idx_doc_id", "doc_id"),
-        Index("idx_chunk_type", "chunk_type"),
-        Index("idx_content_hash", "content_hash"),
+        Index("idx_doc_dense_status", "doc_id", "dense_vector_status"),
+        Index("idx_doc_sparse_status", "doc_id", "sparse_vector_status"),
+        Index("idx_doc_es_status", "doc_id", "es_status"),
     )

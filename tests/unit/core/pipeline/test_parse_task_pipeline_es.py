@@ -2,9 +2,6 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
-from src.config import settings
 from src.core.es_index_storage import EsIndexingResult
 from src.core.mq.messages import ParseTaskMessage
 from src.core.pipeline import ParseTaskPipeline
@@ -52,125 +49,148 @@ def build_es_pipeline(result: EsIndexingResult):
 
 
 def build_pipeline(*, preprocessor=None, es_pipeline=None, chunk_repository=None, post_repo=None):
-    return ParseTaskPipeline(
+    pipeline = ParseTaskPipeline(
         storage=MagicMock(),
         session_factory=MagicMock(),
         mq_service=MagicMock(),
-        post_process_repository=post_repo,
+        pipeline_repository=post_repo or AsyncMock(),
         es_indexing_pipeline=es_pipeline,
         preprocessor=preprocessor,
         chunk_repository=chunk_repository,
     )
+    # 通知器替身：send_or_raise 可 await，便于断言失败通知。
+    pipeline._notifier = AsyncMock()
+    return pipeline
 
 
-class TestRunEsIndexing:
-    async def test_should_return_result_when_plan_indexed(self):
-        es_result = EsIndexingResult(total_items=1, indexed_items=1, succeeded_item_ids=["c-0"])
+_NOW = datetime.now(timezone.utc)
+
+
+class TestRunPretokenize:
+    """预分词独立阶段：文件级 all-or-nothing，失败不污染 chunk。"""
+
+    async def test_should_return_plan_and_mark_success_on_non_empty_plan(self):
+        post_repo = AsyncMock()
+        chunk_repository = AsyncMock()
+        plan = build_plan()
         pipeline = build_pipeline(
-            preprocessor=build_preprocessor(),
-            es_pipeline=build_es_pipeline(es_result),
-            chunk_repository=AsyncMock(),
+            preprocessor=build_preprocessor(plan=plan),
+            chunk_repository=chunk_repository,
+            post_repo=post_repo,
         )
 
-        result = await pipeline._run_es_indexing(build_payload(), SimpleNamespace(), AsyncMock())
+        result_plan, failure = await pipeline._run_pretokenize(
+            build_payload(), SimpleNamespace(), AsyncMock(), _NOW
+        )
 
-        assert result.is_success is True
-        assert result.total_items == 1
+        assert result_plan is plan
+        assert failure is None
+        post_repo.mark_pretokenize_success.assert_awaited_once()
+        chunk_repository.mark_es_failed.assert_not_called()
 
-    async def test_should_handle_pretokenize_failure(self):
+    async def test_should_return_failure_reason_without_touching_chunk_on_tokenize_error(self):
+        post_repo = AsyncMock()
         chunk_repository = AsyncMock()
-        chunk_repository.list_es_pending_or_failed_chunk_ids_by_doc_id.return_value = ["c-0", "c-1"]
         pipeline = build_pipeline(
             preprocessor=build_preprocessor(error=RuntimeError("tokenizer down")),
-            es_pipeline=build_es_pipeline(EsIndexingResult(total_items=1, indexed_items=1)),
             chunk_repository=chunk_repository,
+            post_repo=post_repo,
         )
-        db = AsyncMock()
 
-        result = await pipeline._run_es_indexing(build_payload(), SimpleNamespace(), db)
+        result_plan, failure = await pipeline._run_pretokenize(
+            build_payload(), SimpleNamespace(), AsyncMock(), _NOW
+        )
 
-        assert result.is_success is False
-        assert result.failure_reason.startswith("pretokenize:")
-        assert result.failed_item_ids == ["c-0", "c-1"]
-        chunk_repository.mark_es_failed.assert_awaited_once()
-        db.commit.assert_awaited()
+        assert result_plan is None
+        assert failure.startswith("pretokenize:")
+        # 写库与通知由 _run 统一处理，_run_pretokenize 不直接调用。
+        post_repo.mark_pretokenize_failed.assert_not_awaited()
+        pipeline._notifier.send_or_raise.assert_not_awaited()
+        chunk_repository.mark_es_failed.assert_not_called()
 
     async def test_should_treat_empty_plan_as_success_when_no_pending_chunks(self):
+        post_repo = AsyncMock()
         chunk_repository = AsyncMock()
         chunk_repository.count_es_not_success_by_doc_id.return_value = 0
         pipeline = build_pipeline(
             preprocessor=build_preprocessor(plan=build_plan(chunks=[])),
-            es_pipeline=build_es_pipeline(EsIndexingResult(total_items=0, indexed_items=0)),
             chunk_repository=chunk_repository,
+            post_repo=post_repo,
         )
 
-        result = await pipeline._run_es_indexing(build_payload(), SimpleNamespace(), AsyncMock())
+        result_plan, failure = await pipeline._run_pretokenize(
+            build_payload(), SimpleNamespace(), AsyncMock(), _NOW
+        )
 
-        assert result.is_success is True
+        assert failure is None
+        assert result_plan is not None
+        assert result_plan.chunks_with_tokens == []
+        post_repo.mark_pretokenize_success.assert_awaited_once()
 
-    async def test_should_treat_empty_plan_as_failure_when_chunks_still_pending(self):
+    async def test_should_fail_when_empty_plan_but_chunks_still_pending(self):
+        post_repo = AsyncMock()
         chunk_repository = AsyncMock()
         chunk_repository.count_es_not_success_by_doc_id.return_value = 2
         pipeline = build_pipeline(
             preprocessor=build_preprocessor(plan=build_plan(chunks=[])),
-            es_pipeline=build_es_pipeline(EsIndexingResult(total_items=0, indexed_items=0)),
             chunk_repository=chunk_repository,
+            post_repo=post_repo,
         )
 
-        result = await pipeline._run_es_indexing(build_payload(), SimpleNamespace(), AsyncMock())
+        result_plan, failure = await pipeline._run_pretokenize(
+            build_payload(), SimpleNamespace(), AsyncMock(), _NOW
+        )
 
-        assert result.is_success is False
-        assert "2 chunks pending" in result.failure_reason
+        assert result_plan is None
+        assert failure.startswith("pretokenize:")
+        assert "2 chunks pending" in failure
+        # 写库与通知由 _run 统一处理。
+        post_repo.mark_pretokenize_failed.assert_not_awaited()
+        pipeline._notifier.send_or_raise.assert_not_awaited()
+        chunk_repository.mark_es_failed.assert_not_called()
 
 
-class TestHandleEsFailure:
-    async def test_should_increment_retry_count_and_mark_failed(self):
-        post_repo = AsyncMock()
-        pipeline = build_pipeline(post_repo=post_repo)
-        record = SimpleNamespace(retry_count=0, started_at=None, finished_at=None)
+class TestRunEsIndexing:
+    """ES 入库：单趟扇出消费内存 plan，纯透传 write_es_index。"""
+
+    async def test_should_consume_plan_and_return_es_result(self):
+        es_result = EsIndexingResult(total_items=1, indexed_items=1, succeeded_item_ids=["c-0"])
+        es_pipeline = build_es_pipeline(es_result)
+        pipeline = build_pipeline(es_pipeline=es_pipeline)
+        plan = build_plan()
+        db = AsyncMock()
+
+        result = await pipeline._run_es_indexing(plan, db)
+
+        assert result is es_result
+        es_pipeline.write_es_index.assert_awaited_once_with(plan, db=db)
+
+
+class TestBuildEsFailureReason:
+    """ES 失败原因构建：优先使用 result 自带的 failure_reason，否则降级到汇总。"""
+
+    def test_should_use_result_failure_reason_when_present(self):
+        pipeline = build_pipeline()
         es_result = EsIndexingResult(
             total_items=2,
             indexed_items=1,
             failed_item_ids=["c-1"],
             failure_reason="ES_INDEXING_FAILED: boom",
         )
-        now = datetime.now(timezone.utc)
 
-        reason = await pipeline._handle_es_failure(record, es_result, AsyncMock(), now, now)
+        reason = es_result.failure_reason or pipeline._build_es_failure_reason(es_result)
 
-        assert record.retry_count == 1
         assert reason == "ES_INDEXING_FAILED: boom"
-        post_repo.mark_es_failed.assert_awaited_once()
 
-    async def test_should_mark_retry_exhausted_when_limit_reached(self):
-        post_repo = AsyncMock()
-        pipeline = build_pipeline(post_repo=post_repo)
-        record = SimpleNamespace(
-            retry_count=settings.ES_INDEXING_MAX_RETRY - 1,
-            started_at=None,
-            finished_at=None,
-        )
+    def test_should_preserve_ensure_index_prefix(self):
+        pipeline = build_pipeline()
         es_result = EsIndexingResult(
-            total_items=1, indexed_items=0, failed_item_ids=["c-0"], failure_reason="boom"
+            total_items=1,
+            indexed_items=0,
+            failed_item_ids=[],
+            failure_reason="ensure_index: ES unreachable",
         )
-        now = datetime.now(timezone.utc)
 
-        reason = await pipeline._handle_es_failure(record, es_result, AsyncMock(), now, now)
+        reason = es_result.failure_reason or pipeline._build_es_failure_reason(es_result)
 
-        assert record.retry_count == settings.ES_INDEXING_MAX_RETRY
-        assert reason.endswith("retry_exhausted=true")
-
-
-class TestIsEsRetryExhausted:
-    @pytest.mark.parametrize(
-        "retry_count, expected",
-        [
-            (settings.ES_INDEXING_MAX_RETRY - 1, False),
-            (settings.ES_INDEXING_MAX_RETRY, True),
-            (settings.ES_INDEXING_MAX_RETRY + 1, True),
-        ],
-    )
-    def test_should_detect_retry_exhaustion(self, retry_count, expected):
-        record = SimpleNamespace(retry_count=retry_count)
-
-        assert ParseTaskPipeline._is_es_retry_exhausted(record) is expected
+        assert reason == "ensure_index: ES unreachable"

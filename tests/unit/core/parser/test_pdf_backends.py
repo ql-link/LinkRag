@@ -71,7 +71,9 @@ class TestMinerUBackend:
     def test_returns_empty_when_api_url_not_configured(self):
         """API URL 为空时应返回空结果。"""
         backend = MinerUBackend(api_url="", api_key="token")
-        md, assets = backend.parse(b"fake-pdf-bytes")
+        # 协议层已破坏式替换为 Path | None；本用例只验证 backend 在配置缺失/校验失败时直接返回空，
+        # 不读 source 内容，传 None 既满足类型契约又避免对 fake path 的歧义。
+        md, assets = backend.parse(None)
         assert md == ""
         assert assets == []
         assert "mineru_backend_error" in backend.metadata
@@ -79,13 +81,17 @@ class TestMinerUBackend:
     def test_returns_empty_when_api_url_is_none(self):
         """API URL 为 None 时应返回空结果。"""
         backend = MinerUBackend(api_url=None, api_key="token")
-        md, assets = backend.parse(b"fake-pdf-bytes")
+        # 协议层已破坏式替换为 Path | None；本用例只验证 backend 在配置缺失/校验失败时直接返回空，
+        # 不读 source 内容，传 None 既满足类型契约又避免对 fake path 的歧义。
+        md, assets = backend.parse(None)
         assert md == ""
 
     def test_returns_empty_when_api_key_not_configured(self):
         """API Key 为空时不应回退到本地 mineru-api。"""
         backend = MinerUBackend(api_url="http://localhost:8010")
-        md, assets = backend.parse(b"fake-pdf-bytes")
+        # 协议层已破坏式替换为 Path | None；本用例只验证 backend 在配置缺失/校验失败时直接返回空，
+        # 不读 source 内容，传 None 既满足类型契约又避免对 fake path 的歧义。
+        md, assets = backend.parse(None)
 
         assert md == ""
         assert assets == []
@@ -207,7 +213,9 @@ class TestMinerUBackend:
         """精准解析 API 不支持直接上传本地 bytes，缺少 URL 时应失败。"""
         backend = MinerUBackend(api_url="https://mineru.net/api/v4/extract/task", api_key="token")
 
-        md, assets = backend.parse(b"fake-pdf-bytes")
+        # 协议层已破坏式替换为 Path | None；本用例只验证 backend 在配置缺失/校验失败时直接返回空，
+        # 不读 source 内容，传 None 既满足类型契约又避免对 fake path 的歧义。
+        md, assets = backend.parse(None)
 
         assert md == ""
         assert assets == []
@@ -220,11 +228,11 @@ class TestMinerUBackend:
         mock_fitz_open,
         mock_service_parse,
     ):
-        """mineru URL API 场景允许空 bytes，避免为了本地元数据额外下载 PDF。"""
+        """mineru URL API 场景允许 ``source=None``，避免为了本地元数据额外下载 PDF。"""
         mock_service_parse.return_value = ("# Parsed", {"pdf_parser_backend": "mineru"})
 
         parser = PdfParser(backend="mineru", source_file_url="https://cdn.example/document.pdf")
-        markdown = parser.parse(b"")
+        markdown = parser.parse(None)
 
         assert markdown == "# Parsed"
         assert parser.metadata["pages_or_length"] == 0
@@ -311,7 +319,7 @@ class TestOpenDataLoaderBackend:
         mock_import_module.return_value = mock_module
 
         backend = OpenDataLoaderBackend()
-        markdown, assets = backend.parse(b"fake-pdf-bytes")
+        markdown, assets = backend.parse(Path("/tmp/dummy.pdf"))
 
         assert "# Title" in markdown
         assert len(assets) == 1
@@ -325,7 +333,7 @@ class TestOpenDataLoaderBackend:
         mock_import_module.return_value = MagicMock()
 
         backend = OpenDataLoaderBackend()
-        markdown, assets = backend.parse(b"fake-pdf-bytes")
+        markdown, assets = backend.parse(Path("/tmp/dummy.pdf"))
 
         assert markdown == ""
         assert assets == []
@@ -344,7 +352,7 @@ class TestPdfParserServiceRouting:
         class CustomPdfBackend(BasePdfBackend):
             name = "custom"
 
-            def parse(self, file_stream: bytes, options):
+            def parse(self, source: Path | None, options):
                 self.metadata["custom_called"] = True
                 return "# Custom Markdown", []
 
@@ -352,7 +360,7 @@ class TestPdfParserServiceRouting:
         registry.register(CustomPdfBackend.name, CustomPdfBackend)
         service = PdfParserService(registry=registry)
 
-        markdown, metadata = service.parse(b"fake-pdf-bytes", PdfParseOptions(backend="custom"))
+        markdown, metadata = service.parse(Path("/tmp/dummy.pdf"), PdfParseOptions(backend="custom"))
 
         assert markdown == "# Custom Markdown"
         assert metadata["pdf_parser_backend"] == "custom"
@@ -364,7 +372,7 @@ class TestPdfParserServiceRouting:
         class GlobalCustomPdfBackend(BasePdfBackend):
             name = "global_custom"
 
-            def parse(self, file_stream: bytes, options):
+            def parse(self, source: Path | None, options):
                 return "# Global Custom Markdown", []
 
         register_pdf_backend(GlobalCustomPdfBackend.name, GlobalCustomPdfBackend)
@@ -713,8 +721,9 @@ class TestPdfParserServiceRouting:
             storage=storage,
         )
 
+        # MinerU URL 旁路：source 为 None 时不应尝试打开本地 PDF 抽取图像。
         image_assets = service._upload_images(
-            b"",
+            None,
             options,
             backend="mineru",
             placeholder_count=1,

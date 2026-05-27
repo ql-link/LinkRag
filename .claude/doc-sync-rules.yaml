@@ -2,40 +2,42 @@
 #
 # 用途：约束"改动代码时必须同步对应文档"，由 scripts/check_docs_sync.py 强制执行。
 #
+# 设计原则：
+#   - 只保留 error 级规则（避免 warning 失同步成为习惯性 ignore）。
+#   - 仅覆盖"失同步会引发集成 bug"的对外契约 / 终态语义。
+#   - 内部模块文档失同步靠 PR 评审兜底，不进 hook。
+#
 # 字段说明：
 #   id           - 规则唯一标识（用于报错定位）
 #   description  - 规则描述
 #   when_changed - 触发规则的文件 glob 列表（任一命中即触发）
 #   must_update  - 触发后必须同时改的文档（任一缺失即违规）
-#   severity     - error（阻止提交）| warning（仅提醒）
-#   rationale    - 为什么这条规则重要（给开发者/Agent 看）
+#   severity     - error（阻止提交）
+#   rationale    - 为什么这条规则重要
 #
-# Glob 语法：
-#   *   - 匹配除 / 外的任意字符
-#   **  - 跨目录递归匹配
-#   ?   - 匹配单个非 / 字符
+# 特殊字段：
+#   forbid_change: true   - 任何匹配 when_changed 的改动都视为违规
+#                           （与 must_update 互斥），用于"冻结"文件。
 #
-# 修改本文件后请运行 `python scripts/check_docs_sync.py --self-check` 验证 yaml 合法。
+# 修改本文件后请运行 `python scripts/check_docs_sync.py --self-check` 验证。
 
 version: 1
 
 defaults:
-  severity: warning
+  severity: error
 
 rules:
-  # ---- 数据库与索引 schema ----
+  # ---- 数据库 schema ----
   - id: mysql-schema
-    description: ORM 模型变更（schema 源头）
+    description: ORM 模型变更必须同步 schema 摘要文档
     when_changed:
       - src/models/**/*.py
     must_update:
-      - docs/reference/mysql_schema.md
+      - docs/api/schemas/mysql.md
     severity: error
     rationale: |
-      ORM 模型是 schema 的权威源，变更必须同步对外摘要文档。
-      scripts/db/init.sql 是当前 head 的快照镜像，单独改动（清理、
-      格式化、修 bug）不强制触发；真实 schema 变更总是从模型开始，
-      此时模型路径会独立触发本规则。
+      ORM 模型是 schema 权威源。Java 业务方和外部对接方依据 docs/api/schemas/mysql.md
+      做数据集成，字段变化必须同步对外摘要文档。
 
   - id: db-migration-required
     description: ORM 模型变更必须伴随 Alembic 迁移
@@ -48,158 +50,43 @@ rules:
       模型变更若不写 Alembic 迁移，存量库会陷入 schema drift
       (CI 用空库跑测试不会暴露，线上首条真实流量必炸)。must_update
       为 glob，匹配 migrations/versions 下任意新增/修改的迁移文件即可。
-      init.sql 单文件清理不在此规则范围内（参考 mysql-schema 的 rationale）。
 
-  - id: qdrant-schema
-    description: Qdrant 向量库实现变更
+  - id: init-sql-frozen
+    description: scripts/db/init.sql 是 0001 baseline 冻结快照，禁止直接修改
     when_changed:
-      - src/core/qdrant_vector_storage/**/*.py
-    must_update:
-      - docs/reference/qdrant_schema.md
-    severity: warning
-    rationale: 分桶规则、payload 字段变化影响检索行为。
+      - scripts/db/init.sql
+    forbid_change: true
+    severity: error
+    rationale: |
+      CI 冷启动流程为 `mysql < init.sql` → `alembic stamp 0001` → `alembic upgrade head`。
+      若新字段同时写入 init.sql 与 Alembic 迁移，upgrade 会重复加列触发 MySQL
+      1060 Duplicate column（PR #27 真实事故）。约定 init.sql 永远等价于 migration 0001
+      所描述的形态，新增/修改 schema 一律走 ORM + migrations/versions/*.py。
+      若确实需要 rebase baseline（squash 历史迁移），请在 PR 描述里明确说明并由
+      reviewer 临时跳过本规则（pre-commit: `SKIP=docs-sync git commit ...`）。
 
-  - id: es-schema
-    description: Elasticsearch 入库实现变更
-    when_changed:
-      - src/core/es_index_storage/**/*.py
-    must_update:
-      - docs/reference/elasticsearch_schema.md
-    severity: warning
-    rationale: ES 文档结构、索引名变化影响检索方对接。
-
-  # ---- MQ 契约（业务方对接关键）----
+  # ---- 对外契约 ----
   - id: mq-contracts
     description: MQ 消息载荷或类型变更
     when_changed:
       - src/core/mq/messages/**/*.py
     must_update:
-      - docs/guides/mq_integration.md
-      - docs/architecture/mq_module.md
+      - docs/api/mq_contracts.md
+      - docs/internals/mq.md
     severity: error
-    rationale: MQ 消息是 Java 业务方对接契约，字段缺失或类型变化必须同步通知。
+    rationale: |
+      MQ 消息是 Java 业务方对接契约，字段缺失或类型变化会直接导致集成失败。
+      契约文档（api/mq_contracts.md）与内部实现文档（internals/mq.md）同时更新，
+      避免内部文档与对外契约不一致。
 
-  - id: mq-module
-    description: MQ 中间件、消费者、生产者变更（非消息体）
-    when_changed:
-      - src/core/mq/**/*.py
-    must_update:
-      - docs/architecture/mq_module.md
-    severity: warning
-    rationale: 消费链路或生产者行为变化影响整体异步流。
-
-  # ---- 业务模块 ----
-  - id: parser-module
-    description: 文件解析器变更
-    when_changed:
-      - src/core/parser/**/*.py
-    must_update:
-      - docs/architecture/file_parser_module.md
-    severity: warning
-    rationale: 解析后端切换、回退链变化影响使用方配置。
-
-  - id: markdown-parser-module
-    description: Markdown 解析与 LLM 增强变更
-    when_changed:
-      - src/core/markdown_parser/**/*.py
-    must_update:
-      - docs/architecture/markdown_parser_module.md
-    severity: warning
-    rationale: 表格/图片增强逻辑变化影响输出质量与成本。
-
-  - id: chunking-module
-    description: 分块策略与流水线变更
-    when_changed:
-      - src/core/splitter/**/*.py
-    must_update:
-      - docs/architecture/chunking_module.md
-    severity: warning
-    rationale: 分块参数与边界规则变化影响召回。
-
-  - id: vectorization-module
-    description: 向量化模块变更
-    when_changed:
-      - src/core/vector_storage/**/*.py
-    must_update:
-      - docs/architecture/vectorization_module.md
-    severity: warning
-
-  - id: llm-module
-    description: LLM 调用模块变更
-    when_changed:
-      - src/core/llm/**/*.py
-    must_update:
-      - docs/architecture/llm_module.md
-    severity: warning
-
+  # ---- 流水线终态语义 ----
   - id: pipeline-orchestration
     description: 解析任务流水线编排或状态机变更
     when_changed:
       - src/core/pipeline/**/*.py
     must_update:
-      - docs/architecture/parse_task_pipeline_module.md
+      - docs/internals/parse_task_pipeline.md
     severity: error
-    rationale: 流水线状态机变更涉及 success/failed 终态语义，必须同步对外文档。
-
-  # ---- API 与对外契约 ----
-  - id: api-routes
-    description: HTTP 路由变更
-    when_changed:
-      - src/api/routes/**/*.py
-    must_update:
-      - docs/reference/api_contracts.md
-    severity: warning
-    rationale: 接口签名变更影响业务方对接。
-
-  - id: api-schemas
-    description: HTTP 请求/响应 Schema 变更
-    when_changed:
-      - src/api/schemas/**/*.py
-    must_update:
-      - docs/reference/api_contracts.md
-    severity: warning
-
-  # ---- 配置与部署 ----
-  - id: runtime-config
-    description: 运行时配置 Schema 变更
-    when_changed:
-      - src/config.py
-      - .env.example
-    must_update:
-      - docs/guides/configuration.md
-    severity: warning
-    rationale: 新增/删除配置项影响部署方与使用方。
-
-  - id: deps-deploy
-    description: 依赖编排变更
-    when_changed:
-      - docker-compose.yml
-    must_update:
-      - docs/guides/deployment.md
-    severity: warning
-    rationale: 依赖服务清单变化影响部署文档准确性。
-
-  - id: project-layout
-    description: 顶层目录或入口文件变化
-    when_changed:
-      - src/main.py
-      - pyproject.toml
-    must_update:
-      - docs/architecture/project_structure.md
-    severity: warning
-
-  # ---- 入口文档 ----
-  # CLAUDE.md 与 AGENTS.md 已通过 symlink 指向 .ai/prompts/project.md，
-  # 物理上同一份文件，无需再做内容镜像检查。
-  # 链接完整性由 scripts/check_ai_links.py 保障。
-
-  # ---- 同步规则自身 ----
-  - id: sync-rules-doc
-    description: 同步规则本身变化必须更新使用文档
-    when_changed:
-      - .claude/doc-sync-rules.yaml
-      - scripts/check_docs_sync.py
-    must_update:
-      - docs/development/doc_sync.md
-    severity: warning
-    rationale: 规则或检测逻辑变化要让团队知道。
+    rationale: |
+      流水线状态机变更涉及 success/failed 终态语义，Java 业务方通过 MQ 回调
+      消费这些状态。状态机失同步会导致业务方误判任务状态。

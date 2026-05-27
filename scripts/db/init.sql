@@ -214,13 +214,13 @@ CREATE TABLE IF NOT EXISTS document_post_process_pipeline (
     vectorizing_status          VARCHAR(20) NOT NULL DEFAULT 'PENDING' COMMENT '向量化状态: PENDING/SUCCESS/FAILED',
     es_indexing_status          VARCHAR(20) NOT NULL DEFAULT 'PENDING' COMMENT 'ES入库状态: PENDING/SUCCESS/FAILED',
 
-    failed_stage                VARCHAR(20) DEFAULT NULL COMMENT '失败阶段: CHUNKING/VECTORIZING/ES_INDEXING',
-    recover_from_stage          VARCHAR(20) DEFAULT NULL COMMENT '下次恢复阶段: CHUNKING/VECTORIZING/ES_INDEXING',
+    failed_stage                VARCHAR(20) DEFAULT NULL COMMENT '失败阶段: CHUNKING/VECTORIZING/PRETOKENIZE/ES_INDEXING',
+    recover_from_stage          VARCHAR(20) DEFAULT NULL COMMENT '下次恢复阶段: CHUNKING/VECTORIZING/PRETOKENIZE/ES_INDEXING',
     failure_reason              VARCHAR(512) DEFAULT NULL COMMENT '最近一次失败原因摘要',
 
     chunk_count                 INT NOT NULL DEFAULT 0 COMMENT '本次分片数量',
-    retry_count                 INT NOT NULL DEFAULT 0 COMMENT '已重试次数',
-    last_retry_at               DATETIME DEFAULT NULL COMMENT '最近一次重试时间',
+    retry_count                 INT NOT NULL DEFAULT 0 COMMENT '用户侧重试次数',
+    last_retry_at               DATETIME DEFAULT NULL COMMENT '用户侧最近一次重试时间',
 
     chunking_duration_ms        BIGINT DEFAULT NULL COMMENT '分片耗时，单位毫秒',
     vectorizing_duration_ms     BIGINT DEFAULT NULL COMMENT '向量化耗时，单位毫秒',

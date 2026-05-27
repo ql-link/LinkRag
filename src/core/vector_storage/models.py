@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 
 from src.core.chunk_fact_storage.constants import CHUNK_STATUS_PENDING
 from src.core.splitter.models import Chunk
@@ -24,6 +25,40 @@ class ChunkStorageRequest:
     set_id: int
     doc_id: int
     chunks: list[Chunk]
+
+
+@dataclass(slots=True)
+class ChunkIndexingRequest:
+    """描述一次基于已落库 chunk 真值的向量索引请求。"""
+
+    user_id: int
+    set_id: int
+    doc_id: int
+
+
+class VectorBranch(str, Enum):
+    """向量索引分支。"""
+
+    DENSE = "DENSE"
+    SPARSE = "SPARSE"
+
+
+class VectorFailureStep(str, Enum):
+    """向量索引失败步骤。"""
+
+    VECTOR_GENERATION = "VECTOR_GENERATION"
+    INDEX_WRITE = "INDEX_WRITE"
+    SQL_STATUS_WRITE = "SQL_STATUS_WRITE"
+
+
+@dataclass(slots=True)
+class VectorCompensationEntry:
+    """预留给后续补偿入口的失败定位信息。"""
+
+    document_id: int
+    chunk_id: str
+    vector_branch: VectorBranch
+    failed_step: VectorFailureStep
 
 
 @dataclass(slots=True)
@@ -84,7 +119,7 @@ class StoredChunkDraft:
     start_line: int | None
     end_line: int | None
     chunk_index: int | None
-    status: str = CHUNK_STATUS_PENDING
+    dense_vector_status: str = CHUNK_STATUS_PENDING
 
 
 @dataclass(slots=True)
@@ -103,6 +138,12 @@ class ChunkIndexingResult:
     indexed_chunks: int
     failed_chunk_ids: list[str] = field(default_factory=list)
     embedding_model: str | None = None
+    sparse_model: str | None = None
+    compensation_entry: VectorCompensationEntry | None = None
+
+    @property
+    def is_success(self) -> bool:
+        return not self.failed_chunk_ids and self.indexed_chunks == self.total_chunks
 
 
 @dataclass(slots=True)

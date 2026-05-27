@@ -53,6 +53,11 @@ def create_vector_storage_facade(
         client=qdrant_client,
         bucket_router=resolved_bucket_router,
     )
+    sparse_vector_service = None
+    if getattr(settings, "SPARSE_VECTOR_ENABLED", False):
+        from src.core.sparse_vector import create_sparse_vector_service_from_settings
+
+        sparse_vector_service = create_sparse_vector_service_from_settings()
 
     storage_service = VectorStoragePipeline(
         session_factory=resolved_session_factory,
@@ -60,18 +65,21 @@ def create_vector_storage_facade(
         repository=resolved_repository,
         qdrant_store=resolved_qdrant_store,
         embedding_pipeline=embedding_pipeline,
+        sparse_vector_service=sparse_vector_service,
     )
     management_service = VectorStorageManagementPipeline(
         session_factory=resolved_session_factory,
         repository=resolved_repository,
         qdrant_store=resolved_qdrant_store,
         embedding_pipeline=embedding_pipeline,
+        sparse_vector_service=sparse_vector_service,
     )
     compensation_service = VectorStorageCompensationPipeline(
         session_factory=resolved_session_factory,
         repository=resolved_repository,
         qdrant_store=resolved_qdrant_store,
         embedding_pipeline=embedding_pipeline,
+        sparse_vector_service=sparse_vector_service,
     )
 
     return VectorStorageFacade(
