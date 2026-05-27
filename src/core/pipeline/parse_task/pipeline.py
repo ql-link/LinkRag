@@ -969,7 +969,8 @@ class ParseTaskPipeline:
         - cleaning：通常已 SUCCESS（重试要求 parsed_object_key 非空），直接跳过。
           若极端情况 cleaning 非 SUCCESS，本期不支持回退到首次解析路径，按
           状态不一致落 FAILED 处理。
-        - chunking：SUCCESS → _load_chunks_from_db 反查；否则不在重试场景支持，
+        - chunking：SUCCESS → _load_all_chunks_from_db 反查完整 chunk truth set；
+          否则不在重试场景支持，
           按状态不一致落 FAILED（防止 markdown 二次下载这条复杂路径影响主链路）。
         - vectorizing / pretokenize / es / sparse：标准 mark_started → 执行 → mark_success/failed。
         """
@@ -986,9 +987,9 @@ class ParseTaskPipeline:
 
         # --- chunking ---
         if pipeline_record.chunking_status == STAGE_STATUS_SUCCESS:
-            chunks = await self._load_chunks_from_db(payload, db)
+            chunks = await self._load_all_chunks_from_db(payload, db)
             if chunks is None:
-                # _load_chunks_from_db 已落 FAILED + 通知
+                # _load_all_chunks_from_db 已落 FAILED + 通知
                 return ParsePipelineResult(
                     status=PipelineStatus.FAILED,
                     task_id=payload.task_id,
@@ -1185,36 +1186,32 @@ class ParseTaskPipeline:
             error=RuntimeError(reason),
         )
 
-    async def _load_chunks_from_db(
+    async def _load_all_chunks_from_db(
         self,
         payload: ParseTaskPayload,
         db: AsyncSession,
     ) -> list[Chunk] | None:
-        """重试跳过 chunking 时从 DB 反查 chunk 真值组装内存对象供下游消费。
+        """重试跳过 chunking 时从 DB 反查当前文档完整 chunk truth set。
 
-        反查谓词：``dense_vector_status IN (PENDING, FAILED)``（只补做 dense 未完成）。
-        若反查为空且 chunking_status=SUCCESS → 视为状态不一致，落 FAILED + 通知。
+        反查谓词：仅 ``doc_id``（排除删除态保护集合），按 ``chunk_index`` 排序，
+        返回当前文档全部有效 chunk，语义等价于首次执行的 chunking 输出。
+        下游 dense / pretokenize / ES / sparse 各阶段按各自 SQL 真值
+        （``dense_vector_status / sparse_vector_status / es_status``）决定补做范围，
+        本方法不再按 dense 状态做局部子集过滤。
 
-        返回 None 表示状态不一致（调用方应直接返回 FAILED 结果）。
+        若反查为空且 chunking_status=SUCCESS → 视为状态不一致，落 FAILED + 通知，
+        返回 None 表示调用方应直接返回 FAILED 结果。
         """
-        from src.core.chunk_fact_storage.constants import (
-            CHUNK_STATUS_FAILED,
-            CHUNK_STATUS_PENDING,
-        )
-        doc_id = int(payload.original_file_id)
-        # ChunkRepository.list_sparse_candidates_by_doc_id 用 sparse 字段过滤；
-        # 这里需要按 dense_vector_status 反查，直接执行一次查询语句。
         from sqlalchemy import select
         from src.models.chunk_record import ChunkRecordDB
         from src.core.chunk_fact_storage.constants import CHUNK_DELETE_PROTECTED_STATUSES
 
+        doc_id = int(payload.original_file_id)
         stmt = (
             select(ChunkRecordDB)
             .where(ChunkRecordDB.doc_id == doc_id)
             .where(
-                ChunkRecordDB.dense_vector_status.in_(
-                    (CHUNK_STATUS_PENDING, CHUNK_STATUS_FAILED)
-                )
+                ChunkRecordDB.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES)
             )
             .order_by(ChunkRecordDB.chunk_index.asc())
         )
@@ -1224,13 +1221,8 @@ class ParseTaskPipeline:
         # 反查空 + chunking SUCCESS 的"状态不一致"由调用方落 vectorizing_failed
         # 走通用失败路径——这里返回 None 让上层统一处理。
         if not rows:
-            # 兼容一种情况：所有 chunks 已 INDEXED（即向量阶段也已 SUCCESS）；
-            # 这种情况理论上不会发生在"vectorizing 非 SUCCESS 的重试"分支。
-            # 但若 chunking SUCCESS 而其余阶段也都 SUCCESS，回到 _run_retry_stages 的
-            # vectorizing 分支会因为 status==SUCCESS 直接跳过，根本不会调到这里；
-            # 所以一旦走到这里返回空，就说明状态确实不一致。
             finished_at = now()
-            failure_reason = "VECTORIZING_FAILED:chunk_state_inconsistent;reason=load_chunks_from_db_empty"
+            failure_reason = "VECTORIZING_FAILED:chunk_state_inconsistent;reason=load_all_chunks_from_db_empty"
             pipeline_record = await self._pipeline_repository.get_by_task_id(db, payload.task_id)
             if pipeline_record is not None:
                 await self._pipeline_repository.mark_vectorizing_failed(
