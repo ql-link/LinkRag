@@ -47,10 +47,17 @@ class TestParserFactory:
         mock_parser = MagicMock()
         mock_html_parser_cls.return_value = mock_parser
 
-        parser = ParserFactory.get_parser("htm")
+        parser = ParserFactory.get_parser(
+            "htm",
+            source_file_url="https://cdn.example.com/docs/page.html",
+            image_prefix="images/task-1",
+        )
 
         assert parser is mock_parser
-        mock_html_parser_cls.assert_called_once_with()
+        mock_html_parser_cls.assert_called_once_with(
+            source_file_url="https://cdn.example.com/docs/page.html",
+            image_prefix="images/task-1",
+        )
 
     def test_get_parser_should_raise_for_unsupported_format(self):
         with pytest.raises(UnsupportedFormatError, match="不支持的格式"):
