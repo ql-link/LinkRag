@@ -498,18 +498,21 @@ class TestParseTaskPipeline:
         vector_storage = AsyncMock()
         es_pipeline = FakeEsIndexingPipeline(EsIndexingResult(total_items=2, indexed_items=2))
         post_repo = FakePostProcessRepository()
-        async def store_chunks(**kwargs):
+        async def index_document_chunks(**kwargs):
             events.append("vector")
             return ChunkIndexingResult(total_chunks=2, indexed_chunks=2)
 
-        vector_storage.store_chunks.side_effect = store_chunks
+        vector_storage.index_document_chunks.side_effect = index_document_chunks
         mock_aprocess.return_value = {
             "markdown": "parsed content",
             "parse_result": MagicMock(),
             "metadata": {"pages_or_length": 3},
             "time_cost_ms": 120,
         }
-        mock_chunk_markdown.return_value = [MagicMock(), MagicMock()]
+        mock_chunk_markdown.return_value = [
+            Chunk(content="alpha", start_line=1, end_line=1),
+            Chunk(content="beta", start_line=2, end_line=2),
+        ]
         pipeline = ParseTaskPipeline(
             storage=storage,
             session_factory=FakeAsyncSessionFactory(db),
@@ -556,11 +559,10 @@ class TestParseTaskPipeline:
             "parsed/t-001.md",
             mock_aprocess.return_value["parse_result"],
         )
-        vector_storage.store_chunks.assert_awaited_once_with(
+        vector_storage.index_document_chunks.assert_awaited_once_with(
             user_id=20,
             set_id=30,
             doc_id=1,
-            chunks=mock_chunk_markdown.return_value,
         )
         db.commit.assert_awaited()
         db.close.assert_awaited_once()
@@ -584,7 +586,7 @@ class TestParseTaskPipeline:
         mq_service = MagicMock()
         mq_service.send = AsyncMock()
         vector_storage = AsyncMock()
-        vector_storage.store_chunks.return_value = ChunkIndexingResult(
+        vector_storage.index_document_chunks.return_value = ChunkIndexingResult(
             total_chunks=1,
             indexed_chunks=1,
         )
@@ -596,7 +598,7 @@ class TestParseTaskPipeline:
             "metadata": {"pages_or_length": 0},
             "time_cost_ms": 120,
         }
-        mock_chunk_markdown.return_value = [MagicMock()]
+        mock_chunk_markdown.return_value = [Chunk(content="alpha", start_line=1, end_line=1)]
         pipeline = ParseTaskPipeline(
             storage=storage,
             session_factory=FakeAsyncSessionFactory(db),
@@ -669,7 +671,7 @@ class TestParseTaskPipeline:
         mq_service = MagicMock()
         mq_service.send = AsyncMock(side_effect=RuntimeError("mq down"))
         vector_storage = AsyncMock()
-        vector_storage.store_chunks.return_value = ChunkIndexingResult(
+        vector_storage.index_document_chunks.return_value = ChunkIndexingResult(
             total_chunks=1,
             indexed_chunks=1,
         )
@@ -681,7 +683,7 @@ class TestParseTaskPipeline:
             "metadata": {"pages_or_length": 3},
             "time_cost_ms": 120,
         }
-        mock_chunk_markdown.return_value = [MagicMock()]
+        mock_chunk_markdown.return_value = [Chunk(content="alpha", start_line=1, end_line=1)]
         pipeline = ParseTaskPipeline(
             storage=storage,
             session_factory=FakeAsyncSessionFactory(db),
@@ -766,7 +768,7 @@ class TestParseTaskPipeline:
         assert post_repo.pipeline.cleaning_status == STAGE_STATUS_SUCCESS
         assert post_repo.pipeline.pipeline_status == PIPELINE_STATUS_FAILED
         assert post_repo.pipeline.failed_stage == POST_PROCESS_STAGE_CHUNKING
-        vector_storage.store_chunks.assert_not_awaited()
+        vector_storage.index_document_chunks.assert_not_awaited()
         mq_service.send.assert_awaited_once()
         sent_payload = mq_service.send.call_args.args[0].get_payload()
         assert sent_payload.task_status == PARSE_TASK_STATUS_FAILED
@@ -789,7 +791,7 @@ class TestParseTaskPipeline:
         mq_service.send = AsyncMock()
         vector_storage = AsyncMock()
         post_repo = FakePostProcessRepository()
-        vector_storage.store_chunks.return_value = ChunkIndexingResult(
+        vector_storage.index_document_chunks.return_value = ChunkIndexingResult(
             total_chunks=2,
             indexed_chunks=1,
             failed_chunk_ids=["chunk-2"],
@@ -800,7 +802,10 @@ class TestParseTaskPipeline:
             "metadata": {"pages_or_length": 3},
             "time_cost_ms": 120,
         }
-        mock_chunk_markdown.return_value = [MagicMock(), MagicMock()]
+        mock_chunk_markdown.return_value = [
+            Chunk(content="alpha", start_line=1, end_line=1),
+            Chunk(content="beta", start_line=2, end_line=2),
+        ]
         pipeline = ParseTaskPipeline(
             storage=storage,
             session_factory=FakeAsyncSessionFactory(db),
@@ -839,7 +844,7 @@ class TestParseTaskPipeline:
         mq_service = MagicMock()
         mq_service.send = AsyncMock()
         vector_storage = AsyncMock()
-        vector_storage.store_chunks.return_value = ChunkIndexingResult(
+        vector_storage.index_document_chunks.return_value = ChunkIndexingResult(
             total_chunks=1,
             indexed_chunks=1,
         )
@@ -858,7 +863,7 @@ class TestParseTaskPipeline:
             "metadata": {"pages_or_length": 3},
             "time_cost_ms": 120,
         }
-        mock_chunk_markdown.return_value = [MagicMock()]
+        mock_chunk_markdown.return_value = [Chunk(content="alpha", start_line=1, end_line=1)]
         pipeline = ParseTaskPipeline(
             storage=storage,
             session_factory=FakeAsyncSessionFactory(db),
@@ -885,10 +890,13 @@ class TestParseTaskPipeline:
         mock_chunk_markdown,
     ):
         db = build_db(build_parse_task())
-        chunks = [MagicMock(), MagicMock()]
+        chunks = [
+            Chunk(content="alpha", start_line=1, end_line=1),
+            Chunk(content="beta", start_line=2, end_line=2),
+        ]
         mock_chunk_markdown.return_value = chunks
         vector_storage = AsyncMock()
-        vector_storage.store_chunks.return_value = ChunkIndexingResult(
+        vector_storage.index_document_chunks.return_value = ChunkIndexingResult(
             total_chunks=2,
             indexed_chunks=2,
         )
@@ -902,7 +910,7 @@ class TestParseTaskPipeline:
         result = await pipeline._run_chunking("markdown", None, payload, db)
 
         assert result == chunks
-        vector_storage.store_chunks.assert_not_awaited()
+        vector_storage.index_document_chunks.assert_not_awaited()
 
     async def test_store_chunk_vectors_should_return_partial_failure_status(self):
         db = build_db(build_parse_task())
@@ -911,7 +919,7 @@ class TestParseTaskPipeline:
             Chunk(content="beta", start_line=2, end_line=2),
         ]
         vector_storage = AsyncMock()
-        vector_storage.store_chunks.return_value = ChunkIndexingResult(
+        vector_storage.index_document_chunks.return_value = ChunkIndexingResult(
             total_chunks=2,
             indexed_chunks=1,
             failed_chunk_ids=["chunk-2"],
@@ -928,11 +936,10 @@ class TestParseTaskPipeline:
         assert result.total_chunks == 2
         assert result.indexed_chunks == 1
         assert result.failed_chunk_ids == ["chunk-2"]
-        vector_storage.store_chunks.assert_awaited_once_with(
+        vector_storage.index_document_chunks.assert_awaited_once_with(
             user_id=20,
             set_id=30,
             doc_id=1,
-            chunks=chunks,
         )
 
     async def test_store_chunk_vectors_should_convert_vector_exception_to_failed_result(self):
@@ -942,7 +949,7 @@ class TestParseTaskPipeline:
             Chunk(content="beta", start_line=2, end_line=2),
         ]
         vector_storage = AsyncMock()
-        vector_storage.store_chunks.side_effect = RuntimeError("vector down")
+        vector_storage.index_document_chunks.side_effect = RuntimeError("vector down")
         pipeline = ParseTaskPipeline(
             storage=MagicMock(),
             mq_service=MagicMock(),

@@ -11,24 +11,50 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from src.config import settings
 from src.core.chunk_fact_storage import ChunkRepository
 from src.core.chunk_fact_storage.constants import (
+    CHUNK_STATUS_FAILED,
     CHUNK_STATUS_INDEXING,
     CHUNK_STATUS_PENDING,
+    SPARSE_VECTOR_STATUS_FAILED,
     SPARSE_VECTOR_STATUS_INDEXING,
     SPARSE_VECTOR_STATUS_PENDING,
 )
 from src.core.qdrant_vector_storage import IndexedPoint, QdrantIndexStore
 from src.core.qdrant_vector_storage.point_factory import (
-    indexed_point_from_draft,
-    sparse_indexed_point_from_draft,
+    chunk_from_record,
+    indexed_point_from_record,
+    sparse_indexed_point_from_record,
 )
 from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
 from src.core.sparse_vector import SparseChunkVectorizationRequest, SparseVectorService
-from src.core.splitter.models import Chunk, EmbeddedChunk
 from src.utils.logger import logger
 
 from ._transaction import TransactionalPipelineMixin
 from .draft_factory import ChunkDraftFactory
-from .models import ChunkIndexingResult, ChunkStorageRequest, StoredChunkDraft
+from .models import (
+    ChunkIndexingRequest,
+    ChunkIndexingResult,
+    ChunkStorageRequest,
+    VectorBranch,
+    VectorCompensationEntry,
+    VectorFailureStep,
+)
+
+
+class _VectorBranchFailure(RuntimeError):
+    """Internal exception carrying branch and failed-step metadata."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        branch: VectorBranch,
+        step: VectorFailureStep,
+        chunk_id: str,
+    ) -> None:
+        super().__init__(message)
+        self.branch = branch
+        self.step = step
+        self.chunk_id = chunk_id
 
 
 class VectorStoragePipeline(TransactionalPipelineMixin):
@@ -93,7 +119,7 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         request: ChunkStorageRequest,
     ) -> ChunkIndexingResult:
         """
-            执行完整写入闭环：建 draft、写 MySQL、跑 embedding、写 Qdrant、回写状态。
+            兼容旧入口：只索引已落库 chunk，不再执行 chunk 真值 INSERT。
 
         Args:
             request: 包含业务上下文与待写入 chunk 列表的存储请求。
@@ -101,229 +127,327 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         Returns:
             ChunkIndexingResult: 本次写入任务的结果汇总。
         """
-        if not request.chunks:
-            return ChunkIndexingResult(total_chunks=0, indexed_chunks=0)
-
-        try:
-            drafts = self.draft_factory.build_drafts(
+        return await self.index_document_chunks(
+            ChunkIndexingRequest(
                 user_id=request.user_id,
                 set_id=request.set_id,
                 doc_id=request.doc_id,
-                chunks=request.chunks,
             )
-        except Exception as exc:
-            logger.exception(f"[VectorStoragePipeline] Failed to build drafts: {exc}")
-            return ChunkIndexingResult(total_chunks=len(request.chunks), indexed_chunks=0)
+        )
 
-        try:
-            await self._insert_pending(drafts)
-        except Exception as exc:
-            logger.exception(f"[VectorStoragePipeline] Failed to insert pending chunks: {exc}")
-            return ChunkIndexingResult(
-                total_chunks=len(drafts),
-                indexed_chunks=0,
-                failed_chunk_ids=[draft.chunk_id for draft in drafts],
+    async def index_document_chunks(
+        self,
+        request: ChunkIndexingRequest,
+    ) -> ChunkIndexingResult:
+        """从 SQL chunk 真值表读取候选记录，并按 chunk 顺序写入向量索引副本。"""
+
+        async with self.session_factory() as session:
+            records = await self.repository.list_vector_candidates_by_doc_id(
+                session,
+                request.doc_id,
+                sparse_enabled=False,
             )
+        if not records:
+            return ChunkIndexingResult(total_chunks=0, indexed_chunks=0)
 
         indexed_count = 0
         embedding_model: str | None = None
+        sparse_model: str | None = None
 
-        for draft, chunk in self._ordered_draft_chunk_pairs(drafts, request.chunks):
+        for record in records:
             try:
-                # A document is successful only after every chunk reaches INDEXED.
-                # The retry boundary is one chunk, so already indexed chunks are
-                # not redone when the current chunk hits a transient failure.
-                embedding_model = await self._index_single_chunk_with_retry(draft, chunk)
+                branch_result = await self._index_record_with_retry(record)
+                embedding_model = branch_result.embedding_model or embedding_model
+                sparse_model = branch_result.sparse_model or sparse_model
                 indexed_count += 1
+            except _VectorBranchFailure as exc:
+                logger.exception(
+                    "[VectorStoragePipeline] Stopped document indexing at chunk "
+                    f"{exc.chunk_id}: {exc}"
+                )
+                compensation_entry = await self._safe_mark_branch_failed(
+                    record,
+                    branch=exc.branch,
+                    step=exc.step,
+                    error_msg=str(exc),
+                )
+                return ChunkIndexingResult(
+                    total_chunks=len(records),
+                    indexed_chunks=indexed_count,
+                    failed_chunk_ids=[exc.chunk_id],
+                    embedding_model=embedding_model,
+                    sparse_model=sparse_model,
+                    compensation_entry=compensation_entry,
+                )
             except Exception as exc:
                 logger.exception(
                     "[VectorStoragePipeline] Stopped document indexing at chunk "
-                    f"{draft.chunk_id}: {exc}"
+                    f"{record.chunk_id}: {exc}"
+                )
+                compensation_entry = await self._safe_mark_branch_failed(
+                    record,
+                    branch=VectorBranch.DENSE,
+                    step=VectorFailureStep.INDEX_WRITE,
+                    error_msg=str(exc),
                 )
                 return ChunkIndexingResult(
-                    total_chunks=len(drafts),
+                    total_chunks=len(records),
                     indexed_chunks=indexed_count,
-                    failed_chunk_ids=[draft.chunk_id],
+                    failed_chunk_ids=[record.chunk_id],
                     embedding_model=embedding_model,
+                    sparse_model=sparse_model,
+                    compensation_entry=compensation_entry,
                 )
 
         return ChunkIndexingResult(
-            total_chunks=len(drafts),
+            total_chunks=len(records),
             indexed_chunks=indexed_count,
             embedding_model=embedding_model,
+            sparse_model=sparse_model,
         )
 
-    def _ordered_draft_chunk_pairs(
-        self,
-        drafts: Sequence[StoredChunkDraft],
-        chunks: Sequence[Chunk],
-    ) -> list[tuple[StoredChunkDraft, Chunk]]:
-        """
-            按 `chunk_index` 升序返回 draft/chunk 配对，缺失时回退到输入顺序。
+    async def _index_record_with_retry(self, record: object) -> ChunkIndexingResult:
+        """对单条 SQL chunk 记录执行 `dense -> sparse` 串行索引，失败只重试当前分支。"""
 
-        Args:
-            drafts: 已入库的 chunk 草稿。
-            chunks: 与草稿输入顺序对应的原始 chunk。
-
-        Returns:
-            list[tuple[StoredChunkDraft, Chunk]]: 稳定排序后的 draft/chunk 配对。
-        """
-        pairs = list(zip(drafts, chunks))
-        return [
-            pair
-            for _, pair in sorted(
-                enumerate(pairs),
-                key=lambda item: (
-                    item[1][0].chunk_index is None,
-                    item[1][0].chunk_index if item[1][0].chunk_index is not None else item[0],
-                    item[0],
-                ),
-            )
-        ]
-
-    async def _index_single_chunk_with_retry(
-        self,
-        draft: StoredChunkDraft,
-        chunk: Chunk,
-    ) -> str | None:
-        """
-            对单个 chunk 执行向量化和 Qdrant 写入，失败时仅重试当前 chunk。
-
-        Args:
-            draft: 当前 chunk 的存储草稿。
-            chunk: 需要向量化的原始 chunk。
-
-        Returns:
-            str | None: 当前 chunk 实际使用的 embedding 模型。
-        """
-        last_error: Exception | None = None
-        indexing_marked = False
+        needs_dense = self._needs_dense(record)
+        needs_sparse = self._needs_sparse(record)
+        dense_done = not needs_dense
+        sparse_done = not needs_sparse
+        dense_indexing_marked = False
+        sparse_indexing_marked = False
+        embedding_model: str | None = None
+        sparse_model: str | None = None
+        last_error: _VectorBranchFailure | None = None
 
         for attempt in range(self.retry_limit + 1):
             try:
-                if not indexing_marked:
-                    # 只有第一次进入当前 chunk 时做 PENDING -> INDEXING。
-                    # 后续重试复用 INDEXING checkpoint，避免被 expected_status=PENDING 挡住。
-                    indexing_count = await self._mark_indexing(
-                        [draft.chunk_id],
-                        embedding_model=None,
+                if not dense_done:
+                    embedding_model = await self._index_dense_branch(
+                        record,
+                        mark_indexing=not dense_indexing_marked,
                     )
-                    if indexing_count != 1:
-                        raise RuntimeError(
-                            "Skipped indexing because pending rowcount "
-                            f"{indexing_count} != 1 for chunk {draft.chunk_id}."
-                        )
-                    indexing_marked = True
-                    if self._sparse_enabled():
-                        sparse_indexing_count = await self._mark_sparse_indexing(
-                            [draft.chunk_id],
-                            model_name=self._sparse_model_name(),
-                        )
-                        if sparse_indexing_count != 1:
-                            raise RuntimeError(
-                                "Skipped sparse indexing because rowcount "
-                                f"{sparse_indexing_count} != 1 for chunk {draft.chunk_id}."
-                            )
-                return await self._index_single_chunk(draft, chunk)
-            except Exception as exc:
+                    dense_done = True
+                if not sparse_done:
+                    sparse_model = await self._index_sparse_branch(
+                        record,
+                        mark_indexing=not sparse_indexing_marked,
+                    )
+                    sparse_done = True
+                return ChunkIndexingResult(
+                    total_chunks=1,
+                    indexed_chunks=1,
+                    embedding_model=embedding_model,
+                    sparse_model=sparse_model,
+                )
+            except _VectorBranchFailure as exc:
                 last_error = exc
+                if exc.branch == VectorBranch.DENSE and exc.step != VectorFailureStep.SQL_STATUS_WRITE:
+                    dense_indexing_marked = True
+                if exc.branch == VectorBranch.SPARSE and exc.step != VectorFailureStep.SQL_STATUS_WRITE:
+                    sparse_indexing_marked = True
                 if attempt >= self.retry_limit:
                     break
 
                 sleep_seconds = self._retry_sleep_seconds()
                 logger.warning(
                     "[VectorStoragePipeline] Chunk indexing failed, retrying: "
-                    f"chunk_id={draft.chunk_id}, "
+                    f"chunk_id={exc.chunk_id}, branch={exc.branch.value}, "
                     f"attempt={attempt + 1}/{self.retry_limit + 1}, "
                     f"sleep_seconds={sleep_seconds}, error={exc}"
                 )
                 if sleep_seconds > 0:
                     await asyncio.sleep(sleep_seconds)
 
-        error_msg = str(last_error) if last_error else "unknown chunk indexing failure"
-        # 失败状态只落到当前 chunk；已完成 chunk 保持 INDEXED，后续 chunk 保持 PENDING。
-        await self._safe_mark_failed([draft.chunk_id], error_msg)
-        if self._sparse_enabled():
-            await self._safe_mark_sparse_failed([draft.chunk_id], error_msg)
         if last_error is not None:
             raise last_error
-        raise RuntimeError(error_msg)
+        raise RuntimeError(f"unknown chunk indexing failure for {getattr(record, 'chunk_id', '')}")
 
-    async def _index_single_chunk(
+    async def _index_dense_branch(
         self,
-        draft: StoredChunkDraft,
-        chunk: Chunk,
+        record: object,
+        *,
+        mark_indexing: bool,
     ) -> str | None:
-        """
-            执行单个 chunk 的 `PENDING -> INDEXING -> INDEXED` 闭环。
+        """执行单 chunk dense 分支：状态切换、embedding、Qdrant 写入、SQL 确认。"""
 
-        Args:
-            draft: 当前 chunk 的存储草稿。
-            chunk: 需要向量化的原始 chunk。
+        chunk_id = str(getattr(record, "chunk_id"))
+        if mark_indexing:
+            try:
+                indexing_count = await self._mark_indexing(
+                    [chunk_id],
+                    embedding_model=None,
+                    expected_status=str(getattr(record, "dense_vector_status")),
+                )
+                if indexing_count != 1:
+                    raise RuntimeError(
+                        "Skipped dense indexing because rowcount "
+                        f"{indexing_count} != 1 for chunk {chunk_id}."
+                    )
+            except Exception as exc:
+                raise self._branch_failure(
+                    exc,
+                    branch=VectorBranch.DENSE,
+                    step=VectorFailureStep.SQL_STATUS_WRITE,
+                    chunk_id=chunk_id,
+                ) from exc
 
-        Returns:
-            str | None: 当前 chunk 实际使用的 embedding 模型。
-        """
-        chunk_ids = [draft.chunk_id]
-
-        embedded_chunks = await self.embedding_pipeline.aembed_chunks([chunk])
-        if len(embedded_chunks) != 1:
-            raise ValueError(
-                "Embedded chunk count does not match current chunk: "
-                f"{len(embedded_chunks)} != 1 for chunk {draft.chunk_id}."
-            )
+        try:
+            embedded_chunks = await self.embedding_pipeline.aembed_chunks([chunk_from_record(record)])
+            if len(embedded_chunks) != 1:
+                raise ValueError(
+                    "Embedded chunk count does not match current chunk: "
+                    f"{len(embedded_chunks)} != 1 for chunk {chunk_id}."
+                )
+        except Exception as exc:
+            raise self._branch_failure(
+                exc,
+                branch=VectorBranch.DENSE,
+                step=VectorFailureStep.VECTOR_GENERATION,
+                chunk_id=chunk_id,
+            ) from exc
 
         embedding_model = self._resolve_embedding_model(embedded_chunks)
-        point = indexed_point_from_draft(draft, embedded_chunks[0])
-        sparse_vector = None
-        if self._sparse_enabled():
+        try:
+            point = indexed_point_from_record(record, embedded_chunks[0])
+            await self._ensure_and_upsert([point])
+        except Exception as exc:
+            raise self._branch_failure(
+                exc,
+                branch=VectorBranch.DENSE,
+                step=VectorFailureStep.INDEX_WRITE,
+                chunk_id=chunk_id,
+            ) from exc
+
+        try:
+            indexed_count = await self._mark_indexed([chunk_id], embedding_model=embedding_model)
+            if indexed_count != 1:
+                raise RuntimeError(
+                    "Skipped stale dense index completion because rowcount "
+                    f"{indexed_count} != 1 for chunk {chunk_id}."
+                )
+        except Exception as exc:
+            raise self._branch_failure(
+                exc,
+                branch=VectorBranch.DENSE,
+                step=VectorFailureStep.SQL_STATUS_WRITE,
+                chunk_id=chunk_id,
+            ) from exc
+
+        return embedding_model
+
+    async def _index_sparse_branch(
+        self,
+        record: object,
+        *,
+        mark_indexing: bool,
+    ) -> str | None:
+        """执行单 chunk sparse 分支，必须在 dense 已成功或已跳过后调用。"""
+
+        if not self._sparse_enabled():
+            return None
+        if self.sparse_vector_service is None:
+            raise RuntimeError("SPARSE_VECTOR_ENABLED=true but sparse vector service is not configured.")
+
+        chunk_id = str(getattr(record, "chunk_id"))
+        model_name = self._sparse_model_name()
+        if mark_indexing:
+            try:
+                indexing_count = await self._mark_sparse_indexing(
+                    [chunk_id],
+                    model_name=model_name,
+                    expected_status=str(getattr(record, "sparse_vector_status")),
+                )
+                if indexing_count != 1:
+                    raise RuntimeError(
+                        "Skipped sparse indexing because rowcount "
+                        f"{indexing_count} != 1 for chunk {chunk_id}."
+                    )
+            except Exception as exc:
+                raise self._branch_failure(
+                    exc,
+                    branch=VectorBranch.SPARSE,
+                    step=VectorFailureStep.SQL_STATUS_WRITE,
+                    chunk_id=chunk_id,
+                ) from exc
+
+        try:
             sparse_vector = await self.sparse_vector_service.vectorize_chunk(
                 SparseChunkVectorizationRequest(
-                    chunk_id=draft.chunk_id,
-                    content=draft.content,
-                    doc_id=draft.doc_id,
-                    bucket_id=draft.bucket_id,
-                    user_id=draft.user_id,
-                    set_id=draft.set_id,
-                    task_id=str(draft.doc_id),
-                    chunk_index=draft.chunk_index,
+                    chunk_id=chunk_id,
+                    content=str(getattr(record, "content")),
+                    doc_id=int(getattr(record, "doc_id")),
+                    bucket_id=int(getattr(record, "bucket_id")),
+                    user_id=int(getattr(record, "user_id")),
+                    set_id=int(getattr(record, "set_id")),
+                    task_id=str(getattr(record, "doc_id")),
+                    chunk_index=getattr(record, "chunk_index"),
                 )
             )
+        except Exception as exc:
+            raise self._branch_failure(
+                exc,
+                branch=VectorBranch.SPARSE,
+                step=VectorFailureStep.VECTOR_GENERATION,
+                chunk_id=chunk_id,
+            ) from exc
 
-        await self._ensure_and_upsert([point])
-        if sparse_vector is not None:
-            sparse_point = sparse_indexed_point_from_draft(
-                draft,
+        try:
+            sparse_point = sparse_indexed_point_from_record(
+                record,
                 sparse_vector,
                 vector_name=self.sparse_vector_service.vector_name,
             )
             await self.qdrant_store.ensure_sparse_vector_schema(
-                bucket_id=draft.bucket_id,
+                bucket_id=sparse_point.bucket_id,
                 vector_name=sparse_point.vector_name,
             )
             await self.qdrant_store.upsert_sparse_vectors(
-                bucket_id=draft.bucket_id,
+                bucket_id=sparse_point.bucket_id,
                 points=[sparse_point],
             )
+        except Exception as exc:
+            raise self._branch_failure(
+                exc,
+                branch=VectorBranch.SPARSE,
+                step=VectorFailureStep.INDEX_WRITE,
+                chunk_id=chunk_id,
+            ) from exc
+
+        try:
             sparse_indexed_count = await self._mark_sparse_indexed(
-                chunk_ids,
-                model_name=self._sparse_model_name(),
+                [chunk_id],
+                model_name=model_name,
                 nonzero_count=len(sparse_vector.indices),
             )
             if sparse_indexed_count != 1:
                 raise RuntimeError(
                     "Skipped stale sparse index completion because rowcount "
-                    f"{sparse_indexed_count} != 1 for chunk {draft.chunk_id}."
+                    f"{sparse_indexed_count} != 1 for chunk {chunk_id}."
                 )
+        except Exception as exc:
+            raise self._branch_failure(
+                exc,
+                branch=VectorBranch.SPARSE,
+                step=VectorFailureStep.SQL_STATUS_WRITE,
+                chunk_id=chunk_id,
+            ) from exc
 
-        indexed_count = await self._mark_indexed(chunk_ids, embedding_model=embedding_model)
-        if indexed_count != 1:
-            raise RuntimeError(
-                "Skipped stale index completion because rowcount "
-                f"{indexed_count} != 1 for chunk {draft.chunk_id}."
-            )
+        return model_name
 
-        return embedding_model
+    def _branch_failure(
+        self,
+        exc: Exception,
+        *,
+        branch: VectorBranch,
+        step: VectorFailureStep,
+        chunk_id: str,
+    ) -> _VectorBranchFailure:
+        return _VectorBranchFailure(
+            str(exc),
+            branch=branch,
+            step=step,
+            chunk_id=chunk_id,
+        )
 
     def _retry_sleep_seconds(self) -> float:
         """
@@ -336,25 +460,12 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
             return 0
         return float(min(self.retry_interval_seconds, self.max_inline_retry_sleep_seconds))
 
-    async def _insert_pending(self, drafts: Sequence[StoredChunkDraft]) -> None:
-        """
-            在独立事务中批量插入 `PENDING` 状态的初始真值记录。
-
-        Args:
-            drafts: 已补齐业务字段的存储草稿列表。
-
-        Returns:
-            None.
-        """
-        await self._run_in_transaction(
-            lambda session: self.repository.bulk_insert_pending(session, drafts)
-        )
-
     async def _mark_indexing(
         self,
         chunk_ids: Sequence[str],
         *,
         embedding_model: str | None,
+        expected_status: str = CHUNK_STATUS_PENDING,
     ) -> int:
         """
             在独立事务中把目标记录切换为 `INDEXING` 状态。
@@ -371,7 +482,7 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
                 session,
                 chunk_ids,
                 embedding_model=embedding_model,
-                expected_status=CHUNK_STATUS_PENDING,
+                expected_status=expected_status,
             )
         )
 
@@ -435,6 +546,43 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         except Exception as exc:
             logger.exception(f"[VectorStoragePipeline] Failed to mark chunks as failed: {exc}")
 
+    async def _safe_mark_branch_failed(
+        self,
+        record: object,
+        *,
+        branch: VectorBranch,
+        step: VectorFailureStep,
+        error_msg: str,
+    ) -> VectorCompensationEntry:
+        """尽力标记失败分支，并返回不触发执行的补偿入口定位。"""
+
+        chunk_id = str(getattr(record, "chunk_id"))
+        failed_step = step
+        try:
+            if branch == VectorBranch.DENSE:
+                await self._safe_mark_failed([chunk_id], error_msg)
+            else:
+                await self._safe_mark_sparse_failed([chunk_id], error_msg)
+        except Exception:
+            failed_step = VectorFailureStep.SQL_STATUS_WRITE
+        return VectorCompensationEntry(
+            document_id=int(getattr(record, "doc_id")),
+            chunk_id=chunk_id,
+            vector_branch=branch,
+            failed_step=failed_step,
+        )
+
+    def _needs_dense(self, record: object) -> bool:
+        return getattr(record, "dense_vector_status", None) in (
+            CHUNK_STATUS_PENDING,
+            CHUNK_STATUS_FAILED,
+        )
+
+    def _needs_sparse(self, record: object) -> bool:
+        # Sparse indexing is an independent file-level stage in ParseTaskPipeline.
+        # Vectorizing only handles dense vectors; sparse retries are selected by
+        # SparseIndexingPipeline from sparse_vector_status.
+        return False
 
     def _sparse_enabled(self) -> bool:
         """判断当前向量写入流程是否启用 sparse 子能力。"""
@@ -451,6 +599,7 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         chunk_ids: Sequence[str],
         *,
         model_name: str | None,
+        expected_status: str = SPARSE_VECTOR_STATUS_PENDING,
     ) -> int:
         """把当前 chunk 的 sparse 子状态切换为 INDEXING。"""
 
@@ -461,7 +610,7 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
                 session,
                 chunk_ids,
                 model_name=model_name,
-                expected_status=SPARSE_VECTOR_STATUS_PENDING,
+                expected_status=expected_status,
             )
         )
 
@@ -525,41 +674,15 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
             )
             await self.qdrant_store.upsert_points(bucket_id=bucket_id, points=bucket_points)
 
-    def _build_index_points(
-        self,
-        drafts: Sequence[StoredChunkDraft],
-        embedded_chunks: Sequence[EmbeddedChunk],
-    ) -> list[IndexedPoint]:
-        """
-            将草稿对象与 embedding 结果按顺序配对，转换为可写入 Qdrant 的 point 列表。
-
-        Args:
-            drafts: 已补齐业务字段的存储草稿列表。
-            embedded_chunks: 与草稿顺序对应的向量化结果列表。
-
-        Returns:
-            list[IndexedPoint]: 可直接 upsert 到 Qdrant 的 point 列表。
-        """
-        if len(drafts) != len(embedded_chunks):
-            raise ValueError(
-                "Embedded chunk count does not match draft count: "
-                f"{len(embedded_chunks)} != {len(drafts)}."
-            )
-
-        return [
-            indexed_point_from_draft(draft, embedded_chunk)
-            for draft, embedded_chunk in zip(drafts, embedded_chunks)
-        ]
-
     def _resolve_embedding_model(
         self,
-        embedded_chunks: Sequence[EmbeddedChunk],
+        embedded_chunks: Sequence[object],
     ) -> str | None:
         """
             从本次 embedding 输出中推断实际使用的模型名称，并在必要时回退到管线统计值。
 
         Args:
-            embedded_chunks: 本次向量化产出的 `EmbeddedChunk` 列表。
+            embedded_chunks: 本次向量化产出的结果列表。
 
         Returns:
             str | None: 实际使用的 embedding 模型名称。
@@ -569,16 +692,3 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
                 return embedded_chunk.embedding_model
         stats = getattr(self.embedding_pipeline, "last_stats", None)
         return getattr(stats, "embedding_model", None)
-
-    def _merge_stage_error(self, *results: object) -> str:
-        """
-            汇总并格式化并行阶段返回的异常对象，生成统一失败原因文本。
-
-        Args:
-            *results: 并行阶段返回的任意对象或异常对象。
-
-        Returns:
-            str: 拼接后的错误描述字符串。
-        """
-        errors = [str(item) for item in results if isinstance(item, Exception)]
-        return "; ".join(errors) or "unknown storage failure"

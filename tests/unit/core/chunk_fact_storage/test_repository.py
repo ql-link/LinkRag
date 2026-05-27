@@ -13,6 +13,9 @@ from src.core.chunk_fact_storage.constants import (
     ES_STATUS_FAILED,
     ES_STATUS_PENDING,
     ES_STATUS_SUCCESS,
+    SPARSE_VECTOR_STATUS_FAILED,
+    SPARSE_VECTOR_STATUS_INDEXED,
+    SPARSE_VECTOR_STATUS_PENDING,
 )
 from src.core.chunk_fact_storage.models import ChunkPostStatus, FactChunkDraft, decide_chunk_post_status
 from src.core.chunk_fact_storage.repository import ChunkRepository
@@ -435,6 +438,38 @@ async def test_should_list_es_pending_or_failed_chunk_ids_by_doc_id():
     assert _where_criteria_count(session) == 3
 
 
+@pytest.mark.asyncio
+async def test_should_list_dense_vector_candidates_by_doc_id_when_sparse_disabled():
+    repository = ChunkRepository()
+    session = CapturingSession(records=["chunk-1"])
+
+    records = await repository.list_vector_candidates_by_doc_id(
+        session,
+        doc_id=10,
+        sparse_enabled=False,
+    )
+
+    assert records == ["chunk-1"]
+    # doc_id + dense status IN (PENDING, FAILED) + 排除删除保护状态。
+    assert _where_criteria_count(session) == 3
+
+
+@pytest.mark.asyncio
+async def test_should_list_dense_or_sparse_vector_candidates_by_doc_id_when_sparse_enabled():
+    repository = ChunkRepository()
+    session = CapturingSession(records=["chunk-1"])
+
+    records = await repository.list_vector_candidates_by_doc_id(
+        session,
+        doc_id=10,
+        sparse_enabled=True,
+    )
+
+    assert records == ["chunk-1"]
+    # doc_id + (dense pending/failed OR sparse pending/failed) + 排除删除保护状态。
+    assert _where_criteria_count(session) == 3
+
+
 def test_should_decide_processing_when_stage_status_is_pending():
     record = ChunkRepository().model_cls(
         chunk_id="chunk-1",
@@ -448,3 +483,51 @@ def test_should_decide_processing_when_stage_status_is_pending():
     )
 
     assert decide_chunk_post_status(record) == ChunkPostStatus.PROCESSING
+
+
+def test_should_decide_vector_failed_when_sparse_enabled_and_sparse_failed():
+    record = ChunkRepository().model_cls(
+        chunk_id="chunk-1",
+        doc_id=1,
+        set_id=1,
+        user_id=1,
+        content="a",
+        content_hash="a",
+        dense_vector_status=CHUNK_STATUS_INDEXED,
+        sparse_vector_status=SPARSE_VECTOR_STATUS_FAILED,
+        es_status=ES_STATUS_SUCCESS,
+    )
+
+    assert decide_chunk_post_status(record, sparse_enabled=True) == ChunkPostStatus.VECTOR_FAILED
+
+
+def test_should_decide_processing_when_sparse_enabled_and_sparse_pending():
+    record = ChunkRepository().model_cls(
+        chunk_id="chunk-1",
+        doc_id=1,
+        set_id=1,
+        user_id=1,
+        content="a",
+        content_hash="a",
+        dense_vector_status=CHUNK_STATUS_INDEXED,
+        sparse_vector_status=SPARSE_VECTOR_STATUS_PENDING,
+        es_status=ES_STATUS_SUCCESS,
+    )
+
+    assert decide_chunk_post_status(record, sparse_enabled=True) == ChunkPostStatus.PROCESSING
+
+
+def test_should_decide_completed_when_sparse_enabled_and_sparse_indexed():
+    record = ChunkRepository().model_cls(
+        chunk_id="chunk-1",
+        doc_id=1,
+        set_id=1,
+        user_id=1,
+        content="a",
+        content_hash="a",
+        dense_vector_status=CHUNK_STATUS_INDEXED,
+        sparse_vector_status=SPARSE_VECTOR_STATUS_INDEXED,
+        es_status=ES_STATUS_SUCCESS,
+    )
+
+    assert decide_chunk_post_status(record, sparse_enabled=True) == ChunkPostStatus.COMPLETED
