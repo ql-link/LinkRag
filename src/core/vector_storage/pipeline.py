@@ -139,7 +139,14 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         self,
         request: ChunkIndexingRequest,
     ) -> ChunkIndexingResult:
-        """从 SQL chunk 真值表读取候选记录，并按 chunk 顺序写入向量索引副本。"""
+        """从 SQL chunk 真值表读取候选记录，以 batch 为单位向量化并写入向量索引副本。
+
+        以 batch_size 为单位逐批处理：每批 embed 成功后立即写入 Qdrant 并 mark_indexed，
+        某批 embed 失败则将该批标记 FAILED 并停止，后续批次保持 PENDING 等待补偿路径重试。
+
+        这样已成功的 batch 不会因后续 batch 失败而重复 embed，同时整篇文章的
+        pipeline_status 因存在失败 chunk 而保持 FAILED，搜索路径不会触达部分入库的文章。
+        """
 
         async with self.session_factory() as session:
             records = await self.repository.list_vector_candidates_by_doc_id(
@@ -150,60 +157,163 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         if not records:
             return ChunkIndexingResult(total_chunks=0, indexed_chunks=0)
 
-        indexed_count = 0
-        embedding_model: str | None = None
-        sparse_model: str | None = None
+        # 只处理首次向量化（PENDING）的 chunk。
+        # FAILED 状态的 chunk 由 compensation_pipeline.reindex_failed_chunks() 负责重试，
+        # 不在此路径混合处理，避免 mark_indexing expected_status 乐观锁失效。
+        dense_records = [
+            r for r in records
+            if getattr(r, "dense_vector_status", None) == CHUNK_STATUS_PENDING
+        ]
+        # 已是终态（INDEXED 等）的记录直接计入成功；FAILED 的不计入，留给补偿路径。
+        already_done_records = [
+            r for r in records
+            if getattr(r, "dense_vector_status", None) not in (
+                CHUNK_STATUS_PENDING, CHUNK_STATUS_FAILED
+            )
+        ]
 
-        for record in records:
+        embedding_model: str | None = None
+        indexed_count = len(already_done_records)
+
+        if not dense_records:
+            return ChunkIndexingResult(
+                total_chunks=len(records),
+                indexed_chunks=indexed_count,
+                embedding_model=embedding_model,
+            )
+
+        batch_size = self.embedding_pipeline.batch_size
+
+        # ── 以 batch 为单位逐批处理 ────────────────────────────────────────
+        # 每批：mark_indexing → embed → 写 Qdrant → mark_indexed
+        # 某批 embed 失败 → 该批标 FAILED，停止，后续批次保持 PENDING
+        # 某批写入失败 → 该批中失败的 chunk 标 FAILED，停止
+        for batch_start in range(0, len(dense_records), batch_size):
+            batch_records = dense_records[batch_start : batch_start + batch_size]
+            batch_chunk_ids = [str(getattr(r, "chunk_id")) for r in batch_records]
+
+            # 1. 批量 mark_indexing
             try:
-                branch_result = await self._index_record_with_retry(record)
-                embedding_model = branch_result.embedding_model or embedding_model
-                sparse_model = branch_result.sparse_model or sparse_model
-                indexed_count += 1
-            except _VectorBranchFailure as exc:
-                logger.exception(
-                    "[VectorStoragePipeline] Stopped document indexing at chunk "
-                    f"{exc.chunk_id}: {exc}"
-                )
-                compensation_entry = await self._safe_mark_branch_failed(
-                    record,
-                    branch=exc.branch,
-                    step=exc.step,
-                    error_msg=str(exc),
-                )
-                return ChunkIndexingResult(
-                    total_chunks=len(records),
-                    indexed_chunks=indexed_count,
-                    failed_chunk_ids=[exc.chunk_id],
-                    embedding_model=embedding_model,
-                    sparse_model=sparse_model,
-                    compensation_entry=compensation_entry,
+                await self._mark_indexing(
+                    batch_chunk_ids,
+                    embedding_model=None,
+                    expected_status=CHUNK_STATUS_PENDING,
                 )
             except Exception as exc:
-                logger.exception(
-                    "[VectorStoragePipeline] Stopped document indexing at chunk "
-                    f"{record.chunk_id}: {exc}"
-                )
                 compensation_entry = await self._safe_mark_branch_failed(
-                    record,
+                    batch_records[0],
                     branch=VectorBranch.DENSE,
-                    step=VectorFailureStep.INDEX_WRITE,
+                    step=VectorFailureStep.SQL_STATUS_WRITE,
                     error_msg=str(exc),
+                )
+                logger.exception(
+                    "[VectorStoragePipeline] Batch mark_indexing failed at batch_start={}: {}",
+                    batch_start,
+                    exc,
                 )
                 return ChunkIndexingResult(
                     total_chunks=len(records),
                     indexed_chunks=indexed_count,
-                    failed_chunk_ids=[record.chunk_id],
+                    failed_chunk_ids=[batch_chunk_ids[0]],
                     embedding_model=embedding_model,
-                    sparse_model=sparse_model,
                     compensation_entry=compensation_entry,
                 )
+
+            # 2. 批量 embed
+            try:
+                batch_chunks = [chunk_from_record(r) for r in batch_records]
+                embedded_batch = await self.embedding_pipeline.aembed_chunks(batch_chunks)
+                if len(embedded_batch) != len(batch_records):
+                    raise ValueError(
+                        f"Embedded chunk count mismatch: got {len(embedded_batch)}, "
+                        f"expected {len(batch_records)}."
+                    )
+            except Exception as exc:
+                await self._safe_mark_failed(batch_chunk_ids, str(exc))
+                compensation_entry = VectorCompensationEntry(
+                    document_id=int(getattr(batch_records[0], "doc_id")),
+                    chunk_id=batch_chunk_ids[0],
+                    vector_branch=VectorBranch.DENSE,
+                    failed_step=VectorFailureStep.VECTOR_GENERATION,
+                )
+                logger.exception(
+                    "[VectorStoragePipeline] Batch embedding failed at batch_start={}: {}",
+                    batch_start,
+                    exc,
+                )
+                return ChunkIndexingResult(
+                    total_chunks=len(records),
+                    indexed_chunks=indexed_count,
+                    failed_chunk_ids=batch_chunk_ids,
+                    embedding_model=embedding_model,
+                    compensation_entry=compensation_entry,
+                )
+
+            embedding_model = self._resolve_embedding_model(embedded_batch)
+
+            # 3. 逐条写入 Qdrant + mark_indexed
+            # 写入阶段遇到失败立即停止（该 chunk 标 FAILED），
+            # 同批后续 chunk 已有向量但不写入，保持 PENDING 等待下次重试。
+            for record, embedded in zip(batch_records, embedded_batch):
+                chunk_id = str(getattr(record, "chunk_id"))
+                try:
+                    point = indexed_point_from_record(record, embedded)
+                    await self._ensure_and_upsert([point])
+                except Exception as exc:
+                    compensation_entry = await self._safe_mark_branch_failed(
+                        record,
+                        branch=VectorBranch.DENSE,
+                        step=VectorFailureStep.INDEX_WRITE,
+                        error_msg=str(exc),
+                    )
+                    logger.exception(
+                        "[VectorStoragePipeline] Qdrant upsert failed for chunk {}: {}",
+                        chunk_id,
+                        exc,
+                    )
+                    return ChunkIndexingResult(
+                        total_chunks=len(records),
+                        indexed_chunks=indexed_count,
+                        failed_chunk_ids=[chunk_id],
+                        embedding_model=embedding_model,
+                        compensation_entry=compensation_entry,
+                    )
+
+                try:
+                    indexed_count_result = await self._mark_indexed(
+                        [chunk_id], embedding_model=embedding_model
+                    )
+                    if indexed_count_result != 1:
+                        raise RuntimeError(
+                            f"Skipped stale dense index completion because rowcount "
+                            f"{indexed_count_result} != 1 for chunk {chunk_id}."
+                        )
+                except Exception as exc:
+                    compensation_entry = await self._safe_mark_branch_failed(
+                        record,
+                        branch=VectorBranch.DENSE,
+                        step=VectorFailureStep.SQL_STATUS_WRITE,
+                        error_msg=str(exc),
+                    )
+                    logger.exception(
+                        "[VectorStoragePipeline] mark_indexed failed for chunk {}: {}",
+                        chunk_id,
+                        exc,
+                    )
+                    return ChunkIndexingResult(
+                        total_chunks=len(records),
+                        indexed_chunks=indexed_count,
+                        failed_chunk_ids=[chunk_id],
+                        embedding_model=embedding_model,
+                        compensation_entry=compensation_entry,
+                    )
+
+                indexed_count += 1
 
         return ChunkIndexingResult(
             total_chunks=len(records),
             indexed_chunks=indexed_count,
             embedding_model=embedding_model,
-            sparse_model=sparse_model,
         )
 
     async def _index_record_with_retry(self, record: object) -> ChunkIndexingResult:
