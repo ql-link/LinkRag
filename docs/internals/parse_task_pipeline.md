@@ -165,7 +165,7 @@ any classified failure
 1. `ParseTaskGuard.validate_retry_context(payload, db)`：9 项严格校验（含 CAS 第 1 层快速失败 `superseded_by_task_id IS NULL`），失败抛 `RetryValidationError`。
 2. `ParsePipelineRepository.mark_superseded(old_pipeline, new_task_id)`：CAS 第 2 层真原子，`UPDATE ... WHERE superseded_by_task_id IS NULL` 依赖 rowcount 仲裁；rowcount=0 抛 `RetryValidationError("RETRY_VALIDATION_FAILED:concurrent_supersede")`。
 3. `ParseLogRepository.create_for_retry(...)` + `ParsePipelineRepository.create_with_inherited_state(old_pipeline, new_log)`：建新 log + 新 pipeline，复制 6 阶段 SUCCESS 状态与 duration，重置非 SUCCESS 阶段。
-4. 进入 6 阶段循环，跳过继承到的 SUCCESS 阶段、从首个非 SUCCESS 阶段恢复执行；chunking 被跳过时由 `_load_chunks_from_db(doc_id)` 反查 chunk 真值表组装 `list[Chunk]` 喂给下游，vectorizing 自身再按 `dense_vector_status IN (PENDING, FAILED)` 补做 dense。
+4. 进入 6 阶段循环，跳过继承到的 SUCCESS 阶段、从首个非 SUCCESS 阶段恢复执行；chunking 被跳过时由 `_load_all_chunks_from_db(doc_id)` 反查当前文档**完整** chunk 真值表（仅按 `doc_id` 过滤、排除删除态保护集合，按 `chunk_index` 排序）组装 `list[Chunk]` 喂给下游，语义等价于首次执行的 chunking 输出。下游 dense / pretokenize / ES / sparse 各阶段仍按各自 SQL 真值（`dense_vector_status / sparse_vector_status / es_status`）决定补做范围——pipeline 编排层不再做局部子集过滤。
 
 校验或 CAS 失败时走 `_handle_retry_validation_failure`：双表落 FAILED 终态（`pipeline_status=FAILED` + `failed_stage=RETRY_VALIDATION` + 前缀 `RETRY_VALIDATION_FAILED:`），不更新任何旧表行，通知 Java FAILED。
 
