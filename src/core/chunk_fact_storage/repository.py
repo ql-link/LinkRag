@@ -291,6 +291,34 @@ class ChunkRepository:
         result = await db.execute(stmt)
         return list(result.scalars().all())
 
+    async def list_vector_candidates_by_doc_id(
+        self,
+        db: AsyncSession,
+        doc_id: int,
+        *,
+        sparse_enabled: bool,
+    ) -> list[ChunkRecordDB]:
+        """按 SQL 状态返回当前文档仍需 vectorizing 的 chunk 记录。"""
+
+        vector_statuses = (CHUNK_STATUS_PENDING, CHUNK_STATUS_FAILED)
+        sparse_statuses = (SPARSE_VECTOR_STATUS_PENDING, SPARSE_VECTOR_STATUS_FAILED)
+        predicate = self.model_cls.dense_vector_status.in_(vector_statuses)
+        if sparse_enabled:
+            predicate = or_(
+                predicate,
+                self.model_cls.sparse_vector_status.in_(sparse_statuses),
+            )
+
+        stmt = (
+            select(self.model_cls)
+            .where(self.model_cls.doc_id == doc_id)
+            .where(predicate)
+            .where(self.model_cls.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
+            .order_by(self.model_cls.chunk_index.asc())
+        )
+        result = await db.execute(stmt)
+        return list(result.scalars().all())
+
     async def _execute_sparse_status_update(
         self,
         db: AsyncSession,

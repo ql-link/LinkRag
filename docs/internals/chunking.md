@@ -23,6 +23,9 @@ ParseTaskPipeline
     -> ChunkingEngine
       -> MarkdownParser
       -> BaseChunker
+  -> _persist_chunk_facts()
+    -> ChunkDraftFactory
+    -> ChunkRepository.bulk_insert_pending()
 ```
 
 当前解析任务流水线默认构建：
@@ -57,6 +60,7 @@ class BaseChunker(ABC):
 - 输出是按文档顺序排列的 `Chunk` 列表。
 - `Chunk.metadata` 应携带 `chunk_index`、`element_types` 等下游可用信息。
 - 分片器不负责写数据库、调用 MQ 或写向量库。
+- 解析流水线的 chunking 阶段会在分片完成后批量写入 `kb_document_chunk` 真值记录；这是编排层职责，不属于分片器职责。
 
 ## 3. 当前分片策略
 
@@ -117,6 +121,8 @@ chunks = ParseTaskPipeline._chunk_markdown(
 ```
 
 如果没有 `parse_result`，`ChunkingEngine` 会先调用 `MarkdownParser.parse()` 再分片。
+
+`ParseTaskPipeline._run_chunking` 在获得 `list[Chunk]` 后，会把分片转换为 chunk 真值草稿，并在同一 chunking 阶段通过 `ChunkRepository.bulk_insert_pending()` 单事务写入 MySQL。写入成功后才标记文件级 `chunking_status=SUCCESS`；写入失败会回滚整批 chunk 真值并终止流水线，不进入 vectorizing。
 
 ### 4.2 直接使用 ChunkingEngine
 
@@ -211,5 +217,6 @@ chunks = engine.process(markdown)
 - 标题边界分片。
 - 表格、图片、代码块独立分片。
 - `source_file` 元数据注入。
+- chunking 阶段成功后批量落库 chunk 真值，失败时整批回滚。
 - 超长文本语义细分。
 - 空文档或纯噪声文档。

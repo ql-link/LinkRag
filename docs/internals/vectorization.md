@@ -11,7 +11,7 @@ src/core/splitter/
 src/core/vector_storage/
 ├── factory.py                     # 装配向量存储 Facade
 ├── facade.py                      # 对外统一入口
-├── pipeline.py                    # 新增写入闭环
+├── pipeline.py                    # 已落库 chunk 的向量索引闭环
 ├── management_pipeline.py         # 修改、删除管理
 ├── compensation_pipeline.py       # 失败和卡住状态补偿
 ├── draft_factory.py               # Chunk -> StoredChunkDraft
@@ -34,7 +34,7 @@ src/core/qdrant_vector_storage/
 └── models.py                      # IndexedPoint
 ```
 
-新增写入链路：
+解析后向量化链路：
 
 ```text
 ParseTaskPipeline
@@ -42,25 +42,24 @@ ParseTaskPipeline
   -> upload markdown
   -> document_parse_pipeline: PROCESSING
   -> _run_chunking()
+    -> ChunkDraftFactory
+    -> ChunkRepository.bulk_insert_pending()
   -> document_parse_pipeline.chunking_status = SUCCESS
   -> _store_chunk_vectors()
-    -> VectorStorageFacade.store_chunks()
-      -> VectorStoragePipeline.store_chunks()
-        -> ChunkDraftFactory
-        -> ChunkRepository.bulk_insert_pending()
+    -> VectorStorageFacade.index_document_chunks()
+      -> VectorStoragePipeline.index_document_chunks()
+        -> ChunkRepository.list_vector_candidates_by_doc_id()
         -> 按 chunk_index 顺序处理每个 chunk
           -> ChunkRepository.mark_indexing()
           -> ChunkEmbeddingPipeline.aembed_chunks([chunk])
-          -> SparseVectorService.vectorize_chunk([chunk 原文])（开启时）
           -> QdrantIndexStore.ensure_collection()
           -> QdrantIndexStore.upsert_points()
-          -> QdrantIndexStore.ensure_sparse_vector_schema()（开启时）
-          -> QdrantIndexStore.upsert_sparse_vectors()（开启时）
-          -> ChunkRepository.mark_sparse_indexed()（开启时）
           -> ChunkRepository.mark_indexed()
   -> document_parse_pipeline.vectorizing_status = SUCCESS
   -> EsIndexingPipeline.index_for_parse_task()
   -> document_parse_pipeline.es_indexing_status = SUCCESS
+  -> SparseIndexingPipeline.run()（开启时）
+  -> document_parse_pipeline.sparse_vectorizing_status = SUCCESS（开启时）
   -> parse_result success notification
 ```
 
@@ -71,7 +70,7 @@ ParseTaskPipeline
 | `ChunkEmbeddingPipeline` | `splitter/embedding_pipeline.py` | 批量生成 Chunk embedding，支持缓存和统计 |
 | `SparseVectorService` | `sparse_vector/pipeline.py` | 使用 BGE-M3 对 chunk 原文生成稀疏向量 |
 | `VectorStorageFacade` | `vector_storage/facade.py` | 向上游暴露统一入口 |
-| `VectorStoragePipeline` | `vector_storage/pipeline.py` | 新增 Chunk 的 MySQL + Qdrant 写入闭环 |
+| `VectorStoragePipeline` | `vector_storage/pipeline.py` | 消费 SQL chunk 真值，写 dense Qdrant 索引副本并回写状态 |
 | `VectorStorageManagementPipeline` | `vector_storage/management_pipeline.py` | Chunk 修改、删除 |
 | `VectorStorageCompensationPipeline` | `vector_storage/compensation_pipeline.py` | 删除失败、INDEXING 卡住、FAILED 重建 |
 | `ChunkDraftFactory` | `vector_storage/draft_factory.py` | 生成 chunk_id、content_hash、bucket_id、chunk_type |
@@ -85,16 +84,23 @@ ParseTaskPipeline
 
 ### 3.1 输入模型
 
-`VectorStorageFacade.store_chunks` 接收：
+解析流水线使用 `VectorStorageFacade.index_document_chunks`，只接收文档归属：
 
 ```python
 user_id: int
 set_id: int
 doc_id: int
-chunks: Sequence[Chunk]
 ```
 
-`ChunkDraftFactory` 会把每个 `Chunk` 转成 `StoredChunkDraft`：
+该入口不接收 `list[Chunk]`，不重新分片，不生成新的 `chunk_id`，也不执行 chunk 真值 INSERT。向量化依据来自 `kb_document_chunk`：
+
+- `content`：dense 和 sparse 的文本输入。
+- `chunk_id`：Qdrant point id，重试时覆盖同一个索引副本。
+- `user_id` / `set_id` / `doc_id` / `bucket_id`：Qdrant payload 与 collection/bucket 路由。
+- `chunk_index` / `chunk_type` / `start_line` / `end_line`：还原 splitter 兼容 `Chunk`。
+- `dense_vector_status` / `sparse_vector_status`：决定补做哪个分支。
+
+chunking 阶段复用 `ChunkDraftFactory`，把每个 `Chunk` 转成 `StoredChunkDraft`：
 
 - `chunk_id`：新生成的 UUID。
 - `user_id` / `set_id` / `doc_id`：业务归属。
@@ -113,7 +119,7 @@ chunks: Sequence[Chunk]
 | `SUCCESS` | Qdrant point 已写入，MySQL 已确认 |
 | `FAILED` | 向量化或索引失败 |
 
-MySQL 是 Chunk 真值源，Qdrant 是向量索引副本。启用稀疏向量后，文件级向量化成功要求每个有效 chunk 同时满足 `dense_vector_status=SUCCESS` 与 `sparse_vector_status=SUCCESS`。
+MySQL 是 Chunk 真值源，Qdrant 是向量索引副本。chunk 表中的稠密和稀疏向量状态使用 `PENDING/SUCCESS/FAILED` 粗粒度终态；代码中的 `INDEXED` 常量映射为数据库值 `SUCCESS`。`vectorizing_status` 只代表 dense/Qdrant 阶段成功；启用稀疏向量后，文件级整体成功还要求后续 `sparse_vectorizing_status=SUCCESS`，且每个有效 chunk 的 `sparse_vector_status=SUCCESS`。
 
 稀疏向量子状态：
 
@@ -197,11 +203,10 @@ doc_id = payload.original_file_id
 然后调用：
 
 ```python
-result = await vector_storage.store_chunks(
+result = await vector_storage.index_document_chunks(
     user_id=user_id,
     set_id=set_id,
     doc_id=doc_id,
-    chunks=chunks,
 )
 ```
 
@@ -210,7 +215,9 @@ result = await vector_storage.store_chunks(
 - `total_chunks`
 - `indexed_chunks`
 - `failed_chunk_ids`
-- `dense_vector_model`
+- `embedding_model`
+- `sparse_model`
+- `compensation_entry`
 
 部分 Chunk 失败不会直接抛到解析主流程，而是通过结果汇总表达。当前文件级语义下，只要向量化存在失败 Chunk，整体 parse_result 会以 `failed` 通知 Java；全部 Chunk 向量化成功后才进入 ES 入库阶段。
 
@@ -241,11 +248,10 @@ from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
 from src.core.vector_storage.factory import create_vector_storage_facade
 
 facade = create_vector_storage_facade(embedding_pipeline=embedding_pipeline)
-result = await facade.store_chunks(
+result = await facade.index_document_chunks(
     user_id=10002,
     set_id=10003,
     doc_id=10001,
-    chunks=chunks,
 )
 ```
 
@@ -372,9 +378,11 @@ ES 阶段只返回文件级 `EsIndexingResult`，不直接维护 `kb_document_ch
 - Qdrant point 是可重建索引副本。
 - Elasticsearch document 是面向检索的文本索引副本。
 - `document_parse_pipeline` 是文件级后处理阶段状态源。
-- 新增写入采用 `PENDING -> INDEXING -> INDEXED`。
+- chunking 阶段负责创建 chunk 真值，向量化阶段不得创建新的 chunk 行。
+- dense 写入采用 `PENDING/FAILED -> SUCCESS/FAILED` 的粗粒度 SQL 状态；运行时处理中间态由文件级阶段和 Qdrant 操作边界表达。
+- sparse 是独立文件级阶段，在 dense、pretokenize、ES 成功后采用 `PENDING/FAILED -> SUCCESS/FAILED` 的粗粒度 SQL 状态。
 - 删除采用 `DELETING -> DELETED`，失败进入 `DELETE_FAILED`。
-- Qdrant 写入成功但 MySQL 回写失败时，通过补偿流程修复。
+- Qdrant 写入成功但 MySQL 回写失败时，仍以 SQL 状态为准；后续进入 vectorizing 时按原 `chunk_id` 覆盖写索引副本。
 - 解析结果成功通知只在 Markdown、分片、向量化和 ES 入库均成功后发送。
 - 自动补偿不应无限重试所有失败；显式重建由 `reindex_failed_chunks` 控制。
 
@@ -394,6 +402,8 @@ ES 阶段只返回文件级 `EsIndexingResult`，不直接维护 `kb_document_ch
 建议覆盖：
 
 - MySQL 状态流转。
+- vectorizing 从 SQL 候选记录恢复 `Chunk`，不接收内存 `list[Chunk]`，且只处理 dense。
+- 稀疏向量由 `SparseIndexingPipeline` 独立阶段处理，只处理 dense 已成功的 chunk。
 - embedding 批处理和缓存命中。
 - Qdrant collection 自动创建和 upsert。
 - ES 文件级索引创建和逐 Chunk 写入。

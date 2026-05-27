@@ -107,15 +107,81 @@ def create_chunking_engine() -> ChunkingEngine:
         return ChunkingEngine(chunker=ASTAwareChunker())
 
 
+# DashScope text-embedding-* 系列单次 /embeddings 请求的 input 条数上限。
+# 参考：https://www.alibabacloud.com/help/en/model-studio/text-embedding-synchronous-api
+# text-embedding-v3 / v4 官方文档 Max rows = 10
+_DASHSCOPE_EMBED_BATCH_LIMITS: dict[str, int] = {
+    "text-embedding-v1": 10,
+    "text-embedding-v2": 10,
+    "text-embedding-v3": 10,
+    "text-embedding-v4": 10,
+}
+
+# provider_type → (model_prefix → max_batch_size) 的二级映射，便于后续扩展其他 provider。
+_PROVIDER_EMBED_BATCH_LIMITS: dict[str, dict[str, int]] = {
+    "qwen": _DASHSCOPE_EMBED_BATCH_LIMITS,
+}
+
+
+def _resolve_embed_batch_size(
+    provider_type: str,
+    model_name: str,
+    configured_batch_size: int,
+) -> int:
+    """根据 provider / model 的已知上限，对配置值做保护性 cap。
+
+    若配置值已经小于等于 provider 上限，直接使用配置值（尊重用户主动调小的意图）。
+    若配置值超过 provider 上限，自动降到上限并打印警告日志。
+    对未知 provider / model 不做任何限制，直接返回配置值。
+
+    Args:
+        provider_type: 当前 LLM provider 类型，如 ``"qwen"``。
+        model_name: 当前 embedding 模型名称，如 ``"text-embedding-v4"``。
+        configured_batch_size: 来自 ``settings.CHUNK_INDEX_EMBED_BATCH_SIZE`` 的配置值。
+
+    Returns:
+        int: 实际使用的 batch size，不超过 provider 已知上限。
+    """
+    provider_limits = _PROVIDER_EMBED_BATCH_LIMITS.get(provider_type)
+    if provider_limits is None:
+        return configured_batch_size
+
+    provider_max = provider_limits.get(model_name)
+    if provider_max is None:
+        return configured_batch_size
+
+    if configured_batch_size <= provider_max:
+        return configured_batch_size
+
+    logger.warning(
+        "[splitter.factory] CHUNK_INDEX_EMBED_BATCH_SIZE={} exceeds the known per-request limit "
+        "of {} for provider='{}' model='{}'; capping to {} to avoid 400 errors.",
+        configured_batch_size,
+        provider_max,
+        provider_type,
+        model_name,
+        provider_max,
+    )
+    return provider_max
+
+
 def create_chunk_embedding_pipeline() -> ChunkEmbeddingPipeline:
     """按配置构建 chunk embedding pipeline。
 
     内部固定使用 ASTAwareChunker，因为 embedding pipeline 仅承担向量化阶段，
     更精细的分块策略由独立的 ``create_chunking_engine`` 负责。
+
+    batch_size 会根据 provider / model 的已知单次请求上限自动 cap，
+    避免因配置值超限导致 DashScope 等 provider 返回 400。
     """
+    batch_size = _resolve_embed_batch_size(
+        provider_type=settings.SYSTEM_LLM_PROVIDER,
+        model_name=settings.SYSTEM_LLM_MODEL_EMBEDDING,
+        configured_batch_size=settings.CHUNK_INDEX_EMBED_BATCH_SIZE,
+    )
     return ChunkEmbeddingPipeline(
         chunking_engine=ChunkingEngine(chunker=ASTAwareChunker()),
         embedder=create_lazy_system_embedding_client(),
         embedding_model=settings.SYSTEM_LLM_MODEL_EMBEDDING,
-        batch_size=settings.CHUNK_INDEX_EMBED_BATCH_SIZE,
+        batch_size=batch_size,
     )

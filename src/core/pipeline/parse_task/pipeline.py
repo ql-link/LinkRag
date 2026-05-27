@@ -22,9 +22,12 @@ from src.core.markdown_parser import ParseResult
 from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.core.pipeline.parse_task.post_process.repository import ParsePipelineRepository
 from src.core.preprocessor.models import FilePostIndexPlan
+from src.core.qdrant_vector_storage import BucketRouter
+from src.core.qdrant_vector_storage.constants import DEFAULT_BUCKET_COUNT, DEFAULT_COLLECTION_PREFIX
 from src.core.splitter import create_chunking_engine
 from src.core.splitter.models import Chunk
 from src.core.vector_storage import compose_vector_storage_facade
+from src.core.vector_storage.draft_factory import ChunkDraftFactory
 from src.core.vector_storage.models import ChunkIndexingResult
 from src.database import get_async_session_factory
 from src.models.parse_task import DocumentParsedLog
@@ -88,6 +91,7 @@ class ParseTaskPipeline:
         es_indexing_pipeline: Any | None = None,
         preprocessor: PreprocessorProtocol | None = None,
         chunk_repository: ChunkRepository | None = None,
+        chunk_draft_factory: ChunkDraftFactory | None = None,
         sparse_indexing_pipeline: Any | None = None,
     ) -> None:
         """初始化解析流水线依赖。
@@ -104,6 +108,7 @@ class ParseTaskPipeline:
         self._es_indexing_pipeline = es_indexing_pipeline
         self._preprocessor = preprocessor
         self._chunk_repository = chunk_repository or ChunkRepository()
+        self._chunk_draft_factory = chunk_draft_factory
         self._sparse_indexing_pipeline = sparse_indexing_pipeline
 
         self._source_io = ParseSourceIO(self._storage)
@@ -612,18 +617,52 @@ class ParseTaskPipeline:
         db: AsyncSession,
     ) -> list[Chunk]:
         """执行成功解析后的分片流程。"""
-        _ = db
         chunks = await asyncio.to_thread(
             self._chunk_markdown,
             markdown,
             payload.md_object_key,
             parse_result,
         )
+        await self._persist_chunk_facts(chunks, payload, db)
         logger.info(
             f"[ParseTaskPipeline] chunking completed: task_id={payload.task_id}, "
             f"chunk_count={len(chunks)}"
         )
         return chunks
+
+    async def _persist_chunk_facts(
+        self,
+        chunks: list[Chunk],
+        payload: ParseTaskPayload,
+        db: AsyncSession,
+    ) -> None:
+        """在 chunking 阶段单事务写入 chunk 真值记录。"""
+
+        owner = self._resolve_chunk_owner(payload, db)
+        if owner is None:
+            raise RuntimeError("chunk owner is missing")
+        user_id, set_id, doc_id = owner
+        drafts = self._get_chunk_draft_factory().build_drafts(
+            user_id=user_id,
+            set_id=set_id,
+            doc_id=doc_id,
+            chunks=chunks,
+        )
+        try:
+            await self._chunk_repository.bulk_insert_pending(db, drafts)
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+
+    def _get_chunk_draft_factory(self) -> ChunkDraftFactory:
+        if self._chunk_draft_factory is None:
+            bucket_router = BucketRouter(
+                bucket_count=getattr(settings, "CHUNK_INDEX_BUCKET_COUNT", DEFAULT_BUCKET_COUNT),
+                prefix=getattr(settings, "CHUNK_INDEX_COLLECTION_PREFIX", DEFAULT_COLLECTION_PREFIX),
+            )
+            self._chunk_draft_factory = ChunkDraftFactory(bucket_router=bucket_router)
+        return self._chunk_draft_factory
 
     def _get_vector_storage(self):
         if self._vector_storage is None:
@@ -717,11 +756,10 @@ class ParseTaskPipeline:
 
         user_id, set_id, doc_id = owner
         try:
-            result = await self._get_vector_storage().store_chunks(
+            result = await self._get_vector_storage().index_document_chunks(
                 user_id=user_id,
                 set_id=set_id,
                 doc_id=doc_id,
-                chunks=chunks,
             )
         except Exception as exc:
             logger.error(
@@ -762,20 +800,24 @@ class ParseTaskPipeline:
         vector_result: ChunkIndexingResult,
         expected_chunks: int,
     ) -> bool:
-        return (
-            not vector_result.failed_chunk_ids
-            and vector_result.total_chunks == expected_chunks
-            and vector_result.indexed_chunks == vector_result.total_chunks
-        )
+        _ = expected_chunks
+        return vector_result.is_success
 
     @staticmethod
     def _build_vector_failure_reason(vector_result: ChunkIndexingResult) -> str:
         failed_count = len(vector_result.failed_chunk_ids)
-        return (
+        reason = (
             "VECTORIZING_FAILED: 向量化失败；"
             f"total={vector_result.total_chunks}, indexed={vector_result.indexed_chunks}, "
             f"failed={failed_count}"
         )
+        if vector_result.compensation_entry is not None:
+            entry = vector_result.compensation_entry
+            reason = (
+                f"{reason}, chunk_id={entry.chunk_id}, "
+                f"branch={entry.vector_branch.value}, step={entry.failed_step.value}"
+            )
+        return reason
 
     @staticmethod
     def _build_es_failure_reason(es_result: EsIndexingResult) -> str:
@@ -1150,7 +1192,7 @@ class ParseTaskPipeline:
     ) -> list[Chunk] | None:
         """重试跳过 chunking 时从 DB 反查 chunk 真值组装内存对象供下游消费。
 
-        反查谓词：``vector_status IN (PENDING, FAILED)``（只补做未完成）。
+        反查谓词：``dense_vector_status IN (PENDING, FAILED)``（只补做 dense 未完成）。
         若反查为空且 chunking_status=SUCCESS → 视为状态不一致，落 FAILED + 通知。
 
         返回 None 表示状态不一致（调用方应直接返回 FAILED 结果）。

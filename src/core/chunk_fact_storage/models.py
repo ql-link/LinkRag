@@ -9,6 +9,8 @@ from .constants import (
     CHUNK_STATUS_PENDING,
     ES_STATUS_FAILED,
     ES_STATUS_SUCCESS,
+    SPARSE_VECTOR_STATUS_FAILED,
+    SPARSE_VECTOR_STATUS_INDEXED,
 )
 
 
@@ -35,15 +37,21 @@ class ChunkPostStatus(str, Enum):
     PROCESSING = "processing"
 
 
-def decide_chunk_post_status(record: object) -> ChunkPostStatus:
-    """根据 dense 向量生命周期与 ES 子状态判断 chunk 后置处理结果。"""
+def decide_chunk_post_status(record: object, *, sparse_enabled: bool = False) -> ChunkPostStatus:
+    """根据向量生命周期与 ES 子状态判断 chunk 后置处理结果。"""
     dense_vector_status = getattr(record, "dense_vector_status", None)
+    sparse_vector_status = getattr(record, "sparse_vector_status", None)
     es_status = getattr(record, "es_status", None)
 
-    if dense_vector_status == CHUNK_STATUS_FAILED:
+    if dense_vector_status == CHUNK_STATUS_FAILED or (
+        sparse_enabled and sparse_vector_status == SPARSE_VECTOR_STATUS_FAILED
+    ):
         return ChunkPostStatus.VECTOR_FAILED
-    if dense_vector_status == CHUNK_STATUS_INDEXED and es_status == ES_STATUS_FAILED:
+    vector_indexed = dense_vector_status == CHUNK_STATUS_INDEXED and (
+        not sparse_enabled or sparse_vector_status == SPARSE_VECTOR_STATUS_INDEXED
+    )
+    if vector_indexed and es_status == ES_STATUS_FAILED:
         return ChunkPostStatus.ES_FAILED
-    if dense_vector_status == CHUNK_STATUS_INDEXED and es_status == ES_STATUS_SUCCESS:
+    if vector_indexed and es_status == ES_STATUS_SUCCESS:
         return ChunkPostStatus.COMPLETED
     return ChunkPostStatus.PROCESSING

@@ -19,7 +19,7 @@ src/core/pipeline/
 │   ├── temp_workspace.py        # PARSE_TEMP_DIR 启动清理、临时文件分配、safe_unlink 幂等
 │   ├── validator.py             # ParseTaskGuard: 前置校验、MQ 重投与中断状态收敛
 │   ├── _utils.py                # 子包内部共享小工具（now / duration_ms / 等）
-│   └── post_process/            # 文件级后处理子状态机（chunking → vectorizing → pretokenize → es_indexing）
+│   └── post_process/            # 文件级后处理子状态机（cleaning → chunking → vectorizing → pretokenize → es_indexing → sparse_vectorizing）
 │       ├── constants.py         # PIPELINE_STATUS_* / STAGE_STATUS_*
 │       ├── models.py            # PostProcessStageResult / PostProcessResult
 │       └── repository.py        # ParsePipelineRepository（document_parse_pipeline 仓储）
@@ -75,8 +75,11 @@ parse_task message
   -> mark document_parsed_log success
   -> create/mark document_parse_pipeline processing
   -> chunk markdown / ParseResult
-  -> store chunks to MySQL + Qdrant
+  -> store chunk facts to MySQL
+  -> dense index persisted chunks to Qdrant
+  -> pretokenize chunks
   -> index chunks to Elasticsearch
+  -> sparse vectorize dense-success chunks
   -> mark document_parse_pipeline success
   -> send parse_result success
 ```
@@ -100,8 +103,8 @@ any classified failure
 | 源文件处理 | `ParseSourceIO.should_skip_source_download()` / `ParseSourceIO.download_to_path()` + `temp_workspace.create_temp_file()` + `temp_workspace.safe_unlink()` | MinerU URL API 跳过本地下载（`source_path=None`）；其他后端流式下载到 `PARSE_TEMP_DIR/parse-{task_id}-{rand}.tmp`，拿到 markdown 后立即 `safe_unlink` 早删，外层 `finally` 二次兜底。下载阶段 `OSError errno=ENOSPC` 归类 `TEMP_DISK_FULL`，其他下载异常归类 `SOURCE_FILE_NOT_FOUND` |
 | 文件解析 | `_parse_file()` | 调用 `ParseTaskService.aprocess()`，PDF 后端参数来自 payload |
 | Markdown 上传 | `_upload_markdown()` | 上传 Markdown 到 payload 指定 bucket/key |
-| 分片 | `_run_chunking()` / `_chunk_markdown()` | 优先消费上游 `ParseResult`，否则重新解析 Markdown |
-| 向量化 | `_store_chunk_vectors()` | 通过 `VectorStorageFacade` 写 MySQL 真值和 Qdrant |
+| 分片 | `_run_chunking()` / `_chunk_markdown()` / `_persist_chunk_facts()` | 优先消费上游 `ParseResult`，否则重新解析 Markdown；分片成功后在 chunking 阶段单事务批量写入 `kb_document_chunk` 真值记录 |
+| 向量化 | `_store_chunk_vectors()` | 通过 `VectorStorageFacade.index_document_chunks()` 消费已落库 chunk 真值并写 Qdrant，不再创建 chunk 真值 |
 | 预分词（一等独立阶段） | `_run_pretokenize()` / `_get_preprocessor()` | `Preprocessor.build_file_post_index_plan()` 聚合 doc 下 chunk token 为内存 `FilePostIndexPlan`（单趟扇出，不持久化）。文件级 all-or-nothing：成功 `mark_pretokenize_success`；失败返回 `(None, reason)`，由 `_run` 统一 `mark_pretokenize_failed` + 通知 Java FAILED，**不写任何 chunk es_status** |
 | ES 入库 | `_run_es_indexing()` | 仅消费内存 `FilePostIndexPlan` 调用 `EsIndexingPipeline.write_es_index()`，保持 chunk 级失败语义；`_ensure_index` 等基础设施故障按文件级处理（不标 chunk，`ensure_index:` 前缀）。失败由 `_run` 统一 `mark_es_failed` + 通知，**不计数、不设上限、不写 retry_exhausted** |
 | 结果通知 | `_send_parse_result()` | 向 `tolink.rag.parse_result` 发送整体终态 |
@@ -147,6 +150,8 @@ any classified failure
 
 - **文档清洗失败**：`mark_cleaning_failed` 落 `cleaning_status=FAILED` + `failed_stage=CLEANING` + `recover_from_stage=CLEANING`。`failure_reason` 含前缀 `INVALID_TASK_CONTEXT:` / `SOURCE_FILE_NOT_FOUND:` / `PARSE_ENGINE_FAILED:` / `PARSED_FILE_UPLOAD_FAILED:` / `INTERRUPTED_TASK:` / `INTERNAL_UNKNOWN_ERROR:` / `PARSING_FAILED:` 等。
 - **预分词失败**（`_run_pretokenize` 捕获 `PreprocessorError`，或空 plan 但仍有未完成 chunk）：`mark_pretokenize_failed` 落 `pretokenize_status=FAILED` + `recover_from_stage=PRETOKENIZE`；**绝不写任何 chunk es_status**（文件级 all-or-nothing）。
+- **chunking 写入失败**：`_persist_chunk_facts` 回滚整批 chunk 真值，`mark_chunking_failed` 落 `chunking_status=FAILED`，不进入 vectorizing。
+- **vectorizing 失败**：当前失败 chunk 的 dense 状态标 `FAILED`，已成功 chunk 保持 `SUCCESS`，未处理 chunk 保持 `PENDING`；文件级 `vectorizing_status=FAILED` 并通知 Java。稀疏向量不在 vectorizing 阶段执行。
 - **ES 基础设施故障**（`_ensure_index` 等）：文件级，不标 chunk，`failure_reason` 以 `ensure_index:` 前缀。
 - **ES chunk 级写失败**：逐 chunk 标 `es_status=FAILED`，文件级 `es_indexing_status=FAILED`，前缀 `ES_INDEXING_FAILED:`。
 - **稀疏向量阶段失败**（`SparseIndexingPipeline.run` 抛 `SparseIndexingError`）：触发失败的 chunk 标 `sparse_vector_status=FAILED` 留审计痕迹；文件级 `mark_sparse_vectorizing_failed` 落 `sparse_vectorizing_status=FAILED` + `failed_stage=SPARSE_VECTORIZING`，前缀 `SPARSE_VECTORIZING_FAILED:`。
@@ -160,7 +165,7 @@ any classified failure
 1. `ParseTaskGuard.validate_retry_context(payload, db)`：9 项严格校验（含 CAS 第 1 层快速失败 `superseded_by_task_id IS NULL`），失败抛 `RetryValidationError`。
 2. `ParsePipelineRepository.mark_superseded(old_pipeline, new_task_id)`：CAS 第 2 层真原子，`UPDATE ... WHERE superseded_by_task_id IS NULL` 依赖 rowcount 仲裁；rowcount=0 抛 `RetryValidationError("RETRY_VALIDATION_FAILED:concurrent_supersede")`。
 3. `ParseLogRepository.create_for_retry(...)` + `ParsePipelineRepository.create_with_inherited_state(old_pipeline, new_log)`：建新 log + 新 pipeline，复制 6 阶段 SUCCESS 状态与 duration，重置非 SUCCESS 阶段。
-4. 进入 6 阶段循环，跳过继承到的 SUCCESS 阶段、从首个非 SUCCESS 阶段恢复执行；chunking 被跳过时由 `_load_chunks_from_db(doc_id)` 反查 chunk 真值表（谓词 `dense_vector_status IN (PENDING, FAILED)`）组装 `list[Chunk]` 喂给下游。
+4. 进入 6 阶段循环，跳过继承到的 SUCCESS 阶段、从首个非 SUCCESS 阶段恢复执行；chunking 被跳过时由 `_load_chunks_from_db(doc_id)` 反查 chunk 真值表组装 `list[Chunk]` 喂给下游，vectorizing 自身再按 `dense_vector_status IN (PENDING, FAILED)` 补做 dense。
 
 校验或 CAS 失败时走 `_handle_retry_validation_failure`：双表落 FAILED 终态（`pipeline_status=FAILED` + `failed_stage=RETRY_VALIDATION` + 前缀 `RETRY_VALIDATION_FAILED:`），不更新任何旧表行，通知 Java FAILED。
 
@@ -225,6 +230,8 @@ pdf_parser_backend == "mineru"
 - 新任务正常全链路。
 - 重复 task 的补发、跳过和中断收敛。
 - 解析、上传、分片、向量化、ES 和通知失败。
+- chunking 成功后已批量落库 chunk 真值；SQL 批量落库失败时回滚且不进入向量化。
+- vectorizing 只调用 `index_document_chunks`，不再创建 chunk 真值。
 - MinerU 后端跳过源文件下载并注入 `source_file_url`；旁路下 `source_path` 在整条链路中保持 `None`，不创建临时文件、不需要清理。
 - 预分词失败为文件级 all-or-nothing：落 `pretokenize_status=FAILED`，不写任何 chunk es_status。
 - ES 基础设施故障（`ensure_index`）文件级不标 chunk；ES chunk 级失败逐 chunk 标记。

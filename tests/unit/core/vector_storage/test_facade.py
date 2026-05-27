@@ -5,6 +5,7 @@ import pytest
 from src.core.vector_storage.facade import VectorStorageFacade
 from src.core.vector_storage.models import (
     ChunkIndexingResult,
+    ChunkIndexingRequest,
     ChunkMutationResult,
     ChunkStorageRequest,
     ChunkUpdateRequest,
@@ -72,6 +73,28 @@ async def test_should_store_chunks_through_facade_with_business_arguments(
     assert request.set_id == 8
     assert request.doc_id == 9
     assert request.chunks == sample_chunks
+
+
+@pytest.mark.asyncio
+async def test_should_index_document_chunks_through_facade(
+    vector_storage_facade,
+    mock_storage_service,
+):
+    expected_result = ChunkIndexingResult(total_chunks=2, indexed_chunks=2)
+    mock_storage_service.index_document_chunks.return_value = expected_result
+
+    result = await vector_storage_facade.index_document_chunks(
+        user_id=7,
+        set_id=8,
+        doc_id=9,
+    )
+
+    assert result is expected_result
+    request = mock_storage_service.index_document_chunks.await_args.args[0]
+    assert isinstance(request, ChunkIndexingRequest)
+    assert request.user_id == 7
+    assert request.set_id == 8
+    assert request.doc_id == 9
 
 
 @pytest.mark.asyncio
