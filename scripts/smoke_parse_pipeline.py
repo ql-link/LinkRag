@@ -159,8 +159,28 @@ def print_timing_report(stage_timings: list[tuple[str, int | None]], total_wall_
     print("=" * 50)
 
 
+_SUFFIX_TO_FILE_TYPE = {
+    ".pdf": ("pdf", "application/pdf"),
+    ".html": ("html", "text/html"),
+    ".htm": ("html", "text/html"),
+    ".docx": ("docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
+    ".doc": ("doc", "application/msword"),
+    ".txt": ("txt", "text/plain"),
+    ".md": ("md", "text/markdown"),
+}
+
+
+def detect_file_type(path: str | None) -> tuple[str, str, str]:
+    """从扩展名推断 (file_type, content_type, suffix)。未传入时按 pdf 处理。"""
+    if not path:
+        return "pdf", "application/pdf", ".pdf"
+    suffix = Path(path).suffix.lower()
+    file_type, content_type = _SUFFIX_TO_FILE_TYPE.get(suffix, ("pdf", "application/pdf"))
+    return file_type, content_type, suffix or ".pdf"
+
+
 def load_pdf_bytes(pdf_path: str | None, task_id: str) -> tuple[bytes, str, int]:
-    """读取指定 PDF；未传入时生成默认冒烟测试 PDF。"""
+    """读取指定文件；未传入时生成默认冒烟测试 PDF。"""
     t = time.time()
     if pdf_path:
         path = Path(pdf_path).expanduser()
@@ -182,9 +202,7 @@ async def main(backend: str, keep: bool, pdf_path: str | None = None) -> int:
     dataset_id = 999_999
     src_bucket = "rag-raw"
     md_bucket = "rag-md"
-    pdf_suffix = Path(pdf_path).suffix if pdf_path else ".pdf"
-    if not pdf_suffix:
-        pdf_suffix = ".pdf"
+    file_type, content_type, pdf_suffix = detect_file_type(pdf_path)
     src_key = f"smoke-test/{task_id}{pdf_suffix}"
     md_key = f"smoke-test/{task_id}.md"
     filename = Path(pdf_path).name if pdf_path else f"{task_id}.pdf"
@@ -203,10 +221,13 @@ async def main(backend: str, keep: bool, pdf_path: str | None = None) -> int:
         bucket=src_bucket,
         object_key=src_key,
         content=pdf_bytes,
-        content_type="application/pdf",
+        content_type=content_type,
     )
     upload_src_ms = int((time.time() - t) * 1000)
-    logger.info(f"uploaded test PDF to {src_bucket}/{src_key} ({len(pdf_bytes)} bytes)")
+    logger.info(
+        f"uploaded test file to {src_bucket}/{src_key} "
+        f"({len(pdf_bytes)} bytes, type={file_type})"
+    )
 
     t = time.time()
     await insert_parse_task_row(
@@ -226,7 +247,7 @@ async def main(backend: str, keep: bool, pdf_path: str | None = None) -> int:
         document_parse_task_id=parse_task_id,
         user_id=user_id,
         dataset_id=dataset_id,
-        file_type="pdf",
+        file_type=file_type,
         source_bucket=src_bucket,
         source_object_key=src_key,
         source_filename=filename,
@@ -324,7 +345,10 @@ async def main(backend: str, keep: bool, pdf_path: str | None = None) -> int:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend", choices=["mineru", "docling"], default="mineru")
-    parser.add_argument("--pdf-path", help="使用指定本地 PDF，而不是自动生成测试 PDF")
+    parser.add_argument(
+        "--pdf-path",
+        help="使用指定本地文件路径，按扩展名自动推断 file_type（pdf/html/docx/...）",
+    )
     parser.add_argument("--keep", action="store_true", help="保留 DB / MinIO 测试产物")
     args = parser.parse_args()
     sys.exit(asyncio.run(main(args.backend, args.keep, args.pdf_path)))
