@@ -729,8 +729,62 @@ class ParseTaskPipeline:
         plan: FilePostIndexPlan,
         db: AsyncSession,
     ) -> EsIndexingResult:
-        """ES 入库：单趟扇出消费预分词产出的内存 plan，保持 chunk 级失败语义。"""
-        return await self._get_es_indexing_pipeline().write_es_index(plan, db=db)
+        """ES 入库：文档级全量重建（Issue #57）——前置删除 → 全量写入 → 失败清理。
+
+        首次执行与手动重试都经过本方法，编排一致，无需区分：
+        1. 前置删除：进入写入前删除该文档已有 ES 索引。首次执行通常命中 0（幂等空操作），
+           重试时清理上一趟残留与陈旧 chunk。删除失败（ES 不可达）直接判 ES 阶段失败、不写入。
+        2. 全量写入：消费 plan（已全量，含已成功的 chunk），相同 _id 覆盖。
+        3. 失败清理：写入未全部成功时删除本趟半成品，避免残留；清理失败 best-effort 记日志，
+           不掩盖原写入失败结果。
+        """
+        total = len(plan.chunks_with_tokens)
+        # 空 plan（无任何 dense 已就绪 chunk）：与 write_es_index 空处理一致，不触发删除。
+        if total == 0:
+            return EsIndexingResult(total_items=0, indexed_items=0)
+
+        es_pipeline = self._get_es_indexing_pipeline()
+        meta = plan.file_meta
+
+        # --- 前置删除：删干净再全量重写 ---
+        try:
+            await es_pipeline.delete_document_index(
+                user_id=meta.user_id,
+                dataset_id=meta.dataset_id,
+                doc_id=meta.doc_id,
+            )
+        except Exception as exc:
+            logger.error(
+                "[ParseTaskPipeline] ES 前置删除失败，判 ES 阶段失败不写入: "
+                "doc_id={} error={}",
+                meta.doc_id, exc,
+            )
+            return EsIndexingResult(
+                total_items=total,
+                indexed_items=0,
+                failure_reason=f"es_delete: {exc}",
+            )
+
+        # --- 全量写入 ---
+        result = await es_pipeline.write_es_index(plan, db=db)
+
+        # --- 失败清理：删除本趟半成品 ---
+        if not result.is_success:
+            try:
+                await es_pipeline.delete_document_index(
+                    user_id=meta.user_id,
+                    dataset_id=meta.dataset_id,
+                    doc_id=meta.doc_id,
+                )
+            except Exception as exc:
+                # 清理失败不掩盖原写入失败；下次重试前置删除兜底。
+                logger.warning(
+                    "[ParseTaskPipeline] ES 写入失败后清理半成品失败(best-effort): "
+                    "doc_id={} error={}",
+                    meta.doc_id, exc,
+                )
+
+        return result
 
     async def _store_chunk_vectors(
         self,

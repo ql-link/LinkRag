@@ -42,9 +42,11 @@ def build_preprocessor(*, plan: FilePostIndexPlan | None = None, error: Exceptio
     return preprocessor
 
 
-def build_es_pipeline(result: EsIndexingResult):
+def build_es_pipeline(result: EsIndexingResult, *, deleted: int = 0):
     es_pipeline = MagicMock()
     es_pipeline.write_es_index = AsyncMock(return_value=result)
+    # ES 文档级全量重建：_run_es_indexing 前置删除 + 失败清理都会调用 delete_document_index。
+    es_pipeline.delete_document_index = AsyncMock(return_value=deleted)
     return es_pipeline
 
 
@@ -151,9 +153,10 @@ class TestRunPretokenize:
 
 
 class TestRunEsIndexing:
-    """ES 入库：单趟扇出消费内存 plan，纯透传 write_es_index。"""
+    """ES 入库文档级全量重建：前置删除 → 全量写入 → 失败清理（Issue #57）。"""
 
-    async def test_should_consume_plan_and_return_es_result(self):
+    async def test_should_delete_then_write_on_success(self):
+        # 首次执行/重试成功路径：先删（命中 0=幂等空操作）再全量写入。
         es_result = EsIndexingResult(total_items=1, indexed_items=1, succeeded_item_ids=["c-0"])
         es_pipeline = build_es_pipeline(es_result)
         pipeline = build_pipeline(es_pipeline=es_pipeline)
@@ -163,7 +166,58 @@ class TestRunEsIndexing:
         result = await pipeline._run_es_indexing(plan, db)
 
         assert result is es_result
+        es_pipeline.delete_document_index.assert_awaited_once_with(
+            user_id=plan.file_meta.user_id,
+            dataset_id=plan.file_meta.dataset_id,
+            doc_id=plan.file_meta.doc_id,
+        )
         es_pipeline.write_es_index.assert_awaited_once_with(plan, db=db)
+        # 成功路径不触发失败清理：delete 只被调用一次（前置删除）。
+        assert es_pipeline.delete_document_index.await_count == 1
+
+    async def test_should_fail_without_writing_when_predelete_fails(self):
+        # 前置删除失败（ES 不可达）：直接判 ES 失败，不写入。
+        es_result = EsIndexingResult(total_items=1, indexed_items=1)
+        es_pipeline = build_es_pipeline(es_result)
+        es_pipeline.delete_document_index = AsyncMock(side_effect=RuntimeError("es down"))
+        pipeline = build_pipeline(es_pipeline=es_pipeline)
+        plan = build_plan()
+        db = AsyncMock()
+
+        result = await pipeline._run_es_indexing(plan, db)
+
+        assert not result.is_success
+        assert result.failure_reason.startswith("es_delete:")
+        es_pipeline.write_es_index.assert_not_awaited()
+
+    async def test_should_cleanup_when_write_fails(self):
+        # 写入部分失败：失败清理删除半成品（delete 共两次：前置 + 清理）。
+        es_result = EsIndexingResult(
+            total_items=2, indexed_items=1, failed_item_ids=["c-1"],
+            failure_reason="ES_INDEXING_FAILED: boom",
+        )
+        es_pipeline = build_es_pipeline(es_result)
+        pipeline = build_pipeline(es_pipeline=es_pipeline)
+        plan = build_plan()
+        db = AsyncMock()
+
+        result = await pipeline._run_es_indexing(plan, db)
+
+        assert result is es_result
+        assert es_pipeline.delete_document_index.await_count == 2
+
+    async def test_should_skip_delete_on_empty_plan(self):
+        # 空 plan：不触发删除，直接返回空结果。
+        es_pipeline = build_es_pipeline(EsIndexingResult(total_items=0, indexed_items=0))
+        pipeline = build_pipeline(es_pipeline=es_pipeline)
+        plan = build_plan(chunks=[])
+        db = AsyncMock()
+
+        result = await pipeline._run_es_indexing(plan, db)
+
+        assert result.total_items == 0
+        es_pipeline.delete_document_index.assert_not_awaited()
+        es_pipeline.write_es_index.assert_not_awaited()
 
 
 class TestBuildEsFailureReason:
