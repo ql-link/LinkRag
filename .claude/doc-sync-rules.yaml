@@ -80,13 +80,15 @@ rules:
       避免内部文档与对外契约不一致。
 
   # ---- 流水线终态语义 ----
-  - id: pipeline-orchestration
+  - id: parse-task-pipeline-orchestration
     description: 解析任务流水线编排或状态机变更
     when_changed:
-      - src/core/pipeline/**/*.py
+      - src/core/pipeline/parse_task/**/*.py
     must_update:
       - docs/internals/parse_task_pipeline.md
     severity: error
     rationale: |
-      流水线状态机变更涉及 success/failed 终态语义，Java 业务方通过 MQ 回调
-      消费这些状态。状态机失同步会导致业务方误判任务状态。
+      解析任务流水线状态机变更涉及 success/failed 终态语义，Java 业务方通过 MQ
+      回调消费这些状态。状态机失同步会导致业务方误判任务状态。
+      注意：本规则仅覆盖 parse_task 子包；src/core/pipeline 下的其他 pipeline
+      （如 recall）有各自的契约文档，不在此规则范围内。
