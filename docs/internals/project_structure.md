@@ -119,6 +119,12 @@ toLink-Rag/                         # 仓库根目录
 │   │   ├── parser/               # 文档解析器抽象与实现
 │   │   │   ├── base.py
 │   │   │   ├── factory.py
+│   │   │   ├── html/             # HTML DOM 解析、表格处理和图片引用重写
+│   │   │   │   ├── image_rewriter.py
+│   │   │   │   ├── models.py
+│   │   │   │   ├── renderer.py
+│   │   │   │   ├── service.py
+│   │   │   │   └── table_processor.py
 │   │   │   ├── pdf/              # PDF 解析服务与后端
 │   │   │   │   ├── base.py
 │   │   │   │   ├── models.py

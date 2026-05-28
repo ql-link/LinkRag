@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from src.config import settings
+from src.utils.logger import logger
 
 from .bucket_router import BucketRouter
 from .constants import (
@@ -13,7 +14,13 @@ from .constants import (
     QDRANT_PAYLOAD_INDEX_FIELDS,
 )
 from .exceptions import QdrantStoreError, QdrantVectorStorageConfigurationError
-from .models import IndexedPoint, SparseIndexedPoint
+from .models import IndexedPoint, SparseIndexedPoint, SparseQueryVectorSpec
+
+if TYPE_CHECKING:
+    # 类型提示用：避免在运行时与 vector_storage 子包形成循环导入。
+    # 运行时实现路径直接 import VectorSearchHit；vector_storage 已经依赖
+    # qdrant_vector_storage（不是反向），所以反向 import 从设计上是安全的。
+    from src.core.vector_storage.models import VectorSearchHit
 
 
 class QdrantIndexStore:
@@ -177,6 +184,156 @@ class QdrantIndexStore:
             raise QdrantStoreError(
                 f"Failed to upsert sparse vectors into {collection_name}: {exc}"
             ) from exc
+
+    async def _search_chunks(
+        self,
+        *,
+        bucket_id: int,
+        query_vector_spec: SparseQueryVectorSpec,
+        payload_filter: Any,
+        limit: int,
+        score_threshold: float,
+    ) -> "list[VectorSearchHit]":
+        """向量类型无关的搜索底座（私有，仅供 facade 调用）。
+
+        ``_`` 前缀显式表达"模块内可见、不对业务方暴露"的语义边界。本方法只吞两类
+        Qdrant SDK 异常并降级为空结果（业务等价于"没数据"）：
+        - 目标 bucket collection 不存在
+        - 目标 named sparse vector 在 collection 上未配置
+
+        其他失败（网络、超时、配置缺失）一律抛 ``QdrantStoreError`` /
+        ``QdrantVectorStorageConfigurationError``，由 facade 翻译为
+        ``VectorRetrievalBackendError`` / ``VectorRetrievalConfigurationError``。
+
+        D8 决议：store 层完成 ``ScoredPoint → VectorSearchHit`` 字段映射，facade
+        不接触 qdrant-client 的 SDK 类型。本方法返回 ``list[VectorSearchHit]``。
+
+        Args:
+            bucket_id: 由 ``BucketRouter.route_user(user_id).bucket_id`` 计算得到的 bucket。
+            query_vector_spec: 查询向量规格；本次只接受 ``SparseQueryVectorSpec``。
+            payload_filter: ``models.Filter`` 实例（由 facade 构造，store 不感知字段语义）。
+            limit: Qdrant ``query_points`` 的 limit；上层已做 ``> 0`` 校验。
+            score_threshold: Qdrant ``query_points`` 的阈值；上层已做 ``>= 0`` 校验。
+
+        Returns:
+            按 score 降序的命中列表；命中数 <= limit。collection / named vector 不存在
+            时返回 ``[]``。
+
+        Raises:
+            QdrantStoreError: Qdrant 网络 / 超时 / 服务不可用。
+            QdrantVectorStorageConfigurationError: SDK 模块缺失等。
+        """
+
+        # 延迟运行时 import：避免与 vector_storage 子包形成模块加载期循环依赖。
+        # vector_storage 在初始化时会 import qdrant_vector_storage（写入路径需要），
+        # 反向只在 _search_chunks 实际被调用时拿到 VectorSearchHit 即可。
+        from src.core.vector_storage.models import VectorSearchHit
+
+        client = await self._get_client()
+        models = self._models()
+        collection_name = self.bucket_router.collection_name(bucket_id)
+
+        # 容错点 1：collection 不存在 → 业务等价于"用户/set 没数据"，返空 + warn。
+        # 与写入侧 ``delete_points`` 把"collection 不存在"当作合法语义一致。
+        try:
+            collection_present = await client.collection_exists(collection_name=collection_name)
+        except Exception as exc:
+            raise QdrantStoreError(
+                f"Failed to check collection existence for search: {collection_name}: {exc}"
+            ) from exc
+        if not collection_present:
+            logger.warning(
+                "[QdrantIndexStore._search_chunks] collection not found; returning empty hits: "
+                "bucket_id={} collection={}",
+                bucket_id,
+                collection_name,
+            )
+            return []
+
+        # 构造 query 与 vector_kind：本次只支持 sparse；未来 dense / hybrid 增加分支。
+        if isinstance(query_vector_spec, SparseQueryVectorSpec):
+            query = models.SparseVector(
+                indices=query_vector_spec.indices,
+                values=query_vector_spec.values,
+            )
+            using = query_vector_spec.vector_name
+            vector_kind = "sparse"
+        else:  # pragma: no cover - 防御分支，dense / hybrid 接入时填充
+            raise NotImplementedError(
+                f"Unsupported query_vector_spec type: {type(query_vector_spec).__name__}"
+            )
+
+        # 容错点 2：named vector 不存在 → 写入侧尚未为该 collection 配置 sparse_text
+        # schema 时返空；这是 dense-only 中间状态的合法常态。
+        # 1.17.1 SDK 没有专属"named vector 不存在"异常类，只能在 except 内做关键词
+        # 匹配；监听到典型关键词时降级为空集，否则透传为 QdrantStoreError。
+        try:
+            response = await client.query_points(
+                collection_name=collection_name,
+                query=query,
+                using=using,
+                query_filter=payload_filter,
+                limit=limit,
+                score_threshold=score_threshold,
+                with_payload=True,
+                with_vectors=False,
+            )
+        except Exception as exc:
+            if self._is_named_vector_missing_error(exc):
+                logger.warning(
+                    "[QdrantIndexStore._search_chunks] named sparse vector not configured; "
+                    "returning empty hits: bucket_id={} collection={} vector_name={}",
+                    bucket_id,
+                    collection_name,
+                    using,
+                )
+                return []
+            raise QdrantStoreError(
+                f"Failed to query collection {collection_name}: {exc}"
+            ) from exc
+
+        # ScoredPoint → VectorSearchHit 字段映射；payload dict 在 store 层消化，
+        # 不外泄给 facade 与调用方。score 已由 Qdrant 端按 limit / score_threshold
+        # 过滤；本地不再二次过滤。
+        scored_points = getattr(response, "points", None) or response  # 兼容老/新 API 形态
+        hits: list[VectorSearchHit] = []
+        for point in scored_points:
+            payload = getattr(point, "payload", None) or {}
+            hits.append(
+                VectorSearchHit(
+                    chunk_id=str(point.id),
+                    doc_id=int(payload.get("doc_id", 0)),
+                    set_id=int(payload.get("set_id", 0)),
+                    score=float(point.score),
+                    vector_kind=vector_kind,
+                )
+            )
+        return hits
+
+    @staticmethod
+    def _is_named_vector_missing_error(exc: BaseException) -> bool:
+        """识别"named vector 不存在"型底层异常，用于召回路径的语义降级。
+
+        qdrant-client 1.17.1 没有专属异常类区分这种情况；这里同时尝试两类匹配，
+        互为兜底：
+
+        1. 异常本身或 ``__cause__`` 是 ``UnexpectedResponse``，且响应内容暗示
+           "向量名不存在"。
+        2. 关键词匹配（小写消息中含 "named vector"，或同时含 "vector" + "not found"，
+           或同时含 "vector" + "does not exist"）。
+
+        风险点：未来 SDK 升级可能改变错误消息文本；测试覆盖三类关键词组合，
+        升级 SDK 时若行为退化会被打脸。
+        """
+
+        message = str(exc).lower()
+        if "named vector" in message:
+            return True
+        if "not found" in message and ("vector" in message or "sparse" in message):
+            return True
+        if "does not exist" in message and ("vector" in message or "sparse" in message):
+            return True
+        return False
 
     async def point_exists(self, *, bucket_id: int, chunk_id: str) -> bool:
         """检查指定 chunk_id 对应的 Qdrant point 是否存在。"""

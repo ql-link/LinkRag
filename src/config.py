@@ -125,6 +125,14 @@ class Settings(BaseSettings):
     SPARSE_VECTOR_INDEXING_STALE_SECONDS: int = 900
     TOLINK_RUN_REAL_SPARSE_VECTOR_TESTS: bool = False
 
+    # Sparse retrieval defaults (called by VectorStorageFacade.search_sparse_chunks).
+    # 默认值依据：业界保守占位（Dify "score threshold disabled = 0.0"、
+    # Qdrant "先广召回后精排"），本项目无评测 harness 时不盲设阈值。
+    # 调用方可任意 per-call 覆盖；运维可改 .env 全局收紧。完整调研依据见
+    # docs/internals/vectorization.md §9 与 PR 描述。
+    SPARSE_RETRIEVAL_TOP_K: int = 10
+    SPARSE_RETRIEVAL_SCORE_THRESHOLD: float = 0.0
+
     # Elasticsearch
     ES_HOST: str = "http://localhost:9200"
     ES_USER: Optional[str] = None

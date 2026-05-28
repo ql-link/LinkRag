@@ -87,6 +87,7 @@ def create_vector_storage_facade(
         management_service=management_service,
         compensation_service=compensation_service,
         qdrant_store=resolved_qdrant_store,
+        sparse_vector_service=sparse_vector_service,
     )
 
 
