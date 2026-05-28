@@ -98,6 +98,41 @@ user_id, set_id, doc_id
 
 写入时使用 `QdrantIndexStore.upsert_sparse_vectors`，通过 Qdrant `update_vectors` 对同一 `point_id=chunk_id` 追加或覆盖 sparse vector，不覆盖已存在的 dense vector 与 payload。
 
+### Sparse 召回
+
+召回链路通过 `VectorStorageFacade.search_sparse_chunks` 发起稀疏向量搜索，底层由 `QdrantIndexStore._search_chunks` 执行（私有方法，向量类型无关底座，未来 dense / hybrid 召回复用同一底座）。
+
+**SDK 调用形态**（qdrant-client 1.17.1，旧版 `search` 已移除）：
+
+```python
+response = await client.query_points(
+    collection_name="kb_bucket_42",
+    query=models.SparseVector(indices=[...], values=[...]),
+    using="sparse_text",          # named sparse vector，与写入侧同源
+    query_filter=models.Filter(
+        must=[
+            models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id)),
+            models.FieldCondition(key="set_id",  match=models.MatchValue(value=set_id)),
+            # doc_id 可选，非空时用 MatchAny
+        ]
+    ),
+    limit=top_k,
+    score_threshold=score_threshold,
+    with_payload=True,
+    with_vectors=False,
+)
+```
+
+**容错语义**（与写入侧一致）：
+
+| 场景 | 处理 |
+| --- | --- |
+| collection 不存在 | 返空 hits，不抛；warn 日志带 `bucket_id` |
+| named sparse vector 未配置 | 返空 hits，不抛；warn 日志带 `bucket_id` + `vector_name` |
+| Qdrant 网络故障 / 超时 | 抛 `QdrantStoreError`，由 facade 翻译为 `VectorRetrievalBackendError` |
+
+**写读不变量**：bucket 路由、vector name、payload 字段、BGE-M3 encoder 实例写入与召回共用同一套，不允许分叉。
+
 ## 一致性约束
 
 - **MySQL 为真值**：`kb_document_chunk` 是 Chunk 真值表，可从中重建 Qdrant 数据。
@@ -115,6 +150,7 @@ user_id, set_id, doc_id
 | 确认稀疏向量 schema | `QdrantStore.ensure_sparse_vector_schema` |
 | 检查 Chunk 是否存在 | `QdrantStore.point_exists` |
 | 删除 Chunk | `QdrantStore.delete_points` |
+| **稀疏向量召回** | **`QdrantStore._search_chunks`（私有底座，由 `VectorStorageFacade.search_sparse_chunks` 调用）** |
 | 用户路由 | `BucketRouter.route_user(user_id)` |
 | 按 bucket 取 collection 名 | `BucketRouter.collection_name(bucket_id)` |
 
