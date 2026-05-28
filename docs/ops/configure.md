@@ -55,7 +55,7 @@
 | `MARKDOWN_PARSER_VISION_CONCURRENCY` | `24` | 图片视觉增强最大并发数，可降为 `16` / `8` / `1` 控制限流风险 |
 | `CHUNKING_ENABLE_ADVANCED_PIPELINE` | `true` | 是否启用进阶分块流水线 |
 
-> 注：ES 入库失败即终态，无 ES 内部自动重试配置。原 `ES_INDEXING_MAX_RETRY` 已移除（用户侧重试由 `document_parse_pipeline.retry_count` 记录，触发路径待后续需求接线）。
+> 注：ES 入库失败即终态，无 ES 内部自动重试配置。原 `ES_INDEXING_MAX_RETRY` 已移除；用户侧重试由 Java 端负责，Python 侧不再维护 `retry_count` / `last_retry_at`。
 
 ## MQ 失败兜底（重试 + 死信）
 
