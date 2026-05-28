@@ -132,29 +132,36 @@ class ParseLogRepository:
         payload: ParseTaskPayload,
         db: AsyncSession,
         *,
-        parsed_bucket: str,
-        parsed_object_key: str,
+        parsed_bucket: str | None,
+        parsed_object_key: str | None,
         retry_of_task_id: str,
     ) -> DocumentParsedLog:
-        """重试场景下创建新的 log 行（无真实解析过程）。
+        """重试场景下创建新的 log 行。
 
-        - 直接落 markdown 坐标（由 payload 携带的上次产物 bucket/key）。
+        - 后处理阶段重试：直接落 markdown 坐标（由 payload 携带的上次产物 bucket/key）。
+        - cleaning 阶段重试：不预写 parsed_*，由重新解析并上传成功后的 ``mark_parsed`` 写入。
         - ``retry_of_task_id`` 记录上一轮 task_id，用于审计与反查。
-        - ``parse_started_at`` / ``parse_finished_at`` 留空：本次未做真正解析。
-        - ``parsed_at`` 写入当前时间表示"重试时确认 markdown 已存在"。
+        - ``parse_started_at`` / ``parse_finished_at`` 初始留空；若本次重新 cleaning，后续写真实耗时。
         - 不主动 commit，由调用方与 create_with_inherited_state 同事务收敛。
         """
+        parsed_file_url = (
+            self._build_internal_file_url(parsed_bucket, parsed_object_key)
+            if parsed_bucket and parsed_object_key
+            else None
+        )
         log_record = DocumentParsedLog(
             task_id=payload.task_id,
             document_original_file_id=payload.original_file_id,
             document_parse_task_id=payload.document_parse_task_id,
             trigger_mode=payload.trigger_mode,
             retry_of_task_id=retry_of_task_id,
-            parsed_filename=self._build_parsed_filename(payload.source_filename),
+            parsed_filename=(
+                self._build_parsed_filename(payload.source_filename) if parsed_object_key else None
+            ),
             parsed_bucket_name=parsed_bucket,
             parsed_object_key=parsed_object_key,
-            parsed_file_url=self._build_internal_file_url(parsed_bucket, parsed_object_key),
-            parsed_at=now(),
+            parsed_file_url=parsed_file_url,
+            parsed_at=now() if parsed_object_key else None,
             parse_started_at=None,
             parse_finished_at=None,
             parse_duration_ms=None,
