@@ -74,3 +74,6 @@ tests/api_keys.json
 
 /requirements
 
+/.specs/
+/.kiro/
+/blog/
