@@ -11,8 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.chunk_fact_storage.constants import (
     CHUNK_DELETE_PROTECTED_STATUSES,
     CHUNK_STATUS_INDEXED,
-    ES_STATUS_FAILED,
-    ES_STATUS_PENDING,
 )
 from src.database import get_async_session_factory
 from src.models.chunk_record import ChunkRecordDB
@@ -92,11 +90,14 @@ class Preprocessor:
         db: AsyncSession,
         doc_id: int,
     ) -> list[ChunkRecordDB]:
+        # ES 文档级全量重建（Issue #57）：plan 必须覆盖该文档全部有效 chunk，
+        # 不再按 es_status 过滤。已 SUCCESS 的 chunk 也要重新进入 plan，使下游
+        # ES 阶段在"删干净 + 全量重写"时拿到完整 chunk 集，而非只补失败子集。
+        # 仍保留 dense 已就绪（INDEXED）前置依赖与删除保护态排除。
         stmt = (
             select(ChunkRecordDB)
             .where(ChunkRecordDB.doc_id == doc_id)
             .where(ChunkRecordDB.dense_vector_status == CHUNK_STATUS_INDEXED)
-            .where(ChunkRecordDB.es_status.in_((ES_STATUS_PENDING, ES_STATUS_FAILED)))
             .where(ChunkRecordDB.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
             .order_by(ChunkRecordDB.chunk_index.asc())
         )
