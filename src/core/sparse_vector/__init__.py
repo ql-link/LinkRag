@@ -24,6 +24,12 @@ from .models import (
 )
 from .pipeline import SparseVectorService
 
+# ``SparseRetriever`` 与 ``SparseIndexingPipeline`` 同款：不在此处导入，避免与
+# ``src.core.vector_storage`` 形成循环（``vector_storage.facade`` 依赖
+# ``sparse_vector``，而 ``sparse_retriever`` 又类型上引用 ``vector_storage``
+# 提供的 ``search_sparse_chunks`` 后端契约）。直接使用：
+#     from src.core.sparse_vector.sparse_retriever import SparseRetriever
+
 __all__ = [
     "BGEM3SparseVectorEncoder",
     "SparseChunkResult",

@@ -35,6 +35,7 @@ class ChunkIndexingRequest:
     user_id: int
     set_id: int
     doc_id: int
+    include_failed: bool = False
 
 
 class VectorBranch(str, Enum):
