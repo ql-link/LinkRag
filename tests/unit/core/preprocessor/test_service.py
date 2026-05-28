@@ -97,6 +97,21 @@ async def test_should_build_file_post_index_plan_from_pending_chunks():
     assert plan.chunks_with_tokens[0].fine_tokens == "fine payment"
 
 
+async def test_plan_query_should_not_filter_by_es_status():
+    """ES 文档级全量重建（Issue #57）：plan 必须覆盖全部有效 chunk，查询不再按 es_status 过滤。"""
+    session = CapturingSession(records=[build_record()])
+    preprocessor = build_preprocessor(session)
+
+    await preprocessor.build_file_post_index_plan(doc_id=10, task_id="t-001")
+
+    compiled = str(session.statement)
+    # es_status 作为表列仍出现在 SELECT 中；关键是 WHERE 过滤条件不得再含 es_status。
+    where_clause = compiled.split("WHERE", 1)[1]
+    assert "es_status" not in where_clause
+    assert "dense_vector_status" in where_clause
+    assert "chunk_index" in compiled  # ORDER BY 仍按 chunk_index
+
+
 async def test_should_return_empty_plan_when_no_chunks_need_pretokenization():
     session = CapturingSession(records=[])
     preprocessor = build_preprocessor(session)

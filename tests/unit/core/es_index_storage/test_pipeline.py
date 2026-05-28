@@ -1,5 +1,7 @@
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from src.core.es_index_storage import EsIndexingPipeline
 from src.core.preprocessor.models import ChunkWithTokens, FileIndexMeta, FilePostIndexPlan
 
@@ -148,3 +150,45 @@ class TestEsIndexingPipeline:
         assert result.failed_item_ids == ["c-1"]
         assert db.commit.await_count == 2
         repo.mark_es_success.assert_awaited_once_with(db, ["c-0"])
+
+
+class TestDeleteDocumentIndex:
+    """ES 文档级删除：按 user+dataset+doc 三维过滤，范围严格限定（Issue #57）。"""
+
+    async def test_should_delete_by_three_dimension_filter_and_return_count(self):
+        client = build_client()
+        client.delete_by_query = AsyncMock(return_value={"deleted": 3})
+        pipeline, _ = build_pipeline(client)
+
+        deleted = await pipeline.delete_document_index(user_id=20, dataset_id=30, doc_id=10)
+
+        assert deleted == 3
+        client.delete_by_query.assert_awaited_once()
+        kwargs = client.delete_by_query.await_args.kwargs
+        # routing 与写入侧一致，收敛到目标分片。
+        assert kwargs["routing"] == "30"
+        assert kwargs["conflicts"] == "proceed"
+        assert kwargs["refresh"] is False
+        # 三维全等过滤：user_id + dataset_id + doc_id 都在 filter term 中。
+        filters = kwargs["query"]["bool"]["filter"]
+        terms = {list(f["term"].keys())[0]: list(f["term"].values())[0] for f in filters}
+        assert terms == {"user_id": 20, "dataset_id": 30, "doc_id": 10}
+
+    async def test_should_return_zero_when_no_document_matched(self):
+        # 首次执行前置删除：ES 中无该文档索引，命中 0（幂等空操作）。
+        client = build_client()
+        client.delete_by_query = AsyncMock(return_value={"deleted": 0})
+        pipeline, _ = build_pipeline(client)
+
+        deleted = await pipeline.delete_document_index(user_id=1, dataset_id=2, doc_id=3)
+
+        assert deleted == 0
+
+    async def test_should_raise_when_es_unreachable(self):
+        # ES 不可达：向上抛，由 _run_es_indexing 判 ES 阶段失败。
+        client = build_client()
+        client.delete_by_query = AsyncMock(side_effect=RuntimeError("es down"))
+        pipeline, _ = build_pipeline(client)
+
+        with pytest.raises(RuntimeError, match="es down"):
+            await pipeline.delete_document_index(user_id=1, dataset_id=2, doc_id=3)

@@ -63,6 +63,11 @@ class OrderTrackingEsIndexingPipeline:
         else:
             self.order_tracker = order_tracker
 
+    async def delete_document_index(self, *, user_id, dataset_id, doc_id):
+        # ES 文档级全量重建：前置删除发生在写入之前。
+        self.order_tracker.append("es_delete")
+        return 0
+
     async def write_es_index(self, plan, *, db):
         self.order_tracker.append("es_write")
         return EsIndexingResult(total_items=2, indexed_items=2)
@@ -180,13 +185,14 @@ class TestPipelineSixStageOrder:
         assert result.status == PipelineStatus.SUCCESS
         assert result.chunk_count == 2
 
-        # 验证阶段顺序：cleaning → chunking(隐式) → vector → pretokenize → es → sparse
+        # 验证阶段顺序：cleaning → chunking(隐式) → vector → pretokenize → es(删除→写入) → sparse
         assert order_tracker == [
             "cleaning_upload",  # CLEANING 阶段
             # CHUNKING 阶段没有显式追踪（在 _persist_chunk_facts 中）
             "vector_index",  # VECTORIZING 阶段
             "pretokenize",  # PRETOKENIZE 阶段
-            "es_write",  # ES_INDEXING 阶段
+            "es_delete",  # ES_INDEXING：文档级全量重建前置删除
+            "es_write",  # ES_INDEXING：全量写入
             "sparse_run",  # SPARSE_VECTORIZING 阶段
         ]
 

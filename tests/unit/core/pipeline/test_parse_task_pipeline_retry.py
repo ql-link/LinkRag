@@ -348,7 +348,7 @@ class TestRetryBranch:
         post_repo = FakeRetryPipelineRepository(old_log=old_log, old_pipeline=old_pipeline)
         log_repo = FakeRetryLogRepository(old_log=old_log)
 
-        # _load_chunks_from_db 反查 chunks（dense PENDING/FAILED）：mock 返回 2 行。
+        # _load_all_chunks_from_db 反查完整 chunk truth set（按 doc_id 全量）：mock 返回 2 行。
         from src.core.qdrant_vector_storage.point_factory import chunk_from_record
         chunk_rows = [
             SimpleNamespace(
@@ -407,6 +407,72 @@ class TestRetryBranch:
         assert "mark_sparse_vectorizing_started" in post_repo.calls
         # 整体终态由 sparse 翻 SUCCESS
         assert post_repo.new_pipeline.pipeline_status == PIPELINE_STATUS_SUCCESS
+
+    async def test_load_all_chunks_from_db_returns_full_truth_set(self):
+        """Issue #58: retry 路径加载完整 chunk truth set，不再用 dense PENDING/FAILED 子集过滤。"""
+        from sqlalchemy.sql import Select
+
+        old_log, old_pipeline = build_old_log_pipeline()
+        post_repo = FakeRetryPipelineRepository(old_log=old_log, old_pipeline=old_pipeline)
+
+        # 模拟全量 3 个 chunk：dense INDEXED / PENDING / FAILED 各一，
+        # 还携带 sparse_vector_status / es_status，下游按 SQL 真值自取。
+        chunk_rows = [
+            SimpleNamespace(
+                chunk_id="c1", doc_id=1, set_id=30, user_id=20, bucket_id=42,
+                content="c1", chunk_type="text",
+                start_line=0, end_line=1, chunk_index=0,
+                dense_vector_status="INDEXED",
+                sparse_vector_status="PENDING",
+                es_status="PENDING",
+            ),
+            SimpleNamespace(
+                chunk_id="c2", doc_id=1, set_id=30, user_id=20, bucket_id=42,
+                content="c2", chunk_type="text",
+                start_line=2, end_line=3, chunk_index=1,
+                dense_vector_status="PENDING",
+                sparse_vector_status="PENDING",
+                es_status="PENDING",
+            ),
+            SimpleNamespace(
+                chunk_id="c3", doc_id=1, set_id=30, user_id=20, bucket_id=42,
+                content="c3", chunk_type="text",
+                start_line=4, end_line=5, chunk_index=2,
+                dense_vector_status="FAILED",
+                sparse_vector_status="FAILED",
+                es_status="FAILED",
+            ),
+        ]
+        db = build_db()
+        executed_stmts: list = []
+
+        async def fake_execute(stmt, *args, **kwargs):
+            executed_stmts.append(stmt)
+            result_obj = MagicMock()
+            result_obj.scalars.return_value.all.return_value = chunk_rows
+            return result_obj
+
+        db.execute = fake_execute
+
+        pipeline = ParseTaskPipeline(
+            storage=MagicMock(),
+            session_factory=FakeAsyncSessionFactory(db),
+            mq_service=MagicMock(),
+            pipeline_repository=post_repo,
+        )
+        pipeline._notifier = FakeNotifier()
+
+        chunks = await pipeline._load_all_chunks_from_db(build_retry_payload(), db)
+
+        # 三个 chunk 全部加载（含 INDEXED），且按 chunk_index 排序。
+        assert chunks is not None
+        assert len(chunks) == 3
+        assert [c.metadata.get("chunk_index") for c in chunks] == [0, 1, 2]
+
+        # SQL 谓词中不得出现 dense_vector_status IN (PENDING, FAILED) 这种局部过滤。
+        assert len(executed_stmts) == 1
+        sql = str(executed_stmts[0].compile(compile_kwargs={"literal_binds": True}))
+        assert "dense_vector_status IN" not in sql.replace("'", "")
 
     async def test_concurrent_retry_cas_layer_2_fails_walks_validation_failure_path(self):
         """R2: mark_superseded rowcount=0 → 走 _handle_retry_validation_failure 路径。"""
