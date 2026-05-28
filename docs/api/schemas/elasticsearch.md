@@ -8,6 +8,8 @@ ES 索引命名、mapping、文档结构与入库结果模型参考。
 - Mapping 定义：[src/core/es_index_storage/mapping.py](../../../src/core/es_index_storage/mapping.py)
 - 批次构造：[src/core/es_index_storage/batcher.py](../../../src/core/es_index_storage/batcher.py)
 - 结果模型：[src/core/es_index_storage/models.py](../../../src/core/es_index_storage/models.py)
+- BM25 召回：[src/core/es_index_storage/retrieval.py](../../../src/core/es_index_storage/retrieval.py)
+- 召回模型：[src/core/es_index_storage/retrieval_models.py](../../../src/core/es_index_storage/retrieval_models.py)
 
 ES 负责存储预分词后的 Chunk token 索引副本，用于后续 BM25 / lexical 召回。原文内容、分块元数据与索引状态真值仍以 MySQL `kb_document_chunk` 为准。
 
@@ -142,7 +144,7 @@ is_success = (not failed_item_ids) and (indexed_items == total_items)
 
 ## 查询约束
 
-后续 BM25 / lexical 召回应只依赖 ES 文档中的 token 与定位字段。查询必须至少包含：
+BM25 / lexical 召回应只依赖 ES 文档中的 token 与定位字段。查询必须至少包含：
 
 | 约束 | 字段 |
 | --- | --- |
@@ -151,6 +153,44 @@ is_success = (not failed_item_ids) and (indexed_items == total_items)
 | 数据路由 | `routing=str(dataset_id)` |
 
 可选按 `doc_id` 收窄到单文档。当前 ES 文档不包含 `chunk_type`、业务状态、原文内容等字段；如召回需要这些条件，应先评估是否由 MySQL 后过滤承接，避免为了读侧过滤轻易扩大 ES 文档结构。
+
+### BM25 TopK Chunk 召回
+
+`EsBm25Retriever.recall_topk_chunks(...)` 提供 ES 读侧 BM25 召回入口。调用方负责先完成 query 分词，并传入：
+
+| 入参 | 类型 | 说明 |
+| --- | --- | --- |
+| `user_id` | int | 用户 ID，必须为正整数 |
+| `dataset_id` | int | 数据集 / 知识集 ID，必须为正整数，并用于 ES routing |
+| `tokens` | Sequence[str] | 已分词 query tokens；空列表或全空白时直接返回空结果 |
+| `top_k` | int | 返回命中数，必须大于 0，正整数原样映射到 ES `size` |
+| `doc_id` | int \| None | 可选文档 ID 过滤 |
+
+查询使用 `bool.filter` 固定过滤 `user_id` 与 `dataset_id`，传入 `doc_id` 时追加 `doc_id` term 过滤。文本召回使用 `multi_match`，字段权重为：
+
+```json
+{
+  "fields": ["coarse_tokens^2", "fine_tokens"],
+  "type": "best_fields"
+}
+```
+
+该权重对应 RagFlow 主内容粗粒度字段 `content_ltks^2` 与细粒度字段 `content_sm_ltks`。当前索引只有 `coarse_tokens` / `fine_tokens`，不包含 title、important keyword、question 等更细权重字段。
+
+召回时只请求：
+
+```python
+_source = ["chunk_id"]
+```
+
+返回值为 `list[Bm25ChunkHit]`：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `chunk_id` | str | 命中的 Chunk 业务唯一键 |
+| `score` | float | ES 原始 `_score`，不归一化、不重算，只适合同一次 query 内排序或作为后续融合特征 |
+
+ES 查询失败会抛 `EsRetrievalError`，不会返回空列表；参数错误会抛 `EsRecallValidationError`，且不会访问 ES。
 
 ## 一致性约束
 
