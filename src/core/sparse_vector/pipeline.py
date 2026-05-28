@@ -68,3 +68,33 @@ class SparseVectorService:
                 f"Expected {len(texts)} sparse vectors, got {len(vectors)}."
             )
         return vectors
+
+    async def vectorize_query(self, query: str) -> SparseVector:
+        """对单条召回 query 执行稀疏向量化，复用 chunk 写入侧同一 BGE-M3 路径。
+
+        召回链路调用方（``VectorStorageFacade.search_sparse_chunks``）通过本方法
+        把用户 query 转成 Qdrant 可消费的 ``SparseVector``。这是写入与召回共用的
+        **唯一** 编码入口——保证 query 与 chunk 走同一套 token 权重空间，避免
+        sparse score 在两侧分布不一致。
+
+        本方法**不**做 query 改写、清洗、拼接（属于召回策略，本次不引入）；caller
+        应在进入本方法前完成"空 query 短路"判断。
+
+        Args:
+            query: 用户问题或关键词；调用方需保证非空字符串（service 层不再 strip）。
+
+        Returns:
+            与 query 对应的稀疏向量。
+
+        Raises:
+            ValueError: 编码器返回数量不是 1，表示服务契约被破坏。
+            SparseVectorEncodingError: BGE-M3 推理失败（由 encoder 透传）。
+            SparseVectorOutputError: BGE-M3 返回空向量或非法权重（由 encoder 透传）。
+        """
+
+        vectors = await self._encoder.aencode([query])
+        if len(vectors) != 1:
+            raise ValueError(
+                f"Expected one sparse vector for query, got {len(vectors)}."
+            )
+        return vectors[0]

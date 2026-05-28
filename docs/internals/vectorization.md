@@ -30,8 +30,8 @@ src/core/chunk_fact_storage/
 src/core/qdrant_vector_storage/
 ├── bucket_router.py               # user_id 分桶和 collection 命名
 ├── point_factory.py               # draft/record -> Qdrant point
-├── qdrant_store.py                # Qdrant 访问层
-└── models.py                      # IndexedPoint
+├── qdrant_store.py                # Qdrant 访问层（含召回底座 _search_chunks）
+└── models.py                      # IndexedPoint / SparseIndexedPoint / SparseQueryVectorSpec
 ```
 
 解析后向量化链路：
@@ -52,8 +52,12 @@ ParseTaskPipeline
         -> 按 chunk_index 顺序处理每个 chunk
           -> ChunkRepository.mark_indexing()
           -> ChunkEmbeddingPipeline.aembed_chunks([chunk])
+          -> SparseVectorService.vectorize_chunk([chunk 原文])（开启时）
           -> QdrantIndexStore.ensure_collection()
           -> QdrantIndexStore.upsert_points()
+          -> QdrantIndexStore.ensure_sparse_vector_schema()（开启时）
+          -> QdrantIndexStore.upsert_sparse_vectors()（开启时）
+          -> ChunkRepository.mark_sparse_indexed()（开启时）
           -> ChunkRepository.mark_indexed()
   -> document_parse_pipeline.vectorizing_status = SUCCESS
   -> EsIndexingPipeline.index_for_parse_task()
@@ -68,15 +72,15 @@ ParseTaskPipeline
 | 组件 | 文件 | 职责 |
 | --- | --- | --- |
 | `ChunkEmbeddingPipeline` | `splitter/embedding_pipeline.py` | 批量生成 Chunk embedding，支持缓存和统计 |
-| `SparseVectorService` | `sparse_vector/pipeline.py` | 使用 BGE-M3 对 chunk 原文生成稀疏向量 |
-| `VectorStorageFacade` | `vector_storage/facade.py` | 向上游暴露统一入口 |
+| `SparseVectorService` | `sparse_vector/pipeline.py` | 使用 BGE-M3 对 chunk 原文生成稀疏向量；`vectorize_query` 供召回侧使用 |
+| `VectorStorageFacade` | `vector_storage/facade.py` | 向上游暴露统一入口；含写入、管理、补偿与**召回**（`search_sparse_chunks`） |
 | `VectorStoragePipeline` | `vector_storage/pipeline.py` | 消费 SQL chunk 真值，写 dense Qdrant 索引副本并回写状态 |
 | `VectorStorageManagementPipeline` | `vector_storage/management_pipeline.py` | Chunk 修改、删除 |
 | `VectorStorageCompensationPipeline` | `vector_storage/compensation_pipeline.py` | 删除失败、INDEXING 卡住、FAILED 重建 |
 | `ChunkDraftFactory` | `vector_storage/draft_factory.py` | 生成 chunk_id、content_hash、bucket_id、chunk_type |
 | `ChunkRepository` | `chunk_fact_storage/repository.py` | MySQL Chunk 真值表读写和状态机 |
-| `BucketRouter` | `qdrant_vector_storage/bucket_router.py` | 按 `user_id` 路由到 Qdrant collection |
-| `QdrantIndexStore` | `qdrant_vector_storage/qdrant_store.py` | Qdrant collection、point 写入、删除、查询 |
+| `BucketRouter` | `qdrant_vector_storage/bucket_router.py` | 按 `user_id` 路由到 Qdrant collection；写入与召回共用 |
+| `QdrantIndexStore` | `qdrant_vector_storage/qdrant_store.py` | Qdrant collection、point 写入、删除、查询；`_search_chunks` 为向量类型无关召回底座 |
 | `EsIndexingPipeline` | `es_index_storage/pipeline.py` | 将文件级 Chunk 内容写入 Elasticsearch |
 | `ParsePipelineRepository` | `pipeline/post_process_repository.py` | 维护 `document_parse_pipeline` 文件级阶段状态 |
 
@@ -136,9 +140,9 @@ MySQL 是 Chunk 真值源，Qdrant 是向量索引副本。chunk 表中的稠密
 | 字段 | 含义 |
 | --- | --- |
 | `pipeline_status` | 整体状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
-| `chunking_status` | 分片阶段状态：`PENDING/SUCCESS/FAILED` |
-| `vectorizing_status` | 向量化/Qdrant 阶段状态：`PENDING/SUCCESS/FAILED` |
-| `es_indexing_status` | Elasticsearch 入库阶段状态：`PENDING/SUCCESS/FAILED` |
+| `chunking_status` | 分片阶段状态：`PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED` |
+| `vectorizing_status` | 向量化/Qdrant 阶段状态：`PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED` |
+| `es_indexing_status` | Elasticsearch 入库阶段状态：`PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED` |
 | `failed_stage` | 失败阶段：`CHUNKING/VECTORIZING/ES_INDEXING` |
 | `recover_from_stage` | 重投或补偿时可恢复的阶段 |
 | `chunk_count` | 本次解析生成的 Chunk 数量 |
@@ -298,6 +302,39 @@ await facade.reindex_failed_chunks(chunk_ids)
 
 补偿用于恢复 MySQL 和 Qdrant 的最终一致性。
 
+### 4.7 稀疏向量召回
+
+召回链路通过 `VectorStorageFacade.search_sparse_chunks` 发起稀疏向量搜索。这是**唯一对外召回入口**，调用方只需 import `vector_storage` 包。
+
+```python
+from src.core.vector_storage import (
+    VectorStorageFacade,
+    VectorSearchHit, VectorSearchResult,
+    VectorRetrievalError,
+    VectorRetrievalConfigurationError,
+    VectorRetrievalBackendError,
+    VectorRetrievalEncodingError,
+)
+
+result: VectorSearchResult = await facade.search_sparse_chunks(
+    query="数据治理流程",
+    user_id=10002,
+    set_id=10003,
+    doc_id=[42, 43],          # 可选；None 或 [] 不加 doc_id filter
+    top_k=20,                 # 可选；不传走 settings.SPARSE_RETRIEVAL_TOP_K（默认 10）
+    score_threshold=0.3,      # 可选；不传走 settings.SPARSE_RETRIEVAL_SCORE_THRESHOLD（默认 0.0）
+)
+
+for hit in result.hits:
+    # hit 含 chunk_id / doc_id / set_id / score / vector_kind
+    # 不含 content——调用方自行查 MySQL 回填真值
+    record = await chunk_repository.get_by_chunk_ids(db, [hit.chunk_id])
+```
+
+**返回字段**：`VectorSearchHit` 含 `chunk_id` / `doc_id` / `set_id` / `score` / `vector_kind`，**不含 `payload` dict 和 `content`**——facade 层职责边界是"向量检索 + 业务过滤"，chunk 真值由调用方查 MySQL。
+
+**完全只读**：不动 MySQL `sparse_vector_status`，不调 Qdrant `upsert/update_vectors/delete`。
+
 ## 5. 配置
 
 常见配置来自 `src/config.py` 和 `.env`：
@@ -318,6 +355,8 @@ await facade.reindex_failed_chunks(chunk_ids)
 - `ES_USER`
 - `ES_PASSWORD`
 - `ES_INDEX_NAME`
+- `SPARSE_RETRIEVAL_TOP_K`（默认 10；召回默认值，调用方可 per-call 覆盖）
+- `SPARSE_RETRIEVAL_SCORE_THRESHOLD`（默认 0.0；默认不过滤，见 §9 调研依据）
 
 Embedding 客户端由 `ModelFactory` 创建，必须支持 `CapabilityType.EMBEDDING`。
 
@@ -395,7 +434,9 @@ ES 阶段只返回文件级 `EsIndexingResult`，不直接维护 `kb_document_ch
 .venv/bin/pytest tests/unit/core/qdrant_vector_storage -q
 .venv/bin/pytest tests/unit/core/chunk_fact_storage -q
 .venv/bin/pytest tests/unit/core/es_index_storage -q
+.venv/bin/pytest tests/unit/core/sparse_vector -q
 .venv/bin/pytest tests/unit/core/pipeline/test_post_process_repository.py -q
+.venv/bin/pytest tests/acceptance/test_sparse_vector_recall.py -v
 .venv/bin/pytest tests/integration/core/vector_storage -q
 ```
 
@@ -410,3 +451,79 @@ ES 阶段只返回文件级 `EsIndexingResult`，不直接维护 `kb_document_ch
 - `document_parse_pipeline` 阶段状态流转。
 - 部分失败时的 `failed_chunk_ids`。
 - 删除失败补偿和 INDEXING 卡住修复。
+
+## 9. 召回链路
+
+### 9.1 概览
+
+召回链路是写入链路的**只读镜像**：query 走与 chunk 写入完全相同的 BGE-M3 编码路径，到同一 bucket collection 的同一 named sparse vector 上做搜索，命中通过 payload filter 限定到当前 user / set。
+
+```text
+调用方
+  -> VectorStorageFacade.search_sparse_chunks(query, user_id, set_id, ...)
+       -> 参数校验（user_id/set_id 必填正整数；top_k>0；score_threshold>=0）
+       -> 空 query 短路：直接返空 VectorSearchResult，不调 encoder / Qdrant
+       -> 配置检查：SPARSE_VECTOR_ENABLED=False → 抛 VectorRetrievalConfigurationError
+       -> SparseVectorService.vectorize_query(query)
+            -> BGEM3SparseVectorEncoder.aencode([query])（与写入侧同一实例）
+            -> 返回 SparseVector(indices, values)
+       -> BucketRouter.route_user(user_id) → bucket_id（与写入侧共用）
+       -> 构造 SparseQueryVectorSpec + payload_filter(must: user_id, set_id, [doc_id MatchAny])
+       -> QdrantIndexStore._search_chunks(bucket_id, spec, filter, limit, score_threshold)
+            -> collection_exists? 不存在 → 返空 hits + warn 日志
+            -> client.query_points(query=SparseVector, using="sparse_text", ...)
+            -> named vector 不存在 → 返空 hits + warn 日志
+            -> ScoredPoint → VectorSearchHit(chunk_id, doc_id, set_id, score, vector_kind)
+       -> 包装为 VectorSearchResult(hits, vector_name, top_k, score_threshold, model_name)
+  -> 调用方拿 chunk_id 列表 → ChunkRepository.get_by_chunk_ids → 回填 content
+```
+
+### 9.2 写读不变量
+
+| 不变量 | 同源处 |
+| --- | --- |
+| bucket 路由 | `BucketRouter.route_user(user_id)`，写入与召回共用同一实例 |
+| sparse vector 命名 | `settings.SPARSE_VECTOR_QDRANT_VECTOR_NAME`（默认 `sparse_text`），写入 `upsert_sparse_vectors` 与召回 `_search_chunks` 都从该 setting 读取，不分叉 |
+| BGE-M3 编码器实例 | `factory.create_vector_storage_facade` 构造一次 `SparseVectorService` 后，同时下传给写入 pipeline 与 facade 召回入口，全进程一份 |
+| payload 字段 | `point_factory._payload()` 写入 `{chunk_id, user_id, set_id, doc_id}`；召回 filter 命中同名字段 |
+| `chunk_id` | MySQL UK + Qdrant Point ID + 召回 `hit.chunk_id`，三处一致 |
+
+### 9.3 失败模式判别原则
+
+召回是只读路径，与写入路径的"必须有终态"诉求不同。以下判别原则对 sparse / dense / hybrid 召回**全部适用**，不再重新讨论：
+
+| 场景 | 处理 | 判别 |
+| --- | --- | --- |
+| bucket collection 不存在 | 返空 hits，不抛；warn 日志带 `bucket_id` | 业务等价于"用户/set 没数据"；与写入侧 `delete_points` 把"collection 不存在"当作合法语义一致 |
+| collection 存在但目标 named vector 未配置 | 返空 hits，不抛；warn 日志带 `bucket_id` + `vector_name` | dense-only 等中间状态合法（写入侧 `ensure_*_schema` 由首次写入触发） |
+| Qdrant 网络故障 / 超时 / 服务不可用 | 抛 `VectorRetrievalBackendError` | 底层故障，由调用方决定降级或重试 |
+| `SPARSE_VECTOR_ENABLED=False` / 依赖缺失 / Qdrant URL 无效 | 抛 `VectorRetrievalConfigurationError` | 部署侧配置错误，不是常态 |
+| 编码器（BGE-M3 等）推理失败 | 抛 `VectorRetrievalEncodingError` | 编码失败不是召回的常态 |
+
+**一句话原则**：业务上等价于"没数据"的状况返空；环境 / 配置 / 底层故障一律抛。
+
+### 9.4 默认值依据
+
+| 配置项 | 默认值 | 依据 |
+| --- | --- | --- |
+| `SPARSE_RETRIEVAL_TOP_K` | 10 | 业界主流 RAG 框架（Dify UI 默认上限 10、Qdrant 官方 hybrid + reranking 教程"先广召回后精排"）；10 在覆盖率与上下文成本之间是常见折中 |
+| `SPARSE_RETRIEVAL_SCORE_THRESHOLD` | 0.0（不过滤） | Dify 公开文档明示"score threshold disabled = 0.0"；BGE-M3 sparse score 必须基于自身语料分布手工校准，盲设阈值会让 top_k cutoff 也救不回来；本项目暂无评测 harness，采取保守默认 |
+
+调用方可任意 per-call 覆盖（`top_k=20, score_threshold=0.3`）；运维可改 `.env` 全局收紧。后续 follow-up issue「稀疏向量召回评测 harness」落地后，基于实证数据回头校准默认值。
+
+### 9.5 对外暴露面
+
+召回相关的所有类型 / 异常都从 `src.core.vector_storage` 单点 import，调用方不需要感知 `qdrant_vector_storage` / `sparse_vector` 子包：
+
+```python
+from src.core.vector_storage import (
+    VectorStorageFacade,
+    VectorSearchHit, VectorSearchResult,
+    VectorRetrievalError,                  # 基类
+    VectorRetrievalConfigurationError,
+    VectorRetrievalBackendError,
+    VectorRetrievalEncodingError,
+)
+```
+
+**不在 `__all__` 中**：`SparseVectorSearchRequest`（facade 内部包装）、`QueryVectorSpec` / `SparseQueryVectorSpec`（store 层私有）。

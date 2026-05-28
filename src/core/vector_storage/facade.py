@@ -3,10 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
+from src.config import settings
 from src.core.splitter.models import Chunk
+from src.utils.logger import logger
 
+from .compensation_pipeline import VectorStorageCompensationPipeline
+from .exceptions import (
+    VectorRetrievalBackendError,
+    VectorRetrievalConfigurationError,
+    VectorRetrievalEncodingError,
+)
+from .management_pipeline import VectorStorageManagementPipeline
 from .models import (
     ChunkDeleteRequest,
     ChunkIndexingRequest,
@@ -14,10 +23,13 @@ from .models import (
     ChunkMutationResult,
     ChunkStorageRequest,
     ChunkUpdateRequest,
+    SparseVectorSearchRequest,
+    VectorSearchResult,
 )
-from .compensation_pipeline import VectorStorageCompensationPipeline
-from .management_pipeline import VectorStorageManagementPipeline
 from .pipeline import VectorStoragePipeline
+
+if TYPE_CHECKING:
+    from src.core.sparse_vector import SparseVectorService
 
 
 class VectorStorageFacade:
@@ -38,6 +50,7 @@ class VectorStorageFacade:
         management_service: VectorStorageManagementPipeline,
         compensation_service: VectorStorageCompensationPipeline,
         qdrant_store: Any | None = None,
+        sparse_vector_service: "SparseVectorService | None" = None,
     ) -> None:
         """
         初始化统一入口，并注入已经装配好的底层服务。
@@ -47,6 +60,9 @@ class VectorStorageFacade:
             management_service: chunk 修改与删除管理服务。
             compensation_service: 失败与删除补偿服务。
             qdrant_store: 可选的 Qdrant 访问层，用于统一释放连接资源。
+            sparse_vector_service: 可选的稀疏向量服务；用于召回入口
+                ``search_sparse_chunks``。``SPARSE_VECTOR_ENABLED=False`` 时
+                由工厂传入 ``None``，召回入口会抛 ``VectorRetrievalConfigurationError``。
 
         Returns:
             None.
@@ -55,6 +71,8 @@ class VectorStorageFacade:
         self.management_service = management_service
         self.compensation_service = compensation_service
         self.qdrant_store = qdrant_store
+        # 命名前置 ``_`` 表达"内部状态"语义；外部不直接访问。
+        self._sparse_vector_service = sparse_vector_service
 
     async def store_chunks(
         self,
@@ -180,6 +198,227 @@ class VectorStorageFacade:
     async def reindex_failed_chunks(self, chunk_ids: Sequence[str]) -> ChunkIndexingResult:
         """受控重建 FAILED chunk 的向量索引。"""
         return await self.compensation_service.reindex_failed_chunks(chunk_ids)
+
+    async def search_sparse_chunks(
+        self,
+        *,
+        query: str,
+        user_id: int,
+        set_id: int,
+        doc_id: list[int] | None = None,
+        top_k: int | None = None,
+        score_threshold: float | None = None,
+    ) -> VectorSearchResult:
+        """基于 BGE-M3 稀疏向量在用户 / 知识集范围内召回最多 top-k 个 chunk。
+
+        本方法是稀疏向量召回的**唯一对外入口**——内部把 query 走与写入链路同一份
+        BGE-M3 服务向量化，再到对应 bucket collection 上做 named sparse vector search
+        （vector name 与写入侧共用 ``settings.SPARSE_VECTOR_QDRANT_VECTOR_NAME``，
+        默认 ``sparse_text``），命中通过 payload filter 限定到当前 user / set。
+
+        **完全只读**：不动 MySQL ``sparse_vector_status``、不调 Qdrant
+        ``upsert/update_vectors/delete``；同 query 多次调用结果稳定。
+
+        Args:
+            query: 用户问题或关键词；空字符串或全空白会**短路返空**，不调 encoder /
+                Qdrant。
+            user_id: 必填正整数；非法值抛 ``ValueError``。
+            set_id: 必填正整数；非法值抛 ``ValueError``。
+            doc_id: 可选 ``list[int]``。``None`` 或空列表不加 ``doc_id`` filter；
+                非空列表用 Qdrant ``MatchAny`` 构造，支持"在若干文档内召回"。
+            top_k: 可选；不传走 ``settings.SPARSE_RETRIEVAL_TOP_K``（默认 10）。
+                合并后必须 ``> 0``，否则抛 ``ValueError``。
+            score_threshold: 可选；不传走 ``settings.SPARSE_RETRIEVAL_SCORE_THRESHOLD``
+                （默认 0.0）。合并后必须 ``>= 0``，否则抛 ``ValueError``。
+
+        Returns:
+            ``VectorSearchResult``：
+            - ``hits`` 按 score 降序，长度 ``<= top_k``，全部满足 ``score >= threshold``。
+            - 每个 hit 含 ``chunk_id`` / ``doc_id`` / ``set_id`` / ``score`` /
+              ``vector_kind="sparse"``；**不含** ``content``——调用方拿到 ``chunk_id``
+              后通过 ``ChunkRepository.get_by_chunk_ids`` 自行查 MySQL 回填真值。
+
+        Raises:
+            ValueError: 参数越界（``user_id`` / ``set_id`` / 合并后的 ``top_k`` /
+                ``score_threshold``）。
+            VectorRetrievalConfigurationError: ``SPARSE_VECTOR_ENABLED=False``、缺
+                依赖、Qdrant URL 无效等部署侧问题。
+            VectorRetrievalEncodingError: BGE-M3 推理失败。
+            VectorRetrievalBackendError: Qdrant 网络故障 / 超时 / 服务不可用。
+        """
+
+        # 延迟运行时 import：sparse_vector 子包的异常类只在 facade 内部出现，
+        # 调用方不需要 import；放到方法内可避免 facade 模块加载时强依赖
+        # sparse_vector，方便 mypy / unit test 隔离。
+        from src.core.qdrant_vector_storage.exceptions import (
+            QdrantStoreError,
+            QdrantVectorStorageConfigurationError,
+        )
+        from src.core.qdrant_vector_storage.models import SparseQueryVectorSpec
+        from src.core.sparse_vector import (
+            SparseVectorConfigurationError,
+            SparseVectorError,
+        )
+
+        # ───────────────────── ① 参数越界校验（acceptance: 参数 Outline）─────────
+        # 越界优先于"空 query 短路"——传错参数应当显式抛错，不该被静默吞掉。
+        if not isinstance(user_id, int) or isinstance(user_id, bool) or user_id <= 0:
+            raise ValueError(f"user_id must be a positive integer, got {user_id!r}")
+        if not isinstance(set_id, int) or isinstance(set_id, bool) or set_id <= 0:
+            raise ValueError(f"set_id must be a positive integer, got {set_id!r}")
+        effective_top_k = (
+            top_k if top_k is not None else int(getattr(settings, "SPARSE_RETRIEVAL_TOP_K", 10))
+        )
+        effective_threshold = (
+            score_threshold
+            if score_threshold is not None
+            else float(getattr(settings, "SPARSE_RETRIEVAL_SCORE_THRESHOLD", 0.0))
+        )
+        if not isinstance(effective_top_k, int) or isinstance(effective_top_k, bool) \
+                or effective_top_k <= 0:
+            raise ValueError(
+                f"top_k must be a positive integer, got {effective_top_k!r}"
+            )
+        if effective_threshold < 0:
+            raise ValueError(
+                f"score_threshold must be >= 0, got {effective_threshold!r}"
+            )
+
+        # 提前读取 vector_name：空 query / 配置错路径都需要它包装空 result。
+        vector_name = self._sparse_vector_name()
+
+        # ───────────────────── ② 空 query 短路（acceptance: 空 query Outline）──
+        # 空字符串、全空白、控制字符（\t / \n 等）→ 直接返空；不调 encoder / Qdrant。
+        # 召回链路常态化容错：上游字段填错时静默返空比抛 ValueError 安全。
+        if not query or not query.strip():
+            return VectorSearchResult(
+                hits=[],
+                vector_name=vector_name,
+                top_k=effective_top_k,
+                score_threshold=effective_threshold,
+                model_name=None,
+                vector_kind="sparse",
+            )
+
+        # ───────────────────── ③ 配置就绪检查 ───────────────────────────────────
+        # SPARSE_VECTOR_ENABLED=False / 工厂未注入 service → 部署侧配置问题，
+        # 静默返空会让运维找不到原因，必须显式抛配置异常（acceptance 已断言）。
+        if not bool(getattr(settings, "SPARSE_VECTOR_ENABLED", False)) \
+                or self._sparse_vector_service is None:
+            raise VectorRetrievalConfigurationError(
+                "Sparse vector recall is unavailable: "
+                "SPARSE_VECTOR_ENABLED=False or sparse_vector_service is not configured."
+            )
+
+        # 内部 Request：仅作 facade → 内部底座的语义包装，不外暴；调用方走散参签名。
+        _ = SparseVectorSearchRequest(
+            query=query,
+            user_id=user_id,
+            set_id=set_id,
+            doc_id=list(doc_id) if doc_id else None,
+            top_k=effective_top_k,
+            score_threshold=effective_threshold,
+        )
+
+        service = self._sparse_vector_service
+
+        # ───────────────────── ④ query 向量化（异常翻译）─────────────────────────
+        # 配置错优先（含依赖缺失），再降级为编码错；底层 SparseVectorOutputError
+        # 已经是 SparseVectorError 子类，会被通用分支吞掉。
+        try:
+            sparse_vector = await service.vectorize_query(query)
+        except SparseVectorConfigurationError as exc:
+            raise VectorRetrievalConfigurationError(str(exc)) from exc
+        except SparseVectorError as exc:  # 含 SparseVectorEncodingError / OutputError
+            raise VectorRetrievalEncodingError(str(exc)) from exc
+
+        if self.qdrant_store is None:
+            # 工厂始终注入 qdrant_store；这里是防御性 invariant，避免 None.x。
+            raise VectorRetrievalConfigurationError(
+                "VectorStorageFacade requires qdrant_store to be configured for retrieval."
+            )
+
+        # ───────────────────── ⑤ bucket 路由（与写入侧共用 BucketRouter）────────
+        bucket_route = self.qdrant_store.bucket_router.route_user(user_id)
+
+        # ───────────────────── ⑥ 构造 query_vector_spec 与 payload_filter ────────
+        query_spec = SparseQueryVectorSpec(
+            vector_name=vector_name,
+            indices=list(sparse_vector.indices),
+            values=list(sparse_vector.values),
+        )
+        payload_filter = self._build_payload_filter(
+            user_id=user_id,
+            set_id=set_id,
+            doc_id=doc_id,
+        )
+
+        # ───────────────────── ⑦ 调 store 底座（异常翻译）───────────────────────
+        try:
+            hits = await self.qdrant_store._search_chunks(
+                bucket_id=bucket_route.bucket_id,
+                query_vector_spec=query_spec,
+                payload_filter=payload_filter,
+                limit=effective_top_k,
+                score_threshold=effective_threshold,
+            )
+        except QdrantVectorStorageConfigurationError as exc:
+            raise VectorRetrievalConfigurationError(str(exc)) from exc
+        except QdrantStoreError as exc:
+            raise VectorRetrievalBackendError(str(exc)) from exc
+
+        # ───────────────────── ⑧ 结果包装 ───────────────────────────────────────
+        return VectorSearchResult(
+            hits=hits,
+            vector_name=vector_name,
+            top_k=effective_top_k,
+            score_threshold=effective_threshold,
+            model_name=service.model_name,
+            vector_kind="sparse",
+        )
+
+    def _sparse_vector_name(self) -> str:
+        """读取写入与召回共用的 sparse vector name；写读不分叉的同源点。
+
+        优先取 service 上挂的 ``vector_name``（service 在工厂里就是从同一 settings
+        字段读取的），降级到 settings 兜底。两条路径**不允许**返回不同的值。
+        """
+
+        if self._sparse_vector_service is not None:
+            return self._sparse_vector_service.vector_name
+        return str(getattr(settings, "SPARSE_VECTOR_QDRANT_VECTOR_NAME", "sparse_text"))
+
+    @staticmethod
+    def _build_payload_filter(
+        *,
+        user_id: int,
+        set_id: int,
+        doc_id: list[int] | None,
+    ) -> Any:
+        """构造 Qdrant payload filter；强制 must 包含 ``user_id`` + ``set_id``。
+
+        ``doc_id`` 处理：``None`` 或空列表不加 filter；非空列表统一用 ``MatchAny``
+        构造（即使单值也用列表传入），给"在若干文档内召回"留口子。
+        """
+
+        from qdrant_client import models
+
+        must = [
+            models.FieldCondition(
+                key="user_id", match=models.MatchValue(value=user_id),
+            ),
+            models.FieldCondition(
+                key="set_id", match=models.MatchValue(value=set_id),
+            ),
+        ]
+        if doc_id:  # None 或 [] 都跳过；只有非空列表才追加 doc_id filter
+            must.append(
+                models.FieldCondition(
+                    key="doc_id",
+                    match=models.MatchAny(any=list(doc_id)),
+                )
+            )
+        return models.Filter(must=must)
 
     async def close(self) -> None:
         """
