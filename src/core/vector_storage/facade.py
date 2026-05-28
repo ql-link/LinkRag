@@ -109,11 +109,17 @@ class VectorStorageFacade:
         user_id: int,
         set_id: int,
         doc_id: int,
+        include_failed: bool = False,
     ) -> ChunkIndexingResult:
         """索引已经落库的 chunk 真值记录，不创建新的 chunk 行。"""
 
         return await self.storage_service.index_document_chunks(
-            ChunkIndexingRequest(user_id=user_id, set_id=set_id, doc_id=doc_id)
+            ChunkIndexingRequest(
+                user_id=user_id,
+                set_id=set_id,
+                doc_id=doc_id,
+                include_failed=include_failed,
+            )
         )
 
     async def update_chunk(
@@ -274,15 +280,14 @@ class VectorStorageFacade:
             if score_threshold is not None
             else float(getattr(settings, "SPARSE_RETRIEVAL_SCORE_THRESHOLD", 0.0))
         )
-        if not isinstance(effective_top_k, int) or isinstance(effective_top_k, bool) \
-                or effective_top_k <= 0:
-            raise ValueError(
-                f"top_k must be a positive integer, got {effective_top_k!r}"
-            )
+        if (
+            not isinstance(effective_top_k, int)
+            or isinstance(effective_top_k, bool)
+            or effective_top_k <= 0
+        ):
+            raise ValueError(f"top_k must be a positive integer, got {effective_top_k!r}")
         if effective_threshold < 0:
-            raise ValueError(
-                f"score_threshold must be >= 0, got {effective_threshold!r}"
-            )
+            raise ValueError(f"score_threshold must be >= 0, got {effective_threshold!r}")
 
         # 提前读取 vector_name：空 query / 配置错路径都需要它包装空 result。
         vector_name = self._sparse_vector_name()
@@ -303,8 +308,10 @@ class VectorStorageFacade:
         # ───────────────────── ③ 配置就绪检查 ───────────────────────────────────
         # SPARSE_VECTOR_ENABLED=False / 工厂未注入 service → 部署侧配置问题，
         # 静默返空会让运维找不到原因，必须显式抛配置异常（acceptance 已断言）。
-        if not bool(getattr(settings, "SPARSE_VECTOR_ENABLED", False)) \
-                or self._sparse_vector_service is None:
+        if (
+            not bool(getattr(settings, "SPARSE_VECTOR_ENABLED", False))
+            or self._sparse_vector_service is None
+        ):
             raise VectorRetrievalConfigurationError(
                 "Sparse vector recall is unavailable: "
                 "SPARSE_VECTOR_ENABLED=False or sparse_vector_service is not configured."
@@ -405,10 +412,12 @@ class VectorStorageFacade:
 
         must = [
             models.FieldCondition(
-                key="user_id", match=models.MatchValue(value=user_id),
+                key="user_id",
+                match=models.MatchValue(value=user_id),
             ),
             models.FieldCondition(
-                key="set_id", match=models.MatchValue(value=set_id),
+                key="set_id",
+                match=models.MatchValue(value=set_id),
             ),
         ]
         if doc_id:  # None 或 [] 都跳过；只有非空列表才追加 doc_id filter

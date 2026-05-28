@@ -968,6 +968,7 @@ class ParseTaskPipeline:
                 user_id=user_id,
                 set_id=set_id,
                 doc_id=doc_id,
+                include_failed=payload.is_retry,
             )
         except Exception as exc:
             logger.error(
