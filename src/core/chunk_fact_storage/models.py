@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from .constants import (
+    CHUNK_LIFECYCLE_ACTIVE,
     CHUNK_STATUS_FAILED,
     CHUNK_STATUS_INDEXED,
     CHUNK_STATUS_PENDING,
@@ -39,6 +40,10 @@ class ChunkPostStatus(str, Enum):
 
 def decide_chunk_post_status(record: object, *, sparse_enabled: bool = False) -> ChunkPostStatus:
     """根据向量生命周期与 ES 子状态判断 chunk 后置处理结果。"""
+    lifecycle_status = getattr(record, "lifecycle_status", None) or CHUNK_LIFECYCLE_ACTIVE
+    if lifecycle_status != CHUNK_LIFECYCLE_ACTIVE:
+        return ChunkPostStatus.PROCESSING
+
     dense_vector_status = getattr(record, "dense_vector_status", None)
     sparse_vector_status = getattr(record, "sparse_vector_status", None)
     es_status = getattr(record, "es_status", None)

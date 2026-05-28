@@ -103,6 +103,7 @@ doc_id: int
 - `user_id` / `set_id` / `doc_id` / `bucket_id`：Qdrant payload 与 collection/bucket 路由。
 - `chunk_index` / `chunk_type` / `start_line` / `end_line`：还原 splitter 兼容 `Chunk`。
 - `dense_vector_status` / `sparse_vector_status`：决定补做哪个分支。
+- `lifecycle_status`：决定 chunk 是否仍为有效真值；只有 `ACTIVE` 记录会进入向量化、ES 入库和召回回表。
 
 chunking 阶段复用 `ChunkDraftFactory`，把每个 `Chunk` 转成 `StoredChunkDraft`：
 
@@ -285,10 +286,11 @@ result = await facade.delete_chunks(["chunk-id-1", "chunk-id-2"])
 
 行为：
 
-- MySQL 先标记 `DELETING`。
+- MySQL 先把 `lifecycle_status` 标记为 `DELETING`。
 - 按 `bucket_id` 分组删除 Qdrant points。
-- 成功后标记 `DELETED`。
-- 失败时标记 `DELETE_FAILED`。
+- 成功后把 `lifecycle_status` 标记为 `DELETED`。
+- 失败时把 `lifecycle_status` 标记为 `DELETE_FAILED`。
+- `dense_vector_status` / `sparse_vector_status` / `es_status` 保留原产物状态，不再承载删除生命周期。
 
 ### 4.6 补偿
 
@@ -420,7 +422,7 @@ ES 阶段只返回文件级 `EsIndexingResult`，不直接维护 `kb_document_ch
 - chunking 阶段负责创建 chunk 真值，向量化阶段不得创建新的 chunk 行。
 - dense 写入采用 `PENDING/FAILED -> SUCCESS/FAILED` 的粗粒度 SQL 状态；运行时处理中间态由文件级阶段和 Qdrant 操作边界表达。
 - sparse 是独立文件级阶段，在 dense、pretokenize、ES 成功后采用 `PENDING/FAILED -> SUCCESS/FAILED` 的粗粒度 SQL 状态。
-- 删除采用 `DELETING -> DELETED`，失败进入 `DELETE_FAILED`。
+- 删除生命周期由 `lifecycle_status` 表达：`ACTIVE -> DELETING -> DELETED`，失败进入 `DELETE_FAILED`；产物状态字段只保留 `PENDING/SUCCESS/FAILED`。
 - Qdrant 写入成功但 MySQL 回写失败时，仍以 SQL 状态为准；后续进入 vectorizing 时按原 `chunk_id` 覆盖写索引副本。
 - 解析结果成功通知只在 Markdown、分片、向量化和 ES 入库均成功后发送。
 - 自动补偿不应无限重试所有失败；显式重建由 `reindex_failed_chunks` 控制。

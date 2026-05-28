@@ -51,8 +51,8 @@ class SparseIndexingError(SparseVectorError):
         self.reason = reason
 
 
-# 重试时反查的状态集合：PENDING 是首次没跑到的；FAILED 是上次失败的；其他状态
-# （INDEXING / INDEXED / DELET*）一律不重做，避免重复推理或破坏删除态。
+# 重试时反查的状态集合：PENDING 是首次没跑到的；FAILED 是上次失败的；
+# 非 ACTIVE 生命周期记录由 ChunkRepository 过滤，避免破坏删除态。
 _SPARSE_PENDING_OR_FAILED = (SPARSE_VECTOR_STATUS_PENDING, SPARSE_VECTOR_STATUS_FAILED)
 
 
@@ -104,8 +104,7 @@ class SparseIndexingPipeline:
             )
 
         # 2) 反查待处理 chunk（PENDING / FAILED）；再在内存里过滤"dense 已 INDEXED"。
-        # ChunkRepository.list_sparse_candidates_by_doc_id 内部已排除 DELETE 保护态，
-        # 这里只需补一道"dense_vector_status == INDEXED"过滤即可。
+        # ChunkRepository.list_sparse_candidates_by_doc_id 内部已排除非 ACTIVE 记录。
         candidates = await self._chunk_repository.list_sparse_candidates_by_doc_id(
             db, doc_id, _SPARSE_PENDING_OR_FAILED
         )

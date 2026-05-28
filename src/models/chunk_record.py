@@ -8,6 +8,7 @@ from sqlalchemy import BigInteger, DateTime, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from src.core.chunk_fact_storage.constants import (
+    CHUNK_LIFECYCLE_ACTIVE,
     CHUNK_STATUS_PENDING,
     ES_STATUS_PENDING,
     SPARSE_VECTOR_STATUS_PENDING,
@@ -47,6 +48,12 @@ class ChunkRecordDB(Base):
         nullable=False,
         default=ES_STATUS_PENDING,
     )
+    lifecycle_status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        default=CHUNK_LIFECYCLE_ACTIVE,
+        server_default=CHUNK_LIFECYCLE_ACTIVE,
+    )
     create_time: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
     update_time: Mapped[datetime] = mapped_column(
         DateTime,
@@ -60,4 +67,6 @@ class ChunkRecordDB(Base):
         Index("idx_doc_dense_status", "doc_id", "dense_vector_status"),
         Index("idx_doc_sparse_status", "doc_id", "sparse_vector_status"),
         Index("idx_doc_es_status", "doc_id", "es_status"),
+        Index("idx_doc_lifecycle_status", "doc_id", "lifecycle_status"),
+        Index("idx_lifecycle_update_time", "lifecycle_status", "update_time"),
     )

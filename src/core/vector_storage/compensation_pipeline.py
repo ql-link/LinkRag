@@ -9,7 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from src.config import settings
 from src.core.chunk_fact_storage import ChunkRepository
 from src.core.chunk_fact_storage.constants import (
-    CHUNK_STATUS_DELETING,
+    CHUNK_LIFECYCLE_ACTIVE,
+    CHUNK_LIFECYCLE_DELETING,
     CHUNK_STATUS_FAILED,
     CHUNK_STATUS_INDEXING,
     SPARSE_VECTOR_STATUS_INDEXING,
@@ -285,6 +286,7 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
             record.chunk_id: record
             for record in records
             if record.dense_vector_status == CHUNK_STATUS_FAILED
+            and record.lifecycle_status == CHUNK_LIFECYCLE_ACTIVE
         }
         indexed_chunks = 0
         failed_chunk_ids: list[str] = [
@@ -400,6 +402,7 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
             record.chunk_id: record
             for record in records
             if record.dense_vector_status == CHUNK_STATUS_INDEXING
+            and record.lifecycle_status == CHUNK_LIFECYCLE_ACTIVE
         }
         return (
             [record_map[chunk_id] for chunk_id in chunk_ids if chunk_id in record_map],
@@ -438,7 +441,7 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
             lambda session: self.repository.mark_deleted(
                 session,
                 chunk_ids,
-                expected_status=CHUNK_STATUS_DELETING,
+                expected_lifecycle_status=CHUNK_LIFECYCLE_DELETING,
             )
         )
         return affected_rows == len(chunk_ids)
@@ -487,7 +490,7 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
                 session,
                 chunk_ids,
                 error_msg=error_msg,
-                expected_status=CHUNK_STATUS_DELETING,
+                expected_lifecycle_status=CHUNK_LIFECYCLE_DELETING,
             )
         )
         if affected_rows != len(chunk_ids):

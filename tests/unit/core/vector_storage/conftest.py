@@ -5,7 +5,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.config import settings
-from src.core.chunk_fact_storage.constants import CHUNK_STATUS_PENDING
+from src.core.chunk_fact_storage.constants import (
+    CHUNK_LIFECYCLE_ACTIVE,
+    CHUNK_LIFECYCLE_DELETE_FAILED,
+    CHUNK_LIFECYCLE_DELETING,
+    CHUNK_STATUS_PENDING,
+)
 from src.core.splitter.models import Chunk, EmbeddedChunk
 from src.core.vector_storage.models import StoredChunkDraft
 from src.models.chunk_record import ChunkRecordDB
@@ -131,6 +136,7 @@ def failed_chunk_record() -> ChunkRecordDB:
         end_line=2,
         chunk_index=0,
         dense_vector_status="FAILED",
+        lifecycle_status=CHUNK_LIFECYCLE_ACTIVE,
         dense_vector_model=None,
     )
 
@@ -150,6 +156,7 @@ def indexing_chunk_record() -> ChunkRecordDB:
         end_line=12,
         chunk_index=2,
         dense_vector_status="PENDING",
+        lifecycle_status=CHUNK_LIFECYCLE_ACTIVE,
         dense_vector_model="persisted-model",
     )
 
@@ -168,7 +175,8 @@ def delete_failed_chunk_record() -> ChunkRecordDB:
         start_line=20,
         end_line=22,
         chunk_index=3,
-        dense_vector_status="FAILED",
+        dense_vector_status="SUCCESS",
+        lifecycle_status=CHUNK_LIFECYCLE_DELETE_FAILED,
         dense_vector_model="persisted-model",
     )
 
@@ -187,7 +195,8 @@ def deleting_chunk_record() -> ChunkRecordDB:
         start_line=30,
         end_line=32,
         chunk_index=4,
-        dense_vector_status="PENDING",
+        dense_vector_status="SUCCESS",
+        lifecycle_status=CHUNK_LIFECYCLE_DELETING,
         dense_vector_model="persisted-model",
     )
 

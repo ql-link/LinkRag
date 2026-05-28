@@ -1247,7 +1247,7 @@ class ParseTaskPipeline:
     ) -> list[Chunk] | None:
         """重试跳过 chunking 时从 DB 反查当前文档完整 chunk truth set。
 
-        反查谓词：仅 ``doc_id``（排除删除态保护集合），按 ``chunk_index`` 排序，
+        反查谓词：``doc_id`` + ``lifecycle_status=ACTIVE``，按 ``chunk_index`` 排序，
         返回当前文档全部有效 chunk，语义等价于首次执行的 chunking 输出。
         下游 dense / pretokenize / ES / sparse 各阶段按各自 SQL 真值
         （``dense_vector_status / sparse_vector_status / es_status``）决定补做范围，
@@ -1258,15 +1258,13 @@ class ParseTaskPipeline:
         """
         from sqlalchemy import select
         from src.models.chunk_record import ChunkRecordDB
-        from src.core.chunk_fact_storage.constants import CHUNK_DELETE_PROTECTED_STATUSES
+        from src.core.chunk_fact_storage.constants import CHUNK_LIFECYCLE_ACTIVE
 
         doc_id = int(payload.original_file_id)
         stmt = (
             select(ChunkRecordDB)
             .where(ChunkRecordDB.doc_id == doc_id)
-            .where(
-                ChunkRecordDB.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES)
-            )
+            .where(ChunkRecordDB.lifecycle_status == CHUNK_LIFECYCLE_ACTIVE)
             .order_by(ChunkRecordDB.chunk_index.asc())
         )
         result = await db.execute(stmt)

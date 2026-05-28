@@ -473,6 +473,7 @@ class TestRetryBranch:
         assert len(executed_stmts) == 1
         sql = str(executed_stmts[0].compile(compile_kwargs={"literal_binds": True}))
         assert "dense_vector_status IN" not in sql.replace("'", "")
+        assert "lifecycle_status" in sql
 
     async def test_concurrent_retry_cas_layer_2_fails_walks_validation_failure_path(self):
         """R2: mark_superseded rowcount=0 → 走 _handle_retry_validation_failure 路径。"""

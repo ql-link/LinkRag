@@ -109,6 +109,7 @@ async def test_plan_query_should_not_filter_by_es_status():
     where_clause = compiled.split("WHERE", 1)[1]
     assert "es_status" not in where_clause
     assert "dense_vector_status" in where_clause
+    assert "lifecycle_status" in where_clause
     assert "chunk_index" in compiled  # ORDER BY 仍按 chunk_index
 
 

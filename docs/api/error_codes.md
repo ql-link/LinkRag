@@ -133,4 +133,6 @@ CODE: 中文业务原因；底层详情
 辅助状态：
 
 - `dense_vector_status`: `PENDING/SUCCESS/FAILED`
+- `sparse_vector_status`: `PENDING/SUCCESS/FAILED`
 - `es_status`: `PENDING/SUCCESS/FAILED`
+- `lifecycle_status`: `ACTIVE/DELETING/DELETED/DELETE_FAILED`

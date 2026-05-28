@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.chunk_fact_storage.constants import (
-    CHUNK_DELETE_PROTECTED_STATUSES,
+    CHUNK_LIFECYCLE_ACTIVE,
     CHUNK_STATUS_INDEXED,
 )
 from src.database import get_async_session_factory
@@ -98,7 +98,7 @@ class Preprocessor:
             select(ChunkRecordDB)
             .where(ChunkRecordDB.doc_id == doc_id)
             .where(ChunkRecordDB.dense_vector_status == CHUNK_STATUS_INDEXED)
-            .where(ChunkRecordDB.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
+            .where(ChunkRecordDB.lifecycle_status == CHUNK_LIFECYCLE_ACTIVE)
             .order_by(ChunkRecordDB.chunk_index.asc())
         )
         result = await db.execute(stmt)

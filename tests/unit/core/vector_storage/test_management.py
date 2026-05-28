@@ -4,8 +4,9 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.core.chunk_fact_storage.constants import (
-    CHUNK_STATUS_DELETED,
-    CHUNK_STATUS_DELETING,
+    CHUNK_LIFECYCLE_ACTIVE,
+    CHUNK_LIFECYCLE_DELETED,
+    CHUNK_LIFECYCLE_DELETING,
     CHUNK_STATUS_INDEXING,
 )
 from src.core.qdrant_vector_storage import IndexedPoint
@@ -320,7 +321,8 @@ async def test_should_skip_cleanup_when_update_completion_status_no_longer_match
         content="new content",
         content_hash=hashlib.sha256(b"new content").hexdigest(),
         chunk_type="paragraph",
-        dense_vector_status=CHUNK_STATUS_DELETED,
+        dense_vector_status="SUCCESS",
+        lifecycle_status=CHUNK_LIFECYCLE_ACTIVE,
     )
     mock_repository.get_updatable_by_chunk_ids.return_value = [indexed_chunk_record]
     mock_repository.update_chunk_for_reindex.return_value = 1
@@ -368,7 +370,8 @@ async def test_should_not_mark_delete_failed_without_chunk_delete_state(
         content="new content",
         content_hash=hashlib.sha256(b"new content").hexdigest(),
         chunk_type="paragraph",
-        dense_vector_status=CHUNK_STATUS_DELETED,
+        dense_vector_status="SUCCESS",
+        lifecycle_status=CHUNK_LIFECYCLE_ACTIVE,
     )
     mock_repository.get_updatable_by_chunk_ids.return_value = [indexed_chunk_record]
     mock_repository.update_chunk_for_reindex.return_value = 1
@@ -478,7 +481,7 @@ async def test_should_mark_deleting_delete_points_and_mark_deleted_when_delete_c
     mock_repository.mark_deleted.assert_awaited_once_with(
         mock_session,
         ["chunk-indexed-1", "chunk-indexed-2"],
-        expected_status=CHUNK_STATUS_DELETING,
+        expected_lifecycle_status=CHUNK_LIFECYCLE_DELETING,
     )
     mock_repository.mark_delete_failed.assert_not_awaited()
 
@@ -635,6 +638,6 @@ async def test_should_mark_delete_failed_when_qdrant_delete_raises_exception(
         mock_session,
         ["chunk-indexed-1"],
         error_msg="delete down",
-        expected_status=CHUNK_STATUS_DELETING,
+        expected_lifecycle_status=CHUNK_LIFECYCLE_DELETING,
     )
     mock_repository.mark_deleted.assert_not_awaited()

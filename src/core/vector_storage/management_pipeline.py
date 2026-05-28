@@ -10,8 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.core.chunk_fact_storage import ChunkRepository
 from src.core.chunk_fact_storage.constants import (
-    CHUNK_DELETE_PROTECTED_STATUSES,
-    CHUNK_STATUS_DELETING,
+    CHUNK_LIFECYCLE_DELETE_PROTECTED_STATUSES,
+    CHUNK_LIFECYCLE_DELETING,
     CHUNK_STATUS_INDEXED,
     CHUNK_STATUS_INDEXING,
     SPARSE_VECTOR_STATUS_INDEXING,
@@ -288,7 +288,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
                 logger.warning(
                     "[VectorStorageManagementPipeline] Skipped stale delete completion for chunks "
                     f"{active_chunk_ids}; rowcount {deleted_count} != {len(active_chunk_ids)} "
-                    f"or status no longer matches {CHUNK_STATUS_DELETING}."
+                    f"or lifecycle no longer matches {CHUNK_LIFECYCLE_DELETING}."
                 )
                 return ChunkMutationResult(
                     total_chunks=len(chunk_ids),
@@ -508,7 +508,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
             lambda session: self.repository.mark_deleted(
                 session,
                 chunk_ids,
-                expected_status=CHUNK_STATUS_DELETING,
+                expected_lifecycle_status=CHUNK_LIFECYCLE_DELETING,
             )
         )
 
@@ -528,7 +528,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
                 session,
                 chunk_ids,
                 error_msg=error_msg,
-                expected_status=CHUNK_STATUS_DELETING,
+                expected_lifecycle_status=CHUNK_LIFECYCLE_DELETING,
             )
         )
 
@@ -552,7 +552,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
             records = await self.repository.get_by_chunk_ids(session, [chunk_id])
 
         record = records[0] if records else None
-        if record is None or record.dense_vector_status not in CHUNK_DELETE_PROTECTED_STATUSES:
+        if record is None or record.lifecycle_status not in CHUNK_LIFECYCLE_DELETE_PROTECTED_STATUSES:
             return
 
         bucket_id = record.bucket_id if record.bucket_id is not None else fallback_bucket_id
@@ -563,7 +563,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
             await self._mark_delete_failed_for_status(
                 [chunk_id],
                 error_msg=error_msg,
-                expected_status=record.dense_vector_status,
+                expected_lifecycle_status=record.lifecycle_status,
             )
             logger.exception(
                 "[VectorStorageManagementPipeline] Failed to clean stale Qdrant point "
@@ -575,7 +575,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
         chunk_ids: Sequence[str],
         *,
         error_msg: str,
-        expected_status: str,
+        expected_lifecycle_status: str,
     ) -> int:
         """
             用指定删除态条件回写 `DELETE_FAILED`，避免旧清理任务覆盖新状态。
@@ -583,7 +583,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
         Args:
             chunk_ids: 需要更新状态的 chunk 标识列表。
             error_msg: 需要落库的失败原因。
-            expected_status: 当前期望的删除态。
+            expected_lifecycle_status: 当前期望的删除态。
 
         Returns:
             int: 实际切换为 `DELETE_FAILED` 的记录数。
@@ -593,7 +593,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
                 session,
                 chunk_ids,
                 error_msg=error_msg,
-                expected_status=expected_status,
+                expected_lifecycle_status=expected_lifecycle_status,
             )
         )
 
