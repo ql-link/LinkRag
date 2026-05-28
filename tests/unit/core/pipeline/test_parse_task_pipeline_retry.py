@@ -460,7 +460,7 @@ class TestRetryBranch:
         vector_storage = AsyncMock()
         from src.core.vector_storage.models import ChunkIndexingResult
 
-        vector_storage.store_chunks.return_value = ChunkIndexingResult(
+        vector_storage.index_document_chunks.return_value = ChunkIndexingResult(
             total_chunks=2,
             indexed_chunks=2,
         )
@@ -495,6 +495,12 @@ class TestRetryBranch:
         assert "mark_pretokenize_started" in post_repo.calls
         assert "mark_es_indexing_started" in post_repo.calls
         assert "mark_sparse_vectorizing_started" in post_repo.calls
+        vector_storage.index_document_chunks.assert_awaited_once_with(
+            user_id=20,
+            set_id=30,
+            doc_id=1,
+            include_failed=True,
+        )
         # 整体终态由 sparse 翻 SUCCESS
         assert post_repo.new_pipeline.pipeline_status == PIPELINE_STATUS_SUCCESS
 
@@ -581,6 +587,12 @@ class TestRetryBranch:
         assert chunking_args[1] is None
         assert chunking_args[2].task_id == "T2"
         assert chunking_args[3] is db
+        vector_storage.index_document_chunks.assert_awaited_once_with(
+            user_id=20,
+            set_id=30,
+            doc_id=1,
+            include_failed=True,
+        )
         assert post_repo.new_pipeline.pipeline_status == PIPELINE_STATUS_SUCCESS
 
     @patch("src.core.pipeline.parse_task.pipeline.ChunkRepository")

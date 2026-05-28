@@ -94,6 +94,7 @@ ParseTaskPipeline
 user_id: int
 set_id: int
 doc_id: int
+include_failed: bool = False
 ```
 
 该入口不接收 `list[Chunk]`，不重新分片，不生成新的 `chunk_id`，也不执行 chunk 真值 INSERT。向量化依据来自 `kb_document_chunk`：
@@ -103,6 +104,11 @@ doc_id: int
 - `user_id` / `set_id` / `doc_id` / `bucket_id`：Qdrant payload 与 collection/bucket 路由。
 - `chunk_index` / `chunk_type` / `start_line` / `end_line`：还原 splitter 兼容 `Chunk`。
 - `dense_vector_status` / `sparse_vector_status`：决定补做哪个分支。
+
+`include_failed` 用于区分普通写入与人工重试：默认 `False` 时只补做 dense
+`PENDING` chunk，`FAILED` chunk 仍可由 `VectorStorageCompensationPipeline`
+显式重建；parse pipeline 的 `is_retry=true` 人工重试会传 `True`，补做 dense
+`PENDING` + `FAILED` chunk，并继续跳过已 `SUCCESS` 的 chunk。
 
 chunking 阶段复用 `ChunkDraftFactory`，把每个 `Chunk` 转成 `StoredChunkDraft`：
 
@@ -211,6 +217,7 @@ result = await vector_storage.index_document_chunks(
     user_id=user_id,
     set_id=set_id,
     doc_id=doc_id,
+    include_failed=payload.is_retry,
 )
 ```
 

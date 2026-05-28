@@ -76,6 +76,27 @@ async def test_should_store_chunks_through_facade_with_business_arguments(
 
 
 @pytest.mark.asyncio
+async def test_should_index_document_chunks_with_failed_chunks_when_requested(
+    vector_storage_facade,
+    mock_storage_service,
+):
+    expected_result = ChunkIndexingResult(total_chunks=2, indexed_chunks=2)
+    mock_storage_service.index_document_chunks.return_value = expected_result
+
+    result = await vector_storage_facade.index_document_chunks(
+        user_id=7,
+        set_id=8,
+        doc_id=9,
+        include_failed=True,
+    )
+
+    assert result is expected_result
+    request = mock_storage_service.index_document_chunks.await_args.args[0]
+    assert isinstance(request, ChunkIndexingRequest)
+    assert request.include_failed is True
+
+
+@pytest.mark.asyncio
 async def test_should_index_document_chunks_through_facade(
     vector_storage_facade,
     mock_storage_service,
@@ -95,6 +116,7 @@ async def test_should_index_document_chunks_through_facade(
     assert request.user_id == 7
     assert request.set_id == 8
     assert request.doc_id == 9
+    assert request.include_failed is False
 
 
 @pytest.mark.asyncio

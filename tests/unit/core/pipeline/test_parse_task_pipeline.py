@@ -207,7 +207,9 @@ class FakePostProcessRepository:
         pipeline.recover_from_stage = POST_PROCESS_STAGE_PRETOKENIZE
         pipeline.failure_reason = reason
 
-    async def mark_es_success(self, db, pipeline, *, duration_ms, total_duration_ms=None, finished_at=None):
+    async def mark_es_success(
+        self, db, pipeline, *, duration_ms, total_duration_ms=None, finished_at=None
+    ):
         self.calls.append("mark_es_success")
         pipeline.es_indexing_status = STAGE_STATUS_SUCCESS
         # 注意：pipeline_status=SUCCESS 翻转已下沉到 mark_sparse_vectorizing_success。
@@ -257,7 +259,13 @@ class FakePostProcessRepository:
         self._mark_started(pipeline, stage_attr="sparse_vectorizing_status", started_at=started_at)
 
     async def mark_sparse_vectorizing_success(
-        self, db, pipeline, *, duration_ms, total_duration_ms, finished_at,
+        self,
+        db,
+        pipeline,
+        *,
+        duration_ms,
+        total_duration_ms,
+        finished_at,
     ):
         self.calls.append("mark_sparse_vectorizing_success")
         pipeline.sparse_vectorizing_status = STAGE_STATUS_SUCCESS
@@ -267,7 +275,13 @@ class FakePostProcessRepository:
         pipeline.finished_at = finished_at
 
     async def mark_sparse_vectorizing_failed(
-        self, db, pipeline, *, reason, duration_ms, finished_at,
+        self,
+        db,
+        pipeline,
+        *,
+        reason,
+        duration_ms,
+        finished_at,
     ):
         self.calls.append("mark_sparse_vectorizing_failed")
         pipeline.pipeline_status = PIPELINE_STATUS_FAILED
@@ -285,9 +299,7 @@ class FakeSparseIndexingPipeline:
         self.calls: list[dict] = []
 
     async def run(self, *, doc_id, bucket_id, task_id, db):
-        self.calls.append(
-            {"doc_id": doc_id, "bucket_id": bucket_id, "task_id": task_id}
-        )
+        self.calls.append({"doc_id": doc_id, "bucket_id": bucket_id, "task_id": task_id})
         if self.error is not None:
             raise self.error
 
@@ -347,7 +359,9 @@ class TestParseTaskPipeline:
         assert sent_payload.user_message == DUPLICATE_SUCCESS_USER_MESSAGE
         db.close.assert_awaited_once()
 
-    async def test_execute_should_mark_pipeline_failed_when_duplicate_success_log_but_pipeline_processing(self):
+    async def test_execute_should_mark_pipeline_failed_when_duplicate_success_log_but_pipeline_processing(
+        self,
+    ):
         existing_log = build_log(parsed_object_key="parsed/t-001.md")
         db = build_db(existing_log)
         db.flush.side_effect = IntegrityError("duplicate", None, None)
@@ -493,13 +507,16 @@ class TestParseTaskPipeline:
         db = build_db(build_parse_task())
         events = []
         storage = MagicMock()
-        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf bytes")
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(
+            b"pdf bytes"
+        )
         storage.upload_bytes.side_effect = lambda **kwargs: events.append("upload")
         mq_service = MagicMock()
         mq_service.send = AsyncMock(side_effect=lambda message: events.append("send"))
         vector_storage = AsyncMock()
         es_pipeline = FakeEsIndexingPipeline(EsIndexingResult(total_items=2, indexed_items=2))
         post_repo = FakePostProcessRepository()
+
         async def index_document_chunks(**kwargs):
             events.append("vector")
             return ChunkIndexingResult(total_chunks=2, indexed_chunks=2)
@@ -565,6 +582,7 @@ class TestParseTaskPipeline:
             user_id=20,
             set_id=30,
             doc_id=1,
+            include_failed=False,
         )
         db.commit.assert_awaited()
         db.close.assert_awaited_once()
@@ -631,7 +649,9 @@ class TestParseTaskPipeline:
     async def test_execute_should_mark_failed_and_notify_when_parse_fails(self, mock_aprocess):
         db = build_db(build_parse_task())
         storage = MagicMock()
-        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf bytes")
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(
+            b"pdf bytes"
+        )
         mq_service = MagicMock()
         mq_service.send = AsyncMock()
         mock_aprocess.side_effect = RuntimeError("parse failed")
@@ -669,7 +689,9 @@ class TestParseTaskPipeline:
     ):
         db = build_db(build_parse_task())
         storage = MagicMock()
-        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf bytes")
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(
+            b"pdf bytes"
+        )
         mq_service = MagicMock()
         mq_service.send = AsyncMock(side_effect=RuntimeError("mq down"))
         vector_storage = AsyncMock()
@@ -712,7 +734,9 @@ class TestParseTaskPipeline:
     ):
         db = build_db(build_parse_task())
         storage = MagicMock()
-        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf bytes")
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(
+            b"pdf bytes"
+        )
         mq_service = MagicMock()
         mq_service.send = AsyncMock(side_effect=RuntimeError("mq down"))
         mock_aprocess.side_effect = RuntimeError("parse failed")
@@ -744,7 +768,9 @@ class TestParseTaskPipeline:
     ):
         db = build_db(build_parse_task())
         storage = MagicMock()
-        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf bytes")
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(
+            b"pdf bytes"
+        )
         mq_service = MagicMock()
         mq_service.send = AsyncMock()
         vector_storage = AsyncMock()
@@ -788,7 +814,9 @@ class TestParseTaskPipeline:
     ):
         db = build_db(build_parse_task())
         storage = MagicMock()
-        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf bytes")
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(
+            b"pdf bytes"
+        )
         mq_service = MagicMock()
         mq_service.send = AsyncMock()
         vector_storage = AsyncMock()
@@ -842,7 +870,9 @@ class TestParseTaskPipeline:
     ):
         db = build_db(build_parse_task())
         storage = MagicMock()
-        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(b"pdf bytes")
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(
+            b"pdf bytes"
+        )
         mq_service = MagicMock()
         mq_service.send = AsyncMock()
         vector_storage = AsyncMock()
@@ -942,6 +972,7 @@ class TestParseTaskPipeline:
             user_id=20,
             set_id=30,
             doc_id=1,
+            include_failed=False,
         )
 
     async def test_store_chunk_vectors_should_convert_vector_exception_to_failed_result(self):
@@ -997,4 +1028,6 @@ class TestParseTaskPipeline:
         chunks = ParseTaskPipeline._chunk_markdown("enhanced markdown", "parsed/t-001.md")
 
         assert len(chunks) == 1
-        processor.process.assert_called_once_with("enhanced markdown", source_file="parsed/t-001.md")
+        processor.process.assert_called_once_with(
+            "enhanced markdown", source_file="parsed/t-001.md"
+        )
