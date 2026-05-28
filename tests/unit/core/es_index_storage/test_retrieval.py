@@ -50,8 +50,8 @@ class TestEsBm25Retriever:
             {
                 "hits": {
                     "hits": [
-                        {"_source": {"chunk_id": "c-2"}, "_score": 7.5},
-                        {"_source": {"chunk_id": "c-1"}, "_score": 6.25},
+                        {"_source": {"chunk_id": "c-2", "doc_id": 200}, "_score": 7.5},
+                        {"_source": {"chunk_id": "c-1", "doc_id": 100}, "_score": 6.25},
                     ]
                 }
             }
@@ -61,6 +61,7 @@ class TestEsBm25Retriever:
         hits = await retriever.recall_topk_chunks(build_request())
 
         assert [hit.chunk_id for hit in hits] == ["c-2", "c-1"]
+        assert [hit.doc_id for hit in hits] == [200, 100]
         assert [hit.score for hit in hits] == [7.5, 6.25]
         assert not hasattr(hits[0], "content")
 
@@ -75,7 +76,7 @@ class TestEsBm25Retriever:
 
     async def test_should_use_raw_es_score_without_normalization(self):
         client = build_client(
-            {"hits": {"hits": [{"_source": {"chunk_id": "c-1"}, "_score": 123.456}]}}
+            {"hits": {"hits": [{"_source": {"chunk_id": "c-1", "doc_id": 100}, "_score": 123.456}]}}
         )
         retriever = build_retriever(client)
 
@@ -134,7 +135,7 @@ class TestEsBm25Retriever:
 
         await retriever.recall_topk_chunks(build_request())
 
-        assert get_search_kwargs(client)["_source"] == ["chunk_id"]
+        assert get_search_kwargs(client)["_source"] == ["chunk_id", "doc_id"]
 
     async def test_should_return_empty_without_es_for_empty_tokens(self):
         client = build_client()
