@@ -9,12 +9,14 @@ from .exceptions import (
 )
 from .models import EsIndexingResult
 from .pipeline import EsIndexingPipeline
+from .bm25_retriever import Bm25Retriever
 from .retrieval import EsBm25Retriever
 from .retrieval_models import Bm25ChunkHit, Bm25RecallRequest
 
 __all__ = [
     "Bm25ChunkHit",
     "Bm25RecallRequest",
+    "Bm25Retriever",
     "EsBm25Retriever",
     "EsBulkError",
     "EsDocumentValidationError",

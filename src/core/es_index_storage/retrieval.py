@@ -44,7 +44,7 @@ class EsBm25Retriever:
                 routing=str(request.dataset_id),
                 size=request.top_k,
                 query=query,
-                _source=["chunk_id"],
+                _source=["chunk_id", "doc_id"],
                 request_timeout=settings.ES_BULK_REQUEST_TIMEOUT_SECONDS,
             )
         except Exception as exc:
@@ -102,12 +102,15 @@ class EsBm25Retriever:
         hits = response.get("hits", {}).get("hits", [])
         results: list[Bm25ChunkHit] = []
         for hit in hits:
-            chunk_id = (hit.get("_source") or {}).get("chunk_id")
-            if not chunk_id:
+            source = hit.get("_source") or {}
+            chunk_id = source.get("chunk_id")
+            doc_id = source.get("doc_id")
+            if not chunk_id or doc_id is None:
                 continue
             results.append(
                 Bm25ChunkHit(
                     chunk_id=str(chunk_id),
+                    doc_id=int(doc_id),
                     score=float(hit.get("_score") or 0.0),
                 )
             )
