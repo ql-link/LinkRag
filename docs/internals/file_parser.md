@@ -12,6 +12,12 @@ src/core/parser/
 │   ├── pdf_parser.py          # PDF 解析入口
 │   ├── word_parser.py         # Word/docx 解析器
 │   └── html_parser.py         # HTML 解析器
+├── html/                      # HTML 专用解析体系
+│   ├── models.py              # HTML 参数、表格和图片结果模型
+│   ├── service.py             # DOM 构建、去噪和渲染编排
+│   ├── renderer.py            # HTML 节点到 Markdown 的结构化渲染
+│   ├── table_processor.py     # 表格分类、展开和 Markdown/记录式输出
+│   └── image_rewriter.py      # 图片 URL 绝对化和模拟对象存储路径
 └── pdf/                       # PDF 专用解析体系
     ├── base.py                # PDF 后端接口
     ├── models.py              # PDF 参数和图片资产模型
@@ -42,6 +48,23 @@ PdfParser
       -> MinerUBackend / OpenDataLoaderBackend / NaivePdfBackend / 自定义后端
 ```
 
+HTML 内部调用链：
+
+```text
+HtmlParser
+  -> HtmlParseService
+    -> BeautifulSoup DOM（去噪声/隐藏/全部 HTML 注释）
+    -> trafilatura 定位正文（仅取正文纯文本作信号，不取其结构输出）
+    -> 文本重合度映射回 soup 容器（低置信分级回退：语义容器 -> 整篇 body）
+    -> HtmlMarkdownRenderer
+      -> HtmlTableProcessor
+      -> HtmlImageRewriter
+```
+
+混合方案：trafilatura 负责"哪一块是正文 / 去站点样板 / 空内容(None)识别"，最终 Markdown
+仍由自研渲染器在我们清理后的完好 DOM 上生成（表格/图片保真）。trafilatura 返回 None 或
+渲染根正文低于保守下限时抛 `ParseBaseException`，经 pipeline 映射 `PARSE_ENGINE_FAILED`。
+
 ## 2. 核心角色
 
 | 组件 | 文件 | 职责 |
@@ -49,6 +72,11 @@ PdfParser
 | `BaseParser` | `base.py` | 通用文件解析器基类，提供空文件校验和 metadata |
 | `ParserFactory` | `factory.py` | 根据 `file_type` 返回具体解析器 |
 | `ParseTaskService` | `src/services/parse_task_service.py` | 业务推荐入口，解析后执行 Markdown 清洗和增强 |
+| `HtmlParser` | `providers/html_parser.py` | HTML 格式入口，解码文件流并适配 HTML 专用服务 |
+| `HtmlParseService` | `html/service.py` | 构建并清理 DOM（含删全部 HTML 注释）、trafilatura 定位正文/去样板、文本重合度映射回 soup 容器（低置信分级回退）、空内容判定、编排 Markdown 渲染 |
+| `HtmlMarkdownRenderer` | `html/renderer.py` | 按 DOM 顺序渲染标题、段落、列表、代码块、图片和表格 |
+| `HtmlTableProcessor` | `html/table_processor.py` | 将普通表格输出为 Markdown table，将复杂表格输出为记录式 Markdown |
+| `HtmlImageRewriter` | `html/image_rewriter.py` | 将图片 URL 绝对化，并生成模拟对象存储路径 |
 | `PdfParser` | `providers/pdf_parser.py` | PDF 格式入口，读取配置并组装 PDF 参数 |
 | `PdfParserService` | `pdf/service.py` | PDF 解析流程编排、图片上传和引用替换 |
 | `PdfBackendRegistry` | `pdf/registry.py` | PDF 后端注册、实例创建、解析顺序解析 |
@@ -70,8 +98,8 @@ PdfParser
 | 文件类型 | 解析器 | 说明 |
 | --- | --- | --- |
 | `pdf` | `PdfParser` | PDF 入口，内部按参数选择后端 |
-| `docx` / `doc` | `WordParser` | Word 段落和表格转 Markdown |
-| `html` / `htm` | `HtmlParser` | 使用 trafilatura 提取正文并转 Markdown |
+| `docx` | `WordParser` | mammoth 转语义 HTML + 复用 HTML 渲染引擎（标题/列表/表格/图片保真，跳过 trafilatura）；legacy `.doc`/非 OOXML 快速失败 |
+| `html` / `htm` | `HtmlParser` | trafilatura 定位正文/去样板 + 自研渲染器结构化转 Markdown（表格/图片保真） |
 
 当前 PDF 后端：
 
@@ -274,8 +302,20 @@ register_pdf_backend(
 
 修改 Word 或 HTML：
 
-- Word：`src/core/parser/providers/word_parser.py`
-- HTML：`src/core/parser/providers/html_parser.py`
+- Word：`src/core/parser/providers/word_parser.py`（适配层：mammoth→语义 HTML→复用 `src/core/parser/html` 渲染引擎，跳过 trafilatura；内嵌图经 mammoth 钩子转模拟 MinIO 路径）
+- HTML 入口：`src/core/parser/providers/html_parser.py`
+- HTML 内部流程：`src/core/parser/html/service.py`
+- HTML 表格：`src/core/parser/html/table_processor.py`
+- HTML 图片：`src/core/parser/html/image_rewriter.py`
+
+HTML 解析约束：
+
+- 只处理 HTML/HTM，不改变 Word、PDF、pipeline、MQ、API、数据库或对象存储公共契约。
+- 标题只来自原始 HTML `h1` 到 `h6`，表格记录模板不生成 Markdown 标题，避免影响分片标题边界。
+- 普通表格、可展开 `rowspan` / `colspan`、多级表头和列表单元格输出标准 Markdown table。
+- 嵌套表格、图片单元格、多段复杂单元格输出显式记录式 Markdown，不输出原始 `<table>`。
+- 图片仅做 URL 绝对化和模拟对象存储路径引用，不做真实下载或 MinIO 上传。
+- 大表格本轮不拆分，`table_split_count` 保持为 0。
 
 修改 PDF 通用流程：
 

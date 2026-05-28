@@ -729,8 +729,62 @@ class ParseTaskPipeline:
         plan: FilePostIndexPlan,
         db: AsyncSession,
     ) -> EsIndexingResult:
-        """ES 入库：单趟扇出消费预分词产出的内存 plan，保持 chunk 级失败语义。"""
-        return await self._get_es_indexing_pipeline().write_es_index(plan, db=db)
+        """ES 入库：文档级全量重建（Issue #57）——前置删除 → 全量写入 → 失败清理。
+
+        首次执行与手动重试都经过本方法，编排一致，无需区分：
+        1. 前置删除：进入写入前删除该文档已有 ES 索引。首次执行通常命中 0（幂等空操作），
+           重试时清理上一趟残留与陈旧 chunk。删除失败（ES 不可达）直接判 ES 阶段失败、不写入。
+        2. 全量写入：消费 plan（已全量，含已成功的 chunk），相同 _id 覆盖。
+        3. 失败清理：写入未全部成功时删除本趟半成品，避免残留；清理失败 best-effort 记日志，
+           不掩盖原写入失败结果。
+        """
+        total = len(plan.chunks_with_tokens)
+        # 空 plan（无任何 dense 已就绪 chunk）：与 write_es_index 空处理一致，不触发删除。
+        if total == 0:
+            return EsIndexingResult(total_items=0, indexed_items=0)
+
+        es_pipeline = self._get_es_indexing_pipeline()
+        meta = plan.file_meta
+
+        # --- 前置删除：删干净再全量重写 ---
+        try:
+            await es_pipeline.delete_document_index(
+                user_id=meta.user_id,
+                dataset_id=meta.dataset_id,
+                doc_id=meta.doc_id,
+            )
+        except Exception as exc:
+            logger.error(
+                "[ParseTaskPipeline] ES 前置删除失败，判 ES 阶段失败不写入: "
+                "doc_id={} error={}",
+                meta.doc_id, exc,
+            )
+            return EsIndexingResult(
+                total_items=total,
+                indexed_items=0,
+                failure_reason=f"es_delete: {exc}",
+            )
+
+        # --- 全量写入 ---
+        result = await es_pipeline.write_es_index(plan, db=db)
+
+        # --- 失败清理：删除本趟半成品 ---
+        if not result.is_success:
+            try:
+                await es_pipeline.delete_document_index(
+                    user_id=meta.user_id,
+                    dataset_id=meta.dataset_id,
+                    doc_id=meta.doc_id,
+                )
+            except Exception as exc:
+                # 清理失败不掩盖原写入失败；下次重试前置删除兜底。
+                logger.warning(
+                    "[ParseTaskPipeline] ES 写入失败后清理半成品失败(best-effort): "
+                    "doc_id={} error={}",
+                    meta.doc_id, exc,
+                )
+
+        return result
 
     async def _store_chunk_vectors(
         self,
@@ -969,7 +1023,8 @@ class ParseTaskPipeline:
         - cleaning：通常已 SUCCESS（重试要求 parsed_object_key 非空），直接跳过。
           若极端情况 cleaning 非 SUCCESS，本期不支持回退到首次解析路径，按
           状态不一致落 FAILED 处理。
-        - chunking：SUCCESS → _load_chunks_from_db 反查；否则不在重试场景支持，
+        - chunking：SUCCESS → _load_all_chunks_from_db 反查完整 chunk truth set；
+          否则不在重试场景支持，
           按状态不一致落 FAILED（防止 markdown 二次下载这条复杂路径影响主链路）。
         - vectorizing / pretokenize / es / sparse：标准 mark_started → 执行 → mark_success/failed。
         """
@@ -986,9 +1041,9 @@ class ParseTaskPipeline:
 
         # --- chunking ---
         if pipeline_record.chunking_status == STAGE_STATUS_SUCCESS:
-            chunks = await self._load_chunks_from_db(payload, db)
+            chunks = await self._load_all_chunks_from_db(payload, db)
             if chunks is None:
-                # _load_chunks_from_db 已落 FAILED + 通知
+                # _load_all_chunks_from_db 已落 FAILED + 通知
                 return ParsePipelineResult(
                     status=PipelineStatus.FAILED,
                     task_id=payload.task_id,
@@ -1185,36 +1240,32 @@ class ParseTaskPipeline:
             error=RuntimeError(reason),
         )
 
-    async def _load_chunks_from_db(
+    async def _load_all_chunks_from_db(
         self,
         payload: ParseTaskPayload,
         db: AsyncSession,
     ) -> list[Chunk] | None:
-        """重试跳过 chunking 时从 DB 反查 chunk 真值组装内存对象供下游消费。
+        """重试跳过 chunking 时从 DB 反查当前文档完整 chunk truth set。
 
-        反查谓词：``dense_vector_status IN (PENDING, FAILED)``（只补做 dense 未完成）。
-        若反查为空且 chunking_status=SUCCESS → 视为状态不一致，落 FAILED + 通知。
+        反查谓词：仅 ``doc_id``（排除删除态保护集合），按 ``chunk_index`` 排序，
+        返回当前文档全部有效 chunk，语义等价于首次执行的 chunking 输出。
+        下游 dense / pretokenize / ES / sparse 各阶段按各自 SQL 真值
+        （``dense_vector_status / sparse_vector_status / es_status``）决定补做范围，
+        本方法不再按 dense 状态做局部子集过滤。
 
-        返回 None 表示状态不一致（调用方应直接返回 FAILED 结果）。
+        若反查为空且 chunking_status=SUCCESS → 视为状态不一致，落 FAILED + 通知，
+        返回 None 表示调用方应直接返回 FAILED 结果。
         """
-        from src.core.chunk_fact_storage.constants import (
-            CHUNK_STATUS_FAILED,
-            CHUNK_STATUS_PENDING,
-        )
-        doc_id = int(payload.original_file_id)
-        # ChunkRepository.list_sparse_candidates_by_doc_id 用 sparse 字段过滤；
-        # 这里需要按 dense_vector_status 反查，直接执行一次查询语句。
         from sqlalchemy import select
         from src.models.chunk_record import ChunkRecordDB
         from src.core.chunk_fact_storage.constants import CHUNK_DELETE_PROTECTED_STATUSES
 
+        doc_id = int(payload.original_file_id)
         stmt = (
             select(ChunkRecordDB)
             .where(ChunkRecordDB.doc_id == doc_id)
             .where(
-                ChunkRecordDB.dense_vector_status.in_(
-                    (CHUNK_STATUS_PENDING, CHUNK_STATUS_FAILED)
-                )
+                ChunkRecordDB.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES)
             )
             .order_by(ChunkRecordDB.chunk_index.asc())
         )
@@ -1224,13 +1275,8 @@ class ParseTaskPipeline:
         # 反查空 + chunking SUCCESS 的"状态不一致"由调用方落 vectorizing_failed
         # 走通用失败路径——这里返回 None 让上层统一处理。
         if not rows:
-            # 兼容一种情况：所有 chunks 已 INDEXED（即向量阶段也已 SUCCESS）；
-            # 这种情况理论上不会发生在"vectorizing 非 SUCCESS 的重试"分支。
-            # 但若 chunking SUCCESS 而其余阶段也都 SUCCESS，回到 _run_retry_stages 的
-            # vectorizing 分支会因为 status==SUCCESS 直接跳过，根本不会调到这里；
-            # 所以一旦走到这里返回空，就说明状态确实不一致。
             finished_at = now()
-            failure_reason = "VECTORIZING_FAILED:chunk_state_inconsistent;reason=load_chunks_from_db_empty"
+            failure_reason = "VECTORIZING_FAILED:chunk_state_inconsistent;reason=load_all_chunks_from_db_empty"
             pipeline_record = await self._pipeline_repository.get_by_task_id(db, payload.task_id)
             if pipeline_record is not None:
                 await self._pipeline_repository.mark_vectorizing_failed(

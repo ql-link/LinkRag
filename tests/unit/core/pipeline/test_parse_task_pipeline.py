@@ -296,6 +296,8 @@ class FakeEsIndexingPipeline:
     def __init__(self, result: EsIndexingResult | None = None):
         self.result = result or EsIndexingResult(total_items=1, indexed_items=1)
         self.write_es_index = AsyncMock(return_value=self.result)
+        # ES 文档级全量重建：_run_es_indexing 前置删除 + 失败清理调用。
+        self.delete_document_index = AsyncMock(return_value=0)
 
 
 class FakePreprocessor:

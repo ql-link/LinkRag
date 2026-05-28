@@ -99,6 +99,42 @@ class EsIndexingPipeline:
             succeeded_item_ids=succeeded_item_ids,
         )
 
+    async def delete_document_index(
+        self,
+        *,
+        user_id: int,
+        dataset_id: int,
+        doc_id: int,
+    ) -> int:
+        """删除某文档在 ES 中的全部 chunk 索引（Issue #57 文档级全量重建）。
+
+        删除范围严格限定 user_id + dataset_id + doc_id 三维全等，避免误删其他
+        用户 / 数据集 / 文档的索引。返回删除命中的文档数。
+
+        - routing=dataset_id：与写入侧 routing 一致，把删除收敛到目标分片。
+        - conflicts="proceed"：容忍并发写导致的版本冲突，不中断删除。
+        - refresh=False：不强制刷新；后续全量写入用相同 _id 覆盖即可，无需等待可见性。
+
+        ES 不可达 / 删除请求异常时向上抛，由编排层（_run_es_indexing）判 ES 阶段失败。
+        """
+        client = await self._resolve_client()
+        response = await client.delete_by_query(
+            index=self._index_name,
+            routing=str(dataset_id),
+            query={
+                "bool": {
+                    "filter": [
+                        {"term": {"user_id": user_id}},
+                        {"term": {"dataset_id": dataset_id}},
+                        {"term": {"doc_id": doc_id}},
+                    ]
+                }
+            },
+            conflicts="proceed",
+            refresh=False,
+        )
+        return int(response.get("deleted", 0) or 0)
+
     async def _resolve_client(self) -> AsyncElasticsearch:
         client = self._client_factory()
         if hasattr(client, "__await__"):
