@@ -28,19 +28,20 @@ when_to_use: "当代码实现完成、测试交付后、准备提交代码或合
 
 ## 3. 必读输入
 
-1. `AGENTS.md`
-2. 当前模块当前期次目录 `feature_info.md`
-3. 当前模块当前期次目录 `requirement.md`
-4. 当前模块当前期次目录 `technical_design.md`（若存在）
-5. 当前模块当前期次目录 `testing_delivery.md`
-6. 实际代码变更（`git diff` / 关键文件）
+1. `CLAUDE.md` / `AGENTS.md`
+2. `.specs/<feature-name>/feature_info.md`（若存在）
+3. `.specs/<feature-name>/brief.md`
+4. `.specs/<feature-name>/acceptance.feature`
+5. `.specs/<feature-name>/technical_design.md`（若存在）
+6. `.specs/<feature-name>/implementation_report.md`（若存在）
+7. 实际代码变更（`git diff` / 关键文件）
 
 ## 4. 审查流程
 
 ### 步骤 1：先看目标与测试证据
 
-- 核对改动是否覆盖 `requirement.md` 的核心目标
-- 先看 `testing_delivery.md` 的测试范围与实际结果
+- 核对改动是否覆盖 `brief.md` + `acceptance.feature` 的核心目标
+- 检查 `tests/acceptance/` 下对应 feature 的测试是否齐全且通过
 - 若缺关键测试证据，直接记为 Required 问题
 
 ### 步骤 2：五维审查

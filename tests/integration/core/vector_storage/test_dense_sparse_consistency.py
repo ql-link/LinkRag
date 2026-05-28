@@ -144,9 +144,8 @@ async def test_should_keep_dense_sparse_qdrant_and_mysql_consistent_for_real_chu
                 )
             ).scalars().all()
 
-        assert [record.dense_vector_status for record in records] == ["INDEXED", "INDEXED"]
-        assert [record.sparse_vector_status for record in records] == ["INDEXED", "INDEXED"]
-        assert [record.sparse_vector_nonzero_count for record in records] == [2, 2]
+        assert [record.dense_vector_status for record in records] == ["SUCCESS", "SUCCESS"]
+        assert [record.sparse_vector_status for record in records] == ["SUCCESS", "SUCCESS"]
 
         client = await qdrant_store._get_client()
         qdrant_records = await client.retrieve(

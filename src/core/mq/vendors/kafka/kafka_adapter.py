@@ -17,6 +17,12 @@ from src.core.mq.exceptions import (
     MQSendError,
     MQConsumeError,
 )
+from src.core.mq.retry import (
+    DLQPublisher,
+    DispatchOutcome,
+    RetryPolicy,
+    dispatch_with_retry,
+)
 
 
 class KafkaSender(IMQSender):
@@ -209,6 +215,8 @@ class KafkaReceiver(IMQReceiver):
         sasl_plain_username: str | None = None,
         sasl_plain_password: str | None = None,
         security_protocol: str = "PLAINTEXT",
+        retry_policy: RetryPolicy | None = None,
+        dlq_publisher: DLQPublisher | None = None,
     ):
         self._bootstrap_servers = bootstrap_servers
         self._client_id = client_id
@@ -222,6 +230,10 @@ class KafkaReceiver(IMQReceiver):
         self._sasl_plain_username = sasl_plain_username
         self._sasl_plain_password = sasl_plain_password
         self._security_protocol = security_protocol
+        # 失败兜底依赖：由 MQFactory 注入。允许构造时为 None 以便单测最小化装配，
+        # 但 _consume_loop 内会校验，缺失任一即拒绝消费循环。
+        self._retry_policy = retry_policy
+        self._dlq_publisher = dlq_publisher
 
         self._consumer = None
         self._subscriptions: List[Dict[str, Any]] = []
@@ -309,7 +321,24 @@ class KafkaReceiver(IMQReceiver):
             ) from e
 
     async def _consume_loop(self) -> None:
-        """消费主循环"""
+        """消费主循环：失败兜底走 dispatch_with_retry，位点按 TopicPartition 精确提交。
+
+        关键改造点（修复 GitHub issue #22 P0）：
+        1. 业务回调异常不再裸捕获——委托 ``dispatch_with_retry``：可重试异常做有限
+           次退避重试，超限或终态异常一律投递死信，避免单条消息 poison pill 阻塞
+           整个 partition。
+        2. ``commit()`` 不再用无参（无参提交会一次性提交消费者组在所有已分配 partition
+           上的当前消费位置，遇到失败消息卡在中间、后续成功消息触发提交时会**静默
+           跳过**坏消息丢数据）。改为 ``{TopicPartition: offset+1}`` 精确提交。
+        3. 死信投递成功才提交位点，投递失败则保留位点等待下次重新投递。
+        """
+        if self._retry_policy is None or self._dlq_publisher is None:
+            raise MQConsumeError(
+                "KafkaReceiver 缺少 retry_policy / dlq_publisher，"
+                "应通过 MQFactory.get_receiver() 装配",
+                vendor="kafka",
+            )
+
         # 构建 topic -> callback 映射
         callback_map: Dict[str, Callable] = {
             sub["topic"]: sub["callback"] for sub in self._subscriptions
@@ -325,33 +354,73 @@ class KafkaReceiver(IMQReceiver):
                     logger.warning(f"[Kafka] 收到未注册 Topic 的消息: {topic}")
                     continue
 
+                msg_key = msg.key.decode("utf-8") if msg.key else None
                 metadata = {
                     "topic": topic,
                     "partition": msg.partition,
                     "offset": msg.offset,
                     "timestamp": msg.timestamp,
-                    "key": msg.key.decode("utf-8") if msg.key else None,
+                    "key": msg_key,
                     "headers": (
                         {k: v.decode("utf-8") for k, v in msg.headers}
                         if msg.headers else {}
                     ),
                 }
-                try:
-                    await cb(msg.value, metadata)
-                    # 手动提交 offset（at-least-once 语义）
+
+                # 闭包捕获 msg_key，把它作为 dlq_publisher 的 original_key 参数透传
+                async def _publish_with_key(
+                    dlt_topic: str,
+                    body: bytes,
+                    headers: Dict[str, str],
+                    _key: str | None,
+                ) -> None:
+                    # 注意：_key 形参在此处仅是签名占位，使用闭包外的 msg_key
+                    # 避免 dispatch_with_retry 内部传 original_key 时被覆盖。
+                    await self._dlq_publisher(dlt_topic, body, headers, msg_key)
+
+                outcome = await dispatch_with_retry(
+                    cb,
+                    body=msg.value,
+                    metadata=metadata,
+                    policy=self._retry_policy,
+                    dlq_publisher=_publish_with_key,
+                )
+
+                if outcome in (DispatchOutcome.OK, DispatchOutcome.DLQ_PUBLISHED):
                     if not self._enable_auto_commit:
-                        await self._consumer.commit()
-                except Exception as e:
+                        await self._commit_partition_offset(msg)
+                else:
+                    # DLQ_PUBLISH_FAILED：保留 offset，靠下一次 rebalance / 重启
+                    # 从上次提交位点重新拉取该消息。期间 partition 会继续被该坏消息
+                    # 占用，但日志已告警，运维可介入。
                     logger.error(
-                        f"[Kafka] 业务回调异常: topic={topic}, "
-                        f"offset={msg.offset}, error={e}"
+                        f"[Kafka] DLT 投递失败保留位点: topic={topic} "
+                        f"partition={msg.partition} offset={msg.offset}"
                     )
-                    # 不提交 offset，消息将被重新消费
         except asyncio.CancelledError:
             logger.info("[Kafka Consumer] 消费循环被取消")
         except Exception as e:
             if self._running:
                 logger.error(f"[Kafka Consumer] 消费循环异常退出: {e}")
+
+    async def _commit_partition_offset(self, msg: Any) -> None:
+        """按 (topic, partition) 精确提交本条消息的下一个 offset。
+
+        提交 ``offset + 1`` 是 Kafka 提交语义（提交的是"下次该读的位置"），不是当前
+        已读位置。比起无参 ``commit()``，这里避免了"跨分区一并提交"导致的越权提交
+        与坏消息静默跳过。
+        """
+        from aiokafka import TopicPartition
+        tp = TopicPartition(msg.topic, msg.partition)
+        try:
+            await self._consumer.commit({tp: msg.offset + 1})
+        except Exception as e:
+            # 提交失败仅记日志，循环继续；下次成功消息会再次尝试提交，at-least-once
+            # 语义对此类瞬时失败具备容忍能力。
+            logger.error(
+                f"[Kafka] commit 失败 topic={msg.topic} partition={msg.partition} "
+                f"offset={msg.offset}: {e}"
+            )
 
     async def stop(self) -> None:
         """停止消费"""

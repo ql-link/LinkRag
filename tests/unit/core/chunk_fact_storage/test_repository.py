@@ -13,6 +13,9 @@ from src.core.chunk_fact_storage.constants import (
     ES_STATUS_FAILED,
     ES_STATUS_PENDING,
     ES_STATUS_SUCCESS,
+    SPARSE_VECTOR_STATUS_FAILED,
+    SPARSE_VECTOR_STATUS_INDEXED,
+    SPARSE_VECTOR_STATUS_PENDING,
 )
 from src.core.chunk_fact_storage.models import ChunkPostStatus, FactChunkDraft, decide_chunk_post_status
 from src.core.chunk_fact_storage.repository import ChunkRepository
@@ -80,7 +83,6 @@ async def test_should_record_vector_success_when_mark_indexed():
 
     values = _values_by_key(session)
     assert values["dense_vector_status"] == CHUNK_STATUS_INDEXED
-    assert values["dense_vector_error_msg"] is None
     assert values["dense_vector_model"] == "embed-v1"
 
 
@@ -93,7 +95,6 @@ async def test_should_record_vector_failure_when_mark_failed():
 
     values = _values_by_key(session)
     assert values["dense_vector_status"] == CHUNK_STATUS_FAILED
-    assert values["dense_vector_error_msg"] == "embedding timeout"
 
 
 @pytest.mark.asyncio
@@ -116,7 +117,7 @@ async def test_should_protect_delete_states_when_mark_sparse_indexed():
         ["chunk-1"],
         model_name="BAAI/bge-m3",
         nonzero_count=2,
-        expected_status="INDEXING",
+        expected_status="PENDING",
     )
 
     assert _where_criteria_count(session) == 3
@@ -163,7 +164,6 @@ async def test_should_record_es_success_when_mark_es_success():
 
     values = _values_by_key(session)
     assert values["es_status"] == ES_STATUS_SUCCESS
-    assert values["es_error_msg"] is None
 
 
 @pytest.mark.asyncio
@@ -175,8 +175,7 @@ async def test_should_record_es_failure_when_mark_es_failed():
 
     values = _values_by_key(session)
     assert values["es_status"] == ES_STATUS_FAILED
-    assert values["es_error_msg"] == "es timeout"
-    assert "dense_vector_error_msg" not in values
+    assert "dense_vector_status" not in values
 
 
 @pytest.mark.asyncio
@@ -188,7 +187,6 @@ async def test_should_record_es_pending_when_mark_es_retrying():
 
     values = _values_by_key(session)
     assert values["es_status"] == ES_STATUS_PENDING
-    assert values["es_error_msg"] is None
 
 
 @pytest.mark.asyncio
@@ -200,9 +198,7 @@ async def test_should_record_vector_pending_when_mark_indexing():
 
     values = _values_by_key(session)
     assert values["dense_vector_status"] == CHUNK_STATUS_INDEXING
-    assert values["dense_vector_error_msg"] is None
     assert values["es_status"] == ES_STATUS_PENDING
-    assert values["es_error_msg"] is None
     assert values["dense_vector_model"] == "embed-v1"
 
 
@@ -215,7 +211,6 @@ async def test_should_record_delete_failed_when_mark_delete_failed():
 
     values = _values_by_key(session)
     assert values["dense_vector_status"] == CHUNK_STATUS_DELETE_FAILED
-    assert values["dense_vector_error_msg"] == "qdrant down"
 
 
 @pytest.mark.asyncio
@@ -227,7 +222,6 @@ async def test_should_record_deleted_when_mark_deleted():
 
     values = _values_by_key(session)
     assert values["dense_vector_status"] == CHUNK_STATUS_DELETED
-    assert values["dense_vector_error_msg"] is None
 
 
 @pytest.mark.asyncio
@@ -240,8 +234,6 @@ async def test_should_claim_delete_retry_when_record_is_retryable():
     values = _values_by_key(session)
     assert claimed is True
     assert values["dense_vector_status"] == CHUNK_STATUS_DELETING
-    assert values["dense_vector_error_msg"] is None
-    assert "dense_vector_last_retry_at" in values
 
 
 @pytest.mark.asyncio
@@ -258,7 +250,7 @@ async def test_should_claim_stale_indexing_for_repair_without_changing_status():
     values = _values_by_key(session)
     assert claimed is True
     assert "dense_vector_status" not in values
-    assert "dense_vector_last_retry_at" in values
+    assert "update_time" in values
 
 
 @pytest.mark.asyncio
@@ -271,10 +263,7 @@ async def test_should_claim_failed_for_reindex_and_reset_vector_stage():
     values = _values_by_key(session)
     assert claimed is True
     assert values["dense_vector_status"] == CHUNK_STATUS_INDEXING
-    assert values["dense_vector_error_msg"] is None
     assert values["es_status"] == ES_STATUS_PENDING
-    assert "dense_vector_retry_count" in values
-    assert "dense_vector_last_retry_at" in values
 
 
 @pytest.mark.asyncio
@@ -309,9 +298,7 @@ async def test_should_prepare_reindex_when_update_chunk_for_reindex():
     assert values["content"] == "new text"
     assert values["content_hash"] == "new-hash"
     assert values["dense_vector_status"] == CHUNK_STATUS_INDEXING
-    assert values["dense_vector_error_msg"] is None
     assert values["es_status"] == ES_STATUS_PENDING
-    assert values["es_error_msg"] is None
 
 
 @pytest.mark.asyncio
@@ -345,7 +332,6 @@ async def test_should_record_deleting_when_mark_deleting():
 
     values = _values_by_key(session)
     assert values["dense_vector_status"] == CHUNK_STATUS_DELETING
-    assert values["dense_vector_error_msg"] is None
 
 
 @pytest.mark.asyncio
@@ -452,6 +438,38 @@ async def test_should_list_es_pending_or_failed_chunk_ids_by_doc_id():
     assert _where_criteria_count(session) == 3
 
 
+@pytest.mark.asyncio
+async def test_should_list_dense_vector_candidates_by_doc_id_when_sparse_disabled():
+    repository = ChunkRepository()
+    session = CapturingSession(records=["chunk-1"])
+
+    records = await repository.list_vector_candidates_by_doc_id(
+        session,
+        doc_id=10,
+        sparse_enabled=False,
+    )
+
+    assert records == ["chunk-1"]
+    # doc_id + dense status IN (PENDING, FAILED) + 排除删除保护状态。
+    assert _where_criteria_count(session) == 3
+
+
+@pytest.mark.asyncio
+async def test_should_list_dense_or_sparse_vector_candidates_by_doc_id_when_sparse_enabled():
+    repository = ChunkRepository()
+    session = CapturingSession(records=["chunk-1"])
+
+    records = await repository.list_vector_candidates_by_doc_id(
+        session,
+        doc_id=10,
+        sparse_enabled=True,
+    )
+
+    assert records == ["chunk-1"]
+    # doc_id + (dense pending/failed OR sparse pending/failed) + 排除删除保护状态。
+    assert _where_criteria_count(session) == 3
+
+
 def test_should_decide_processing_when_stage_status_is_pending():
     record = ChunkRepository().model_cls(
         chunk_id="chunk-1",
@@ -465,3 +483,51 @@ def test_should_decide_processing_when_stage_status_is_pending():
     )
 
     assert decide_chunk_post_status(record) == ChunkPostStatus.PROCESSING
+
+
+def test_should_decide_vector_failed_when_sparse_enabled_and_sparse_failed():
+    record = ChunkRepository().model_cls(
+        chunk_id="chunk-1",
+        doc_id=1,
+        set_id=1,
+        user_id=1,
+        content="a",
+        content_hash="a",
+        dense_vector_status=CHUNK_STATUS_INDEXED,
+        sparse_vector_status=SPARSE_VECTOR_STATUS_FAILED,
+        es_status=ES_STATUS_SUCCESS,
+    )
+
+    assert decide_chunk_post_status(record, sparse_enabled=True) == ChunkPostStatus.VECTOR_FAILED
+
+
+def test_should_decide_processing_when_sparse_enabled_and_sparse_pending():
+    record = ChunkRepository().model_cls(
+        chunk_id="chunk-1",
+        doc_id=1,
+        set_id=1,
+        user_id=1,
+        content="a",
+        content_hash="a",
+        dense_vector_status=CHUNK_STATUS_INDEXED,
+        sparse_vector_status=SPARSE_VECTOR_STATUS_PENDING,
+        es_status=ES_STATUS_SUCCESS,
+    )
+
+    assert decide_chunk_post_status(record, sparse_enabled=True) == ChunkPostStatus.PROCESSING
+
+
+def test_should_decide_completed_when_sparse_enabled_and_sparse_indexed():
+    record = ChunkRepository().model_cls(
+        chunk_id="chunk-1",
+        doc_id=1,
+        set_id=1,
+        user_id=1,
+        content="a",
+        content_hash="a",
+        dense_vector_status=CHUNK_STATUS_INDEXED,
+        sparse_vector_status=SPARSE_VECTOR_STATUS_INDEXED,
+        es_status=ES_STATUS_SUCCESS,
+    )
+
+    assert decide_chunk_post_status(record, sparse_enabled=True) == ChunkPostStatus.COMPLETED

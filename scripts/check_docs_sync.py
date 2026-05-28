@@ -12,7 +12,7 @@ Exit codes:
     1  - One or more error-level violations
     2  - Configuration or runtime failure (bad yaml, git unavailable, etc.)
 
-The rules live in .claude/doc-sync-rules.yaml. See docs/development/doc_sync.md.
+The rules live in .claude/doc-sync-rules.yaml. See docs/contributing.md.
 """
 
 from __future__ import annotations

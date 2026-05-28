@@ -18,17 +18,18 @@ when_to_use: "当需求和技术方案已确认并且给出需求和技术方案
 
 ## 输入前提
 
-- `requirement.md` 已审核通过
-- 若存在 `technical_design.md`，则其也已审核通过
+- `.specs/<feature-name>/brief.md` 已冻结
+- `.specs/<feature-name>/acceptance.feature` 已冻结
+- 若存在 `.specs/<feature-name>/technical_design.md`，则其也已审核通过
 
 ## 必读文件
 
-1. `AGENTS.md`
-2. `project_info.md`
-3. 当前模块当前期次目录 `feature_info.md`
-4. 当前模块当前期次目录 `requirement.md`
-5. 当前模块当前期次目录 `technical_design.md`（若存在）
-6. 对应组件说明文档（若涉及）
+1. `CLAUDE.md` / `AGENTS.md`（同一份，项目使用入口）
+2. `.specs/<feature-name>/feature_info.md`（若存在）
+3. `.specs/<feature-name>/brief.md`
+4. `.specs/<feature-name>/acceptance.feature`
+5. `.specs/<feature-name>/technical_design.md`（若存在）
+6. 对应组件说明文档（若涉及，见 `docs/internals/`）
 7. 涉及模块的真实代码
 
 ## 输出位置
@@ -37,11 +38,13 @@ when_to_use: "当需求和技术方案已确认并且给出需求和技术方案
 
 若需要改造报告，输出位置固定为：
 
-`docs/module-development-files/<domain>-<module-name>/<phase>/implementation_report.md`
+`.specs/<feature-name>/implementation_report.md`
+
+> `.specs/` 整目录 git-ignored；合并 PR 前应把有长期价值的内容沉淀到 PR 描述 / `docs/internals/` / `tests/acceptance/features/`，详见 [.specs/README.md](../../../.specs/README.md)。
 
 改造报告模板固定为：
 
-`.agents/skills/implementation-execution/implementation_report.template.md`
+`.ai/skills/implementation-execution/implementation_report.template.md`
 
 ## 输出要求
 
@@ -65,10 +68,10 @@ when_to_use: "当需求和技术方案已确认并且给出需求和技术方案
 
 ## 写改造报告时必须读取
 
-1. 当前模块当前期次目录 `requirement.md`
-2. 当前模块当前期次目录 `technical_design.md`（若存在）
+1. `.specs/<feature-name>/brief.md` + `acceptance.feature`
+2. `.specs/<feature-name>/technical_design.md`（若存在）
 3. 实际代码 diff
-4. 当前模块当前期次目录 `feature_info.md`
+4. `.specs/<feature-name>/feature_info.md`
 
 ## 改造报告应包含什么
 
@@ -86,7 +89,7 @@ when_to_use: "当需求和技术方案已确认并且给出需求和技术方案
 - 完整技术方案
 - 完整测试执行结果
 
-写作时应优先按 `.agents/skills/implementation-execution/implementation_report.template.md` 的章节结构落文。
+写作时应优先按 `.ai/skills/implementation-execution/implementation_report.template.md` 的章节结构落文。
 
 ## 强制约束
 
@@ -101,7 +104,7 @@ when_to_use: "当需求和技术方案已确认并且给出需求和技术方案
 
 ### 步骤 1：按文档实现代码
 
-- 以 `requirement.md` 为边界
+- 以 `brief.md` + `acceptance.feature` 为边界
 - 以 `technical_design.md` 为实现依据
 - 先复用已有模块和组件，再考虑改 framework
 

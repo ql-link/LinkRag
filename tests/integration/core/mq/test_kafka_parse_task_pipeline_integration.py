@@ -234,7 +234,7 @@ async def test_kafka_receiver_should_consume_parse_task_message_and_commit_after
         session_factory=FakeAsyncSessionFactory(db),
         mq_service=mq_service,
         vector_storage=vector_storage,
-        post_process_repository=FakePostProcessRepository(),
+        pipeline_repository=FakePostProcessRepository(),
         es_indexing_pipeline=FakeEsIndexingPipeline(),
         preprocessor=FakePreprocessor(),
     )
@@ -327,7 +327,7 @@ async def test_kafka_receiver_should_commit_when_pipeline_fails():
         storage=storage,
         session_factory=FakeAsyncSessionFactory(db),
         mq_service=mq_service,
-        post_process_repository=FakePostProcessRepository(),
+        pipeline_repository=FakePostProcessRepository(),
     )
 
     message = ParseTaskMessage.build(
@@ -392,7 +392,7 @@ async def test_kafka_receiver_should_commit_when_duplicate_created_is_marked_fai
         storage=storage,
         session_factory=FakeAsyncSessionFactory(db),
         mq_service=mq_service,
-        post_process_repository=FakePostProcessRepository(),
+        pipeline_repository=FakePostProcessRepository(),
     )
 
     message = ParseTaskMessage.build(
@@ -449,7 +449,7 @@ async def test_kafka_receiver_should_commit_when_duplicate_success_is_resent():
         storage=storage,
         session_factory=FakeAsyncSessionFactory(db),
         mq_service=mq_service,
-        post_process_repository=FakePostProcessRepository(PIPELINE_STATUS_SUCCESS),
+        pipeline_repository=FakePostProcessRepository(PIPELINE_STATUS_SUCCESS),
     )
 
     message = ParseTaskMessage.build(

@@ -1,0 +1,351 @@
+"""测试 ParseTaskPipeline 的 6 阶段执行顺序。
+
+本测试文件专注于验证：
+1. 6 个阶段按正确顺序执行：CLEANING → CHUNKING → VECTORIZING → PRETOKENIZE → ES_INDEXING → SPARSE_VECTORIZING
+2. sparse 阶段在 ES 成功后执行
+3. sparse 成功才翻转 pipeline_status=SUCCESS
+4. sparse 失败时的正确处理
+"""
+
+from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+
+from src.core.es_index_storage.models import EsIndexingResult
+from src.core.pipeline.parse_task.pipeline import ParseTaskPipeline, PipelineStatus
+from src.core.pipeline.parse_task.post_process.constants import (
+    PIPELINE_STATUS_FAILED,
+    PIPELINE_STATUS_SUCCESS,
+    STAGE_STATUS_FAILED,
+    STAGE_STATUS_SUCCESS,
+)
+from src.core.preprocessor.models import ChunkWithTokens, FileIndexMeta, FilePostIndexPlan
+from src.core.splitter.models import Chunk
+from src.core.vector_storage.models import ChunkIndexingResult
+from tests.unit.core.pipeline.test_parse_task_pipeline import (
+    FakeAsyncSessionFactory,
+    FakeEsIndexingPipeline,
+    FakePostProcessRepository,
+    FakePreprocessor,
+    build_db,
+    build_parse_task,
+    build_payload,
+)
+
+
+class OrderTrackingSparseIndexingPipeline:
+    """追踪调用顺序的 SparseIndexingPipeline 替身。"""
+
+    def __init__(self, *, should_fail: bool = False, order_tracker: list | None = None):
+        self.should_fail = should_fail
+        # 确保使用传入的列表引用，而不是创建新列表
+        if order_tracker is None:
+            self.order_tracker = []
+        else:
+            self.order_tracker = order_tracker
+        self.run_called = False
+
+    async def run(self, *, doc_id: int, bucket_id: int, task_id: str, db):
+        self.run_called = True
+        self.order_tracker.append("sparse_run")
+        if self.should_fail:
+            from src.core.sparse_vector.indexing import SparseIndexingError
+
+            raise SparseIndexingError("SPARSE_VECTORIZING_FAILED:test_error")
+
+
+class OrderTrackingEsIndexingPipeline:
+    """追踪调用顺序的 EsIndexingPipeline 替身。"""
+
+    def __init__(self, *, order_tracker: list | None = None):
+        if order_tracker is None:
+            self.order_tracker = []
+        else:
+            self.order_tracker = order_tracker
+
+    async def write_es_index(self, plan, *, db):
+        self.order_tracker.append("es_write")
+        return EsIndexingResult(total_items=2, indexed_items=2)
+
+
+class OrderTrackingVectorStorage:
+    """追踪调用顺序的 VectorStorage 替身。"""
+
+    def __init__(self, *, order_tracker: list | None = None):
+        if order_tracker is None:
+            self.order_tracker = []
+        else:
+            self.order_tracker = order_tracker
+
+    async def index_document_chunks(self, **kwargs):
+        self.order_tracker.append("vector_index")
+        return ChunkIndexingResult(total_chunks=2, indexed_chunks=2)
+
+
+class OrderTrackingPreprocessor:
+    """追踪调用顺序的 Preprocessor 替身。"""
+
+    def __init__(self, *, order_tracker: list | None = None):
+        if order_tracker is None:
+            self.order_tracker = []
+        else:
+            self.order_tracker = order_tracker
+
+    async def build_file_post_index_plan(self, *, doc_id: int, task_id: str):
+        self.order_tracker.append("pretokenize")
+        return FilePostIndexPlan(
+            file_meta=FileIndexMeta(user_id=20, dataset_id=30, doc_id=doc_id, task_id=task_id),
+            chunks_with_tokens=[
+                ChunkWithTokens(
+                    chunk_id="c1",
+                    chunk_index=0,
+                    coarse_tokens="test",
+                    fine_tokens="test",
+                ),
+                ChunkWithTokens(
+                    chunk_id="c2",
+                    chunk_index=1,
+                    coarse_tokens="test2",
+                    fine_tokens="test2",
+                ),
+            ],
+        )
+
+
+class TestPipelineSixStageOrder:
+    """测试 6 阶段执行顺序。"""
+
+    @patch(
+        "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
+        new_callable=AsyncMock,
+    )
+    @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown")
+    async def test_six_stages_execute_in_correct_order(
+        self,
+        mock_chunk_markdown,
+        mock_aprocess,
+    ):
+        """验证 6 个阶段按正确顺序执行：CLEANING → CHUNKING → VECTORIZING → PRETOKENIZE → ES → SPARSE。"""
+        db = build_db(build_parse_task())
+        order_tracker = []
+
+        storage = MagicMock()
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(
+            b"pdf bytes"
+        )
+        storage.upload_bytes.side_effect = lambda **kwargs: order_tracker.append("cleaning_upload")
+
+        mq_service = MagicMock()
+        mq_service.send = AsyncMock()
+
+        # Mock ChunkRepository instance directly
+        mock_chunk_repo = AsyncMock()
+        mock_chunk_repo.bulk_insert_pending = AsyncMock()
+
+        vector_storage = OrderTrackingVectorStorage(order_tracker=order_tracker)
+        preprocessor = OrderTrackingPreprocessor(order_tracker=order_tracker)
+        es_pipeline = OrderTrackingEsIndexingPipeline(order_tracker=order_tracker)
+        sparse_pipeline = OrderTrackingSparseIndexingPipeline(order_tracker=order_tracker)
+        post_repo = FakePostProcessRepository()
+
+        mock_aprocess.return_value = {
+            "markdown": "parsed content",
+            "parse_result": MagicMock(),
+            "metadata": {"pages_or_length": 3},
+            "time_cost_ms": 120,
+        }
+        mock_chunk_markdown.return_value = [
+            Chunk(content="alpha", start_line=1, end_line=1),
+            Chunk(content="beta", start_line=2, end_line=2),
+        ]
+
+        pipeline = ParseTaskPipeline(
+            storage=storage,
+            session_factory=FakeAsyncSessionFactory(db),
+            mq_service=mq_service,
+            vector_storage=vector_storage,
+            pipeline_repository=post_repo,
+            es_indexing_pipeline=es_pipeline,
+            preprocessor=preprocessor,
+            sparse_indexing_pipeline=sparse_pipeline,
+            chunk_repository=mock_chunk_repo,
+        )
+
+        payload = build_payload()
+        payload.pdf_parser_backend = "opendataloader"
+
+        result = await pipeline.execute(payload)
+
+        # 验证成功
+        assert result.status == PipelineStatus.SUCCESS
+        assert result.chunk_count == 2
+
+        # 验证阶段顺序：cleaning → chunking(隐式) → vector → pretokenize → es → sparse
+        assert order_tracker == [
+            "cleaning_upload",  # CLEANING 阶段
+            # CHUNKING 阶段没有显式追踪（在 _persist_chunk_facts 中）
+            "vector_index",  # VECTORIZING 阶段
+            "pretokenize",  # PRETOKENIZE 阶段
+            "es_write",  # ES_INDEXING 阶段
+            "sparse_run",  # SPARSE_VECTORIZING 阶段
+        ]
+
+        # 验证 sparse 确实被调用
+        assert sparse_pipeline.run_called is True
+
+        # 验证最终状态
+        assert post_repo.pipeline.pipeline_status == PIPELINE_STATUS_SUCCESS
+        assert post_repo.pipeline.sparse_vectorizing_status == STAGE_STATUS_SUCCESS
+
+    @patch(
+        "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
+        new_callable=AsyncMock,
+    )
+    @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown")
+    async def test_sparse_failure_marks_pipeline_failed(
+        self,
+        mock_chunk_markdown,
+        mock_aprocess,
+    ):
+        """验证 sparse 失败时正确标记 pipeline 失败。"""
+        db = build_db(build_parse_task())
+        order_tracker = []
+
+        storage = MagicMock()
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(
+            b"pdf bytes"
+        )
+        storage.upload_bytes.side_effect = lambda **kwargs: None
+
+        mq_service = MagicMock()
+        mq_service.send = AsyncMock()
+
+        # Mock ChunkRepository instance directly
+        mock_chunk_repo = AsyncMock()
+        mock_chunk_repo.bulk_insert_pending = AsyncMock()
+
+        vector_storage = OrderTrackingVectorStorage(order_tracker=order_tracker)
+        preprocessor = OrderTrackingPreprocessor(order_tracker=order_tracker)
+        es_pipeline = OrderTrackingEsIndexingPipeline(order_tracker=order_tracker)
+        sparse_pipeline = OrderTrackingSparseIndexingPipeline(
+            should_fail=True, order_tracker=order_tracker
+        )
+        post_repo = FakePostProcessRepository()
+
+        mock_aprocess.return_value = {
+            "markdown": "parsed content",
+            "parse_result": MagicMock(),
+            "metadata": {"pages_or_length": 3},
+            "time_cost_ms": 120,
+        }
+        mock_chunk_markdown.return_value = [
+            Chunk(content="alpha", start_line=1, end_line=1),
+        ]
+
+        pipeline = ParseTaskPipeline(
+            storage=storage,
+            session_factory=FakeAsyncSessionFactory(db),
+            mq_service=mq_service,
+            vector_storage=vector_storage,
+            pipeline_repository=post_repo,
+            es_indexing_pipeline=es_pipeline,
+            preprocessor=preprocessor,
+            sparse_indexing_pipeline=sparse_pipeline,
+            chunk_repository=mock_chunk_repo,
+        )
+
+        payload = build_payload()
+        payload.pdf_parser_backend = "opendataloader"
+
+        result = await pipeline.execute(payload)
+
+        # 验证失败
+        assert result.status == PipelineStatus.FAILED
+
+        # 验证 ES 成功但 sparse 失败
+        assert "es_write" in order_tracker
+        assert "sparse_run" in order_tracker
+        assert order_tracker.index("es_write") < order_tracker.index("sparse_run")
+
+        # 验证状态
+        assert post_repo.pipeline.pipeline_status == PIPELINE_STATUS_FAILED
+        assert post_repo.pipeline.sparse_vectorizing_status == STAGE_STATUS_FAILED
+        assert post_repo.pipeline.failed_stage == "SPARSE_VECTORIZING"
+
+        # 验证通知被发送
+        mq_service.send.assert_awaited()
+
+    @patch(
+        "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
+        new_callable=AsyncMock,
+    )
+    @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown")
+    async def test_sparse_executes_after_es_success(
+        self,
+        mock_chunk_markdown,
+        mock_aprocess,
+    ):
+        """验证 sparse 只在 ES 成功后执行。"""
+        db = build_db(build_parse_task())
+        order_tracker = []
+
+        storage = MagicMock()
+        storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(
+            b"pdf bytes"
+        )
+        storage.upload_bytes.side_effect = lambda **kwargs: None
+
+        mq_service = MagicMock()
+        mq_service.send = AsyncMock()
+
+        # Mock ChunkRepository instance directly
+        mock_chunk_repo = AsyncMock()
+        mock_chunk_repo.bulk_insert_pending = AsyncMock()
+
+        vector_storage = OrderTrackingVectorStorage(order_tracker=order_tracker)
+        preprocessor = OrderTrackingPreprocessor(order_tracker=order_tracker)
+        es_pipeline = OrderTrackingEsIndexingPipeline(order_tracker=order_tracker)
+        sparse_pipeline = OrderTrackingSparseIndexingPipeline(order_tracker=order_tracker)
+        post_repo = FakePostProcessRepository()
+
+        mock_aprocess.return_value = {
+            "markdown": "parsed content",
+            "parse_result": MagicMock(),
+            "metadata": {"pages_or_length": 3},
+            "time_cost_ms": 120,
+        }
+        mock_chunk_markdown.return_value = [
+            Chunk(content="alpha", start_line=1, end_line=1),
+        ]
+
+        pipeline = ParseTaskPipeline(
+            storage=storage,
+            session_factory=FakeAsyncSessionFactory(db),
+            mq_service=mq_service,
+            vector_storage=vector_storage,
+            pipeline_repository=post_repo,
+            es_indexing_pipeline=es_pipeline,
+            preprocessor=preprocessor,
+            sparse_indexing_pipeline=sparse_pipeline,
+            chunk_repository=mock_chunk_repo,
+        )
+
+        payload = build_payload()
+        payload.pdf_parser_backend = "opendataloader"
+
+        result = await pipeline.execute(payload)
+
+        # 验证成功
+        assert result.status == PipelineStatus.SUCCESS
+
+        # 验证 sparse 在 ES 之后执行
+        es_index = order_tracker.index("es_write")
+        sparse_index = order_tracker.index("sparse_run")
+        assert sparse_index > es_index, "sparse 应该在 ES 之后执行"
+
+        # 验证 ES 成功标记在 sparse 之前
+        assert "mark_es_success" in post_repo.calls
+        assert "mark_sparse_vectorizing_success" in post_repo.calls
+        es_success_index = post_repo.calls.index("mark_es_success")
+        sparse_success_index = post_repo.calls.index("mark_sparse_vectorizing_success")
+        assert sparse_success_index > es_success_index

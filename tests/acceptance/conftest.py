@@ -267,7 +267,7 @@ def pipeline_factory(
         pipeline._session_factory = _FakeSessionFactory(session)
         pipeline._mq_service = MagicMock()
         pipeline._vector_storage = MagicMock()
-        pipeline._post_process_repository = post_process_repository_stub
+        pipeline._pipeline_repository = post_process_repository_stub
         pipeline._es_indexing_pipeline = MagicMock()
         pipeline._preprocessor = MagicMock()
         pipeline._chunk_repository = MagicMock()
@@ -340,9 +340,4 @@ def pipeline_factory(
 @pytest.fixture
 def feature_path() -> Path:
     """供 step 测试时定位 acceptance.feature 的绝对路径。"""
-    return (
-        Path(__file__).resolve().parents[2]
-        / "docs"
-        / "解析任务OOM风险治理"
-        / "acceptance.feature"
-    )
+    return Path(__file__).resolve().parent / "features" / "parse_task_oom_governance.feature"

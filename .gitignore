@@ -37,6 +37,7 @@ venv/
 # Environment
 .env
 .env.local
+.env.test
 
 # External Storage (managed externally, not in repo)
 # ChromaDB data, PostgreSQL, ES indices, S3 files
@@ -60,7 +61,11 @@ tests/api_keys.json
 /tests/evaluation_datasets/parser_smoke/sample/
 /tests/evaluation_datasets/
 /docs/evaluation_reports/
-/blog/
+
+# Feature spec-as-test 临时产物 (brief/acceptance/design/report)
+# 只有 .specs/README.md 入 git；其他全部本地工作产物，合并后清理。
+/.specs/*
+!/.specs/README.md
 
 # Claude Code session worktrees (per-session local clones)
 .claude/worktrees/
@@ -68,7 +73,4 @@ tests/api_keys.json
 .claude/settings.local.json
 
 /requirements
-
-# 功能设计文档（本地工作产物，不推送）
-docs/预分词独立阶段/
 
