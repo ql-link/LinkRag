@@ -4,8 +4,8 @@ from unittest.mock import AsyncMock
 import pytest
 
 from src.core.chunk_fact_storage.constants import (
-    CHUNK_STATUS_DELETED,
-    CHUNK_STATUS_DELETING,
+    CHUNK_LIFECYCLE_ACTIVE,
+    CHUNK_LIFECYCLE_REMOVED,
     CHUNK_STATUS_INDEXING,
 )
 from src.core.qdrant_vector_storage import IndexedPoint
@@ -320,7 +320,8 @@ async def test_should_skip_cleanup_when_update_completion_status_no_longer_match
         content="new content",
         content_hash=hashlib.sha256(b"new content").hexdigest(),
         chunk_type="paragraph",
-        dense_vector_status=CHUNK_STATUS_DELETED,
+        dense_vector_status="SUCCESS",
+        lifecycle_status=CHUNK_LIFECYCLE_ACTIVE,
     )
     mock_repository.get_updatable_by_chunk_ids.return_value = [indexed_chunk_record]
     mock_repository.update_chunk_for_reindex.return_value = 1
@@ -350,7 +351,7 @@ async def test_should_skip_cleanup_when_update_completion_status_no_longer_match
 
 
 @pytest.mark.asyncio
-async def test_should_not_mark_delete_failed_without_chunk_delete_state(
+async def test_should_not_cleanup_qdrant_without_removed_chunk_state(
     chunk_management_service,
     mock_session,
     mock_repository,
@@ -368,7 +369,8 @@ async def test_should_not_mark_delete_failed_without_chunk_delete_state(
         content="new content",
         content_hash=hashlib.sha256(b"new content").hexdigest(),
         chunk_type="paragraph",
-        dense_vector_status=CHUNK_STATUS_DELETED,
+        dense_vector_status="SUCCESS",
+        lifecycle_status=CHUNK_LIFECYCLE_ACTIVE,
     )
     mock_repository.get_updatable_by_chunk_ids.return_value = [indexed_chunk_record]
     mock_repository.update_chunk_for_reindex.return_value = 1
@@ -394,7 +396,6 @@ async def test_should_not_mark_delete_failed_without_chunk_delete_state(
     assert result.affected_chunks == 0
     assert result.skipped_chunk_ids == ["chunk-indexed-1"]
     mock_qdrant_store.delete_points.assert_not_awaited()
-    mock_repository.mark_delete_failed.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -440,7 +441,7 @@ async def test_should_mark_failed_when_update_reindex_raises_exception(
 
 
 @pytest.mark.asyncio
-async def test_should_mark_deleting_delete_points_and_mark_deleted_when_delete_chunks_succeeds(
+async def test_should_mark_removed_then_delete_points_when_delete_chunks_succeeds(
     chunk_management_service,
     mock_session,
     mock_repository,
@@ -460,8 +461,7 @@ async def test_should_mark_deleting_delete_points_and_mark_deleted_when_delete_c
         dense_vector_status="SUCCESS",
     )
     mock_repository.get_deletable_by_chunk_ids.return_value = [indexed_chunk_record, other_record]
-    mock_repository.mark_deleting.return_value = 2
-    mock_repository.mark_deleted.return_value = 2
+    mock_repository.mark_removed.return_value = 2
     request = ChunkDeleteRequest(chunk_ids=["chunk-indexed-1", "chunk-indexed-2"])
 
     # Act: 执行动作
@@ -469,22 +469,17 @@ async def test_should_mark_deleting_delete_points_and_mark_deleted_when_delete_c
 
     # Assert: 断言结果
     assert result == ChunkMutationResult(total_chunks=2, affected_chunks=2)
-    mock_repository.mark_deleting.assert_awaited_once_with(
+    mock_repository.mark_removed.assert_awaited_once_with(
         mock_session,
         ["chunk-indexed-1", "chunk-indexed-2"],
+        expected_lifecycle_status=CHUNK_LIFECYCLE_ACTIVE,
     )
     mock_qdrant_store.delete_points.assert_any_await(bucket_id=5, chunk_ids=["chunk-indexed-1"])
     mock_qdrant_store.delete_points.assert_any_await(bucket_id=6, chunk_ids=["chunk-indexed-2"])
-    mock_repository.mark_deleted.assert_awaited_once_with(
-        mock_session,
-        ["chunk-indexed-1", "chunk-indexed-2"],
-        expected_status=CHUNK_STATUS_DELETING,
-    )
-    mock_repository.mark_delete_failed.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_should_skip_delete_when_mark_deleting_rowcount_is_zero(
+async def test_should_skip_delete_when_mark_removed_rowcount_is_zero(
     chunk_management_service,
     mock_repository,
     mock_qdrant_store,
@@ -492,7 +487,7 @@ async def test_should_skip_delete_when_mark_deleting_rowcount_is_zero(
 ):
     # Arrange: 准备数据
     mock_repository.get_deletable_by_chunk_ids.return_value = [indexed_chunk_record]
-    mock_repository.mark_deleting.return_value = 0
+    mock_repository.mark_removed.return_value = 0
     request = ChunkDeleteRequest(chunk_ids=["chunk-indexed-1"])
 
     # Act: 执行动作
@@ -505,11 +500,10 @@ async def test_should_skip_delete_when_mark_deleting_rowcount_is_zero(
         skipped_chunk_ids=["chunk-indexed-1"],
     )
     mock_qdrant_store.delete_points.assert_not_awaited()
-    mock_repository.mark_deleted.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_should_skip_delete_when_mark_deleting_rowcount_is_incomplete(
+async def test_should_skip_delete_when_mark_removed_rowcount_is_incomplete(
     chunk_management_service,
     mock_repository,
     mock_qdrant_store,
@@ -528,7 +522,7 @@ async def test_should_skip_delete_when_mark_deleting_rowcount_is_incomplete(
         dense_vector_status="SUCCESS",
     )
     mock_repository.get_deletable_by_chunk_ids.return_value = [indexed_chunk_record, other_record]
-    mock_repository.mark_deleting.return_value = 1
+    mock_repository.mark_removed.return_value = 1
     request = ChunkDeleteRequest(chunk_ids=["chunk-indexed-1", "chunk-indexed-2"])
 
     # Act: 执行动作
@@ -541,46 +535,6 @@ async def test_should_skip_delete_when_mark_deleting_rowcount_is_incomplete(
         skipped_chunk_ids=["chunk-indexed-1", "chunk-indexed-2"],
     )
     mock_qdrant_store.delete_points.assert_not_awaited()
-    mock_repository.mark_deleted.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_should_skip_delete_completion_when_mark_deleted_rowcount_is_incomplete(
-    chunk_management_service,
-    mock_repository,
-    mock_qdrant_store,
-    indexed_chunk_record,
-):
-    # Arrange: 准备数据
-    other_record = ChunkRecordDB(
-        chunk_id="chunk-indexed-2",
-        doc_id=102,
-        set_id=202,
-        user_id=302,
-        bucket_id=5,
-        content="other content",
-        content_hash="hash-other",
-        chunk_type="paragraph",
-        dense_vector_status="SUCCESS",
-    )
-    mock_repository.get_deletable_by_chunk_ids.return_value = [indexed_chunk_record, other_record]
-    mock_repository.mark_deleting.return_value = 2
-    mock_repository.mark_deleted.return_value = 1
-    request = ChunkDeleteRequest(chunk_ids=["chunk-indexed-1", "chunk-indexed-2"])
-
-    # Act: 执行动作
-    result = await chunk_management_service.delete_chunks(request)
-
-    # Assert: 断言结果
-    assert result == ChunkMutationResult(
-        total_chunks=2,
-        affected_chunks=0,
-        skipped_chunk_ids=["chunk-indexed-1", "chunk-indexed-2"],
-    )
-    mock_qdrant_store.delete_points.assert_awaited_once_with(
-        bucket_id=5,
-        chunk_ids=["chunk-indexed-1", "chunk-indexed-2"],
-    )
 
 
 @pytest.mark.asyncio
@@ -602,14 +556,12 @@ async def test_should_skip_delete_when_chunk_status_is_not_admitted(
         affected_chunks=0,
         skipped_chunk_ids=["chunk-deleted-1"],
     )
-    mock_repository.mark_deleting.assert_not_awaited()
+    mock_repository.mark_removed.assert_not_awaited()
     mock_qdrant_store.delete_points.assert_not_awaited()
-    mock_repository.mark_deleted.assert_not_awaited()
-    mock_repository.mark_delete_failed.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_should_mark_delete_failed_when_qdrant_delete_raises_exception(
+async def test_should_report_failure_when_qdrant_delete_raises_exception(
     chunk_management_service,
     mock_session,
     mock_repository,
@@ -618,8 +570,7 @@ async def test_should_mark_delete_failed_when_qdrant_delete_raises_exception(
 ):
     # Arrange: 准备数据
     mock_repository.get_deletable_by_chunk_ids.return_value = [indexed_chunk_record]
-    mock_repository.mark_deleting.return_value = 1
-    mock_repository.mark_delete_failed.return_value = 1
+    mock_repository.mark_removed.return_value = 1
     mock_qdrant_store.delete_points = AsyncMock(side_effect=RuntimeError("delete down"))
     request = ChunkDeleteRequest(chunk_ids=["chunk-indexed-1"])
 
@@ -630,11 +581,8 @@ async def test_should_mark_delete_failed_when_qdrant_delete_raises_exception(
     assert result.total_chunks == 1
     assert result.affected_chunks == 0
     assert result.failed_chunk_ids == ["chunk-indexed-1"]
-    mock_repository.mark_deleting.assert_awaited_once_with(mock_session, ["chunk-indexed-1"])
-    mock_repository.mark_delete_failed.assert_awaited_once_with(
+    mock_repository.mark_removed.assert_awaited_once_with(
         mock_session,
         ["chunk-indexed-1"],
-        error_msg="delete down",
-        expected_status=CHUNK_STATUS_DELETING,
+        expected_lifecycle_status=CHUNK_LIFECYCLE_ACTIVE,
     )
-    mock_repository.mark_deleted.assert_not_awaited()

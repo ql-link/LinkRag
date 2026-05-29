@@ -271,6 +271,7 @@ CREATE TABLE IF NOT EXISTS kb_document_chunk (
     sparse_vector_status        VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT '稀疏向量状态: PENDING/SUCCESS/FAILED',
     sparse_vector_model         VARCHAR(128) DEFAULT NULL COMMENT '实际使用的稀疏向量模型名称',
     es_status                   VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT 'ES索引状态: PENDING/SUCCESS/FAILED',
+    lifecycle_status            VARCHAR(16) NOT NULL DEFAULT 'ACTIVE' COMMENT 'Chunk业务生命周期状态: ACTIVE=业务有效，可参与解析/索引/检索; REMOVED=已从业务视图移除，不再参与解析/索引/检索，外部索引清理由异步任务处理',
     create_time                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
     update_time                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
 
@@ -278,7 +279,9 @@ CREATE TABLE IF NOT EXISTS kb_document_chunk (
     KEY idx_user_set (user_id, set_id),
     KEY idx_doc_dense_status (doc_id, dense_vector_status),
     KEY idx_doc_sparse_status (doc_id, sparse_vector_status),
-    KEY idx_doc_es_status (doc_id, es_status)
+    KEY idx_doc_es_status (doc_id, es_status),
+    KEY idx_doc_lifecycle_status (doc_id, lifecycle_status),
+    KEY idx_lifecycle_update_time (lifecycle_status, update_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '文档Chunk真值记录表';
 
 -- 自增起始值统一为 10000
