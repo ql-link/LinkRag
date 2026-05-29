@@ -110,10 +110,10 @@ MarkdownElement[]
 
 ### 4.1 解析流水线中的使用
 
-`ParseTaskPipeline._chunk_markdown` 会优先使用上游已经生成的 `ParseResult`：
+解析 Pipeline 的 `ChunkingStage` 会通过 `StageServices.run_chunking()` 优先使用上游已经生成的 `ParseResult`：
 
 ```python
-chunks = ParseTaskPipeline._chunk_markdown(
+chunks = await services.run_chunking(
     markdown=markdown,
     source_file=md_object_key,
     parse_result=parse_result,
@@ -122,7 +122,7 @@ chunks = ParseTaskPipeline._chunk_markdown(
 
 如果没有 `parse_result`，`ChunkingEngine` 会先调用 `MarkdownParser.parse()` 再分片。
 
-`ParseTaskPipeline._run_chunking` 在获得 `list[Chunk]` 后，会把分片转换为 chunk 真值草稿，并在同一 chunking 阶段通过 `ChunkRepository.bulk_insert_pending()` 单事务写入 MySQL。写入成功后才标记文件级 `chunking_status=SUCCESS`；写入失败会回滚整批 chunk 真值并终止流水线，不进入 vectorizing。
+`ChunkingStage` 在获得 `list[Chunk]` 后，会把分片转换为 chunk 真值草稿，并在同一 chunking 阶段通过 `ChunkRepository.bulk_insert_pending()` 单事务写入 MySQL。写入成功后才标记文件级 `chunking_status=SUCCESS`；写入失败会回滚整批 chunk 真值并终止流水线，不进入 vectorizing。
 
 ### 4.2 直接使用 ChunkingEngine
 

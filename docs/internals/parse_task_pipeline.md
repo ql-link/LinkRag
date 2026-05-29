@@ -9,7 +9,7 @@
 ```text
 src/core/pipeline/
 ├── parse_task/                  # 解析任务主编排
-│   ├── pipeline.py              # ParseTaskPipeline 主类（编排骨架）
+│   ├── pipeline.py              # ParseTaskPipeline 主类（薄编排）：消息分流/幂等/校验/重试 CAS，6 阶段执行委托 stages/
 │   ├── constants.py             # 解析任务状态和用户提示文案
 │   ├── error_codes.py           # ParseFailureCode + build_failure_reason
 │   ├── models.py                # ParsePipelineResult / PipelineStatus
@@ -19,6 +19,16 @@ src/core/pipeline/
 │   ├── temp_workspace.py        # PARSE_TEMP_DIR 启动清理、临时文件分配、safe_unlink 幂等
 │   ├── validator.py             # ParseTaskGuard: 前置校验、MQ 重投与中断状态收敛
 │   ├── _utils.py                # 子包内部共享小工具（now / duration_ms / 等）
+│   ├── stages/                  # 6 阶段类化编排（LINK-37）：唯一的 mark/run/notify 模板
+│   │   ├── base.py              # Stage 抽象基类（execute 模板）+ StagePipeline 编排器
+│   │   ├── context.py           # StageContext（跨阶段产物）/ StageOutcome（单阶段结果）
+│   │   ├── services.py          # StageServices：解析/分片/向量化/预分词/ES/稀疏等底层操作 + PreprocessorProtocol
+│   │   ├── cleaning.py          # CleaningStage（下载→解析→上传 markdown）
+│   │   ├── chunking.py          # ChunkingStage（分片 / 重试反查完整 chunk 集合）
+│   │   ├── vectorizing.py       # VectorizingStage（dense）
+│   │   ├── pretokenize.py       # PretokenizeStage（内存 plan，文件级 all-or-nothing）
+│   │   ├── es_indexing.py       # EsIndexingStage（plan 缺失先重建；文档级全量重建）
+│   │   └── sparse_vectorizing.py# SparseVectorizingStage（最后一段，唯一翻转 pipeline_status=SUCCESS）
 │   └── post_process/            # 文件级后处理子状态机（cleaning → chunking → vectorizing → pretokenize → es_indexing → sparse_vectorizing）
 │       ├── constants.py         # PIPELINE_STATUS_* / STAGE_STATUS_*
 │       ├── models.py            # PostProcessStageResult / PostProcessResult
@@ -95,19 +105,51 @@ any classified failure
 
 ## 3. 核心职责
 
-| 阶段 | 主要方法 | 说明 |
+### 编排架构（Stage 类化，LINK-37）
+
+`ParseTaskPipeline` 退化为**薄编排**：只做消息分流、幂等屏障、上下文校验、重试 CAS 与继承式新建；6 阶段执行委托给 `stages/` 子包的 `StagePipeline`。首次执行与重试共用**同一条** StagePipeline，差异只在「建行 / 校验」准备阶段。
+
+```text
+ParseTaskPipeline._run
+ ├── is_retry=True  → _handle_retry_branch（校验 + CAS supersede + 继承式新建）
+ │                     → _build_stage_pipeline().run(ctx, is_retry=True)
+ └── is_retry=False → create log + 幂等/上下文校验
+                       → _build_stage_pipeline().run(ctx)  （外层保留一层兜底 except）
+
+StagePipeline.run（唯一的 6 阶段编排）
+ CleaningStage → ChunkingStage → VectorizingStage
+   → PretokenizeStage → EsIndexingStage → SparseVectorizingStage
+```
+
+三层职责切分：
+
+| 层 | 角色 | 职责 |
 | --- | --- | --- |
-| 幂等屏障 | `_create_log_record()` | 先插入 `document_parsed_log`，依赖 task_id 唯一索引阻止重复解析 |
-| 重投处理 | `_handle_duplicate_task()` | 对已有终态补发通知；对中断后处理收敛为可恢复失败 |
-| 上下文校验 | `_validate_parse_task()` | 校验 MQ payload 与 Java 侧 `document_parse_file` 记录一致 |
-| 源文件处理 | `ParseSourceIO.should_skip_source_download()` / `ParseSourceIO.download_to_path()` + `temp_workspace.create_temp_file()` + `temp_workspace.safe_unlink()` | MinerU URL API 跳过本地下载（`source_path=None`）；其他后端流式下载到 `PARSE_TEMP_DIR/parse-{task_id}-{rand}.tmp`，拿到 markdown 后立即 `safe_unlink` 早删，外层 `finally` 二次兜底。下载阶段 `OSError errno=ENOSPC` 归类 `TEMP_DISK_FULL`，其他下载异常归类 `SOURCE_FILE_NOT_FOUND` |
-| 文件解析 | `_run_cleaning_stage()` / `_parse_file()` | `recover_from_stage=CLEANING` 的 retry 入口，按首次解析一致的顺序下载源文件、调用 `ParseTaskService.aprocess()`、上传 Markdown，并在上传成功后写入 `document_parsed_log.parsed_*` |
-| Markdown 上传 | `ParseSourceIO.upload_markdown()` | 上传 Markdown 到 payload 指定 bucket/key；cleaning retry 不预写旧 markdown 坐标，成功后由 `mark_parsed()` 写入真实坐标 |
-| 分片 | `_run_chunking()` / `_chunk_markdown()` / `_persist_chunk_facts()` | 优先消费上游 `ParseResult`，否则重新解析 Markdown；分片成功后在 chunking 阶段单事务批量写入 `kb_document_chunk` 真值记录 |
-| 向量化 | `_store_chunk_vectors()` | 通过 `VectorStorageFacade.index_document_chunks()` 消费已落库 chunk 真值并写 Qdrant，不再创建 chunk 真值；首次执行只处理 dense `PENDING` chunk，`is_retry=true` 的人工重试会显式补做 dense `PENDING` + `FAILED` chunk |
-| 预分词（一等独立阶段） | `_run_pretokenize()` / `_get_preprocessor()` | `Preprocessor.build_file_post_index_plan()` 聚合 doc 下 chunk token 为内存 `FilePostIndexPlan`（单趟扇出，不持久化）。**plan 覆盖该文档全部有效 chunk（不按 `es_status` 过滤，Issue #57）**，已 SUCCESS 的 chunk 也重新 tokenize 进入 plan，供 ES 文档级全量重建消费。文件级 all-or-nothing：成功 `mark_pretokenize_success`；失败返回 `(None, reason)`，由 `_run` 统一 `mark_pretokenize_failed` + 通知 Java FAILED，**不写任何 chunk es_status** |
-| ES 入库（文档级全量重建，Issue #57） | `_run_es_indexing()` | **前置删除 → 全量写入 → 失败清理**：先 `EsIndexingPipeline.delete_document_index(user+dataset+doc)` 删干净该文档已有 ES 索引（首次执行命中 0 的幂等空操作，重试时清理旧残留与陈旧 chunk），再消费内存 `FilePostIndexPlan` 调 `write_es_index()` 全量写（相同 `_id` 覆盖）。前置删除失败（ES 不可达）直接判 ES 失败、不写入（`es_delete:` 前缀）；写入未全部成功时再次 delete 清理本趟半成品（best-effort）。**不再按 `es_status` 只补失败 chunk**。`_ensure_index` 等基础设施故障按文件级处理（不标 chunk，`ensure_index:` 前缀）。失败由 `_run` 统一 `mark_es_failed` + 通知，**不计数、不设上限、不写 retry_exhausted** |
-| 结果通知 | `_send_parse_result()` | 向 `tolink.rag.parse_result` 发送整体终态 |
+| `ParseTaskPipeline` | 薄编排 | 分流 / 幂等 / 校验 / 重试 CAS / 兜底 except；`_build_stage_pipeline()` 每次执行从当前协作者装配 StagePipeline（便于测试替换协作者即时生效） |
+| `Stage` 基类 | **唯一**的执行模板 | `execute`：已继承 `SUCCESS` → `on_skip`；否则 `mark_started → run → 成功 mark_success / 失败 mark_failed + 通知 Java FAILED`。新增/调整阶段只写一个子类，不再双链路改动 |
+| `StageServices` | 底层操作集合 | 解析 / 分片 / dense 向量化 / 预分词 / ES 写入 / 稀疏向量化 / chunk 反查等；**不写阶段状态、不发通知**（副作用边界清晰） |
+
+`StageContext` 在阶段间传递可变产物（`parse_result` / `chunks` / `plan` / `vector_result`）并收敛最终 `ParsePipelineResult`；`StageOutcome` 是单阶段成败结果（`finalized=True` 表示该阶段已自行 mark+notify，模板不重复处理）。
+
+各阶段的特例（均封装在对应 Stage 子类内，对编排循环透明）：
+
+- **CleaningStage**：`cleaning_status != SUCCESS` 才执行（首次恒执行）；下载/解析/上传失败按错误码归类（`TEMP_DISK_FULL` / `SOURCE_FILE_NOT_FOUND` / `PARSE_ENGINE_FAILED` / `PARSED_FILE_UPLOAD_FAILED`），成功在 `mark_success` 写 `mark_parsed + mark_cleaning_success + mark_post_cleaning`。临时文件早删 + `finally` 兜底封装在 `run` 内。
+- **ChunkingStage**：`chunking_status == SUCCESS` → `on_skip` 调 `StageServices.load_all_chunks_from_db` 反查完整 chunk truth set；反查为空按历史语义落 `vectorizing_failed` + 通知（`finalized`）。否则用本轮 cleaning 产物分片；二者皆无视为状态不一致落 `chunking_failed`。
+- **VectorizingStage / PretokenizeStage / SparseVectorizingStage**：`*_status != SUCCESS` 才执行。SparseVectorizingStage 是 `pipeline_status=SUCCESS` 的**唯一**翻转点——即便继承 SUCCESS 被跳过，也在 `on_skip` 翻转整体终态。
+- **EsIndexingStage**：依赖 pretokenize 的内存态 `FilePostIndexPlan`，`ctx.plan` 缺失（pretokenize 继承 SUCCESS 被跳过）时先重做 pretokenize 重建再消费（见 §4 重试恢复起点）。
+
+| 阶段 | StageServices 主要方法 | 说明 |
+| --- | --- | --- |
+| 幂等屏障 | `ParseLogRepository.create()` | 先插入 `document_parsed_log`，依赖 task_id 唯一索引阻止重复解析 |
+| 重投处理 | `ParseTaskGuard.handle_duplicate()` | 对已有终态补发通知；对中断后处理收敛为可恢复失败 |
+| 上下文校验 | `ParseTaskGuard.validate()` | 校验 MQ payload 与 Java 侧 `document_parse_file` 记录一致 |
+| 源文件处理 | `ParseSourceIO.should_skip_source_download()` / `.download_to_path()` + `temp_workspace.*` | MinerU URL API 跳过本地下载（`source_path=None`）；其他后端流式下载到 `PARSE_TEMP_DIR/parse-{task_id}-{rand}.tmp`，拿到 markdown 后立即 `safe_unlink` 早删，`finally` 二次兜底 |
+| 文件解析 | `StageServices.parse_file()` | 调 `ParseTaskService.aprocess()` 生成 Markdown；首次与 `recover_from_stage=CLEANING` 重试同序 |
+| 分片 | `StageServices.run_chunking()` / `._chunk_markdown()` | 优先消费上游 `ParseResult`，否则重新解析 Markdown；分片成功后单事务批量写入 `kb_document_chunk` 真值记录 |
+| 向量化 | `StageServices.store_chunk_vectors()` | 通过 `VectorStorageFacade.index_document_chunks()` 消费已落库 chunk 真值写 Qdrant；首次只处理 dense `PENDING`，`is_retry=true` 补做 `PENDING` + `FAILED` chunk |
+| 预分词 | `StageServices.build_pretokenize_plan()` | 聚合 doc 下 chunk token 为内存 `FilePostIndexPlan`（不持久化、不写状态）。**plan 覆盖该文档全部有效 chunk（不按 `es_status` 过滤，Issue #57）**。文件级 all-or-nothing：成功置 `ctx.plan`，失败返回 `(None, reason)`，由 PretokenizeStage 统一 mark + 通知，**不写任何 chunk es_status** |
+| ES 入库 | `StageServices.run_es_indexing()` | **前置删除 → 全量写入 → 失败清理**（Issue #57）；前置删除失败 `es_delete:` 前缀；写入未全部成功再 delete 清理半成品（best-effort）。失败由 EsIndexingStage 统一 mark + 通知，**不计数、不设上限** |
+| 结果通知 | `ParseResultNotifier.send_or_raise()` | 由 Stage / StagePipeline 统一调用，向 `tolink.rag.parse_result` 发送整体终态 |
 
 ## 4. 状态语义
 
@@ -149,7 +191,7 @@ any classified failure
 任一阶段失败即终态：只把结果写入 `document_parse_pipeline`（阶段状态 FAILED、`failed_stage`、`recover_from_stage`、`failure_reason`、`finished_at`、耗时）并通知 Java `failed`。系统**不计数、不设上限、不写 retry_exhausted、不自动重试**。
 
 - **文档清洗失败**：`mark_cleaning_failed` 落 `cleaning_status=FAILED` + `failed_stage=CLEANING` + `recover_from_stage=CLEANING`。`failure_reason` 含前缀 `INVALID_TASK_CONTEXT:` / `SOURCE_FILE_NOT_FOUND:` / `PARSE_ENGINE_FAILED:` / `PARSED_FILE_UPLOAD_FAILED:` / `INTERRUPTED_TASK:` / `INTERNAL_UNKNOWN_ERROR:` / `PARSING_FAILED:` 等。
-- **预分词失败**（`_run_pretokenize` 捕获 `PreprocessorError`，或空 plan 但仍有未完成 chunk）：`mark_pretokenize_failed` 落 `pretokenize_status=FAILED` + `recover_from_stage=PRETOKENIZE`；**绝不写任何 chunk es_status**（文件级 all-or-nothing）。
+- **预分词失败**（`StageServices.build_pretokenize_plan` 捕获 `PreprocessorError`，或空 plan 但仍有未完成 chunk）：`PretokenizeStage` 落 `mark_pretokenize_failed`（`pretokenize_status=FAILED` + `recover_from_stage=PRETOKENIZE`）；**绝不写任何 chunk es_status**（文件级 all-or-nothing）。
 - **chunking 写入失败**：`_persist_chunk_facts` 回滚整批 chunk 真值，`mark_chunking_failed` 落 `chunking_status=FAILED`，不进入 vectorizing。
 - **vectorizing 失败**：当前失败 chunk 的 dense 状态标 `FAILED`，已成功 chunk 保持 `SUCCESS`，未处理 chunk 保持 `PENDING`；文件级 `vectorizing_status=FAILED` 并通知 Java。稀疏向量不在 vectorizing 阶段执行。用户侧人工重试进入 VECTORIZING 时会补做 dense `PENDING` 与 `FAILED` chunk，已 `SUCCESS` 的 chunk 不重复向量化。
 - **ES 前置删除失败**（`delete_document_index` 抛异常，如 ES 不可达）：直接判 ES 阶段失败、不进入写入，`failure_reason` 以 `es_delete:` 前缀。
@@ -166,7 +208,7 @@ any classified failure
 1. `ParseTaskGuard.validate_retry_context(payload, db)`：严格校验（含 CAS 第 1 层快速失败 `superseded_by_task_id IS NULL`），失败抛 `RetryValidationError`。若旧 pipeline 的 `recover_from_stage=CLEANING`，不要求旧 log 已有 `parsed_object_key`；若恢复点晚于 CLEANING，则要求旧 markdown 坐标存在。
 2. `ParsePipelineRepository.mark_superseded(old_pipeline, new_task_id)`：CAS 第 2 层真原子，`UPDATE ... WHERE superseded_by_task_id IS NULL` 依赖 rowcount 仲裁；rowcount=0 抛 `RetryValidationError("RETRY_VALIDATION_FAILED:concurrent_supersede")`。
 3. `ParseLogRepository.create_for_retry(...)` + `ParsePipelineRepository.create_with_inherited_state(old_pipeline, new_log)`：建新 log + 新 pipeline，复制 6 阶段 SUCCESS 状态与 duration，重置非 SUCCESS 阶段。若从 CLEANING 恢复，新 log 初始不写 `parsed_*` 字段，等待重新上传 markdown 成功后写真实值。
-4. 进入 6 阶段循环，跳过继承到的 SUCCESS 阶段、从首个非 SUCCESS 阶段恢复执行；若恢复点是 CLEANING，则复用 `_run_cleaning_stage()` 重新下载源文件、解析、上传 markdown，成功后继续 chunking。chunking 被跳过时由 `_load_all_chunks_from_db(doc_id)` 反查当前文档**完整有效** chunk 真值表（按 `doc_id` + `lifecycle_status=ACTIVE` 过滤，按 `chunk_index` 排序）组装 `list[Chunk]` 喂给下游，语义等价于首次执行的 chunking 输出。下游 dense / sparse 按各自 SQL 真值（`dense_vector_status / sparse_vector_status`）决定补做范围；**ES 阶段为文档级全量重建（Issue #57）——不按 `es_status` 补做子集，而是先删该文档全部 ES 索引再基于完整 chunk 集全量重写**（首次执行与重试同一编排）。pipeline 编排层不做 dense/sparse 的局部子集过滤。
+4. 进入 `StagePipeline.run()`（与首次执行**共用同一编排**），跳过继承到的 SUCCESS 阶段、从首个非 SUCCESS 阶段恢复执行；若恢复点是 CLEANING，则 `CleaningStage` 重新下载源文件、解析、上传 markdown，成功后继续 chunking。chunking 被跳过时由 `ChunkingStage.on_skip` 经 `StageServices.load_all_chunks_from_db(doc_id)` 反查当前文档**完整有效** chunk 真值表（按 `doc_id` + `lifecycle_status=ACTIVE` 过滤，按 `chunk_index` 排序）组装 `list[Chunk]` 喂给下游，语义等价于首次执行的 chunking 输出。下游 dense / sparse 按各自 SQL 真值（`dense_vector_status / sparse_vector_status`）决定补做范围；**ES 阶段为文档级全量重建（Issue #57）——不按 `es_status` 补做子集，而是先删该文档全部 ES 索引再基于完整 chunk 集全量重写**（首次执行与重试同一编排）。pipeline 编排层不做 dense/sparse 的局部子集过滤。
 
 校验或 CAS 失败时走 `_handle_retry_validation_failure`：双表落 FAILED 终态（`pipeline_status=FAILED` + `failed_stage=RETRY_VALIDATION` + 前缀 `RETRY_VALIDATION_FAILED:`），不更新任何旧表行，通知 Java FAILED。
 
@@ -238,5 +280,5 @@ pdf_parser_backend == "mineru"
 - 预分词失败为文件级 all-or-nothing：落 `pretokenize_status=FAILED`，不写任何 chunk es_status。
 - ES 基础设施故障（`ensure_index`）文件级不标 chunk；ES chunk 级失败逐 chunk 标记。
 - ES 入库为文档级全量重建（Issue #57）：前置删除 + 全量写入 + 失败清理，首次/重试同一编排；不按 `es_status` 补做子集。
-- 失败即终态：ES 失败无 retry_exhausted；`mark_parsing_started` / `mark_post_processing` 不清各阶段 `*_status`。所有阶段失败均由 `_run` 统一写库+通知。
+- 失败即终态：ES 失败无 retry_exhausted；`mark_parsing_started` / `mark_post_processing` 不清各阶段 `*_status`。所有阶段失败均由对应 `Stage`（经 `Stage.execute` 模板）统一写库+通知（首次/重试同一 `StagePipeline`）。
 - 恢复入口推断按首个非 SUCCESS 阶段，`pretokenize_status` 与其他阶段状态列一样跨重投持久。

@@ -83,12 +83,14 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── interfaces.py
 │   │   │   └── providers/        # LLM 提供方实现
 │   │   ├── pipeline/             # 文档解析业务流水线编排
-│   │   │   ├── constants.py       # 解析任务状态、通知文案等流水线常量
-│   │   │   ├── error_codes.py
-│   │   │   ├── models.py
-│   │   │   ├── post_process_constants.py # 文件级后处理状态常量
-│   │   │   ├── post_process_repository.py # 后处理 pipeline 状态仓储
-│   │   │   └── parse_task_pipeline.py
+│   │   │   └── parse_task/        # 解析任务主编排
+│   │   │       ├── pipeline.py     # ParseTaskPipeline 薄编排（分流/幂等/校验/重试）
+│   │   │       ├── constants.py    # 解析任务状态、通知文案等流水线常量
+│   │   │       ├── error_codes.py
+│   │   │       ├── models.py
+│   │   │       ├── log_repository.py / source.py / notifier.py / validator.py / temp_workspace.py / _utils.py
+│   │   │       ├── stages/         # 6 阶段类化编排（base/context/services + 6 个 Stage）
+│   │   │       └── post_process/   # 文件级后处理状态机（constants/models/repository）
 │   │   ├── prompts/              # LLM 提示词模板
 │   │   │   └── markdown_enhancement.py
 │   │   ├── markdown_parser/      # Markdown 解析与增强编排

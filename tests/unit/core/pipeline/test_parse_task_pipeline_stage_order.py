@@ -121,10 +121,10 @@ class TestPipelineSixStageOrder:
     """测试 6 阶段执行顺序。"""
 
     @patch(
-        "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
+        "src.core.pipeline.parse_task.stages.services.ParseTaskService.aprocess",
         new_callable=AsyncMock,
     )
-    @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown")
+    @patch("src.core.pipeline.parse_task.stages.services.StageServices._chunk_markdown")
     async def test_six_stages_execute_in_correct_order(
         self,
         mock_chunk_markdown,
@@ -204,10 +204,10 @@ class TestPipelineSixStageOrder:
         assert post_repo.pipeline.sparse_vectorizing_status == STAGE_STATUS_SUCCESS
 
     @patch(
-        "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
+        "src.core.pipeline.parse_task.stages.services.ParseTaskService.aprocess",
         new_callable=AsyncMock,
     )
-    @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown")
+    @patch("src.core.pipeline.parse_task.stages.services.StageServices._chunk_markdown")
     async def test_sparse_failure_marks_pipeline_failed(
         self,
         mock_chunk_markdown,
@@ -282,10 +282,10 @@ class TestPipelineSixStageOrder:
         mq_service.send.assert_awaited()
 
     @patch(
-        "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
+        "src.core.pipeline.parse_task.stages.services.ParseTaskService.aprocess",
         new_callable=AsyncMock,
     )
-    @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown")
+    @patch("src.core.pipeline.parse_task.stages.services.StageServices._chunk_markdown")
     async def test_sparse_executes_after_es_success(
         self,
         mock_chunk_markdown,

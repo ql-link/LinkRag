@@ -38,31 +38,31 @@ src/core/qdrant_vector_storage/
 
 ```text
 ParseTaskPipeline
-  -> ParseTaskService.aprocess()
-  -> upload markdown
-  -> document_parse_pipeline: PROCESSING
-  -> _run_chunking()
-    -> ChunkDraftFactory
-    -> ChunkRepository.bulk_insert_pending()
-  -> document_parse_pipeline.chunking_status = SUCCESS
-  -> _store_chunk_vectors()
-    -> VectorStorageFacade.index_document_chunks()
-      -> VectorStoragePipeline.index_document_chunks()
-        -> ChunkRepository.list_vector_candidates_by_doc_id()
-        -> 按 chunk_index 顺序处理每个 chunk
-          -> ChunkRepository.mark_indexing()
-          -> ChunkEmbeddingPipeline.aembed_chunks([chunk])
-          -> SparseVectorService.vectorize_chunk([chunk 原文])（开启时）
-          -> QdrantIndexStore.ensure_collection()
-          -> QdrantIndexStore.upsert_points()
-          -> QdrantIndexStore.ensure_sparse_vector_schema()（开启时）
-          -> QdrantIndexStore.upsert_sparse_vectors()（开启时）
-          -> ChunkRepository.mark_sparse_indexed()（开启时）
-          -> ChunkRepository.mark_indexed()
-  -> document_parse_pipeline.vectorizing_status = SUCCESS
-  -> EsIndexingPipeline.index_for_parse_task()
-  -> document_parse_pipeline.es_indexing_status = SUCCESS
-  -> SparseIndexingPipeline.run()（开启时）
+  -> StagePipeline
+    -> CleaningStage
+      -> StageServices.parse_file()
+      -> upload markdown
+    -> ChunkingStage
+      -> StageServices.run_chunking()
+      -> ChunkDraftFactory
+      -> ChunkRepository.bulk_insert_pending()
+    -> VectorizingStage
+      -> StageServices.store_chunk_vectors()
+        -> VectorStorageFacade.index_document_chunks()
+          -> VectorStoragePipeline.index_document_chunks()
+            -> ChunkRepository.list_vector_candidates_by_doc_id()
+            -> 按 chunk_index 顺序处理每个 chunk
+              -> ChunkRepository.mark_indexing()
+              -> ChunkEmbeddingPipeline.aembed_chunks([chunk])
+              -> QdrantIndexStore.ensure_collection()
+              -> QdrantIndexStore.upsert_points()
+              -> ChunkRepository.mark_indexed()
+    -> PretokenizeStage
+      -> StageServices.build_pretokenize_plan()
+    -> EsIndexingStage
+      -> StageServices.run_es_indexing()
+    -> SparseVectorizingStage
+      -> StageServices.run_sparse_vectorizing()
   -> document_parse_pipeline.sparse_vectorizing_status = SUCCESS（开启时）
   -> parse_result success notification
 ```
@@ -203,7 +203,7 @@ collection 名称由 `BucketRouter.collection_name(bucket_id)` 生成。
 
 ### 4.1 解析流水线中的使用
 
-解析流水线先分片，再进入向量化和 ES 入库。`ParseTaskPipeline._store_chunk_vectors` 会解析 owner：
+解析流水线先分片，再进入 dense 向量化、预分词、ES 入库和 sparse 向量化。`VectorizingStage` 通过 `StageServices.store_chunk_vectors()` 解析 owner：
 
 ```text
 user_id = payload.user_id
@@ -235,7 +235,7 @@ result = await vector_storage.index_document_chunks(
 
 ### 4.2 文件级 ES 入库
 
-`ParseTaskPipeline` 在向量化全部成功后调用：
+`EsIndexingStage` 在预分词成功后通过 `StageServices.run_es_indexing()` 调用 ES 入库：
 
 ```python
 es_result = await EsIndexingPipeline().index_for_parse_task(
