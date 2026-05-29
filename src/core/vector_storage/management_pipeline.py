@@ -10,8 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.core.chunk_fact_storage import ChunkRepository
 from src.core.chunk_fact_storage.constants import (
-    CHUNK_LIFECYCLE_DELETE_PROTECTED_STATUSES,
-    CHUNK_LIFECYCLE_DELETING,
+    CHUNK_LIFECYCLE_ACTIVE,
+    CHUNK_LIFECYCLE_INACTIVE_STATUSES,
     CHUNK_STATUS_INDEXED,
     CHUNK_STATUS_INDEXING,
     SPARSE_VECTOR_STATUS_INDEXING,
@@ -263,11 +263,11 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
             )
 
         try:
-            deleting_count = await self._mark_deleting(active_chunk_ids)
-            if deleting_count != len(active_chunk_ids):
+            removed_count = await self._mark_removed(active_chunk_ids)
+            if removed_count != len(active_chunk_ids):
                 logger.warning(
-                    "[VectorStorageManagementPipeline] Skipped delete because deleting rowcount "
-                    f"{deleting_count} != {len(active_chunk_ids)} for chunks {active_chunk_ids}."
+                    "[VectorStorageManagementPipeline] Skipped delete because removed rowcount "
+                    f"{removed_count} != {len(active_chunk_ids)} for chunks {active_chunk_ids}."
                 )
                 return ChunkMutationResult(
                     total_chunks=len(chunk_ids),
@@ -283,21 +283,8 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
                     bucket_id=bucket_id,
                     chunk_ids=bucket_chunk_ids,
                 )
-            deleted_count = await self._mark_deleted(active_chunk_ids)
-            if deleted_count != len(active_chunk_ids):
-                logger.warning(
-                    "[VectorStorageManagementPipeline] Skipped stale delete completion for chunks "
-                    f"{active_chunk_ids}; rowcount {deleted_count} != {len(active_chunk_ids)} "
-                    f"or lifecycle no longer matches {CHUNK_LIFECYCLE_DELETING}."
-                )
-                return ChunkMutationResult(
-                    total_chunks=len(chunk_ids),
-                    affected_chunks=0,
-                    skipped_chunk_ids=active_chunk_ids + skipped_chunk_ids,
-                )
         except Exception as exc:
             error_msg = str(exc)
-            await self._mark_delete_failed(active_chunk_ids, error_msg=error_msg)
             logger.exception(
                 f"[VectorStorageManagementPipeline] Failed to delete chunks {active_chunk_ids}: {error_msg}"
             )
@@ -480,55 +467,21 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
         )
         return affected_rows == len(chunk_ids)
 
-    async def _mark_deleting(self, chunk_ids: Sequence[str]) -> int:
+    async def _mark_removed(self, chunk_ids: Sequence[str]) -> int:
         """
-            在独立事务中把目标记录切换为 `DELETING`。
+            在独立事务中把目标记录切换为 `REMOVED`。
 
         Args:
             chunk_ids: 需要更新状态的 chunk 标识列表。
 
         Returns:
-            int: 实际切换为 `DELETING` 的记录数。
+            int: 实际切换为 `REMOVED` 的记录数。
         """
         return await self._run_in_transaction_with_result(
-            lambda session: self.repository.mark_deleting(session, chunk_ids)
-        )
-
-    async def _mark_deleted(self, chunk_ids: Sequence[str]) -> int:
-        """
-            在独立事务中把目标记录切换为 `DELETED`。
-
-        Args:
-            chunk_ids: 需要更新状态的 chunk 标识列表。
-
-        Returns:
-            int: 实际切换为 `DELETED` 的记录数。
-        """
-        return await self._run_in_transaction_with_result(
-            lambda session: self.repository.mark_deleted(
+            lambda session: self.repository.mark_removed(
                 session,
                 chunk_ids,
-                expected_lifecycle_status=CHUNK_LIFECYCLE_DELETING,
-            )
-        )
-
-    async def _mark_delete_failed(self, chunk_ids: Sequence[str], *, error_msg: str) -> int:
-        """
-            在独立事务中把删除失败的目标记录切换为 `DELETE_FAILED`。
-
-        Args:
-            chunk_ids: 需要更新状态的 chunk 标识列表。
-            error_msg: 需要落库的失败原因。
-
-        Returns:
-            int: 实际切换为 `DELETE_FAILED` 的记录数。
-        """
-        return await self._run_in_transaction_with_result(
-            lambda session: self.repository.mark_delete_failed(
-                session,
-                chunk_ids,
-                error_msg=error_msg,
-                expected_lifecycle_status=CHUNK_LIFECYCLE_DELETING,
+                expected_lifecycle_status=CHUNK_LIFECYCLE_ACTIVE,
             )
         )
 
@@ -552,7 +505,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
             records = await self.repository.get_by_chunk_ids(session, [chunk_id])
 
         record = records[0] if records else None
-        if record is None or record.lifecycle_status not in CHUNK_LIFECYCLE_DELETE_PROTECTED_STATUSES:
+        if record is None or record.lifecycle_status not in CHUNK_LIFECYCLE_INACTIVE_STATUSES:
             return
 
         bucket_id = record.bucket_id if record.bucket_id is not None else fallback_bucket_id
@@ -560,42 +513,10 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
             await self.qdrant_store.delete_points(bucket_id=bucket_id, chunk_ids=[chunk_id])
         except Exception as exc:
             error_msg = str(exc)
-            await self._mark_delete_failed_for_status(
-                [chunk_id],
-                error_msg=error_msg,
-                expected_lifecycle_status=record.lifecycle_status,
-            )
             logger.exception(
                 "[VectorStorageManagementPipeline] Failed to clean stale Qdrant point "
                 f"for delete-state chunk {chunk_id}: {error_msg}"
             )
-
-    async def _mark_delete_failed_for_status(
-        self,
-        chunk_ids: Sequence[str],
-        *,
-        error_msg: str,
-        expected_lifecycle_status: str,
-    ) -> int:
-        """
-            用指定删除态条件回写 `DELETE_FAILED`，避免旧清理任务覆盖新状态。
-
-        Args:
-            chunk_ids: 需要更新状态的 chunk 标识列表。
-            error_msg: 需要落库的失败原因。
-            expected_lifecycle_status: 当前期望的删除态。
-
-        Returns:
-            int: 实际切换为 `DELETE_FAILED` 的记录数。
-        """
-        return await self._run_in_transaction_with_result(
-            lambda session: self.repository.mark_delete_failed(
-                session,
-                chunk_ids,
-                error_msg=error_msg,
-                expected_lifecycle_status=expected_lifecycle_status,
-            )
-        )
 
 
     def _sparse_enabled(self) -> bool:

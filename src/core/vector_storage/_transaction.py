@@ -7,7 +7,7 @@ from typing import TypeVar
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from src.core.chunk_fact_storage.constants import CHUNK_LIFECYCLE_DELETE_PROTECTED_STATUSES
+from src.core.chunk_fact_storage.constants import CHUNK_LIFECYCLE_INACTIVE_STATUSES
 from src.utils.logger import logger
 
 ResultT = TypeVar("ResultT")
@@ -80,18 +80,13 @@ class TransactionalPipelineMixin:
             async with self.session_factory() as session:
                 records = await self.repository.get_by_chunk_ids(session, [chunk_id])
             record = records[0] if records else None
-            if record is None or record.lifecycle_status not in CHUNK_LIFECYCLE_DELETE_PROTECTED_STATUSES:
+            if record is None or record.lifecycle_status not in CHUNK_LIFECYCLE_INACTIVE_STATUSES:
                 return
 
             bucket_id = record.bucket_id if record.bucket_id is not None else fallback_bucket_id
             try:
                 await self.qdrant_store.delete_points(bucket_id=bucket_id, chunk_ids=[chunk_id])
             except Exception as exc:
-                await self._mark_delete_failed_after_stale_cleanup(
-                    chunk_id=chunk_id,
-                    expected_lifecycle_status=record.lifecycle_status,
-                    error_msg=str(exc),
-                )
                 logger.warning(
                     "[TransactionalPipelineMixin] Failed to cleanup stale Qdrant point "
                     f"for deleted chunk {chunk_id}: {exc}"
@@ -101,30 +96,3 @@ class TransactionalPipelineMixin:
                 "[TransactionalPipelineMixin] Failed to inspect delete state before "
                 f"stale Qdrant cleanup for chunk {chunk_id}: {exc}"
             )
-
-    async def _mark_delete_failed_after_stale_cleanup(
-        self,
-        *,
-        chunk_id: str,
-        expected_lifecycle_status: str,
-        error_msg: str,
-    ) -> None:
-        """
-        将残留 point 清理失败的删除态记录重新纳入删除补偿。
-
-        Args:
-            chunk_id: 需要重新纳入删除补偿的 chunk 标识。
-            expected_lifecycle_status: 回写前要求匹配的当前删除状态。
-            error_msg: 需要落库的清理失败原因。
-
-        Returns:
-            None.
-        """
-        async with self.session_factory() as session:
-            async with session.begin():
-                await self.repository.mark_delete_failed(
-                    session,
-                    [chunk_id],
-                    error_msg=error_msg,
-                    expected_lifecycle_status=expected_lifecycle_status,
-                )

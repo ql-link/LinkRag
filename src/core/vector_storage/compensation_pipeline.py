@@ -10,7 +10,6 @@ from src.config import settings
 from src.core.chunk_fact_storage import ChunkRepository
 from src.core.chunk_fact_storage.constants import (
     CHUNK_LIFECYCLE_ACTIVE,
-    CHUNK_LIFECYCLE_DELETING,
     CHUNK_STATUS_FAILED,
     CHUNK_STATUS_INDEXING,
     SPARSE_VECTOR_STATUS_INDEXING,
@@ -67,57 +66,8 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
         *,
         limit: int = 100,
     ) -> ChunkMutationResult:
-        """重试删除失败或卡住的记录，直到 Qdrant 与 MySQL 删除态一致。"""
-        limit = self.repair_policy.normalize_limit(limit)
-        if limit <= 0:
-            return ChunkMutationResult(total_chunks=0, affected_chunks=0)
-
-        records = await self._load_delete_retry_candidates(limit)
-        if not records:
-            return ChunkMutationResult(total_chunks=0, affected_chunks=0)
-
-        affected_chunks = 0
-        failed_chunk_ids: list[str] = []
-        skipped_chunk_ids: list[str] = []
-
-        for record in records:
-            claimed = await self._claim_delete_for_retry(record.chunk_id)
-            if not claimed:
-                skipped_chunk_ids.append(record.chunk_id)
-                continue
-
-            try:
-                exists = await self.qdrant_store.point_exists(
-                    bucket_id=record.bucket_id,
-                    chunk_id=record.chunk_id,
-                )
-                if exists:
-                    await self.qdrant_store.delete_points(
-                        bucket_id=record.bucket_id,
-                        chunk_ids=[record.chunk_id],
-                    )
-                deleted = await self._mark_deleted([record.chunk_id])
-                if deleted:
-                    affected_chunks += 1
-                else:
-                    skipped_chunk_ids.append(record.chunk_id)
-                    logger.warning(
-                        "[VectorStorageCompensationPipeline] Skipped stale delete completion "
-                        f"for {record.chunk_id}."
-                    )
-            except Exception as exc:
-                failed_chunk_ids.append(record.chunk_id)
-                await self._mark_delete_failed([record.chunk_id], error_msg=str(exc))
-                logger.exception(
-                    f"[VectorStorageCompensationPipeline] Failed delete retry for {record.chunk_id}: {exc}"
-                )
-
-        return ChunkMutationResult(
-            total_chunks=len(records),
-            affected_chunks=affected_chunks,
-            failed_chunk_ids=failed_chunk_ids,
-            skipped_chunk_ids=skipped_chunk_ids,
-        )
+        """删除补偿状态机暂未启用；后续删除流程将基于 REMOVED 记录幂等重试。"""
+        return ChunkMutationResult(total_chunks=0, affected_chunks=0)
 
     async def repair_stale_indexing(self, *, limit: int = 100) -> ChunkMutationResult:
         """检查 Qdrant point 是否存在，并修复超时停留在 INDEXING 的记录。"""
@@ -365,16 +315,6 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
             embedding_model=embedding_model,
         )
 
-    async def _load_delete_retry_candidates(self, limit: int) -> list[ChunkRecordDB]:
-        """读取需要重试删除的 chunk 记录。"""
-
-        async with self.session_factory() as session:
-            return await self.repository.list_delete_retry_candidates(
-                session,
-                limit=limit,
-                stale_after_seconds=self.indexing_stale_seconds,
-            )
-
     async def _load_stale_indexing_candidates(self, limit: int) -> list[ChunkRecordDB]:
         """读取超过阈值仍停留在 INDEXING 的 chunk 记录。"""
 
@@ -409,13 +349,6 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
             [chunk_id for chunk_id in chunk_ids if chunk_id not in record_map],
         )
 
-    async def _claim_delete_for_retry(self, chunk_id: str) -> bool:
-        """抢占一个删除重试任务，避免并发补偿重复执行。"""
-
-        return await self._run_in_transaction_with_result(
-            lambda session: self.repository.claim_delete_for_retry(session, chunk_id)
-        )
-
     async def _claim_stale_indexing_for_repair(self, chunk_id: str) -> bool:
         """抢占一个 stale INDEXING 修复任务。"""
 
@@ -433,18 +366,6 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
         return await self._run_in_transaction_with_result(
             lambda session: self.repository.claim_failed_for_reindex(session, chunk_id)
         )
-
-    async def _mark_deleted(self, chunk_ids: Sequence[str]) -> bool:
-        """把删除补偿成功的记录标记为 DELETED。"""
-
-        affected_rows = await self._run_in_transaction_with_result(
-            lambda session: self.repository.mark_deleted(
-                session,
-                chunk_ids,
-                expected_lifecycle_status=CHUNK_LIFECYCLE_DELETING,
-            )
-        )
-        return affected_rows == len(chunk_ids)
 
     async def _mark_indexed(
         self,
@@ -481,25 +402,6 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
                 f"{affected_rows} != {len(chunk_ids)} for chunks {chunk_ids}."
             )
         return affected_rows == len(chunk_ids)
-
-    async def _mark_delete_failed(self, chunk_ids: Sequence[str], *, error_msg: str) -> bool:
-        """把删除补偿失败的记录标记为 DELETE_FAILED。"""
-
-        affected_rows = await self._run_in_transaction_with_result(
-            lambda session: self.repository.mark_delete_failed(
-                session,
-                chunk_ids,
-                error_msg=error_msg,
-                expected_lifecycle_status=CHUNK_LIFECYCLE_DELETING,
-            )
-        )
-        if affected_rows != len(chunk_ids):
-            logger.warning(
-                "[VectorStorageCompensationPipeline] Delete failed status rowcount mismatch: "
-                f"{affected_rows} != {len(chunk_ids)} for chunks {chunk_ids}."
-            )
-        return affected_rows == len(chunk_ids)
-
 
     def _sparse_enabled(self) -> bool:
         """判断当前补偿流程是否需要同步重建 sparse vector。"""

@@ -53,6 +53,10 @@ class ChunkRecordDB(Base):
         nullable=False,
         default=CHUNK_LIFECYCLE_ACTIVE,
         server_default=CHUNK_LIFECYCLE_ACTIVE,
+        comment=(
+            "Chunk业务生命周期状态: ACTIVE=业务有效，可参与解析/索引/检索; "
+            "REMOVED=已从业务视图移除，不再参与解析/索引/检索，外部索引清理由异步任务处理"
+        ),
     )
     create_time: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
     update_time: Mapped[datetime] = mapped_column(

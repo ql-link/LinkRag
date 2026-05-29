@@ -27,7 +27,10 @@ def upgrade() -> None:
             sa.String(length=16),
             nullable=False,
             server_default="ACTIVE",
-            comment="Chunk生命周期状态: ACTIVE/DELETING/DELETED/DELETE_FAILED",
+            comment=(
+                "Chunk业务生命周期状态: ACTIVE=业务有效，可参与解析/索引/检索; "
+                "REMOVED=已从业务视图移除，不再参与解析/索引/检索，外部索引清理由异步任务处理"
+            ),
         ),
     )
     op.create_index(
@@ -46,4 +49,3 @@ def downgrade() -> None:
     op.drop_index("idx_lifecycle_update_time", table_name="kb_document_chunk")
     op.drop_index("idx_doc_lifecycle_status", table_name="kb_document_chunk")
     op.drop_column("kb_document_chunk", "lifecycle_status")
-

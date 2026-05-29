@@ -338,10 +338,10 @@ ORM：[`ChunkRecordDB`](../../src/models/chunk_record.py)
 | `sparse_vector_status` | VARCHAR(16) | 稀疏向量状态：`PENDING` / `SUCCESS` / `FAILED` |
 | `sparse_vector_model` | VARCHAR(128) | 实际使用的稀疏向量模型 |
 | `es_status` | VARCHAR(16) | `PENDING` / `SUCCESS` / `FAILED` |
-| `lifecycle_status` | VARCHAR(16) | Chunk 生命周期状态：`ACTIVE` / `DELETING` / `DELETED` / `DELETE_FAILED` |
+| `lifecycle_status` | VARCHAR(16) | Chunk 业务生命周期状态：`ACTIVE`=业务有效，可参与解析 / 索引 / 检索；`REMOVED`=已从业务视图移除，不再参与解析 / 索引 / 检索，外部索引清理由异步任务处理 |
 | `create_time` / `update_time` | DATETIME | 创建 / 更新时间 |
 
-> 重试治理 (`*_retry_count` / `*_last_retry_at`) 与失败原因 (`*_error_msg`) 已从本表移除（migration 0006）：文件级状态机由 `document_parse_pipeline` 承担，失败原因从 `document_parse_pipeline.failure_reason` 读取；chunk 表仅保留断点续传必需的产物状态反查谓词、生命周期状态与产物元数据。`dense_vector_status` / `sparse_vector_status` / `es_status` 只表示产物状态；删除生命周期统一由 `lifecycle_status` 表达。
+> 重试治理 (`*_retry_count` / `*_last_retry_at`) 与失败原因 (`*_error_msg`) 已从本表移除（migration 0006）：文件级状态机由 `document_parse_pipeline` 承担，失败原因从 `document_parse_pipeline.failure_reason` 读取；chunk 表仅保留断点续传必需的产物状态反查谓词、业务生命周期状态与产物元数据。`dense_vector_status` / `sparse_vector_status` / `es_status` 只表示产物状态；业务有效性统一由 `lifecycle_status` 表达。
 
 索引：
 - `uk_chunk_id(chunk_id)`

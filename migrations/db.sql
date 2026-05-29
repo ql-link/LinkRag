@@ -271,7 +271,7 @@ CREATE TABLE IF NOT EXISTS kb_document_chunk (
     sparse_vector_status        VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT '稀疏向量状态: PENDING/SUCCESS/FAILED',
     sparse_vector_model         VARCHAR(128) DEFAULT NULL COMMENT '实际使用的稀疏向量模型名称',
     es_status                   VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT 'ES索引状态: PENDING/SUCCESS/FAILED',
-    lifecycle_status            VARCHAR(16) NOT NULL DEFAULT 'ACTIVE' COMMENT 'Chunk生命周期状态: ACTIVE/DELETING/DELETED/DELETE_FAILED',
+    lifecycle_status            VARCHAR(16) NOT NULL DEFAULT 'ACTIVE' COMMENT 'Chunk业务生命周期状态: ACTIVE=业务有效，可参与解析/索引/检索; REMOVED=已从业务视图移除，不再参与解析/索引/检索，外部索引清理由异步任务处理',
     create_time                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
     update_time                 DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
 

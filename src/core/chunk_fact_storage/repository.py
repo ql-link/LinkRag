@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 
-from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.chunk_record import ChunkRecordDB
@@ -11,9 +11,7 @@ from src.models.chunk_record import ChunkRecordDB
 from .constants import (
     CHUNK_DELETE_ALLOWED_STATUSES,
     CHUNK_LIFECYCLE_ACTIVE,
-    CHUNK_LIFECYCLE_DELETED,
-    CHUNK_LIFECYCLE_DELETE_FAILED,
-    CHUNK_LIFECYCLE_DELETING,
+    CHUNK_LIFECYCLE_REMOVED,
     CHUNK_STATUS_FAILED,
     CHUNK_STATUS_INDEXED,
     CHUNK_STATUS_INDEXING,
@@ -362,7 +360,7 @@ class ChunkRepository:
         result = await db.execute(stmt.values(**values))
         return int(result.rowcount or 0)
 
-    async def mark_deleted(
+    async def mark_removed(
         self,
         db: AsyncSession,
         chunk_ids: Sequence[str],
@@ -377,7 +375,9 @@ class ChunkRepository:
         stmt = update(self.model_cls).where(self.model_cls.chunk_id.in_(chunk_ids))
         if expected_lifecycle_status is not None:
             stmt = stmt.where(self.model_cls.lifecycle_status == expected_lifecycle_status)
-        result = await db.execute(stmt.values(lifecycle_status=CHUNK_LIFECYCLE_DELETED))
+        else:
+            stmt = stmt.where(self._active_predicate())
+        result = await db.execute(stmt.values(lifecycle_status=CHUNK_LIFECYCLE_REMOVED))
         return int(result.rowcount or 0)
 
     async def mark_es_success(
@@ -527,63 +527,6 @@ class ChunkRepository:
         result = await db.execute(stmt)
         return int(result.rowcount or 0)
 
-    async def mark_deleting(
-        self,
-        db: AsyncSession,
-        chunk_ids: Sequence[str],
-    ) -> int:
-        if not chunk_ids:
-            return 0
-
-        stmt = (
-            update(self.model_cls)
-            .where(self.model_cls.chunk_id.in_(chunk_ids))
-            .where(self._active_predicate())
-            .where(self.model_cls.dense_vector_status.in_(CHUNK_DELETE_ALLOWED_STATUSES))
-            .values(lifecycle_status=CHUNK_LIFECYCLE_DELETING)
-        )
-        result = await db.execute(stmt)
-        return int(result.rowcount or 0)
-
-    async def mark_delete_failed(
-        self,
-        db: AsyncSession,
-        chunk_ids: Sequence[str],
-        *,
-        error_msg: str,
-        expected_lifecycle_status: str | None = None,
-        expected_status: str | None = None,
-    ) -> int:
-        if not chunk_ids:
-            return 0
-
-        expected_lifecycle_status = expected_lifecycle_status or expected_status
-        stmt = update(self.model_cls).where(self.model_cls.chunk_id.in_(chunk_ids))
-        if expected_lifecycle_status is not None:
-            stmt = stmt.where(self.model_cls.lifecycle_status == expected_lifecycle_status)
-        result = await db.execute(stmt.values(lifecycle_status=CHUNK_LIFECYCLE_DELETE_FAILED))
-        return int(result.rowcount or 0)
-
-    async def claim_delete_for_retry(
-        self,
-        db: AsyncSession,
-        chunk_id: str,
-    ) -> bool:
-        stmt = (
-            update(self.model_cls)
-            .where(self.model_cls.chunk_id == chunk_id)
-            .where(
-                self.model_cls.lifecycle_status.in_(
-                    (CHUNK_LIFECYCLE_DELETE_FAILED, CHUNK_LIFECYCLE_DELETING)
-                )
-            )
-            .values(
-                lifecycle_status=CHUNK_LIFECYCLE_DELETING,
-            )
-        )
-        result = await db.execute(stmt)
-        return bool(result.rowcount)
-
     async def claim_stale_indexing_for_repair(
         self,
         db: AsyncSession,
@@ -621,31 +564,6 @@ class ChunkRepository:
         )
         result = await db.execute(stmt)
         return bool(result.rowcount)
-
-    async def list_delete_retry_candidates(
-        self,
-        db: AsyncSession,
-        *,
-        limit: int,
-        stale_after_seconds: int,
-    ) -> list[ChunkRecordDB]:
-        cutoff = datetime.utcnow() - timedelta(seconds=stale_after_seconds)
-        stmt = (
-            select(self.model_cls)
-            .where(
-                or_(
-                    self.model_cls.lifecycle_status == CHUNK_LIFECYCLE_DELETE_FAILED,
-                    and_(
-                        self.model_cls.lifecycle_status == CHUNK_LIFECYCLE_DELETING,
-                        self.model_cls.update_time <= cutoff,
-                    ),
-                )
-            )
-            .order_by(self.model_cls.update_time.asc())
-            .limit(limit)
-        )
-        result = await db.execute(stmt)
-        return result.scalars().all()
 
     async def list_stale_indexing_candidates(
         self,
