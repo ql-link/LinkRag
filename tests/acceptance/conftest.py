@@ -180,11 +180,11 @@ def parse_service_stub(state, monkeypatch):
         }
 
     monkeypatch.setattr(
-        "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
+        "src.core.pipeline.parse_task.stages.services.ParseTaskService.aprocess",
         _aprocess,
     )
     monkeypatch.setattr(
-        "src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown",
+        "src.core.pipeline.parse_task.stages.services.StageServices._chunk_markdown",
         staticmethod(lambda *a, **kw: [MagicMock()]),
     )
     return received
@@ -273,8 +273,21 @@ def pipeline_factory(
         pipeline._chunk_repository = MagicMock()
 
         from src.core.pipeline.parse_task.source import ParseSourceIO
+        from src.core.pipeline.parse_task.stages.services import StageServices
 
         pipeline._source_io = ParseSourceIO(fake_storage)
+
+        # 重构后（LINK-37）6 阶段执行委托给 StageServices + Stage 子类；
+        # 这里用与上面相同的桩件装配 services，使 __new__ 构造的 pipeline 仍可执行。
+        pipeline._services = StageServices(
+            storage=fake_storage,
+            source_io=pipeline._source_io,
+            chunk_repository=pipeline._chunk_repository,
+            vector_storage=pipeline._vector_storage,
+            es_indexing_pipeline=pipeline._es_indexing_pipeline,
+            preprocessor=pipeline._preprocessor,
+            sparse_indexing_pipeline=MagicMock(),
+        )
 
         # log_repository 桩：create 直通返回 DocumentParsedLog；mark_failed/mark_success
         # 仅记录入参便于断言。

@@ -279,11 +279,11 @@ async def test_kafka_receiver_should_consume_parse_task_message_and_commit_after
             return_value=pipeline,
         ),
         patch(
-            "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
+            "src.core.pipeline.parse_task.stages.services.ParseTaskService.aprocess",
             new=AsyncMock(return_value=parse_result),
         ),
         patch(
-            "src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown",
+            "src.core.pipeline.parse_task.stages.services.StageServices._chunk_markdown",
             return_value=[
                 MagicMock(content="alpha", start_line=1, end_line=1, metadata={}),
                 MagicMock(content="beta", start_line=2, end_line=2, metadata={}),
@@ -363,7 +363,7 @@ async def test_kafka_receiver_should_commit_when_pipeline_fails():
             return_value=pipeline,
         ),
         patch(
-            "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
+            "src.core.pipeline.parse_task.stages.services.ParseTaskService.aprocess",
             new=AsyncMock(side_effect=RuntimeError("parse failed")),
         ),
     ):

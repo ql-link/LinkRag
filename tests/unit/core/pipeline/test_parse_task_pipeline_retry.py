@@ -551,11 +551,11 @@ class TestRetryBranch:
         pipeline._guard._log_repository = log_repo
         pipeline._guard._pipeline_repository = post_repo
         pipeline._notifier = notifier
-        pipeline._source_io = MagicMock()
-        pipeline._source_io.should_skip_source_download.return_value = False
-        pipeline._source_io.download_to_path = MagicMock()
-        pipeline._source_io.upload_markdown = MagicMock()
-        pipeline._parse_file = AsyncMock(
+        pipeline._services.source_io = MagicMock()
+        pipeline._services.source_io.should_skip_source_download.return_value = False
+        pipeline._services.source_io.download_to_path = MagicMock()
+        pipeline._services.source_io.upload_markdown = MagicMock()
+        pipeline._services.parse_file = AsyncMock(
             return_value={
                 "markdown": "retry markdown",
                 "parse_result": None,
@@ -563,7 +563,7 @@ class TestRetryBranch:
                 "metadata": {},
             }
         )
-        pipeline._run_chunking = AsyncMock(
+        pipeline._services.run_chunking = AsyncMock(
             return_value=[Chunk(content="alpha", start_line=1, end_line=1)]
         )
 
@@ -578,11 +578,11 @@ class TestRetryBranch:
         assert "mark_parsed" in log_repo.calls
         assert log_repo.create_for_retry_args["parsed_object_key"] is None
         assert log_repo.new_log.parsed_object_key == "parsed/T1.md"
-        pipeline._source_io.download_to_path.assert_called_once()
-        pipeline._source_io.upload_markdown.assert_called_once()
-        pipeline._parse_file.assert_awaited_once()
-        pipeline._run_chunking.assert_awaited_once()
-        chunking_args = pipeline._run_chunking.await_args.args
+        pipeline._services.source_io.download_to_path.assert_called_once()
+        pipeline._services.source_io.upload_markdown.assert_called_once()
+        pipeline._services.parse_file.assert_awaited_once()
+        pipeline._services.run_chunking.assert_awaited_once()
+        chunking_args = pipeline._services.run_chunking.await_args.args
         assert chunking_args[0] == "retry markdown"
         assert chunking_args[1] is None
         assert chunking_args[2].task_id == "T2"
@@ -629,11 +629,11 @@ class TestRetryBranch:
         pipeline._guard._log_repository = log_repo
         pipeline._guard._pipeline_repository = post_repo
         pipeline._notifier = notifier
-        pipeline._source_io = MagicMock()
-        pipeline._source_io.should_skip_source_download.return_value = False
-        pipeline._source_io.download_to_path = MagicMock()
-        pipeline._parse_file = AsyncMock(side_effect=RuntimeError("parse failed again"))
-        pipeline._run_chunking = AsyncMock()
+        pipeline._services.source_io = MagicMock()
+        pipeline._services.source_io.should_skip_source_download.return_value = False
+        pipeline._services.source_io.download_to_path = MagicMock()
+        pipeline._services.parse_file = AsyncMock(side_effect=RuntimeError("parse failed again"))
+        pipeline._services.run_chunking = AsyncMock()
 
         result = await pipeline.execute(build_retry_payload())
 
@@ -642,7 +642,7 @@ class TestRetryBranch:
         assert "mark_cleaning_failed" in post_repo.calls
         assert post_repo.new_pipeline.failed_stage == POST_PROCESS_STAGE_CLEANING
         assert post_repo.new_pipeline.recover_from_stage == POST_PROCESS_STAGE_CLEANING
-        pipeline._run_chunking.assert_not_awaited()
+        pipeline._services.run_chunking.assert_not_awaited()
         assert notifier.sent[0][0] == PARSE_TASK_STATUS_FAILED
 
     async def test_load_all_chunks_from_db_returns_full_truth_set(self):
@@ -720,7 +720,7 @@ class TestRetryBranch:
         )
         pipeline._notifier = FakeNotifier()
 
-        chunks = await pipeline._load_all_chunks_from_db(build_retry_payload(), db)
+        chunks = await pipeline._services.load_all_chunks_from_db(build_retry_payload(), db)
 
         # 三个 chunk 全部加载（含 INDEXED），且按 chunk_index 排序。
         assert chunks is not None
