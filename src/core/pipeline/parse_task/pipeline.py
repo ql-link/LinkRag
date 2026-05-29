@@ -282,36 +282,42 @@ class ParseTaskPipeline:
         # 1) 严格校验：失败抛 RetryValidationError（由调用方走 _handle_retry_validation_failure）。
         _old_log, old_pipeline = await self._guard.validate_retry_context(payload, db)
 
-        # 2) CAS 第 2 层：mark_superseded UPDATE WHERE superseded_by_task_id IS NULL；
-        #    rowcount=0 → 抛 RetryValidationError，避免 create_with_inherited_state 提前建行。
-        rowcount = await self._pipeline_repository.mark_superseded(
-            db,
-            old_pipeline,
-            new_task_id=payload.task_id,
-        )
-        if rowcount == 0:
-            raise RetryValidationError("RETRY_VALIDATION_FAILED:concurrent_supersede")
+        try:
+            # 2) CAS 第 2 层：mark_superseded UPDATE WHERE superseded_by_task_id IS NULL；
+            #    rowcount=0 → 抛 RetryValidationError，避免 create_with_inherited_state 提前建行。
+            rowcount = await self._pipeline_repository.mark_superseded(
+                db,
+                old_pipeline,
+                new_task_id=payload.task_id,
+            )
+            if rowcount == 0:
+                raise RetryValidationError("RETRY_VALIDATION_FAILED:concurrent_supersede")
 
-        # 3) 抢占成功后再建新 log + 继承式新 pipeline；两步同事务，避免 CAS 失败后还要回滚。
-        retry_from_cleaning = old_pipeline.recover_from_stage == POST_PROCESS_STAGE_CLEANING
-        new_log = await self._log_repository.create_for_retry(
-            payload,
-            db,
-            parsed_bucket=None if retry_from_cleaning else payload.md_bucket,
-            parsed_object_key=None if retry_from_cleaning else payload.md_object_key,
-            retry_of_task_id=payload.previous_task_id,  # validate 已确保非空
-        )
-        new_pipeline = await self._pipeline_repository.create_with_inherited_state(
-            db,
-            old_pipeline,
-            new_log=new_log,
-            new_task_id=payload.task_id,
-            started_at=now(),
-        )
-        # 把 pipeline 行挂到 log，便于后续 get_pipeline_from_log 复用。
-        attach_pipeline_to_log(new_log, new_pipeline)
-        await db.commit()
-        return new_log, new_pipeline
+            # 3) 抢占成功后再建新 log + 继承式新 pipeline；三步同事务提交。
+            retry_from_cleaning = old_pipeline.recover_from_stage == POST_PROCESS_STAGE_CLEANING
+            new_log = await self._log_repository.create_for_retry(
+                payload,
+                db,
+                parsed_bucket=None if retry_from_cleaning else payload.md_bucket,
+                parsed_object_key=None if retry_from_cleaning else payload.md_object_key,
+                retry_of_task_id=payload.previous_task_id,  # validate 已确保非空
+            )
+            new_pipeline = await self._pipeline_repository.create_with_inherited_state(
+                db,
+                old_pipeline,
+                new_log=new_log,
+                new_task_id=payload.task_id,
+                started_at=now(),
+            )
+            # 把 pipeline 行挂到 log，便于后续 get_pipeline_from_log 复用。
+            attach_pipeline_to_log(new_log, new_pipeline)
+            await db.commit()
+            return new_log, new_pipeline
+        except RetryValidationError:
+            raise
+        except Exception:
+            await db.rollback()
+            raise
 
     async def _handle_retry_validation_failure(
         self,
