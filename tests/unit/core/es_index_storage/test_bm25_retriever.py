@@ -1,4 +1,7 @@
-"""``Bm25Retriever`` recall-pipeline 适配器单测。"""
+"""``Bm25Retriever`` recall-pipeline 适配器单测。
+
+``user_id`` / ``top_k`` 改为执行期由 pipeline 透传，构造期只注入底座与分词器。
+"""
 
 from __future__ import annotations
 
@@ -35,12 +38,10 @@ class _FakeEsRetriever:
         return list(self._hits_by_dataset.get(request.dataset_id, []))
 
 
-def _build(user_id: int = 7, top_k: int = 5, **kwargs) -> Bm25Retriever:
+def _build(**kwargs) -> Bm25Retriever:
     return Bm25Retriever(
         es_retriever=kwargs.pop("es", _FakeEsRetriever()),
         tokenizer=kwargs.pop("tokenizer", _FakeTokenizer({"合同 付款": "合同 付款"})),
-        user_id=user_id,
-        top_k=top_k,
     )
 
 
@@ -54,7 +55,7 @@ async def test_empty_dataset_ids_short_circuits():
     es = _FakeEsRetriever()
     retriever = _build(es=es)
 
-    hits = await retriever.recall("合同 付款", dataset_ids=[])
+    hits = await retriever.recall("合同 付款", dataset_ids=[], user_id=7, top_k=5)
 
     assert hits == []
     assert es.calls == []
@@ -65,7 +66,7 @@ async def test_blank_tokens_short_circuits():
     es = _FakeEsRetriever()
     retriever = _build(es=es, tokenizer=_FakeTokenizer({"   ": ""}))
 
-    hits = await retriever.recall("   ", dataset_ids=[10])
+    hits = await retriever.recall("   ", dataset_ids=[10], user_id=7, top_k=5)
 
     assert hits == []
     assert es.calls == []
@@ -82,9 +83,9 @@ async def test_fan_out_per_dataset_and_merge_sorted():
             ],
         }
     )
-    retriever = _build(es=es, top_k=10)
+    retriever = _build(es=es)
 
-    hits = await retriever.recall("合同 付款", dataset_ids=[10, 11])
+    hits = await retriever.recall("合同 付款", dataset_ids=[10, 11], user_id=7, top_k=10)
 
     assert [h.chunk_id for h in hits] == ["c2", "c1", "c3"]
     assert hits[0].dataset_id == 11 and hits[0].doc_id == 200
@@ -100,9 +101,9 @@ async def test_top_k_truncates_merged_result():
             11: [Bm25ChunkHit(chunk_id=f"d{i}", doc_id=i, score=20.0 - i) for i in range(5)],
         }
     )
-    retriever = _build(es=es, top_k=3)
+    retriever = _build(es=es)
 
-    hits = await retriever.recall("合同 付款", dataset_ids=[10, 11])
+    hits = await retriever.recall("合同 付款", dataset_ids=[10, 11], user_id=7, top_k=3)
 
     assert len(hits) == 3
     assert [h.score for h in hits] == [20.0, 19.0, 18.0]
@@ -113,7 +114,9 @@ async def test_doc_ids_cartesian_product():
     es = _FakeEsRetriever()
     retriever = _build(es=es)
 
-    await retriever.recall("合同 付款", dataset_ids=[10, 11], doc_ids=[300, 301])
+    await retriever.recall(
+        "合同 付款", dataset_ids=[10, 11], doc_ids=[300, 301], user_id=7, top_k=5
+    )
 
     seen = {(req.dataset_id, req.doc_id) for req in es.calls}
     assert seen == {(10, 300), (10, 301), (11, 300), (11, 301)}
@@ -124,30 +127,32 @@ async def test_no_doc_ids_means_single_call_per_dataset():
     es = _FakeEsRetriever()
     retriever = _build(es=es)
 
-    await retriever.recall("合同 付款", dataset_ids=[10, 11])
+    await retriever.recall("合同 付款", dataset_ids=[10, 11], user_id=7, top_k=5)
 
     assert [(req.dataset_id, req.doc_id) for req in es.calls] == [(10, None), (11, None)]
 
 
 @pytest.mark.asyncio
-async def test_user_id_and_top_k_passed_through():
+async def test_user_id_and_top_k_passed_through_at_execution():
     es = _FakeEsRetriever()
-    retriever = _build(es=es, user_id=42, top_k=7)
+    retriever = _build(es=es)
 
-    await retriever.recall("合同 付款", dataset_ids=[10])
+    await retriever.recall("合同 付款", dataset_ids=[10], user_id=42, top_k=7)
 
     assert es.calls[0].user_id == 42
     assert es.calls[0].top_k == 7
     assert es.calls[0].tokens == ["合同", "付款"]
 
 
-def test_construct_rejects_non_positive_user_id():
+@pytest.mark.asyncio
+async def test_recall_rejects_non_positive_user_id():
+    retriever = _build()
     with pytest.raises(ValueError):
-        Bm25Retriever(es_retriever=_FakeEsRetriever(), tokenizer=_FakeTokenizer(),
-                      user_id=0, top_k=5)
+        await retriever.recall("合同 付款", dataset_ids=[10], user_id=0, top_k=5)
 
 
-def test_construct_rejects_non_positive_top_k():
+@pytest.mark.asyncio
+async def test_recall_rejects_non_positive_top_k():
+    retriever = _build()
     with pytest.raises(ValueError):
-        Bm25Retriever(es_retriever=_FakeEsRetriever(), tokenizer=_FakeTokenizer(),
-                      user_id=1, top_k=0)
+        await retriever.recall("合同 付款", dataset_ids=[10], user_id=1, top_k=0)

@@ -6,7 +6,8 @@
         ↓
     facade ``search_sparse_chunks(query, user_id, set_id, doc_id, top_k, ...)``
 
-不重新实现编码 / Qdrant 查询逻辑。``user_id`` 在装配期注入，召回时复用。
+不重新实现编码 / Qdrant 查询逻辑。``user_id`` 与 ``top_k`` 改为**执行期**由
+pipeline 透传（来自 ``RecallRequest``）；``score_threshold`` 非用户上下文，仍装配期注入。
 
 为什么不直接 import ``VectorStorageFacade``：``vector_storage`` 包在加载时
 会 import 本包（``sparse_vector``），如果反过来 hard import 会形成循环。
@@ -53,21 +54,13 @@ class SparseRetriever:
         self,
         backend: _SparseSearchBackend,
         *,
-        user_id: int,
-        top_k: int,
         score_threshold: float | None = None,
     ) -> None:
-        if user_id is None or user_id <= 0:
-            raise ValueError(f"user_id must be a positive int, got {user_id!r}")
-        if top_k is None or top_k <= 0:
-            raise ValueError(f"top_k must be a positive int, got {top_k!r}")
         if score_threshold is not None and score_threshold < 0:
             raise ValueError(
                 f"score_threshold must be >= 0, got {score_threshold!r}"
             )
         self._backend = backend
-        self._user_id = user_id
-        self._top_k = top_k
         self._score_threshold = score_threshold
 
     async def recall(
@@ -75,13 +68,22 @@ class SparseRetriever:
         query: str,
         dataset_ids: list[int],
         doc_ids: list[int] | None = None,
+        *,
+        user_id: int,
+        top_k: int,
     ) -> list[RetrieverHit]:
         """按稀疏向量召回一组候选 chunk。
 
+        ``user_id`` / ``top_k`` 由 pipeline 执行期透传。
         ``dataset_ids`` 为空 → 直接返空。底层 facade 的 ``set_id`` 是单值，
         协议层的"全库"语义在这一路放弃（与 ``Bm25Retriever`` 行为一致）。
         多个 ``dataset_ids`` → 逐个下发，合并后按 score 降序截断。
         """
+
+        if user_id is None or user_id <= 0:
+            raise ValueError(f"user_id must be a positive int, got {user_id!r}")
+        if top_k is None or top_k <= 0:
+            raise ValueError(f"top_k must be a positive int, got {top_k!r}")
 
         if not dataset_ids:
             return []
@@ -90,10 +92,10 @@ class SparseRetriever:
         for dataset_id in dataset_ids:
             result = await self._backend.search_sparse_chunks(
                 query=query,
-                user_id=self._user_id,
+                user_id=user_id,
                 set_id=dataset_id,
                 doc_id=list(doc_ids) if doc_ids else None,
-                top_k=self._top_k,
+                top_k=top_k,
                 score_threshold=self._score_threshold,
             )
             for hit in result.hits:
@@ -108,4 +110,4 @@ class SparseRetriever:
                 )
 
         accumulated.sort(key=lambda h: h.score, reverse=True)
-        return accumulated[: self._top_k]
+        return accumulated[:top_k]

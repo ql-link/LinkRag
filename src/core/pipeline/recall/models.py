@@ -55,14 +55,21 @@ class RecallRequest:
 
     Attributes:
         query: 用户原始查询文本，必须非空非纯空白。
+        user_id: 发起召回的用户身份，必须为正整数。由调用方在请求期确定
+            （HTTP 入口从内部凭证 claims 注入），pipeline 执行期透传给各路 retriever，
+            不再在 retriever 装配期注入——便于 pipeline 单例化与按用户审计/隔离。
         dataset_ids: 数据集范围，**允许空列表**（表示不限数据集做全库召回，
             调用方自行保证身份合法）。
         doc_ids: 可选文档过滤；不传或 ``None`` 表示不限。
+        top_k: 各路执行期召回规模上限，同时作为融合后结果的截断上限；必须为正整数。
+            由服务端配置（``RECALL_RESULT_LIMIT``）决定，不作为外部请求字段。
     """
 
     query: str
+    user_id: int
     dataset_ids: list[int]
     doc_ids: list[int] | None = None
+    top_k: int = 20
 
 
 @dataclass

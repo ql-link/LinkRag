@@ -118,7 +118,40 @@ CODE: 中文业务原因；底层详情
 | `QdrantVectorStorageConfigurationError` | Qdrant 依赖或配置错误 |
 | `QdrantStoreError` | Qdrant collection 或 point 操作失败 |
 
-## 5. Chunk Status Values
+### Recall（内部召回 pipeline）
+
+| Exception | 含义 |
+| --- | --- |
+| `RecallValidationError` | 召回入参非法（query 空白 / user_id 非正 / top_k 非正）|
+| `RecallError` | 严格模式任一路失败，或宽松模式全路失败 |
+
+## 5. Internal Recall 错误码
+
+内部召回 SSE 接口 `POST /api/v1/internal/recall/stream`（见
+[http_contracts.md §6](http_contracts.md#6-internal-recall-api)）的错误分两类：
+
+**握手前**（鉴权 / 参数 / scope 校验失败）→ 非 2xx 的 `{code, message, data}` JSON：
+
+| 场景 | HTTP | code |
+| --- | --- | --- |
+| 缺失 / 验签 / iss / aud / scope / exp 校验失败 | `401` | `RECALL_INTERNAL_UNAUTHORIZED` |
+| `body.user_id` 与凭证 `sub` 不一致 | `403` | `RECALL_USER_MISMATCH` |
+| `body.dataset_ids` 超出凭证授权范围 | `403` | `RECALL_SCOPE_FORBIDDEN` |
+| JSON 非法 / 缺字段 / 类型错 / 出现非首版字段 | `422` | `RECALL_INVALID_REQUEST` |
+| `query` 为空或纯空白 | `400` | `RECALL_INVALID_REQUEST` |
+
+**握手后**（pipeline 执行期）→ SSE `error` 事件，发送后关闭流：
+
+| 场景 | 事件 | code |
+| --- | --- | --- |
+| 全部召回路失败 / 严格模式失败 | `error` | `RECALL_ALL_SOURCES_FAILED` |
+| 召回执行超过 `RECALL_STREAM_TIMEOUT_MS` | `error` | `RECALL_TIMEOUT` |
+| 未预期内部异常 | `error` | `RECALL_INTERNAL_ERROR` |
+
+宽松模式下单路失败但仍有成功路时**不是错误**：正常返回 `recall_done`，失败路计入
+`failed_sources`。客户端（Java）断连不作为业务错误，Python 停止发送事件并取消召回任务。
+
+## 6. Chunk Status Values
 
 | Status | 含义 |
 | --- | --- |

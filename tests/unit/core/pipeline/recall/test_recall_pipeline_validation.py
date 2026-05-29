@@ -31,7 +31,7 @@ async def test_invalid_query_raises(query: str):
     pipeline = RecallPipeline([dense, sparse, bm25])
 
     with pytest.raises(RecallValidationError):
-        await pipeline.execute(RecallRequest(query=query, dataset_ids=[10]))
+        await pipeline.execute(RecallRequest(user_id=1, query=query, dataset_ids=[10]))
 
     assert dense.calls == []
     assert sparse.calls == []
@@ -46,7 +46,7 @@ async def test_empty_dataset_ids_allowed():
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[])
     pipeline = RecallPipeline([dense, sparse, bm25])
 
-    response = await pipeline.execute(RecallRequest(query="任意查询", dataset_ids=[]))
+    response = await pipeline.execute(RecallRequest(user_id=1, query="任意查询", dataset_ids=[]))
 
     for r in (dense, sparse, bm25):
         assert r.calls == [("任意查询", [], None)]
@@ -62,7 +62,7 @@ async def test_doc_ids_pass_through():
     pipeline = RecallPipeline([dense, sparse, bm25])
 
     await pipeline.execute(
-        RecallRequest(query="任意查询", dataset_ids=[10, 11], doc_ids=[2001])
+        RecallRequest(user_id=1, query="任意查询", dataset_ids=[10, 11], doc_ids=[2001])
     )
 
     for r in (dense, sparse, bm25):

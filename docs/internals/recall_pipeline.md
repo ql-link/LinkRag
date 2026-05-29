@@ -52,12 +52,13 @@ src/core/pipeline/recall/
 ## 3. 核心流程
 
 ```text
-RecallRequest(query, dataset_ids, doc_ids)
+RecallRequest(query, user_id, dataset_ids, doc_ids, top_k)
   -> RecallPipeline.execute()
-       -> validate query
-       -> run retrievers in parallel / serial
+       -> validate query / user_id / top_k
+       -> run retrievers in parallel / serial（透传 user_id / top_k）
        -> check failures by strict / loose policy
        -> fuse successful hits with RRF
+       -> truncate fused hits to top_k
        -> build RecallResponse
 ```
 
@@ -96,6 +97,9 @@ class Retriever(Protocol):
         query: str,
         dataset_ids: list[int],
         doc_ids: list[int] | None = None,
+        *,
+        user_id: int,
+        top_k: int,
     ) -> list[RetrieverHit]:
         ...
 ```
@@ -107,6 +111,7 @@ class Retriever(Protocol):
 - 合法但无命中时返回 `[]`，不要抛异常。
 - 模型不可达、ES 超时、存储异常等不可恢复失败可抛任意 Exception，由 Pipeline 根据容错配置处理。
 - `RetrieverHit.chunk_id` 必须锚定 MySQL `kb_document_chunk.chunk_id`，下游 reranker / 上下文拼装阶段用它反查正文。
+- `user_id` / `top_k` 在**执行期**由 Pipeline 透传（来自 `RecallRequest`），retriever 不在装配期持有它们——这样 Pipeline 与 retriever 可单例复用，HTTP 入口按请求注入用户上下文。内部召回 HTTP 入口见 [recall_http_api.md](recall_http_api.md)。
 
 ---
 
@@ -114,7 +119,7 @@ class Retriever(Protocol):
 
 | 模型 | 方向 | 说明 |
 | --- | --- | --- |
-| `RecallRequest` | 入参 | `query` 必须非空；`dataset_ids` 允许空列表，表示不限数据集；`doc_ids` 可选 |
+| `RecallRequest` | 入参 | `query` 必须非空；`user_id` 必须为正（HTTP 入口从凭证 claims 注入）；`dataset_ids` 允许空列表，表示不限数据集；`doc_ids` 可选；`top_k` 为正，由服务端配置 `RECALL_RESULT_LIMIT` 决定，同时是融合结果截断上限 |
 | `RetrieverHit` | 单路内部结果 | 单路返回的原始候选，包含 `chunk_id`、`doc_id`、`dataset_id`、`score`、`source` |
 | `RecallHit` | 融合结果 | RRF 融合后的候选，包含 `fused_score` 和每路原始 `scores` |
 | `RecallResponse` | 出参 | 回显 query、融合候选、各路命中数、失败路、整体耗时 |

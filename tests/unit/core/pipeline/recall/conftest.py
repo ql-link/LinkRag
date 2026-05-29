@@ -28,6 +28,9 @@ class FakeRetriever:
     # 测试断言用：记录每次 recall 的入参与触发时机。
     calls: list[tuple[str, list[int], list[int] | None]] = field(default_factory=list)
     call_order: list[float] = field(default_factory=list)
+    # 执行期透传的用户上下文记录，供断言。
+    user_ids: list[int] = field(default_factory=list)
+    top_ks: list[int] = field(default_factory=list)
     # 注入一个共享的"全局调用序号"生成器以观察跨实例的触发顺序。
     sequence_recorder: list[str] | None = None
 
@@ -36,10 +39,15 @@ class FakeRetriever:
         query: str,
         dataset_ids: list[int],
         doc_ids: list[int] | None = None,
+        *,
+        user_id: int,
+        top_k: int,
     ) -> list[RetrieverHit]:
         import time as _time
         self.calls.append((query, list(dataset_ids), list(doc_ids) if doc_ids else None))
         self.call_order.append(_time.monotonic())
+        self.user_ids.append(user_id)
+        self.top_ks.append(top_k)
         if self.sequence_recorder is not None:
             self.sequence_recorder.append(self.source)
         if self.delay_seconds > 0:

@@ -62,6 +62,29 @@ class Settings(BaseSettings):
     API_KEY_ENCRYPTION_SECRET: str = "default-secret"
 
     # ==========================================
+    # 内部召回 API 配置 (Internal Recall API)
+    # ==========================================
+    # 外部用户态 Recall API 归属 Java；Python 只暴露内部 recall runtime，
+    # 校验 Java 签发的短期内部 JWT(HS256)。详见 docs/internals/recall.md。
+    RECALL_INTERNAL_AUTH_ENABLED: bool = True
+    RECALL_INTERNAL_JWT_ISSUER: str = "tolink-java"
+    RECALL_INTERNAL_JWT_AUDIENCE: str = "tolink-rag"
+    RECALL_INTERNAL_JWT_SCOPE: str = "recall:execute"
+    # HS256 共享密钥：Java 签发端与 Python 验签端必须一致。
+    # 默认值仅用于本地联调，生产必须通过环境变量 / 密钥管理系统覆盖。
+    RECALL_INTERNAL_JWT_SECRET: str = (
+        "9780df1524906ac133898a8cc74280c512f0334d32d795786c021059ec09b5da"
+    )
+    # 单次召回最大执行时间（毫秒）；超过即以 SSE error RECALL_TIMEOUT 终止。
+    RECALL_STREAM_TIMEOUT_MS: int = 60000
+    # pipeline 严格模式默认值：False=宽松，允许单路失败降级。
+    RECALL_STRICT_DEFAULT: bool = False
+    # 服务端固定返回候选数上限（同时作为各路执行期 top_k）。
+    RECALL_RESULT_LIMIT: int = 20
+    # 启用的召回路（逗号分隔）；未实现的 source（如 dense）不应出现在默认值。
+    RECALL_ENABLED_SOURCES: str = "bm25,sparse"
+
+    # ==========================================
     # 系统级兜底 LLM 配置 (Platform Default Fallback LLMs)
     # ==========================================
     SYSTEM_LLM_PROVIDER: str = "qwen"

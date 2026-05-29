@@ -34,7 +34,7 @@ async def test_lenient_one_source_fails():
     ])
     pipeline = RecallPipeline([dense, sparse, bm25])
 
-    response = await pipeline.execute(RecallRequest(query="q", dataset_ids=[10]))
+    response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
 
     assert response.failed_sources == [SOURCE_DENSE]
     assert response.per_source_counts == {
@@ -52,7 +52,7 @@ async def test_lenient_two_sources_fail():
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("c1", SOURCE_BM25)])
     pipeline = RecallPipeline([dense, sparse, bm25])
 
-    response = await pipeline.execute(RecallRequest(query="q", dataset_ids=[10]))
+    response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
 
     assert response.failed_sources == [SOURCE_DENSE, SOURCE_SPARSE]
     assert len(response.hits) == 1
@@ -68,7 +68,7 @@ async def test_lenient_all_fail_raises():
     pipeline = RecallPipeline([dense, sparse, bm25])
 
     with pytest.raises(RecallError) as ei:
-        await pipeline.execute(RecallRequest(query="q", dataset_ids=[10]))
+        await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
 
     msg = str(ei.value)
     assert "qdrant_down" in msg
@@ -88,7 +88,7 @@ async def test_strict_any_fail_raises():
     )
 
     with pytest.raises(RecallError) as ei:
-        await pipeline.execute(RecallRequest(query="q", dataset_ids=[10]))
+        await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
     assert SOURCE_DENSE in str(ei.value)
 
 
@@ -103,6 +103,6 @@ async def test_strict_all_success_returns():
         config=RecallPipelineConfig(strict=True),
     )
 
-    response = await pipeline.execute(RecallRequest(query="q", dataset_ids=[10]))
+    response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
     assert response.failed_sources == []
     assert {h.chunk_id for h in response.hits} == {"c1", "c2", "c3"}

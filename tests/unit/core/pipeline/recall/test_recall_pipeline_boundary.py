@@ -21,6 +21,22 @@ def _hit(chunk_id, source, score=1.0, doc_id=100, dataset_id=10):
 
 
 @pytest.mark.asyncio
+async def test_fused_hits_truncated_to_request_top_k():
+    """融合结果按 request.top_k 截断，并把 user_id/top_k 透传给各路。"""
+    bm25_hits = [_hit(f"c{i}", SOURCE_BM25, score=10.0 - i) for i in range(5)]
+    bm25 = FakeRetriever(source=SOURCE_BM25, hits=bm25_hits)
+    pipeline = RecallPipeline([bm25])
+
+    response = await pipeline.execute(
+        RecallRequest(user_id=99, query="q", dataset_ids=[10], top_k=2)
+    )
+
+    assert len(response.hits) == 2
+    assert bm25.user_ids == [99]
+    assert bm25.top_ks == [2]
+
+
+@pytest.mark.asyncio
 async def test_all_empty_returns_empty():
     """三路均返回空列表时结果为空但不抛错。"""
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[])
@@ -28,7 +44,7 @@ async def test_all_empty_returns_empty():
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[])
     pipeline = RecallPipeline([dense, sparse, bm25])
 
-    response = await pipeline.execute(RecallRequest(query="q", dataset_ids=[10]))
+    response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
     assert response.hits == []
     assert response.per_source_counts == {
         SOURCE_DENSE: 0, SOURCE_SPARSE: 0, SOURCE_BM25: 0,
@@ -51,7 +67,7 @@ async def test_trust_declared_order():
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[])
     pipeline = RecallPipeline([dense, sparse, bm25])
 
-    response = await pipeline.execute(RecallRequest(query="q", dataset_ids=[10]))
+    response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
     by_id = {h.chunk_id: h for h in response.hits}
     assert by_id["cA"].fused_score == pytest.approx(1 / 61)
     assert by_id["cB"].fused_score == pytest.approx(1 / 62)
@@ -68,7 +84,7 @@ async def test_four_retrievers():
     graph = FakeRetriever(source="graph", hits=[_hit("c4", "graph")])
     pipeline = RecallPipeline([dense, sparse, bm25, graph])
 
-    response = await pipeline.execute(RecallRequest(query="q", dataset_ids=[10]))
+    response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
 
     for r in (dense, sparse, bm25, graph):
         assert len(r.calls) == 1
@@ -91,7 +107,7 @@ async def test_empty_list_not_failed_source():
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[])
     pipeline = RecallPipeline([dense, sparse, bm25])
 
-    response = await pipeline.execute(RecallRequest(query="q", dataset_ids=[10]))
+    response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
     assert response.failed_sources == []
     assert response.per_source_counts == {
         SOURCE_DENSE: 0, SOURCE_SPARSE: 1, SOURCE_BM25: 0,
