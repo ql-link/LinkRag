@@ -33,9 +33,7 @@ def chunk_storage_service(
     mock_qdrant_store,
     sample_embedded_chunks,
 ):
-    pipeline = _make_embedding_pipeline(
-        batch_size=10, embedded_chunks=sample_embedded_chunks
-    )
+    pipeline = _make_embedding_pipeline(batch_size=10, embedded_chunks=sample_embedded_chunks)
     return VectorStoragePipeline(
         session_factory=mock_session_factory,
         draft_factory=mock_draft_factory,
@@ -87,6 +85,7 @@ def make_embedded(chunk_id: str, content: str, model: str = "embed-v1") -> Embed
 # ──────────────────────────────────────────────────────────────────────────────
 # 基础路径
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_should_return_empty_result_when_no_vector_candidates(
@@ -199,6 +198,7 @@ async def test_should_process_chunks_across_two_batches(
 # FAILED chunk 过滤
 # ──────────────────────────────────────────────────────────────────────────────
 
+
 @pytest.mark.asyncio
 async def test_should_skip_failed_chunks_and_leave_them_for_compensation(
     mock_session_factory,
@@ -221,7 +221,12 @@ async def test_should_skip_failed_chunks_and_leave_them_for_compensation(
     )
     records = [
         build_record("chunk-1", chunk_index=0, dense_status=CHUNK_STATUS_PENDING),
-        build_record("chunk-2", chunk_index=1, dense_status=CHUNK_STATUS_FAILED),
+        build_record(
+            "chunk-2",
+            chunk_index=1,
+            dense_status=CHUNK_STATUS_FAILED,
+            content="beta",
+        ),
     ]
     mock_repository.list_vector_candidates_by_doc_id.return_value = records
     mock_repository.mark_indexing.return_value = 1
@@ -230,7 +235,7 @@ async def test_should_skip_failed_chunks_and_leave_them_for_compensation(
     result = await service.index_document_chunks(build_request())
 
     assert result.total_chunks == 2
-    assert result.indexed_chunks == 1   # chunk-2 (FAILED) 不计入
+    assert result.indexed_chunks == 1  # chunk-2 (FAILED) 不计入
     assert result.failed_chunk_ids == []
     # aembed_chunks 只收到 PENDING 的 chunk
     pipeline.aembed_chunks.assert_awaited_once()
@@ -244,9 +249,71 @@ async def test_should_skip_failed_chunks_and_leave_them_for_compensation(
     assert call_args.kwargs["expected_status"] == CHUNK_STATUS_PENDING
 
 
+@pytest.mark.asyncio
+async def test_should_reindex_failed_chunks_when_include_failed_is_true(
+    mock_session_factory,
+    mock_draft_factory,
+    mock_repository,
+    mock_qdrant_store,
+    mock_session,
+):
+    """manual retry 显式要求 include_failed 时，PENDING 和 FAILED 都会补做。"""
+    ec1 = make_embedded("chunk-1", "alpha")
+    ec2 = make_embedded("chunk-2", "beta")
+    pipeline = _make_embedding_pipeline(batch_size=10, embedded_chunks=[ec1, ec2])
+    service = VectorStoragePipeline(
+        session_factory=mock_session_factory,
+        draft_factory=mock_draft_factory,
+        repository=mock_repository,
+        qdrant_store=mock_qdrant_store,
+        embedding_pipeline=pipeline,
+        retry_limit=0,
+        retry_interval_seconds=0,
+    )
+    records = [
+        build_record("chunk-1", chunk_index=0, dense_status=CHUNK_STATUS_PENDING),
+        build_record(
+            "chunk-2",
+            chunk_index=1,
+            dense_status=CHUNK_STATUS_FAILED,
+            content="beta",
+        ),
+    ]
+    mock_repository.list_vector_candidates_by_doc_id.return_value = records
+    mock_repository.mark_indexing.return_value = 1
+    mock_repository.mark_indexed.return_value = 1
+
+    request = build_request()
+    request.include_failed = True
+    result = await service.index_document_chunks(request)
+
+    assert result.total_chunks == 2
+    assert result.indexed_chunks == 2
+    assert result.failed_chunk_ids == []
+    pipeline.aembed_chunks.assert_awaited_once()
+    called_chunks = pipeline.aembed_chunks.await_args.args[0]
+    assert [chunk.content for chunk in called_chunks] == ["alpha", "beta"]
+    assert mock_repository.mark_indexing.await_args_list == [
+        call(
+            mock_session,
+            ["chunk-1"],
+            embedding_model=None,
+            expected_status=CHUNK_STATUS_PENDING,
+        ),
+        call(
+            mock_session,
+            ["chunk-2"],
+            embedding_model=None,
+            expected_status=CHUNK_STATUS_FAILED,
+        ),
+    ]
+    assert mock_qdrant_store.upsert_points.await_count == 2
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # embed 失败：该批标 FAILED，后续批次保持 PENDING
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_should_mark_batch_failed_and_stop_when_embed_fails(
@@ -260,10 +327,12 @@ async def test_should_mark_batch_failed_and_stop_when_embed_fails(
     ec2 = make_embedded("chunk-2", "beta")
     pipeline = _make_embedding_pipeline(batch_size=2)
     # batch1 成功，batch2 失败
-    pipeline.aembed_chunks = AsyncMock(side_effect=[
-        [ec1, ec2],
-        RuntimeError("embed API down"),
-    ])
+    pipeline.aembed_chunks = AsyncMock(
+        side_effect=[
+            [ec1, ec2],
+            RuntimeError("embed API down"),
+        ]
+    )
     service = VectorStoragePipeline(
         session_factory=mock_session_factory,
         draft_factory=mock_draft_factory,
@@ -301,6 +370,7 @@ async def test_should_mark_batch_failed_and_stop_when_embed_fails(
 # ──────────────────────────────────────────────────────────────────────────────
 # 写入失败：立即停止，不继续处理同批剩余 chunk
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_should_stop_immediately_when_qdrant_upsert_fails(
@@ -392,6 +462,7 @@ async def test_should_stop_immediately_when_mark_indexed_fails(
 # ──────────────────────────────────────────────────────────────────────────────
 # sparse 服务配置相关
 # ──────────────────────────────────────────────────────────────────────────────
+
 
 @pytest.mark.asyncio
 async def test_should_query_dense_candidates_only_even_when_sparse_service_is_configured(

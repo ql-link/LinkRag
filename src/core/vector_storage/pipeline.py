@@ -102,15 +102,19 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         self.sparse_vector_service = sparse_vector_service
         self.retry_limit = max(
             0,
-            retry_limit
-            if retry_limit is not None
-            else getattr(settings, "CHUNK_INDEX_RETRY_LIMIT", 0),
+            (
+                retry_limit
+                if retry_limit is not None
+                else getattr(settings, "CHUNK_INDEX_RETRY_LIMIT", 0)
+            ),
         )
         self.retry_interval_seconds = max(
             0,
-            retry_interval_seconds
-            if retry_interval_seconds is not None
-            else getattr(settings, "CHUNK_INDEX_RETRY_INTERVAL_SECONDS", 0),
+            (
+                retry_interval_seconds
+                if retry_interval_seconds is not None
+                else getattr(settings, "CHUNK_INDEX_RETRY_INTERVAL_SECONDS", 0)
+            ),
         )
         self.max_inline_retry_sleep_seconds = max(0, max_inline_retry_sleep_seconds)
 
@@ -157,19 +161,23 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         if not records:
             return ChunkIndexingResult(total_chunks=0, indexed_chunks=0)
 
-        # 只处理首次向量化（PENDING）的 chunk。
-        # FAILED 状态的 chunk 由 compensation_pipeline.reindex_failed_chunks() 负责重试，
-        # 不在此路径混合处理，避免 mark_indexing expected_status 乐观锁失效。
+        dense_candidate_statuses = (
+            (CHUNK_STATUS_PENDING, CHUNK_STATUS_FAILED)
+            if request.include_failed
+            else (CHUNK_STATUS_PENDING,)
+        )
         dense_records = [
-            r for r in records
-            if getattr(r, "dense_vector_status", None) == CHUNK_STATUS_PENDING
+            r
+            for r in records
+            if getattr(r, "dense_vector_status", None) in dense_candidate_statuses
         ]
-        # 已是终态（INDEXED 等）的记录直接计入成功；FAILED 的不计入，留给补偿路径。
+        # 已是终态（INDEXED 等）的记录直接计入成功；默认写入路径仍把 FAILED
+        # 留给 compensation，manual retry 会通过 include_failed=True 显式补做。
         already_done_records = [
-            r for r in records
-            if getattr(r, "dense_vector_status", None) not in (
-                CHUNK_STATUS_PENDING, CHUNK_STATUS_FAILED
-            )
+            r
+            for r in records
+            if getattr(r, "dense_vector_status", None)
+            not in (CHUNK_STATUS_PENDING, CHUNK_STATUS_FAILED)
         ]
 
         embedding_model: str | None = None
@@ -194,11 +202,14 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
 
             # 1. 批量 mark_indexing
             try:
-                await self._mark_indexing(
-                    batch_chunk_ids,
-                    embedding_model=None,
-                    expected_status=CHUNK_STATUS_PENDING,
-                )
+                for expected_status, status_records in self._group_records_by_dense_status(
+                    batch_records
+                ).items():
+                    await self._mark_indexing(
+                        [str(getattr(record, "chunk_id")) for record in status_records],
+                        embedding_model=None,
+                        expected_status=expected_status,
+                    )
             except Exception as exc:
                 compensation_entry = await self._safe_mark_branch_failed(
                     batch_records[0],
@@ -316,6 +327,15 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
             embedding_model=embedding_model,
         )
 
+    @staticmethod
+    def _group_records_by_dense_status(records: Sequence[object]) -> dict[str, list[object]]:
+        """按当前 dense 状态分组，便于 PENDING/FAILED 混合批次分别 CAS 抢占。"""
+
+        grouped: dict[str, list[object]] = defaultdict(list)
+        for record in records:
+            grouped[str(getattr(record, "dense_vector_status"))].append(record)
+        return grouped
+
     async def _index_record_with_retry(self, record: object) -> ChunkIndexingResult:
         """对单条 SQL chunk 记录执行 `dense -> sparse` 串行索引，失败只重试当前分支。"""
 
@@ -351,9 +371,15 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
                 )
             except _VectorBranchFailure as exc:
                 last_error = exc
-                if exc.branch == VectorBranch.DENSE and exc.step != VectorFailureStep.SQL_STATUS_WRITE:
+                if (
+                    exc.branch == VectorBranch.DENSE
+                    and exc.step != VectorFailureStep.SQL_STATUS_WRITE
+                ):
                     dense_indexing_marked = True
-                if exc.branch == VectorBranch.SPARSE and exc.step != VectorFailureStep.SQL_STATUS_WRITE:
+                if (
+                    exc.branch == VectorBranch.SPARSE
+                    and exc.step != VectorFailureStep.SQL_STATUS_WRITE
+                ):
                     sparse_indexing_marked = True
                 if attempt >= self.retry_limit:
                     break
@@ -402,7 +428,9 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
                 ) from exc
 
         try:
-            embedded_chunks = await self.embedding_pipeline.aembed_chunks([chunk_from_record(record)])
+            embedded_chunks = await self.embedding_pipeline.aembed_chunks(
+                [chunk_from_record(record)]
+            )
             if len(embedded_chunks) != 1:
                 raise ValueError(
                     "Embedded chunk count does not match current chunk: "
@@ -456,7 +484,9 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         if not self._sparse_enabled():
             return None
         if self.sparse_vector_service is None:
-            raise RuntimeError("SPARSE_VECTOR_ENABLED=true but sparse vector service is not configured.")
+            raise RuntimeError(
+                "SPARSE_VECTOR_ENABLED=true but sparse vector service is not configured."
+            )
 
         chunk_id = str(getattr(record, "chunk_id"))
         model_name = self._sparse_model_name()
@@ -714,7 +744,9 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         """把当前 chunk 的 sparse 子状态切换为 INDEXING。"""
 
         if self.sparse_vector_service is None:
-            raise RuntimeError("SPARSE_VECTOR_ENABLED=true but sparse vector service is not configured.")
+            raise RuntimeError(
+                "SPARSE_VECTOR_ENABLED=true but sparse vector service is not configured."
+            )
         return await self._run_in_transaction_with_result(
             lambda session: self.repository.mark_sparse_indexing(
                 session,
@@ -761,7 +793,9 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
                     f"{affected_rows} != {len(chunk_ids)} for chunks {chunk_ids}."
                 )
         except Exception as exc:
-            logger.exception(f"[VectorStoragePipeline] Failed to mark sparse chunks as failed: {exc}")
+            logger.exception(
+                f"[VectorStoragePipeline] Failed to mark sparse chunks as failed: {exc}"
+            )
 
     async def _ensure_and_upsert(self, points: Sequence[IndexedPoint]) -> None:
         """

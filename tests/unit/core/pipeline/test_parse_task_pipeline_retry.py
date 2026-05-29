@@ -22,6 +22,7 @@ from src.core.pipeline.parse_task.post_process.constants import (
     PIPELINE_STATUS_FAILED,
     PIPELINE_STATUS_PROCESSING,
     PIPELINE_STATUS_SUCCESS,
+    POST_PROCESS_STAGE_CLEANING,
     POST_PROCESS_STAGE_PRETOKENIZE,
     POST_PROCESS_STAGE_VECTORIZING,
     STAGE_STATUS_FAILED,
@@ -29,6 +30,7 @@ from src.core.pipeline.parse_task.post_process.constants import (
     STAGE_STATUS_SUCCESS,
 )
 from src.core.pipeline.parse_task.validator import RetryValidationError
+from src.core.splitter.models import Chunk
 from src.models.parse_task import DocumentParsedLog, DocumentParsePipeline
 
 
@@ -133,7 +135,9 @@ class FakeRetryPipelineRepository:
             old_pipeline.superseded_by_task_id = new_task_id
         return self.mark_superseded_rowcount
 
-    async def create_with_inherited_state(self, db, old_pipeline, *, new_log, new_task_id, started_at):
+    async def create_with_inherited_state(
+        self, db, old_pipeline, *, new_log, new_task_id, started_at
+    ):
         self.calls.append("create_with_inherited_state")
         # 简化：把旧 pipeline SUCCESS 状态复制为新 pipeline 的初始值
         new_pipeline = SimpleNamespace(
@@ -141,8 +145,16 @@ class FakeRetryPipelineRepository:
             task_id=new_task_id,
             document_parsed_log_id=new_log.id,
             pipeline_status=PIPELINE_STATUS_PROCESSING,
-            cleaning_status=old_pipeline.cleaning_status,
-            chunking_status=old_pipeline.chunking_status,
+            cleaning_status=(
+                STAGE_STATUS_SUCCESS
+                if old_pipeline.cleaning_status == STAGE_STATUS_SUCCESS
+                else STAGE_STATUS_PENDING
+            ),
+            chunking_status=(
+                STAGE_STATUS_SUCCESS
+                if old_pipeline.chunking_status == STAGE_STATUS_SUCCESS
+                else STAGE_STATUS_PENDING
+            ),
             vectorizing_status=(
                 STAGE_STATUS_SUCCESS
                 if old_pipeline.vectorizing_status == STAGE_STATUS_SUCCESS
@@ -216,6 +228,27 @@ class FakeRetryPipelineRepository:
         self.calls.append("mark_chunking_started")
         self._mark_started(pipeline, "chunking_status", started_at)
 
+    async def mark_cleaning_started(self, db, pipeline, *, started_at):
+        self.calls.append("mark_cleaning_started")
+        self._mark_started(pipeline, "cleaning_status", started_at)
+
+    async def mark_cleaning_success(self, db, pipeline, *, duration_ms):
+        self.calls.append("mark_cleaning_success")
+        pipeline.cleaning_status = STAGE_STATUS_SUCCESS
+        pipeline.cleaning_duration_ms = duration_ms
+
+    async def mark_cleaning_failed(self, db, pipeline, *, reason, duration_ms, finished_at):
+        self.calls.append("mark_cleaning_failed")
+        pipeline.pipeline_status = PIPELINE_STATUS_FAILED
+        pipeline.cleaning_status = STAGE_STATUS_FAILED
+        pipeline.failed_stage = POST_PROCESS_STAGE_CLEANING
+        pipeline.recover_from_stage = POST_PROCESS_STAGE_CLEANING
+        pipeline.failure_reason = reason
+
+    async def mark_post_cleaning(self, db, pipeline, *, started_at):
+        self.calls.append("mark_post_cleaning")
+        pipeline.pipeline_status = PIPELINE_STATUS_PROCESSING
+
     async def mark_vectorizing_started(self, db, pipeline, *, started_at):
         self.calls.append("mark_vectorizing_started")
         self._mark_started(pipeline, "vectorizing_status", started_at)
@@ -236,6 +269,10 @@ class FakeRetryPipelineRepository:
         self.calls.append("mark_vectorizing_success")
         pipeline.vectorizing_status = STAGE_STATUS_SUCCESS
 
+    async def mark_chunking_success(self, db, pipeline, *, duration_ms):
+        self.calls.append("mark_chunking_success")
+        pipeline.chunking_status = STAGE_STATUS_SUCCESS
+
     async def mark_vectorizing_failed(self, db, pipeline, *, reason, duration_ms, finished_at):
         self.calls.append("mark_vectorizing_failed")
         pipeline.pipeline_status = PIPELINE_STATUS_FAILED
@@ -251,7 +288,9 @@ class FakeRetryPipelineRepository:
         pipeline.pretokenize_status = STAGE_STATUS_FAILED
         pipeline.failed_stage = POST_PROCESS_STAGE_PRETOKENIZE
 
-    async def mark_es_success(self, db, pipeline, *, duration_ms, total_duration_ms=None, finished_at=None):
+    async def mark_es_success(
+        self, db, pipeline, *, duration_ms, total_duration_ms=None, finished_at=None
+    ):
         self.calls.append("mark_es_success")
         pipeline.es_indexing_status = STAGE_STATUS_SUCCESS
 
@@ -261,13 +300,17 @@ class FakeRetryPipelineRepository:
         pipeline.es_indexing_status = STAGE_STATUS_FAILED
         pipeline.failed_stage = "ES_INDEXING"
 
-    async def mark_sparse_vectorizing_success(self, db, pipeline, *, duration_ms, total_duration_ms, finished_at):
+    async def mark_sparse_vectorizing_success(
+        self, db, pipeline, *, duration_ms, total_duration_ms, finished_at
+    ):
         self.calls.append("mark_sparse_vectorizing_success")
         pipeline.sparse_vectorizing_status = STAGE_STATUS_SUCCESS
         pipeline.pipeline_status = PIPELINE_STATUS_SUCCESS
         pipeline.finished_at = finished_at
 
-    async def mark_sparse_vectorizing_failed(self, db, pipeline, *, reason, duration_ms, finished_at):
+    async def mark_sparse_vectorizing_failed(
+        self, db, pipeline, *, reason, duration_ms, finished_at
+    ):
         self.calls.append("mark_sparse_vectorizing_failed")
         pipeline.pipeline_status = PIPELINE_STATUS_FAILED
         pipeline.sparse_vectorizing_status = STAGE_STATUS_FAILED
@@ -281,6 +324,7 @@ class FakeRetryLogRepository:
         self.old_log = old_log
         self.new_log = None
         self.failed_validation_log = None
+        self.create_for_retry_args = None
         self.calls: list[str] = []
 
     async def get_by_task_id(self, task_id, db):
@@ -290,9 +334,20 @@ class FakeRetryLogRepository:
         return None  # 重试分支不走 validate（parse_task 路径），返回 None 无害
 
     async def create_for_retry(
-        self, payload, db, *, parsed_bucket, parsed_object_key, retry_of_task_id,
+        self,
+        payload,
+        db,
+        *,
+        parsed_bucket,
+        parsed_object_key,
+        retry_of_task_id,
     ):
         self.calls.append("create_for_retry")
+        self.create_for_retry_args = {
+            "parsed_bucket": parsed_bucket,
+            "parsed_object_key": parsed_object_key,
+            "retry_of_task_id": retry_of_task_id,
+        }
         log = DocumentParsedLog(
             id=101,
             task_id=payload.task_id,
@@ -306,8 +361,23 @@ class FakeRetryLogRepository:
         self.new_log = log
         return log
 
+    async def mark_parsed(self, payload, log_record, db):
+        self.calls.append("mark_parsed")
+        log_record.parsed_bucket_name = payload.md_bucket
+        log_record.parsed_object_key = payload.md_object_key
+        log_record.parsed_file_url = f"oss://{payload.md_bucket}/{payload.md_object_key}"
+        log_record.parse_duration_ms = 1
+
+    async def mark_parse_finished(self, log_record, db):
+        self.calls.append("mark_parse_finished")
+        log_record.parse_duration_ms = 1
+
     async def create_failed_for_retry_validation(
-        self, payload, db, *, previous_task_id,
+        self,
+        payload,
+        db,
+        *,
+        previous_task_id,
     ):
         self.calls.append("create_failed_for_retry_validation")
         log = DocumentParsedLog(
@@ -335,7 +405,10 @@ class TestRetryBranch:
     @patch("src.core.pipeline.parse_task.pipeline.StorageFactory.get_storage")
     @patch("src.core.pipeline.parse_task.pipeline.MQService")
     async def test_retry_success_path_skips_already_success_stages(
-        self, mock_mq, mock_storage, mock_chunk_repo_cls,
+        self,
+        mock_mq,
+        mock_storage,
+        mock_chunk_repo_cls,
     ):
         """端到端重试 happy path：跳过 cleaning/chunking SUCCESS，从 vectorizing 起步。"""
         from tests.unit.core.pipeline.test_parse_task_pipeline import (
@@ -350,17 +423,32 @@ class TestRetryBranch:
 
         # _load_all_chunks_from_db 反查完整 chunk truth set（按 doc_id 全量）：mock 返回 2 行。
         from src.core.qdrant_vector_storage.point_factory import chunk_from_record
+
         chunk_rows = [
             SimpleNamespace(
-                chunk_id="c1", doc_id=1, set_id=30, user_id=20, bucket_id=42,
-                content="c1-text", chunk_type="text",
-                start_line=0, end_line=1, chunk_index=0,
+                chunk_id="c1",
+                doc_id=1,
+                set_id=30,
+                user_id=20,
+                bucket_id=42,
+                content="c1-text",
+                chunk_type="text",
+                start_line=0,
+                end_line=1,
+                chunk_index=0,
                 dense_vector_status="PENDING",
             ),
             SimpleNamespace(
-                chunk_id="c2", doc_id=1, set_id=30, user_id=20, bucket_id=42,
-                content="c2-text", chunk_type="text",
-                start_line=2, end_line=3, chunk_index=1,
+                chunk_id="c2",
+                doc_id=1,
+                set_id=30,
+                user_id=20,
+                bucket_id=42,
+                content="c2-text",
+                chunk_type="text",
+                start_line=2,
+                end_line=3,
+                chunk_index=1,
                 dense_vector_status="FAILED",
             ),
         ]
@@ -371,8 +459,10 @@ class TestRetryBranch:
 
         vector_storage = AsyncMock()
         from src.core.vector_storage.models import ChunkIndexingResult
-        vector_storage.store_chunks.return_value = ChunkIndexingResult(
-            total_chunks=2, indexed_chunks=2,
+
+        vector_storage.index_document_chunks.return_value = ChunkIndexingResult(
+            total_chunks=2,
+            indexed_chunks=2,
         )
 
         pipeline = ParseTaskPipeline(
@@ -405,8 +495,155 @@ class TestRetryBranch:
         assert "mark_pretokenize_started" in post_repo.calls
         assert "mark_es_indexing_started" in post_repo.calls
         assert "mark_sparse_vectorizing_started" in post_repo.calls
+        vector_storage.index_document_chunks.assert_awaited_once_with(
+            user_id=20,
+            set_id=30,
+            doc_id=1,
+            include_failed=True,
+        )
         # 整体终态由 sparse 翻 SUCCESS
         assert post_repo.new_pipeline.pipeline_status == PIPELINE_STATUS_SUCCESS
+
+    @patch("src.core.pipeline.parse_task.pipeline.ChunkRepository")
+    @patch("src.core.pipeline.parse_task.pipeline.StorageFactory.get_storage")
+    @patch("src.core.pipeline.parse_task.pipeline.MQService")
+    async def test_retry_from_cleaning_reruns_cleaning_then_continues_chunking(
+        self,
+        mock_mq,
+        mock_storage,
+        mock_chunk_repo_cls,
+    ):
+        """cleaning 失败后的 retry：不要求旧 markdown，重新解析上传后继续 chunking。"""
+        from tests.unit.core.pipeline.test_parse_task_pipeline import (
+            FakeEsIndexingPipeline,
+            FakePreprocessor,
+            FakeSparseIndexingPipeline,
+        )
+        from src.core.vector_storage.models import ChunkIndexingResult
+
+        old_log, old_pipeline = build_old_log_pipeline(recover=POST_PROCESS_STAGE_CLEANING)
+        old_log.parsed_object_key = None
+        old_pipeline.cleaning_status = STAGE_STATUS_FAILED
+        old_pipeline.chunking_status = STAGE_STATUS_PENDING
+        old_pipeline.vectorizing_status = STAGE_STATUS_PENDING
+
+        post_repo = FakeRetryPipelineRepository(old_log=old_log, old_pipeline=old_pipeline)
+        log_repo = FakeRetryLogRepository(old_log=old_log)
+        db = build_db()
+        notifier = FakeNotifier()
+        vector_storage = AsyncMock()
+        vector_storage.index_document_chunks.return_value = ChunkIndexingResult(
+            total_chunks=1,
+            indexed_chunks=1,
+        )
+
+        pipeline = ParseTaskPipeline(
+            storage=MagicMock(),
+            session_factory=FakeAsyncSessionFactory(db),
+            mq_service=MagicMock(),
+            vector_storage=vector_storage,
+            pipeline_repository=post_repo,
+            es_indexing_pipeline=FakeEsIndexingPipeline(),
+            preprocessor=FakePreprocessor(),
+            sparse_indexing_pipeline=FakeSparseIndexingPipeline(),
+        )
+        pipeline._log_repository = log_repo
+        pipeline._guard._log_repository = log_repo
+        pipeline._guard._pipeline_repository = post_repo
+        pipeline._notifier = notifier
+        pipeline._source_io = MagicMock()
+        pipeline._source_io.should_skip_source_download.return_value = False
+        pipeline._source_io.download_to_path = MagicMock()
+        pipeline._source_io.upload_markdown = MagicMock()
+        pipeline._parse_file = AsyncMock(
+            return_value={
+                "markdown": "retry markdown",
+                "parse_result": None,
+                "time_cost_ms": 3,
+                "metadata": {},
+            }
+        )
+        pipeline._run_chunking = AsyncMock(
+            return_value=[Chunk(content="alpha", start_line=1, end_line=1)]
+        )
+
+        result = await pipeline.execute(build_retry_payload())
+
+        assert result.status == PipelineStatus.SUCCESS
+        assert "mark_superseded" in post_repo.calls
+        assert "mark_cleaning_started" in post_repo.calls
+        assert "mark_cleaning_success" in post_repo.calls
+        assert "mark_chunking_started" in post_repo.calls
+        assert "mark_chunking_success" in post_repo.calls
+        assert "mark_parsed" in log_repo.calls
+        assert log_repo.create_for_retry_args["parsed_object_key"] is None
+        assert log_repo.new_log.parsed_object_key == "parsed/T1.md"
+        pipeline._source_io.download_to_path.assert_called_once()
+        pipeline._source_io.upload_markdown.assert_called_once()
+        pipeline._parse_file.assert_awaited_once()
+        pipeline._run_chunking.assert_awaited_once()
+        chunking_args = pipeline._run_chunking.await_args.args
+        assert chunking_args[0] == "retry markdown"
+        assert chunking_args[1] is None
+        assert chunking_args[2].task_id == "T2"
+        assert chunking_args[3] is db
+        vector_storage.index_document_chunks.assert_awaited_once_with(
+            user_id=20,
+            set_id=30,
+            doc_id=1,
+            include_failed=True,
+        )
+        assert post_repo.new_pipeline.pipeline_status == PIPELINE_STATUS_SUCCESS
+
+    @patch("src.core.pipeline.parse_task.pipeline.ChunkRepository")
+    @patch("src.core.pipeline.parse_task.pipeline.StorageFactory.get_storage")
+    @patch("src.core.pipeline.parse_task.pipeline.MQService")
+    async def test_retry_from_cleaning_failure_marks_new_pipeline_recover_from_cleaning(
+        self,
+        mock_mq,
+        mock_storage,
+        mock_chunk_repo_cls,
+    ):
+        """cleaning retry 重新解析失败时，新 pipeline 仍落 CLEANING 可恢复失败。"""
+        from tests.unit.core.pipeline.test_parse_task_pipeline import FakeSparseIndexingPipeline
+
+        old_log, old_pipeline = build_old_log_pipeline(recover=POST_PROCESS_STAGE_CLEANING)
+        old_log.parsed_object_key = None
+        old_pipeline.cleaning_status = STAGE_STATUS_FAILED
+        old_pipeline.chunking_status = STAGE_STATUS_PENDING
+        old_pipeline.vectorizing_status = STAGE_STATUS_PENDING
+
+        post_repo = FakeRetryPipelineRepository(old_log=old_log, old_pipeline=old_pipeline)
+        log_repo = FakeRetryLogRepository(old_log=old_log)
+        db = build_db()
+        notifier = FakeNotifier()
+
+        pipeline = ParseTaskPipeline(
+            storage=MagicMock(),
+            session_factory=FakeAsyncSessionFactory(db),
+            mq_service=MagicMock(),
+            pipeline_repository=post_repo,
+            sparse_indexing_pipeline=FakeSparseIndexingPipeline(),
+        )
+        pipeline._log_repository = log_repo
+        pipeline._guard._log_repository = log_repo
+        pipeline._guard._pipeline_repository = post_repo
+        pipeline._notifier = notifier
+        pipeline._source_io = MagicMock()
+        pipeline._source_io.should_skip_source_download.return_value = False
+        pipeline._source_io.download_to_path = MagicMock()
+        pipeline._parse_file = AsyncMock(side_effect=RuntimeError("parse failed again"))
+        pipeline._run_chunking = AsyncMock()
+
+        result = await pipeline.execute(build_retry_payload())
+
+        assert result.status == PipelineStatus.FAILED
+        assert "mark_cleaning_started" in post_repo.calls
+        assert "mark_cleaning_failed" in post_repo.calls
+        assert post_repo.new_pipeline.failed_stage == POST_PROCESS_STAGE_CLEANING
+        assert post_repo.new_pipeline.recover_from_stage == POST_PROCESS_STAGE_CLEANING
+        pipeline._run_chunking.assert_not_awaited()
+        assert notifier.sent[0][0] == PARSE_TASK_STATUS_FAILED
 
     async def test_load_all_chunks_from_db_returns_full_truth_set(self):
         """Issue #58: retry 路径加载完整 chunk truth set，不再用 dense PENDING/FAILED 子集过滤。"""
@@ -419,25 +656,46 @@ class TestRetryBranch:
         # 还携带 sparse_vector_status / es_status，下游按 SQL 真值自取。
         chunk_rows = [
             SimpleNamespace(
-                chunk_id="c1", doc_id=1, set_id=30, user_id=20, bucket_id=42,
-                content="c1", chunk_type="text",
-                start_line=0, end_line=1, chunk_index=0,
+                chunk_id="c1",
+                doc_id=1,
+                set_id=30,
+                user_id=20,
+                bucket_id=42,
+                content="c1",
+                chunk_type="text",
+                start_line=0,
+                end_line=1,
+                chunk_index=0,
                 dense_vector_status="INDEXED",
                 sparse_vector_status="PENDING",
                 es_status="PENDING",
             ),
             SimpleNamespace(
-                chunk_id="c2", doc_id=1, set_id=30, user_id=20, bucket_id=42,
-                content="c2", chunk_type="text",
-                start_line=2, end_line=3, chunk_index=1,
+                chunk_id="c2",
+                doc_id=1,
+                set_id=30,
+                user_id=20,
+                bucket_id=42,
+                content="c2",
+                chunk_type="text",
+                start_line=2,
+                end_line=3,
+                chunk_index=1,
                 dense_vector_status="PENDING",
                 sparse_vector_status="PENDING",
                 es_status="PENDING",
             ),
             SimpleNamespace(
-                chunk_id="c3", doc_id=1, set_id=30, user_id=20, bucket_id=42,
-                content="c3", chunk_type="text",
-                start_line=4, end_line=5, chunk_index=2,
+                chunk_id="c3",
+                doc_id=1,
+                set_id=30,
+                user_id=20,
+                bucket_id=42,
+                content="c3",
+                chunk_type="text",
+                start_line=4,
+                end_line=5,
+                chunk_index=2,
                 dense_vector_status="FAILED",
                 sparse_vector_status="FAILED",
                 es_status="FAILED",
@@ -480,7 +738,9 @@ class TestRetryBranch:
 
         old_log, old_pipeline = build_old_log_pipeline()
         post_repo = FakeRetryPipelineRepository(
-            old_log=old_log, old_pipeline=old_pipeline, mark_superseded_rowcount=0,
+            old_log=old_log,
+            old_pipeline=old_pipeline,
+            mark_superseded_rowcount=0,
         )
         log_repo = FakeRetryLogRepository(old_log=old_log)
         db = build_db()
@@ -518,8 +778,10 @@ class TestRetryBranch:
         # 旧 log 不存在 → previous_log_not_found
         log_repo = FakeRetryLogRepository(
             old_log=DocumentParsedLog(
-                id=999, task_id="OTHER",  # 不匹配 previous_task_id=T1
-                document_original_file_id=1, document_parse_task_id=10,
+                id=999,
+                task_id="OTHER",  # 不匹配 previous_task_id=T1
+                document_original_file_id=1,
+                document_parse_task_id=10,
                 trigger_mode="upload_auto",
             ),
         )

@@ -14,6 +14,7 @@ from src.core.pipeline.parse_task.post_process.constants import (
     PIPELINE_STATUS_FAILED,
     PIPELINE_STATUS_PROCESSING,
     PIPELINE_STATUS_SUCCESS,
+    POST_PROCESS_STAGE_CLEANING,
     POST_PROCESS_STAGE_VECTORIZING,
 )
 from src.core.pipeline.parse_task.post_process.repository import ParsePipelineRepository
@@ -132,11 +133,23 @@ class TestValidateRetryContext:
     async def test_previous_markdown_missing(self):
         old_log = build_valid_old_log()
         old_log.parsed_object_key = None
-        guard, _, _ = build_guard(old_log=old_log)
+        old_pipeline = build_valid_old_pipeline()
+        guard, _, _ = build_guard(old_log=old_log, old_pipeline=old_pipeline)
 
         with pytest.raises(RetryValidationError) as exc:
             await guard.validate_retry_context(build_retry_payload(), db=MagicMock())
         assert "previous_markdown_missing" in exc.value.reason
+
+    async def test_previous_markdown_missing_is_allowed_when_recover_from_cleaning(self):
+        old_log = build_valid_old_log()
+        old_log.parsed_object_key = None
+        old_pipeline = build_valid_old_pipeline()
+        old_pipeline.recover_from_stage = POST_PROCESS_STAGE_CLEANING
+        guard, _, _ = build_guard(old_log=old_log, old_pipeline=old_pipeline)
+
+        result = await guard.validate_retry_context(build_retry_payload(), db=MagicMock())
+
+        assert result == (old_log, old_pipeline)
 
     async def test_previous_pipeline_not_found(self):
         old_log = build_valid_old_log()

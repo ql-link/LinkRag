@@ -112,7 +112,7 @@ docs/
 | `src/models/**.py` | 新增 `migrations/versions/*.py` |
 | `scripts/db/init.sql` | **禁止修改**（0001 baseline 冻结） |
 | `src/core/mq/messages/**` | [docs/api/mq_contracts.md](docs/api/mq_contracts.md) + [docs/internals/mq.md](docs/internals/mq.md) |
-| `src/core/pipeline/**` | [docs/internals/parse_task_pipeline.md](docs/internals/parse_task_pipeline.md) |
+| `src/core/pipeline/parse_task/**` | [docs/internals/parse_task_pipeline.md](docs/internals/parse_task_pipeline.md) |
 
 机器规则在 [.claude/doc-sync-rules.yaml](.claude/doc-sync-rules.yaml)，由 pre-commit 与 CI 强制。详见 [docs/contributing.md §五](docs/contributing.md#五文档同步规则)。
 

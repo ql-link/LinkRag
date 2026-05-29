@@ -306,7 +306,7 @@ NNNN_YYYYMMDD_slug.py
 | `src/models/**.py` | 新增 `migrations/versions/*.py` | ❌ error |
 | `scripts/db/init.sql` | **禁止改动** | ❌ error |
 | `src/core/mq/messages/**` | [docs/api/mq_contracts.md](api/mq_contracts.md) + [docs/internals/mq.md](internals/mq.md) | ❌ error |
-| `src/core/pipeline/**` | [docs/internals/parse_task_pipeline.md](internals/parse_task_pipeline.md) | ❌ error |
+| `src/core/pipeline/parse_task/**` | [docs/internals/parse_task_pipeline.md](internals/parse_task_pipeline.md) | ❌ error |
 
 > 仅保留 error 级规则。内部模块文档同步由 PR 评审兜底，不由 hook 强制。
 
