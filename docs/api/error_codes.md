@@ -159,11 +159,10 @@ CODE: 中文业务原因；底层详情
 | `INDEXING` | 正在写入向量索引 |
 | `INDEXED` | 向量索引完成 |
 | `FAILED` | 向量化或索引失败 |
-| `DELETING` | 正在删除 |
-| `DELETED` | 已删除 |
-| `DELETE_FAILED` | 删除失败，等待补偿 |
 
 辅助状态：
 
 - `dense_vector_status`: `PENDING/SUCCESS/FAILED`
+- `sparse_vector_status`: `PENDING/SUCCESS/FAILED`
 - `es_status`: `PENDING/SUCCESS/FAILED`
+- `lifecycle_status`: `ACTIVE/REMOVED`

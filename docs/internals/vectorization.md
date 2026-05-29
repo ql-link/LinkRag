@@ -104,6 +104,7 @@ include_failed: bool = False
 - `user_id` / `set_id` / `doc_id` / `bucket_id`：Qdrant payload 与 collection/bucket 路由。
 - `chunk_index` / `chunk_type` / `start_line` / `end_line`：还原 splitter 兼容 `Chunk`。
 - `dense_vector_status` / `sparse_vector_status`：决定补做哪个分支。
+- `lifecycle_status`：决定 chunk 是否仍为有效真值；只有 `ACTIVE` 记录会进入向量化、ES 入库和召回回表。
 
 `include_failed` 用于区分普通写入与人工重试：默认 `False` 时只补做 dense
 `PENDING` chunk，`FAILED` chunk 仍可由 `VectorStorageCompensationPipeline`
@@ -146,9 +147,9 @@ MySQL 是 Chunk 真值源，Qdrant 是向量索引副本。chunk 表中的稠密
 | 字段 | 含义 |
 | --- | --- |
 | `pipeline_status` | 整体状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
-| `chunking_status` | 分片阶段状态：`PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED` |
-| `vectorizing_status` | 向量化/Qdrant 阶段状态：`PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED` |
-| `es_indexing_status` | Elasticsearch 入库阶段状态：`PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED` |
+| `chunking_status` | 分片阶段状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
+| `vectorizing_status` | 向量化/Qdrant 阶段状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
+| `es_indexing_status` | Elasticsearch 入库阶段状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
 | `failed_stage` | 失败阶段：`CHUNKING/VECTORIZING/ES_INDEXING` |
 | `recover_from_stage` | 重投或补偿时可恢复的阶段 |
 | `chunk_count` | 本次解析生成的 Chunk 数量 |
@@ -292,22 +293,21 @@ result = await facade.delete_chunks(["chunk-id-1", "chunk-id-2"])
 
 行为：
 
-- MySQL 先标记 `DELETING`。
-- 按 `bucket_id` 分组删除 Qdrant points。
-- 成功后标记 `DELETED`。
-- 失败时标记 `DELETE_FAILED`。
+- MySQL 先把 `lifecycle_status` 标记为 `REMOVED`，使 chunk 立即退出解析 / 索引 / 检索视图。
+- 后续删除流程按 `doc_id` / `chunk_id` 幂等清理 Qdrant points、ES 文档与 sparse 向量。
+- 任一步失败时不回写 chunk 生命周期失败态；重试继续扫描 `REMOVED` 记录并重复执行清理。
+- `dense_vector_status` / `sparse_vector_status` / `es_status` 保留原产物状态，不再承载删除生命周期。
 
 ### 4.6 补偿
 
 Facade 暴露补偿入口：
 
 ```python
-await facade.retry_delete_failed(limit=100)
 await facade.repair_stale_indexing(limit=100)
 await facade.reindex_failed_chunks(chunk_ids)
 ```
 
-补偿用于恢复 MySQL 和 Qdrant 的最终一致性。
+补偿用于恢复 MySQL 和 Qdrant 的最终一致性。删除补偿状态机当前未启用；后续删除流程会基于 `REMOVED` chunk 记录做幂等重试。
 
 ### 4.7 稀疏向量召回
 
@@ -427,7 +427,7 @@ ES 阶段只返回文件级 `EsIndexingResult`，不直接维护 `kb_document_ch
 - chunking 阶段负责创建 chunk 真值，向量化阶段不得创建新的 chunk 行。
 - dense 写入采用 `PENDING/FAILED -> SUCCESS/FAILED` 的粗粒度 SQL 状态；运行时处理中间态由文件级阶段和 Qdrant 操作边界表达。
 - sparse 是独立文件级阶段，在 dense、pretokenize、ES 成功后采用 `PENDING/FAILED -> SUCCESS/FAILED` 的粗粒度 SQL 状态。
-- 删除采用 `DELETING -> DELETED`，失败进入 `DELETE_FAILED`。
+- 业务生命周期由 `lifecycle_status` 表达：`ACTIVE -> REMOVED`；产物状态字段只保留 `PENDING/SUCCESS/FAILED`。
 - Qdrant 写入成功但 MySQL 回写失败时，仍以 SQL 状态为准；后续进入 vectorizing 时按原 `chunk_id` 覆盖写索引副本。
 - 解析结果成功通知只在 Markdown、分片、向量化和 ES 入库均成功后发送。
 - 自动补偿不应无限重试所有失败；显式重建由 `reindex_failed_chunks` 控制。
