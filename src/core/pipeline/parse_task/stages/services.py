@@ -1,0 +1,443 @@
+"""StageServices：解析阶段共享的底层操作集合。
+
+把 cleaning/chunking/vectorizing/pretokenize/es/sparse 各阶段需要的纯 IO 与
+计算操作（解析、分片、向量化、预分词、ES 写入、稀疏向量化、chunk 反查等）集中
+于此。:class:`~.base.Stage` 子类只做编排，不直接持有这些重依赖的装配细节；
+重依赖（向量库、ES、预分词、稀疏模型）统一在此懒加载，支持测试注入。
+
+本类**不写 ``document_parse_pipeline`` 阶段状态、不发 MQ 通知**——状态机与
+通知由各 Stage 通过 repository / notifier 处理，保证副作用边界清晰。
+"""
+
+from __future__ import annotations
+
+from dataclasses import replace
+from pathlib import Path
+from typing import Any, Protocol
+
+from loguru import logger
+
+from src.config import settings
+from src.core.chunk_fact_storage.repository import ChunkRepository
+from src.core.es_index_storage import EsIndexingPipeline, EsIndexingResult
+from src.core.markdown_parser import ParseResult
+from src.core.mq.messages.parse_task import ParseTaskPayload
+from src.core.preprocessor.models import FilePostIndexPlan
+from src.core.qdrant_vector_storage import BucketRouter
+from src.core.qdrant_vector_storage.constants import DEFAULT_BUCKET_COUNT, DEFAULT_COLLECTION_PREFIX
+from src.core.splitter import create_chunking_engine
+from src.core.splitter.models import Chunk
+from src.core.vector_storage import compose_vector_storage_facade
+from src.core.vector_storage.draft_factory import ChunkDraftFactory
+from src.core.vector_storage.models import ChunkIndexingResult
+from src.services.parse_task_service import ParseTaskService
+from src.services.storage.base import BaseObjectStorage
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from .._utils import coerce_optional_int
+from ..source import ParseSourceIO
+
+
+class PreprocessorProtocol(Protocol):
+    """解析流水线消费的最小预分词接口。"""
+
+    async def build_file_post_index_plan(
+        self,
+        *,
+        doc_id: int,
+        task_id: str,
+    ) -> FilePostIndexPlan: ...
+
+
+class StageServices:
+    """阶段共享底层操作；重依赖懒加载，支持测试注入。"""
+
+    def __init__(
+        self,
+        *,
+        storage: BaseObjectStorage,
+        source_io: ParseSourceIO,
+        chunk_repository: ChunkRepository,
+        vector_storage: Any | None = None,
+        es_indexing_pipeline: Any | None = None,
+        preprocessor: PreprocessorProtocol | None = None,
+        chunk_draft_factory: ChunkDraftFactory | None = None,
+        sparse_indexing_pipeline: Any | None = None,
+    ) -> None:
+        self._storage = storage
+        self.source_io = source_io
+        self._chunk_repository = chunk_repository
+        self._vector_storage = vector_storage
+        self._es_indexing_pipeline = es_indexing_pipeline
+        self._preprocessor = preprocessor
+        self._chunk_draft_factory = chunk_draft_factory
+        self._sparse_indexing_pipeline = sparse_indexing_pipeline
+
+    # ------------------------------------------------------------------
+    # cleaning
+    # ------------------------------------------------------------------
+
+    async def parse_file(self, source_path: Path | None, payload: ParseTaskPayload) -> dict:
+        """调用解析服务生成 Markdown 与结构化解析结果。
+
+        ``source_path`` 为 ``None`` 仅出现在 MinerU URL 旁路场景；其余路径下必须是
+        已经流式下载完成的本地临时文件路径。
+        """
+        parser_kwargs: dict[str, Any] = {}
+        if payload.file_type.lower() == "pdf":
+            pdf_backend = payload.pdf_parser_backend or "mineru"
+            parser_kwargs = {
+                "backend": pdf_backend,
+                "docling_force_ocr": bool(payload.docling_force_ocr),
+                "image_bucket": payload.image_bucket or payload.md_bucket,
+                "image_prefix": payload.image_prefix or payload.md_object_key,
+                "storage": self._storage,
+            }
+            if pdf_backend.lower() == "mineru":
+                parser_kwargs["source_file_url"] = self.source_io.build_source_file_url(payload)
+
+        return await ParseTaskService.aprocess(
+            source_path,
+            payload.file_type,
+            source_file=payload.source_filename or payload.md_object_key,
+            **parser_kwargs,
+        )
+
+    # ------------------------------------------------------------------
+    # chunking
+    # ------------------------------------------------------------------
+
+    async def run_chunking(
+        self,
+        markdown: str,
+        parse_result: ParseResult | None,
+        payload: ParseTaskPayload,
+        db: AsyncSession,
+    ) -> list[Chunk]:
+        """分片并在单事务内写入 chunk 真值记录。"""
+        import asyncio
+
+        chunks = await asyncio.to_thread(
+            self._chunk_markdown,
+            markdown,
+            payload.md_object_key,
+            parse_result,
+        )
+        await self._persist_chunk_facts(chunks, payload, db)
+        logger.info(
+            f"[StageServices] chunking completed: task_id={payload.task_id}, "
+            f"chunk_count={len(chunks)}"
+        )
+        return chunks
+
+    async def _persist_chunk_facts(
+        self,
+        chunks: list[Chunk],
+        payload: ParseTaskPayload,
+        db: AsyncSession,
+    ) -> None:
+        owner = self.resolve_chunk_owner(payload)
+        if owner is None:
+            raise RuntimeError("chunk owner is missing")
+        user_id, set_id, doc_id = owner
+        drafts = self._get_chunk_draft_factory().build_drafts(
+            user_id=user_id,
+            set_id=set_id,
+            doc_id=doc_id,
+            chunks=chunks,
+        )
+        try:
+            await self._chunk_repository.bulk_insert_pending(db, drafts)
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+
+    @staticmethod
+    def _chunk_markdown(
+        markdown: str,
+        source_file: str | None,
+        parse_result: ParseResult | None = None,
+    ) -> list[Chunk]:
+        processor = create_chunking_engine()
+        if parse_result is None:
+            return processor.process(markdown, source_file=source_file)
+        parse_result_for_chunking = replace(parse_result, source_file=source_file)
+        return processor.process_parse_result(parse_result_for_chunking)
+
+    async def load_all_chunks_from_db(
+        self,
+        payload: ParseTaskPayload,
+        db: AsyncSession,
+    ) -> list[Chunk]:
+        """重试跳过 chunking 时从 DB 反查当前文档完整 chunk truth set。
+
+        反查谓词：仅 ``doc_id``（排除删除态保护集合），按 ``chunk_index`` 排序。
+        返回空列表表示状态不一致（chunking 标 SUCCESS 但无有效 chunk），由
+        ChunkingStage 落 FAILED + 通知。
+        """
+        from sqlalchemy import select
+
+        from src.core.chunk_fact_storage.constants import CHUNK_DELETE_PROTECTED_STATUSES
+        from src.core.qdrant_vector_storage.point_factory import chunk_from_record
+        from src.models.chunk_record import ChunkRecordDB
+
+        doc_id = int(payload.original_file_id)
+        stmt = (
+            select(ChunkRecordDB)
+            .where(ChunkRecordDB.doc_id == doc_id)
+            .where(ChunkRecordDB.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
+            .order_by(ChunkRecordDB.chunk_index.asc())
+        )
+        result = await db.execute(stmt)
+        rows = list(result.scalars().all())
+        return [chunk_from_record(row) for row in rows]
+
+    def resolve_chunk_owner(self, payload: ParseTaskPayload) -> tuple[int, int, int] | None:
+        """解析 chunk 向量索引所需的归属标识（user/set/doc）。"""
+        user_id = coerce_optional_int(payload.user_id)
+        set_id = coerce_optional_int(payload.dataset_id)
+        doc_id = coerce_optional_int(payload.original_file_id)
+        if user_id is None or set_id is None or doc_id is None:
+            return None
+        return user_id, set_id, doc_id
+
+    # ------------------------------------------------------------------
+    # vectorizing (dense)
+    # ------------------------------------------------------------------
+
+    async def store_chunk_vectors(
+        self,
+        chunks: list[Chunk],
+        payload: ParseTaskPayload,
+        db: AsyncSession,
+    ) -> ChunkIndexingResult:
+        """将 chunk 写入向量存储（dense/Qdrant）。"""
+        if not chunks:
+            return ChunkIndexingResult(total_chunks=0, indexed_chunks=0)
+
+        owner = self.resolve_chunk_owner(payload)
+        if owner is None:
+            logger.warning(
+                "[StageServices] skip vector indexing because owner is missing: task_id={}",
+                payload.task_id,
+            )
+            return ChunkIndexingResult(
+                total_chunks=len(chunks),
+                indexed_chunks=0,
+                failed_chunk_ids=self.fallback_chunk_ids(chunks),
+            )
+
+        user_id, set_id, doc_id = owner
+        try:
+            result = await self._get_vector_storage().index_document_chunks(
+                user_id=user_id,
+                set_id=set_id,
+                doc_id=doc_id,
+                include_failed=payload.is_retry,
+            )
+        except Exception as exc:
+            logger.error(
+                "[StageServices] vector indexing failed: task_id={} error={}",
+                payload.task_id,
+                exc,
+            )
+            return ChunkIndexingResult(
+                total_chunks=len(chunks),
+                indexed_chunks=0,
+                failed_chunk_ids=self.fallback_chunk_ids(chunks),
+            )
+
+        if result.failed_chunk_ids:
+            logger.warning(
+                "[StageServices] vector indexing has failed chunks: "
+                "task_id={} total={} indexed={} failed={}",
+                payload.task_id,
+                result.total_chunks,
+                result.indexed_chunks,
+                result.failed_chunk_ids,
+            )
+        else:
+            logger.info(
+                "[StageServices] vector indexing completed: task_id={} indexed={} model={}",
+                payload.task_id,
+                result.indexed_chunks,
+                result.embedding_model,
+            )
+        return result
+
+    @staticmethod
+    def fallback_chunk_ids(chunks: list[Chunk]) -> list[str]:
+        return [f"chunk-{index}" for index, _ in enumerate(chunks)]
+
+    @staticmethod
+    def is_vector_indexing_success(vector_result: ChunkIndexingResult) -> bool:
+        return vector_result.is_success
+
+    @staticmethod
+    def build_vector_failure_reason(vector_result: ChunkIndexingResult) -> str:
+        failed_count = len(vector_result.failed_chunk_ids)
+        reason = (
+            "VECTORIZING_FAILED: 向量化失败；"
+            f"total={vector_result.total_chunks}, indexed={vector_result.indexed_chunks}, "
+            f"failed={failed_count}"
+        )
+        if vector_result.compensation_entry is not None:
+            entry = vector_result.compensation_entry
+            reason = (
+                f"{reason}, chunk_id={entry.chunk_id}, "
+                f"branch={entry.vector_branch.value}, step={entry.failed_step.value}"
+            )
+        return reason
+
+    # ------------------------------------------------------------------
+    # pretokenize
+    # ------------------------------------------------------------------
+
+    async def build_pretokenize_plan(
+        self,
+        payload: ParseTaskPayload,
+        db: AsyncSession,
+    ) -> tuple[FilePostIndexPlan | None, str | None]:
+        """构建内存态 ``FilePostIndexPlan``（不持久化、不写阶段状态）。
+
+        成功返回 ``(plan, None)``；失败返回 ``(None, reason)``。空 plan 但仍有
+        待入库 chunk 视为失败（文件级 all-or-nothing）。
+        """
+        doc_id = int(payload.original_file_id)
+        try:
+            plan = await self._get_preprocessor().build_file_post_index_plan(
+                doc_id=doc_id,
+                task_id=payload.task_id,
+            )
+        except Exception as exc:
+            reason = str(exc)
+            if not reason.startswith("pretokenize:"):
+                reason = f"pretokenize: {reason}"
+            return None, reason
+
+        if len(plan.chunks_with_tokens) == 0:
+            pending = await self._chunk_repository.count_es_not_success_by_doc_id(db, doc_id)
+            if pending > 0:
+                return None, f"pretokenize: empty plan but {pending} chunks pending"
+
+        return plan, None
+
+    # ------------------------------------------------------------------
+    # es_indexing
+    # ------------------------------------------------------------------
+
+    async def run_es_indexing(
+        self,
+        plan: FilePostIndexPlan,
+        db: AsyncSession,
+    ) -> EsIndexingResult:
+        """ES 入库：文档级全量重建（Issue #57）——前置删除 → 全量写入 → 失败清理。"""
+        total = len(plan.chunks_with_tokens)
+        if total == 0:
+            return EsIndexingResult(total_items=0, indexed_items=0)
+
+        es_pipeline = self._get_es_indexing_pipeline()
+        meta = plan.file_meta
+
+        try:
+            await es_pipeline.delete_document_index(
+                user_id=meta.user_id,
+                dataset_id=meta.dataset_id,
+                doc_id=meta.doc_id,
+            )
+        except Exception as exc:
+            logger.error(
+                "[StageServices] ES 前置删除失败，判 ES 阶段失败不写入: doc_id={} error={}",
+                meta.doc_id,
+                exc,
+            )
+            return EsIndexingResult(
+                total_items=total,
+                indexed_items=0,
+                failure_reason=f"es_delete: {exc}",
+            )
+
+        result = await es_pipeline.write_es_index(plan, db=db)
+
+        if not result.is_success:
+            try:
+                await es_pipeline.delete_document_index(
+                    user_id=meta.user_id,
+                    dataset_id=meta.dataset_id,
+                    doc_id=meta.doc_id,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[StageServices] ES 写入失败后清理半成品失败(best-effort): doc_id={} error={}",
+                    meta.doc_id,
+                    exc,
+                )
+
+        return result
+
+    @staticmethod
+    def build_es_failure_reason(es_result: EsIndexingResult) -> str:
+        failed_count = len(es_result.failed_item_ids)
+        return (
+            "ES_INDEXING_FAILED: ES入库失败；"
+            f"total={es_result.total_items}, indexed={es_result.indexed_items}, "
+            f"failed={failed_count}"
+        )
+
+    # ------------------------------------------------------------------
+    # sparse_vectorizing
+    # ------------------------------------------------------------------
+
+    async def run_sparse_vectorizing(
+        self,
+        payload: ParseTaskPayload,
+        db: AsyncSession,
+    ) -> None:
+        """调用 SparseIndexingPipeline.run；失败抛出（由 SparseVectorizingStage 归类）。"""
+        from src.core.sparse_vector.indexing import SparseIndexingPipeline
+
+        sparse_pipeline = self._sparse_indexing_pipeline or SparseIndexingPipeline()
+        await sparse_pipeline.run(
+            doc_id=int(payload.original_file_id),
+            bucket_id=int(payload.dataset_id),
+            task_id=payload.task_id,
+            db=db,
+        )
+
+    # ------------------------------------------------------------------
+    # 懒加载装配
+    # ------------------------------------------------------------------
+
+    def _get_chunk_draft_factory(self) -> ChunkDraftFactory:
+        if self._chunk_draft_factory is None:
+            bucket_router = BucketRouter(
+                bucket_count=getattr(settings, "CHUNK_INDEX_BUCKET_COUNT", DEFAULT_BUCKET_COUNT),
+                prefix=getattr(
+                    settings, "CHUNK_INDEX_COLLECTION_PREFIX", DEFAULT_COLLECTION_PREFIX
+                ),
+            )
+            self._chunk_draft_factory = ChunkDraftFactory(bucket_router=bucket_router)
+        return self._chunk_draft_factory
+
+    def _get_vector_storage(self):
+        if self._vector_storage is None:
+            self._vector_storage = compose_vector_storage_facade()
+        return self._vector_storage
+
+    def _get_es_indexing_pipeline(self):
+        if self._es_indexing_pipeline is None:
+            self._es_indexing_pipeline = EsIndexingPipeline(
+                chunk_repository=self._chunk_repository,
+            )
+        return self._es_indexing_pipeline
+
+    def _get_preprocessor(self) -> PreprocessorProtocol:
+        if self._preprocessor is not None:
+            return self._preprocessor
+        try:
+            from src.core.preprocessor.service import Preprocessor
+        except Exception as exc:
+            raise RuntimeError("preprocessor service is not available") from exc
+        self._preprocessor = Preprocessor()
+        return self._preprocessor

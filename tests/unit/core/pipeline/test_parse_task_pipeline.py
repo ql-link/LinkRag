@@ -10,6 +10,7 @@ from src.core.markdown_parser.models import ParseResult
 from src.core.mq.messages import ParseTaskMessage
 from src.core.pipeline import ParseTaskPipeline, PipelineStatus
 from src.core.pipeline.parse_task.notifier import ParseResultNotificationError
+from src.core.pipeline.parse_task.stages.services import StageServices
 from src.core.pipeline.parse_task.constants import (
     DUPLICATE_FAILED_USER_MESSAGE,
     DUPLICATE_SUCCESS_USER_MESSAGE,
@@ -495,10 +496,10 @@ class TestParseTaskPipeline:
         assert sent_payload.failure_reason.startswith("INVALID_TASK_CONTEXT:")
 
     @patch(
-        "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
+        "src.core.pipeline.parse_task.stages.services.ParseTaskService.aprocess",
         new_callable=AsyncMock,
     )
-    @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown")
+    @patch("src.core.pipeline.parse_task.stages.services.StageServices._chunk_markdown")
     async def test_execute_should_parse_upload_mark_success_notify_chunk_and_store_vectors(
         self,
         mock_chunk_markdown,
@@ -588,10 +589,10 @@ class TestParseTaskPipeline:
         db.close.assert_awaited_once()
 
     @patch(
-        "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
+        "src.core.pipeline.parse_task.stages.services.ParseTaskService.aprocess",
         new_callable=AsyncMock,
     )
-    @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown")
+    @patch("src.core.pipeline.parse_task.stages.services.StageServices._chunk_markdown")
     async def test_execute_should_skip_source_download_for_mineru_url_api(
         self,
         mock_chunk_markdown,
@@ -643,7 +644,7 @@ class TestParseTaskPipeline:
         )
 
     @patch(
-        "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
+        "src.core.pipeline.parse_task.stages.services.ParseTaskService.aprocess",
         new_callable=AsyncMock,
     )
     async def test_execute_should_mark_failed_and_notify_when_parse_fails(self, mock_aprocess):
@@ -678,10 +679,10 @@ class TestParseTaskPipeline:
         assert sent_payload.failure_reason.endswith("parse failed")
 
     @patch(
-        "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
+        "src.core.pipeline.parse_task.stages.services.ParseTaskService.aprocess",
         new_callable=AsyncMock,
     )
-    @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown")
+    @patch("src.core.pipeline.parse_task.stages.services.StageServices._chunk_markdown")
     async def test_execute_should_mark_success_failed_when_result_send_fails(
         self,
         mock_chunk_markdown,
@@ -725,7 +726,7 @@ class TestParseTaskPipeline:
         assert post_repo.pipeline.cleaning_status == STAGE_STATUS_SUCCESS
 
     @patch(
-        "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
+        "src.core.pipeline.parse_task.stages.services.ParseTaskService.aprocess",
         new_callable=AsyncMock,
     )
     async def test_execute_should_keep_parse_failure_reason_when_failed_notify_fails(
@@ -757,10 +758,10 @@ class TestParseTaskPipeline:
         assert post_repo.pipeline.failure_reason.endswith("parse failed")
 
     @patch(
-        "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
+        "src.core.pipeline.parse_task.stages.services.ParseTaskService.aprocess",
         new_callable=AsyncMock,
     )
-    @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown")
+    @patch("src.core.pipeline.parse_task.stages.services.StageServices._chunk_markdown")
     async def test_execute_should_mark_failed_and_notify_when_chunking_fails(
         self,
         mock_chunk_markdown,
@@ -803,10 +804,10 @@ class TestParseTaskPipeline:
         assert sent_payload.failure_reason.startswith("PARSE_ENGINE_FAILED:")
 
     @patch(
-        "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
+        "src.core.pipeline.parse_task.stages.services.ParseTaskService.aprocess",
         new_callable=AsyncMock,
     )
-    @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown")
+    @patch("src.core.pipeline.parse_task.stages.services.StageServices._chunk_markdown")
     async def test_execute_should_return_success_with_vector_status_when_vector_indexing_partially_fails(
         self,
         mock_chunk_markdown,
@@ -859,10 +860,10 @@ class TestParseTaskPipeline:
         assert sent_payload.task_status == PARSE_TASK_STATUS_FAILED
 
     @patch(
-        "src.core.pipeline.parse_task.pipeline.ParseTaskService.aprocess",
+        "src.core.pipeline.parse_task.stages.services.ParseTaskService.aprocess",
         new_callable=AsyncMock,
     )
-    @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown")
+    @patch("src.core.pipeline.parse_task.stages.services.StageServices._chunk_markdown")
     async def test_execute_should_mark_pipeline_failed_when_es_indexing_fails(
         self,
         mock_chunk_markdown,
@@ -916,7 +917,7 @@ class TestParseTaskPipeline:
         assert sent_payload.task_status == PARSE_TASK_STATUS_FAILED
         assert sent_payload.failure_reason == "es down"
 
-    @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown")
+    @patch("src.core.pipeline.parse_task.stages.services.StageServices._chunk_markdown")
     async def test_run_chunking_should_return_full_chunk_list_without_storing_vectors(
         self,
         mock_chunk_markdown,
@@ -939,7 +940,7 @@ class TestParseTaskPipeline:
         )
         payload = build_payload()
 
-        result = await pipeline._run_chunking("markdown", None, payload, db)
+        result = await pipeline._services.run_chunking("markdown", None, payload, db)
 
         assert result == chunks
         vector_storage.index_document_chunks.assert_not_awaited()
@@ -963,7 +964,7 @@ class TestParseTaskPipeline:
         )
         payload = build_payload()
 
-        result = await pipeline._store_chunk_vectors(chunks, payload, db)
+        result = await pipeline._services.store_chunk_vectors(chunks, payload, db)
 
         assert result.total_chunks == 2
         assert result.indexed_chunks == 1
@@ -989,13 +990,13 @@ class TestParseTaskPipeline:
             vector_storage=vector_storage,
         )
 
-        result = await pipeline._store_chunk_vectors(chunks, build_payload(), db)
+        result = await pipeline._services.store_chunk_vectors(chunks, build_payload(), db)
 
         assert result.total_chunks == 2
         assert result.indexed_chunks == 0
         assert result.failed_chunk_ids == ["chunk-0", "chunk-1"]
 
-    @patch("src.core.pipeline.parse_task.pipeline.create_chunking_engine")
+    @patch("src.core.pipeline.parse_task.stages.services.create_chunking_engine")
     def test_chunk_markdown_should_use_process_parse_result_when_available(
         self,
         mock_create_chunking_engine,
@@ -1005,7 +1006,7 @@ class TestParseTaskPipeline:
         processor.process_parse_result.return_value = [MagicMock(), MagicMock(), MagicMock()]
         mock_create_chunking_engine.return_value = processor
 
-        chunks = ParseTaskPipeline._chunk_markdown(
+        chunks = StageServices._chunk_markdown(
             "enhanced markdown",
             "parsed/t-001.md",
             parse_result,
@@ -1016,7 +1017,7 @@ class TestParseTaskPipeline:
         forwarded_parse_result = processor.process_parse_result.call_args.args[0]
         assert forwarded_parse_result.source_file == "parsed/t-001.md"
 
-    @patch("src.core.pipeline.parse_task.pipeline.create_chunking_engine")
+    @patch("src.core.pipeline.parse_task.stages.services.create_chunking_engine")
     def test_chunk_markdown_should_use_process_when_parse_result_is_absent(
         self,
         mock_create_chunking_engine,
@@ -1025,7 +1026,7 @@ class TestParseTaskPipeline:
         processor.process.return_value = [MagicMock()]
         mock_create_chunking_engine.return_value = processor
 
-        chunks = ParseTaskPipeline._chunk_markdown("enhanced markdown", "parsed/t-001.md")
+        chunks = StageServices._chunk_markdown("enhanced markdown", "parsed/t-001.md")
 
         assert len(chunks) == 1
         processor.process.assert_called_once_with(

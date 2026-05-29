@@ -1,10 +1,17 @@
-from datetime import datetime, timezone
-from types import SimpleNamespace
+"""StageServices 的 pretokenize / ES 底层操作单测。
+
+重构后（LINK-37）：预分词与 ES 入库的底层逻辑落在
+:class:`~src.core.pipeline.parse_task.stages.services.StageServices`，
+不再写阶段状态、不发通知——状态机与通知由对应 Stage 承担（见
+``tests/unit/core/pipeline/stages/test_stages.py``）。
+"""
+
 from unittest.mock import AsyncMock, MagicMock
 
 from src.core.es_index_storage import EsIndexingResult
 from src.core.mq.messages import ParseTaskMessage
-from src.core.pipeline import ParseTaskPipeline
+from src.core.pipeline.parse_task.source import ParseSourceIO
+from src.core.pipeline.parse_task.stages.services import StageServices
 from src.core.preprocessor.models import ChunkWithTokens, FileIndexMeta, FilePostIndexPlan
 
 
@@ -45,125 +52,87 @@ def build_preprocessor(*, plan: FilePostIndexPlan | None = None, error: Exceptio
 def build_es_pipeline(result: EsIndexingResult, *, deleted: int = 0):
     es_pipeline = MagicMock()
     es_pipeline.write_es_index = AsyncMock(return_value=result)
-    # ES 文档级全量重建：_run_es_indexing 前置删除 + 失败清理都会调用 delete_document_index。
+    # ES 文档级全量重建：run_es_indexing 前置删除 + 失败清理都会调用 delete_document_index。
     es_pipeline.delete_document_index = AsyncMock(return_value=deleted)
     return es_pipeline
 
 
-def build_pipeline(*, preprocessor=None, es_pipeline=None, chunk_repository=None, post_repo=None):
-    pipeline = ParseTaskPipeline(
-        storage=MagicMock(),
-        session_factory=MagicMock(),
-        mq_service=MagicMock(),
-        pipeline_repository=post_repo or AsyncMock(),
+def build_services(*, preprocessor=None, es_pipeline=None, chunk_repository=None) -> StageServices:
+    storage = MagicMock()
+    return StageServices(
+        storage=storage,
+        source_io=ParseSourceIO(storage),
+        chunk_repository=chunk_repository or AsyncMock(),
         es_indexing_pipeline=es_pipeline,
         preprocessor=preprocessor,
-        chunk_repository=chunk_repository,
     )
-    # 通知器替身：send_or_raise 可 await，便于断言失败通知。
-    pipeline._notifier = AsyncMock()
-    return pipeline
 
 
-_NOW = datetime.now(timezone.utc)
+class TestBuildPretokenizePlan:
+    """预分词内存 plan 构建：文件级 all-or-nothing；不写状态、不发通知。"""
 
-
-class TestRunPretokenize:
-    """预分词独立阶段：文件级 all-or-nothing，失败不污染 chunk。"""
-
-    async def test_should_return_plan_and_mark_success_on_non_empty_plan(self):
-        post_repo = AsyncMock()
-        chunk_repository = AsyncMock()
+    async def test_should_return_plan_on_non_empty_plan(self):
         plan = build_plan()
-        pipeline = build_pipeline(
-            preprocessor=build_preprocessor(plan=plan),
-            chunk_repository=chunk_repository,
-            post_repo=post_repo,
-        )
+        services = build_services(preprocessor=build_preprocessor(plan=plan))
 
-        result_plan, failure = await pipeline._run_pretokenize(
-            build_payload(), SimpleNamespace(), AsyncMock(), _NOW
-        )
+        result_plan, failure = await services.build_pretokenize_plan(build_payload(), AsyncMock())
 
         assert result_plan is plan
         assert failure is None
-        post_repo.mark_pretokenize_success.assert_awaited_once()
-        chunk_repository.mark_es_failed.assert_not_called()
 
-    async def test_should_return_failure_reason_without_touching_chunk_on_tokenize_error(self):
-        post_repo = AsyncMock()
+    async def test_should_return_failure_reason_on_tokenize_error(self):
         chunk_repository = AsyncMock()
-        pipeline = build_pipeline(
+        services = build_services(
             preprocessor=build_preprocessor(error=RuntimeError("tokenizer down")),
             chunk_repository=chunk_repository,
-            post_repo=post_repo,
         )
 
-        result_plan, failure = await pipeline._run_pretokenize(
-            build_payload(), SimpleNamespace(), AsyncMock(), _NOW
-        )
+        result_plan, failure = await services.build_pretokenize_plan(build_payload(), AsyncMock())
 
         assert result_plan is None
         assert failure.startswith("pretokenize:")
-        # 写库与通知由 _run 统一处理，_run_pretokenize 不直接调用。
-        post_repo.mark_pretokenize_failed.assert_not_awaited()
-        pipeline._notifier.send_or_raise.assert_not_awaited()
         chunk_repository.mark_es_failed.assert_not_called()
 
     async def test_should_treat_empty_plan_as_success_when_no_pending_chunks(self):
-        post_repo = AsyncMock()
         chunk_repository = AsyncMock()
         chunk_repository.count_es_not_success_by_doc_id.return_value = 0
-        pipeline = build_pipeline(
+        services = build_services(
             preprocessor=build_preprocessor(plan=build_plan(chunks=[])),
             chunk_repository=chunk_repository,
-            post_repo=post_repo,
         )
 
-        result_plan, failure = await pipeline._run_pretokenize(
-            build_payload(), SimpleNamespace(), AsyncMock(), _NOW
-        )
+        result_plan, failure = await services.build_pretokenize_plan(build_payload(), AsyncMock())
 
         assert failure is None
         assert result_plan is not None
         assert result_plan.chunks_with_tokens == []
-        post_repo.mark_pretokenize_success.assert_awaited_once()
 
     async def test_should_fail_when_empty_plan_but_chunks_still_pending(self):
-        post_repo = AsyncMock()
         chunk_repository = AsyncMock()
         chunk_repository.count_es_not_success_by_doc_id.return_value = 2
-        pipeline = build_pipeline(
+        services = build_services(
             preprocessor=build_preprocessor(plan=build_plan(chunks=[])),
             chunk_repository=chunk_repository,
-            post_repo=post_repo,
         )
 
-        result_plan, failure = await pipeline._run_pretokenize(
-            build_payload(), SimpleNamespace(), AsyncMock(), _NOW
-        )
+        result_plan, failure = await services.build_pretokenize_plan(build_payload(), AsyncMock())
 
         assert result_plan is None
         assert failure.startswith("pretokenize:")
         assert "2 chunks pending" in failure
-        # 写库与通知由 _run 统一处理。
-        post_repo.mark_pretokenize_failed.assert_not_awaited()
-        pipeline._notifier.send_or_raise.assert_not_awaited()
-        chunk_repository.mark_es_failed.assert_not_called()
 
 
 class TestRunEsIndexing:
     """ES 入库文档级全量重建：前置删除 → 全量写入 → 失败清理（Issue #57）。"""
 
     async def test_should_delete_then_write_on_success(self):
-        # 首次执行/重试成功路径：先删（命中 0=幂等空操作）再全量写入。
         es_result = EsIndexingResult(total_items=1, indexed_items=1, succeeded_item_ids=["c-0"])
         es_pipeline = build_es_pipeline(es_result)
-        pipeline = build_pipeline(es_pipeline=es_pipeline)
+        services = build_services(es_pipeline=es_pipeline)
         plan = build_plan()
         db = AsyncMock()
 
-        result = await pipeline._run_es_indexing(plan, db)
+        result = await services.run_es_indexing(plan, db)
 
         assert result is es_result
         es_pipeline.delete_document_index.assert_awaited_once_with(
@@ -172,48 +141,43 @@ class TestRunEsIndexing:
             doc_id=plan.file_meta.doc_id,
         )
         es_pipeline.write_es_index.assert_awaited_once_with(plan, db=db)
-        # 成功路径不触发失败清理：delete 只被调用一次（前置删除）。
         assert es_pipeline.delete_document_index.await_count == 1
 
     async def test_should_fail_without_writing_when_predelete_fails(self):
-        # 前置删除失败（ES 不可达）：直接判 ES 失败，不写入。
         es_result = EsIndexingResult(total_items=1, indexed_items=1)
         es_pipeline = build_es_pipeline(es_result)
         es_pipeline.delete_document_index = AsyncMock(side_effect=RuntimeError("es down"))
-        pipeline = build_pipeline(es_pipeline=es_pipeline)
-        plan = build_plan()
+        services = build_services(es_pipeline=es_pipeline)
         db = AsyncMock()
 
-        result = await pipeline._run_es_indexing(plan, db)
+        result = await services.run_es_indexing(build_plan(), db)
 
         assert not result.is_success
         assert result.failure_reason.startswith("es_delete:")
         es_pipeline.write_es_index.assert_not_awaited()
 
     async def test_should_cleanup_when_write_fails(self):
-        # 写入部分失败：失败清理删除半成品（delete 共两次：前置 + 清理）。
         es_result = EsIndexingResult(
-            total_items=2, indexed_items=1, failed_item_ids=["c-1"],
+            total_items=2,
+            indexed_items=1,
+            failed_item_ids=["c-1"],
             failure_reason="ES_INDEXING_FAILED: boom",
         )
         es_pipeline = build_es_pipeline(es_result)
-        pipeline = build_pipeline(es_pipeline=es_pipeline)
-        plan = build_plan()
+        services = build_services(es_pipeline=es_pipeline)
         db = AsyncMock()
 
-        result = await pipeline._run_es_indexing(plan, db)
+        result = await services.run_es_indexing(build_plan(), db)
 
         assert result is es_result
         assert es_pipeline.delete_document_index.await_count == 2
 
     async def test_should_skip_delete_on_empty_plan(self):
-        # 空 plan：不触发删除，直接返回空结果。
         es_pipeline = build_es_pipeline(EsIndexingResult(total_items=0, indexed_items=0))
-        pipeline = build_pipeline(es_pipeline=es_pipeline)
-        plan = build_plan(chunks=[])
+        services = build_services(es_pipeline=es_pipeline)
         db = AsyncMock()
 
-        result = await pipeline._run_es_indexing(plan, db)
+        result = await services.run_es_indexing(build_plan(chunks=[]), db)
 
         assert result.total_items == 0
         es_pipeline.delete_document_index.assert_not_awaited()
@@ -221,30 +185,24 @@ class TestRunEsIndexing:
 
 
 class TestBuildEsFailureReason:
-    """ES 失败原因构建：优先使用 result 自带的 failure_reason，否则降级到汇总。"""
+    """ES 失败原因：优先使用 result 自带的 failure_reason，否则降级到汇总。"""
 
     def test_should_use_result_failure_reason_when_present(self):
-        pipeline = build_pipeline()
         es_result = EsIndexingResult(
             total_items=2,
             indexed_items=1,
             failed_item_ids=["c-1"],
             failure_reason="ES_INDEXING_FAILED: boom",
         )
-
-        reason = es_result.failure_reason or pipeline._build_es_failure_reason(es_result)
-
+        reason = es_result.failure_reason or StageServices.build_es_failure_reason(es_result)
         assert reason == "ES_INDEXING_FAILED: boom"
 
     def test_should_preserve_ensure_index_prefix(self):
-        pipeline = build_pipeline()
         es_result = EsIndexingResult(
             total_items=1,
             indexed_items=0,
             failed_item_ids=[],
             failure_reason="ensure_index: ES unreachable",
         )
-
-        reason = es_result.failure_reason or pipeline._build_es_failure_reason(es_result)
-
+        reason = es_result.failure_reason or StageServices.build_es_failure_reason(es_result)
         assert reason == "ensure_index: ES unreachable"
