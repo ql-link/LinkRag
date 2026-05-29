@@ -34,7 +34,7 @@ async def test_single_source_hit_preserved():
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[])
     pipeline = RecallPipeline([dense, sparse, bm25])
 
-    response = await pipeline.execute(RecallRequest(query="q", dataset_ids=[10]))
+    response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
     assert len(response.hits) == 1
     cx = response.hits[0]
     assert cx.chunk_id == "cX"
@@ -57,7 +57,7 @@ async def test_per_source_scores_preserved():
     ])
     pipeline = RecallPipeline([dense, sparse, bm25])
 
-    response = await pipeline.execute(RecallRequest(query="q", dataset_ids=[10]))
+    response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
     by_id = {h.chunk_id: h for h in response.hits}
 
     assert by_id["cA"].scores == {
@@ -79,7 +79,7 @@ async def test_hit_metadata_no_content():
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[])
     pipeline = RecallPipeline([dense, sparse, bm25])
 
-    response = await pipeline.execute(RecallRequest(query="q", dataset_ids=[10]))
+    response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
     hit = response.hits[0]
 
     expected_fields = {"chunk_id", "doc_id", "dataset_id", "fused_score", "scores"}

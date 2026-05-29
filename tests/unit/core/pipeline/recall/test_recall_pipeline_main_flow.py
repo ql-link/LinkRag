@@ -40,7 +40,7 @@ async def test_parallel_all_success():
     pipeline = RecallPipeline([dense, sparse, bm25])
 
     response = await pipeline.execute(
-        RecallRequest(query="如何重试", dataset_ids=[10])
+        RecallRequest(user_id=1, query="如何重试", dataset_ids=[10])
     )
 
     # 三路均收到统一入参
@@ -80,7 +80,7 @@ async def test_serial_fixed_order():
         config=RecallPipelineConfig(parallel=False),
     )
 
-    await pipeline.execute(RecallRequest(query="q", dataset_ids=[10]))
+    await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
 
     assert recorder == [SOURCE_DENSE, SOURCE_SPARSE, SOURCE_BM25]
     # 串行下，sparse 的调用时刻必须晚于 dense 完成
@@ -107,7 +107,7 @@ async def test_rrf_sum_across_sources():
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[])
     pipeline = RecallPipeline([dense, sparse, bm25])
 
-    response = await pipeline.execute(RecallRequest(query="q", dataset_ids=[10]))
+    response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
     by_id = {h.chunk_id: h for h in response.hits}
 
     assert by_id["cA"].fused_score == pytest.approx(2 / 61)

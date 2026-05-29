@@ -5,8 +5,9 @@
         ↓
     底层 ``EsBm25Retriever.recall_topk_chunks(Bm25RecallRequest)``
 
-不重新实现任何检索 / 分词 / 打分逻辑。底层服务需要的 ``user_id`` 和
-``tokenizer`` 在装配期一次性注入，召回时复用。
+不重新实现任何检索 / 分词 / 打分逻辑。``tokenizer`` 在装配期一次性注入；
+``user_id`` 与 ``top_k`` 改为**执行期**由 pipeline 透传（来自 ``RecallRequest``），
+使适配器与 pipeline 可单例复用。
 """
 
 from __future__ import annotations
@@ -46,34 +47,33 @@ class Bm25Retriever:
         self,
         es_retriever: EsBm25Retriever,
         tokenizer: _QueryTokenizer,
-        *,
-        user_id: int,
-        top_k: int,
     ) -> None:
-        if user_id is None or user_id <= 0:
-            raise ValueError(f"user_id must be a positive int, got {user_id!r}")
-        if top_k is None or top_k <= 0:
-            raise ValueError(f"top_k must be a positive int, got {top_k!r}")
         self._es_retriever = es_retriever
         self._tokenizer = tokenizer
-        self._user_id = user_id
-        self._top_k = top_k
 
     async def recall(
         self,
         query: str,
         dataset_ids: list[int],
         doc_ids: list[int] | None = None,
+        *,
+        user_id: int,
+        top_k: int,
     ) -> list[RetrieverHit]:
         """按 BM25 召回一组候选 chunk。
 
-        策略：
+        ``user_id`` / ``top_k`` 由 pipeline 执行期透传。策略：
         - ``dataset_ids`` 为空 → 直接返空。BM25 路依赖 dataset routing，
           没有数据集范围时不下发 ES（pipeline 协议允许"全库"，但本路放弃）。
         - 多个 ``dataset_ids`` → 按 dataset 逐次下发，每次取 ``top_k``；
           合并后按 ES 原始分降序，截断到 ``top_k``。
         - ``doc_ids`` 有多个 → 与 dataset 做笛卡儿积下发；无则按 dataset 下发。
         """
+
+        if user_id is None or user_id <= 0:
+            raise ValueError(f"user_id must be a positive int, got {user_id!r}")
+        if top_k is None or top_k <= 0:
+            raise ValueError(f"top_k must be a positive int, got {top_k!r}")
 
         if not dataset_ids:
             return []
@@ -87,10 +87,10 @@ class Bm25Retriever:
         for dataset_id in dataset_ids:
             for doc_id in doc_iter:
                 request = Bm25RecallRequest(
-                    user_id=self._user_id,
+                    user_id=user_id,
                     dataset_id=dataset_id,
                     tokens=tokens,
-                    top_k=self._top_k,
+                    top_k=top_k,
                     doc_id=doc_id,
                 )
                 hits = await self._es_retriever.recall_topk_chunks(request)
@@ -106,7 +106,7 @@ class Bm25Retriever:
                     )
 
         accumulated.sort(key=lambda h: h.score, reverse=True)
-        return accumulated[: self._top_k]
+        return accumulated[:top_k]
 
     def _tokenize(self, query: str) -> list[str]:
         tokenized = self._tokenizer.tokenize(query)

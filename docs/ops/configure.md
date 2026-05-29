@@ -135,6 +135,23 @@
 
 不再提供 `SPARSE_VECTOR_USE_FP16` 配置。推理精度只由 `SPARSE_VECTOR_DEVICE` 决定：CPU 使用 fp32，CUDA 使用 fp16。
 
+## 内部召回 API 配置
+
+内部多路召回 SSE 接口 `POST /api/v1/internal/recall/stream` 的配置。详见
+[docs/internals/recall_http_api.md](../internals/recall_http_api.md)。
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `RECALL_INTERNAL_AUTH_ENABLED` | `true` | 是否启用内部 JWT 校验；**生产必须为 true** |
+| `RECALL_INTERNAL_JWT_ISSUER` | `tolink-java` | 期望的 JWT `iss` |
+| `RECALL_INTERNAL_JWT_AUDIENCE` | `tolink-rag` | 期望的 JWT `aud` |
+| `RECALL_INTERNAL_JWT_SCOPE` | `recall:execute` | 期望的 JWT `scope` |
+| `RECALL_INTERNAL_JWT_SECRET` | 本地联调占位值 | HS256 共享密钥；Java 签发端与 Python 验签端必须一致，**生产务必用环境变量覆盖为强随机值** |
+| `RECALL_STREAM_TIMEOUT_MS` | `60000` | 单次召回最大执行时间（毫秒）；超时以 SSE `error` RECALL_TIMEOUT 终止 |
+| `RECALL_STRICT_DEFAULT` | `false` | pipeline 严格模式默认；false=宽松，允许单路失败降级 |
+| `RECALL_RESULT_LIMIT` | `20` | 服务端固定返回候选上限（同时作为各路执行期 `top_k`）|
+| `RECALL_ENABLED_SOURCES` | `bm25,sparse` | 启用的召回路（逗号分隔）；未实现的 source（如 dense）不应出现，否则装配期报错 |
+
 ## 配置加载与覆盖
 
 - `.env` 由 [src/config.py](../../src/config.py) 通过 `Settings`（pydantic-settings）加载。

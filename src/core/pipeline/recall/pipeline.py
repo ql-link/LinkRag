@@ -75,6 +75,8 @@ class RecallPipeline:
             all_sources=self._sources,
             k=self._config.rrf_k,
         )
+        # 服务端固定返回候选上限：融合后按 top_k 截断（fuse 已按 fused_score 降序）。
+        fused_hits = fused_hits[: request.top_k]
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
         return self._build_response(
             query=request.query,
@@ -85,9 +87,17 @@ class RecallPipeline:
         )
 
     def _validate(self, request: RecallRequest) -> None:
-        """入参校验：query 非空非空白。dataset_ids 允许空（=全库召回）。"""
+        """入参校验：query 非空非空白；user_id 为正；top_k 为正。
+
+        dataset_ids 允许空（=全库召回）。HTTP 入口已在握手前做同等校验，这里是
+        pipeline 自身的安全网，保证任何调用方都不能绕过。
+        """
         if not isinstance(request.query, str) or not request.query.strip():
             raise RecallValidationError("query is empty or blank")
+        if request.user_id is None or request.user_id <= 0:
+            raise RecallValidationError("user_id must be a positive int")
+        if request.top_k is None or request.top_k <= 0:
+            raise RecallValidationError("top_k must be a positive int")
 
     async def _run_parallel(
         self,
@@ -95,7 +105,13 @@ class RecallPipeline:
     ) -> dict[str, list[RetrieverHit] | BaseException]:
         """并行触发：``asyncio.gather(return_exceptions=True)`` 收异常成对象返回。"""
         tasks = [
-            r.recall(request.query, request.dataset_ids, request.doc_ids)
+            r.recall(
+                request.query,
+                request.dataset_ids,
+                request.doc_ids,
+                user_id=request.user_id,
+                top_k=request.top_k,
+            )
             for r in self._retrievers
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -113,7 +129,11 @@ class RecallPipeline:
         for retriever in self._retrievers:
             try:
                 hits = await retriever.recall(
-                    request.query, request.dataset_ids, request.doc_ids
+                    request.query,
+                    request.dataset_ids,
+                    request.doc_ids,
+                    user_id=request.user_id,
+                    top_k=request.top_k,
                 )
                 results[retriever.source] = hits
             except Exception as exc:

@@ -28,6 +28,8 @@ class Retriever(Protocol):
     - 合法但无命中应返回 ``[]``，不要抛异常。
     - 不可恢复的查询失败（模型不可达、ES 超时等）应抛任意 Exception，由 pipeline
       按严格 / 宽松策略处理。
+    - ``user_id`` 与 ``top_k`` 在**执行期**由 pipeline 透传（来自 ``RecallRequest``），
+      retriever 不在装配期持有它们——这样 pipeline 与 retriever 可单例复用。
     """
 
     source: str
@@ -37,5 +39,8 @@ class Retriever(Protocol):
         query: str,
         dataset_ids: list[int],
         doc_ids: list[int] | None = None,
+        *,
+        user_id: int,
+        top_k: int,
     ) -> list[RetrieverHit]:
         ...

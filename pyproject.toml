@@ -56,6 +56,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "loguru>=0.7.0",
     "cryptography>=42.0.0",
+    "PyJWT>=2.8.0",
     "aiokafka>=0.11.0",
     "confluent-kafka>=2.6.0",
     "aio-pika>=9.4.0",
