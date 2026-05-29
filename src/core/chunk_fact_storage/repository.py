@@ -10,11 +10,8 @@ from src.models.chunk_record import ChunkRecordDB
 
 from .constants import (
     CHUNK_DELETE_ALLOWED_STATUSES,
-    CHUNK_DELETE_PROTECTED_STATUSES,
-    CHUNK_DELETE_RETRY_STATUSES,
-    CHUNK_STATUS_DELETED,
-    CHUNK_STATUS_DELETE_FAILED,
-    CHUNK_STATUS_DELETING,
+    CHUNK_LIFECYCLE_ACTIVE,
+    CHUNK_LIFECYCLE_REMOVED,
     CHUNK_STATUS_FAILED,
     CHUNK_STATUS_INDEXED,
     CHUNK_STATUS_INDEXING,
@@ -34,6 +31,9 @@ from .models import FactChunkDraft
 class ChunkRepository:
     def __init__(self, model_cls: type[ChunkRecordDB] = ChunkRecordDB) -> None:
         self.model_cls = model_cls
+
+    def _active_predicate(self):
+        return self.model_cls.lifecycle_status == CHUNK_LIFECYCLE_ACTIVE
 
     async def bulk_insert_pending(
         self,
@@ -60,6 +60,7 @@ class ChunkRepository:
                     dense_vector_status=draft.dense_vector_status,
                     sparse_vector_status=SPARSE_VECTOR_STATUS_PENDING,
                     es_status=ES_STATUS_PENDING,
+                    lifecycle_status=CHUNK_LIFECYCLE_ACTIVE,
                 )
                 for draft in drafts
             ]
@@ -102,6 +103,7 @@ class ChunkRepository:
             select(self.model_cls)
             .where(self.model_cls.chunk_id.in_(chunk_ids))
             .where(self.model_cls.dense_vector_status.in_(allowed_statuses))
+            .where(self._active_predicate())
         )
         result = await db.execute(stmt)
         records = result.scalars().all()
@@ -245,7 +247,7 @@ class ChunkRepository:
         db: AsyncSession,
         doc_id: int,
     ) -> int:
-        """统计指定 doc_id 下未被删除态保护的 chunk 总数。
+        """统计指定 doc_id 下的有效 chunk 总数。
 
         服务于 SparseIndexingPipeline 的健康性校验：若总数为 0 视为状态严重
         不一致（chunking 应已落库），由上层文件级 all-or-nothing 兜底。
@@ -255,7 +257,7 @@ class ChunkRepository:
             select(func.count())
             .select_from(self.model_cls)
             .where(self.model_cls.doc_id == doc_id)
-            .where(self.model_cls.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
+            .where(self._active_predicate())
         )
         result = await db.execute(stmt)
         return int(result.scalar() or 0)
@@ -270,7 +272,7 @@ class ChunkRepository:
             .select_from(self.model_cls)
             .where(self.model_cls.doc_id == doc_id)
             .where(self.model_cls.sparse_vector_status != SPARSE_VECTOR_STATUS_INDEXED)
-            .where(self.model_cls.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
+            .where(self._active_predicate())
         )
         result = await db.execute(stmt)
         return int(result.scalar() or 0)
@@ -285,7 +287,7 @@ class ChunkRepository:
             select(self.model_cls)
             .where(self.model_cls.doc_id == doc_id)
             .where(self.model_cls.sparse_vector_status.in_(statuses))
-            .where(self.model_cls.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
+            .where(self._active_predicate())
             .order_by(self.model_cls.chunk_index.asc())
         )
         result = await db.execute(stmt)
@@ -313,7 +315,7 @@ class ChunkRepository:
             select(self.model_cls)
             .where(self.model_cls.doc_id == doc_id)
             .where(predicate)
-            .where(self.model_cls.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
+            .where(self._active_predicate())
             .order_by(self.model_cls.chunk_index.asc())
         )
         result = await db.execute(stmt)
@@ -331,7 +333,7 @@ class ChunkRepository:
             return 0
 
         stmt = update(self.model_cls).where(self.model_cls.chunk_id.in_(chunk_ids))
-        stmt = stmt.where(self.model_cls.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
+        stmt = stmt.where(self._active_predicate())
         if expected_status is not None:
             stmt = stmt.where(self.model_cls.sparse_vector_status == expected_status)
         result = await db.execute(stmt.values(**values))
@@ -352,27 +354,31 @@ class ChunkRepository:
         stmt = update(self.model_cls).where(self.model_cls.chunk_id.in_(chunk_ids))
         if expected_status is not None:
             stmt = stmt.where(self.model_cls.dense_vector_status == expected_status)
-        elif protect_delete_statuses:
-            stmt = stmt.where(self.model_cls.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
+        if protect_delete_statuses:
+            stmt = stmt.where(self._active_predicate())
 
         result = await db.execute(stmt.values(**values))
         return int(result.rowcount or 0)
 
-    async def mark_deleted(
+    async def mark_removed(
         self,
         db: AsyncSession,
         chunk_ids: Sequence[str],
         *,
+        expected_lifecycle_status: str | None = None,
         expected_status: str | None = None,
     ) -> int:
-        return await self._execute_status_update(
-            db,
-            chunk_ids,
-            values={
-                "dense_vector_status": CHUNK_STATUS_DELETED,
-            },
-            expected_status=expected_status,
-        )
+        if not chunk_ids:
+            return 0
+
+        expected_lifecycle_status = expected_lifecycle_status or expected_status
+        stmt = update(self.model_cls).where(self.model_cls.chunk_id.in_(chunk_ids))
+        if expected_lifecycle_status is not None:
+            stmt = stmt.where(self.model_cls.lifecycle_status == expected_lifecycle_status)
+        else:
+            stmt = stmt.where(self._active_predicate())
+        result = await db.execute(stmt.values(lifecycle_status=CHUNK_LIFECYCLE_REMOVED))
+        return int(result.rowcount or 0)
 
     async def mark_es_success(
         self,
@@ -438,7 +444,7 @@ class ChunkRepository:
             .select_from(self.model_cls)
             .where(self.model_cls.doc_id == doc_id)
             .where(self.model_cls.es_status != ES_STATUS_SUCCESS)
-            .where(self.model_cls.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
+            .where(self._active_predicate())
         )
         result = await db.execute(stmt)
         return int(result.scalar() or 0)
@@ -454,7 +460,7 @@ class ChunkRepository:
             select(self.model_cls.chunk_id)
             .where(self.model_cls.doc_id == doc_id)
             .where(self.model_cls.es_status.in_((ES_STATUS_PENDING, ES_STATUS_FAILED)))
-            .where(self.model_cls.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
+            .where(self._active_predicate())
             .order_by(self.model_cls.chunk_index.asc())
         )
         result = await db.execute(stmt)
@@ -476,6 +482,7 @@ class ChunkRepository:
             update(self.model_cls)
             .where(self.model_cls.chunk_id == chunk_id)
             .where(self.model_cls.dense_vector_status.in_(CHUNK_UPDATE_ALLOWED_STATUSES))
+            .where(self._active_predicate())
             .values(
                 content=content,
                 content_hash=content_hash,
@@ -507,6 +514,7 @@ class ChunkRepository:
             update(self.model_cls)
             .where(self.model_cls.chunk_id == chunk_id)
             .where(self.model_cls.dense_vector_status.in_(CHUNK_UPDATE_ALLOWED_STATUSES))
+            .where(self._active_predicate())
             .values(
                 content=content,
                 content_hash=content_hash,
@@ -518,56 +526,6 @@ class ChunkRepository:
         )
         result = await db.execute(stmt)
         return int(result.rowcount or 0)
-
-    async def mark_deleting(
-        self,
-        db: AsyncSession,
-        chunk_ids: Sequence[str],
-    ) -> int:
-        if not chunk_ids:
-            return 0
-
-        stmt = (
-            update(self.model_cls)
-            .where(self.model_cls.chunk_id.in_(chunk_ids))
-            .where(self.model_cls.dense_vector_status.in_(CHUNK_DELETE_ALLOWED_STATUSES))
-            .values(dense_vector_status=CHUNK_STATUS_DELETING)
-        )
-        result = await db.execute(stmt)
-        return int(result.rowcount or 0)
-
-    async def mark_delete_failed(
-        self,
-        db: AsyncSession,
-        chunk_ids: Sequence[str],
-        *,
-        error_msg: str,
-        expected_status: str | None = None,
-    ) -> int:
-        return await self._execute_status_update(
-            db,
-            chunk_ids,
-            values={
-                "dense_vector_status": CHUNK_STATUS_DELETE_FAILED,
-            },
-            expected_status=expected_status,
-        )
-
-    async def claim_delete_for_retry(
-        self,
-        db: AsyncSession,
-        chunk_id: str,
-    ) -> bool:
-        stmt = (
-            update(self.model_cls)
-            .where(self.model_cls.chunk_id == chunk_id)
-            .where(self.model_cls.dense_vector_status.in_(CHUNK_DELETE_RETRY_STATUSES))
-            .values(
-                dense_vector_status=CHUNK_STATUS_DELETING,
-            )
-        )
-        result = await db.execute(stmt)
-        return bool(result.rowcount)
 
     async def claim_stale_indexing_for_repair(
         self,
@@ -581,6 +539,7 @@ class ChunkRepository:
             update(self.model_cls)
             .where(self.model_cls.chunk_id == chunk_id)
             .where(self.model_cls.dense_vector_status == CHUNK_STATUS_INDEXING)
+            .where(self._active_predicate())
             .where(self.model_cls.update_time <= cutoff)
             .values(update_time=func.now())
         )
@@ -596,6 +555,7 @@ class ChunkRepository:
             update(self.model_cls)
             .where(self.model_cls.chunk_id == chunk_id)
             .where(self.model_cls.dense_vector_status == CHUNK_STATUS_FAILED)
+            .where(self._active_predicate())
             .values(
                 dense_vector_status=CHUNK_STATUS_INDEXING,
                 sparse_vector_status=SPARSE_VECTOR_STATUS_PENDING,
@@ -604,29 +564,6 @@ class ChunkRepository:
         )
         result = await db.execute(stmt)
         return bool(result.rowcount)
-
-    async def list_delete_retry_candidates(
-        self,
-        db: AsyncSession,
-        *,
-        limit: int,
-        stale_after_seconds: int,
-    ) -> list[ChunkRecordDB]:
-        cutoff = datetime.utcnow() - timedelta(seconds=stale_after_seconds)
-        stmt = (
-            select(self.model_cls)
-            .where(self.model_cls.dense_vector_status.in_(CHUNK_DELETE_RETRY_STATUSES))
-            .where(
-                or_(
-                    self.model_cls.dense_vector_status == CHUNK_STATUS_DELETE_FAILED,
-                    self.model_cls.update_time <= cutoff,
-                )
-            )
-            .order_by(self.model_cls.update_time.asc())
-            .limit(limit)
-        )
-        result = await db.execute(stmt)
-        return result.scalars().all()
 
     async def list_stale_indexing_candidates(
         self,
@@ -639,6 +576,7 @@ class ChunkRepository:
         stmt = (
             select(self.model_cls)
             .where(self.model_cls.dense_vector_status == CHUNK_STATUS_INDEXING)
+            .where(self._active_predicate())
             .where(self.model_cls.update_time <= cutoff)
             .order_by(self.model_cls.update_time.asc())
             .limit(limit)

@@ -172,13 +172,13 @@ class StageServices:
     ) -> list[Chunk]:
         """重试跳过 chunking 时从 DB 反查当前文档完整 chunk truth set。
 
-        反查谓词：仅 ``doc_id``（排除删除态保护集合），按 ``chunk_index`` 排序。
+        反查谓词：``doc_id`` + ``lifecycle_status=ACTIVE``，按 ``chunk_index`` 排序。
         返回空列表表示状态不一致（chunking 标 SUCCESS 但无有效 chunk），由
         ChunkingStage 落 FAILED + 通知。
         """
         from sqlalchemy import select
 
-        from src.core.chunk_fact_storage.constants import CHUNK_DELETE_PROTECTED_STATUSES
+        from src.core.chunk_fact_storage.constants import CHUNK_LIFECYCLE_ACTIVE
         from src.core.qdrant_vector_storage.point_factory import chunk_from_record
         from src.models.chunk_record import ChunkRecordDB
 
@@ -186,7 +186,7 @@ class StageServices:
         stmt = (
             select(ChunkRecordDB)
             .where(ChunkRecordDB.doc_id == doc_id)
-            .where(ChunkRecordDB.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
+            .where(ChunkRecordDB.lifecycle_status == CHUNK_LIFECYCLE_ACTIVE)
             .order_by(ChunkRecordDB.chunk_index.asc())
         )
         result = await db.execute(stmt)
