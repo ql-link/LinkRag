@@ -30,8 +30,9 @@
 | 文件 | 内容 |
 | --- | --- |
 | [project_structure.md](internals/project_structure.md) | 项目目录结构 |
-| [pipeline_architecture.md](internals/pipeline_architecture.md) | Pipeline 总体架构 |
+| [pipeline_architecture.md](internals/pipeline_architecture.md) | 解析 Pipeline 架构 |
 | [parse_task_pipeline.md](internals/parse_task_pipeline.md) | 解析任务流水线状态机 |
+| [recall_pipeline.md](internals/recall_pipeline.md) | 召回 Pipeline 架构 |
 | [file_parser.md](internals/file_parser.md) | 文件解析器（含回退链） |
 | [markdown_parser.md](internals/markdown_parser.md) | Markdown 解析与 LLM 增强 |
 | [chunking.md](internals/chunking.md) | 分块策略与流水线 |
