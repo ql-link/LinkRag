@@ -112,10 +112,18 @@ def build_old_log_pipeline(*, recover="VECTORIZING", superseded=None):
 class FakeRetryPipelineRepository:
     """重试场景专用的 fake repo：编排层只需要少量方法。"""
 
-    def __init__(self, *, old_log, old_pipeline, mark_superseded_rowcount=1):
+    def __init__(
+        self,
+        *,
+        old_log,
+        old_pipeline,
+        mark_superseded_rowcount=1,
+        fail_create_with_inherited_state=False,
+    ):
         self.old_log = old_log
         self.old_pipeline = old_pipeline
         self.mark_superseded_rowcount = mark_superseded_rowcount
+        self.fail_create_with_inherited_state = fail_create_with_inherited_state
         # 新建的 pipeline 行：测试可读取断言
         self.new_pipeline = None
         self.failed_validation_pipeline = None
@@ -139,6 +147,8 @@ class FakeRetryPipelineRepository:
         self, db, old_pipeline, *, new_log, new_task_id, started_at
     ):
         self.calls.append("create_with_inherited_state")
+        if self.fail_create_with_inherited_state:
+            raise RuntimeError("create inherited failed")
         # 简化：把旧 pipeline SUCCESS 状态复制为新 pipeline 的初始值
         new_pipeline = SimpleNamespace(
             id=300,
@@ -320,8 +330,9 @@ class FakeRetryPipelineRepository:
 class FakeRetryLogRepository:
     """重试场景的 log repo 替身。"""
 
-    def __init__(self, *, old_log):
+    def __init__(self, *, old_log, fail_create_for_retry=False):
         self.old_log = old_log
+        self.fail_create_for_retry = fail_create_for_retry
         self.new_log = None
         self.failed_validation_log = None
         self.create_for_retry_args = None
@@ -343,6 +354,8 @@ class FakeRetryLogRepository:
         retry_of_task_id,
     ):
         self.calls.append("create_for_retry")
+        if self.fail_create_for_retry:
+            raise RuntimeError("create retry log failed")
         self.create_for_retry_args = {
             "parsed_bucket": parsed_bucket,
             "parsed_object_key": parsed_object_key,
@@ -771,6 +784,73 @@ class TestRetryBranch:
         status, reason = notifier.sent[0]
         assert status == PARSE_TASK_STATUS_FAILED
         assert reason.startswith("RETRY_VALIDATION_FAILED:concurrent_supersede")
+
+    async def test_retry_rolls_back_when_create_for_retry_fails_after_supersede(self):
+        """LINK-34: CAS 抢占成功后，新 retry log 创建失败必须整体 rollback。"""
+        from tests.unit.core.pipeline.test_parse_task_pipeline import FakeSparseIndexingPipeline
+
+        old_log, old_pipeline = build_old_log_pipeline()
+        post_repo = FakeRetryPipelineRepository(old_log=old_log, old_pipeline=old_pipeline)
+        log_repo = FakeRetryLogRepository(
+            old_log=old_log,
+            fail_create_for_retry=True,
+        )
+        db = build_db()
+
+        pipeline = ParseTaskPipeline(
+            storage=MagicMock(),
+            session_factory=FakeAsyncSessionFactory(db),
+            mq_service=MagicMock(),
+            pipeline_repository=post_repo,
+            sparse_indexing_pipeline=FakeSparseIndexingPipeline(),
+        )
+        pipeline._log_repository = log_repo
+        pipeline._guard._log_repository = log_repo
+        pipeline._guard._pipeline_repository = post_repo
+        pipeline._notifier = FakeNotifier()
+
+        with pytest.raises(RuntimeError, match="create retry log failed"):
+            await pipeline.execute(build_retry_payload())
+
+        assert "mark_superseded" in post_repo.calls
+        assert "create_for_retry" in log_repo.calls
+        assert "create_with_inherited_state" not in post_repo.calls
+        db.rollback.assert_awaited_once()
+        db.commit.assert_not_awaited()
+
+    async def test_retry_rolls_back_when_create_inherited_pipeline_fails_after_supersede(self):
+        """LINK-34: CAS 抢占成功后，新 retry pipeline 创建失败必须整体 rollback。"""
+        from tests.unit.core.pipeline.test_parse_task_pipeline import FakeSparseIndexingPipeline
+
+        old_log, old_pipeline = build_old_log_pipeline()
+        post_repo = FakeRetryPipelineRepository(
+            old_log=old_log,
+            old_pipeline=old_pipeline,
+            fail_create_with_inherited_state=True,
+        )
+        log_repo = FakeRetryLogRepository(old_log=old_log)
+        db = build_db()
+
+        pipeline = ParseTaskPipeline(
+            storage=MagicMock(),
+            session_factory=FakeAsyncSessionFactory(db),
+            mq_service=MagicMock(),
+            pipeline_repository=post_repo,
+            sparse_indexing_pipeline=FakeSparseIndexingPipeline(),
+        )
+        pipeline._log_repository = log_repo
+        pipeline._guard._log_repository = log_repo
+        pipeline._guard._pipeline_repository = post_repo
+        pipeline._notifier = FakeNotifier()
+
+        with pytest.raises(RuntimeError, match="create inherited failed"):
+            await pipeline.execute(build_retry_payload())
+
+        assert "mark_superseded" in post_repo.calls
+        assert "create_for_retry" in log_repo.calls
+        assert "create_with_inherited_state" in post_repo.calls
+        db.rollback.assert_awaited_once()
+        db.commit.assert_not_awaited()
 
     async def test_validation_failure_creates_double_table_failed_record(self):
         """validate_retry_context 校验失败：log + pipeline 同步落 FAILED 终态。"""

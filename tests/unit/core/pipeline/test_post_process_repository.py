@@ -365,7 +365,7 @@ class TestParsePipelineRepository:
 
         assert rowcount == 1
         assert old_pipeline.superseded_by_task_id == "T_NEW"
-        db.commit.assert_awaited()
+        db.commit.assert_not_awaited()
 
     async def test_mark_superseded_returns_rowcount_zero_when_concurrent_loss(self):
         """CAS 第 2 层抢占失败：rowcount==0，老行 superseded_by_task_id 不动。"""
