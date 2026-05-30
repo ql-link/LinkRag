@@ -1,7 +1,9 @@
 import os
-from typing import Optional, List, Union
+from typing import List, Optional, Union
+
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
 
 class Settings(BaseSettings):
     # ==========================================
@@ -22,7 +24,7 @@ class Settings(BaseSettings):
     DB_USER: str = "root"
     DB_PASSWORD: str = ""
     DB_NAME: str = "tolink_rag_db"
-    
+
     # 支持直接从 env 读取 DATABASE_URL，如果不存在则由上述字段构建
     DATABASE_URL: Optional[str] = None
 
@@ -39,7 +41,7 @@ class Settings(BaseSettings):
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
     REDIS_PASSWORD: Optional[str] = None
-    
+
     # 支持直接从 env 读取 REDIS_URL
     REDIS_URL: Optional[str] = None
 
@@ -81,8 +83,11 @@ class Settings(BaseSettings):
     RECALL_STRICT_DEFAULT: bool = False
     # 服务端固定返回候选数上限（同时作为各路执行期 top_k）。
     RECALL_RESULT_LIMIT: int = 20
-    # 启用的召回路（逗号分隔）；未实现的 source（如 dense）不应出现在默认值。
-    RECALL_ENABLED_SOURCES: str = "bm25,sparse"
+    # 启用的召回路（逗号分隔）。dense 是远程 system embedding HTTP 调用，与 sparse
+    # 本地 BGE-M3 推理路径互补；本期默认开启 dense（GitHub issue ql-link/LinkRag#53）。
+    # 升级影响：未显式 set env 的部署在升级后自动开启 dense 召回，system embedding
+    # HTTP 流量增加；如需暂时回退，运维侧 set RECALL_ENABLED_SOURCES=bm25,sparse 重启。
+    RECALL_ENABLED_SOURCES: str = "bm25,sparse,dense"
 
     # ==========================================
     # 系统级兜底 LLM 配置 (Platform Default Fallback LLMs)
@@ -156,6 +161,14 @@ class Settings(BaseSettings):
     SPARSE_RETRIEVAL_TOP_K: int = 10
     SPARSE_RETRIEVAL_SCORE_THRESHOLD: float = 0.0
 
+    # Dense retrieval defaults (called by VectorStorageFacade.search_dense_chunks).
+    # 与 SPARSE_RETRIEVAL_* 严格对仗：top_k=10（先广召回后精排），threshold=0.0
+    # （cosine 上界 [0, 1]，不过滤、由 top_k 兜底）；阈值校准待评测 harness follow-up。
+    # 注意：pipeline 路径下实际生效的 top_k 是 RECALL_RESULT_LIMIT；
+    # DENSE_RETRIEVAL_TOP_K 仅作 facade 直调（脚本 / 评测 harness）的兜底默认。
+    DENSE_RETRIEVAL_TOP_K: int = 10
+    DENSE_RETRIEVAL_SCORE_THRESHOLD: float = 0.0
+
     # Elasticsearch
     ES_HOST: str = "http://localhost:9200"
     ES_USER: Optional[str] = None
@@ -193,7 +206,6 @@ class Settings(BaseSettings):
     MINERU_API_KEY: Optional[str] = None  # MinerU 云服务专属 Token
     MINERU_TIMEOUT: int = 300  # MinerU API 请求超时（秒）
     MINERU_MODEL_VERSION: str = "vlm"  # pipeline / vlm / MinerU-HTML
-
 
     # ==========================================
     # MQ 消息中台配置 (Message Queue)
@@ -241,7 +253,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"),
         env_file_encoding="utf-8",
-        extra="ignore"
+        extra="ignore",
     )
+
 
 settings = Settings()
