@@ -5,11 +5,9 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from src.core.es_index_storage import EsIndexingResult
-from src.core.preprocessor.models import ChunkWithTokens, FileIndexMeta, FilePostIndexPlan
 from src.core.markdown_parser.models import ParseResult
 from src.core.mq.messages import ParseTaskMessage
 from src.core.pipeline import ParseTaskPipeline, PipelineStatus
-from src.core.pipeline.parse_task.notifier import ParseResultNotificationError
 from src.core.pipeline.parse_task.constants import (
     DUPLICATE_FAILED_USER_MESSAGE,
     DUPLICATE_SUCCESS_USER_MESSAGE,
@@ -17,6 +15,7 @@ from src.core.pipeline.parse_task.constants import (
     PARSE_TASK_STATUS_FAILED,
     PARSE_TASK_STATUS_SUCCESS,
 )
+from src.core.pipeline.parse_task.notifier import ParseResultNotificationError
 from src.core.pipeline.parse_task.post_process.constants import (
     PIPELINE_STATUS_FAILED,
     PIPELINE_STATUS_PENDING,
@@ -30,6 +29,7 @@ from src.core.pipeline.parse_task.post_process.constants import (
     STAGE_STATUS_PENDING,
     STAGE_STATUS_SUCCESS,
 )
+from src.core.preprocessor.models import ChunkWithTokens, FileIndexMeta, FilePostIndexPlan
 from src.core.splitter.models import Chunk
 from src.core.vector_storage.models import ChunkIndexingResult
 from src.models.parse_task import DocumentParsedLog, DocumentParseTask
@@ -292,16 +292,59 @@ class FakePostProcessRepository:
 
 
 class FakeSparseIndexingPipeline:
-    """no-op SparseIndexingPipeline 测试替身：默认成功，可显式抛错。"""
+    """no-op SparseIndexingPipeline 测试替身：默认成功，可显式抛错。
+
+    本期 sparse 入口签名变更为 ``(*, chunks, task_id, db)``，删除了
+    ``doc_id`` / ``bucket_id`` 入参（顺手关闭 GitHub #95）。
+    """
 
     def __init__(self, error: Exception | None = None):
         self.error = error
         self.calls: list[dict] = []
 
-    async def run(self, *, doc_id, bucket_id, task_id, db):
-        self.calls.append({"doc_id": doc_id, "bucket_id": bucket_id, "task_id": task_id})
+    async def run(self, *, chunks, task_id, db):
+        self.calls.append({"chunks_count": len(list(chunks)), "task_id": task_id})
         if self.error is not None:
             raise self.error
+
+
+def attach_fake_reload_chunks(pipeline, *, count: int = 2):
+    """给 pipeline 实例挂上 ``_reload_chunks_from_db`` 的 fake，避免依赖真实 SQL。
+
+    本期 ``_run_chunking`` commit 后 + sparse 阶段开始前都会调 reload。
+    """
+
+    async def fake_reload(payload, db):
+        from src.core.chunk_fact_storage.constants import (
+            CHUNK_STATUS_PENDING,
+            ES_STATUS_PENDING,
+            SPARSE_VECTOR_STATUS_PENDING,
+        )
+        from src.models.chunk_record import ChunkRecordDB
+
+        return [
+            ChunkRecordDB(
+                id=i + 1,
+                chunk_id=f"chunk-{i}",
+                doc_id=1,
+                set_id=30,
+                user_id=20,
+                bucket_id=42,
+                content="x",
+                content_hash="h",
+                chunk_type="text",
+                start_line=0,
+                end_line=0,
+                chunk_index=i,
+                dense_vector_status=CHUNK_STATUS_PENDING,
+                sparse_vector_status=SPARSE_VECTOR_STATUS_PENDING,
+                es_status=ES_STATUS_PENDING,
+            )
+            for i in range(count)
+        ]
+
+    pipeline._reload_chunks_from_db = fake_reload
+    return pipeline
 
 
 class FakeEsIndexingPipeline:
@@ -503,8 +546,14 @@ class TestParseTaskPipeline:
         self,
         mock_chunk_markdown,
         mock_aprocess,
+        monkeypatch,
+        tmp_path,
     ):
         db = build_db(build_parse_task())
+        monkeypatch.setattr(
+            "src.core.pipeline.parse_task.pipeline.settings.PARSE_TEMP_DIR",
+            str(tmp_path),
+        )
         events = []
         storage = MagicMock()
         storage.download_to_path.side_effect = lambda bucket, object_key, dst: dst.write_bytes(
@@ -517,11 +566,11 @@ class TestParseTaskPipeline:
         es_pipeline = FakeEsIndexingPipeline(EsIndexingResult(total_items=2, indexed_items=2))
         post_repo = FakePostProcessRepository()
 
-        async def index_document_chunks(**kwargs):
+        async def index_chunks(**kwargs):
             events.append("vector")
             return ChunkIndexingResult(total_chunks=2, indexed_chunks=2)
 
-        vector_storage.index_document_chunks.side_effect = index_document_chunks
+        vector_storage.index_chunks.side_effect = index_chunks
         mock_aprocess.return_value = {
             "markdown": "parsed content",
             "parse_result": MagicMock(),
@@ -542,6 +591,7 @@ class TestParseTaskPipeline:
             preprocessor=FakePreprocessor(),
             sparse_indexing_pipeline=FakeSparseIndexingPipeline(),
         )
+        attach_fake_reload_chunks(pipeline, count=2)
 
         payload = build_payload()
         payload.pdf_parser_backend = "opendataloader"
@@ -578,12 +628,12 @@ class TestParseTaskPipeline:
             "parsed/t-001.md",
             mock_aprocess.return_value["parse_result"],
         )
-        vector_storage.index_document_chunks.assert_awaited_once_with(
-            user_id=20,
-            set_id=30,
-            doc_id=1,
-            include_failed=False,
-        )
+        vector_storage.index_chunks.assert_awaited_once()
+        call_kwargs = vector_storage.index_chunks.await_args.kwargs
+        assert call_kwargs["user_id"] == 20
+        assert call_kwargs["set_id"] == 30
+        assert call_kwargs["doc_id"] == 1
+        assert "include_failed" not in call_kwargs  # PR #89 临时方案已删除
         db.commit.assert_awaited()
         db.close.assert_awaited_once()
 
@@ -606,7 +656,7 @@ class TestParseTaskPipeline:
         mq_service = MagicMock()
         mq_service.send = AsyncMock()
         vector_storage = AsyncMock()
-        vector_storage.index_document_chunks.return_value = ChunkIndexingResult(
+        vector_storage.index_chunks.return_value = ChunkIndexingResult(
             total_chunks=1,
             indexed_chunks=1,
         )
@@ -629,6 +679,7 @@ class TestParseTaskPipeline:
             preprocessor=FakePreprocessor(),
             sparse_indexing_pipeline=FakeSparseIndexingPipeline(),
         )
+        attach_fake_reload_chunks(pipeline, count=1)
 
         result = await pipeline.execute(build_payload())
 
@@ -695,7 +746,7 @@ class TestParseTaskPipeline:
         mq_service = MagicMock()
         mq_service.send = AsyncMock(side_effect=RuntimeError("mq down"))
         vector_storage = AsyncMock()
-        vector_storage.index_document_chunks.return_value = ChunkIndexingResult(
+        vector_storage.index_chunks.return_value = ChunkIndexingResult(
             total_chunks=1,
             indexed_chunks=1,
         )
@@ -796,7 +847,7 @@ class TestParseTaskPipeline:
         assert post_repo.pipeline.cleaning_status == STAGE_STATUS_SUCCESS
         assert post_repo.pipeline.pipeline_status == PIPELINE_STATUS_FAILED
         assert post_repo.pipeline.failed_stage == POST_PROCESS_STAGE_CHUNKING
-        vector_storage.index_document_chunks.assert_not_awaited()
+        vector_storage.index_chunks.assert_not_awaited()
         mq_service.send.assert_awaited_once()
         sent_payload = mq_service.send.call_args.args[0].get_payload()
         assert sent_payload.task_status == PARSE_TASK_STATUS_FAILED
@@ -821,7 +872,7 @@ class TestParseTaskPipeline:
         mq_service.send = AsyncMock()
         vector_storage = AsyncMock()
         post_repo = FakePostProcessRepository()
-        vector_storage.index_document_chunks.return_value = ChunkIndexingResult(
+        vector_storage.index_chunks.return_value = ChunkIndexingResult(
             total_chunks=2,
             indexed_chunks=1,
             failed_chunk_ids=["chunk-2"],
@@ -844,6 +895,7 @@ class TestParseTaskPipeline:
             pipeline_repository=post_repo,
             es_indexing_pipeline=FakeEsIndexingPipeline(),
         )
+        attach_fake_reload_chunks(pipeline, count=2)
 
         result = await pipeline.execute(build_payload())
 
@@ -876,7 +928,7 @@ class TestParseTaskPipeline:
         mq_service = MagicMock()
         mq_service.send = AsyncMock()
         vector_storage = AsyncMock()
-        vector_storage.index_document_chunks.return_value = ChunkIndexingResult(
+        vector_storage.index_chunks.return_value = ChunkIndexingResult(
             total_chunks=1,
             indexed_chunks=1,
         )
@@ -917,41 +969,61 @@ class TestParseTaskPipeline:
         assert sent_payload.failure_reason == "es down"
 
     @patch("src.core.pipeline.parse_task.pipeline.ParseTaskPipeline._chunk_markdown")
-    async def test_run_chunking_should_return_full_chunk_list_without_storing_vectors(
+    async def test_run_chunking_should_return_orm_records_after_commit(
         self,
         mock_chunk_markdown,
     ):
+        """新版 _run_chunking 返回 list[ChunkRecordDB]：commit 后追加反查。"""
+        from tests.unit.core.conftest import make_chunk_record
+
         db = build_db(build_parse_task())
-        chunks = [
+        splitter_chunks = [
             Chunk(content="alpha", start_line=1, end_line=1),
             Chunk(content="beta", start_line=2, end_line=2),
         ]
-        mock_chunk_markdown.return_value = chunks
+        mock_chunk_markdown.return_value = splitter_chunks
         vector_storage = AsyncMock()
-        vector_storage.index_document_chunks.return_value = ChunkIndexingResult(
-            total_chunks=2,
-            indexed_chunks=2,
-        )
         pipeline = ParseTaskPipeline(
             storage=MagicMock(),
             mq_service=MagicMock(),
             vector_storage=vector_storage,
         )
-        payload = build_payload()
 
+        # mock _reload_chunks_from_db 直接返回 ORM 行（避免依赖真实 SQL 查询）
+        orm_records = [
+            make_chunk_record("chunk-1", chunk_index=0, content="alpha"),
+            make_chunk_record("chunk-2", chunk_index=1, content="beta"),
+        ]
+
+        async def fake_reload(payload, db):
+            return orm_records
+
+        pipeline._reload_chunks_from_db = fake_reload
+
+        payload = build_payload()
         result = await pipeline._run_chunking("markdown", None, payload, db)
 
-        assert result == chunks
-        vector_storage.index_document_chunks.assert_not_awaited()
+        # 关键断言：返回值是 ORM 行而不是 splitter Chunk
+        assert result == orm_records
+        # _run_chunking 不应触发 dense / sparse 写入
+        vector_storage.index_chunks.assert_not_awaited()
+        # 旧入口已删除
+        assert (
+            not hasattr(vector_storage, "index_document_chunks")
+            or not vector_storage.index_chunks.called
+        )
 
     async def test_store_chunk_vectors_should_return_partial_failure_status(self):
+        """新版 _store_chunk_vectors：现场过滤 + 调 index_chunks。"""
+        from tests.unit.core.conftest import make_chunk_record
+
         db = build_db(build_parse_task())
         chunks = [
-            Chunk(content="alpha", start_line=1, end_line=1),
-            Chunk(content="beta", start_line=2, end_line=2),
+            make_chunk_record("chunk-1", chunk_index=0, content="alpha"),
+            make_chunk_record("chunk-2", chunk_index=1, content="beta"),
         ]
         vector_storage = AsyncMock()
-        vector_storage.index_document_chunks.return_value = ChunkIndexingResult(
+        vector_storage.index_chunks.return_value = ChunkIndexingResult(
             total_chunks=2,
             indexed_chunks=1,
             failed_chunk_ids=["chunk-2"],
@@ -968,21 +1040,25 @@ class TestParseTaskPipeline:
         assert result.total_chunks == 2
         assert result.indexed_chunks == 1
         assert result.failed_chunk_ids == ["chunk-2"]
-        vector_storage.index_document_chunks.assert_awaited_once_with(
-            user_id=20,
-            set_id=30,
-            doc_id=1,
-            include_failed=False,
-        )
+        # 关键断言：调 index_chunks，传 chunks（不传 include_failed）
+        vector_storage.index_chunks.assert_awaited_once()
+        call_kwargs = vector_storage.index_chunks.await_args.kwargs
+        assert call_kwargs["user_id"] == 20
+        assert call_kwargs["set_id"] == 30
+        assert call_kwargs["doc_id"] == 1
+        assert call_kwargs["chunks"] == chunks
+        assert "include_failed" not in call_kwargs
 
     async def test_store_chunk_vectors_should_convert_vector_exception_to_failed_result(self):
+        from tests.unit.core.conftest import make_chunk_record
+
         db = build_db(build_parse_task())
         chunks = [
-            Chunk(content="alpha", start_line=1, end_line=1),
-            Chunk(content="beta", start_line=2, end_line=2),
+            make_chunk_record("chunk-1", chunk_index=0, content="alpha"),
+            make_chunk_record("chunk-2", chunk_index=1, content="beta"),
         ]
         vector_storage = AsyncMock()
-        vector_storage.index_document_chunks.side_effect = RuntimeError("vector down")
+        vector_storage.index_chunks.side_effect = RuntimeError("vector down")
         pipeline = ParseTaskPipeline(
             storage=MagicMock(),
             mq_service=MagicMock(),
@@ -993,7 +1069,40 @@ class TestParseTaskPipeline:
 
         assert result.total_chunks == 2
         assert result.indexed_chunks == 0
-        assert result.failed_chunk_ids == ["chunk-0", "chunk-1"]
+        # _fallback_chunk_ids 现在用真实 chunk_id
+        assert result.failed_chunk_ids == ["chunk-1", "chunk-2"]
+
+    async def test_store_chunk_vectors_should_filter_already_success_chunks(self):
+        """现场过滤：dense=SUCCESS 的 chunk 不传给 dense 入口。"""
+        from src.core.chunk_fact_storage.constants import CHUNK_STATUS_INDEXED
+        from tests.unit.core.conftest import make_chunk_record
+
+        db = build_db(build_parse_task())
+        chunks = [
+            make_chunk_record(
+                "chunk-1", chunk_index=0, dense=CHUNK_STATUS_INDEXED
+            ),  # 已 SUCCESS，应过滤
+            make_chunk_record("chunk-2", chunk_index=1, content="beta"),  # PENDING，应处理
+        ]
+        vector_storage = AsyncMock()
+        vector_storage.index_chunks.return_value = ChunkIndexingResult(
+            total_chunks=1,
+            indexed_chunks=1,
+        )
+        pipeline = ParseTaskPipeline(
+            storage=MagicMock(),
+            mq_service=MagicMock(),
+            vector_storage=vector_storage,
+        )
+
+        result = await pipeline._store_chunk_vectors(chunks, build_payload(), db)
+
+        assert result.is_success
+        # index_chunks 收到的 chunks 只含 chunk-2
+        call_kwargs = vector_storage.index_chunks.await_args.kwargs
+        passed_chunks = call_kwargs["chunks"]
+        assert len(passed_chunks) == 1
+        assert passed_chunks[0].chunk_id == "chunk-2"
 
     @patch("src.core.pipeline.parse_task.pipeline.create_chunking_engine")
     def test_chunk_markdown_should_use_process_parse_result_when_available(

@@ -33,6 +33,52 @@ from tests.unit.core.pipeline.test_parse_task_pipeline import (
 )
 
 
+def make_fake_reload_chunks(count: int = 2):
+    """构造 ``_reload_chunks_from_db`` 的 fake：返回 N 条 ORM 行。
+
+    本期 ``_run_chunking`` commit 后 + sparse 阶段开始前都会调 reload；测试用
+    fake 屏蔽真实 SQL 反查，让 chunks 透传到 dense / sparse 入口。
+
+    返回的 chunks 状态：``dense=PENDING, sparse=PENDING, es=PENDING``——
+    用 OrderTrackingVectorStorage 替身的测试会"假装" dense 处理成功（替身永远
+    返回 indexed_chunks=count），但**chunk 本身的 dense_vector_status 仍然是 PENDING**。
+    sparse 阶段在第二次 reload 时再调本 fake，会再返回 PENDING——但 sparse 阶段在
+    OrderTrackingSparseIndexingPipeline 替身里也是被替换的，不会触发真实的前置断言。
+    所以 fake reload 的状态搭配替身使用即可，不必模拟"dense 已 SUCCESS"的真实推进。
+    """
+
+    async def fake_reload(payload, db):
+        from src.core.chunk_fact_storage.constants import (
+            CHUNK_STATUS_PENDING,
+            ES_STATUS_PENDING,
+            SPARSE_VECTOR_STATUS_PENDING,
+        )
+        from src.models.chunk_record import ChunkRecordDB
+
+        return [
+            ChunkRecordDB(
+                id=i + 1,
+                chunk_id=f"chunk-{i}",
+                doc_id=1,
+                set_id=30,
+                user_id=20,
+                bucket_id=42,
+                content="x",
+                content_hash="h",
+                chunk_type="text",
+                start_line=0,
+                end_line=0,
+                chunk_index=i,
+                dense_vector_status=CHUNK_STATUS_PENDING,
+                sparse_vector_status=SPARSE_VECTOR_STATUS_PENDING,
+                es_status=ES_STATUS_PENDING,
+            )
+            for i in range(count)
+        ]
+
+    return fake_reload
+
+
 class OrderTrackingSparseIndexingPipeline:
     """追踪调用顺序的 SparseIndexingPipeline 替身。"""
 
@@ -45,7 +91,7 @@ class OrderTrackingSparseIndexingPipeline:
             self.order_tracker = order_tracker
         self.run_called = False
 
-    async def run(self, *, doc_id: int, bucket_id: int, task_id: str, db):
+    async def run(self, *, chunks, task_id: str, db):
         self.run_called = True
         self.order_tracker.append("sparse_run")
         if self.should_fail:
@@ -82,7 +128,7 @@ class OrderTrackingVectorStorage:
         else:
             self.order_tracker = order_tracker
 
-    async def index_document_chunks(self, **kwargs):
+    async def index_chunks(self, **kwargs):
         self.order_tracker.append("vector_index")
         return ChunkIndexingResult(total_chunks=2, indexed_chunks=2)
 
@@ -129,9 +175,15 @@ class TestPipelineSixStageOrder:
         self,
         mock_chunk_markdown,
         mock_aprocess,
+        monkeypatch,
+        tmp_path,
     ):
         """验证 6 个阶段按正确顺序执行：CLEANING → CHUNKING → VECTORIZING → PRETOKENIZE → ES → SPARSE。"""
         db = build_db(build_parse_task())
+        monkeypatch.setattr(
+            "src.core.pipeline.parse_task.pipeline.settings.PARSE_TEMP_DIR",
+            str(tmp_path),
+        )
         order_tracker = []
 
         storage = MagicMock()
@@ -176,6 +228,9 @@ class TestPipelineSixStageOrder:
             chunk_repository=mock_chunk_repo,
         )
 
+        # _run_chunking 与 sparse 阶段会调 _reload_chunks_from_db；mock 一下让它返回 2 条 ORM 行
+        pipeline._reload_chunks_from_db = make_fake_reload_chunks(count=2)
+
         payload = build_payload()
         payload.pdf_parser_backend = "opendataloader"
 
@@ -212,9 +267,15 @@ class TestPipelineSixStageOrder:
         self,
         mock_chunk_markdown,
         mock_aprocess,
+        monkeypatch,
+        tmp_path,
     ):
         """验证 sparse 失败时正确标记 pipeline 失败。"""
         db = build_db(build_parse_task())
+        monkeypatch.setattr(
+            "src.core.pipeline.parse_task.pipeline.settings.PARSE_TEMP_DIR",
+            str(tmp_path),
+        )
         order_tracker = []
 
         storage = MagicMock()
@@ -259,6 +320,7 @@ class TestPipelineSixStageOrder:
             sparse_indexing_pipeline=sparse_pipeline,
             chunk_repository=mock_chunk_repo,
         )
+        pipeline._reload_chunks_from_db = make_fake_reload_chunks(count=1)
 
         payload = build_payload()
         payload.pdf_parser_backend = "opendataloader"
@@ -290,9 +352,15 @@ class TestPipelineSixStageOrder:
         self,
         mock_chunk_markdown,
         mock_aprocess,
+        monkeypatch,
+        tmp_path,
     ):
         """验证 sparse 只在 ES 成功后执行。"""
         db = build_db(build_parse_task())
+        monkeypatch.setattr(
+            "src.core.pipeline.parse_task.pipeline.settings.PARSE_TEMP_DIR",
+            str(tmp_path),
+        )
         order_tracker = []
 
         storage = MagicMock()
@@ -335,6 +403,7 @@ class TestPipelineSixStageOrder:
             sparse_indexing_pipeline=sparse_pipeline,
             chunk_repository=mock_chunk_repo,
         )
+        pipeline._reload_chunks_from_db = make_fake_reload_chunks(count=1)
 
         payload = build_payload()
         payload.pdf_parser_backend = "opendataloader"

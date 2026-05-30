@@ -422,8 +422,7 @@ class TestRetryBranch:
         log_repo = FakeRetryLogRepository(old_log=old_log)
 
         # _load_all_chunks_from_db 反查完整 chunk truth set（按 doc_id 全量）：mock 返回 2 行。
-        from src.core.qdrant_vector_storage.point_factory import chunk_from_record
-
+        # 新版 _load_all_chunks_from_db 直接返回 ORM 行（不再 wrap 成 splitter Chunk）。
         chunk_rows = [
             SimpleNamespace(
                 chunk_id="c1",
@@ -437,6 +436,8 @@ class TestRetryBranch:
                 end_line=1,
                 chunk_index=0,
                 dense_vector_status="PENDING",
+                sparse_vector_status="PENDING",
+                es_status="PENDING",
             ),
             SimpleNamespace(
                 chunk_id="c2",
@@ -450,6 +451,8 @@ class TestRetryBranch:
                 end_line=3,
                 chunk_index=1,
                 dense_vector_status="FAILED",
+                sparse_vector_status="PENDING",
+                es_status="PENDING",
             ),
         ]
         db = build_db()
@@ -460,7 +463,7 @@ class TestRetryBranch:
         vector_storage = AsyncMock()
         from src.core.vector_storage.models import ChunkIndexingResult
 
-        vector_storage.index_document_chunks.return_value = ChunkIndexingResult(
+        vector_storage.index_chunks.return_value = ChunkIndexingResult(
             total_chunks=2,
             indexed_chunks=2,
         )
@@ -495,12 +498,17 @@ class TestRetryBranch:
         assert "mark_pretokenize_started" in post_repo.calls
         assert "mark_es_indexing_started" in post_repo.calls
         assert "mark_sparse_vectorizing_started" in post_repo.calls
-        vector_storage.index_document_chunks.assert_awaited_once_with(
-            user_id=20,
-            set_id=30,
-            doc_id=1,
-            include_failed=True,
-        )
+        # 新版 dense 入口：传 chunks 不传 include_failed（PR #89 临时方案已删除）
+        vector_storage.index_chunks.assert_awaited_once()
+        index_call = vector_storage.index_chunks.await_args.kwargs
+        assert index_call["user_id"] == 20
+        assert index_call["set_id"] == 30
+        assert index_call["doc_id"] == 1
+        assert "include_failed" not in index_call
+        # 传入的 chunks 应当只含未 SUCCESS 的（pipeline 现场过滤后的子集）
+        passed_chunks = index_call["chunks"]
+        for chunk in passed_chunks:
+            assert chunk.dense_vector_status != "SUCCESS"
         # 整体终态由 sparse 翻 SUCCESS
         assert post_repo.new_pipeline.pipeline_status == PIPELINE_STATUS_SUCCESS
 
@@ -514,12 +522,12 @@ class TestRetryBranch:
         mock_chunk_repo_cls,
     ):
         """cleaning 失败后的 retry：不要求旧 markdown，重新解析上传后继续 chunking。"""
+        from src.core.vector_storage.models import ChunkIndexingResult
         from tests.unit.core.pipeline.test_parse_task_pipeline import (
             FakeEsIndexingPipeline,
             FakePreprocessor,
             FakeSparseIndexingPipeline,
         )
-        from src.core.vector_storage.models import ChunkIndexingResult
 
         old_log, old_pipeline = build_old_log_pipeline(recover=POST_PROCESS_STAGE_CLEANING)
         old_log.parsed_object_key = None
@@ -532,7 +540,7 @@ class TestRetryBranch:
         db = build_db()
         notifier = FakeNotifier()
         vector_storage = AsyncMock()
-        vector_storage.index_document_chunks.return_value = ChunkIndexingResult(
+        vector_storage.index_chunks.return_value = ChunkIndexingResult(
             total_chunks=1,
             indexed_chunks=1,
         )
@@ -564,8 +572,46 @@ class TestRetryBranch:
             }
         )
         pipeline._run_chunking = AsyncMock(
-            return_value=[Chunk(content="alpha", start_line=1, end_line=1)]
+            return_value=[
+                SimpleNamespace(
+                    chunk_id="c-retry-1",
+                    doc_id=1,
+                    set_id=30,
+                    user_id=20,
+                    bucket_id=42,
+                    content="alpha",
+                    chunk_type="text",
+                    start_line=1,
+                    end_line=1,
+                    chunk_index=0,
+                    dense_vector_status="PENDING",
+                    sparse_vector_status="PENDING",
+                    es_status="PENDING",
+                )
+            ]
         )
+
+        # sparse 阶段开始前会调 _reload_chunks_from_db；mock 一个 dense 已 SUCCESS 的视图
+        async def _fake_reload(payload, db):
+            return [
+                SimpleNamespace(
+                    chunk_id="c-retry-1",
+                    doc_id=1,
+                    set_id=30,
+                    user_id=20,
+                    bucket_id=42,
+                    content="alpha",
+                    chunk_type="text",
+                    start_line=1,
+                    end_line=1,
+                    chunk_index=0,
+                    dense_vector_status="SUCCESS",
+                    sparse_vector_status="PENDING",
+                    es_status="SUCCESS",
+                )
+            ]
+
+        pipeline._reload_chunks_from_db = _fake_reload
 
         result = await pipeline.execute(build_retry_payload())
 
@@ -587,12 +633,13 @@ class TestRetryBranch:
         assert chunking_args[1] is None
         assert chunking_args[2].task_id == "T2"
         assert chunking_args[3] is db
-        vector_storage.index_document_chunks.assert_awaited_once_with(
-            user_id=20,
-            set_id=30,
-            doc_id=1,
-            include_failed=True,
-        )
+        # 新版 dense 入口：传 chunks 不传 include_failed
+        vector_storage.index_chunks.assert_awaited_once()
+        index_call = vector_storage.index_chunks.await_args.kwargs
+        assert index_call["user_id"] == 20
+        assert index_call["set_id"] == 30
+        assert index_call["doc_id"] == 1
+        assert "include_failed" not in index_call
         assert post_repo.new_pipeline.pipeline_status == PIPELINE_STATUS_SUCCESS
 
     @patch("src.core.pipeline.parse_task.pipeline.ChunkRepository")
@@ -723,9 +770,10 @@ class TestRetryBranch:
         chunks = await pipeline._load_all_chunks_from_db(build_retry_payload(), db)
 
         # 三个 chunk 全部加载（含 INDEXED），且按 chunk_index 排序。
+        # 新版返回 list[ChunkRecordDB]，用 chunk_index 字段（而非 splitter Chunk.metadata）
         assert chunks is not None
         assert len(chunks) == 3
-        assert [c.metadata.get("chunk_index") for c in chunks] == [0, 1, 2]
+        assert [c.chunk_index for c in chunks] == [0, 1, 2]
 
         # SQL 谓词中不得出现 dense_vector_status IN (PENDING, FAILED) 这种局部过滤。
         assert len(executed_stmts) == 1
