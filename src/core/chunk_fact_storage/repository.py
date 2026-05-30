@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 
-from sqlalchemy import func, or_, select, update
+from sqlalchemy import delete, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.chunk_record import ChunkRecordDB
@@ -34,6 +34,25 @@ class ChunkRepository:
 
     def _active_predicate(self):
         return self.model_cls.lifecycle_status == CHUNK_LIFECYCLE_ACTIVE
+
+    async def delete_by_doc_id(
+        self,
+        db: AsyncSession,
+        doc_id: int,
+    ) -> int:
+        """硬删除指定文档的全部 chunk 真值行（不区分 lifecycle）。
+
+        服务于「重试从 CHUNKING 恢复」的 chunk truth set 重建：旧 chunking 失败后
+        DB 中可能残留半成品（或上一轮 REMOVED 残片），而 ``chunk_id`` 为全局唯一键
+        且由内容派生，重新分片会复用同一批 chunk_id。若不先清残留，``bulk_insert_pending``
+        会撞唯一键。本方法在重新分片落库前清场，保证 truth set 由本轮全量重建。
+
+        调用方应在同一事务内紧接 ``bulk_insert_pending`` + ``commit``，使「清旧+写新」原子化。
+        """
+        result = await db.execute(
+            delete(self.model_cls).where(self.model_cls.doc_id == doc_id)
+        )
+        return int(result.rowcount or 0)
 
     async def bulk_insert_pending(
         self,
