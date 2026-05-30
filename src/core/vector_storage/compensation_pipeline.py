@@ -21,7 +21,11 @@ from src.core.qdrant_vector_storage.point_factory import (
     indexed_point_from_record,
     sparse_indexed_point_from_record,
 )
-from src.core.sparse_vector import SparseChunkVectorizationRequest, SparseVector, SparseVectorService
+from src.core.sparse_vector import (
+    SparseChunkVectorizationRequest,
+    SparseVector,
+    SparseVectorService,
+)
 from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
 from src.core.splitter.models import EmbeddedChunk
 from src.models.chunk_record import ChunkRecordDB
@@ -497,7 +501,6 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
             )
         return affected_rows == len(chunk_ids)
 
-
     def _sparse_enabled(self) -> bool:
         """判断当前补偿流程是否需要同步重建 sparse vector。"""
 
@@ -514,16 +517,22 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
         *,
         model_name: str | None,
     ) -> int:
-        """把补偿目标的 sparse 子状态切换为 INDEXING。"""
+        """把补偿目标的 sparse 子状态切换为 INDEXING。
+
+        补偿入口处理的 chunk 来自 ``claim_failed_for_reindex`` 抢占成功后被推回
+        ``sparse_vector_status=PENDING`` 的状态，单值 CAS 即可。
+        """
 
         if self.sparse_vector_service is None:
-            raise RuntimeError("SPARSE_VECTOR_ENABLED=true but sparse vector service is not configured.")
+            raise RuntimeError(
+                "SPARSE_VECTOR_ENABLED=true but sparse vector service is not configured."
+            )
         return await self._run_in_transaction_with_result(
             lambda session: self.repository.mark_sparse_indexing(
                 session,
                 chunk_ids,
                 model_name=model_name,
-                expected_status=SPARSE_VECTOR_STATUS_PENDING,
+                allowed_statuses=(SPARSE_VECTOR_STATUS_PENDING,),
             )
         )
 
@@ -590,4 +599,8 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
                     chunk_index=record.chunk_index,
                 )
             )
-        return indexed_point_from_record(record, embedded_chunk), embedded_chunk.embedding_model, sparse_vector
+        return (
+            indexed_point_from_record(record, embedded_chunk),
+            embedded_chunk.embedding_model,
+            sparse_vector,
+        )

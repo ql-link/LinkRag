@@ -8,6 +8,7 @@ from collections.abc import Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from src.config import settings
 from src.core.chunk_fact_storage import ChunkRepository
 from src.core.chunk_fact_storage.constants import (
     CHUNK_DELETE_PROTECTED_STATUSES,
@@ -23,8 +24,11 @@ from src.core.qdrant_vector_storage.point_factory import (
     indexed_point_from_record,
     sparse_indexed_point_from_record,
 )
-from src.config import settings
-from src.core.sparse_vector import SparseChunkVectorizationRequest, SparseVector, SparseVectorService
+from src.core.sparse_vector import (
+    SparseChunkVectorizationRequest,
+    SparseVector,
+    SparseVectorService,
+)
 from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
 from src.core.splitter.models import EmbeddedChunk
 from src.models.chunk_record import ChunkRecordDB
@@ -96,7 +100,10 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
         end_line = request.end_line if request.end_line is not None else record.end_line
         chunk_index = request.chunk_index if request.chunk_index is not None else record.chunk_index
 
-        if record.dense_vector_status == CHUNK_STATUS_INDEXED and content_hash == record.content_hash:
+        if (
+            record.dense_vector_status == CHUNK_STATUS_INDEXED
+            and content_hash == record.content_hash
+        ):
             if not self._truth_fields_changed(
                 record,
                 content=request.content,
@@ -597,7 +604,6 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
             )
         )
 
-
     def _sparse_enabled(self) -> bool:
         """判断管理端重建流程是否需要同步 sparse vector。"""
 
@@ -614,16 +620,22 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
         *,
         model_name: str | None,
     ) -> int:
-        """把管理端重建目标的 sparse 子状态切换为 INDEXING。"""
+        """把管理端重建目标的 sparse 子状态切换为 INDEXING。
+
+        管理端入口处理的 chunk 都是更新后刚被 ``update_chunk_for_reindex`` 推回
+        ``sparse_vector_status=PENDING`` 的，单值 CAS 即可。
+        """
 
         if self.sparse_vector_service is None:
-            raise RuntimeError("SPARSE_VECTOR_ENABLED=true but sparse vector service is not configured.")
+            raise RuntimeError(
+                "SPARSE_VECTOR_ENABLED=true but sparse vector service is not configured."
+            )
         return await self._run_in_transaction_with_result(
             lambda session: self.repository.mark_sparse_indexing(
                 session,
                 chunk_ids,
                 model_name=model_name,
-                expected_status=SPARSE_VECTOR_STATUS_PENDING,
+                allowed_statuses=(SPARSE_VECTOR_STATUS_PENDING,),
             )
         )
 
