@@ -88,8 +88,13 @@ JWT 推荐 claims：
 
 - `bm25` → `Bm25Retriever(EsBm25Retriever(), RagFlowTokenizer())`；
 - `sparse` → `SparseRetriever(compose_vector_storage_facade(), score_threshold=...)`；
-- 配置中出现未登记 source（如 dense）→ 装配期 `ValueError`，不静默跳过。
+- `dense` → `DenseRetriever(compose_vector_storage_facade(), score_threshold=...)`（本期新增）；
+- 配置中出现未登记 source → 装配期 `ValueError`，不静默跳过。
 
-sparse 底座含本地 BGE-M3，装配较重，必须单例。`user_id` / `top_k` 不在装配期注入，而是
-执行期由 pipeline 透传给 `Retriever.recall(query, dataset_ids, doc_ids, *, user_id, top_k)`
-——这是相对 LINK-6 的契约调整（见 [recall_pipeline.md](recall_pipeline.md)），使单例化成立。
+sparse 底座含本地 BGE-M3，装配较重，必须单例。dense 底座走远程 system embedding HTTP
+（无本地模型加载），单例化主要是为了与 `recall_pipeline` 单例对齐——所有 retriever
+在 pipeline 单例之内只构造一次。
+
+`user_id` / `top_k` 不在装配期注入，而是执行期由 pipeline 透传给
+`Retriever.recall(query, dataset_ids, doc_ids, *, user_id, top_k)`——这是相对 LINK-6
+的契约调整（见 [recall_pipeline.md](recall_pipeline.md)），使单例化成立。
