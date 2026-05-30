@@ -27,8 +27,8 @@ from src.core.qdrant_vector_storage.point_factory import (
     indexed_point_from_record,
     sparse_indexed_point_from_record,
 )
-from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
 from src.core.sparse_vector import SparseChunkVectorizationRequest, SparseVectorService
+from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
 from src.utils.logger import logger
 
 from ._transaction import TransactionalPipelineMixin
