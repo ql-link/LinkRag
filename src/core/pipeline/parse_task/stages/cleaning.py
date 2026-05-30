@@ -91,7 +91,12 @@ class CleaningStage(Stage):
 
             parse_started_at = time.monotonic()
             try:
-                parse_result = await self._services.parse_file(source_path, payload)
+                if payload.is_markdown_passthrough:
+                    # md/markdown 源文件本身即目标格式：cleaning 阶段的职责是把多源文件
+                    # 「解析为 md」，md 无需任何引擎转换，直接读取源文件文本透传，跳过解析。
+                    parse_result = await self._read_markdown_passthrough(source_path)
+                else:
+                    parse_result = await self._services.parse_file(source_path, payload)
             except Exception as exc:
                 return self._classified_failure(
                     payload, ParseFailureCode.PARSE_ENGINE_FAILED, exc
@@ -108,16 +113,20 @@ class CleaningStage(Stage):
             temp_workspace.safe_unlink(source_path)
             source_path = None
 
-            try:
-                await asyncio.to_thread(
-                    self._services.source_io.upload_markdown,
-                    payload,
-                    parse_result["markdown"],
-                )
-            except Exception as exc:
-                return self._classified_failure(
-                    payload, ParseFailureCode.PARSED_FILE_UPLOAD_FAILED, exc
-                )
+            # md/markdown 在上传阶段已存入 minio（source 位置），cleaning 不重复写 md_bucket；
+            # 其余格式需把解析转换得到的 markdown 写入 md_bucket。markdown 产物坐标由
+            # payload.markdown_bucket/markdown_object_key 统一解析（md→source，其余→md）。
+            if not payload.is_markdown_passthrough:
+                try:
+                    await asyncio.to_thread(
+                        self._services.source_io.upload_markdown,
+                        payload,
+                        parse_result["markdown"],
+                    )
+                except Exception as exc:
+                    return self._classified_failure(
+                        payload, ParseFailureCode.PARSED_FILE_UPLOAD_FAILED, exc
+                    )
 
             ctx.parse_result = parse_result
             return StageOutcome.success()
@@ -147,6 +156,31 @@ class CleaningStage(Stage):
             duration_ms=ctx.log_record.parse_duration_ms,
             finished_at=now(),
         )
+
+    @staticmethod
+    async def _read_markdown_passthrough(source_path: Path | None) -> dict:
+        """直接读取已下载的 md/markdown 源文件文本作为 markdown 产物。
+
+        返回与 :meth:`StageServices.parse_file` 一致的产物字典形状
+        （``markdown`` / ``parse_result`` / ``metadata`` / ``time_cost_ms``），
+        ``parse_result`` 置空使下游 chunking 走纯 markdown 分片路径。
+        """
+        if source_path is None:
+            raise ValueError("md/markdown 源文件路径不能为空，无法透传")
+        started_at = time.monotonic()
+        markdown = await asyncio.to_thread(
+            Path(source_path).read_text, "utf-8", "ignore"
+        )
+        return {
+            "markdown": markdown,
+            "parse_result": None,
+            "metadata": {
+                "format": "markdown",
+                "passthrough": True,
+                "pages_or_length": len(markdown),
+            },
+            "time_cost_ms": int((time.monotonic() - started_at) * 1000),
+        }
 
     @staticmethod
     def _classified_failure(payload, code: ParseFailureCode, exc: Exception) -> StageOutcome:

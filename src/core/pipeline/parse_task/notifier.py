@@ -43,6 +43,22 @@ class ParseResultNotifier:
         self._log_repository = log_repository
         self._pipeline_repository = pipeline_repository
 
+    @staticmethod
+    def _resolve_log_id(
+        document_parsed_log_id: int | None,
+        pipeline_record: DocumentParsePipeline | None,
+    ) -> int | None:
+        """解析 parse_result 必填的 document_parsed_log_id。
+
+        优先取显式入参；缺省时回落到 pipeline 行上的外键。两者皆缺则返回 None，
+        由调用方放弃通知（Java 端 stuck scanner 兜底），避免发出 Java 必拒的消息。
+        """
+        if document_parsed_log_id is not None:
+            return document_parsed_log_id
+        if pipeline_record is not None:
+            return getattr(pipeline_record, "document_parsed_log_id", None)
+        return None
+
     async def send(
         self,
         payload: ParseTaskPayload,
@@ -50,6 +66,7 @@ class ParseResultNotifier:
         parse_finished_at: datetime | None,
         failure_reason: str | None,
         *,
+        document_parsed_log_id: int | None = None,
         user_message: str | None = None,
         pipeline_record: DocumentParsePipeline | None = None,
         db: AsyncSession | None = None,
@@ -59,12 +76,19 @@ class ParseResultNotifier:
 
         发送失败时记录日志，若指定了 ``pipeline_record`` 与 ``db`` 则把 pipeline 兜底为 FAILED。
         """
+        log_id = self._resolve_log_id(document_parsed_log_id, pipeline_record)
+        if log_id is None:
+            logger.error(
+                f"[ParseResultNotifier] 无法确定 document_parsed_log_id，放弃 parse_result 通知: "
+                f"task_id={payload.task_id}, status={task_status}"
+            )
+            return False
         try:
             finished_at = parse_finished_at or now()
             message = ParseResultMessage.build(
                 task_id=payload.task_id,
                 original_file_id=payload.original_file_id,
-                document_parse_task_id=payload.document_parse_task_id,
+                document_parsed_log_id=log_id,
                 dataset_id=payload.dataset_id,
                 user_id=payload.user_id,
                 task_status=task_status,
@@ -90,14 +114,28 @@ class ParseResultNotifier:
         parse_finished_at: datetime | None,
         failure_reason: str | None,
         *,
+        document_parsed_log_id: int | None = None,
+        pipeline_record: DocumentParsePipeline | None = None,
         user_message: str | None = None,
     ) -> None:
-        """发送 parse_result，失败时抛错交给 MQ 重投补发。"""
+        """发送 parse_result，失败时抛错交给 MQ 重投补发。
+
+        当无法确定 ``document_parsed_log_id`` 时不抛错（重投也无济于事），仅由
+        :meth:`send` 记录并放弃，交由 Java 端 stuck scanner 兜底。
+        """
+        log_id = self._resolve_log_id(document_parsed_log_id, pipeline_record)
+        if log_id is None:
+            logger.error(
+                f"[ParseResultNotifier] 无法确定 document_parsed_log_id，放弃 parse_result 通知: "
+                f"task_id={payload.task_id}, status={task_status}"
+            )
+            return
         sent = await self.send(
             payload,
             task_status,
             parse_finished_at,
             failure_reason,
+            document_parsed_log_id=log_id,
             user_message=user_message,
             mark_failed_on_error=False,
         )

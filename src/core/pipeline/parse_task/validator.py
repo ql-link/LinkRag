@@ -132,6 +132,7 @@ class ParseTaskGuard:
                     PARSE_TASK_STATUS_SUCCESS,
                     existing.parse_finished_at,
                     None,
+                    document_parsed_log_id=existing.id,
                     user_message=DUPLICATE_SUCCESS_USER_MESSAGE,
                 )
                 return ParsePipelineResult(status=PipelineStatus.SUCCESS, task_id=payload.task_id)
@@ -142,6 +143,7 @@ class ParseTaskGuard:
                 PARSE_TASK_STATUS_FAILED,
                 existing.parse_finished_at,
                 failure_reason,
+                document_parsed_log_id=existing.id,
                 user_message=DUPLICATE_FAILED_USER_MESSAGE,
             )
             return ParsePipelineResult(status=PipelineStatus.FAILED, task_id=payload.task_id)
@@ -153,6 +155,7 @@ class ParseTaskGuard:
                 PARSE_TASK_STATUS_SUCCESS,
                 existing.parse_finished_at,
                 None,
+                document_parsed_log_id=existing.id,
                 user_message=DUPLICATE_SUCCESS_USER_MESSAGE,
             )
             return ParsePipelineResult(status=PipelineStatus.SUCCESS, task_id=payload.task_id)
@@ -166,6 +169,7 @@ class ParseTaskGuard:
                 PARSE_TASK_STATUS_FAILED,
                 pipeline_record.finished_at or existing.parse_finished_at,
                 failure_reason,
+                document_parsed_log_id=existing.id,
                 user_message=DUPLICATE_FAILED_USER_MESSAGE,
             )
             return ParsePipelineResult(status=PipelineStatus.FAILED, task_id=payload.task_id)
@@ -184,6 +188,7 @@ class ParseTaskGuard:
             PARSE_TASK_STATUS_FAILED,
             finished_at,
             failure_reason,
+            document_parsed_log_id=existing.id,
             user_message=INTERRUPTED_TASK_USER_MESSAGE,
         )
         return ParsePipelineResult(status=PipelineStatus.FAILED, task_id=payload.task_id)

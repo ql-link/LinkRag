@@ -134,10 +134,12 @@ ORM：[`UsageLogDB`](../../src/models/db_models.py)
 | `name` | VARCHAR(128) | 数据集名称 |
 | `description` | VARCHAR(512) | 数据集描述 |
 | `status` | VARCHAR(16) | 状态，默认 `ACTIVE` |
+| `is_deleted` | BOOLEAN | 逻辑删除标记，默认 `FALSE` |
+| `deleted_seq` | BIGINT UNSIGNED | 删除判别列：活行为 `0`，软删后为自身 `id`，支持删后同名重建 |
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
 
 索引：
-- `uk_dataset_user_name(user_id, name)`
+- `uk_dataset_user_name_seq(user_id, name, deleted_seq)`
 - `idx_dataset_user_updated(user_id, updated_at)`
 
 ### `chat_conversation` — 对话表
@@ -200,10 +202,12 @@ document_original_file (1)──(N) document_parse_file (1)──(N) document_pa
 | `upload_status` | VARCHAR(20) | `uploading` / `success` / `failed` |
 | `is_upload_success` | TINYINT(1) | 是否上传成功 |
 | `failure_reason` | VARCHAR(512) | 上传失败原因 |
+| `is_deleted` | BOOLEAN | 逻辑删除标记，默认 `FALSE`；软删保留原文件和 OSS 对象 |
+| `deleted_seq` | BIGINT UNSIGNED | 删除判别列：活行为 `0`，软删后为自身 `id`，支持删后同名重传 |
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
 
 索引：
-- `uk_dataset_user_name_suffix(dataset_id, user_id, original_filename, file_suffix)`
+- `uk_dof_name_suffix_seq(dataset_id, user_id, original_filename, file_suffix, deleted_seq)`
 - `idx_document_original_dataset_created`
 - `idx_document_original_user_created`
 - `idx_document_original_upload_status`

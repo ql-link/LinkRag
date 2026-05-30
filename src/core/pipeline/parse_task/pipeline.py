@@ -126,6 +126,42 @@ class ParseTaskPipeline:
         async with self._session_factory() as db:
             return await self._run(payload, db)
 
+    async def notify_unexpected_failure(
+        self, payload: ParseTaskPayload, exc: BaseException
+    ) -> None:
+        """消费者层兜底：``execute`` 逃逸异常时尽力回发 failed parse_result。
+
+        ``execute`` 内部已对可归类失败落库 + 通知；此处仅兜底极少数逃逸异常
+        （DB/会话错误、未预期 bug 等），避免 Java 端文件永久卡在“解析中”。
+
+        依赖 task_id 反查已建的 ``document_parsed_log`` 行以取得 Java 所需的
+        ``document_parsed_log_id``；若该行尚不存在（如反序列化后建行前即失败），
+        则无法回发合规通知，交由 Java 端 stuck scanner 兜底。本方法不抛异常。
+        """
+        failure_reason = build_failure_reason(ParseFailureCode.INTERNAL_UNKNOWN_ERROR, str(exc))
+        try:
+            async with self._session_factory() as db:
+                log_record = await self._log_repository.get_by_task_id(payload.task_id, db)
+                if log_record is None:
+                    logger.error(
+                        "[ParseTaskPipeline] 兜底通知失败：未找到解析日志 task_id={}",
+                        payload.task_id,
+                    )
+                    return
+                await self._notifier.send(
+                    payload,
+                    PARSE_TASK_STATUS_FAILED,
+                    now(),
+                    failure_reason,
+                    document_parsed_log_id=log_record.id,
+                )
+        except Exception as notify_exc:
+            logger.error(
+                "[ParseTaskPipeline] 兜底通知异常 task_id={} error={}",
+                payload.task_id,
+                notify_exc,
+            )
+
     async def _run(self, payload: ParseTaskPayload, db: AsyncSession) -> ParsePipelineResult:
         """按 ``payload.is_retry`` 分流准备，随后委托 :class:`StagePipeline`。
 
@@ -201,6 +237,7 @@ class ParseTaskPipeline:
             PARSE_TASK_STATUS_FAILED,
             log_record.parse_finished_at,
             validation_error,
+            document_parsed_log_id=log_record.id,
         )
         return ParsePipelineResult(
             status=PipelineStatus.FAILED,
@@ -224,6 +261,7 @@ class ParseTaskPipeline:
             PARSE_TASK_STATUS_FAILED,
             log_record.parse_finished_at,
             failure_reason,
+            document_parsed_log_id=log_record.id,
         )
         return ParsePipelineResult(
             status=PipelineStatus.FAILED,
@@ -255,6 +293,7 @@ class ParseTaskPipeline:
             PARSE_TASK_STATUS_FAILED,
             log_record.parse_finished_at,
             failure_reason,
+            document_parsed_log_id=log_record.id,
             pipeline_record=pipeline_record,
             db=db,
         )
@@ -295,11 +334,13 @@ class ParseTaskPipeline:
 
             # 3) 抢占成功后再建新 log + 继承式新 pipeline；三步同事务提交。
             retry_from_cleaning = old_pipeline.recover_from_stage == POST_PROCESS_STAGE_CLEANING
+            # 非 cleaning 恢复时预写 markdown 坐标：经 payload 解析（md→source 上传位置，
+            # 其余→md_bucket），使 md 重试从 CHUNKING 恢复时按上传位置读回，不误用 md_bucket。
             new_log = await self._log_repository.create_for_retry(
                 payload,
                 db,
-                parsed_bucket=None if retry_from_cleaning else payload.md_bucket,
-                parsed_object_key=None if retry_from_cleaning else payload.md_object_key,
+                parsed_bucket=None if retry_from_cleaning else payload.markdown_bucket,
+                parsed_object_key=None if retry_from_cleaning else payload.markdown_object_key,
                 retry_of_task_id=payload.previous_task_id,  # validate 已确保非空
             )
             new_pipeline = await self._pipeline_repository.create_with_inherited_state(
@@ -338,6 +379,7 @@ class ParseTaskPipeline:
             payload.previous_task_id,
             reason,
         )
+        new_log = None
         try:
             new_log = await self._log_repository.create_failed_for_retry_validation(
                 payload,
@@ -361,11 +403,14 @@ class ParseTaskPipeline:
                 exc,
             )
 
+        # 落库失败时 new_log 可能为空：无 log id 则放弃通知（send_or_raise 内部静默），
+        # 交由 Java 端 stuck scanner 兜底，避免发出 Java 必拒的 parse_result。
         await self._notifier.send_or_raise(
             payload,
             PARSE_TASK_STATUS_FAILED,
             now(),
             reason,
+            document_parsed_log_id=getattr(new_log, "id", None),
         )
         return ParsePipelineResult(
             status=PipelineStatus.FAILED,
