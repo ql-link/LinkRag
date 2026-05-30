@@ -53,6 +53,7 @@ class ChunkingStage(Stage):
                 PARSE_TASK_STATUS_FAILED,
                 finished_at,
                 _CHUNK_STATE_INCONSISTENT,
+                document_parsed_log_id=ctx.log_record.id,
             )
             return StageOutcome.failure(
                 _CHUNK_STATE_INCONSISTENT,

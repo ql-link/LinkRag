@@ -97,6 +97,7 @@ class Stage(ABC):
             PARSE_TASK_STATUS_FAILED,
             now(),
             reason,
+            document_parsed_log_id=ctx.log_record.id,
         )
 
 
@@ -129,5 +130,6 @@ class StagePipeline:
             PARSE_TASK_STATUS_SUCCESS,
             now(),
             None,
+            document_parsed_log_id=ctx.log_record.id,
         )
         return ctx.success_result()

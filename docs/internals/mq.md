@@ -67,7 +67,14 @@ FastAPI lifespan
 | `CacheSyncMessage` | `tolink.rag.cache_sync` | Java -> Python | 失效或刷新用户 LLM 配置缓存 |
 | `UsageReportMessage` | `tolink.rag.usage_report` | Python -> Java/统计侧 | 上报 LLM 调用用量 |
 
-`ParseResultMessage.serialize()` 输出的是 Java 约定的业务 payload，不包含 `mq_type`、`mq_name`、`payload` 信封。
+`ParseResultMessage.serialize()` 输出的是 Java 约定的业务 payload，不包含 `mq_type`、`mq_name`、`payload` 信封。终态通知以 `document_parsed_log_id`（`document_parsed_log.id`）作为 Java 回查解析日志与流水线的关键字段（字段契约见 [mq_contracts.md §ParseResultPayload](../api/mq_contracts.md)）。
+
+### 消费者层异常兜底
+
+`consumers/parse_task_consumer.py::handle_parse_task` 在 `ParseTaskPipeline.execute()` 之外再包一层 catch-all：
+
+- **反序列化失败**（`ParseTaskMessage.parse_msg` 抛错）：无 payload / 无解析日志行，无法回发合规 parse_result，直接抛出交由 §4.1 死信兜底（Java 端 stuck scanner 最终收敛文件状态）。
+- **`execute` 逃逸异常**（pipeline 内部兜底之外的未预期错误，如 DB/会话故障）：调用 `ParseTaskPipeline.notify_unexpected_failure(payload, exc)` 按 task_id 反查已建 log 行、尽力回发 `task_status=failed` 的 parse_result，**避免 Java 端文件永久卡「解析中」**；随后仍 `raise` 以保留死信记账。若 log 行尚不存在则放弃通知，交由 stuck scanner 兜底。
 
 ## 4. 配置
 

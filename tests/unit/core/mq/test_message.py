@@ -163,7 +163,7 @@ class TestParseResultMessage:
         msg = ParseResultMessage.build(
             task_id="t-001",
             original_file_id=1,
-            document_parse_task_id=10,
+            document_parsed_log_id=10,
             dataset_id=30,
             user_id=20,
             task_status="success",
@@ -184,7 +184,7 @@ class TestParseResultMessage:
         msg = ParseResultMessage.build(
             task_id="9f6b7d7e-4e7b-4a3f-9f4d-8d2a1b6c7e90",
             original_file_id=10001,
-            document_parse_task_id=10002,
+            document_parsed_log_id=10002,
             dataset_id=10003,
             user_id=10002,
             task_status="success",
@@ -198,7 +198,7 @@ class TestParseResultMessage:
         assert data == {
             "task_id": "9f6b7d7e-4e7b-4a3f-9f4d-8d2a1b6c7e90",
             "original_file_id": 10001,
-            "document_parse_task_id": 10002,
+            "document_parsed_log_id": 10002,
             "dataset_id": 10003,
             "user_id": 10002,
             "task_status": "success",
@@ -222,7 +222,7 @@ class TestParseResultMessage:
                 "payload": {
                     "task_id": "t-legacy-result",
                     "original_file_id": 1,
-                    "document_parse_task_id": 10,
+                    "document_parsed_log_id": 10,
                     "dataset_id": 30,
                     "user_id": 20,
                     "task_status": "failed",

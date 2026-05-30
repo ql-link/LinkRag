@@ -19,8 +19,8 @@ class ParseResultPayload(MessagePayload):
 
     task_id: str = Field(..., title="解析任务ID", description="document_parsed_log.task_id")
     original_file_id: int = Field(..., title="原始文件ID", description="document_original_file.id")
-    document_parse_task_id: int = Field(
-        ..., title="文件解析表ID", description="document_parse_file.id，字段名保持历史兼容"
+    document_parsed_log_id: int = Field(
+        ..., title="解析日志ID", description="document_parsed_log.id，Java 据此回查解析日志与流水线"
     )
     dataset_id: int = Field(..., title="数据集ID", description="文件所属数据集ID")
     user_id: int = Field(..., title="用户ID", description="文件所属用户ID")
@@ -93,7 +93,7 @@ class ParseResultMessage(AbstractMessage):
         cls,
         task_id: str,
         original_file_id: int,
-        document_parse_task_id: int,
+        document_parsed_log_id: int,
         dataset_id: int,
         user_id: int,
         task_status: str,
@@ -106,7 +106,7 @@ class ParseResultMessage(AbstractMessage):
         Args:
             task_id: 解析任务幂等 ID。
             original_file_id: 原始文件 ID。
-            document_parse_task_id: Java 侧文件解析记录 ID，对应 document_parse_file.id。
+            document_parsed_log_id: 解析日志 ID，对应 document_parsed_log.id，Java 据此回查日志与流水线。
             dataset_id: 数据集 ID。
             user_id: 用户 ID。
             task_status: 点击解析整体终态，通常为 success 或 failed。
@@ -121,7 +121,7 @@ class ParseResultMessage(AbstractMessage):
             payload=ParseResultPayload(
                 task_id=task_id,
                 original_file_id=original_file_id,
-                document_parse_task_id=document_parse_task_id,
+                document_parsed_log_id=document_parsed_log_id,
                 dataset_id=dataset_id,
                 user_id=user_id,
                 task_status=task_status,

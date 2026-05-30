@@ -122,10 +122,12 @@ class StageServices:
 
         path = temp_workspace.create_temp_file(payload.task_id, Path(settings.PARSE_TEMP_DIR))
         try:
+            # markdown 真实位置经 payload 解析：md/markdown 取上传位置（source_*），
+            # 其余格式取 cleaning 写出的 md_*；不可硬编码 md_bucket，否则 md 重试读不到。
             await asyncio.to_thread(
                 self._storage.download_to_path,
-                payload.md_bucket,
-                payload.md_object_key,
+                payload.markdown_bucket,
+                payload.markdown_object_key,
                 path,
             )
             return await asyncio.to_thread(path.read_text, "utf-8")
