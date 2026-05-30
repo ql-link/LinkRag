@@ -44,25 +44,30 @@ ParseTaskPipeline
   -> _run_chunking()
     -> ChunkDraftFactory
     -> ChunkRepository.bulk_insert_pending()
+    -> reload persisted ChunkRecordDB rows
   -> document_parse_pipeline.chunking_status = SUCCESS
   -> _store_chunk_vectors()
-    -> VectorStorageFacade.index_document_chunks()
-      -> VectorStoragePipeline.index_document_chunks()
-        -> ChunkRepository.list_vector_candidates_by_doc_id()
-        -> 按 chunk_index 顺序处理每个 chunk
-          -> ChunkRepository.mark_indexing()
-          -> ChunkEmbeddingPipeline.aembed_chunks([chunk])
-          -> SparseVectorService.vectorize_chunk([chunk 原文])（开启时）
+    -> filter dense chunks: dense_vector_status != SUCCESS
+    -> VectorStorageFacade.index_chunks(chunks=...)
+      -> VectorStoragePipeline.index_chunks()
+        -> 按调用方传入顺序批量处理 chunk
+          -> ChunkRepository.mark_indexing(allowed_statuses=(PENDING, FAILED))
+          -> ChunkEmbeddingPipeline.aembed_chunks(batch)
           -> QdrantIndexStore.ensure_collection()
           -> QdrantIndexStore.upsert_points()
-          -> QdrantIndexStore.ensure_sparse_vector_schema()（开启时）
-          -> QdrantIndexStore.upsert_sparse_vectors()（开启时）
-          -> ChunkRepository.mark_sparse_indexed()（开启时）
           -> ChunkRepository.mark_indexed()
   -> document_parse_pipeline.vectorizing_status = SUCCESS
-  -> EsIndexingPipeline.index_for_parse_task()
+  -> EsIndexingPipeline.write_es_index()
   -> document_parse_pipeline.es_indexing_status = SUCCESS
-  -> SparseIndexingPipeline.run()（开启时）
+  -> _run_sparse_vectorizing()（开启时）
+    -> reload fresh ChunkRecordDB rows
+    -> filter sparse chunks: dense_vector_status=SUCCESS AND sparse_vector_status!=SUCCESS
+    -> SparseIndexingPipeline.run(chunks=..., task_id=..., db=...)
+      -> ChunkRepository.mark_sparse_indexing(allowed_statuses=(PENDING, FAILED))
+      -> SparseVectorService.vectorize_texts(batch content)
+      -> QdrantIndexStore.ensure_sparse_vector_schema()
+      -> QdrantIndexStore.upsert_sparse_vectors()
+      -> ChunkRepository.mark_sparse_indexed()
   -> document_parse_pipeline.sparse_vectorizing_status = SUCCESS（开启时）
   -> parse_result success notification
 ```
@@ -88,16 +93,18 @@ ParseTaskPipeline
 
 ### 3.1 输入模型
 
-解析流水线使用 `VectorStorageFacade.index_document_chunks`，只接收文档归属：
+解析流水线使用 `VectorStorageFacade.index_chunks`。调用方必须先提供已经落库、已过滤的 chunk 真值行；向量化模块不再按 `doc_id` 自查 SQL，也不再接收 `include_failed`：
 
 ```python
 user_id: int
 set_id: int
 doc_id: int
-include_failed: bool = False
+chunks: Sequence[ChunkRecordDB]
 ```
 
-该入口不接收 `list[Chunk]`，不重新分片，不生成新的 `chunk_id`，也不执行 chunk 真值 INSERT。向量化依据来自 `kb_document_chunk`：
+旧 `VectorStoragePipeline.index_document_chunks`、`VectorStorageFacade.index_document_chunks`、`ChunkIndexingRequest` 和 `include_failed` 参数已删除；PR #89 的 `_group_records_by_dense_status` 分组方案也被 pipeline 现场过滤 + 多值 CAS 替代。
+
+该入口接收的是 `list[ChunkRecordDB]`（或等价字段契约对象），不是 splitter `list[Chunk]`。它不重新分片，不生成新的 `chunk_id`，也不执行 chunk 真值 INSERT。向量化依据来自 `kb_document_chunk`：
 
 - `content`：dense 和 sparse 的文本输入。
 - `chunk_id`：Qdrant point id，重试时覆盖同一个索引副本。
@@ -105,10 +112,9 @@ include_failed: bool = False
 - `chunk_index` / `chunk_type` / `start_line` / `end_line`：还原 splitter 兼容 `Chunk`。
 - `dense_vector_status` / `sparse_vector_status`：决定补做哪个分支。
 
-`include_failed` 用于区分普通写入与人工重试：默认 `False` 时只补做 dense
-`PENDING` chunk，`FAILED` chunk 仍可由 `VectorStorageCompensationPipeline`
-显式重建；parse pipeline 的 `is_retry=true` 人工重试会传 `True`，补做 dense
-`PENDING` + `FAILED` chunk，并继续跳过已 `SUCCESS` 的 chunk。
+补做范围由 `ParseTaskPipeline` 现场过滤决定：`dense_chunks = [c for c in chunks if c.dense_vector_status != SUCCESS]`。dense 模块内部再用 `mark_indexing(allowed_statuses=(PENDING, FAILED))` 做多值 CAS 兜底，防止误把已 `SUCCESS` 的 chunk 拉回处理中。
+
+稀疏向量阶段的输入同样是 `list[ChunkRecordDB]`，但由 `ParseTaskPipeline._run_sparse_vectorizing` 在 dense 完成后重新从 SQL load 一次，避免读取陈旧的 `dense_vector_status`。调用前过滤条件是 `dense_vector_status=SUCCESS AND sparse_vector_status!=SUCCESS`；`bucket_id` 从 chunk 行读取，不再由调用方传入。
 
 chunking 阶段复用 `ChunkDraftFactory`，把每个 `Chunk` 转成 `StoredChunkDraft`：
 
@@ -146,15 +152,17 @@ MySQL 是 Chunk 真值源，Qdrant 是向量索引副本。chunk 表中的稠密
 | 字段 | 含义 |
 | --- | --- |
 | `pipeline_status` | 整体状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
-| `chunking_status` | 分片阶段状态：`PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED` |
-| `vectorizing_status` | 向量化/Qdrant 阶段状态：`PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED` |
-| `es_indexing_status` | Elasticsearch 入库阶段状态：`PENDING/INDEXING/INDEXED/FAILED/DELETING/DELETED/DELETE_FAILED` |
-| `failed_stage` | 失败阶段：`CHUNKING/VECTORIZING/ES_INDEXING` |
+| `chunking_status` | 分片阶段状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
+| `vectorizing_status` | dense/Qdrant 阶段状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
+| `pretokenize_status` | 预分词阶段状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
+| `es_indexing_status` | Elasticsearch 入库阶段状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
+| `sparse_vectorizing_status` | 稀疏向量阶段状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
+| `failed_stage` | 失败阶段：`CHUNKING/VECTORIZING/PRETOKENIZE/ES_INDEXING/SPARSE_VECTORIZING` |
 | `recover_from_stage` | 重投或补偿时可恢复的阶段 |
 | `chunk_count` | 本次解析生成的 Chunk 数量 |
 | `*_duration_ms` | 各阶段耗时与总耗时 |
 
-解析日志 `document_parsed_log` 会先记录 Markdown 解析和上传成功；只有分片、向量化和 ES 入库都成功后，Python 才发送 parse_result `success` 通知给 Java。任一后处理阶段失败都会把 `document_parse_pipeline` 标记为 `FAILED`，并发送 parse_result `failed`。
+解析日志 `document_parsed_log` 会先记录 Markdown 解析和上传成功；只有分片、dense 向量化、预分词、ES 入库和稀疏向量化都成功后，Python 才发送 parse_result `success` 通知给 Java。任一后处理阶段失败都会把 `document_parse_pipeline` 标记为 `FAILED`，并发送 parse_result `failed`。
 
 ### 3.4 Qdrant Point
 
@@ -202,7 +210,7 @@ collection 名称由 `BucketRouter.collection_name(bucket_id)` 生成。
 
 ### 4.1 解析流水线中的使用
 
-解析流水线先分片，再进入向量化和 ES 入库。`ParseTaskPipeline._store_chunk_vectors` 会解析 owner：
+解析流水线先分片，再进入向量化和 ES 入库。`_run_chunking()` 在 chunk 真值 commit 后反查 ORM 行，`ParseTaskPipeline._store_chunk_vectors` 接收 `list[ChunkRecordDB]` 并解析 owner：
 
 ```text
 user_id = payload.user_id
@@ -210,14 +218,16 @@ set_id = payload.dataset_id
 doc_id = payload.original_file_id
 ```
 
-然后调用：
+然后现场过滤 dense 待处理集合并调用：
 
 ```python
-result = await vector_storage.index_document_chunks(
+dense_chunks = [c for c in chunks if c.dense_vector_status != SUCCESS]
+
+result = await vector_storage.index_chunks(
     user_id=user_id,
     set_id=set_id,
     doc_id=doc_id,
-    include_failed=payload.is_retry,
+    chunks=dense_chunks,
 )
 ```
 
@@ -234,13 +244,11 @@ result = await vector_storage.index_document_chunks(
 
 ### 4.2 文件级 ES 入库
 
-`ParseTaskPipeline` 在向量化全部成功后调用：
+`ParseTaskPipeline` 在向量化全部成功后基于 `FilePostIndexPlan` 做文档级全量重建：
 
 ```python
-es_result = await EsIndexingPipeline().index_for_parse_task(
-    payload=payload,
-    chunks=chunks,
-)
+await es_pipeline.delete_document_index(user_id=user_id, dataset_id=set_id, doc_id=doc_id)
+es_result = await es_pipeline.write_es_index(plan, db=db)
 ```
 
 `EsIndexingResult` 包含：
@@ -259,16 +267,42 @@ from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
 from src.core.vector_storage.factory import create_vector_storage_facade
 
 facade = create_vector_storage_facade(embedding_pipeline=embedding_pipeline)
-result = await facade.index_document_chunks(
+records = await load_chunk_records_for_doc(db, doc_id=10001)
+dense_chunks = [r for r in records if r.dense_vector_status != "SUCCESS"]
+
+result = await facade.index_chunks(
     user_id=10002,
     set_id=10003,
     doc_id=10001,
+    chunks=dense_chunks,
 )
 ```
 
 实际业务通常由 `ParseTaskPipeline._build_vector_storage()` 负责装配。
 
-### 4.4 修改 Chunk
+### 4.4 稀疏向量阶段
+
+稀疏向量阶段由解析流水线在 dense、pretokenize、ES 均成功后调用。调用前必须重新读取 chunk 真值，确保看到 dense 阶段刚写回的状态：
+
+```python
+fresh_chunks = await self._reload_chunks_from_db(payload, db)
+sparse_chunks = [
+    c
+    for c in fresh_chunks
+    if c.dense_vector_status == SUCCESS
+    and c.sparse_vector_status != SUCCESS
+]
+
+await sparse_pipeline.run(
+    chunks=sparse_chunks,
+    task_id=payload.task_id,
+    db=db,
+)
+```
+
+`SparseIndexingPipeline.run` 不接收 `doc_id` / `bucket_id`，不执行 `count_by_doc_id` 或 `list_sparse_candidates_by_doc_id` 反查。`bucket_id` 从传入 chunk 行取得；若任何传入 chunk 的 `dense_vector_status` 不是 `SUCCESS`，入口会 fail-fast 抛 `SparseIndexingError`。
+
+### 4.5 修改 Chunk
 
 ```python
 result = await facade.update_chunk(
@@ -284,7 +318,7 @@ result = await facade.update_chunk(
 - 使用原 `chunk_id` 覆盖 Qdrant point。
 - 成功后回写 `INDEXED`。
 
-### 4.5 删除 Chunk
+### 4.6 删除 Chunk
 
 ```python
 result = await facade.delete_chunks(["chunk-id-1", "chunk-id-2"])
@@ -297,7 +331,7 @@ result = await facade.delete_chunks(["chunk-id-1", "chunk-id-2"])
 - 成功后标记 `DELETED`。
 - 失败时标记 `DELETE_FAILED`。
 
-### 4.6 补偿
+### 4.7 补偿
 
 Facade 暴露补偿入口：
 
@@ -309,7 +343,7 @@ await facade.reindex_failed_chunks(chunk_ids)
 
 补偿用于恢复 MySQL 和 Qdrant 的最终一致性。
 
-### 4.7 稀疏向量召回
+### 4.8 稀疏向量召回
 
 召回链路通过 `VectorStorageFacade.search_sparse_chunks` 发起稀疏向量搜索。这是**唯一对外召回入口**，调用方只需 import `vector_storage` 包。
 
@@ -450,8 +484,9 @@ ES 阶段只返回文件级 `EsIndexingResult`，不直接维护 `kb_document_ch
 建议覆盖：
 
 - MySQL 状态流转。
-- vectorizing 从 SQL 候选记录恢复 `Chunk`，不接收内存 `list[Chunk]`，且只处理 dense。
-- 稀疏向量由 `SparseIndexingPipeline` 独立阶段处理，只处理 dense 已成功的 chunk。
+- vectorizing 接收 pipeline 传入的 `list[ChunkRecordDB]`，不接收 splitter `list[Chunk]`，不按 `doc_id` 自查 SQL，且只处理 dense。
+- `ParseTaskPipeline` 在 dense 前现场过滤 `dense_vector_status != SUCCESS`，并调用 `index_chunks(chunks=...)`，不再调用旧 `index_document_chunks` / 传 `include_failed`。
+- 稀疏向量由 `SparseIndexingPipeline` 独立阶段处理；调用前重新 load chunks，只处理 dense 已成功且 sparse 未成功的 chunk。
 - embedding 批处理和缓存命中。
 - Qdrant collection 自动创建和 upsert。
 - ES 文件级索引创建和逐 Chunk 写入。

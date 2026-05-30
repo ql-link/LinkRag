@@ -76,10 +76,12 @@ parse_task message
   -> create/mark document_parse_pipeline processing
   -> chunk markdown / ParseResult
   -> store chunk facts to MySQL
-  -> dense index persisted chunks to Qdrant
+  -> reload persisted chunk truth rows
+  -> dense index filtered chunks to Qdrant
   -> pretokenize chunks
   -> index chunks to Elasticsearch
-  -> sparse vectorize dense-success chunks
+  -> reload fresh chunk truth rows
+  -> sparse vectorize filtered dense-success chunks
   -> mark document_parse_pipeline success
   -> send parse_result success
 ```
@@ -103,10 +105,11 @@ any classified failure
 | 源文件处理 | `ParseSourceIO.should_skip_source_download()` / `ParseSourceIO.download_to_path()` + `temp_workspace.create_temp_file()` + `temp_workspace.safe_unlink()` | MinerU URL API 跳过本地下载（`source_path=None`）；其他后端流式下载到 `PARSE_TEMP_DIR/parse-{task_id}-{rand}.tmp`，拿到 markdown 后立即 `safe_unlink` 早删，外层 `finally` 二次兜底。下载阶段 `OSError errno=ENOSPC` 归类 `TEMP_DISK_FULL`，其他下载异常归类 `SOURCE_FILE_NOT_FOUND` |
 | 文件解析 | `_run_cleaning_stage()` / `_parse_file()` | `recover_from_stage=CLEANING` 的 retry 入口，按首次解析一致的顺序下载源文件、调用 `ParseTaskService.aprocess()`、上传 Markdown，并在上传成功后写入 `document_parsed_log.parsed_*` |
 | Markdown 上传 | `ParseSourceIO.upload_markdown()` | 上传 Markdown 到 payload 指定 bucket/key；cleaning retry 不预写旧 markdown 坐标，成功后由 `mark_parsed()` 写入真实坐标 |
-| 分片 | `_run_chunking()` / `_chunk_markdown()` / `_persist_chunk_facts()` | 优先消费上游 `ParseResult`，否则重新解析 Markdown；分片成功后在 chunking 阶段单事务批量写入 `kb_document_chunk` 真值记录 |
-| 向量化 | `_store_chunk_vectors()` | 通过 `VectorStorageFacade.index_document_chunks()` 消费已落库 chunk 真值并写 Qdrant，不再创建 chunk 真值；首次执行只处理 dense `PENDING` chunk，`is_retry=true` 的人工重试会显式补做 dense `PENDING` + `FAILED` chunk |
+| 分片 | `_run_chunking()` / `_chunk_markdown()` / `_persist_chunk_facts()` | 优先消费上游 `ParseResult`，否则重新解析 Markdown；分片成功后在 chunking 阶段单事务批量写入 `kb_document_chunk` 真值记录，并在 commit 后按 `doc_id` 反查 ORM 行，返回 `list[ChunkRecordDB]` 作为下游唯一 chunk 形态 |
+| 向量化 | `_store_chunk_vectors()` | 接收 `list[ChunkRecordDB]`，现场过滤 `dense_chunks = [c for c in chunks if c.dense_vector_status != SUCCESS]`，再通过 `VectorStorageFacade.index_chunks(user_id, set_id, doc_id, chunks=...)` 写 Qdrant；dense 模块不再自查 SQL、不接收 `include_failed`，由多值 CAS `(PENDING, FAILED)` 兜底首次 / 重试共用入口 |
 | 预分词（一等独立阶段） | `_run_pretokenize()` / `_get_preprocessor()` | `Preprocessor.build_file_post_index_plan()` 聚合 doc 下 chunk token 为内存 `FilePostIndexPlan`（单趟扇出，不持久化）。**plan 覆盖该文档全部有效 chunk（不按 `es_status` 过滤，Issue #57）**，已 SUCCESS 的 chunk 也重新 tokenize 进入 plan，供 ES 文档级全量重建消费。文件级 all-or-nothing：成功 `mark_pretokenize_success`；失败返回 `(None, reason)`，由 `_run` 统一 `mark_pretokenize_failed` + 通知 Java FAILED，**不写任何 chunk es_status** |
 | ES 入库（文档级全量重建，Issue #57） | `_run_es_indexing()` | **前置删除 → 全量写入 → 失败清理**：先 `EsIndexingPipeline.delete_document_index(user+dataset+doc)` 删干净该文档已有 ES 索引（首次执行命中 0 的幂等空操作，重试时清理旧残留与陈旧 chunk），再消费内存 `FilePostIndexPlan` 调 `write_es_index()` 全量写（相同 `_id` 覆盖）。前置删除失败（ES 不可达）直接判 ES 失败、不写入（`es_delete:` 前缀）；写入未全部成功时再次 delete 清理本趟半成品（best-effort）。**不再按 `es_status` 只补失败 chunk**。`_ensure_index` 等基础设施故障按文件级处理（不标 chunk，`ensure_index:` 前缀）。失败由 `_run` 统一 `mark_es_failed` + 通知，**不计数、不设上限、不写 retry_exhausted** |
+| 稀疏向量化 | `_run_sparse_vectorizing()` | dense 阶段完成后重新按 `doc_id` load 一次 `list[ChunkRecordDB]`，避免读取陈旧 `dense_vector_status`；现场过滤 `dense_vector_status=SUCCESS AND sparse_vector_status!=SUCCESS` 后调用 `SparseIndexingPipeline.run(chunks=..., task_id=..., db=...)`。`bucket_id` 取自 chunk 行，不再由调用方传入 |
 | 结果通知 | `_send_parse_result()` | 向 `tolink.rag.parse_result` 发送整体终态 |
 
 ## 4. 状态语义
@@ -166,7 +169,7 @@ any classified failure
 1. `ParseTaskGuard.validate_retry_context(payload, db)`：严格校验（含 CAS 第 1 层快速失败 `superseded_by_task_id IS NULL`），失败抛 `RetryValidationError`。若旧 pipeline 的 `recover_from_stage=CLEANING`，不要求旧 log 已有 `parsed_object_key`；若恢复点晚于 CLEANING，则要求旧 markdown 坐标存在。
 2. `ParsePipelineRepository.mark_superseded(old_pipeline, new_task_id)`：CAS 第 2 层真原子，`UPDATE ... WHERE superseded_by_task_id IS NULL` 依赖 rowcount 仲裁；rowcount=0 抛 `RetryValidationError("RETRY_VALIDATION_FAILED:concurrent_supersede")`。
 3. `ParseLogRepository.create_for_retry(...)` + `ParsePipelineRepository.create_with_inherited_state(old_pipeline, new_log)`：建新 log + 新 pipeline，复制 6 阶段 SUCCESS 状态与 duration，重置非 SUCCESS 阶段。若从 CLEANING 恢复，新 log 初始不写 `parsed_*` 字段，等待重新上传 markdown 成功后写真实值。
-4. 进入 6 阶段循环，跳过继承到的 SUCCESS 阶段、从首个非 SUCCESS 阶段恢复执行；若恢复点是 CLEANING，则复用 `_run_cleaning_stage()` 重新下载源文件、解析、上传 markdown，成功后继续 chunking。chunking 被跳过时由 `_load_all_chunks_from_db(doc_id)` 反查当前文档**完整** chunk 真值表（仅按 `doc_id` 过滤、排除删除态保护集合，按 `chunk_index` 排序）组装 `list[Chunk]` 喂给下游，语义等价于首次执行的 chunking 输出。下游 dense / sparse 按各自 SQL 真值（`dense_vector_status / sparse_vector_status`）决定补做范围；**ES 阶段为文档级全量重建（Issue #57）——不按 `es_status` 补做子集，而是先删该文档全部 ES 索引再基于完整 chunk 集全量重写**（首次执行与重试同一编排）。pipeline 编排层不做 dense/sparse 的局部子集过滤。
+4. 进入 6 阶段循环，跳过继承到的 SUCCESS 阶段、从首个非 SUCCESS 阶段恢复执行；若恢复点是 CLEANING，则复用 `_run_cleaning_stage()` 重新下载源文件、解析、上传 markdown，成功后继续 chunking。chunking 被跳过时由 `_load_all_chunks_from_db(payload, db)` 反查当前文档**完整** chunk 真值表（仅按 `doc_id` 过滤、排除删除态保护集合，按 `chunk_index` 排序），返回 `list[ChunkRecordDB]` 喂给下游，语义等价于首次执行的 `_run_chunking()` 返回值。dense 阶段由 pipeline 现场过滤 `dense_vector_status != SUCCESS` 后调用 `index_chunks`；sparse 阶段在 dense 完成后重新 load 一次最新 ORM 行，再过滤 `dense_vector_status=SUCCESS AND sparse_vector_status!=SUCCESS` 后调用 `SparseIndexingPipeline.run`；**ES 阶段为文档级全量重建（Issue #57）——不按 `es_status` 补做子集，而是先删该文档全部 ES 索引再基于完整 chunk 集全量重写**（首次执行与重试同一编排）。
 
 校验或 CAS 失败时走 `_handle_retry_validation_failure`：双表落 FAILED 终态（`pipeline_status=FAILED` + `failed_stage=RETRY_VALIDATION` + 前缀 `RETRY_VALIDATION_FAILED:`），不更新任何旧表行，通知 Java FAILED。
 
@@ -208,6 +211,7 @@ pdf_parser_backend == "mineru"
 - `es_delete:`（ES 文档级全量重建前置删除失败，如 ES 不可达）
 - `ensure_index:`（ES 确保索引存在等基础设施故障）
 - `ES_INDEXING_FAILED:`（ES bulk chunk 级写失败）
+- `SPARSE_VECTORIZING_FAILED:`（稀疏向量阶段失败；包括 dense 前置条件不满足、稀疏编码、Qdrant 写入或状态回写失败）
 
 失败原因统一写入 `failure_reason`，最大长度按数据库字段控制为 512。
 
@@ -233,7 +237,9 @@ pdf_parser_backend == "mineru"
 - 重复 task 的补发、跳过和中断收敛。
 - 解析、上传、分片、向量化、ES 和通知失败。
 - chunking 成功后已批量落库 chunk 真值；SQL 批量落库失败时回滚且不进入向量化。
-- vectorizing 只调用 `index_document_chunks`，不再创建 chunk 真值。
+- chunking 成功后返回 `list[ChunkRecordDB]`；retry `_load_all_chunks_from_db` 同样返回 ORM 行，不再 wrap 成 splitter `Chunk`。
+- vectorizing 现场过滤 `dense_vector_status != SUCCESS` 后只调用 `index_chunks(chunks=...)`，不再创建 chunk 真值，也不再调用旧 `index_document_chunks` / 传 `include_failed`。
+- sparse vectorizing 在调用前重新 load chunks，并只把 `dense_vector_status=SUCCESS` 且 `sparse_vector_status!=SUCCESS` 的 ORM 行传给 `SparseIndexingPipeline.run(chunks=..., task_id=..., db=...)`。
 - MinerU 后端跳过源文件下载并注入 `source_file_url`；旁路下 `source_path` 在整条链路中保持 `None`，不创建临时文件、不需要清理。
 - 预分词失败为文件级 all-or-nothing：落 `pretokenize_status=FAILED`，不写任何 chunk es_status。
 - ES 基础设施故障（`ensure_index`）文件级不标 chunk；ES chunk 级失败逐 chunk 标记。
