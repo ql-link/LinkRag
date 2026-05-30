@@ -18,7 +18,6 @@ from .exceptions import (
 from .management_pipeline import VectorStorageManagementPipeline
 from .models import (
     ChunkDeleteRequest,
-    ChunkIndexingRequest,
     ChunkIndexingResult,
     ChunkMutationResult,
     ChunkStorageRequest,
@@ -103,23 +102,25 @@ class VectorStorageFacade:
             )
         )
 
-    async def index_document_chunks(
+    async def index_chunks(
         self,
         *,
         user_id: int,
         set_id: int,
         doc_id: int,
-        include_failed: bool = False,
+        chunks: Sequence[object],
     ) -> ChunkIndexingResult:
-        """索引已经落库的 chunk 真值记录，不创建新的 chunk 行。"""
+        """索引 pipeline 已过滤的 chunk 真值记录；调用方需提前剔除 ``dense_vector_status=SUCCESS``。
 
-        return await self.storage_service.index_document_chunks(
-            ChunkIndexingRequest(
-                user_id=user_id,
-                set_id=set_id,
-                doc_id=doc_id,
-                include_failed=include_failed,
-            )
+        模块内部使用多值 CAS（``allowed_statuses=(PENDING, FAILED)``）兜底，
+        ``rowcount`` 不达预期会进失败路径，调用方按返回的 ``failed_chunk_ids`` 处理。
+        """
+
+        return await self.storage_service.index_chunks(
+            user_id=user_id,
+            set_id=set_id,
+            doc_id=doc_id,
+            chunks=chunks,
         )
 
     async def update_chunk(
