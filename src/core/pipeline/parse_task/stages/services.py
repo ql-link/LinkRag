@@ -103,6 +103,29 @@ class StageServices:
             **parser_kwargs,
         )
 
+    async def load_markdown(self, payload: ParseTaskPayload) -> str:
+        """从对象存储读回已上传的 Markdown 文本（重试从 CHUNKING 恢复时使用）。
+
+        ``cleaning`` 已成功的重试会跳过解析+上传，但「从 CHUNKING 重新分片」需要旧
+        markdown 作为分片输入。沿用 ``download_to_path`` 流式下载到临时文件再读取，
+        不在内存拼接完整对象，与源文件下载保持同一 OOM 安全约束。
+        """
+        import asyncio
+
+        from .. import temp_workspace
+
+        path = temp_workspace.create_temp_file(payload.task_id, Path(settings.PARSE_TEMP_DIR))
+        try:
+            await asyncio.to_thread(
+                self._storage.download_to_path,
+                payload.md_bucket,
+                payload.md_object_key,
+                path,
+            )
+            return await asyncio.to_thread(path.read_text, "utf-8")
+        finally:
+            temp_workspace.safe_unlink(path)
+
     # ------------------------------------------------------------------
     # chunking
     # ------------------------------------------------------------------
@@ -147,6 +170,10 @@ class StageServices:
             chunks=chunks,
         )
         try:
+            if payload.is_retry:
+                # 重试重建 chunk truth set：先清本文档残留再全量写入，使「清旧+写新」同事务原子化，
+                # 避免旧 chunking 半成品或上一轮残片与本轮派生的同名 chunk_id 撞唯一键。
+                await self._chunk_repository.delete_by_doc_id(db, doc_id)
             await self._chunk_repository.bulk_insert_pending(db, drafts)
             await db.commit()
         except Exception:

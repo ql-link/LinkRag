@@ -28,8 +28,10 @@ Qdrant 6333、ES 9200，以及解析引擎 mineru 公网 API、sparse BGE-M3 模
 from __future__ import annotations
 
 import asyncio
+import html as _html
 import sys
 import uuid
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -140,6 +142,13 @@ class HarnessServices(StageServices):
     async def load_all_chunks_from_db(self, payload, db) -> list[Chunk]:
         self._bump("load_all_chunks_from_db")
         return await super().load_all_chunks_from_db(payload, db)  # 真实 DB 反查
+
+    async def load_markdown(self, payload: ParseTaskPayload) -> str:
+        # 替代对象存储读回：StubStorage 不实现 download，这里直接产出与 parse_file 同源的 markdown。
+        self._bump("load_markdown")
+        if self.faults.get("LOAD_MARKDOWN") == "raise":
+            raise RuntimeError("injected markdown reload failure")
+        return f"# Doc {payload.task_id}\n\npara one\n\npara two\n\npara three\n"
 
     # ---- vectorizing (dense) ----
     async def store_chunk_vectors(self, chunks, payload, db) -> ChunkIndexingResult:
@@ -295,6 +304,7 @@ async def count_chunks(doc_id: int) -> int:
 class Report:
     def __init__(self) -> None:
         self.rows: list[tuple[str, str, bool, str]] = []
+        self.started_at = datetime.now()
 
     def check(self, scenario: str, label: str, cond: bool, got: str = "") -> None:
         self.rows.append((scenario, label, bool(cond), got))
@@ -329,6 +339,115 @@ class Report:
               f"{sum(1 for s in scenarios if self.scenario_ok(s))}/{len(scenarios)} 全绿")
         print("=" * 78)
         return failed_total
+
+    def write_html(self, out_path: Path) -> None:
+        """生成可视化 HTML 报告。"""
+        scenarios: list[str] = []
+        for s, _, _, _ in self.rows:
+            if s not in scenarios:
+                scenarios.append(s)
+        total = len(self.rows)
+        passed = sum(1 for _, _, ok, _ in self.rows if ok)
+        failed = total - passed
+        sc_pass = sum(1 for s in scenarios if self.scenario_ok(s))
+        finished_at = datetime.now()
+        dur = (finished_at - self.started_at).total_seconds()
+        overall_ok = failed == 0
+
+        def esc(x: object) -> str:
+            return _html.escape("" if x is None else str(x))
+
+        cards = []
+        for s in scenarios:
+            ok = self.scenario_ok(s)
+            sub = [r for r in self.rows if r[0] == s]
+            n_pass = sum(1 for r in sub if r[2])
+            rows_html = []
+            for _s, label, c, got in sub:
+                badge = (
+                    '<span class="b ok">PASS</span>' if c
+                    else '<span class="b bad">FAIL</span>'
+                )
+                got_html = f'<code>{esc(got)}</code>' if got else "<span class=dim>—</span>"
+                rows_html.append(
+                    f'<tr class="{"" if c else "row-bad"}"><td>{badge}</td>'
+                    f'<td>{esc(label)}</td><td>{got_html}</td></tr>'
+                )
+            cards.append(f'''
+    <details class="card {'ok' if ok else 'bad'}" {'open' if not ok else ''}>
+      <summary>
+        <span class="pill {'ok' if ok else 'bad'}">{'PASS' if ok else 'FAIL'}</span>
+        <span class="sname">{esc(s)}</span>
+        <span class="count">{n_pass}/{len(sub)}</span>
+      </summary>
+      <table>
+        <thead><tr><th>结果</th><th>断言</th><th>实际值 (got)</th></tr></thead>
+        <tbody>{''.join(rows_html)}</tbody>
+      </table>
+    </details>''')
+
+        html_doc = f'''<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>LINK-37 解析 Pipeline 真实链路测试报告</title>
+<style>
+  :root {{ --ok:#16a34a; --bad:#dc2626; --bg:#0f172a; --card:#1e293b; --line:#334155; --txt:#e2e8f0; --dim:#94a3b8; }}
+  * {{ box-sizing:border-box; }}
+  body {{ margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC","Microsoft YaHei",sans-serif; background:var(--bg); color:var(--txt); line-height:1.5; }}
+  .wrap {{ max-width:1040px; margin:0 auto; padding:32px 20px 64px; }}
+  h1 {{ font-size:22px; margin:0 0 4px; }}
+  .meta {{ color:var(--dim); font-size:13px; margin-bottom:24px; }}
+  .summary {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:28px; }}
+  .stat {{ background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; }}
+  .stat .num {{ font-size:28px; font-weight:700; }}
+  .stat .lbl {{ color:var(--dim); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }}
+  .stat.green .num {{ color:var(--ok); }}  .stat.red .num {{ color:var(--bad); }}
+  .banner {{ border-radius:12px; padding:14px 18px; font-weight:600; margin-bottom:24px; }}
+  .banner.ok {{ background:rgba(22,163,74,.15); border:1px solid var(--ok); color:#86efac; }}
+  .banner.bad {{ background:rgba(220,38,38,.15); border:1px solid var(--bad); color:#fca5a5; }}
+  .card {{ background:var(--card); border:1px solid var(--line); border-radius:12px; margin-bottom:12px; overflow:hidden; }}
+  .card.bad {{ border-color:var(--bad); }}
+  summary {{ cursor:pointer; padding:14px 16px; display:flex; align-items:center; gap:12px; font-weight:500; list-style:none; }}
+  summary::-webkit-details-marker {{ display:none; }}
+  .pill {{ font-size:11px; font-weight:700; padding:3px 9px; border-radius:999px; }}
+  .pill.ok {{ background:var(--ok); color:#03210f; }}  .pill.bad {{ background:var(--bad); color:#2a0606; }}
+  .sname {{ flex:1; font-size:14px; }}
+  .count {{ color:var(--dim); font-size:13px; font-variant-numeric:tabular-nums; }}
+  table {{ width:100%; border-collapse:collapse; font-size:13px; }}
+  th, td {{ text-align:left; padding:8px 16px; border-top:1px solid var(--line); vertical-align:top; }}
+  th {{ color:var(--dim); font-weight:500; font-size:11px; text-transform:uppercase; }}
+  td code {{ background:#0b1220; padding:2px 6px; border-radius:5px; font-size:12px; color:#fbbf24; word-break:break-all; }}
+  .b {{ font-size:10px; font-weight:700; padding:2px 7px; border-radius:5px; }}
+  .b.ok {{ background:rgba(22,163,74,.2); color:#86efac; }}
+  .b.bad {{ background:rgba(220,38,38,.2); color:#fca5a5; }}
+  .row-bad {{ background:rgba(220,38,38,.07); }}
+  .dim {{ color:var(--dim); }}
+  footer {{ margin-top:32px; color:var(--dim); font-size:12px; border-top:1px solid var(--line); padding-top:16px; }}
+</style></head>
+<body><div class="wrap">
+  <h1>LINK-37 解析 Pipeline 真实链路测试报告</h1>
+  <div class="meta">
+    真实 MySQL 状态机 + 真实编排 · 非 mock 测试 · 稀疏向量阶段按需求 no-op 跳过<br>
+    运行时间 {esc(self.started_at.strftime("%Y-%m-%d %H:%M:%S"))} · 耗时 {dur:.2f}s · RUN={esc(RUN)}
+  </div>
+  <div class="banner {'ok' if overall_ok else 'bad'}">
+    {'✓ 全部通过：6 阶段状态机、失败状态记录、重试恢复、前置校验、幂等均符合 LINK-37 验收。'
+     if overall_ok else '✗ 存在失败断言，详见下方红色场景。'}
+  </div>
+  <div class="summary">
+    <div class="stat {'green' if overall_ok else 'red'}"><div class="num">{sc_pass}/{len(scenarios)}</div><div class="lbl">场景全绿</div></div>
+    <div class="stat green"><div class="num">{passed}</div><div class="lbl">断言通过</div></div>
+    <div class="stat {'red' if failed else ''}"><div class="num">{failed}</div><div class="lbl">断言失败</div></div>
+    <div class="stat"><div class="num">{total}</div><div class="lbl">断言总数</div></div>
+  </div>
+  {''.join(cards)}
+  <footer>
+    生成自 <code>scripts/link37_realtest.py</code> · 覆盖：S1 全链路成功 / S2 各阶段异常状态记录 /
+    S3 重试恢复 / S4 §8 es 重试 plan 重建 / S5 重试前置校验 / S6 幂等重复投递。
+  </footer>
+</div></body></html>'''
+        out_path.write_text(html_doc, encoding="utf-8")
+        print(f"[html] 报告已写出：{out_path}")
 
 
 # ---------------------------------------------------------------------------
@@ -450,6 +569,61 @@ async def scenario_retry_resume(rep: Report, idx: int, fail_stage: str, fault_mo
         rep.check(s, "重试不重跑 cleaning（parse_file 未调用）", svc2.calls.get("parse_file", 0) == 0, str(svc2.calls.get("parse_file", 0)))
         rep.check(s, "重试不重跑 chunking（run_chunking 未调用）", svc2.calls.get("run_chunking", 0) == 0, str(svc2.calls.get("run_chunking", 0)))
         rep.check(s, "重试从 DB 反查 chunk（load_all_chunks_from_db 调用）", svc2.calls.get("load_all_chunks_from_db", 0) >= 1, str(svc2.calls.get("load_all_chunks_from_db", 0)))
+
+
+async def scenario_retry_chunking_recover(rep: Report, idx: int) -> None:
+    """LINK-32：chunking 失败后的重试应从旧 markdown 重新分片恢复，而非被拒。
+
+    旧任务 cleaning 成功（markdown 已上传）、chunking 失败 → recover_from_stage=CHUNKING。
+    重试时 cleaning 继承 SUCCESS 被跳过，ChunkingStage 必须读回旧 markdown 重新分片，
+    重建 chunk truth set（不翻倍），随后继续 dense→pretokenize→es→sparse 成功。
+    """
+    s = "S3.CHUNKING 重试：chunking 失败 → 从旧 markdown 重新分片恢复（LINK-32）"
+    file_id = BASE_ID + idx
+    old_task = f"link37_{RUN}_{idx}_old"
+    new_task = f"link37_{RUN}_{idx}_new"
+    user_id, dataset_id = 8_000_000, 7_000_000 + idx
+    pt = await seed_parse_task(file_id, user_id, dataset_id, old_task)
+
+    # --- 第一轮：chunking 注入异常（cleaning/markdown 已成功）---
+    mq1 = FakeMQ()
+    p1, svc1 = build_pipeline(mq1)
+    svc1.faults["CHUNKING"] = "raise"
+    r1 = await p1.execute(make_payload(
+        task_id=old_task, file_id=file_id, parse_task_id=pt,
+        user_id=user_id, dataset_id=dataset_id))
+    old_pp = await read_pipeline(old_task)
+    rep.check(s, "旧任务 cleaning 成功、chunking 失败、recover=CHUNKING",
+              r1.status == PipelineStatus.FAILED and old_pp.cleaning_status == SUCCESS
+              and old_pp.chunking_status == FAILED and old_pp.recover_from_stage == "CHUNKING",
+              f"clean={old_pp.cleaning_status},chunk={old_pp.chunking_status},recover={old_pp.recover_from_stage}")
+    rep.check(s, "旧任务 chunk 未落库（persist 回滚）", await count_chunks(file_id) == 0, str(await count_chunks(file_id)))
+
+    # --- 第二轮：retry，无故障 → 期望从旧 markdown 重新分片 ---
+    mq2 = FakeMQ()
+    p2, svc2 = build_pipeline(mq2)
+    r2 = await p2.execute(make_payload(
+        task_id=new_task, file_id=file_id, parse_task_id=pt,
+        user_id=user_id, dataset_id=dataset_id,
+        is_retry=True, previous_task_id=old_task))
+    new_pp = await read_pipeline(new_task)
+    old_after = await read_pipeline(old_task)
+
+    rep.check(s, "重试 execute 返回 SUCCESS（不再被判 chunking_not_success_in_retry）",
+              r2.status == PipelineStatus.SUCCESS, str(r2.status))
+    rep.check(s, "新 pipeline_status=SUCCESS", new_pp and new_pp.pipeline_status == SUCCESS, getattr(new_pp, "pipeline_status", None))
+    rep.check(s, "新 chunking_status=SUCCESS", new_pp and new_pp.chunking_status == SUCCESS, getattr(new_pp, "chunking_status", None))
+    rep.check(s, "重试读回旧 markdown（load_markdown 调用 1 次）", svc2.calls.get("load_markdown", 0) == 1, str(svc2.calls.get("load_markdown", 0)))
+    rep.check(s, "重试重新分片（run_chunking 调用 1 次）", svc2.calls.get("run_chunking", 0) == 1, str(svc2.calls.get("run_chunking", 0)))
+    rep.check(s, "重试不重跑 cleaning（parse_file 未调用）", svc2.calls.get("parse_file", 0) == 0, str(svc2.calls.get("parse_file", 0)))
+    rep.check(s, "chunk truth set 重建为 3 行（未翻倍）", await count_chunks(file_id) == 3, str(await count_chunks(file_id)))
+    rep.check(s, "旧 pipeline 被 supersede", old_after and old_after.superseded_by_task_id == new_task, getattr(old_after, "superseded_by_task_id", None))
+    rep.check(s, "下游全部 SUCCESS（dense/pretokenize/es/sparse）",
+              new_pp and all(getattr(new_pp, f) == SUCCESS for f in
+                             ["vectorizing_status", "pretokenize_status", "es_indexing_status", "sparse_vectorizing_status"]),
+              f"v={getattr(new_pp,'vectorizing_status',None)},p={getattr(new_pp,'pretokenize_status',None)},"
+              f"e={getattr(new_pp,'es_indexing_status',None)},s={getattr(new_pp,'sparse_vectorizing_status',None)}")
+    rep.check(s, "通知 task_status=success", mq2.last_status() == "success", mq2.last_status())
 
 
 async def scenario_retry_es_special(rep: Report, idx: int) -> None:
@@ -589,6 +763,7 @@ async def main() -> int:
         await scenario_stage_failure(rep, 3, "VECTORIZING", "fail", "vectorizing_status", "VECTORIZING_FAILED")
         await scenario_stage_failure(rep, 4, "PRETOKENIZE", "fail", "pretokenize_status", "pretokenize")
         await scenario_stage_failure(rep, 5, "ES_INDEXING", "fail", "es_indexing_status", "ES_INDEXING_FAILED")
+        await scenario_retry_chunking_recover(rep, 8)
         await scenario_retry_resume(rep, 10, "VECTORIZING", "fail", "VECTORIZING")
         await scenario_retry_resume(rep, 12, "PRETOKENIZE", "fail", "PRETOKENIZE")
         await scenario_retry_es_special(rep, 14)
@@ -596,6 +771,8 @@ async def main() -> int:
         await scenario_duplicate(rep, 30)
     finally:
         failed = rep.dump()
+        out = Path(__file__).resolve().parents[1] / "link37_realtest_report.html"
+        rep.write_html(out)
         await cleanup()
         await close_database()
     return 1 if failed else 0

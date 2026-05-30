@@ -1,10 +1,12 @@
 """ChunkingStage：分片并写入 chunk 真值，或重试时从 DB 反查完整 chunk 集合。
 
-三条入口：
+四条入口：
   - ``chunking_status == SUCCESS``（继承）→ :meth:`on_skip` 从 DB 反查完整 chunk
     truth set；反查为空视为状态不一致（落 vectorizing_failed + 通知）。
   - 非 SUCCESS 且有本轮 cleaning 产物 → :meth:`run` 用 markdown / ParseResult 分片。
-  - 非 SUCCESS 且无 cleaning 产物 → 状态不一致（仅可能出现在重试），落 chunking_failed。
+  - 非 SUCCESS、无本轮 cleaning 产物、但旧 markdown 坐标可用（重试从 CHUNKING 恢复，
+    LINK-32）→ :meth:`run` 读回旧 markdown 重新分片，重建 chunk truth set。
+  - 非 SUCCESS、无 cleaning 产物、也无 markdown 坐标 → 状态不一致，落 chunking_failed。
 """
 
 from __future__ import annotations
@@ -71,16 +73,28 @@ class ChunkingStage(Stage):
 
     async def run(self, ctx: StageContext) -> StageOutcome:
         if ctx.parse_result is None:
-            # 非 SUCCESS 又无本轮 cleaning 产物：状态不一致（仅重试）。
-            logger.warning(
-                "[ChunkingStage] retry aborted due to unexpected state: task_id={} reason={}",
-                ctx.payload.task_id,
-                _CHUNKING_NOT_SUCCESS_IN_RETRY,
-            )
-            return StageOutcome.failure(
-                _CHUNKING_NOT_SUCCESS_IN_RETRY,
-                error=RuntimeError(_CHUNKING_NOT_SUCCESS_IN_RETRY),
-            )
+            # 重试从 CHUNKING 恢复（LINK-32）：cleaning 继承 SUCCESS 被跳过，本轮没有
+            # cleaning 产物喂 chunking。若旧 markdown 坐标可用，则读回旧 markdown 重新
+            # 分片；否则才是真状态不一致（无产物也无 markdown），落 chunking_failed。
+            markdown = await self._load_retry_markdown(ctx)
+            if markdown is None:
+                logger.warning(
+                    "[ChunkingStage] retry aborted due to unexpected state: task_id={} reason={}",
+                    ctx.payload.task_id,
+                    _CHUNKING_NOT_SUCCESS_IN_RETRY,
+                )
+                return StageOutcome.failure(
+                    _CHUNKING_NOT_SUCCESS_IN_RETRY,
+                    error=RuntimeError(_CHUNKING_NOT_SUCCESS_IN_RETRY),
+                )
+            # 复用 cleaning 产物字典形状，使下游（success_result 读 time_cost_ms /
+            # metadata）与首次执行一致；本轮未重新解析，cleaning 维度耗时/页数回落 0。
+            ctx.parse_result = {
+                "markdown": markdown,
+                "parse_result": None,
+                "time_cost_ms": 0,
+                "metadata": {"pages_or_length": 0},
+            }
 
         try:
             chunks = await self._services.run_chunking(
@@ -96,6 +110,29 @@ class ChunkingStage(Stage):
             )
         ctx.chunks = chunks
         return StageOutcome.success()
+
+    async def _load_retry_markdown(self, ctx: StageContext) -> str | None:
+        """重试从 CHUNKING 恢复时读回旧 markdown；坐标缺失或读取失败返回 None。
+
+        坐标取自新 retry log 行的 ``parsed_bucket_name`` / ``parsed_object_key``
+        （由 ``create_for_retry`` 从 payload 的 markdown 坐标拷入，且重试前置校验
+        ``previous_markdown_missing`` 已保证旧产物存在）。读取失败按状态不一致处理，
+        交由调用方落 chunking_failed + 通知。
+        """
+        log_record = ctx.log_record
+        bucket = getattr(log_record, "parsed_bucket_name", None)
+        object_key = getattr(log_record, "parsed_object_key", None)
+        if not (bucket and object_key):
+            return None
+        try:
+            return await self._services.load_markdown(ctx.payload)
+        except Exception as exc:
+            logger.warning(
+                "[ChunkingStage] retry markdown reload failed: task_id={} error={}",
+                ctx.payload.task_id,
+                exc,
+            )
+            return None
 
     async def mark_success(self, ctx: StageContext, outcome: StageOutcome, *, started_at) -> None:
         await self._repo.mark_chunking_success(
