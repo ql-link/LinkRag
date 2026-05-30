@@ -1,17 +1,19 @@
 """文件级稀疏向量阶段编排：解析主流水线的最后一段。
 
-承接 brief v3 §3.6：
+承接 brief v3 §3.6（已升级）：
 
-- 输入是 ``(doc_id, bucket_id, task_id, db)``，复用现有 sparse_vector 底层
-  能力（``SparseVectorService`` + Qdrant client）。
+- 输入是 pipeline 已过滤的 ``chunks`` 列表 + ``task_id`` + ``db``，复用现有
+  sparse_vector 底层能力（``SparseVectorService`` + Qdrant client）。
 - 文件级 all-or-nothing：任一 chunk 失败 → 触发失败 chunk 标 FAILED，整体
   抛 :class:`SparseIndexingError`，由上层编排转为 ``pipeline.sparse_vectorizing_status=FAILED`` +
   ``pipeline_status=FAILED`` + 通知 Java。
-- 健康性校验：
-  - 总行数 == 0 → 抛 :class:`SparseIndexingError`（``chunk_total_zero``）。
-  - 反查待处理 chunk 为空（且总数 > 0）→ 视为全部 INDEXED，短路返回。
-- 重试只补做 ``sparse_vector_status IN (PENDING, FAILED)`` 的 chunk，已 INDEXED
-  的不再重做（节省稀疏向量推理成本）。
+- 调用方约束：
+  - chunks 已剔除 ``sparse_vector_status=SUCCESS`` 的条目（由 pipeline 现场过滤完成）。
+  - chunks 中每条的 ``dense_vector_status`` 必须是 ``SUCCESS``——业务硬约束：
+    sparse 向量追加在 dense point 上，dense 没成功就不能跑 sparse。本模块在
+    入口前置断言（fail-fast）兜底；CAS 不能保护这一前置条件。
+  - chunks 自带 ``bucket_id``，本模块从首条取作权威；不再接受外部 ``bucket_id``
+    入参（参见 GitHub issue #95 顺手清理）。
 """
 
 from __future__ import annotations
@@ -51,11 +53,6 @@ class SparseIndexingError(SparseVectorError):
         self.reason = reason
 
 
-# 重试时反查的状态集合：PENDING 是首次没跑到的；FAILED 是上次失败的；其他状态
-# （INDEXING / INDEXED / DELET*）一律不重做，避免重复推理或破坏删除态。
-_SPARSE_PENDING_OR_FAILED = (SPARSE_VECTOR_STATUS_PENDING, SPARSE_VECTOR_STATUS_FAILED)
-
-
 class SparseIndexingPipeline:
     """文件级稀疏向量编排。
 
@@ -86,52 +83,68 @@ class SparseIndexingPipeline:
     async def run(
         self,
         *,
-        doc_id: int,
-        bucket_id: int,
+        chunks: Sequence[ChunkRecordDB],
         task_id: str,
         db: AsyncSession,
     ) -> None:
         """执行单文档的稀疏向量阶段。
 
+        与旧签名（``doc_id`` / ``bucket_id`` 入参）相比：
+
+        * **接收 pipeline 已过滤的 chunks** —— 调用方需提前剔除
+          ``sparse_vector_status=SUCCESS``，并保证每条 chunk 的
+          ``dense_vector_status=SUCCESS``（业务约束：sparse 向量追加在 dense
+          point 上，dense 没成功就不能跑 sparse）。
+        * **不再自查 SQL** —— 删除 ``count_by_doc_id`` 健康性校验与
+          ``list_sparse_candidates_by_doc_id`` 反查。
+        * **bucket_id 从 chunks 自带字段取** —— 不再由调用方误传
+          ``payload.dataset_id``（参见 GitHub issue #95）。
+
         正常路径不返回值；异常路径统一抛 :class:`SparseIndexingError`，由
         ``ParseTaskPipeline._run_sparse_vectorizing`` 捕获并翻 FAILED 终态。
+
+        前置断言（fail-fast）：传入 chunks 中任一条 ``dense_vector_status``
+        不是 ``SUCCESS`` 即抛异常。理由：CAS 只能保护 ``sparse_vector_status``
+        维度；"dense 还没成功就跑 sparse" 这种前置条件违反必须在应用层兜底。
         """
-        # 1) 健康性校验：总数 == 0 视为状态严重不一致。
-        total = await self._chunk_repository.count_by_doc_id(db, doc_id)
-        if total == 0:
-            raise SparseIndexingError(
-                f"SPARSE_VECTORIZING_FAILED:chunk_total_zero;doc_id={doc_id}"
-            )
+        records = list(chunks)
 
-        # 2) 反查待处理 chunk（PENDING / FAILED）；再在内存里过滤"dense 已 INDEXED"。
-        # ChunkRepository.list_sparse_candidates_by_doc_id 内部已排除 DELETE 保护态，
-        # 这里只需补一道"dense_vector_status == INDEXED"过滤即可。
-        candidates = await self._chunk_repository.list_sparse_candidates_by_doc_id(
-            db, doc_id, _SPARSE_PENDING_OR_FAILED
-        )
-        targets: list[ChunkRecordDB] = [
-            row for row in candidates if row.dense_vector_status == CHUNK_STATUS_INDEXED
-        ]
-
-        # 3) 空集短路：全部 INDEXED 表示已经做完，幂等 SUCCESS。
-        if not targets:
+        # ① 空集短路：调用方现场过滤后没有待处理 chunk，等价于成功
+        if not records:
             logger.info(
-                "[SparseIndexingPipeline] short-circuit success (no pending sparse chunks): "
-                "task_id={} doc_id={} total={}",
+                "[SparseIndexingPipeline] empty chunks, no-op: task_id={}",
                 task_id,
-                doc_id,
-                total,
             )
             return
 
-        # 4) 分批编排：encode → Qdrant upsert → mark INDEXED；任一批失败抛文件级异常。
+        # ② 前置断言：dense=SUCCESS 是 sparse 运行的硬性前置条件
+        invalid = [r for r in records if r.dense_vector_status != CHUNK_STATUS_INDEXED]
+        if invalid:
+            raise SparseIndexingError(
+                "SPARSE_VECTORIZING_FAILED:dense_not_success;"
+                f"count={len(invalid)},sample_chunk_id={invalid[0].chunk_id}"
+            )
+
+        # ③ batch 编排：从 chunks 自带字段取 bucket_id，每批走 _run_batch
         service = self._get_sparse_vector_service()
         store = self._get_qdrant_store()
         model_name = service.model_name
         vector_name = service.vector_name
 
-        for batch_start in range(0, len(targets), self.batch_size):
-            batch = targets[batch_start : batch_start + self.batch_size]
+        # 同文档下 chunks 的 bucket_id 由写入路径保证一致；取首条作权威。
+        # 下游 Qdrant 按 bucket_id 路由 collection；不一致属于上游 bug。
+        # ORM 字段名义类型为 int | None，但 chunking 阶段 bulk_insert_pending
+        # 要求 bucket_id 必填，因此运行期不可能为 None；显式断言让 mypy 收紧类型。
+        first_bucket_id = records[0].bucket_id
+        if first_bucket_id is None:
+            raise SparseIndexingError(
+                "SPARSE_VECTORIZING_FAILED:missing_bucket_id;"
+                f"chunk_id={records[0].chunk_id}"
+            )
+        bucket_id = int(first_bucket_id)
+
+        for batch_start in range(0, len(records), self.batch_size):
+            batch = records[batch_start : batch_start + self.batch_size]
             await self._run_batch(
                 db=db,
                 batch=batch,
@@ -144,10 +157,9 @@ class SparseIndexingPipeline:
             )
 
         logger.info(
-            "[SparseIndexingPipeline] success: task_id={} doc_id={} processed={}",
+            "[SparseIndexingPipeline] success: task_id={} processed={}",
             task_id,
-            doc_id,
-            len(targets),
+            len(records),
         )
 
     async def _run_batch(
@@ -171,11 +183,16 @@ class SparseIndexingPipeline:
         texts = [row.content for row in batch]
 
         try:
-            # 4.1 先把本批切换到 INDEXING（CAS expected_status=PENDING），保证并发安全。
-            # FAILED 重做时通常已被 list_sparse_candidates 反查回来，期望状态为 FAILED，
-            # 但这里仅做"切到 INDEXING"的统一动作；如 rowcount != len 视为状态不一致。
+            # 4.1 先把本批切换到 INDEXING（多值 CAS allowed=(PENDING, FAILED)），
+            # 一次 SQL 同时覆盖首次 / retry 两种合法旧态；rowcount != len 视为不一致。
             indexing_count = await self._chunk_repository.mark_sparse_indexing(
-                db, chunk_ids, model_name=model_name, expected_status=None
+                db,
+                chunk_ids,
+                model_name=model_name,
+                allowed_statuses=(
+                    SPARSE_VECTOR_STATUS_PENDING,
+                    SPARSE_VECTOR_STATUS_FAILED,
+                ),
             )
             if indexing_count != len(chunk_ids):
                 raise SparseIndexingError(
@@ -193,9 +210,7 @@ class SparseIndexingPipeline:
                 )
 
             # 4.3 写 Qdrant：先 ensure schema，再 upsert sparse vectors。
-            await store.ensure_sparse_vector_schema(
-                bucket_id=bucket_id, vector_name=vector_name
-            )
+            await store.ensure_sparse_vector_schema(bucket_id=bucket_id, vector_name=vector_name)
             points = [
                 sparse_indexed_point_from_record(row, vec, vector_name=vector_name)
                 for row, vec in zip(batch, vectors)
@@ -222,9 +237,7 @@ class SparseIndexingPipeline:
             await self._safe_mark_failed(db, chunk_ids, reason=str(exc), task_id=task_id)
             raise
         except Exception as exc:
-            reason = (
-                f"SPARSE_VECTORIZING_FAILED:{type(exc).__name__}: {exc}"
-            )
+            reason = f"SPARSE_VECTORIZING_FAILED:{type(exc).__name__}: {exc}"
             await self._safe_mark_failed(db, chunk_ids, reason=reason, task_id=task_id)
             raise SparseIndexingError(reason) from exc
 
