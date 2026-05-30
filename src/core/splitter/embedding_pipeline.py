@@ -233,6 +233,45 @@ class ChunkEmbeddingPipeline:
         """
         return await self._embed_chunks(chunks)
 
+    async def aembed_query(self, query: str) -> list[float]:
+        """
+        对单条 query 文本向量化，供召回路径（``VectorStorageFacade.search_dense_chunks``）使用。
+
+        与 ``aembed_chunks`` 共用 ``self.embedder`` + ``self.embedding_model``，
+        从代码层保证写入 / 召回向量空间不分叉（§4.4.1 假设）。**故意不走 cache**
+        （query 几乎不重复，cache key 是 hash(model+content) 对 query 无意义），
+        **故意不批量化**（query 是单条），**故意不更新 last_stats**（last_stats 是
+        写入路径的统计字段，与 query 无关）。
+
+        Args:
+            query: 用户问题或关键词；空字符串或全空白抛 ``ValueError``。
+                注意：召回侧"空 query 短路返空"由 facade 入口提前 return，正常
+                路径下不会让空 query 走到本方法；这里的 ValueError 是防御性兜底。
+
+        Returns:
+            list[float]: 单条 query 的稠密向量（与 ``aembed_chunks`` 输出每条
+            ``EmbeddedChunk.embedding`` 同维度、同空间）。
+
+        Raises:
+            ValueError: query 为空或全空白；或 embedder 返回向量数量不为 1。
+            httpx.HTTPStatusError / httpx.TimeoutException / 其它: 由调用方
+                （facade）翻译为 ``VectorRetrievalEncodingError``；本方法不吞异常。
+        """
+        if not query or not query.strip():
+            raise ValueError("query must not be empty or whitespace")
+
+        response = await self.embedder.embed(
+            texts=[query.strip()],
+            model=self.embedding_model,
+        )
+        embeddings = getattr(response, "embeddings", None) or []
+        if len(embeddings) != 1:
+            raise ValueError(
+                f"Embedding API returned {len(embeddings)} vectors for single query, "
+                f"expected 1."
+            )
+        return [float(value) for value in embeddings[0]]
+
     def process(
         self,
         text: str,
