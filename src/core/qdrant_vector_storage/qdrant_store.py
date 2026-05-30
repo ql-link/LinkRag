@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from src.config import settings
 from src.utils.logger import logger
@@ -14,7 +14,12 @@ from .constants import (
     QDRANT_PAYLOAD_INDEX_FIELDS,
 )
 from .exceptions import QdrantStoreError, QdrantVectorStorageConfigurationError
-from .models import IndexedPoint, SparseIndexedPoint, SparseQueryVectorSpec
+from .models import (
+    DenseQueryVectorSpec,
+    IndexedPoint,
+    SparseIndexedPoint,
+    SparseQueryVectorSpec,
+)
 
 if TYPE_CHECKING:
     # 类型提示用：避免在运行时与 vector_storage 子包形成循环导入。
@@ -112,7 +117,9 @@ class QdrantIndexStore:
                 wait=True,
             )
         except Exception as exc:
-            raise QdrantStoreError(f"Failed to upsert points into {collection_name}: {exc}") from exc
+            raise QdrantStoreError(
+                f"Failed to upsert points into {collection_name}: {exc}"
+            ) from exc
 
     async def ensure_sparse_vector_schema(self, *, bucket_id: int, vector_name: str) -> None:
         """确保 bucket collection 中存在指定 named sparse vector 配置。"""
@@ -189,7 +196,7 @@ class QdrantIndexStore:
         self,
         *,
         bucket_id: int,
-        query_vector_spec: SparseQueryVectorSpec,
+        query_vector_spec: SparseQueryVectorSpec | DenseQueryVectorSpec,
         payload_filter: Any,
         limit: int,
         score_threshold: float,
@@ -199,7 +206,8 @@ class QdrantIndexStore:
         ``_`` 前缀显式表达"模块内可见、不对业务方暴露"的语义边界。本方法只吞两类
         Qdrant SDK 异常并降级为空结果（业务等价于"没数据"）：
         - 目标 bucket collection 不存在
-        - 目标 named sparse vector 在 collection 上未配置
+        - 目标 named sparse vector 在 collection 上未配置（**仅对 sparse 分支有效**；
+          dense 是 collection 创建时配齐的 unnamed vector，不会触发此降级）
 
         其他失败（网络、超时、配置缺失）一律抛 ``QdrantStoreError`` /
         ``QdrantVectorStorageConfigurationError``，由 facade 翻译为
@@ -210,10 +218,11 @@ class QdrantIndexStore:
 
         Args:
             bucket_id: 由 ``BucketRouter.route_user(user_id).bucket_id`` 计算得到的 bucket。
-            query_vector_spec: 查询向量规格；本次只接受 ``SparseQueryVectorSpec``。
+            query_vector_spec: 查询向量规格；接受 ``SparseQueryVectorSpec`` /
+                ``DenseQueryVectorSpec``（union dispatch）。
             payload_filter: ``models.Filter`` 实例（由 facade 构造，store 不感知字段语义）。
             limit: Qdrant ``query_points`` 的 limit；上层已做 ``> 0`` 校验。
-            score_threshold: Qdrant ``query_points`` 的阈值；上层已做 ``>= 0`` 校验。
+            score_threshold: Qdrant ``query_points`` 的阈值；上层已做范围校验。
 
         Returns:
             按 score 降序的命中列表；命中数 <= limit。collection / named vector 不存在
@@ -250,7 +259,9 @@ class QdrantIndexStore:
             )
             return []
 
-        # 构造 query 与 vector_kind：本次只支持 sparse；未来 dense / hybrid 增加分支。
+        # 构造 query 与 vector_kind：sparse 分支由 sparse-vector-recall 阶段引入；
+        # 本期（dense-vector-recall）补 dense 分支。hybrid 接入时再加 elif。
+        vector_kind: Literal["sparse", "dense"]
         if isinstance(query_vector_spec, SparseQueryVectorSpec):
             query = models.SparseVector(
                 indices=query_vector_spec.indices,
@@ -258,7 +269,15 @@ class QdrantIndexStore:
             )
             using = query_vector_spec.vector_name
             vector_kind = "sparse"
-        else:  # pragma: no cover - 防御分支，dense / hybrid 接入时填充
+        elif isinstance(query_vector_spec, DenseQueryVectorSpec):
+            # dense 是 unnamed vector：写入侧 ``ensure_collection`` 用
+            # ``vectors_config=VectorParams(size, distance=COSINE)``，
+            # ``PointStruct(vector=[...])`` 裸传；召回侧 query_points 调用
+            # ``using=None``，``query`` 直接给 list[float]。
+            query = list(query_vector_spec.vector)
+            using = None
+            vector_kind = "dense"
+        else:  # pragma: no cover - 防御分支，hybrid 接入时填充
             raise NotImplementedError(
                 f"Unsupported query_vector_spec type: {type(query_vector_spec).__name__}"
             )
@@ -288,9 +307,7 @@ class QdrantIndexStore:
                     using,
                 )
                 return []
-            raise QdrantStoreError(
-                f"Failed to query collection {collection_name}: {exc}"
-            ) from exc
+            raise QdrantStoreError(f"Failed to query collection {collection_name}: {exc}") from exc
 
         # ScoredPoint → VectorSearchHit 字段映射；payload dict 在 store 层消化，
         # 不外泄给 facade 与调用方。score 已由 Qdrant 端按 limit / score_threshold
@@ -377,7 +394,9 @@ class QdrantIndexStore:
                 wait=True,
             )
         except Exception as exc:
-            raise QdrantStoreError(f"Failed to delete points from {collection_name}: {exc}") from exc
+            raise QdrantStoreError(
+                f"Failed to delete points from {collection_name}: {exc}"
+            ) from exc
 
     async def close(self) -> None:
         """关闭由本 store 自行创建的 Qdrant client。"""
