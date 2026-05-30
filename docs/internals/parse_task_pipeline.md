@@ -103,6 +103,8 @@ any classified failure
   -> return ParsePipelineResult(status=FAILED)
 ```
 
+消费者层兜底：`ParseTaskConsumer.handle_parse_task` 在 `execute()` 之外再包一层 catch-all。`execute` 逃逸的未预期异常（pipeline 内部归类兜底之外，如 DB/会话故障）会触发 `ParseTaskPipeline.notify_unexpected_failure(payload, exc)`——按 `task_id` 反查已建 log 行、尽力回发 `task_status=failed`（`INTERNAL_UNKNOWN_ERROR`），避免 Java 端文件永久卡「解析中」，随后仍 `raise` 保留死信记账；log 行尚不存在时放弃通知交由 Java stuck scanner 兜底（见 [mq.md §消费者层异常兜底](mq.md)）。
+
 ## 3. 核心职责
 
 ### 编排架构（Stage 类化，LINK-37）
@@ -134,6 +136,8 @@ StagePipeline.run（唯一的 6 阶段编排）
 各阶段的特例（均封装在对应 Stage 子类内，对编排循环透明）：
 
 - **CleaningStage**：`cleaning_status != SUCCESS` 才执行（首次恒执行）；下载/解析/上传失败按错误码归类（`TEMP_DISK_FULL` / `SOURCE_FILE_NOT_FOUND` / `PARSE_ENGINE_FAILED` / `PARSED_FILE_UPLOAD_FAILED`），成功在 `mark_success` 写 `mark_parsed + mark_cleaning_success + mark_post_cleaning`。临时文件早删 + `finally` 兜底封装在 `run` 内。
+  - **`md` / `markdown` 透传**：cleaning 的职责是把多源文件「解析为 md」，而 md 源文件本身即目标格式——经 `payload.is_markdown_passthrough` 判定后 `_read_markdown_passthrough` 直接读取已下载的源文件文本作为 markdown 产物（`parse_result=None`，下游 chunking 走纯 markdown 分片路径），**跳过解析引擎**；且 md 在上传阶段已存入对象存储，cleaning **不再重复写 `md_bucket`**。透传仍走完整成功收口（`mark_parsed + mark_cleaning_success + mark_post_cleaning`），`cleaning_status=SUCCESS`，状态语义与正常清洗一致。
+  - **markdown 产物坐标解析**：markdown 真实所在位置由 `ParseTaskPayload.markdown_bucket` / `markdown_object_key` 统一解析——**md/markdown 取上传位置 `source_*`，其余格式取 cleaning 写出的 `md_*`**。`mark_parsed`（写 `parsed_bucket_name`/`parsed_object_key`）、`StageServices.load_markdown`（重试从 CHUNKING 恢复读回旧 markdown）、重试 `create_for_retry` 的预写坐标三处一致取用，确保「清洗完成、分片失败」重试时 md 按上传位置读回，不会误用 `md_bucket`。
 - **ChunkingStage**：`chunking_status == SUCCESS` → `on_skip` 调 `StageServices.load_all_chunks_from_db` 反查完整 chunk truth set；反查为空按历史语义落 `vectorizing_failed` + 通知（`finalized`）。否则进入 `run`：有本轮 cleaning 产物用其分片；无 cleaning 产物但旧 markdown 坐标可用（**重试从 CHUNKING 恢复**，LINK-32）则经 `StageServices.load_markdown` 读回旧 markdown 重新分片；二者皆无（无产物也无 markdown 坐标）才视为状态不一致落 `chunking_failed`（`failure_reason` 含 `chunking_not_success_in_retry`）。
 - **VectorizingStage / PretokenizeStage / SparseVectorizingStage**：`*_status != SUCCESS` 才执行。SparseVectorizingStage 是 `pipeline_status=SUCCESS` 的**唯一**翻转点——即便继承 SUCCESS 被跳过，也在 `on_skip` 翻转整体终态。
 - **EsIndexingStage**：依赖 pretokenize 的内存态 `FilePostIndexPlan`，`ctx.plan` 缺失（pretokenize 继承 SUCCESS 被跳过）时先重做 pretokenize 重建再消费（见 §4 重试恢复起点）。

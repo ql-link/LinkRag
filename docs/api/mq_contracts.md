@@ -45,8 +45,8 @@ Topic 名称由 toLink-Rag 的 `.env` 配置决定，业务方对接前需要从
 | `source_bucket` | string | ✅ | 源文件对象存储 bucket |
 | `source_object_key` | string | ✅ | 源文件对象存储 key |
 | `source_filename` | string | ✅ | 用户上传时的原始文件名 |
-| `md_bucket` | string | ✅ | 解析后 Markdown 输出 bucket |
-| `md_object_key` | string | ✅ | 解析后 Markdown 输出 key |
+| `md_bucket` | string | ✅ | 解析后 Markdown 输出 bucket（`md`/`markdown` 透传时不使用，见下方说明） |
+| `md_object_key` | string | ✅ | 解析后 Markdown 输出 key（`md`/`markdown` 透传时不使用，见下方说明） |
 | `trigger_mode` | string | ⬜ | `upload_auto`（默认） / `manual_retry` |
 | `pdf_parser_backend` | string | ⬜ | `mineru`（默认） / `opendataloader` / `naive` / `auto` |
 | `docling_force_ocr` | bool | ⬜ | 仅 Docling 后端生效 |
@@ -105,6 +105,8 @@ Topic 名称由 toLink-Rag 的 `.env` 配置决定，业务方对接前需要从
 }
 ```
 
+> **`md` / `markdown` 透传**：源文件本身即目标 Markdown，cleaning 阶段跳过解析引擎转换，也**不再把 markdown 重复写入 `md_bucket`**——markdown 产物坐标直接取上传位置（`source_bucket` / `source_object_key`）。因此对 md/markdown 文件，业务方读取解析产物（预览/下载）须以 `document_parsed_log.parsed_bucket_name` / `parsed_object_key`（即上传位置）为准，不可硬取请求里的 `md_object_key`。其余格式（pdf/docx/html/…）仍把转换后的 markdown 写入 `md_bucket`/`md_object_key`，行为不变。
+
 ### 路由键
 
 消息以 `file_type` 作为 routing key，便于按文件类型做消费侧分流。
@@ -122,7 +124,7 @@ Topic 名称由 toLink-Rag 的 `.env` 配置决定，业务方对接前需要从
 | --- | --- | --- | --- |
 | `task_id` | string | ✅ | 与请求中的 `task_id` 一致，用于关联 |
 | `original_file_id` | int | ✅ | 来自请求 |
-| `document_parse_task_id` | int | ✅ | 来自请求 |
+| `document_parsed_log_id` | int | ✅ | `document_parsed_log.id`，Java 据此回查解析日志与流水线终态 |
 | `dataset_id` | int | ✅ | 来自请求 |
 | `user_id` | int | ✅ | 来自请求 |
 | `task_status` | string | ✅ | `success` / `failed` |
