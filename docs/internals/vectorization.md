@@ -47,13 +47,12 @@ ParseTaskPipeline
       -> ChunkDraftFactory
       -> ChunkRepository.bulk_insert_pending()
     -> VectorizingStage
-      -> StageServices.store_chunk_vectors()
-        -> VectorStorageFacade.index_document_chunks()
-          -> VectorStoragePipeline.index_document_chunks()
-            -> ChunkRepository.list_vector_candidates_by_doc_id()
-            -> 按 chunk_index 顺序处理每个 chunk
-              -> ChunkRepository.mark_indexing()
-              -> ChunkEmbeddingPipeline.aembed_chunks([chunk])
+      -> StageServices.store_chunk_vectors()  # 现场过滤 dense_vector_status != SUCCESS
+        -> VectorStorageFacade.index_chunks(chunks=...)
+          -> VectorStoragePipeline.index_chunks(chunks=...)  # 接收已过滤 chunks，不自查 SQL
+            -> 按 batch 处理（chunk_index 顺序）
+              -> ChunkRepository.mark_indexing(allowed_statuses=(PENDING, FAILED))  # 多值 CAS
+              -> ChunkEmbeddingPipeline.aembed_chunks(batch)
               -> QdrantIndexStore.ensure_collection()
               -> QdrantIndexStore.upsert_points()
               -> ChunkRepository.mark_indexed()
@@ -88,28 +87,29 @@ ParseTaskPipeline
 
 ### 3.1 输入模型
 
-解析流水线使用 `VectorStorageFacade.index_document_chunks`，只接收文档归属：
+解析流水线使用 `VectorStorageFacade.index_chunks(chunks=...)`，接收 pipeline 已现场过滤好的 chunk 真值行：
 
 ```python
-user_id: int
+user_id: int            # 业务归属（日志可读用途）
 set_id: int
 doc_id: int
-include_failed: bool = False
+chunks: Sequence[ChunkRecordDB]   # pipeline 现场过滤：dense_vector_status != SUCCESS
 ```
 
-该入口不接收 `list[Chunk]`，不重新分片，不生成新的 `chunk_id`，也不执行 chunk 真值 INSERT。向量化依据来自 `kb_document_chunk`：
+该入口不接收 splitter `list[Chunk]`、不重新分片、不生成新 `chunk_id`、不执行 chunk 真值 INSERT，**也不再按 `doc_id` 自查 SQL**——待处理 chunk 由 `StageServices.store_chunk_vectors` 现场过滤后透传。每个 `ChunkRecordDB` 行携带：
 
 - `content`：dense 和 sparse 的文本输入。
 - `chunk_id`：Qdrant point id，重试时覆盖同一个索引副本。
 - `user_id` / `set_id` / `doc_id` / `bucket_id`：Qdrant payload 与 collection/bucket 路由。
 - `chunk_index` / `chunk_type` / `start_line` / `end_line`：还原 splitter 兼容 `Chunk`。
-- `dense_vector_status` / `sparse_vector_status`：决定补做哪个分支。
-- `lifecycle_status`：决定 chunk 是否仍为有效真值；只有 `ACTIVE` 记录会进入向量化、ES 入库和召回回表。
+- `dense_vector_status` / `sparse_vector_status`：现场过滤口径。
+- `lifecycle_status`：`_reload_chunks_from_db` 只反查 `ACTIVE` 行，删除态不进入向量化。
 
-`include_failed` 用于区分普通写入与人工重试：默认 `False` 时只补做 dense
-`PENDING` chunk，`FAILED` chunk 仍可由 `VectorStorageCompensationPipeline`
-显式重建；parse pipeline 的 `is_retry=true` 人工重试会传 `True`，补做 dense
-`PENDING` + `FAILED` chunk，并继续跳过已 `SUCCESS` 的 chunk。
+首次与人工重试共用同一入口：`store_chunk_vectors` 都过滤 `dense_vector_status != SUCCESS`
+（首次为 `PENDING`，重试覆盖 `PENDING` + `FAILED`），dense 模块不感知场景类型。多值 CAS
+`mark_indexing(allowed_statuses=(PENDING, FAILED))` 在 SQL 层兜底：若过滤口径错误把已
+`SUCCESS` chunk 混入，UPDATE rowcount 不达预期进失败路径，不会把 SUCCESS chunk 拉回 INDEXING。
+`FAILED` chunk 仍可由 `VectorStorageCompensationPipeline` 在补偿路径独立重建。
 
 chunking 阶段复用 `ChunkDraftFactory`，把每个 `Chunk` 转成 `StoredChunkDraft`：
 
@@ -211,16 +211,19 @@ set_id = payload.dataset_id
 doc_id = payload.original_file_id
 ```
 
-然后调用：
+然后**现场过滤** `dense_vector_status != SUCCESS` 后调用：
 
 ```python
-result = await vector_storage.index_document_chunks(
+dense_chunks = [c for c in chunks if c.dense_vector_status != CHUNK_STATUS_INDEXED]
+result = await vector_storage.index_chunks(
     user_id=user_id,
     set_id=set_id,
     doc_id=doc_id,
-    include_failed=payload.is_retry,
+    chunks=dense_chunks,
 )
 ```
+
+`chunks` 是 `list[ChunkRecordDB]`（`run_chunking` 反查或 retry 的 `load_all_chunks_from_db` 反查，形态一致）。全部已 SUCCESS 时 `store_chunk_vectors` 短路返回幂等成功，不调 `index_chunks`。
 
 返回 `ChunkIndexingResult`，包含：
 
@@ -260,10 +263,11 @@ from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
 from src.core.vector_storage.factory import create_vector_storage_facade
 
 facade = create_vector_storage_facade(embedding_pipeline=embedding_pipeline)
-result = await facade.index_document_chunks(
+result = await facade.index_chunks(
     user_id=10002,
     set_id=10003,
     doc_id=10001,
+    chunks=dense_chunks,  # list[ChunkRecordDB]，调用方需先过滤 dense_vector_status != SUCCESS
 )
 ```
 
@@ -450,8 +454,8 @@ ES 阶段只返回文件级 `EsIndexingResult`，不直接维护 `kb_document_ch
 建议覆盖：
 
 - MySQL 状态流转。
-- vectorizing 从 SQL 候选记录恢复 `Chunk`，不接收内存 `list[Chunk]`，且只处理 dense。
-- 稀疏向量由 `SparseIndexingPipeline` 独立阶段处理，只处理 dense 已成功的 chunk。
+- vectorizing 接收 pipeline 现场过滤好的 `list[ChunkRecordDB]`（`index_chunks(chunks=...)`），不自查 SQL、不接收内存 `list[Chunk]`，且只处理 dense。
+- 稀疏向量由 `SparseIndexingPipeline.run(chunks=...)` 独立阶段处理：pipeline 在 dense 完成后重新 load 并现场过滤 `dense=SUCCESS AND sparse != SUCCESS` 透传；`bucket_id` 从 chunks 自带字段取，入口前置断言 dense=SUCCESS。
 - embedding 批处理和缓存命中。
 - Qdrant collection 自动创建和 upsert。
 - ES 文件级索引创建和逐 Chunk 写入。

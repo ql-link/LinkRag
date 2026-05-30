@@ -428,7 +428,7 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
                 session,
                 chunk_ids,
                 model_name=model_name,
-                expected_status=SPARSE_VECTOR_STATUS_PENDING,
+                allowed_statuses=(SPARSE_VECTOR_STATUS_PENDING,),
             )
         )
 

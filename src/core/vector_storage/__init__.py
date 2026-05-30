@@ -15,7 +15,6 @@ from .factory import compose_vector_storage_facade, create_vector_storage_facade
 from .management_pipeline import VectorStorageManagementPipeline
 from .models import (
     ChunkDeleteRequest,
-    ChunkIndexingRequest,
     ChunkIndexingResult,
     ChunkMutationResult,
     ChunkStorageRequest,
@@ -37,7 +36,6 @@ from .repair_policy import RepairDecision, RepairPolicy
 __all__ = [
     "ChunkDeleteRequest",
     "ChunkDraftFactory",
-    "ChunkIndexingRequest",
     "ChunkIndexingResult",
     "ChunkMutationResult",
     "ChunkStorageRequest",
