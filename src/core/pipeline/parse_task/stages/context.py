@@ -17,8 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.core.preprocessor.models import FilePostIndexPlan
-from src.core.splitter.models import Chunk
 from src.core.vector_storage.models import ChunkIndexingResult
+from src.models.chunk_record import ChunkRecordDB
 from src.models.parse_task import DocumentParsedLog
 
 from ..models import ParsePipelineResult, PipelineStatus
@@ -41,7 +41,7 @@ class StageContext:
 
     # 阶段产物（按执行顺序逐步填充）。
     parse_result: dict | None = None
-    chunks: list[Chunk] | None = None
+    chunks: list[ChunkRecordDB] | None = None
     plan: FilePostIndexPlan | None = None
     vector_result: ChunkIndexingResult | None = None
     vector_indexing_completed: bool = True

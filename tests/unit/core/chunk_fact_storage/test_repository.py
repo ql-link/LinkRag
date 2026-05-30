@@ -203,6 +203,66 @@ async def test_should_record_vector_pending_when_mark_indexing():
 
 
 @pytest.mark.asyncio
+async def test_should_use_multivalue_cas_when_mark_indexing_with_allowed_statuses():
+    """多值 CAS：allowed_statuses 非空时追加 ``dense_vector_status IN (...)`` 谓词。
+
+    WHERE = chunk_id.in_() + dense_vector_status.in_() + _active_predicate = 3。
+    """
+    repository = ChunkRepository()
+    session = CapturingSession()
+
+    await repository.mark_indexing(
+        session,
+        ["chunk-1"],
+        allowed_statuses=(CHUNK_STATUS_PENDING, CHUNK_STATUS_FAILED),
+    )
+
+    assert _where_criteria_count(session) == 3
+    assert "dense_vector_status IN" in str(session.statement)
+
+
+@pytest.mark.asyncio
+async def test_should_not_add_dense_cas_when_mark_indexing_without_status_args():
+    """无 allowed_statuses / expected_status：仅 chunk_id.in_() + _active_predicate = 2。"""
+    repository = ChunkRepository()
+    session = CapturingSession()
+
+    await repository.mark_indexing(session, ["chunk-1"])
+
+    assert _where_criteria_count(session) == 2
+    assert "dense_vector_status IN" not in str(session.statement)
+
+
+@pytest.mark.asyncio
+async def test_should_use_multivalue_cas_when_mark_sparse_indexing_with_allowed_statuses():
+    """sparse 多值 CAS：WHERE = chunk_id.in_() + _active_predicate + sparse IN = 3。"""
+    repository = ChunkRepository()
+    session = CapturingSession()
+
+    await repository.mark_sparse_indexing(
+        session,
+        ["chunk-1"],
+        model_name="BAAI/bge-m3",
+        allowed_statuses=(SPARSE_VECTOR_STATUS_PENDING, SPARSE_VECTOR_STATUS_FAILED),
+    )
+
+    assert _where_criteria_count(session) == 3
+    assert "sparse_vector_status IN" in str(session.statement)
+
+
+@pytest.mark.asyncio
+async def test_should_not_add_sparse_cas_when_mark_sparse_indexing_without_status_args():
+    """无 CAS 参数：sparse 入口仅 chunk_id.in_() + _active_predicate = 2。"""
+    repository = ChunkRepository()
+    session = CapturingSession()
+
+    await repository.mark_sparse_indexing(session, ["chunk-1"], model_name="BAAI/bge-m3")
+
+    assert _where_criteria_count(session) == 2
+    assert "sparse_vector_status IN" not in str(session.statement)
+
+
+@pytest.mark.asyncio
 async def test_should_record_removed_when_mark_removed():
     repository = ChunkRepository()
     session = CapturingSession()

@@ -6,12 +6,15 @@ import asyncio
 from collections import defaultdict
 from collections.abc import Sequence
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.config import settings
 from src.core.chunk_fact_storage import ChunkRepository
 from src.core.chunk_fact_storage.constants import (
+    CHUNK_LIFECYCLE_ACTIVE,
     CHUNK_STATUS_FAILED,
+    CHUNK_STATUS_INDEXED,
     CHUNK_STATUS_INDEXING,
     CHUNK_STATUS_PENDING,
     SPARSE_VECTOR_STATUS_FAILED,
@@ -31,7 +34,6 @@ from src.utils.logger import logger
 from ._transaction import TransactionalPipelineMixin
 from .draft_factory import ChunkDraftFactory
 from .models import (
-    ChunkIndexingRequest,
     ChunkIndexingResult,
     ChunkStorageRequest,
     VectorBranch,
@@ -123,92 +125,99 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         request: ChunkStorageRequest,
     ) -> ChunkIndexingResult:
         """
-            兼容旧入口：只索引已落库 chunk，不再执行 chunk 真值 INSERT。
+            兼容旧入口：按 ``doc_id`` 反查已落库 chunk 真值后委托给 ``index_chunks``；
+            不再执行 chunk 真值 INSERT。
 
         Args:
-            request: 包含业务上下文与待写入 chunk 列表的存储请求。
+            request: 包含业务上下文的存储请求；其中的 ``chunks`` 字段在新边界下被忽略，
+                索引依据来自已落库真值。
 
         Returns:
             ChunkIndexingResult: 本次写入任务的结果汇总。
         """
-        return await self.index_document_chunks(
-            ChunkIndexingRequest(
-                user_id=request.user_id,
-                set_id=request.set_id,
-                doc_id=request.doc_id,
+
+        # 把"按 doc_id 反查 + 现场过滤"收敛进这里，让 ``index_chunks`` 唯一对外。
+        async with self.session_factory() as session:
+            stmt = (
+                select(self.repository.model_cls)
+                .where(self.repository.model_cls.doc_id == request.doc_id)
+                .where(self.repository.model_cls.lifecycle_status == CHUNK_LIFECYCLE_ACTIVE)
+                .order_by(self.repository.model_cls.chunk_index.asc())
             )
+            result = await session.execute(stmt)
+            records = list(result.scalars().all())
+
+        # 现场过滤：仅保留待 dense 处理的 chunk（与 pipeline 现场过滤口径一致）。
+        dense_chunks = [r for r in records if r.dense_vector_status != CHUNK_STATUS_INDEXED]
+
+        return await self.index_chunks(
+            user_id=request.user_id,
+            set_id=request.set_id,
+            doc_id=request.doc_id,
+            chunks=dense_chunks,
         )
 
-    async def index_document_chunks(
+    async def index_chunks(
         self,
-        request: ChunkIndexingRequest,
+        *,
+        user_id: int,
+        set_id: int,
+        doc_id: int,
+        chunks: Sequence[object],
     ) -> ChunkIndexingResult:
-        """从 SQL chunk 真值表读取候选记录，以 batch 为单位向量化并写入向量索引副本。
+        """以 batch 为单位向量化并写入向量索引副本；调用方需提供已过滤的 chunks。
+
+        与被替换的旧 ``index_document_chunks`` 相比，本入口：
+
+        * 不再按 ``doc_id`` 反查 SQL —— chunks 由 pipeline 现场过滤后透传。
+        * 单条 SQL 多值 CAS（``allowed_statuses=(PENDING, FAILED)``）覆盖两种合法旧态，
+          替代旧版 ``_group_records_by_dense_status`` 分组多次 UPDATE 的写法。
+        * ``total_chunks`` 等于 ``len(chunks)``——不再做"全文档已完成数"折算。
 
         以 batch_size 为单位逐批处理：每批 embed 成功后立即写入 Qdrant 并 mark_indexed，
-        某批 embed 失败则将该批标记 FAILED 并停止，后续批次保持 PENDING 等待补偿路径重试。
-
+        某批失败则将该批标记 FAILED 并停止，后续批次保持 PENDING / INDEXING 等待补偿路径重试。
         这样已成功的 batch 不会因后续 batch 失败而重复 embed，同时整篇文章的
         pipeline_status 因存在失败 chunk 而保持 FAILED，搜索路径不会触达部分入库的文章。
+
+        Args:
+            user_id / set_id / doc_id: 业务归属，仅日志可读用途；写入主键由 chunk 自带。
+            chunks: pipeline 现场过滤好的待 dense 处理 chunk 真值序列（``ChunkRecordDB`` 行）。
         """
 
-        async with self.session_factory() as session:
-            records = await self.repository.list_vector_candidates_by_doc_id(
-                session,
-                request.doc_id,
-                sparse_enabled=False,
-            )
+        # 业务归属仅作日志可读，dense 写入路径完全用记录自带的归属字段。
+        _ = (user_id, set_id, doc_id)
+
+        records = list(chunks)
+
+        # 空集短路：调用方现场过滤后没有待处理 chunk，等价于成功。
         if not records:
             return ChunkIndexingResult(total_chunks=0, indexed_chunks=0)
 
-        dense_candidate_statuses = (
-            (CHUNK_STATUS_PENDING, CHUNK_STATUS_FAILED)
-            if request.include_failed
-            else (CHUNK_STATUS_PENDING,)
-        )
-        dense_records = [
-            r
-            for r in records
-            if getattr(r, "dense_vector_status", None) in dense_candidate_statuses
-        ]
-        # 已是终态（INDEXED 等）的记录直接计入成功；默认写入路径仍把 FAILED
-        # 留给 compensation，manual retry 会通过 include_failed=True 显式补做。
-        already_done_records = [
-            r
-            for r in records
-            if getattr(r, "dense_vector_status", None)
-            not in (CHUNK_STATUS_PENDING, CHUNK_STATUS_FAILED)
-        ]
-
         embedding_model: str | None = None
-        indexed_count = len(already_done_records)
-
-        if not dense_records:
-            return ChunkIndexingResult(
-                total_chunks=len(records),
-                indexed_chunks=indexed_count,
-                embedding_model=embedding_model,
-            )
-
+        indexed_count = 0
         batch_size = self.embedding_pipeline.batch_size
 
         # ── 以 batch 为单位逐批处理 ────────────────────────────────────────
         # 每批：mark_indexing → embed → 写 Qdrant → mark_indexed
-        # 某批 embed 失败 → 该批标 FAILED，停止，后续批次保持 PENDING
-        # 某批写入失败 → 该批中失败的 chunk 标 FAILED，停止
-        for batch_start in range(0, len(dense_records), batch_size):
-            batch_records = dense_records[batch_start : batch_start + batch_size]
+        # 某批 mark_indexing rowcount 不达预期 → 该批走失败路径，停止后续 batch
+        # 某批 embed 失败 → 该批标 FAILED，停止
+        # 单 chunk 写入失败 → 当前 chunk 标 FAILED，同批后续 chunk 保持 INDEXING
+        for batch_start in range(0, len(records), batch_size):
+            batch_records = records[batch_start : batch_start + batch_size]
             batch_chunk_ids = [str(getattr(r, "chunk_id")) for r in batch_records]
 
-            # 1. 批量 mark_indexing
+            # 1. 批量 mark_indexing：多值 CAS 拦下混入的 SUCCESS / INDEXING chunk。
             try:
-                for expected_status, status_records in self._group_records_by_dense_status(
-                    batch_records
-                ).items():
-                    await self._mark_indexing(
-                        [str(getattr(record, "chunk_id")) for record in status_records],
-                        embedding_model=None,
-                        expected_status=expected_status,
+                indexing_count = await self._mark_indexing(
+                    batch_chunk_ids,
+                    embedding_model=None,
+                    allowed_statuses=(CHUNK_STATUS_PENDING, CHUNK_STATUS_FAILED),
+                )
+                if indexing_count != len(batch_chunk_ids):
+                    raise RuntimeError(
+                        "Skipped dense indexing because rowcount "
+                        f"{indexing_count} != {len(batch_chunk_ids)} "
+                        "(some chunks not in (PENDING, FAILED))."
                     )
             except Exception as exc:
                 compensation_entry = await self._safe_mark_branch_failed(
@@ -327,15 +336,6 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
             embedding_model=embedding_model,
         )
 
-    @staticmethod
-    def _group_records_by_dense_status(records: Sequence[object]) -> dict[str, list[object]]:
-        """按当前 dense 状态分组，便于 PENDING/FAILED 混合批次分别 CAS 抢占。"""
-
-        grouped: dict[str, list[object]] = defaultdict(list)
-        for record in records:
-            grouped[str(getattr(record, "dense_vector_status"))].append(record)
-        return grouped
-
     async def _index_record_with_retry(self, record: object) -> ChunkIndexingResult:
         """对单条 SQL chunk 记录执行 `dense -> sparse` 串行索引，失败只重试当前分支。"""
 
@@ -412,7 +412,7 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
                 indexing_count = await self._mark_indexing(
                     [chunk_id],
                     embedding_model=None,
-                    expected_status=str(getattr(record, "dense_vector_status")),
+                    allowed_statuses=(str(getattr(record, "dense_vector_status")),),
                 )
                 if indexing_count != 1:
                     raise RuntimeError(
@@ -495,7 +495,7 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
                 indexing_count = await self._mark_sparse_indexing(
                     [chunk_id],
                     model_name=model_name,
-                    expected_status=str(getattr(record, "sparse_vector_status")),
+                    allowed_statuses=(str(getattr(record, "sparse_vector_status")),),
                 )
                 if indexing_count != 1:
                     raise RuntimeError(
@@ -605,14 +605,16 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         chunk_ids: Sequence[str],
         *,
         embedding_model: str | None,
-        expected_status: str = CHUNK_STATUS_PENDING,
+        allowed_statuses: Sequence[str] = (CHUNK_STATUS_PENDING,),
     ) -> int:
         """
-            在独立事务中把目标记录切换为 `INDEXING` 状态。
+            在独立事务中把目标记录切换为 `INDEXING` 状态（多值 CAS）。
 
         Args:
             chunk_ids: 需要更新状态的 chunk 标识列表。
             embedding_model: 当前批次实际使用的 embedding 模型名称。
+            allowed_statuses: SQL 多值 CAS 的合法旧态集合；默认 ``(PENDING,)`` 服务于
+                单 chunk 补偿路径，批量入口传 ``(PENDING, FAILED)`` 覆盖首次 / retry。
 
         Returns:
             int: 实际切换到 `INDEXING` 的记录数。
@@ -622,7 +624,7 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
                 session,
                 chunk_ids,
                 embedding_model=embedding_model,
-                expected_status=expected_status,
+                allowed_statuses=allowed_statuses,
             )
         )
 
@@ -739,9 +741,13 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         chunk_ids: Sequence[str],
         *,
         model_name: str | None,
-        expected_status: str = SPARSE_VECTOR_STATUS_PENDING,
+        allowed_statuses: Sequence[str] = (SPARSE_VECTOR_STATUS_PENDING,),
     ) -> int:
-        """把当前 chunk 的 sparse 子状态切换为 INDEXING。"""
+        """把当前 chunk 的 sparse 子状态切换为 INDEXING（多值 CAS）。
+
+        ``allowed_statuses`` 默认 ``(PENDING,)`` 服务于单 chunk 补偿路径；批量入口
+        传 ``(PENDING, FAILED)`` 覆盖首次 / retry 两种合法旧态。
+        """
 
         if self.sparse_vector_service is None:
             raise RuntimeError(
@@ -752,7 +758,7 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
                 session,
                 chunk_ids,
                 model_name=model_name,
-                expected_status=expected_status,
+                allowed_statuses=allowed_statuses,
             )
         )
 

@@ -18,6 +18,11 @@ from typing import Any, Protocol
 from loguru import logger
 
 from src.config import settings
+from src.core.chunk_fact_storage.constants import (
+    CHUNK_LIFECYCLE_ACTIVE,
+    CHUNK_STATUS_INDEXED,
+    SPARSE_VECTOR_STATUS_INDEXED,
+)
 from src.core.chunk_fact_storage.repository import ChunkRepository
 from src.core.es_index_storage import EsIndexingPipeline, EsIndexingResult
 from src.core.markdown_parser import ParseResult
@@ -30,6 +35,7 @@ from src.core.splitter.models import Chunk
 from src.core.vector_storage import compose_vector_storage_facade
 from src.core.vector_storage.draft_factory import ChunkDraftFactory
 from src.core.vector_storage.models import ChunkIndexingResult
+from src.models.chunk_record import ChunkRecordDB
 from src.services.parse_task_service import ParseTaskService
 from src.services.storage.base import BaseObjectStorage
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -136,8 +142,14 @@ class StageServices:
         parse_result: ParseResult | None,
         payload: ParseTaskPayload,
         db: AsyncSession,
-    ) -> list[Chunk]:
-        """分片并在单事务内写入 chunk 真值记录。"""
+    ) -> list[ChunkRecordDB]:
+        """分片并在单事务内写入 chunk 真值记录；返回当前文档完整 chunk truth set（ORM 行）。
+
+        ``_persist_chunk_facts`` commit 后追加一次按 ``doc_id`` 的反查，让首次链路的
+        ``chunks`` 形态与 retry 链路（``load_all_chunks_from_db``）完全一致——都是
+        ``list[ChunkRecordDB]``。下游 dense / sparse 入口因此能用同一套字段契约消费，
+        不区分首次 / retry 场景。
+        """
         import asyncio
 
         chunks = await asyncio.to_thread(
@@ -147,11 +159,40 @@ class StageServices:
             parse_result,
         )
         await self._persist_chunk_facts(chunks, payload, db)
+
+        # commit 后立即反查 ORM 行作为返回值（与 retry 路径形态一致）。
+        records = await self._reload_chunks_from_db(payload, db)
         logger.info(
             f"[StageServices] chunking completed: task_id={payload.task_id}, "
-            f"chunk_count={len(chunks)}"
+            f"chunk_count={len(records)}"
         )
-        return chunks
+        return records
+
+    async def _reload_chunks_from_db(
+        self,
+        payload: ParseTaskPayload,
+        db: AsyncSession,
+    ) -> list[ChunkRecordDB]:
+        """按 ``doc_id`` 反查当前文档完整 chunk truth set（仅 ACTIVE，按 ``chunk_index`` 升序）。
+
+        chunks 反查的唯一 SQL 实现，三个调用点共享：
+
+        * ``run_chunking``：commit 后立即反查，作为返回值。
+        * ``load_all_chunks_from_db``：retry 路径加空集兜底后返回。
+        * ``run_sparse_vectorizing``：dense 完成后重新 load 一次，确保 sparse 阶段
+          读到刷新后的 ``dense_vector_status``。
+        """
+        from sqlalchemy import select
+
+        doc_id = int(payload.original_file_id)
+        stmt = (
+            select(ChunkRecordDB)
+            .where(ChunkRecordDB.doc_id == doc_id)
+            .where(ChunkRecordDB.lifecycle_status == CHUNK_LIFECYCLE_ACTIVE)
+            .order_by(ChunkRecordDB.chunk_index.asc())
+        )
+        result = await db.execute(stmt)
+        return list(result.scalars().all())
 
     async def _persist_chunk_facts(
         self,
@@ -196,29 +237,15 @@ class StageServices:
         self,
         payload: ParseTaskPayload,
         db: AsyncSession,
-    ) -> list[Chunk]:
-        """重试跳过 chunking 时从 DB 反查当前文档完整 chunk truth set。
+    ) -> list[ChunkRecordDB]:
+        """重试跳过 chunking 时从 DB 反查当前文档完整 chunk truth set（ORM 行）。
 
         反查谓词：``doc_id`` + ``lifecycle_status=ACTIVE``，按 ``chunk_index`` 排序。
-        返回空列表表示状态不一致（chunking 标 SUCCESS 但无有效 chunk），由
-        ChunkingStage 落 FAILED + 通知。
+        不再 ``chunk_from_record`` 包成 splitter ``Chunk``——dense / sparse 入口现在直接
+        消费 ORM 行（按字段契约访问）。返回空列表表示状态不一致（chunking 标 SUCCESS
+        但无有效 chunk），由 ChunkingStage 落 FAILED + 通知。
         """
-        from sqlalchemy import select
-
-        from src.core.chunk_fact_storage.constants import CHUNK_LIFECYCLE_ACTIVE
-        from src.core.qdrant_vector_storage.point_factory import chunk_from_record
-        from src.models.chunk_record import ChunkRecordDB
-
-        doc_id = int(payload.original_file_id)
-        stmt = (
-            select(ChunkRecordDB)
-            .where(ChunkRecordDB.doc_id == doc_id)
-            .where(ChunkRecordDB.lifecycle_status == CHUNK_LIFECYCLE_ACTIVE)
-            .order_by(ChunkRecordDB.chunk_index.asc())
-        )
-        result = await db.execute(stmt)
-        rows = list(result.scalars().all())
-        return [chunk_from_record(row) for row in rows]
+        return await self._reload_chunks_from_db(payload, db)
 
     def resolve_chunk_owner(self, payload: ParseTaskPayload) -> tuple[int, int, int] | None:
         """解析 chunk 向量索引所需的归属标识（user/set/doc）。"""
@@ -235,11 +262,18 @@ class StageServices:
 
     async def store_chunk_vectors(
         self,
-        chunks: list[Chunk],
+        chunks: list[ChunkRecordDB],
         payload: ParseTaskPayload,
         db: AsyncSession,
     ) -> ChunkIndexingResult:
-        """将 chunk 写入向量存储（dense/Qdrant）。"""
+        """将 chunk 写入向量存储（dense/Qdrant）。
+
+        ``chunks`` 是 ``list[ChunkRecordDB]``（首次链路 ``run_chunking`` 反查、retry 链路
+        ``load_all_chunks_from_db`` 反查，形态一致）。调用 dense 入口前**现场过滤**
+        ``dense_vector_status != SUCCESS`` 的 chunk，dense 模块只处理传入子集、不再自查 SQL。
+        入口从 ``index_document_chunks(include_failed=...)`` 切到 ``index_chunks(chunks=...)``：
+        dense 不感知首次 / retry，多值 CAS 在 SQL 层兜底两种共用入口。
+        """
         if not chunks:
             return ChunkIndexingResult(total_chunks=0, indexed_chunks=0)
 
@@ -256,12 +290,22 @@ class StageServices:
             )
 
         user_id, set_id, doc_id = owner
+
+        # 现场过滤：dense_vector_status != SUCCESS（覆盖首次 PENDING 与 retry 的 PENDING / FAILED）。
+        dense_chunks = [c for c in chunks if c.dense_vector_status != CHUNK_STATUS_INDEXED]
+        if not dense_chunks:
+            # 全部已 SUCCESS：等价于无事可做，幂等成功。
+            return ChunkIndexingResult(
+                total_chunks=len(chunks),
+                indexed_chunks=len(chunks),
+            )
+
         try:
-            result = await self._get_vector_storage().index_document_chunks(
+            result = await self._get_vector_storage().index_chunks(
                 user_id=user_id,
                 set_id=set_id,
                 doc_id=doc_id,
-                include_failed=payload.is_retry,
+                chunks=dense_chunks,
             )
         except Exception as exc:
             logger.error(
@@ -294,8 +338,9 @@ class StageServices:
         return result
 
     @staticmethod
-    def fallback_chunk_ids(chunks: list[Chunk]) -> list[str]:
-        return [f"chunk-{index}" for index, _ in enumerate(chunks)]
+    def fallback_chunk_ids(chunks: list[ChunkRecordDB]) -> list[str]:
+        """从 ORM 行序列提取真实 ``chunk_id`` 作为兜底失败标识，便于运维定位。"""
+        return [c.chunk_id for c in chunks]
 
     @staticmethod
     def is_vector_indexing_success(vector_result: ChunkIndexingResult) -> bool:
@@ -421,13 +466,26 @@ class StageServices:
         payload: ParseTaskPayload,
         db: AsyncSession,
     ) -> None:
-        """调用 SparseIndexingPipeline.run；失败抛出（由 SparseVectorizingStage 归类）。"""
+        """调用 SparseIndexingPipeline.run；失败抛出（由 SparseVectorizingStage 归类）。
+
+        dense 阶段已推进 ``dense_vector_status``，这里**重新 load** 一次 chunks 以读到
+        刷新后的视图，再**现场过滤** ``dense=SUCCESS AND sparse != SUCCESS`` 后透传给
+        sparse 入口。sparse 模块不再自查 SQL，``bucket_id`` 由 chunks 自带字段决定
+        （不再误传 ``payload.dataset_id``）。
+        """
         from src.core.sparse_vector.indexing import SparseIndexingPipeline
 
         sparse_pipeline = self._sparse_indexing_pipeline or SparseIndexingPipeline()
+
+        fresh_chunks = await self._reload_chunks_from_db(payload, db)
+        sparse_chunks = [
+            c
+            for c in fresh_chunks
+            if c.dense_vector_status == CHUNK_STATUS_INDEXED
+            and c.sparse_vector_status != SPARSE_VECTOR_STATUS_INDEXED
+        ]
         await sparse_pipeline.run(
-            doc_id=int(payload.original_file_id),
-            bucket_id=int(payload.dataset_id),
+            chunks=sparse_chunks,
             task_id=payload.task_id,
             db=db,
         )

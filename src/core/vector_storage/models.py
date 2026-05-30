@@ -28,16 +28,6 @@ class ChunkStorageRequest:
     chunks: list[Chunk]
 
 
-@dataclass(slots=True)
-class ChunkIndexingRequest:
-    """描述一次基于已落库 chunk 真值的向量索引请求。"""
-
-    user_id: int
-    set_id: int
-    doc_id: int
-    include_failed: bool = False
-
-
 class VectorBranch(str, Enum):
     """向量索引分支。"""
 
