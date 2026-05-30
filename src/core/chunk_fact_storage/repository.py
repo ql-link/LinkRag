@@ -12,8 +12,8 @@ from .constants import (
     CHUNK_DELETE_ALLOWED_STATUSES,
     CHUNK_DELETE_PROTECTED_STATUSES,
     CHUNK_DELETE_RETRY_STATUSES,
-    CHUNK_STATUS_DELETED,
     CHUNK_STATUS_DELETE_FAILED,
+    CHUNK_STATUS_DELETED,
     CHUNK_STATUS_DELETING,
     CHUNK_STATUS_FAILED,
     CHUNK_STATUS_INDEXED,
@@ -24,9 +24,9 @@ from .constants import (
     ES_STATUS_PENDING,
     ES_STATUS_SUCCESS,
     SPARSE_VECTOR_STATUS_FAILED,
+    SPARSE_VECTOR_STATUS_INDEXED,
     SPARSE_VECTOR_STATUS_INDEXING,
     SPARSE_VECTOR_STATUS_PENDING,
-    SPARSE_VECTOR_STATUS_INDEXED,
 )
 from .models import FactChunkDraft
 
@@ -163,7 +163,22 @@ class ChunkRepository:
         *,
         embedding_model: str | None = None,
         expected_status: str | None = None,
+        allowed_statuses: Sequence[str] | None = None,
     ) -> int:
+        """把一批 chunk 推进到 dense INDEXING 中间态。
+
+        CAS 条件由 ``allowed_statuses`` 与 ``expected_status`` 二选一决定：
+
+        - ``allowed_statuses=(...)`` 非空时使用多值 CAS（``dense_vector_status IN (...)``），
+          覆盖"首次（PENDING）/ retry（PENDING + FAILED）"两种合法旧态。
+        - ``expected_status`` 仅在 ``allowed_statuses`` 为 ``None`` / 空时生效，单值 CAS。
+        - 二者皆为空时不加 CAS（仅靠 delete-protected 兜底）。
+
+        SET 子句包含 dense / sparse / es 三个字段——这是 mark_indexing 的固有副作用：
+        进入 dense INDEXING 时把 sparse / es 状态都重置为 PENDING（语义：dense 重做，
+        下游需要重做）。CAS WHERE 拦下时整条 UPDATE 不生效，副作用也不会发生。
+        """
+
         values: dict[str, object] = {
             "dense_vector_status": CHUNK_STATUS_INDEXING,
             "sparse_vector_status": SPARSE_VECTOR_STATUS_PENDING,
@@ -177,6 +192,7 @@ class ChunkRepository:
             chunk_ids,
             values=values,
             expected_status=expected_status,
+            allowed_statuses=allowed_statuses,
             protect_delete_statuses=True,
         )
 
@@ -187,7 +203,14 @@ class ChunkRepository:
         *,
         model_name: str | None = None,
         expected_status: str | None = None,
+        allowed_statuses: Sequence[str] | None = None,
     ) -> int:
+        """把一批 chunk 推进到 sparse INDEXING 中间态。
+
+        CAS 条件优先级与 :meth:`mark_indexing` 一致；本方法只 SET sparse 维度，
+        不动 dense / es 字段。
+        """
+
         values: dict[str, object] = {
             "sparse_vector_status": SPARSE_VECTOR_STATUS_INDEXING,
         }
@@ -199,6 +222,7 @@ class ChunkRepository:
             chunk_ids,
             values=values,
             expected_status=expected_status,
+            allowed_statuses=allowed_statuses,
         )
 
     async def mark_sparse_indexed(
@@ -326,13 +350,19 @@ class ChunkRepository:
         *,
         values: Mapping[str, object],
         expected_status: str | None = None,
+        allowed_statuses: Sequence[str] | None = None,
     ) -> int:
         if not chunk_ids:
             return 0
 
         stmt = update(self.model_cls).where(self.model_cls.chunk_id.in_(chunk_ids))
-        stmt = stmt.where(self.model_cls.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
-        if expected_status is not None:
+        stmt = stmt.where(
+            self.model_cls.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES)
+        )
+        # CAS 优先级：allowed_statuses（多值）> expected_status（单值）> 不加 CAS
+        if allowed_statuses:
+            stmt = stmt.where(self.model_cls.sparse_vector_status.in_(tuple(allowed_statuses)))
+        elif expected_status is not None:
             stmt = stmt.where(self.model_cls.sparse_vector_status == expected_status)
         result = await db.execute(stmt.values(**values))
         return int(result.rowcount or 0)
@@ -344,16 +374,23 @@ class ChunkRepository:
         *,
         values: Mapping[str, object],
         expected_status: str | None = None,
+        allowed_statuses: Sequence[str] | None = None,
         protect_delete_statuses: bool = False,
     ) -> int:
         if not chunk_ids:
             return 0
 
         stmt = update(self.model_cls).where(self.model_cls.chunk_id.in_(chunk_ids))
-        if expected_status is not None:
+        # CAS 优先级：allowed_statuses（多值）> expected_status（单值）>
+        # protect_delete_statuses（仅排除 delete-protected）
+        if allowed_statuses:
+            stmt = stmt.where(self.model_cls.dense_vector_status.in_(tuple(allowed_statuses)))
+        elif expected_status is not None:
             stmt = stmt.where(self.model_cls.dense_vector_status == expected_status)
         elif protect_delete_statuses:
-            stmt = stmt.where(self.model_cls.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES))
+            stmt = stmt.where(
+                self.model_cls.dense_vector_status.notin_(CHUNK_DELETE_PROTECTED_STATUSES)
+            )
 
         result = await db.execute(stmt.values(**values))
         return int(result.rowcount or 0)

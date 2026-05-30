@@ -3,11 +3,11 @@ from __future__ import annotations
 import pytest
 
 from src.core.chunk_fact_storage.constants import (
-    CHUNK_STATUS_FAILED,
-    CHUNK_STATUS_INDEXED,
     CHUNK_STATUS_DELETE_FAILED,
     CHUNK_STATUS_DELETED,
     CHUNK_STATUS_DELETING,
+    CHUNK_STATUS_FAILED,
+    CHUNK_STATUS_INDEXED,
     CHUNK_STATUS_INDEXING,
     CHUNK_STATUS_PENDING,
     ES_STATUS_FAILED,
@@ -17,7 +17,11 @@ from src.core.chunk_fact_storage.constants import (
     SPARSE_VECTOR_STATUS_INDEXED,
     SPARSE_VECTOR_STATUS_PENDING,
 )
-from src.core.chunk_fact_storage.models import ChunkPostStatus, FactChunkDraft, decide_chunk_post_status
+from src.core.chunk_fact_storage.models import (
+    ChunkPostStatus,
+    FactChunkDraft,
+    decide_chunk_post_status,
+)
 from src.core.chunk_fact_storage.repository import ChunkRepository
 
 
@@ -269,8 +273,12 @@ async def test_should_claim_failed_for_reindex_and_reset_vector_stage():
 @pytest.mark.asyncio
 async def test_should_return_records_in_input_order_when_get_by_chunk_ids():
     repository = ChunkRepository()
-    first = repository.model_cls(chunk_id="chunk-1", doc_id=1, set_id=1, user_id=1, content="a", content_hash="a")
-    second = repository.model_cls(chunk_id="chunk-2", doc_id=1, set_id=1, user_id=1, content="b", content_hash="b")
+    first = repository.model_cls(
+        chunk_id="chunk-1", doc_id=1, set_id=1, user_id=1, content="a", content_hash="a"
+    )
+    second = repository.model_cls(
+        chunk_id="chunk-2", doc_id=1, set_id=1, user_id=1, content="b", content_hash="b"
+    )
     session = CapturingSession(records=[second, first])
 
     records = await repository.get_by_chunk_ids(session, ["chunk-1", "chunk-2"])
@@ -337,8 +345,12 @@ async def test_should_record_deleting_when_mark_deleting():
 @pytest.mark.asyncio
 async def test_should_return_records_in_input_order_when_get_updatable_by_chunk_ids():
     repository = ChunkRepository()
-    first = repository.model_cls(chunk_id="chunk-1", doc_id=1, set_id=1, user_id=1, content="a", content_hash="a")
-    second = repository.model_cls(chunk_id="chunk-2", doc_id=1, set_id=1, user_id=1, content="b", content_hash="b")
+    first = repository.model_cls(
+        chunk_id="chunk-1", doc_id=1, set_id=1, user_id=1, content="a", content_hash="a"
+    )
+    second = repository.model_cls(
+        chunk_id="chunk-2", doc_id=1, set_id=1, user_id=1, content="b", content_hash="b"
+    )
     session = CapturingSession(records=[second, first])
 
     records = await repository.get_updatable_by_chunk_ids(session, ["chunk-1", "chunk-2"])
@@ -349,8 +361,12 @@ async def test_should_return_records_in_input_order_when_get_updatable_by_chunk_
 @pytest.mark.asyncio
 async def test_should_return_records_in_input_order_when_get_deletable_by_chunk_ids():
     repository = ChunkRepository()
-    first = repository.model_cls(chunk_id="chunk-1", doc_id=1, set_id=1, user_id=1, content="a", content_hash="a")
-    second = repository.model_cls(chunk_id="chunk-2", doc_id=1, set_id=1, user_id=1, content="b", content_hash="b")
+    first = repository.model_cls(
+        chunk_id="chunk-1", doc_id=1, set_id=1, user_id=1, content="a", content_hash="a"
+    )
+    second = repository.model_cls(
+        chunk_id="chunk-2", doc_id=1, set_id=1, user_id=1, content="b", content_hash="b"
+    )
     session = CapturingSession(records=[second, first])
 
     records = await repository.get_deletable_by_chunk_ids(session, ["chunk-1", "chunk-2"])
@@ -531,3 +547,122 @@ def test_should_decide_completed_when_sparse_enabled_and_sparse_indexed():
     )
 
     assert decide_chunk_post_status(record, sparse_enabled=True) == ChunkPostStatus.COMPLETED
+
+
+# ============================================================================
+# 多值 CAS（allowed_statuses）：dense / sparse 入口的 SQL 层防呆
+# 对应 acceptance.feature 中的 "dense / sparse mark_*indexing 多值 CAS" Outline
+# ============================================================================
+
+
+def _where_clauses_strs(session: CapturingSession) -> list[str]:
+    """把 UPDATE 语句的 WHERE 子句转成可断言的字符串列表。"""
+
+    return [str(clause).lower() for clause in session.statement._where_criteria]
+
+
+@pytest.mark.asyncio
+async def test_mark_indexing_with_allowed_statuses_renders_in_clause():
+    """allowed_statuses=(PENDING, FAILED) → SQL 含 dense_vector_status IN (...)。"""
+
+    repository = ChunkRepository()
+    session = CapturingSession(rowcount=2)
+
+    affected = await repository.mark_indexing(
+        session,
+        ["chunk-1", "chunk-2"],
+        allowed_statuses=(CHUNK_STATUS_PENDING, CHUNK_STATUS_FAILED),
+    )
+
+    assert affected == 2
+    where_strs = _where_clauses_strs(session)
+    # 多值 CAS 应当渲染为 IN 子句
+    assert any("in (" in clause for clause in where_strs), where_strs
+
+
+@pytest.mark.asyncio
+async def test_mark_indexing_with_single_allowed_status_still_uses_in_clause():
+    """allowed_statuses=(PENDING,) 即单元素元组也走 IN 子句（语义等价单值 CAS）。"""
+
+    repository = ChunkRepository()
+    session = CapturingSession(rowcount=1)
+
+    await repository.mark_indexing(
+        session,
+        ["chunk-1"],
+        allowed_statuses=(CHUNK_STATUS_PENDING,),
+    )
+
+    where_strs = _where_clauses_strs(session)
+    assert any("in (" in clause for clause in where_strs), where_strs
+
+
+@pytest.mark.asyncio
+async def test_mark_indexing_allowed_statuses_takes_precedence_over_expected_status():
+    """allowed_statuses 优先于 expected_status；后者用于过渡期兼容。"""
+
+    repository = ChunkRepository()
+    session = CapturingSession(rowcount=1)
+
+    await repository.mark_indexing(
+        session,
+        ["chunk-1"],
+        expected_status=CHUNK_STATUS_INDEXING,  # 故意传一个不会匹配的
+        allowed_statuses=(CHUNK_STATUS_PENDING, CHUNK_STATUS_FAILED),
+    )
+
+    where_strs = _where_clauses_strs(session)
+    # WHERE 应包含 IN 子句而非 = INDEXING
+    assert any("in (" in clause for clause in where_strs), where_strs
+    assert not any("= 'indexing'" in clause for clause in where_strs), where_strs
+
+
+@pytest.mark.asyncio
+async def test_mark_indexing_falls_back_to_protect_delete_when_no_cas_args():
+    """allowed_statuses 与 expected_status 都不传 → 仅 delete-protected 兜底。"""
+
+    repository = ChunkRepository()
+    session = CapturingSession(rowcount=1)
+
+    await repository.mark_indexing(session, ["chunk-1"])
+
+    where_strs = _where_clauses_strs(session)
+    # 不应有 dense_vector_status IN (...) 的 CAS 子句
+    assert not any("dense_vector_status in (" in clause for clause in where_strs), where_strs
+
+
+@pytest.mark.asyncio
+async def test_mark_sparse_indexing_with_allowed_statuses_renders_in_clause():
+    """sparse 端多值 CAS：sparse_vector_status IN (PENDING, FAILED)。"""
+
+    repository = ChunkRepository()
+    session = CapturingSession(rowcount=2)
+
+    affected = await repository.mark_sparse_indexing(
+        session,
+        ["chunk-1", "chunk-2"],
+        allowed_statuses=(SPARSE_VECTOR_STATUS_PENDING, SPARSE_VECTOR_STATUS_FAILED),
+        model_name="bge-m3",
+    )
+
+    assert affected == 2
+    where_strs = _where_clauses_strs(session)
+    assert any("sparse_vector_status in (" in clause for clause in where_strs), where_strs
+
+
+@pytest.mark.asyncio
+async def test_mark_sparse_indexing_keeps_dense_protect_clause():
+    """sparse 端 CAS 仍保留 dense_vector_status NOT IN delete-protected 兜底。"""
+
+    repository = ChunkRepository()
+    session = CapturingSession(rowcount=1)
+
+    await repository.mark_sparse_indexing(
+        session,
+        ["chunk-1"],
+        allowed_statuses=(SPARSE_VECTOR_STATUS_PENDING,),
+    )
+
+    where_strs = _where_clauses_strs(session)
+    # 必须仍有 dense_vector_status NOT IN (...) 子句
+    assert any("dense_vector_status not in (" in clause for clause in where_strs), where_strs
