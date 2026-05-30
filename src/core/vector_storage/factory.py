@@ -88,6 +88,7 @@ def create_vector_storage_facade(
         compensation_service=compensation_service,
         qdrant_store=resolved_qdrant_store,
         sparse_vector_service=sparse_vector_service,
+        embedding_pipeline=embedding_pipeline,
     )
 
 
