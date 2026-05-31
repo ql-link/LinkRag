@@ -1,6 +1,12 @@
 """
 toLink-RAG API 服务入口
 """
+# NLTK 数据路径必须在引入任何会用到 NLTK 的依赖（deepdoc/infinity-sdk/langchain 等）之前配置，
+# 确保运行时优先命中项目内 nltk_data，而非用户家目录 ~/nltk_data。
+from src.nltk_bootstrap import configure_nltk_data_path
+
+configure_nltk_data_path()
+
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator

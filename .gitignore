@@ -39,6 +39,9 @@ venv/
 .env.local
 .env.test
 
+# NLTK data: 体积大(~99M)，不入 Git；由 scripts/setup_nltk_data.py 在构建/部署时下载
+/nltk_data/
+
 # External Storage (managed externally, not in repo)
 # ChromaDB data, PostgreSQL, ES indices, S3 files
 

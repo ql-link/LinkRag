@@ -35,6 +35,7 @@ dependencies = [
     "numpy>=1.26.0",
     "opencv-python-headless>=4.9.0",
     "transformers>=4.53.0",
+    "nltk>=3.9.0",
     "beautifulsoup4>=4.12.0",
     "trafilatura>=2.0.0",
     "mammoth>=1.6.0",
