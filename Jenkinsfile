@@ -8,12 +8,9 @@ pipeline {
     }
 
     environment {
-        REGISTRY    = 'registry.example.com/tolink'   // TODO: 改成你的镜像仓库
-        IMAGE_NAME  = 'tolink-rag'
-        IMAGE       = "${REGISTRY}/${IMAGE_NAME}"
-        TAG         = "${env.GIT_COMMIT?.take(8) ?: env.BUILD_NUMBER}"
-        DEPLOY_HOST = 'deploy@your-server'             // TODO: 部署目标主机
-        DEPLOY_DIR  = '/opt/tolink/toLink-Rag'
+        IMAGE      = 'tolink-rag'
+        TAG        = "${env.GIT_COMMIT?.take(8) ?: env.BUILD_NUMBER}"
+        DEPLOY_DIR = '/opt/tolink/toLink-Rag'   // TODO: 本机部署目录，内含 .env 和 deploy/docker-compose.yml
     }
 
     stages {
@@ -40,31 +37,13 @@ pipeline {
             }
         }
 
-        stage('Push Image') {
-            steps {
-                withCredentials([usernamePassword(credentialsId: 'registry-cred',
-                        usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
-                    sh '''
-                        echo "$REG_PASS" | docker login ${REGISTRY%%/*} -u "$REG_USER" --password-stdin
-                        docker push ${IMAGE}:${TAG}
-                        docker push ${IMAGE}:latest
-                    '''
-                }
-            }
-        }
-
         stage('Deploy') {
             steps {
-                sshagent(credentials: ['deploy-ssh-key']) {
-                    sh """
-                        ssh -o StrictHostKeyChecking=no ${DEPLOY_HOST} '
-                            cd ${DEPLOY_DIR} &&
-                            export REGISTRY=${REGISTRY} TAG=${TAG} &&
-                            docker compose -f deploy/docker-compose.yml pull &&
-                            docker compose -f deploy/docker-compose.yml up -d
-                        '
-                    """
-                }
+                sh """
+                    cd ${DEPLOY_DIR}
+                    export TAG=${TAG}
+                    docker compose -f deploy/docker-compose.yml up -d
+                """
             }
         }
     }

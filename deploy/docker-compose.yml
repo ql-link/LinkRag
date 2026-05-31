@@ -1,9 +1,9 @@
-# 部署用 compose：拉取 Jenkins 推送的镜像并启动 RAG 服务
+# 部署用 compose：引用本机 docker build 出来的镜像并启动
 # 外部依赖（MySQL/Redis/MinIO/ES/Qdrant/Kafka）由根目录 docker-compose.yml 单独拉起
-# 用法：REGISTRY=xxx TAG=xxx docker compose -f deploy/docker-compose.yml up -d
+# 用法：TAG=xxx docker compose -f deploy/docker-compose.yml up -d
 services:
   tolink-rag:
-    image: ${REGISTRY:-local}/tolink-rag:${TAG:-latest}
+    image: tolink-rag:${TAG:-latest}
     container_name: tolink-rag
     restart: always
     env_file:
