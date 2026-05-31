@@ -47,7 +47,12 @@ class QdrantIndexStore:
         )
         self.host = host or settings.QDRANT_HOST
         self.port = port or settings.QDRANT_PORT
-        self.api_key = api_key if api_key is not None else getattr(settings, "QDRANT_API_KEY", None)
+        resolved_api_key = (
+            api_key if api_key is not None else getattr(settings, "QDRANT_API_KEY", None)
+        )
+        # 空串归一为 None：qdrant-client 见到非 None 的 api_key（含 ""）会强制 https，
+        # 对明文 HTTP 部署触发 [SSL: WRONG_VERSION_NUMBER]。.env 里 QDRANT_API_KEY= 即空串。
+        self.api_key = resolved_api_key or None
         self.timeout = timeout or getattr(
             settings,
             "QDRANT_TIMEOUT_SECONDS",
@@ -69,12 +74,24 @@ class QdrantIndexStore:
         try:
             exists = await client.collection_exists(collection_name=collection_name)
             if not exists:
+                # collection 必须在「创建时」就带 named sparse vector：Qdrant 不支持事后用
+                # update_collection 给 dense-only collection 追加新的 named sparse vector
+                # （返回 400 "Not existing vector name"）。dense 阶段先于 sparse 建表，
+                # 若此处只建 dense，则 sparse 阶段 ensure_sparse_vector_schema 必然失败、
+                # 稀疏索引永不可用。故按配置的 sparse 向量名把 collection 建成 hybrid-ready。
+                sparse_vector_name = getattr(settings, "SPARSE_VECTOR_QDRANT_VECTOR_NAME", None)
+                sparse_vectors_config = (
+                    {sparse_vector_name: models.SparseVectorParams()}
+                    if sparse_vector_name
+                    else None
+                )
                 await client.create_collection(
                     collection_name=collection_name,
                     vectors_config=models.VectorParams(
                         size=vector_size,
                         distance=models.Distance.COSINE,
                     ),
+                    sparse_vectors_config=sparse_vectors_config,
                 )
 
             if collection_name not in self._payload_index_ready_collections:
@@ -112,7 +129,9 @@ class QdrantIndexStore:
                 wait=True,
             )
         except Exception as exc:
-            raise QdrantStoreError(f"Failed to upsert points into {collection_name}: {exc}") from exc
+            raise QdrantStoreError(
+                f"Failed to upsert points into {collection_name}: {exc}"
+            ) from exc
 
     async def ensure_sparse_vector_schema(self, *, bucket_id: int, vector_name: str) -> None:
         """确保 bucket collection 中存在指定 named sparse vector 配置。"""
@@ -288,9 +307,7 @@ class QdrantIndexStore:
                     using,
                 )
                 return []
-            raise QdrantStoreError(
-                f"Failed to query collection {collection_name}: {exc}"
-            ) from exc
+            raise QdrantStoreError(f"Failed to query collection {collection_name}: {exc}") from exc
 
         # ScoredPoint → VectorSearchHit 字段映射；payload dict 在 store 层消化，
         # 不外泄给 facade 与调用方。score 已由 Qdrant 端按 limit / score_threshold
@@ -377,7 +394,9 @@ class QdrantIndexStore:
                 wait=True,
             )
         except Exception as exc:
-            raise QdrantStoreError(f"Failed to delete points from {collection_name}: {exc}") from exc
+            raise QdrantStoreError(
+                f"Failed to delete points from {collection_name}: {exc}"
+            ) from exc
 
     async def close(self) -> None:
         """关闭由本 store 自行创建的 Qdrant client。"""
