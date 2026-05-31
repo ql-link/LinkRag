@@ -1,0 +1,94 @@
+# 文档同步规则（机器可读版）
+#
+# 用途：约束"改动代码时必须同步对应文档"，由 scripts/check_docs_sync.py 强制执行。
+#
+# 设计原则：
+#   - 只保留 error 级规则（避免 warning 失同步成为习惯性 ignore）。
+#   - 仅覆盖"失同步会引发集成 bug"的对外契约 / 终态语义。
+#   - 内部模块文档失同步靠 PR 评审兜底，不进 hook。
+#
+# 字段说明：
+#   id           - 规则唯一标识（用于报错定位）
+#   description  - 规则描述
+#   when_changed - 触发规则的文件 glob 列表（任一命中即触发）
+#   must_update  - 触发后必须同时改的文档（任一缺失即违规）
+#   severity     - error（阻止提交）
+#   rationale    - 为什么这条规则重要
+#
+# 特殊字段：
+#   forbid_change: true   - 任何匹配 when_changed 的改动都视为违规
+#                           （与 must_update 互斥），用于"冻结"文件。
+#
+# 修改本文件后请运行 `python scripts/check_docs_sync.py --self-check` 验证。
+
+version: 1
+
+defaults:
+  severity: error
+
+rules:
+  # ---- 数据库 schema ----
+  - id: mysql-schema
+    description: ORM 模型变更必须同步 schema 摘要文档
+    when_changed:
+      - src/models/**/*.py
+    must_update:
+      - docs/api/schemas/mysql.md
+    severity: error
+    rationale: |
+      ORM 模型是 schema 权威源。Java 业务方和外部对接方依据 docs/api/schemas/mysql.md
+      做数据集成，字段变化必须同步对外摘要文档。
+
+  - id: db-migration-required
+    description: ORM 模型变更必须伴随 Alembic 迁移
+    when_changed:
+      - src/models/**/*.py
+    must_update:
+      - migrations/versions/*.py
+    severity: error
+    rationale: |
+      模型变更若不写 Alembic 迁移，存量库会陷入 schema drift
+      (CI 用空库跑测试不会暴露，线上首条真实流量必炸)。must_update
+      为 glob，匹配 migrations/versions 下任意新增/修改的迁移文件即可。
+
+  - id: init-sql-frozen
+    description: scripts/db/init.sql 是 0001 baseline 冻结快照，禁止直接修改
+    when_changed:
+      - scripts/db/init.sql
+    forbid_change: true
+    severity: error
+    rationale: |
+      CI 冷启动流程为 `mysql < init.sql` → `alembic stamp 0001` → `alembic upgrade head`。
+      若新字段同时写入 init.sql 与 Alembic 迁移，upgrade 会重复加列触发 MySQL
+      1060 Duplicate column（PR #27 真实事故）。约定 init.sql 永远等价于 migration 0001
+      所描述的形态，新增/修改 schema 一律走 ORM + migrations/versions/*.py。
+      若确实需要 rebase baseline（squash 历史迁移），请在 PR 描述里明确说明并由
+      reviewer 临时跳过本规则（pre-commit: `SKIP=docs-sync git commit ...`）。
+
+  # ---- 对外契约 ----
+  - id: mq-contracts
+    description: MQ 消息载荷或类型变更
+    when_changed:
+      - src/core/mq/messages/**/*.py
+    must_update:
+      - docs/api/mq_contracts.md
+      - docs/internals/mq.md
+    severity: error
+    rationale: |
+      MQ 消息是 Java 业务方对接契约，字段缺失或类型变化会直接导致集成失败。
+      契约文档（api/mq_contracts.md）与内部实现文档（internals/mq.md）同时更新，
+      避免内部文档与对外契约不一致。
+
+  # ---- 流水线终态语义 ----
+  - id: parse-task-pipeline-orchestration
+    description: 解析任务流水线编排或状态机变更
+    when_changed:
+      - src/core/pipeline/parse_task/**/*.py
+    must_update:
+      - docs/internals/parse_task_pipeline.md
+    severity: error
+    rationale: |
+      解析任务流水线状态机变更涉及 success/failed 终态语义，Java 业务方通过 MQ
+      回调消费这些状态。状态机失同步会导致业务方误判任务状态。
+      注意：本规则仅覆盖 parse_task 子包；src/core/pipeline 下的其他 pipeline
+      （如 recall）有各自的契约文档，不在此规则范围内。

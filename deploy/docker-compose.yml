@@ -1,0 +1,20 @@
+# 部署用 compose：引用本机 docker build 出来的镜像并启动
+# 外部依赖（MySQL/Redis/MinIO/ES/Qdrant/Kafka）由根目录 docker-compose.yml 单独拉起
+# 用法：TAG=xxx docker compose -f deploy/docker-compose.yml up -d
+services:
+  tolink-rag:
+    image: tolink-rag:${TAG:-latest}
+    container_name: tolink-rag
+    restart: always
+    env_file:
+      - ../.env
+    ports:
+      - "8000:8000"
+    networks:
+      - tolink-app-net
+    # 启动前如需执行 Alembic 迁移，可改用：
+    # command: sh -c "alembic upgrade head && uvicorn src.main:app --host 0.0.0.0 --port 8000"
+
+networks:
+  tolink-app-net:
+    external: true
