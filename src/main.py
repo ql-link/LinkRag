@@ -63,7 +63,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(
     title=settings.APP_NAME,
-    version="1.0.0",
+    version="0.1.0",
     description="RAG 系统服务",
     lifespan=lifespan,
 )
