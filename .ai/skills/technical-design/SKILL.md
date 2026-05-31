@@ -62,7 +62,7 @@ when_to_use: 当用户明确要求"生成技术方案 / 生成技术实现文档
 3. `.specs/<feature-name>/acceptance.feature`
 4. `.specs/<feature-name>/feature_info.md`（若存在）
 5. `.ai/skills/technical-design/technical_design.template.md`
-6. `docs/internals/middleware_contract.md`（若存在）
+6. 公共契约文档：`docs/api/**`、`docs/internals/naming_conventions.md`、`docs/internals/mq.md`（按改动涉及面选读）
 
 按需补读：
 
@@ -71,12 +71,14 @@ when_to_use: 当用户明确要求"生成技术方案 / 生成技术实现文档
 9. 同业务域历史模块的 `implementation_report.md`
 10. 相关真实代码
 
-组件文档强制规则：
+组件文档强制规则（路径以本项目真实文档为准）：
 
-- 涉及 Redis 缓存 → 读 `redis_component.md`
-- 涉及文件存储、object key → 读 `oss_component.md`
-- 涉及异步消息 / topic / consumer → 读 `kafka_component.md`
-- 涉及向量检索 → 读 `qdrant_component.md`
+- 涉及文件 / 对象存储、object key → 读 `docs/internals/object_storage.md`
+- 涉及异步消息 / topic / consumer → 读 `docs/internals/mq.md`、`docs/api/mq_contracts.md`
+- 涉及向量检索 → 读 `docs/api/schemas/qdrant.md`、`docs/internals/vectorization.md`
+- 涉及 ES / BM25 检索 → 读 `docs/api/schemas/elasticsearch.md`
+- 涉及解析流水线 → 读 `docs/internals/parse_task_pipeline.md`
+- 本项目当前不使用 Redis 公共组件；如确需引入缓存，先在 brief / TD 中说明并补对应文档
 
 **只要方案中准备"使用、修改、扩展、复用"某组件或模块，就必须先读对应代码或文档**。不允许凭类名猜测、历史印象或通用框架经验直接写方案。
 

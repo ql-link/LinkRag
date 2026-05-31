@@ -16,7 +16,7 @@ when_to_use: "当用户要求生成测试用例、补齐单元测试、修复失
 
 ## Background
 - 测试覆盖率不是最终目的，系统的高可用与"可被验证性"才是。
-- 对于所有的中间件（如 MySQL、Redis、Milvus）以及外部端点（如大语言模型 API），在单元测试阶段必须做到 100% 隔离（Mock）。
+- 对于所有的中间件（如 MySQL、Qdrant 向量库、Elasticsearch、Kafka/RabbitMQ、MinIO/OSS）以及外部端点（如系统 Embedding / LLM HTTP API、远程 bge-m3-server），在单元测试阶段必须做到 100% 隔离（Mock）。
 - 集成测试与连通性冒烟测试应当使用专门的隔离夹具 (Fixtures) 与独立的环境配置加载。
 
 ## Rules
@@ -32,6 +32,18 @@ when_to_use: "当用户要求生成测试用例、补齐单元测试、修复失
 2. 【策略制定】：简述为这个目标需要撰写几个测试用例测试，哪些依赖项需要被 Mock，以及需要什么样的 Pytest Fixtures。
 3. 【基础夹具输出 (Fixtures)】：先输出（或定义）通用的模拟依赖对象集合（如 `mock_db_session`，`respx_mock`，`mock_env_vars`）。
 4. 【用例输出 (Test Cases)】：逐个输出对应的边界与分支测试代码，并在关键位置附加上注释帮助开发者理解 Mock 拦截技巧。
+
+## 本项目测试约定（toLink-Rag）
+
+- 目录分层：单元测试放 `tests/unit/<镜像 src 路径>`；集成测试放 `tests/integration`。
+- 运行命令：
+  - 单测：`.venv/bin/pytest tests/unit -q`
+  - 全量（含集成）：`.venv/bin/pytest --run-integration tests`（不带 `--run-integration` 不收集集成测试）
+- 异步代码用 `pytest.mark.asyncio`（项目已配 `asyncio_mode`/插件）；`async def` 测试直接 `await`。
+- HTTP 外部依赖（系统 Embedding/LLM、远程 bge-m3-server）优先用 `httpx.MockTransport` 注入受控 `AsyncClient`，不要打真实网络。
+- DB 用 `AsyncSession` 的测试替身或 fixture，禁止单测连真实 MySQL。
+- 真实连通性/冒烟测试由开关控制（如 `TOLINK_RUN_REAL_SPARSE_VECTOR_TESTS`），默认关闭，不混入单测。
+- 参考既有用例风格：`tests/unit/core/sparse_vector/`。
 
 ## OutputFormat
 

@@ -41,7 +41,7 @@ when_to_use: "当用户要求为代码生成注释、补充文档字符串、优
 禁止注释的场景：
 - 简单的赋值操作
 - 变量声明与基础判空
--显而易见的流程控制
+- 显而易见的流程控制
 
 ---
 
@@ -63,43 +63,44 @@ when_to_use: "当用户要求为代码生成注释、补充文档字符串、优
 ### 类注释
 
 ```python
-class UserService:
-    """用户服务层。
+class SparseVectorService:
+    """稀疏向量服务层。
 
-    负责用户注册、登录、信息修改等核心业务流程的编排，
-    协调 UserRepository 与 RedisCache 实现数据持久化与缓存策略。
+    编排稀疏向量编码与产出规整，按 provider 复用本地或远程 BGE-M3 编码器，
+    向上游提供与 dense 召回对仗的稀疏向量化能力，不直接维护 MySQL/Qdrant 状态。
     """
 ```
 
 ### 方法/函数注释
 
 ```python
-    def register(self, request: RegisterRequest) -> int:
-        """用户注册。
+    async def vectorize_chunk(self, request: SparseChunkVectorizationRequest) -> SparseVector:
+        """对单个 chunk 原文生成稀疏向量。
 
         Args:
-            request: 注册请求（包含手机号、密码）
+            request: 待编码 chunk（含 chunk_id、content、bucket_id 等定位字段）
 
         Returns:
-            注册成功后的用户ID
+            indices 升序、values 一一对应的稀疏向量
 
         Raises:
-            BusinessError: 手机号已存在或校验失败时抛出
+            SparseVectorEncodingError: 编码失败或返回结构异常时抛出
+            SparseVectorOutputError: 清洗后稀疏维度为空时抛出
         """
 ```
 
 ### 内部注释风格
 
 ```python
-        # 1. 校验手机号是否已被注册（调用Repository查询数据库）
-        if await self.user_repository.exists_by_phone(request.phone):
-            raise BusinessError("手机号已被注册")
+        # 现场过滤：只处理 dense 已成功且 sparse 尚未成功的 chunk（幂等、避免重复写）
+        sparse_chunks = [
+            c for c in chunks
+            if c.dense_vector_status == CHUNK_STATUS_INDEXED
+            and c.sparse_vector_status != SPARSE_VECTOR_STATUS_INDEXED
+        ]
 
-        # 2. 密码加密后入库（不加密会导致安全风险）
-        encrypted_password = self.password_encoder.encode(request.password)
-
-        # 3. 写入缓存（预期：提升后续查询性能）
-        await self.redis_cache.set(f"user:{user_id}", user)
+        # 复用同一套 lexical weights 清洗，保证本地/远程 provider 产出口径一致
+        vectors = await self._encoder.aencode([c.content for c in sparse_chunks])
 ```
 
 ---
@@ -125,82 +126,54 @@ class UserService:
 
 ## 使用示例
 
+> 示例取自本项目领域（RAG 解析/向量化），不要用与项目无关的样例（如用户注册）。
+
 ### 用户输入
 
-为 user_service.py 生成注释
+为稀疏向量编码器 `http_encoder.py` 生成注释
 
 ### Agent 响应
 
 **上下文分析**
-- 文件角色：Service 层
-- 外部依赖：UserRepository、RedisCache
-- 调用关系：被 UserRouter 依赖注入
+- 文件角色：Core 模块（稀疏向量编码器，实现 `SparseVectorEncoderProtocol`）
+- 外部依赖：远程 `bge-m3-server`（HTTP）、`httpx`
+- 调用关系：由 `sparse_vector/factory.py` 按 `SPARSE_VECTOR_PROVIDER=bge_m3_http` 装配，供 `SparseVectorService` 调用
 
 **输出带注释的代码：**
 
 ```python
-class UserService:
-    """用户服务层。
+class BGEM3HttpSparseVectorEncoder:
+    """调用远程 bge-m3-server 生成 sparse lexical weights 的编码器。
 
-    负责用户注册、登录、信息修改等核心业务流程的编排，
-    协调 UserRepository 与 RedisCache 实现数据持久化与缓存策略。
+    与本地 BGEM3SparseVectorEncoder 实现同一 SparseVectorEncoderProtocol，
+    上层编排无感切换；本类只负责 HTTP 调用与输出规整，不处理 MySQL/Qdrant 状态。
     """
 
-    def __init__(
-        self,
-        user_repository: UserRepository,
-        redis_cache: RedisCache,
-    ) -> None:
-        self.user_repository = user_repository
-        self.redis_cache = redis_cache
-
-    async def register(self, request: RegisterRequest) -> int:
-        """用户注册。
+    async def aencode(self, texts: Sequence[str]) -> list[SparseVector]:
+        """调用远程 /encode 接口，把一批文本编码为稀疏向量。
 
         Args:
-            request: 注册请求（包含手机号、密码）
+            texts: 待编码的 chunk 原文，返回向量与其一一同序。
 
         Returns:
-            注册成功后的用户ID
+            与输入同序的稀疏向量列表；输入为空时返回空列表。
 
         Raises:
-            BusinessError: 手机号已存在或校验失败时抛出
+            SparseVectorEncodingError: HTTP 调用失败或响应结构异常时抛出。
         """
-        # 校验手机号是否已被注册（调用Repository查询数据库）
-        if await self.user_repository.exists_by_phone(request.phone):
-            raise BusinessError("手机号已被注册")
+        if not texts:
+            return []
 
-        # 密码加密后入库（不加密会导致安全风险）
-        encrypted_password = self.password_encoder.encode(request.password)
-        user = User(phone=request.phone, password=encrypted_password)
-        user_id = await self.user_repository.save(user)
+        # 只取 sparse，关闭 dense/colbert，降低远程计算与网络开销
+        payload = {"texts": list(texts), "return_dense": False, "return_sparse": True}
 
-        # 写入缓存（预期：提升后续查询性能）
-        await self.redis_cache.set(f"user:{user_id}", user)
+        data = await self._post_encode(payload)
 
-        return user_id
+        # 远程返回的 sparse 必须与输入数量严格对齐，否则后续与 chunk 配对会错位
+        sparse = data.get("sparse")
+        if not isinstance(sparse, list) or len(sparse) != len(texts):
+            raise SparseVectorEncodingError("bge-m3-server sparse 结构或数量不匹配")
 
-    async def get_user_by_id(self, user_id: int) -> User | None:
-        """根据ID获取用户。
-
-        先查缓存，缓存未命中时查数据库并回填缓存。
-
-        Args:
-            user_id: 用户ID
-
-        Returns:
-            用户对象，不存在返回 None
-        """
-        # 尝试从缓存获取（减少数据库压力）
-        cached_user = await self.redis_cache.get(f"user:{user_id}")
-        if cached_user:
-            return cached_user
-
-        # 缓存未命中，查数据库
-        user = await self.user_repository.find_by_id(user_id)
-        if user:
-            # 回填缓存（预期：下次查询直接命中）
-            await self.redis_cache.set(f"user:{user_id}", user)
-
-        return user
+        # 复用与本地推理同一套清洗规则，保证两种 provider 产出口径一致
+        return [normalize_lexical_weights(w, top_k=self._top_k) for w in sparse]
 ```

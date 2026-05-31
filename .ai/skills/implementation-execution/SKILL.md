@@ -1,7 +1,7 @@
 ---
 name: implementation-execution
 description: 在需求和技术方案确认后执行代码实现，并在必要时产出 implementation_report.md。
-when_to_use: "当需求和技术方案已确认并且给出需求和技术方案后、需要开始具体编码实现时激活。触发示例：'开始写代码吧'、'按方案实现这个功能'、'可以开始编码了'、'实现这个需求'"
+when_to_use: "当需求和技术方案已确认并且给出需求和技术方案后、需要开始具体编码实现时激活。触发示例：'开始写代码吧'、'按方案实现这个功能'、'可以开始编码了'、'实现这个需求'。若不存在冻结的 brief.md / acceptance.feature（用户只有口头需求、尚无 spec），不要直接编码，先转 brief-generator 收敛需求。代码写完后转测试与收口段：run-all-tests + code-review-and-quality，最终经 branch-pr-workflow 提 PR。"
 ---
 
 # Implementation Execution
@@ -64,7 +64,7 @@ when_to_use: "当需求和技术方案已确认并且给出需求和技术方案
 
 - `L1` 小改动
 - `L2` 且实现与技术方案基本一致
-- 影响面小，且后续 `testing_delivery.md` 足以说明交付结果
+- 影响面小，且后续测试与 PR 描述足以说明交付结果
 
 ## 写改造报告时必须读取
 
@@ -142,4 +142,4 @@ when_to_use: "当需求和技术方案已确认并且给出需求和技术方案
 1. 代码实现完成
 2. 必要时写好 `implementation_report.md`
 3. 更新 `feature_info.md`
-4. 进入 `test-and-delivery` 阶段
+4. 进入测试与收口段：先 `run-all-tests` 跑全量回归，再 `code-review-and-quality` 过质量门禁，最终经 `branch-pr-workflow` 提 PR

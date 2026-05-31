@@ -148,7 +148,7 @@ flowchart TD
 
 - README、已有同业务域的 brief / technical_design
 - 相关模块目录、入口文件、状态枚举、消息契约
-- 公共契约（`docs/internals/middleware_contract.md` 等）
+- 公共契约（`docs/api/**`、`docs/internals/naming_conventions.md` 等）
 
 不做完整代码审查，**只读到能支撑模块草图为止**。不要把"读到了什么文件"写成独立章节，转化为对模块归属、复用边界的具体判断。
 
