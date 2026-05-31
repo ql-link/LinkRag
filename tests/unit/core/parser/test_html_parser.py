@@ -4,11 +4,27 @@
 故 fixture 用带 article 容器 + 足量正文的现实结构（一轮迷你 fixture 已不再是合法输入）。
 """
 
+import tempfile
+from pathlib import Path
+
 import pytest
 
 from src.core.exceptions import ParseBaseException
 from src.core.markdown_parser import MarkdownParser
 from src.core.parser.providers.html_parser import HtmlParser
+
+# parser 协议为 ``parse(source: Path)``：测试把字节落到临时文件再传路径。
+_TMP_DIR = Path(tempfile.mkdtemp(prefix="html-parser-test-"))
+_seq = 0
+
+
+def _as_path(content: bytes) -> Path:
+    global _seq
+    _seq += 1
+    path = _TMP_DIR / f"doc-{_seq}.html"
+    path.write_bytes(content)
+    return path
+
 
 # 足量中文正文，确保 trafilatura 判定为主体内容并被文本重合度命中。
 PROSE = (
@@ -18,9 +34,9 @@ PROSE = (
 ) * 2
 
 
-def _article(body: str) -> bytes:
+def _article(body: str) -> Path:
     """把被测结构包进带站点装饰的现实文章页，验证去样板同时保留正文能力。"""
-    return f"""
+    html = f"""
         <html><body>
           <nav>首页 档案 SiteSearch</nav>
           <article>
@@ -31,6 +47,7 @@ def _article(body: str) -> bytes:
           <footer>上一篇 下一篇 分类：开发者手册 微博 GitHub License</footer>
         </body></html>
         """.encode()
+    return _as_path(html)
 
 
 def test_html_parser_should_preserve_basic_dom_structure_as_markdown():
@@ -38,9 +55,9 @@ def test_html_parser_should_preserve_basic_dom_structure_as_markdown():
 
     markdown = parser.parse(
         _article(
-            '<h1>主标题</h1>'
+            "<h1>主标题</h1>"
             '<p>这是正文段落，查看 <a href="/docs/api">接口文档</a> 获取细节。</p>'
-            '<ul><li>第一项</li><li>第二项</li></ul>'
+            "<ul><li>第一项</li><li>第二项</li></ul>"
             '<pre><code class="language-python">print("ok")</code></pre>'
         )
     )
@@ -58,11 +75,11 @@ def test_html_parser_should_remove_noise_nodes_and_site_chrome():
 
     markdown = parser.parse(
         _article(
-            '<script>console.log(1)</script>'
-            '<style>.hidden{}</style>'
-            '<noscript>noscript fallback</noscript>'
-            '<template>template text</template>'
-            '<p>有效知识内容标记段落</p>'
+            "<script>console.log(1)</script>"
+            "<style>.hidden{}</style>"
+            "<noscript>noscript fallback</noscript>"
+            "<template>template text</template>"
+            "<p>有效知识内容标记段落</p>"
         )
     )
 
@@ -134,7 +151,7 @@ def test_html_parser_should_fail_for_empty_stream():
     parser = HtmlParser()
 
     with pytest.raises(ValueError, match="文件流不可为空"):
-        parser.parse(b"")
+        parser.parse(_as_path(b""))
 
 
 def test_html_parser_should_fail_when_no_main_content_located():
@@ -142,7 +159,9 @@ def test_html_parser_should_fail_when_no_main_content_located():
 
     # 纯脚本/无正文 → trafilatura 返回 None → 抛解析异常（经 pipeline 映射 PARSE_ENGINE_FAILED）。
     with pytest.raises(ParseBaseException, match="正文"):
-        parser.parse(b"<html><body><div id='root'></div><script>window.x=1</script></body></html>")
+        parser.parse(
+            _as_path(b"<html><body><div id='root'></div><script>window.x=1</script></body></html>")
+        )
 
 
 def test_html_parser_should_remove_html_comments_including_base64():

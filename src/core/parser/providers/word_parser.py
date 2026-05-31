@@ -1,6 +1,7 @@
 import hashlib
 import zipfile
 from io import BytesIO
+from pathlib import Path
 
 import mammoth
 import mammoth.images
@@ -59,8 +60,12 @@ class WordParser(BaseParser):
         self._options = HtmlParseOptions()
         self._image_warning_count = 0
 
-    def parse(self, file_stream: bytes) -> str:
-        self.validate_stream(file_stream)
+    def parse(self, source: Path | None) -> str:
+        # Word 解析不支持 MinerU URL 旁路，必须有本地源文件路径。
+        if source is None:
+            raise ValueError("Word 解析需要本地源文件路径")
+        self.validate_source(source)
+        file_stream = Path(source).read_bytes()
         self._image_warning_count = 0
 
         if not self._is_ooxml(file_stream):

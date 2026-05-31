@@ -5,6 +5,8 @@ HTML 模块零回归由独立的 HTML 单测/集成承接（本模块不改 src/
 """
 
 import io
+import tempfile
+from pathlib import Path
 
 import docx
 import pytest
@@ -44,6 +46,19 @@ def _add_hyperlink(paragraph, url: str, text: str) -> None:
     paragraph._p.append(link)
 
 
+# parser 协议为 ``parse(source: Path)``：测试把字节落到临时文件再传路径。
+_TMP_DIR = Path(tempfile.mkdtemp(prefix="word-parser-test-"))
+_seq = 0
+
+
+def _as_path(content: bytes) -> Path:
+    global _seq
+    _seq += 1
+    path = _TMP_DIR / f"doc-{_seq}.docx"
+    path.write_bytes(content)
+    return path
+
+
 def _docx_bytes(build) -> bytes:
     d = docx.Document()
     build(d)
@@ -54,11 +69,12 @@ def _docx_bytes(build) -> bytes:
 
 def _parse(build) -> tuple[str, dict]:
     parser = WordParser()
-    md = parser.parse(_docx_bytes(build))
+    md = parser.parse(_as_path(_docx_bytes(build)))
     return md, parser.extract_metadata()
 
 
 # ==== 主流程 ====
+
 
 def test_headings_keep_level_and_order():
     def build(d):
@@ -131,6 +147,7 @@ def test_table_image_paragraph_order():
 
 # ==== 表格 ====
 
+
 def test_simple_table_is_markdown_table_in_place():
     def build(d):
         d.add_paragraph("说明段落")
@@ -157,10 +174,15 @@ def test_merged_cell_table_is_record_style():
         t = d.add_table(rows=3, cols=3)
         t.style = "Table Grid"
         for (r, c), v in {
-            (0, 0): "模块", (0, 1): "接口", (0, 2): "说明",
-            (1, 0): "用户", (2, 0): "用户",
-            (1, 1): "创建", (1, 2): "新建用户",
-            (2, 1): "删除", (2, 2): "移除用户",
+            (0, 0): "模块",
+            (0, 1): "接口",
+            (0, 2): "说明",
+            (1, 0): "用户",
+            (2, 0): "用户",
+            (1, 1): "创建",
+            (1, 2): "新建用户",
+            (2, 1): "删除",
+            (2, 2): "移除用户",
         }.items():
             t.cell(r, c).text = v
         t.cell(1, 0).merge(t.cell(2, 0))
@@ -201,6 +223,7 @@ def test_single_table_failure_keeps_position(monkeypatch):
 
 # ==== 图片 ====
 
+
 def test_embedded_image_to_mock_minio():
     def build(d):
         d.add_paragraph("配图说明")
@@ -230,6 +253,7 @@ def test_image_object_path_failure_keeps_placeholder(monkeypatch):
 
 # ==== 异常与边界 ====
 
+
 @pytest.mark.parametrize(
     "blob",
     [
@@ -240,12 +264,12 @@ def test_image_object_path_failure_keeps_placeholder(monkeypatch):
 )
 def test_non_ooxml_inputs_fail_fast(blob):
     with pytest.raises(ParseBaseException, match="非 .docx"):
-        WordParser().parse(blob)
+        WordParser().parse(_as_path(blob))
 
 
 def test_empty_stream_fails():
     with pytest.raises(ValueError, match="文件流不可为空"):
-        WordParser().parse(b"")
+        WordParser().parse(_as_path(b""))
 
 
 def test_mammoth_empty_content_fails():
@@ -253,7 +277,7 @@ def test_mammoth_empty_content_fails():
         d.add_paragraph("")  # 无有效正文
 
     with pytest.raises(ParseBaseException, match="无有效内容"):
-        WordParser().parse(_docx_bytes(build))
+        WordParser().parse(_as_path(_docx_bytes(build)))
 
 
 def test_does_not_affect_non_word_parser_dispatch():
@@ -268,7 +292,7 @@ def test_pipeline_contract_outputs_str_and_metadata():
         d.add_paragraph("正文内容占位足够长以产出有效 Markdown。")
 
     parser = WordParser()
-    md = parser.parse(_docx_bytes(build))
+    md = parser.parse(_as_path(_docx_bytes(build)))
     assert isinstance(md, str) and md.strip()
     meta = parser.extract_metadata()
     for key in ("table_count", "record_table_count", "table_failure_count", "image_count"):

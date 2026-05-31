@@ -1,5 +1,8 @@
 """trafilatura 定位 / 文本重合度映射 / 分级回退 / 空内容判定。"""
 
+import tempfile
+from pathlib import Path
+
 import pytest
 from bs4 import BeautifulSoup
 
@@ -8,19 +11,34 @@ from src.core.parser.html import service as svc_mod
 from src.core.parser.html.service import HtmlParseService
 from src.core.parser.providers.html_parser import HtmlParser
 
+# parser 协议为 ``parse(source: Path)``：测试把字节落到临时文件再传路径。
+_TMP_DIR = Path(tempfile.mkdtemp(prefix="html-locator-test-"))
+_seq = 0
+
+
+def _as_path(content: bytes) -> Path:
+    global _seq
+    _seq += 1
+    path = _TMP_DIR / f"doc-{_seq}.html"
+    path.write_bytes(content)
+    return path
+
+
 PROSE = (
     "本文系统介绍知识库文档解析链路的设计与实现。文档解析是检索增强生成的第一道工序，"
     "解析质量直接决定后续分块、向量化与召回的上限。逐节说明解析流程与结构保真策略。"
 ) * 2
 
 
-def _page(article_inner: str, chrome: bool = True) -> bytes:
+def _page(article_inner: str, chrome: bool = True) -> Path:
     nav = "<nav>首页 档案 SiteSearch 站内搜索</nav>" if chrome else ""
     footer = "<footer>上一篇 下一篇 分类：开发者手册 微博 GitHub License</footer>" if chrome else ""
-    return f"<html><body>{nav}<article>{article_inner}</article>{footer}</body></html>".encode()
+    html = f"<html><body>{nav}<article>{article_inner}</article>{footer}</body></html>".encode()
+    return _as_path(html)
 
 
 # ==== 定位 + 去样板 ====
+
 
 def test_located_main_content_strips_outside_chrome():
     parser = HtmlParser()
@@ -66,6 +84,7 @@ def test_pure_content_without_chrome_not_judged_empty():
 
 # ==== 文本重合度匹配（白盒）====
 
+
 def test_text_overlap_match_picks_tightest_matching_container():
     svc = HtmlParseService()
     # 真实正文容器含结构性内容（段落/标题）；纯文本无结构块按新规则会被排除
@@ -86,6 +105,7 @@ def test_text_overlap_match_picks_tightest_matching_container():
 
 
 # ==== 分级回退（白盒 + 端到端 monkeypatch）====
+
 
 def test_fallback_root_prefers_semantic_container():
     svc = HtmlParseService()
@@ -122,12 +142,10 @@ def test_locate_low_confidence_falls_back_to_semantic_container(monkeypatch):
 
 
 def test_locate_low_confidence_full_body_when_no_semantic_container(monkeypatch):
-    monkeypatch.setattr(
-        svc_mod.trafilatura, "extract", lambda *a, **k: "完全无法匹配的离散文本ZZZ"
-    )
+    monkeypatch.setattr(svc_mod.trafilatura, "extract", lambda *a, **k: "完全无法匹配的离散文本ZZZ")
     parser = HtmlParser()
     html = f"<html><body><div><h1>整篇回退标题</h1><p>{PROSE}</p></div></body></html>".encode()
-    md = parser.parse(html)
+    md = parser.parse(_as_path(html))
 
     assert "整篇回退标题" in md
     assert parser.extract_metadata()["content_locator_fallback"] == "full_body"
@@ -135,12 +153,15 @@ def test_locate_low_confidence_full_body_when_no_semantic_container(monkeypatch)
 
 # ==== 空内容 / SPA 快速失败 ====
 
+
 def test_spa_empty_shell_raises_parse_exception():
     parser = HtmlParser()
     with pytest.raises(ParseBaseException, match="正文"):
         parser.parse(
-            b"<html><head><script src='/app.js'></script></head>"
-            b"<body><div id='root'></div><script>window.__BOOT__=1</script></body></html>"
+            _as_path(
+                b"<html><head><script src='/app.js'></script></head>"
+                b"<body><div id='root'></div><script>window.__BOOT__=1</script></body></html>"
+            )
         )
 
 
@@ -149,14 +170,17 @@ def test_static_skeleton_spa_below_floor_raises(monkeypatch):
     monkeypatch.setattr(svc_mod.trafilatura, "extract", lambda *a, **k: "加载中")
     parser = HtmlParser()
     with pytest.raises(ParseBaseException, match="正文"):
-        parser.parse("<html><body><div id='app'>加载中</div></body></html>".encode())
+        parser.parse(_as_path("<html><body><div id='app'>加载中</div></body></html>".encode()))
 
 
 def test_short_but_valid_content_not_killed():
     parser = HtmlParser()
     # “短但有效”：正文有效字符数高于保守下限（acceptance 明确该前置），
     # 远小于真实长文但属合法知识条目，不应被误杀。
-    short_valid = "本页只有一句有效说明，但内容真实有效，足以构成可检索的知识条目，不应被误判为空内容而丢弃。" * 3
+    short_valid = (
+        "本页只有一句有效说明，但内容真实有效，足以构成可检索的知识条目，不应被误判为空内容而丢弃。"
+        * 3
+    )
     md = parser.parse(_page(f"<h1>短文</h1><p>{short_valid}</p>", chrome=False))
 
     assert "本页只有一句有效说明" in md
