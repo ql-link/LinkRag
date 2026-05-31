@@ -1,10 +1,12 @@
 """``RecallPipeline`` 单例装配与依赖提供者。
 
-按 ``RECALL_ENABLED_SOURCES`` 装配召回路（本期 bm25 / sparse），构造一个进程内
-单例 ``RecallPipeline`` 供路由复用。``user_id`` / ``top_k`` 在执行期透传，因此 pipeline
-与各路 retriever 都是无用户态的长期实例，单例安全。
+按 ``RECALL_ENABLED_SOURCES`` 装配召回路（本期 bm25 / sparse / dense），构造一个
+进程内单例 ``RecallPipeline`` 供路由复用。``user_id`` / ``top_k`` 在执行期透传，因此
+pipeline 与各路 retriever 都是无用户态的长期实例，单例安全。
 
 sparse 底座含本地 BGE-M3 编码器，装配较重，必须单例而非每请求构造。
+dense 底座走远程 system embedding HTTP（无本地模型加载），单例化主要是为了与
+``recall_pipeline`` 单例对齐——所有 retriever 在 pipeline 单例之内只构造一次。
 """
 
 from __future__ import annotations
@@ -16,12 +18,14 @@ from src.core.es_index_storage import Bm25Retriever, EsBm25Retriever
 from src.core.pipeline.recall import RecallPipeline, RecallPipelineConfig
 from src.core.pipeline.recall.protocols import (
     SOURCE_BM25,
+    SOURCE_DENSE,
     SOURCE_SPARSE,
     Retriever,
 )
 from src.core.preprocessor.ragflow_tokenizer import RagFlowTokenizer
 from src.core.sparse_vector.sparse_retriever import SparseRetriever
 from src.core.vector_storage import compose_vector_storage_facade
+from src.core.vector_storage.dense_retriever import DenseRetriever
 
 
 def _build_bm25_retriever() -> Retriever:
@@ -38,11 +42,19 @@ def _build_sparse_retriever() -> Retriever:
     )
 
 
+def _build_dense_retriever() -> Retriever:
+    return DenseRetriever(
+        backend=compose_vector_storage_facade(),
+        score_threshold=settings.DENSE_RETRIEVAL_SCORE_THRESHOLD,
+    )
+
+
 # source 名 → 装配函数。新增召回路在此登记即可。未登记的 source 出现在配置中
 # 视为运维配置错误，装配期显式失败（不静默跳过）。
 _BUILDERS = {
     SOURCE_BM25: _build_bm25_retriever,
     SOURCE_SPARSE: _build_sparse_retriever,
+    SOURCE_DENSE: _build_dense_retriever,
 }
 
 

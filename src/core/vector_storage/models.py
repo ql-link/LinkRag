@@ -175,8 +175,24 @@ class SparseVectorSearchRequest:
     与 ``ChunkStorageRequest`` / ``ChunkUpdateRequest`` 角色一致——facade 暴露散参
     签名，内部统一打包成 Request 透传给底层。本类**不在 ``vector_storage`` 包的对外
     ``__all__`` 中**；上游业务永远不需要直接构造它。
+    """
 
-    后续 dense issue 同形对仗新增 ``DenseVectorSearchRequest``。
+    query: str
+    user_id: int
+    set_id: int
+    doc_id: list[int] | None = None
+    top_k: int | None = None
+    score_threshold: float | None = None
+
+
+@dataclass(slots=True)
+class DenseVectorSearchRequest:
+    """facade → pipeline 内部包装：稠密召回请求。
+
+    与 ``SparseVectorSearchRequest`` 角色完全一致；唯一存在的理由是让 facade 入口
+    内部"参数已合并 / 已校验"的内部状态有显式语义记录（GitHub issue
+    ql-link/LinkRag#53 点名要求保留此命名）。本类**不在 ``vector_storage`` 包的
+    对外 ``__all__`` 中**；上游业务永远不需要直接构造它。
     """
 
     query: str
@@ -215,7 +231,7 @@ class VectorSearchResult:
     """
 
     hits: list[VectorSearchHit] = field(default_factory=list)
-    vector_name: str = ""
+    vector_name: str | None = ""
     top_k: int = 0
     score_threshold: float = 0.0
     model_name: str | None = None

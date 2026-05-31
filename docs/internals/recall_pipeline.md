@@ -43,7 +43,7 @@ src/core/pipeline/recall/
 | --- | --- | --- |
 | sparse | `sparse` | `src/core/sparse_vector/sparse_retriever.py` |
 | BM25 | `bm25` | `src/core/es_index_storage/bm25_retriever.py` |
-| dense | `dense` | 由 dense 向量检索实现满足 `Retriever` 协议后接入 |
+| dense | `dense` | `src/core/vector_storage/dense_retriever.py` |
 
 `RecallPipeline` 不写死具体路数；新增 GraphRAG、wiki 或其他召回路时，只要实现 `Retriever` 协议并在构造时传入即可。
 
