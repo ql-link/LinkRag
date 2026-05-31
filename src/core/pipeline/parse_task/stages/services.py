@@ -192,6 +192,11 @@ class StageServices:
             .where(ChunkRecordDB.doc_id == doc_id)
             .where(ChunkRecordDB.lifecycle_status == CHUNK_LIFECYCLE_ACTIVE)
             .order_by(ChunkRecordDB.chunk_index.asc())
+            # populate_existing：dense 阶段在独立 session 写 dense_vector_status=SUCCESS，
+            # 而本 session 的 expire_on_commit=False 会让身份映射里 chunking 阶段加载的同主键
+            # ORM 对象保持旧值（PENDING）。不强制刷新则 sparse 入口按 dense==SUCCESS 过滤恒为空，
+            # 稀疏索引永不写入。populate_existing 用查询结果覆盖已加载实例的属性，读到最新真值。
+            .execution_options(populate_existing=True)
         )
         result = await db.execute(stmt)
         return list(result.scalars().all())

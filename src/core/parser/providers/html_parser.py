@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from ..base import BaseParser
 from ..html import HtmlParseOptions, HtmlParseService
 
@@ -20,10 +22,13 @@ class HtmlParser(BaseParser):
         )
         self.service = HtmlParseService(self.options)
 
-    def parse(self, file_stream: bytes) -> str:
-        self.validate_stream(file_stream)
+    def parse(self, source: Path | None) -> str:
+        # HTML 解析不支持 MinerU URL 旁路，必须有本地源文件路径。
+        if source is None:
+            raise ValueError("HTML 解析需要本地源文件路径")
+        self.validate_source(source)
 
-        html_content = file_stream.decode("utf-8", errors="ignore")
+        html_content = Path(source).read_bytes().decode("utf-8", errors="ignore")
         result = self.service.parse(html_content)
 
         self.metadata.update(result.metadata)
