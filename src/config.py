@@ -137,7 +137,10 @@ class Settings(BaseSettings):
     CHUNK_INDEX_RETRY_INTERVAL_SECONDS: int = 300
     CHUNK_INDEX_INDEXING_STALE_SECONDS: int = 900
 
-    # Sparse vector / local BGE-M3
+    # Sparse vector / BGE-M3
+    # SPARSE_VECTOR_PROVIDER 切换推理实现：
+    #   bge_m3      → 本地进程内加载模型（下方 MODEL/CACHE/DEVICE/BATCH 等生效）
+    #   bge_m3_http → 调用远程 bge-m3-server（下方 SPARSE_VECTOR_HTTP_* 生效）
     SPARSE_VECTOR_ENABLED: bool = True
     SPARSE_VECTOR_PROVIDER: str = "bge_m3"
     SPARSE_VECTOR_MODEL_NAME: str = "BAAI/bge-m3"
@@ -146,6 +149,10 @@ class Settings(BaseSettings):
     SPARSE_VECTOR_DEVICE: str = "auto"
     SPARSE_VECTOR_BATCH_SIZE: int = 12
     SPARSE_VECTOR_MAX_LENGTH: int = 8192
+    # 远程 bge-m3-server（仅 SPARSE_VECTOR_PROVIDER=bge_m3_http 时生效）
+    SPARSE_VECTOR_HTTP_ENDPOINT: Optional[str] = None
+    SPARSE_VECTOR_HTTP_TIMEOUT: float = 30.0
+    SPARSE_VECTOR_HTTP_BATCH_SIZE: Optional[int] = None
     SPARSE_VECTOR_QDRANT_VECTOR_NAME: str = "sparse_text"
     SPARSE_VECTOR_TOP_K: int = 256
     SPARSE_VECTOR_MIN_WEIGHT: float = 0.0

@@ -5,6 +5,7 @@ from .encoder import (
     normalize_lexical_weights,
     resolve_sparse_vector_device,
 )
+from .http_encoder import BGEM3HttpSparseVectorEncoder
 from .exceptions import (
     SparseVectorConfigurationError,
     SparseVectorEncodingError,
@@ -31,6 +32,7 @@ from .pipeline import SparseVectorService
 #     from src.core.sparse_vector.sparse_retriever import SparseRetriever
 
 __all__ = [
+    "BGEM3HttpSparseVectorEncoder",
     "BGEM3SparseVectorEncoder",
     "SparseChunkResult",
     "SparseChunkVectorizationRequest",
