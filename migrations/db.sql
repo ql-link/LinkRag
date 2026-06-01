@@ -1,8 +1,8 @@
 -- ===============================================
 -- toLink-Rag 数据库初始化脚本（0001 baseline 冻结快照）
 -- ===============================================
--- 本文件是 0001 baseline 冻结快照，由 0001 迁移脚本自动执行（IF NOT EXISTS，幂等）：
---   - 冷启动只需 `alembic upgrade head`，无需手动导入本文件；
+-- 本文件是 0001 baseline 冻结快照，也是冷启动部署入口：
+--   - 冷启动以本文件为准：`mysql < migrations/db.sql` → `alembic stamp 0001`；
 --   - 本文件永远等价于 migration 0001，**禁止直接修改**（同步规则 baseline-sql-frozen）；
 --   - schema 演进的唯一权威源是 src/models/**.py + migrations/versions/*.py；
 --     新增/修改字段一律只改 ORM 并补 migration，不要改本文件。
