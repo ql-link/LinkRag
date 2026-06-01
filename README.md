@@ -105,7 +105,7 @@ cp .env.example .env
 ### 初始化数据库
 
 ```bash
-mysql -h 127.0.0.1 -P 3306 -u root -p tolink_rag_db < migrations/db.sql
+alembic upgrade head
 ```
 
 ### 启动服务

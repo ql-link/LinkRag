@@ -38,8 +38,8 @@ pip install -e ".[dev]"
 # 3. 准备配置
 cp .env.example .env
 
-# 4. 初始化数据库
-mysql -h 127.0.0.1 -P 3306 -u root -p tolink_rag_db < migrations/db.sql
+# 4. 初始化数据库（建表 + 后续迁移一步完成）
+alembic upgrade head
 
 # 5. 启动服务
 uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload

@@ -63,7 +63,8 @@ rules:
       1060 Duplicate column（PR #27 真实事故）。约定 migrations/db.sql 永远等价于 migration 0001
       所描述的形态，新增/修改 schema 一律走 ORM + migrations/versions/*.py。
       若确实需要 rebase baseline（squash 历史迁移），请在 PR 描述里明确说明并由
-      reviewer 临时跳过本规则（pre-commit: `SKIP=docs-sync git commit ...`）。
+      reviewer 临时跳过本规则：pre-commit 用 `SKIP=docs-sync git commit ...`，
+      CI 在 commit message 里加 `[skip docs-sync]` 令牌即可放行（见 check_docs_sync.py）。
 
   # ---- 对外契约 ----
   - id: mq-contracts

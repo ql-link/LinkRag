@@ -178,6 +178,30 @@ def _git(*args: str) -> str:
     return out.stdout
 
 
+# Commit-message escape hatch for sanctioned exceptions (e.g. baseline rebase).
+# Mirrors the pre-commit `SKIP=docs-sync` path so CI has an explicit, auditable
+# waiver: put `[skip docs-sync]` in the commit message and the check is bypassed.
+SKIP_TOKEN_RE = re.compile(r"\[skip[ _-]docs-sync\]", re.IGNORECASE)
+
+
+def _commit_messages(mode: str, base: str | None) -> str:
+    """Return commit messages relevant to the current check, for skip detection.
+
+    For `base` mode, inspect every commit in `base..HEAD` (covers push and PR
+    ranges). For other modes, inspect the tip commit only.
+    """
+    try:
+        if mode == "base" and base:
+            return _git("log", "--format=%B", f"{base}..HEAD")
+        return _git("log", "-1", "--format=%B", "HEAD")
+    except RuntimeError:
+        return ""
+
+
+def skip_requested(mode: str, base: str | None) -> bool:
+    return bool(SKIP_TOKEN_RE.search(_commit_messages(mode, base)))
+
+
 def get_changed_files(mode: str, base: str | None) -> set[str]:
     """Return the set of changed file paths relative to repo root.
 
@@ -364,6 +388,15 @@ def main(argv: list[str] | None = None) -> int:
     if not changed:
         if not args.quiet:
             print(_green("No changed files — nothing to check."))
+        return 0
+
+    if skip_requested(mode, base):
+        print(
+            _yellow(
+                "docs-sync skipped: '[skip docs-sync]' token present in commit "
+                "message (sanctioned exception, e.g. baseline rebase)."
+            )
+        )
         return 0
 
     violations = find_violations(rules, changed)
