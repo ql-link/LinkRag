@@ -10,23 +10,35 @@
 - Docker 构建：``RUN python scripts/setup_nltk_data.py``
 - 本地开发：``python scripts/setup_nltk_data.py``
 
+下载策略（国内网络友好）：
+1. 若设置环境变量 ``NLTK_GH_PROXY``（如 ``https://gh-proxy.com/``），优先经该 GitHub 加速代理下载；
+2. 否则/失败后回退官方 ``raw.githubusercontent.com``；
+3. 仍失败则最后用 ``nltk.download`` 兜底。
+已存在的资源会跳过，re-run 幂等。
+
 运行时由 :mod:`src.nltk_bootstrap` 把该目录注入 ``nltk.data.path``，保证优先命中项目内资源。
 """
 
 from __future__ import annotations
 
+import io
 import os
 import sys
+import zipfile
+import urllib.request
 from pathlib import Path
 
-# 项目实际用到的 NLTK 资源包：本地 ~/nltk_data 现存包 + 依赖库代码中 nltk.download 请求的包的并集。
-REQUIRED_PACKAGES = (
-    "punkt",
-    "punkt_tab",
-    "stopwords",
-    "wordnet",
-    "omw-1.4",
-)
+# 需要的资源 -> (NLTK 类别目录, 官方 packages 下的相对 zip 路径)
+PACKAGE_LAYOUT = {
+    "punkt":     ("tokenizers", "tokenizers/punkt.zip"),
+    "punkt_tab": ("tokenizers", "tokenizers/punkt_tab.zip"),
+    "stopwords": ("corpora", "corpora/stopwords.zip"),
+    "wordnet":   ("corpora", "corpora/wordnet.zip"),
+    "omw-1.4":   ("corpora", "corpora/omw-1.4.zip"),
+}
+REQUIRED_PACKAGES = tuple(PACKAGE_LAYOUT.keys())
+
+OFFICIAL_BASE = "https://raw.githubusercontent.com/nltk/nltk_data/gh-pages/packages/"
 
 
 def resolve_target_dir() -> Path:
@@ -38,24 +50,55 @@ def resolve_target_dir() -> Path:
     return project_root / "nltk_data"
 
 
-def main() -> int:
+def _download_and_extract(url: str, dest_category_dir: Path) -> bool:
+    """下载 zip 并解压到指定类别目录。成功返回 True。"""
     try:
-        import nltk
-    except ImportError:
-        print("[setup_nltk_data] 未安装 nltk，请先 `pip install -e .` 或 `pip install nltk`", file=sys.stderr)
-        return 1
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            data = resp.read()
+        with zipfile.ZipFile(io.BytesIO(data)) as zf:
+            zf.extractall(dest_category_dir)
+        return True
+    except Exception as exc:  # noqa: BLE001 - 下载失败原因多样，统一兜底
+        print(f"  [setup_nltk_data] 失败 {url} -> {exc}", file=sys.stderr)
+        return False
 
+
+def main() -> int:
     target_dir = resolve_target_dir()
     target_dir.mkdir(parents=True, exist_ok=True)
-    print(f"[setup_nltk_data] 目标目录: {target_dir}")
+    proxy = os.environ.get("NLTK_GH_PROXY", "").strip()
+    print(f"[setup_nltk_data] 目标目录: {target_dir}; GitHub 代理: {proxy or '(无)'}")
 
     failed: list[str] = []
-    for package in REQUIRED_PACKAGES:
-        print(f"[setup_nltk_data] 下载 {package} ...")
-        ok = nltk.download(package, download_dir=str(target_dir), quiet=True)
+    for pkg, (category, rel_path) in PACKAGE_LAYOUT.items():
+        dest = target_dir / category
+        dest.mkdir(parents=True, exist_ok=True)
+        if (dest / pkg).exists():
+            print(f"[setup_nltk_data] {pkg} 已存在，跳过")
+            continue
+
+        official_url = OFFICIAL_BASE + rel_path
+        candidate_urls = ([proxy + official_url] if proxy else []) + [official_url]
+
+        ok = False
+        for url in candidate_urls:
+            print(f"[setup_nltk_data] 下载 {pkg} <- {url}")
+            if _download_and_extract(url, dest):
+                ok = True
+                break
+
         if not ok:
-            failed.append(package)
-            print(f"[setup_nltk_data] 警告: {package} 下载失败", file=sys.stderr)
+            # 最后兜底：交给 nltk 自身的下载器（官方源）
+            try:
+                import nltk
+                ok = bool(nltk.download(pkg, download_dir=str(target_dir), quiet=True))
+            except Exception as exc:  # noqa: BLE001
+                print(f"  [setup_nltk_data] nltk.download 兜底失败 {pkg} -> {exc}", file=sys.stderr)
+                ok = False
+
+        if not ok:
+            failed.append(pkg)
 
     if failed:
         print(f"[setup_nltk_data] 以下资源下载失败: {', '.join(failed)}", file=sys.stderr)
