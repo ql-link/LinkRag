@@ -20,7 +20,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 先装依赖（package 安装需要源码在场，故连同 src 一起拷入做缓存层）
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install --upgrade pip && pip install .
+RUN pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple && \
+    pip install . -i https://pypi.tuna.tsinghua.edu.cn/simple --timeout 120
 
 # 拷入其余运行所需文件（迁移、脚本、alembic 配置等）
 COPY . .

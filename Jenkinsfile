@@ -24,8 +24,8 @@ pipeline {
             }
             steps {
                 sh '''
-                    pip install --upgrade pip
-                    pip install -e ".[dev]"
+                    pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple
+                    pip install -e ".[dev]" -i https://pypi.tuna.tsinghua.edu.cn/simple --timeout 120
                     pytest tests/unit -q
                 '''
             }
