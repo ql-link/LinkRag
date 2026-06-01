@@ -20,7 +20,8 @@ pipeline {
 
         stage('Test') {
             agent {
-                docker { image 'python:3.11-slim'; reuseNode true }
+                // 挂载 pip 缓存到 jenkins_home，跨构建复用已下载的包
+                docker { image 'python:3.11-slim'; args '-v $HOME/.cache/pip:/root/.cache/pip'; reuseNode true }
             }
             steps {
                 sh '''
