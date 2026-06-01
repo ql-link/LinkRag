@@ -2,11 +2,11 @@
 
 toLink-Rag 业务表模式参考。**权威来源**：ORM 模型 (`src/models/**.py`) + Alembic migrations (`migrations/versions/*.py`)。
 
-- 冷启动 baseline：[scripts/db/init.sql](../../scripts/db/init.sql)（0001，已冻结）
-- 当前完整结构快照（baseline + 已应用 migration）：[migrations/db.sql](../../migrations/db.sql)
+- 冷启动 baseline：[migrations/db.sql](../../migrations/db.sql)（0001，已冻结）
+- 当前完整结构快照（baseline + 已应用 migration）：[scripts/db/init.sql](../../scripts/db/init.sql)
 - 本文是按业务域分组的人读摘要视图
 
-ORM 与 migration 不一致时，以 migration 为准并修正 ORM；db.sql 需在每条 schema 演进的 migration 落库时一并同步。
+ORM 与 migration 不一致时，以 migration 为准并修正 ORM；scripts/db/init.sql 需在每条 schema 演进的 migration 落库时一并同步。
 
 ## 表清单
 

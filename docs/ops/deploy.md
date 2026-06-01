@@ -92,11 +92,13 @@ mammoth；否则 HTML / Word 文件解析会在导入期失败。无需额外系
 
 ## 数据库初始化
 
-`scripts/db/init.sql` 是当前 schema 的权威来源。首次部署或重置：
+`migrations/db.sql`（0001 baseline）是冷启动建库入口。首次部署或重置：
 
 ```bash
-mysql -h ${DB_HOST} -P ${DB_PORT} -u ${DB_USER} -p${DB_PASSWORD} ${DB_NAME} < scripts/db/init.sql
+mysql -h ${DB_HOST} -P ${DB_PORT} -u ${DB_USER} -p${DB_PASSWORD} ${DB_NAME} < migrations/db.sql
 ```
+
+> 建库后按需 `alembic stamp 0001` → `alembic upgrade head` 应用后续迁移。叠加全部迁移后的当前完整结构可查阅 `scripts/db/init.sql`。
 
 应用进程**不会**自动建表，必须先执行 DDL。
 

@@ -51,16 +51,16 @@ rules:
       (CI 用空库跑测试不会暴露，线上首条真实流量必炸)。must_update
       为 glob，匹配 migrations/versions 下任意新增/修改的迁移文件即可。
 
-  - id: init-sql-frozen
-    description: scripts/db/init.sql 是 0001 baseline 冻结快照，禁止直接修改
+  - id: baseline-sql-frozen
+    description: migrations/db.sql 是 0001 baseline 冻结快照，禁止直接修改
     when_changed:
-      - scripts/db/init.sql
+      - migrations/db.sql
     forbid_change: true
     severity: error
     rationale: |
-      CI 冷启动流程为 `mysql < init.sql` → `alembic stamp 0001` → `alembic upgrade head`。
-      若新字段同时写入 init.sql 与 Alembic 迁移，upgrade 会重复加列触发 MySQL
-      1060 Duplicate column（PR #27 真实事故）。约定 init.sql 永远等价于 migration 0001
+      CI 冷启动流程为 `mysql < migrations/db.sql` → `alembic stamp 0001` → `alembic upgrade head`。
+      若新字段同时写入 migrations/db.sql 与 Alembic 迁移，upgrade 会重复加列触发 MySQL
+      1060 Duplicate column（PR #27 真实事故）。约定 migrations/db.sql 永远等价于 migration 0001
       所描述的形态，新增/修改 schema 一律走 ORM + migrations/versions/*.py。
       若确实需要 rebase baseline（squash 历史迁移），请在 PR 描述里明确说明并由
       reviewer 临时跳过本规则（pre-commit: `SKIP=docs-sync git commit ...`）。

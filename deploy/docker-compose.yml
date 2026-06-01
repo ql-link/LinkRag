@@ -10,5 +10,11 @@ services:
       - ../.env
     ports:
       - "8000:8000"
+    networks:
+      - tolink-app-net
     # 启动前如需执行 Alembic 迁移，可改用：
     # command: sh -c "alembic upgrade head && uvicorn src.main:app --host 0.0.0.0 --port 8000"
+
+networks:
+  tolink-app-net:
+    external: true

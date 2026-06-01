@@ -31,7 +31,7 @@ when_to_use: "当技术设计或代码实现涉及 MySQL 表、Qdrant/Elasticsea
 - 改 `src/models/**.py` → 必同步 `docs/api/schemas/mysql.md` **且**新增 `migrations/versions/*.py`。
 - 改 `src/core/mq/messages/**` → 必同步 `docs/api/mq_contracts.md` + `docs/internals/mq.md`。
 - 改 `src/core/pipeline/parse_task/**` → 必同步 `docs/internals/parse_task_pipeline.md`。
-- `scripts/db/init.sql` **禁止修改**（0001 baseline 冻结）。
+- `migrations/db.sql` **禁止修改**（0001 baseline 冻结）。
 
 ## 检查清单
 

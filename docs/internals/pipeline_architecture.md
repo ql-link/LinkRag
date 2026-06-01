@@ -217,4 +217,4 @@ CLEANING
 - 解析成功通知必须晚于 Markdown、分片、dense 向量化、预分词、ES 入库和 sparse 向量化全部完成。
 - 新增外部系统调用时，先判断归属 `StageServices`、独立协作者还是下游模块工厂，不直接塞进 `ParseTaskPipeline._run`。
 - `document_parse_pipeline.pipeline_status` 是整体成功/失败的权威单源。
-- `scripts/db/init.sql` 是 0001 baseline 冻结快照；schema 演进只通过 ORM + Alembic migration。
+- `migrations/db.sql` 是 0001 baseline 冻结快照；schema 演进只通过 ORM + Alembic migration。

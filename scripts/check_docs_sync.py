@@ -12,7 +12,7 @@ Exit codes:
     1  - One or more error-level violations
     2  - Configuration or runtime failure (bad yaml, git unavailable, etc.)
 
-The rules live in .claude/doc-sync-rules.yaml. See docs/contributing.md.
+The rules live in scripts/doc-sync-rules.yaml. See docs/contributing.md.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ except ImportError:
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_RULES_PATH = REPO_ROOT / ".claude" / "doc-sync-rules.yaml"
+DEFAULT_RULES_PATH = REPO_ROOT / "scripts" / "doc-sync-rules.yaml"
 
 
 # ---------------------------------------------------------------------------

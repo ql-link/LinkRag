@@ -2,10 +2,10 @@
 -- toLink-Rag 种子数据脚本 (seed data)
 -- ===============================================
 --
--- 用途：在已建表（scripts/db/init.sql baseline + migrations 0002~0011 全量升级）
+-- 用途：在已建表（migrations/db.sql baseline + migrations 0002~0011 全量升级）
 --       的库上灌入一批贴近真实业务的初始化数据，便于本地联调 / 演示 / 集成测试。
 --
--- 适配 schema：当前迁移链头（0011）。相对 init.sql baseline 的差异：
+-- 适配 schema：当前迁移链头（0011）。相对 migrations/db.sql baseline 的差异：
 --   - dataset / document_original_file 新增 is_deleted + deleted_seq 软删列
 --   - document_parsed_log 去掉 task_status/failure_reason，新增 retry_of_task_id
 --   - document_post_process_pipeline 重命名为 document_parse_pipeline，

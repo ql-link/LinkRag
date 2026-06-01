@@ -15,7 +15,8 @@
 | 应用入口（FastAPI） | [src/main.py](src/main.py) |
 | 运行时配置 | [src/config.py](src/config.py) |
 | 数据库初始化入口 | [src/database.py](src/database.py) |
-| 数据库 DDL baseline（0001 冻结快照，**不应改动**） | [scripts/db/init.sql](scripts/db/init.sql) |
+| 数据库 DDL baseline（0001 冻结快照，**不应改动**） | [migrations/db.sql](migrations/db.sql) |
+| 数据库当前完整结构快照（baseline + 已应用 migration，仅供查阅） | [scripts/db/init.sql](scripts/db/init.sql) |
 | 数据库迁移（Alembic，schema 演进的唯一入口） | [migrations/](migrations/) |
 | HTTP 路由 | [src/api/routes](src/api/routes) |
 | 核心业务模块 | [src/core](src/core) |
@@ -38,7 +39,7 @@ pip install -e ".[dev]"
 cp .env.example .env
 
 # 4. 初始化数据库
-mysql -h 127.0.0.1 -P 3306 -u root -p tolink_rag_db < scripts/db/init.sql
+mysql -h 127.0.0.1 -P 3306 -u root -p tolink_rag_db < migrations/db.sql
 
 # 5. 启动服务
 uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
@@ -72,7 +73,7 @@ python scripts/check_docs_sync.py --staged
 
 - 所有运行时配置统一通过 [src/config.py](src/config.py) 的 `Settings` 加载。
 - 环境变量样例放在 [.env.example](.env.example)，不要硬编码密钥。
-- 数据库结构权威源是 **ORM 模型 + Alembic 迁移链**。[scripts/db/init.sql](scripts/db/init.sql) 是 0001 baseline 冻结快照，新增/修改字段一律只改 ORM + 写 migration，**不要**改 init.sql。
+- 数据库结构权威源是 **ORM 模型 + Alembic 迁移链**。[migrations/db.sql](migrations/db.sql) 是 0001 baseline 冻结快照，新增/修改字段一律只改 ORM + 写 migration，**不要**改 migrations/db.sql；[scripts/db/init.sql](scripts/db/init.sql) 是叠加全部 migration 后的当前完整结构快照，仅供查阅，随迁移落库同步。
 
 ---
 
@@ -110,11 +111,11 @@ docs/
 | --- | --- |
 | `src/models/**.py` | [docs/api/schemas/mysql.md](docs/api/schemas/mysql.md) |
 | `src/models/**.py` | 新增 `migrations/versions/*.py` |
-| `scripts/db/init.sql` | **禁止修改**（0001 baseline 冻结） |
+| `migrations/db.sql` | **禁止修改**（0001 baseline 冻结） |
 | `src/core/mq/messages/**` | [docs/api/mq_contracts.md](docs/api/mq_contracts.md) + [docs/internals/mq.md](docs/internals/mq.md) |
 | `src/core/pipeline/parse_task/**` | [docs/internals/parse_task_pipeline.md](docs/internals/parse_task_pipeline.md) |
 
-机器规则在 [.claude/doc-sync-rules.yaml](.claude/doc-sync-rules.yaml)，由 pre-commit 与 CI 强制。详见 [docs/contributing.md §五](docs/contributing.md#五文档同步规则)。
+机器规则在 [scripts/doc-sync-rules.yaml](scripts/doc-sync-rules.yaml)，由 pre-commit 与 CI 强制。详见 [docs/contributing.md §五](docs/contributing.md#五文档同步规则)。
 
 ---
 

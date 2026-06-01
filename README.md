@@ -105,7 +105,7 @@ cp .env.example .env
 ### 初始化数据库
 
 ```bash
-mysql -h 127.0.0.1 -P 3306 -u root -p tolink_rag_db < scripts/db/init.sql
+mysql -h 127.0.0.1 -P 3306 -u root -p tolink_rag_db < migrations/db.sql
 ```
 
 ### 启动服务
@@ -131,7 +131,7 @@ uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
 - PDF 解析：MinerU、OpenDataLoader、本地解析回退
 - 向量索引：Qdrant collection 与分桶策略
 
-数据库结构以 `scripts/db/init.sql` 为准。
+冷启动建库以 `migrations/db.sql`（0001 baseline）为准；叠加全部迁移后的当前完整结构见 `scripts/db/init.sql`。
 
 ## 源码启动
 
