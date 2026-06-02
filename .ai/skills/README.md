@@ -61,6 +61,11 @@
 | --- | --- | --- |
 | `incident-triage` | 从日志定位解析/召回故障，分诊配置漂移 vs 数据不一致 | 新功能实现转 implementation-execution；写迁移修数据转 alembic-migration |
 
+### issue 登记 / 同步
+| skill | 职责 | 边界 / 转交 |
+| --- | --- | --- |
+| `cowork-issue-sync` | 把需求/bug 落成 Linear 主记录 + GitHub 镜像并双向回链 | 只「立 issue」；建分支/写码/发 PR 转 branch-pr-workflow |
+
 ### 内容产出
 | skill | 职责 | 边界 / 转交 |
 | --- | --- | --- |
