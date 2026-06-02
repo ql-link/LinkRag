@@ -1,0 +1,67 @@
+<svg width="680" viewBox="0 0 680 560" role="img" xmlns="http://www.w3.org/2000/svg">
+<title>LinkRag 整体架构图</title>
+<desc>LinkRag 由前端 Web、Java 管理端、Python RAG 执行端三个仓库组成，通过 HTTP/SSE 与 MQ 协作，并共享 MySQL、Redis、OSS、Qdrant 等基础设施。</desc>
+<defs>
+<marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="context-stroke" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></marker>
+<style>
+text{font-family:-apple-system,"Segoe UI","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif;}
+.th{font-size:14px;font-weight:500;}
+.ts{font-size:12px;font-weight:400;}
+.arr{stroke:#888780;stroke-width:1.5px;fill:none;}
+.web-f{fill:#E6F1FB;stroke:#185FA5;stroke-width:1px;} .web-t{fill:#0C447C;} .web-s{fill:#185FA5;}
+.svc-f{fill:#E1F5EE;stroke:#0F6E56;stroke-width:1px;} .svc-t{fill:#085041;} .svc-s{fill:#0F6E56;}
+.rag-f{fill:#EEEDFE;stroke:#534AB7;stroke-width:1px;} .rag-t{fill:#3C3489;} .rag-s{fill:#534AB7;}
+.box-f{fill:#F1EFE8;stroke:#5F5E5A;stroke-width:1px;} .box-t{fill:#2C2C2A;} .box-s{fill:#5F5E5A;}
+.region{fill:none;stroke:#B4B2A9;stroke-width:0.5px;stroke-dasharray:4 4;} .region-t{fill:#5F5E5A;}
+@media (prefers-color-scheme: dark){
+.web-f{fill:#0C447C;stroke:#85B7EB;} .web-t{fill:#E6F1FB;} .web-s{fill:#B5D4F4;}
+.svc-f{fill:#085041;stroke:#5DCAA5;} .svc-t{fill:#E1F5EE;} .svc-s{fill:#9FE1CB;}
+.rag-f{fill:#3C3489;stroke:#AFA9EC;} .rag-t{fill:#EEEDFE;} .rag-s{fill:#CECBF6;}
+.box-f{fill:#444441;stroke:#B4B2A9;} .box-t{fill:#F1EFE8;} .box-s{fill:#D3D1C7;}
+.arr{stroke:#B4B2A9;} .region{stroke:#888780;} .region-t{fill:#B4B2A9;}
+}
+</style>
+</defs>
+
+<rect class="web-f" x="180" y="50" width="320" height="64" rx="8"/>
+<text class="th web-t" x="340" y="78" text-anchor="middle">LinkRag-Web · 前端</text>
+<text class="ts web-s" x="340" y="98" text-anchor="middle">知识图谱 · RAG 问答 · 配置</text>
+
+<rect class="svc-f" x="180" y="150" width="320" height="72" rx="8"/>
+<text class="th svc-t" x="340" y="182" text-anchor="middle">LinkRag-Service · Java 管理端</text>
+<text class="ts svc-s" x="340" y="202" text-anchor="middle">管理入口 · 任务投递 · 结果回传</text>
+
+<rect class="rag-f" x="180" y="300" width="320" height="72" rx="8"/>
+<text class="th rag-t" x="340" y="332" text-anchor="middle">LinkRag · Python RAG 执行端</text>
+<text class="ts rag-s" x="340" y="352" text-anchor="middle">文档解析 · 语义分片 · 向量索引</text>
+
+<rect class="region" x="40" y="410" width="600" height="120" rx="8"/>
+<text class="ts region-t" x="56" y="430" text-anchor="start">共享基础设施</text>
+
+<rect class="box-f" x="56" y="446" width="130" height="64" rx="6"/>
+<text class="th box-t" x="121" y="474" text-anchor="middle">MySQL</text>
+<text class="ts box-s" x="121" y="494" text-anchor="middle">元数据/状态</text>
+
+<rect class="box-f" x="204" y="446" width="130" height="64" rx="6"/>
+<text class="th box-t" x="269" y="474" text-anchor="middle">Redis</text>
+<text class="ts box-s" x="269" y="494" text-anchor="middle">缓存</text>
+
+<rect class="box-f" x="352" y="446" width="130" height="64" rx="6"/>
+<text class="th box-t" x="417" y="474" text-anchor="middle">OSS / MinIO</text>
+<text class="ts box-s" x="417" y="494" text-anchor="middle">文件对象</text>
+
+<rect class="box-f" x="500" y="446" width="130" height="64" rx="6"/>
+<text class="th box-t" x="565" y="474" text-anchor="middle">Qdrant</text>
+<text class="ts box-s" x="565" y="494" text-anchor="middle">向量检索</text>
+
+<line class="arr" x1="340" y1="114" x2="340" y2="147" marker-end="url(#arrow)"/>
+<text class="ts box-s" x="350" y="135" text-anchor="start">HTTP / SSE</text>
+
+<line class="arr" x1="315" y1="222" x2="315" y2="297" marker-end="url(#arrow)"/>
+<line class="arr" x1="365" y1="299" x2="365" y2="224" marker-end="url(#arrow)" stroke-dasharray="4 4"/>
+<text class="ts box-s" x="308" y="264" text-anchor="end">解析任务</text>
+<text class="ts box-s" x="372" y="264" text-anchor="start">结果回传</text>
+
+<line class="arr" x1="340" y1="372" x2="340" y2="408" marker-end="url(#arrow)"/>
+<path class="arr" d="M180 186 H92 V408" marker-end="url(#arrow)"/>
+</svg>

@@ -26,7 +26,7 @@ COPY pyproject.toml README.md ./
 RUN mkdir -p src && touch src/__init__.py
 RUN --mount=type=cache,target=/root/.cache/pip \
     pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple && \
-    pip install . -i https://pypi.tuna.tsinghua.edu.cn/simple --timeout 120
+    pip install '.[all]' -i https://pypi.tuna.tsinghua.edu.cn/simple --timeout 120
 
 # 再拷入真实源码与其余文件（迁移、脚本、alembic 配置等）；
 # 这层变动不影响上面的依赖层缓存。运行时 uvicorn 从 /app/src 直接加载。

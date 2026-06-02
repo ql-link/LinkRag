@@ -95,6 +95,22 @@ local-embedding = [
     "FlagEmbedding>=1.4.0",
     "sentence-transformers>=2.3.0",
 ]
+all = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-bdd>=7.0.0",
+    "httpx>=0.26.0",
+    "black>=24.1.0",
+    "isort>=5.13.0",
+    "mypy>=1.8.0",
+    "reportlab>=4.0.0",
+    "aiokafka>=0.11.0",
+    "confluent-kafka>=2.6.0",
+    "aio-pika>=9.4.0",
+    "infinity-sdk>=0.7.0; python_version >= '3.11'",
+    "FlagEmbedding>=1.4.0",
+    "sentence-transformers>=2.3.0",
+]
 
 [build-system]
 requires = ["hatchling"]
