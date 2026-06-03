@@ -156,6 +156,19 @@
 | `DENSE_RETRIEVAL_TOP_K` | `10` | dense 召回 facade 直调时的兜底 top_k；pipeline 路径下被 `RECALL_RESULT_LIMIT` 覆盖 |
 | `DENSE_RETRIEVAL_SCORE_THRESHOLD` | `0.0` | dense 召回默认 score 阈值（cosine 上界 [0, 1]，0.0 = 不过滤；facade 入口校验 `> 1.0` 早死） |
 
+### 远程 BGE-M3 推理服务（`remote_bge_m3` provider）
+
+`SPARSE_VECTOR_PROVIDER` 除已有 `bge_m3`（本地）/ `bge_m3_http`（早期 bge-m3-server）
+外，新增 `remote_bge_m3`：对接独立部署的 ``bge-m3-service``，单次 `/encode` 同时
+拿到 dense（1024 维）+ sparse lexical weights，并在客户端做超时 + 重试。详见
+[docs/internals/vectorization.md §6.6](../internals/vectorization.md)。
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `BGE_M3_SERVICE_URL` | 空 | ``bge-m3-service`` 根地址（如 `http://127.0.0.1:7997`），尾部 `/` 会被忽略；provider=`remote_bge_m3` 时必填 |
+| `BGE_M3_TIMEOUT_SECONDS` | `30.0` | 单次 `/encode` 请求超时（秒） |
+| `BGE_M3_MAX_RETRIES` | `3` | 网络错误 / 5xx 的重试次数（不含首次请求；`0` = 不重试；4xx 直接抛错不重试） |
+
 ## 配置加载与覆盖
 
 - `.env` 由 [src/config.py](../../src/config.py) 通过 `Settings`（pydantic-settings）加载。

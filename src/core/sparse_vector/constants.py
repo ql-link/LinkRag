@@ -5,10 +5,12 @@ DEFAULT_SPARSE_VECTOR_PROVIDER = "bge_m3"
 DEFAULT_SPARSE_VECTOR_NAME = "sparse_text"
 
 # Provider 取值：
-# - ``bge_m3``      ：本地进程内加载 BGE-M3 模型推理（默认，零外部依赖）。
-# - ``bge_m3_http`` ：调用远程 bge-m3-server 的 /encode HTTP 接口推理。
+# - ``bge_m3``        ：本地进程内加载 BGE-M3 模型推理（默认，零外部依赖）。
+# - ``bge_m3_http``   ：调用早期 ``bge-m3-server`` 的 /encode 接口（仅 sparse）。
+# - ``remote_bge_m3`` ：调用独立部署的 ``bge-m3-service``（dense + sparse，带重试）。
 SPARSE_VECTOR_PROVIDER_LOCAL = "bge_m3"
 SPARSE_VECTOR_PROVIDER_HTTP = "bge_m3_http"
+SPARSE_VECTOR_PROVIDER_REMOTE = "remote_bge_m3"
 
 SPARSE_VECTOR_STATUS_PENDING = "PENDING"
 SPARSE_VECTOR_STATUS_INDEXING = "PENDING"

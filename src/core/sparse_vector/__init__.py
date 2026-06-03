@@ -5,7 +5,6 @@ from .encoder import (
     normalize_lexical_weights,
     resolve_sparse_vector_device,
 )
-from .http_encoder import BGEM3HttpSparseVectorEncoder
 from .exceptions import (
     SparseVectorConfigurationError,
     SparseVectorEncodingError,
@@ -13,6 +12,8 @@ from .exceptions import (
     SparseVectorOutputError,
 )
 from .factory import create_sparse_vector_service, create_sparse_vector_service_from_settings
+from .http_encoder import BGEM3HttpSparseVectorEncoder
+
 # 注意：``SparseIndexingPipeline`` / ``SparseIndexingError`` 不在此处导入，
 # 避免与 ``src.core.qdrant_vector_storage`` 形成循环导入（后者的 models 模块
 # 引用 ``sparse_vector.models``）。需要使用时请直接：
@@ -24,6 +25,7 @@ from .models import (
     SparseVectorizationResult,
 )
 from .pipeline import SparseVectorService
+from .remote_encoder import RemoteBGEM3Encoder
 
 # ``SparseRetriever`` 与 ``SparseIndexingPipeline`` 同款：不在此处导入，避免与
 # ``src.core.vector_storage`` 形成循环（``vector_storage.facade`` 依赖
@@ -34,6 +36,7 @@ from .pipeline import SparseVectorService
 __all__ = [
     "BGEM3HttpSparseVectorEncoder",
     "BGEM3SparseVectorEncoder",
+    "RemoteBGEM3Encoder",
     "SparseChunkResult",
     "SparseChunkVectorizationRequest",
     "SparseVector",

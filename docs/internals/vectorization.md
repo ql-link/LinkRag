@@ -398,10 +398,12 @@ chunk_id_to_content = {
 
 - `SPARSE_VECTOR_PROVIDER`（默认 `bge_m3`）：选择稀疏向量推理实现，见 §6.6。
   - `bge_m3`：本地进程内加载 BGE-M3 模型。
-  - `bge_m3_http`：调用远程 `bge-m3-server` 的 `/encode` 接口。
+  - `bge_m3_http`：调用早期 `bge-m3-server` 的 `/encode` 接口（仅 sparse）。
+  - `remote_bge_m3`：调用独立部署的 `bge-m3-service`（dense + sparse 同出，带重试）。
 - `SPARSE_VECTOR_MODEL_NAME` / `SPARSE_VECTOR_MODEL_CACHE_DIR` / `SPARSE_VECTOR_LOCAL_FILES_ONLY` / `SPARSE_VECTOR_DEVICE` / `SPARSE_VECTOR_BATCH_SIZE`（仅 `bge_m3` 本地推理生效）。
 - `SPARSE_VECTOR_HTTP_ENDPOINT` / `SPARSE_VECTOR_HTTP_TIMEOUT` / `SPARSE_VECTOR_HTTP_BATCH_SIZE`（仅 `bge_m3_http` 远程推理生效）。
-- `SPARSE_VECTOR_MAX_LENGTH` / `SPARSE_VECTOR_TOP_K` / `SPARSE_VECTOR_MIN_WEIGHT`：两种 provider 共用，保证产出经过同一套清洗规则。
+- `BGE_M3_SERVICE_URL` / `BGE_M3_TIMEOUT_SECONDS` / `BGE_M3_MAX_RETRIES`（仅 `remote_bge_m3` 远程推理生效）。
+- `SPARSE_VECTOR_MAX_LENGTH` / `SPARSE_VECTOR_TOP_K` / `SPARSE_VECTOR_MIN_WEIGHT`：三种 provider 共用，保证产出经过同一套清洗规则。
 
 Embedding 客户端由 `ModelFactory` 创建，必须支持 `CapabilityType.EMBEDDING`。
 
@@ -466,7 +468,8 @@ ES 阶段只返回文件级 `EsIndexingResult`，不直接维护 `kb_document_ch
 | provider | 编码器 | 位置 | 推理方式 |
 | --- | --- | --- | --- |
 | `bge_m3`（默认） | `BGEM3SparseVectorEncoder` | `sparse_vector/encoder.py` | 本地进程内 `FlagEmbedding.BGEM3FlagModel` 推理 |
-| `bge_m3_http` | `BGEM3HttpSparseVectorEncoder` | `sparse_vector/http_encoder.py` | `POST {endpoint}/encode` 调用远程 `bge-m3-server` |
+| `bge_m3_http` | `BGEM3HttpSparseVectorEncoder` | `sparse_vector/http_encoder.py` | `POST {endpoint}/encode` 调用早期 `bge-m3-server`（仅 sparse） |
+| `remote_bge_m3` | `RemoteBGEM3Encoder` | `sparse_vector/remote_encoder.py` | `POST {BGE_M3_SERVICE_URL}/encode` 调用独立 `bge-m3-service`（dense + sparse，带重试） |
 
 两条路径产出对齐：远程 `/encode` 返回的 `sparse` 列表元素是 `{token_id: weight}`，与本地
 `output["lexical_weights"]` 同构，HTTP 编码器复用 `normalize_lexical_weights` 做同一套
@@ -484,9 +487,33 @@ POST {SPARSE_VECTOR_HTTP_ENDPOINT}/encode
 切换到远程只需 `.env`：
 
 ```bash
+# 早期 bge-m3-server（仅 sparse）
 SPARSE_VECTOR_PROVIDER=bge_m3_http
 SPARSE_VECTOR_HTTP_ENDPOINT=http://<host>:<port>
+
+# 或：独立 bge-m3-service（dense + sparse 同出，带重试）
+SPARSE_VECTOR_PROVIDER=remote_bge_m3
+BGE_M3_SERVICE_URL=http://<host>:<port>
+BGE_M3_TIMEOUT_SECONDS=30.0
+BGE_M3_MAX_RETRIES=3
 ```
+
+`remote_bge_m3` 服务契约（独立 ``bge-m3-service``）：
+
+```text
+POST {BGE_M3_SERVICE_URL}/encode
+请求: {"texts": [...], "return_dense": true, "return_sparse": true}
+响应: {"dense":  [[float, ...]],          # shape (n, 1024)
+       "sparse": [{"<token_id>": weight, ...}, ...]}  # 与 texts 一一同序
+```
+
+`RemoteBGEM3Encoder` 的 `aencode()` 走 `return_dense=False` 节省带宽；当
+dense 召回侧需要复用同一次推理时，可调 `aencode_with_dense()` 同时返回
+`(list[SparseVector], list[list[float]])`。HTTP 失败的处理：
+
+- 4xx：当作永久错误，立即抛 `SparseVectorEncodingError`，不重试。
+- 5xx / 网络错误：按 `BGE_M3_MAX_RETRIES` 线性退避重试，耗尽后抛
+  `SparseVectorEncodingError`。
 
 新增第三种 provider 时：实现 `SparseVectorEncoderProtocol`，在 `constants.py` 注册 provider
 常量，并在 `factory.py` 增加对应 `_build_*_encoder()` 分支即可。

@@ -10,11 +10,13 @@ from .constants import (
     DEFAULT_SPARSE_VECTOR_PROVIDER,
     SPARSE_VECTOR_PROVIDER_HTTP,
     SPARSE_VECTOR_PROVIDER_LOCAL,
+    SPARSE_VECTOR_PROVIDER_REMOTE,
 )
 from .encoder import BGEM3SparseVectorEncoder, SparseVectorEncoderProtocol
 from .exceptions import SparseVectorConfigurationError
 from .http_encoder import BGEM3HttpSparseVectorEncoder
 from .pipeline import SparseVectorService
+from .remote_encoder import RemoteBGEM3Encoder
 
 
 def create_sparse_vector_service(encoder: SparseVectorEncoderProtocol) -> SparseVectorService:
@@ -33,9 +35,10 @@ def create_sparse_vector_service(encoder: SparseVectorEncoderProtocol) -> Sparse
 def create_sparse_vector_service_from_settings() -> SparseVectorService:
     """从项目 settings 读取配置并按 provider 装配稀疏向量服务。
 
-    根据 ``SPARSE_VECTOR_PROVIDER`` 在两种实现间切换：
-    - ``bge_m3``      ：本地进程内加载 BGE-M3 模型（:class:`BGEM3SparseVectorEncoder`）。
-    - ``bge_m3_http`` ：调用远程 bge-m3-server（:class:`BGEM3HttpSparseVectorEncoder`）。
+    根据 ``SPARSE_VECTOR_PROVIDER`` 在三种实现间切换：
+    - ``bge_m3``        ：本地进程内加载 BGE-M3 模型（:class:`BGEM3SparseVectorEncoder`）。
+    - ``bge_m3_http``   ：调用早期 bge-m3-server（:class:`BGEM3HttpSparseVectorEncoder`）。
+    - ``remote_bge_m3`` ：调用独立 bge-m3-service（:class:`RemoteBGEM3Encoder`，dense + sparse + 重试）。
 
     Returns:
         按当前运行时配置创建的 SparseVectorService。
@@ -51,6 +54,8 @@ def create_sparse_vector_service_from_settings() -> SparseVectorService:
         encoder: SparseVectorEncoderProtocol = _build_local_encoder()
     elif provider == SPARSE_VECTOR_PROVIDER_HTTP:
         encoder = _build_http_encoder()
+    elif provider == SPARSE_VECTOR_PROVIDER_REMOTE:
+        encoder = _build_remote_encoder()
     else:
         raise SparseVectorConfigurationError(f"Unsupported sparse vector provider: {provider!r}.")
 
@@ -92,6 +97,22 @@ def _build_http_encoder() -> BGEM3HttpSparseVectorEncoder:
         timeout=getattr(settings, "SPARSE_VECTOR_HTTP_TIMEOUT", 30.0),
         batch_size=getattr(settings, "SPARSE_VECTOR_HTTP_BATCH_SIZE", None),
         max_length=getattr(settings, "SPARSE_VECTOR_MAX_LENGTH", None),
+        top_k=getattr(settings, "SPARSE_VECTOR_TOP_K", 256),
+        min_weight=getattr(settings, "SPARSE_VECTOR_MIN_WEIGHT", 0.0),
+    )
+
+
+def _build_remote_encoder() -> RemoteBGEM3Encoder:
+    """按 settings 装配独立 bge-m3-service 远程编码器。
+
+    服务由 ``BGE_M3_SERVICE_URL`` 等独立配置项控制；``top_k`` / ``min_weight``
+    复用 ``SPARSE_VECTOR_*`` 全局清洗规则，保证三种 provider 在召回侧表现一致。
+    """
+
+    return RemoteBGEM3Encoder(
+        service_url=getattr(settings, "BGE_M3_SERVICE_URL", None) or "",
+        timeout_seconds=getattr(settings, "BGE_M3_TIMEOUT_SECONDS", 30.0),
+        max_retries=getattr(settings, "BGE_M3_MAX_RETRIES", 3),
         top_k=getattr(settings, "SPARSE_VECTOR_TOP_K", 256),
         min_weight=getattr(settings, "SPARSE_VECTOR_MIN_WEIGHT", 0.0),
     )
