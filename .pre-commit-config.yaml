@@ -1,0 +1,38 @@
+# Pre-commit hooks
+#
+# Setup:
+#   pip install pre-commit
+#   pre-commit install
+#
+# Manual run on all files:
+#   pre-commit run --all-files
+
+repos:
+  - repo: local
+    hooks:
+      - id: check-docs-sync
+        name: Documentation sync check
+        entry: python scripts/check_docs_sync.py --staged
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+        description: Block commits that change code without updating required docs.
+
+      - id: check-ai-links
+        name: AI asset symlinks check
+        entry: python scripts/check_ai_links.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+        description: Ensure .claude/.agent/CLAUDE.md/AGENTS.md remain symlinks into .ai/.
+
+      - id: check-skills
+        name: Skill quality check
+        entry: python scripts/check_skills.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+        description: Validate .ai/skills frontmatter, dead path references and stack consistency.

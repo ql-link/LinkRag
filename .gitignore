@@ -37,6 +37,10 @@ venv/
 # Environment
 .env
 .env.local
+.env.test
+
+# NLTK data: 体积大(~99M)，不入 Git；由 scripts/setup_nltk_data.py 在构建/部署时下载
+/nltk_data/
 
 # External Storage (managed externally, not in repo)
 # ChromaDB data, PostgreSQL, ES indices, S3 files
@@ -47,8 +51,32 @@ venv/
 htmlcov/
 .tox/
 
+# API Keys (DO NOT COMMIT)
+tests/api_keys.json
+
 # MyPy
 .mypy_cache/
 
 # Logs
 *.log
+
+# Local evaluation datasets and generated reports
+/tests/evaluation_datasets/parser_smoke/sample/
+/tests/evaluation_datasets/
+/docs/evaluation_reports/
+
+# Feature spec-as-test 临时产物 (brief/acceptance/design/report)
+# 只有 .specs/README.md 入 git；其他全部本地工作产物，合并后清理。
+/.specs/*
+!/.specs/README.md
+
+# Claude Code session worktrees (per-session local clones)
+.claude/worktrees/
+# Claude Code per-user permission allowlist
+.claude/settings.local.json
+
+/requirements
+
+/.specs/
+/.kiro/
+/blog/
