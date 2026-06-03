@@ -139,8 +139,9 @@ class Settings(BaseSettings):
 
     # Sparse vector / BGE-M3
     # SPARSE_VECTOR_PROVIDER 切换推理实现：
-    #   bge_m3      → 本地进程内加载模型（下方 MODEL/CACHE/DEVICE/BATCH 等生效）
-    #   bge_m3_http → 调用远程 bge-m3-server（下方 SPARSE_VECTOR_HTTP_* 生效）
+    #   bge_m3        → 本地进程内加载模型（下方 MODEL/CACHE/DEVICE/BATCH 等生效）
+    #   bge_m3_http   → 调用早期 bge-m3-server（下方 SPARSE_VECTOR_HTTP_* 生效）
+    #   remote_bge_m3 → 调用独立 bge-m3-service（下方 BGE_M3_* 生效，dense + sparse 同出）
     SPARSE_VECTOR_ENABLED: bool = True
     SPARSE_VECTOR_PROVIDER: str = "bge_m3"
     SPARSE_VECTOR_MODEL_NAME: str = "BAAI/bge-m3"
@@ -153,6 +154,11 @@ class Settings(BaseSettings):
     SPARSE_VECTOR_HTTP_ENDPOINT: Optional[str] = None
     SPARSE_VECTOR_HTTP_TIMEOUT: float = 30.0
     SPARSE_VECTOR_HTTP_BATCH_SIZE: Optional[int] = None
+    # 独立 bge-m3-service（仅 SPARSE_VECTOR_PROVIDER=remote_bge_m3 时生效）
+    # 同时返回 dense（1024 维）+ sparse；带超时 / 重试。
+    BGE_M3_SERVICE_URL: Optional[str] = None
+    BGE_M3_TIMEOUT_SECONDS: float = 30.0
+    BGE_M3_MAX_RETRIES: int = 3
     SPARSE_VECTOR_QDRANT_VECTOR_NAME: str = "sparse_text"
     SPARSE_VECTOR_TOP_K: int = 256
     SPARSE_VECTOR_MIN_WEIGHT: float = 0.0

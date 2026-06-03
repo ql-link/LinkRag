@@ -82,3 +82,37 @@ def test_should_raise_for_unknown_provider(monkeypatch):
 
     with pytest.raises(SparseVectorConfigurationError):
         factory.create_sparse_vector_service_from_settings()
+
+
+def test_should_build_remote_encoder_when_provider_is_remote_bge_m3(monkeypatch):
+    captured_kwargs: dict[str, object] = {}
+
+    class FakeSettings:
+        SPARSE_VECTOR_PROVIDER = "remote_bge_m3"
+        SPARSE_VECTOR_QDRANT_VECTOR_NAME = "sparse_text"
+        SPARSE_VECTOR_TOP_K = 200
+        SPARSE_VECTOR_MIN_WEIGHT = 0.05
+        BGE_M3_SERVICE_URL = "http://127.0.0.1:7997"
+        BGE_M3_TIMEOUT_SECONDS = 15.0
+        BGE_M3_MAX_RETRIES = 5
+
+    class FakeRemoteEncoder:
+        model_name = "http://127.0.0.1:7997"
+
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+
+        async def aencode(self, texts):
+            return []
+
+    monkeypatch.setattr(factory, "settings", FakeSettings())
+    monkeypatch.setattr(factory, "RemoteBGEM3Encoder", FakeRemoteEncoder)
+
+    service = factory.create_sparse_vector_service_from_settings()
+
+    assert service.vector_name == "sparse_text"
+    assert captured_kwargs["service_url"] == "http://127.0.0.1:7997"
+    assert captured_kwargs["timeout_seconds"] == 15.0
+    assert captured_kwargs["max_retries"] == 5
+    assert captured_kwargs["top_k"] == 200
+    assert captured_kwargs["min_weight"] == 0.05
