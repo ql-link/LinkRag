@@ -1,6 +1,6 @@
 ---
 name: rag-recall-eval
-description: 评估 dense/sparse/bm25 三路召回及融合的检索质量，用一组带期望命中的 query 跑召回，量化命中率/排序，支撑换 embedding provider、调 top_k/threshold、改 RECALL_ENABLED_SOURCES 后的回归判断。 - 当用户要求评估召回效果、对比检索质量、验证换向量模型/调参后是否退化、排查「召回不准/漏召」时激活。触发示例：'评估一下召回质量'、'换了 bge 服务召回有没有变差'、'调 top_k 后对比一下'、'sparse 和 dense 哪个召回好'、'搭个召回评测'
+description: 评估 dense/sparse/bm25 三路召回及融合的检索质量，用一组带期望命中的 query 跑召回，量化命中率/排序，支撑换 embedding provider、调 top_k/threshold、改 RECALL_ENABLED_SOURCES 后的回归判断。
 when_to_use: "当用户要求评估/对比 RAG 召回质量、验证换 embedding provider 或调 top_k/threshold/RECALL_ENABLED_SOURCES 后是否退化、或排查召回不准/漏召时激活。触发示例：'评估一下召回质量'、'换了 bge 服务召回有没有变差'、'调 top_k 后对比一下'、'sparse 和 dense 哪个召回好'、'搭个召回评测'。若用户是排查召回报错/为空的故障转 incident-triage；只写单测转 auto-test。"
 ---
 

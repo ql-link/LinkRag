@@ -1,6 +1,6 @@
 ---
 name: config-contract-sync
-description: 核对 Java 与 Py 两端、以及 .env/.env.example/代码三处之间的「物理契约值」是否一致（MQ topic/group、OSS bucket、消息字段别名、内部 HTTP 路径等），防止配置漂移导致消息收不到/取不到文件。 - 当用户改动 topic/queue/group、bucket、消息字段名、内部接口路径，或排查「两端对不上」「收不到消息」「配置改了没生效」类问题时激活。触发示例：'topic 改了对端要不要同步'、'为什么收不到消息'、'这个字段名两端一致吗'、'.env 和代码哪个生效'、'换了 bucket 名'
+description: 核对 Java 与 Py 两端、以及 .env/.env.example/代码三处之间的「物理契约值」是否一致（MQ topic/group、OSS bucket、消息字段别名、内部 HTTP 路径等），防止配置漂移导致消息收不到/取不到文件。
 when_to_use: "当用户改动 MQ topic/queue/group、OSS bucket、MQ 消息字段名/别名、内部 HTTP 路径等跨服务物理契约值，或排查「Java 与 Py 对不上」「收不到消息」「.env 改了没生效」类问题时激活。触发示例：'topic 改了对端要不要同步'、'为什么收不到消息'、'这个字段名两端一致吗'、'.env 和代码哪个生效'、'换了 bucket 名'。若是检查改动是否破坏公共契约并触发文档同步，转 contract-guard；若是定位运行故障转 incident-triage。"
 ---
 
