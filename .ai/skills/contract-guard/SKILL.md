@@ -1,6 +1,6 @@
 ---
 name: contract-guard
-description: 在技术设计与代码实现阶段校验改动是否破坏跨模块/跨服务的公共契约（MySQL schema、Qdrant/ES 索引、MQ topic 与消息、OSS 路径、HTTP 接口、错误码），并对照本项目按域拆分的契约文档与机器强制同步规则给出同步清单。 - 当技术设计或编码涉及数据库表、向量/ES 索引、MQ 消息、OSS 路径、对外 HTTP 接口或错误码等公共约定，或需要确认改动是否违反跨模块契约时激活。触发示例：'这个改动会破坏公共约定吗'、'新增表字段要同步什么'、'改了消息结构对端受影响吗'、'加了错误码要更新哪些文档'
+description: 在技术设计与代码实现阶段校验改动是否破坏跨模块/跨服务的公共契约（MySQL schema、Qdrant/ES 索引、MQ topic 与消息、OSS 路径、HTTP 接口、错误码），并对照本项目按域拆分的契约文档与机器强制同步规则给出同步清单。
 when_to_use: "当技术设计或代码实现涉及 MySQL 表、Qdrant/Elasticsearch 索引、MQ topic/消息结构、OSS 路径规则、对外 HTTP 接口或错误码等公共约定，或需要确认改动是否违反跨模块契约并触发文档同步时激活。触发示例：'这个改动会破坏公共约定吗'、'新增表字段要同步什么'、'改了消息结构对端受影响吗'、'加了错误码要更新哪些文档'。若是核对 topic/bucket/字段在 .env 与 Java 两端的具体取值一致性，转 config-contract-sync；若只是泛化的文档跟随同步，转 doc-maintenance-sync。"
 ---
 
