@@ -26,6 +26,9 @@ class ParseFailureCode(str, Enum):
     PARSING_FAILED = "PARSING_FAILED"
     # 稀疏向量阶段失败前缀，与 dense 的 VECTORIZING_FAILED 平级。
     SPARSE_VECTORIZING_FAILED = "SPARSE_VECTORIZING_FAILED"
+    # 发起用户缺少必配能力（CHAT）的默认 LLM 配置，无法执行解析增强。
+    # 区别于读取失败（按 INTERNAL/引擎异常处理），仅在「确实未配置」时使用。
+    LLM_CONFIG_MISSING = "LLM_CONFIG_MISSING"
     # 重试前置校验失败前缀；详情形如 "RETRY_VALIDATION_FAILED:<具体校验项>"。
     RETRY_VALIDATION_FAILED = "RETRY_VALIDATION_FAILED"
 
@@ -43,6 +46,7 @@ FAILURE_REASON_TEXT: dict[ParseFailureCode, str] = {
     ParseFailureCode.INTERNAL_UNKNOWN_ERROR: "系统异常，请稍后重试",
     ParseFailureCode.PARSING_FAILED: "文件解析阶段失败，请检查文件内容或重新解析",
     ParseFailureCode.SPARSE_VECTORIZING_FAILED: "稀疏向量化失败，请稍后重试",
+    ParseFailureCode.LLM_CONFIG_MISSING: "未配置默认大模型，请先在系统中配置后重试",
     ParseFailureCode.RETRY_VALIDATION_FAILED: "重试前置校验失败，请确认上次任务状态",
 }
 
