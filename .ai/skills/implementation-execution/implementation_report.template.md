@@ -32,7 +32,15 @@
 - 需要后续测试、交付、审查特别留意的点。
 - 待办（含跨服务需对端配合的项，如 Java 侧同步）。
 
-## 5. 自检
+## 5. Spec 偏差记录
+
+> 编码阶段回写过 `brief.md` / `acceptance.feature` 时必填（见 SKILL.md「回流规则」）。无回写则写 `无`。
+
+| 偏差点 | 原 spec | 实际处理 | 回写位置 |
+| --- | --- | --- | --- |
+| | | | `acceptance.feature` / `brief.md` 第 N 章 |
+
+## 6. 自检
 
 - [ ] 受影响的对外契约文档已同步（参见 contract-guard / doc-maintenance-sync）。
 - [ ] 改 `src/models/**` 已补 migration 且同步 `docs/api/schemas/mysql.md`。
