@@ -133,6 +133,10 @@ class Settings(BaseSettings):
     CHUNK_INDEX_BUCKET_COUNT: int = 128
     CHUNK_INDEX_COLLECTION_PREFIX: str = "kb_bucket"
     CHUNK_INDEX_EMBED_BATCH_SIZE: int = 32
+    # 稠密向量系统统一维度（方案 A：写入按用户解析 embedder，但所有用户共享 per-bucket
+    # collection、维度首次建表即固定）。写入前校验用户 EMBEDDING 模型输出维度必须等于此值，
+    # 不一致则任务失败（EMBEDDING_DIMENSION_UNSUPPORTED），避免写入既有 collection 时维度冲突。
+    DENSE_VECTOR_DIMENSION: int = 1024
     CHUNK_INDEX_RETRY_LIMIT: int = 3
     CHUNK_INDEX_RETRY_INTERVAL_SECONDS: int = 300
     CHUNK_INDEX_INDEXING_STALE_SECONDS: int = 900

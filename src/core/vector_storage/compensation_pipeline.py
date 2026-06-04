@@ -27,6 +27,10 @@ from src.core.sparse_vector import (
     SparseVectorService,
 )
 from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
+from src.core.splitter.factory import (
+    aresolve_user_chunk_embedding_pipeline,
+    validate_dense_dimension,
+)
 from src.core.splitter.models import EmbeddedChunk
 from src.models.chunk_record import ChunkRecordDB
 from src.utils.logger import logger
@@ -474,19 +478,30 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
         self,
         record: ChunkRecordDB,
     ) -> tuple[IndexedPoint, str | None, SparseVector | None]:
-        """重新生成 dense point，并在开启 sparse 时同时生成 sparse vector。"""
+        """重新生成 dense point，并在开启 sparse 时同时生成 sparse vector。
 
-        if self.embedding_pipeline is None:
-            raise RuntimeError("embedding pipeline is required for explicit reindex")
+        稠密 embedder 按 chunk 所属用户（``record.user_id``）解析（LINK-91），与写入主链路
+        ``index_chunks`` 同一套「查配置→解密→create_client」范式与维度约束，避免重建时把系统
+        模型向量写回本该是用户模型的共享 collection。用户无默认 EMBEDDING 配置 / 维度不符时
+        分别抛 ``DenseEmbeddingConfigMissingError`` / ``DenseEmbeddingDimensionError``，由
+        ``reindex_failed_chunks`` 的 per-chunk 异常处理标该 chunk FAILED，不影响其余 chunk。
+        """
 
         chunk = chunk_from_record(record)
-        embedded_chunks = await self.embedding_pipeline.aembed_chunks([chunk])
+        embedding_pipeline = await aresolve_user_chunk_embedding_pipeline(record.user_id)
+        embedded_chunks = await embedding_pipeline.aembed_chunks([chunk])
         if len(embedded_chunks) != 1:
             raise ValueError(
                 f"Expected 1 embedded chunk for {record.chunk_id}, got {len(embedded_chunks)}."
             )
 
         embedded_chunk: EmbeddedChunk = embedded_chunks[0]
+        # 方案 A 维度校验：重建与写入共用同一约束，禁止把不一致维度写回共享 collection。
+        validate_dense_dimension(
+            [embedded_chunk],
+            user_id=record.user_id,
+            model_name=embedding_pipeline.embedding_model,
+        )
         sparse_vector = None
         if self._sparse_enabled():
             sparse_vector = await self.sparse_vector_service.vectorize_chunk(

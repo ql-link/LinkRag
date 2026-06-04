@@ -29,6 +29,11 @@ from src.core.qdrant_vector_storage.point_factory import (
 )
 from src.core.sparse_vector import SparseChunkVectorizationRequest, SparseVectorService
 from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
+from src.core.splitter.factory import (
+    DenseEmbeddingDimensionError,
+    aresolve_user_chunk_embedding_pipeline,
+    validate_dense_dimension,
+)
 from src.utils.logger import logger
 
 from ._transaction import TransactionalPipelineMixin
@@ -184,8 +189,9 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
             chunks: pipeline 现场过滤好的待 dense 处理 chunk 真值序列（``ChunkRecordDB`` 行）。
         """
 
-        # 业务归属仅作日志可读，dense 写入路径完全用记录自带的归属字段。
-        _ = (user_id, set_id, doc_id)
+        # set_id / doc_id 仅作日志可读，dense 写入主键由 chunk 自带；user_id 用于解析
+        # 发起用户的稠密 embedder（LINK-91）。
+        _ = (set_id, doc_id)
 
         records = list(chunks)
 
@@ -193,9 +199,15 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         if not records:
             return ChunkIndexingResult(total_chunks=0, indexed_chunks=0)
 
+        # 方案 A：写入链路按发起用户解析稠密 embedder（必配 EMBEDDING、无系统兜底）。
+        # 配置缺失（DenseEmbeddingConfigMissingError）在此直接向上抛出，不触碰任何 chunk
+        # 状态，由 VectorizingStage 归类为 LLM_CONFIG_MISSING 并通知 Java，而不是被下方
+        # batch 失败路径吞成 generic VECTORIZING_FAILED。
+        embedding_pipeline = await aresolve_user_chunk_embedding_pipeline(user_id)
+
         embedding_model: str | None = None
         indexed_count = 0
-        batch_size = self.embedding_pipeline.batch_size
+        batch_size = embedding_pipeline.batch_size
 
         # ── 以 batch 为单位逐批处理 ────────────────────────────────────────
         # 每批：mark_indexing → embed → 写 Qdrant → mark_indexed
@@ -242,12 +254,23 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
             # 2. 批量 embed
             try:
                 batch_chunks = [chunk_from_record(r) for r in batch_records]
-                embedded_batch = await self.embedding_pipeline.aembed_chunks(batch_chunks)
+                embedded_batch = await embedding_pipeline.aembed_chunks(batch_chunks)
                 if len(embedded_batch) != len(batch_records):
                     raise ValueError(
                         f"Embedded chunk count mismatch: got {len(embedded_batch)}, "
                         f"expected {len(batch_records)}."
                     )
+                # 方案 A 维度校验：用户模型输出维度必须等于系统统一维度，否则写入共享
+                # collection 必然冲突。维度不符是「配错模型」而非瞬时故障，故标失败后向上抛出，
+                # 不进补偿重试。校验逻辑与补偿重建链路共用 ``validate_dense_dimension``。
+                validate_dense_dimension(
+                    embedded_batch,
+                    user_id=user_id,
+                    model_name=embedding_pipeline.embedding_model,
+                )
+            except DenseEmbeddingDimensionError:
+                await self._safe_mark_failed(batch_chunk_ids, "EMBEDDING_DIMENSION_UNSUPPORTED")
+                raise
             except Exception as exc:
                 await self._safe_mark_failed(batch_chunk_ids, str(exc))
                 compensation_entry = VectorCompensationEntry(
@@ -269,7 +292,9 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
                     compensation_entry=compensation_entry,
                 )
 
-            embedding_model = self._resolve_embedding_model(embedded_batch)
+            embedding_model = self._resolve_embedding_model(
+                embedded_batch, pipeline=embedding_pipeline
+            )
 
             # 3. 逐条写入 Qdrant + mark_indexed
             # 写入阶段遇到失败立即停止（该 chunk 标 FAILED），
@@ -827,12 +852,17 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
     def _resolve_embedding_model(
         self,
         embedded_chunks: Sequence[object],
+        *,
+        pipeline: ChunkEmbeddingPipeline | None = None,
     ) -> str | None:
         """
             从本次 embedding 输出中推断实际使用的模型名称，并在必要时回退到管线统计值。
 
         Args:
             embedded_chunks: 本次向量化产出的结果列表。
+            pipeline: 本次实际使用的 embedding 管线；LINK-91 后 dense 写入按用户解析
+                per-user 管线，需取该管线的 ``last_stats`` 而非进程级 ``self.embedding_pipeline``。
+                缺省回退到注入的进程级管线（兼容补偿/管理路径）。
 
         Returns:
             str | None: 实际使用的 embedding 模型名称。
@@ -840,5 +870,5 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         for embedded_chunk in embedded_chunks:
             if embedded_chunk.embedding_model:
                 return embedded_chunk.embedding_model
-        stats = getattr(self.embedding_pipeline, "last_stats", None)
+        stats = getattr(pipeline or self.embedding_pipeline, "last_stats", None)
         return getattr(stats, "embedding_model", None)
