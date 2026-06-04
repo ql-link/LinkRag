@@ -28,6 +28,7 @@ from src.core.parser.pdf.base import BasePdfBackend
 from src.core.parser.pdf.models import PdfBinaryAsset
 
 _DEFAULT_TIMEOUT_SECONDS = 300  # 长文档解析可能需要较长时间
+_MAX_CONSECUTIVE_POLL_ERRORS = 5  # 轮询连续返回 code != 0 的熔断阈值，避免硬等满超时
 _IMAGE_PATTERN = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
 
 
@@ -128,6 +129,7 @@ class MinerUBackend(BasePdfBackend):
             full_zip_url = None
             markdown_url = None
             poll_interval = 1.0
+            consecutive_errors = 0
 
             while time.time() - start_time < self._timeout:
                 poll_resp = client.get(poll_url, headers=poll_headers)
@@ -135,9 +137,21 @@ class MinerUBackend(BasePdfBackend):
                 poll_res = poll_resp.json()
 
                 if poll_res.get("code") != 0:
-                    logger.warning(f"轮询警告: {poll_res.get('msg')}")
+                    consecutive_errors += 1
+                    logger.warning(
+                        f"轮询警告 ({consecutive_errors}/{_MAX_CONSECUTIVE_POLL_ERRORS}): "
+                        f"{poll_res.get('msg')}"
+                    )
+                    if consecutive_errors >= _MAX_CONSECUTIVE_POLL_ERRORS:
+                        raise Exception(
+                            f"轮询连续 {consecutive_errors} 次返回异常状态码，提前终止: "
+                            f"{poll_res.get('msg')}"
+                        )
+                    self._backoff(poll_interval, start_time)
+                    poll_interval = min(poll_interval * 1.5, 5.0)
                     continue
 
+                consecutive_errors = 0
                 task_state = poll_res.get("data", {})
                 state = task_state.get("state")
 
@@ -152,10 +166,8 @@ class MinerUBackend(BasePdfBackend):
                     logger.info(
                         f"[MinerU Cloud] 解析中 ({progress.get('extracted_pages', 0)}/{progress.get('total_pages', 0)})..."
                     )
-                    remaining_time = self._timeout - (time.time() - start_time)
-                    if remaining_time > 0:
-                        time.sleep(min(poll_interval, remaining_time))
-                        poll_interval = min(poll_interval * 1.5, 5.0)
+                    self._backoff(poll_interval, start_time)
+                    poll_interval = min(poll_interval * 1.5, 5.0)
 
             if not full_zip_url and not markdown_url:
                 raise Exception(f"云端解析超时 ({self._timeout}s)")
@@ -209,6 +221,12 @@ class MinerUBackend(BasePdfBackend):
             self.metadata["mineru_model_version"] = model_version
             self.metadata["mineru_download_mode"] = "zip_stream"
             return markdown, assets
+
+    def _backoff(self, poll_interval: float, start_time: float) -> None:
+        """统一的轮询退避：按剩余时间裁剪 sleep，确保任何分支都不会全速空转。"""
+        remaining_time = self._timeout - (time.time() - start_time)
+        if remaining_time > 0:
+            time.sleep(min(poll_interval, remaining_time))
 
     def _build_task_url(self) -> str:
         """兼容域名、/api/v4 和完整 /api/v4/extract/task 三种配置。"""
