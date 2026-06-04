@@ -11,10 +11,14 @@ from loguru import logger
 
 from src.core.mq.messages import ParseTaskMessage
 from src.core.pipeline import ParseTaskPipeline
+from src.core.mq.consumers.cache_sync_consumer import (
+    CACHE_SYNC_TOPIC,
+    handle_cache_sync,
+)
 from src.services.mq_service import MQService
 
 PARSE_TASK_TOPIC = ParseTaskMessage.MQ_NAME
-PARSE_TASK_GROUP = "tolink.rag.parse_task"
+RAG_CONSUMER_GROUP = "tolink.rag.worker"
 
 
 async def handle_parse_task(message_body: str, metadata: Dict[str, Any]) -> None:
@@ -49,14 +53,20 @@ async def handle_parse_task(message_body: str, metadata: Dict[str, Any]) -> None
 
 
 async def start_parse_consumer() -> None:
-    """启动文档解析 MQ 消费者。"""
+    """启动 RAG MQ 消费者。"""
     mq_service = MQService()
     await mq_service.subscribe(
         topic=PARSE_TASK_TOPIC,
-        group_id=PARSE_TASK_GROUP,
+        group_id=RAG_CONSUMER_GROUP,
         callback=handle_parse_task,
+    )
+    await mq_service.subscribe(
+        topic=CACHE_SYNC_TOPIC,
+        group_id=RAG_CONSUMER_GROUP,
+        callback=handle_cache_sync,
     )
     await mq_service.start_consuming()
     logger.info(
-        f"[ParseTaskConsumer] 消费者已启动: " f"topic={PARSE_TASK_TOPIC}, group={PARSE_TASK_GROUP}"
+        f"[RagConsumer] 消费者已启动: topics={[PARSE_TASK_TOPIC, CACHE_SYNC_TOPIC]}, "
+        f"group={RAG_CONSUMER_GROUP}"
     )

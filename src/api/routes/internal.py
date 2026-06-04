@@ -40,7 +40,7 @@ async def get_system_providers(
                 "provider_type": p.get("provider_type"),
                 "provider_name": p.get("provider_name"),
                 "api_base_url": p.get("api_base_url"),
-                "supported_models": p.get("supported_models", []),
+                "supported_capabilities": p.get("supported_capabilities", []),
                 "config_schema": p.get("config_schema"),
                 "is_active": p.get("is_active", True),
             }
@@ -88,6 +88,7 @@ async def get_user_configs(
                 "is_active": c.get("is_active"),
                 "is_default": c.get("is_default"),
                 "stream_enabled": c.get("stream_enabled"),
+                "capability": c.get("capability"),
                 "extra_config": c.get("extra_config"),
             }
             for c in configs

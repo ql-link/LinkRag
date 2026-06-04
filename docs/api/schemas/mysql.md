@@ -60,7 +60,7 @@ ORM：[`SystemProviderDB`](../../src/models/db_models.py)
 | `provider_type` | VARCHAR(32) UNIQUE | `openai` / `claude` / `glm` / `deepseek` 等 |
 | `provider_name` | VARCHAR(64) | 厂商展示名 |
 | `api_base_url` | VARCHAR(512) | 官方默认 API 地址 |
-| `supported_models` | JSON | 支持模型与能力映射 |
+| `supported_capabilities` | JSON | 支持能力列表，如 `["CHAT","EMBEDDING"]` |
 | `config_schema` | JSON | 配置参数 Schema |
 | `is_active` | BOOLEAN | 是否启用 |
 | `priority` | INT | 厂商优先级（1-100），默认 50 |
@@ -71,6 +71,9 @@ ORM：[`SystemProviderDB`](../../src/models/db_models.py)
 ### `llm_user_config` — 用户级 LLM 配置
 
 ORM：[`UserLLMConfigDB`](../../src/models/db_models.py)
+
+`user_id=0` 表示系统预设配置：用户未设置某个 capability 的个人默认配置时，Python 按能力读取
+`user_id=0` 的默认记录作为兜底。系统预设可被真实用户通过 `config_id` 切换和使用，但不应在用户侧配置详情中对外展示或允许修改。
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |

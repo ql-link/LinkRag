@@ -3,7 +3,7 @@ SQLAlchemy ORM 模型
 对应 MySQL 数据库表结构
 """
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from sqlalchemy import (
     BigInteger,
@@ -36,7 +36,7 @@ class SystemProviderDB(Base):
     provider_type: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
     provider_name: Mapped[str] = mapped_column(String(64), nullable=False)
     api_base_url: Mapped[str] = mapped_column(String(512), nullable=False)
-    supported_models: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    supported_capabilities: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     config_schema: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     priority: Mapped[int] = mapped_column(Integer, default=50, nullable=False)

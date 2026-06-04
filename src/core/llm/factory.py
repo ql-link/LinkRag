@@ -6,7 +6,7 @@ from typing import Dict, Type, Optional, Any
 
 from src.core.llm.base_provider import BaseProvider
 from src.core.llm.interfaces import CapabilityType
-from src.core.llm.exceptions import ConfigNotFoundError, AllProvidersFailedError
+from src.core.llm.exceptions import ConfigNotFoundError
 
 
 class ModelFactory:
@@ -117,16 +117,24 @@ class ModelFactory:
             **kwargs
         )
 
-    def _get_cache_key(self, user_id: str, config_id: Optional[str] = None) -> str:
+    def _get_cache_key(
+        self,
+        user_id: str,
+        *,
+        capability_type: Optional[str] = None,
+        config_id: Optional[str] = None,
+    ) -> str:
         """生成缓存键"""
         if config_id:
-            return f"{user_id}:{config_id}"
-        return f"{user_id}:default"
+            return f"{user_id}:config:{config_id}"
+        if capability_type:
+            return f"{user_id}:default:{capability_type.upper()}"
+        raise ValueError("Either config_id or capability_type is required for client cache key")
 
     async def get_client(
         self,
         user_id: str,
-        capability_type: Optional[str] = None,
+        capability_type: str,
         provider_type: Optional[str] = None,
         **kwargs
     ) -> BaseProvider:
@@ -148,34 +156,27 @@ class ModelFactory:
 
         config_service = ConfigReaderService()
 
-        # 如果指定了 capability_type，优先使用按能力查询
-        if capability_type:
-            config = await config_service.get_user_default_config_by_capability(
-                user_id=user_id,
-                capability=capability_type,
-                provider_type=provider_type
+        config = await config_service.get_user_default_config_by_capability(
+            user_id=user_id,
+            capability=capability_type,
+            provider_type=provider_type
+        )
+        if not config:
+            raise ConfigNotFoundError(
+                message=f"No config found for user {user_id} with capability {capability_type}",
+                provider_type=provider_type,
             )
-            if not config:
-                raise ConfigNotFoundError(
-                    message=f"No config found for user {user_id} with capability {capability_type}",
-                    provider_type=provider_type,
-                )
-        else:
-            # 兼容旧逻辑：获取用户的默认配置
-            config = await config_service.get_user_default_config(user_id)
 
-            if not config:
-                raise ConfigNotFoundError(
-                    message=f"No default config found for user {user_id}",
-                    provider_type=None,
-                )
-
-        return self._create_client_from_config(user_id, config, **kwargs)
+        config = dict(config)
+        config["api_key"] = await config_service.decrypt_api_key(config.get("api_key", ""))
+        cache_key = self._get_cache_key(user_id, capability_type=capability_type)
+        return self._create_client_from_config(user_id, config, cache_key=cache_key, **kwargs)
 
     async def get_client_by_id(
         self,
         config_id: str,
         user_id: str,
+        capability_type: Optional[str] = None,
         **kwargs
     ) -> BaseProvider:
         """通过配置 ID 获取 Provider 实例
@@ -202,12 +203,22 @@ class ModelFactory:
                 provider_type=None,
             )
 
-        return self._create_client_from_config(user_id, config, **kwargs)
+        if capability_type and str(config.get("capability", "")).upper() != capability_type.upper():
+            raise ConfigNotFoundError(
+                message=f"Config {config_id} does not support capability {capability_type}",
+                provider_type=config.get("provider_type"),
+            )
+
+        config = dict(config)
+        config["api_key"] = await config_service.decrypt_api_key(config.get("api_key", ""))
+        cache_key = self._get_cache_key(user_id, config_id=config_id)
+        return self._create_client_from_config(user_id, config, cache_key=cache_key, **kwargs)
 
     def _create_client_from_config(
         self,
         user_id: str,
         config: Dict[str, Any],
+        cache_key: Optional[str] = None,
         **kwargs
     ) -> BaseProvider:
         """从配置字典创建 Provider 实例
@@ -232,7 +243,7 @@ class ModelFactory:
             kwargs.setdefault("max_retries", extra_config.get("max_retries", 3))
 
         # 从缓存获取
-        cache_key = self._get_cache_key(user_id, config.get("id"))
+        cache_key = cache_key or self._get_cache_key(user_id, config_id=str(config.get("id")))
         if cache_key in self._client_cache:
             return self._client_cache[cache_key]
 

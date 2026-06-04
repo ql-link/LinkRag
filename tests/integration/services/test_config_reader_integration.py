@@ -120,13 +120,13 @@ class TestConfigReaderServiceIntegration:
                 # 插入测试 SystemProvider
                 cursor.execute("""
                     INSERT INTO llm_system_provider
-                    (provider_type, provider_name, api_base_url, supported_models, config_schema, is_active, priority)
+                    (provider_type, provider_name, api_base_url, supported_capabilities, config_schema, is_active, priority)
                     VALUES (%s, %s, %s, %s, %s, %s, %s)
                 """, (
                     provider_type,
                     "OpenAI Test",
                     "https://api.openai.com/v1",
-                    json.dumps({"gpt-4": ["CHAT", "OCR"], "gpt-3.5-turbo": ["CHAT"]}),
+                    json.dumps(["CHAT", "OCR"]),
                     json.dumps({"temperature": {"type": "float", "default": 0.7}}),
                     1,
                     100
@@ -175,7 +175,6 @@ class TestConfigReaderServiceIntegration:
     @pytest_asyncio.fixture
     async def setup_multi_capability_test_data(self, db_session: AsyncSession):
         """创建多种 capability 的测试数据"""
-        import random
         provider_type1 = create_unique_provider_type()
         provider_type2 = f"anthropic_test_{uuid.uuid4().hex[:8]}"
         test_user_id = create_unique_user_id()
@@ -187,13 +186,13 @@ class TestConfigReaderServiceIntegration:
                 # 插入两个测试 SystemProvider
                 cursor.execute("""
                     INSERT INTO llm_system_provider
-                    (provider_type, provider_name, api_base_url, supported_models, is_active, priority)
+                    (provider_type, provider_name, api_base_url, supported_capabilities, is_active, priority)
                     VALUES (%s, %s, %s, %s, %s, %s)
                 """, (
                     provider_type1,
                     "OpenAI Test",
                     "https://api.openai.com/v1",
-                    json.dumps({"gpt-4": ["CHAT"], "text-embedding-3": ["EMBEDDING"]}),
+                    json.dumps(["CHAT", "EMBEDDING"]),
                     1,
                     100
                 ))
@@ -201,13 +200,13 @@ class TestConfigReaderServiceIntegration:
 
                 cursor.execute("""
                     INSERT INTO llm_system_provider
-                    (provider_type, provider_name, api_base_url, supported_models, is_active, priority)
+                    (provider_type, provider_name, api_base_url, supported_capabilities, is_active, priority)
                     VALUES (%s, %s, %s, %s, %s, %s)
                 """, (
                     provider_type2,
                     "Anthropic Test",
                     "https://api.anthropic.com",
-                    json.dumps({"claude-3": ["CHAT", "VISION"]}),
+                    json.dumps(["CHAT", "VISION", "RERANK"]),
                     1,
                     90
                 ))
@@ -307,6 +306,72 @@ class TestConfigReaderServiceIntegration:
         finally:
             conn.close()
 
+    @pytest_asyncio.fixture
+    async def setup_system_preset_test_data(self, db_session: AsyncSession):
+        """创建 user_id=0 的系统预设配置。"""
+        provider_type = f"system_preset_test_{uuid.uuid4().hex[:8]}"
+        real_user_id = create_unique_user_id()
+        test_ids = {}
+
+        conn = get_sync_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute("""
+                    INSERT INTO llm_system_provider
+                    (provider_type, provider_name, api_base_url, supported_capabilities, is_active, priority)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                """, (
+                    provider_type,
+                    "System Preset Test",
+                    "https://api.system-preset.test/v1",
+                    json.dumps(["EMBEDDING"]),
+                    1,
+                    100,
+                ))
+                provider_id = cursor.lastrowid
+
+                cursor.execute("""
+                    INSERT INTO llm_user_config
+                    (user_id, provider_id, provider_type, provider_name, config_name, api_key, model_name, priority, is_active, is_default, timeout_ms, max_retries, stream_enabled, capability)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (
+                    0,
+                    provider_id,
+                    provider_type,
+                    "System Preset Test",
+                    "System Embedding Preset",
+                    "encrypted_system_key",
+                    "system-embedding-model",
+                    100,
+                    1,
+                    1,
+                    60000,
+                    3,
+                    1,
+                    "EMBEDDING",
+                ))
+                config_id = cursor.lastrowid
+
+                test_ids = {
+                    "real_user_id": real_user_id,
+                    "provider_id": provider_id,
+                    "provider_type": provider_type,
+                    "config_id": config_id,
+                }
+        finally:
+            conn.close()
+
+        await db_session.commit()
+        yield test_ids
+
+        conn = get_sync_connection()
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(f"DELETE FROM llm_user_config WHERE id = {test_ids['config_id']}")
+                cursor.execute(f"DELETE FROM llm_system_provider WHERE id = {test_ids['provider_id']}")
+        finally:
+            conn.close()
+
     @pytest.mark.asyncio
     async def test_GetSystemProviders_Should_Return_All_Active_Providers(
         self, service: ConfigReaderService, setup_test_data
@@ -338,10 +403,10 @@ class TestConfigReaderServiceIntegration:
             assert p["provider_type"] == provider_type
 
     @pytest.mark.asyncio
-    async def test_GetSystemProviders_SupportedModels_Should_Be_Parsed_Correctly(
+    async def test_GetSystemProviders_SupportedCapabilities_Should_Be_Parsed_Correctly(
         self, service: ConfigReaderService, setup_test_data
     ):
-        """get_system_providers 返回的 supported_models 应正确解析为 dict"""
+        """get_system_providers 返回的 supported_capabilities 应正确解析为 list"""
         providers = await service.get_system_providers()
 
         provider_type = setup_test_data["provider_type"]
@@ -350,11 +415,11 @@ class TestConfigReaderServiceIntegration:
         )
         assert test_provider is not None
 
-        supported_models = test_provider["supported_models"]
-        assert isinstance(supported_models, dict)
-        assert "gpt-4" in supported_models
-        assert "CHAT" in supported_models["gpt-4"]
-        assert "OCR" in supported_models["gpt-4"]
+        supported_capabilities = test_provider["supported_capabilities"]
+        assert isinstance(supported_capabilities, list)
+        assert "CHAT" in supported_capabilities
+        assert "OCR" in supported_capabilities
+        assert "supported_models" not in test_provider
 
     @pytest.mark.asyncio
     async def test_GetSystemProviderByType_Should_Return_Single_Provider(
@@ -397,17 +462,18 @@ class TestConfigReaderServiceIntegration:
         assert test_config["is_default"] is True
 
     @pytest.mark.asyncio
-    async def test_GetUserDefaultConfig_Should_Return_Default_Config(
+    async def test_GetUserDefaultConfigByCapability_CHAT_Should_Return_Default_Config(
         self, service: ConfigReaderService, setup_test_data
     ):
-        """get_user_default_config 应返回用户的默认配置"""
+        """get_user_default_config_by_capability 应返回用户 CHAT 默认配置"""
         user_id = setup_test_data["user_id"]
-        config = await service.get_user_default_config(user_id)
+        config = await service.get_user_default_config_by_capability(user_id, "CHAT")
 
         assert config is not None
         assert config["user_id"] == user_id
         assert config["is_default"] is True
         assert config["model_name"] == "gpt-4"
+        assert config["capability"] == "CHAT"
 
     @pytest.mark.asyncio
     async def test_GetUserConfigById_Should_Return_Specific_Config(
@@ -488,13 +554,45 @@ class TestConfigReaderServiceIntegration:
         assert config_correct_provider["provider_type"] == setup_multi_capability_test_data["provider_type1"]
 
     @pytest.mark.asyncio
+    async def test_GetUserDefaultConfigByCapability_NoPersonal_Should_Return_SystemPreset(
+        self, service: ConfigReaderService, setup_system_preset_test_data: dict
+    ):
+        """用户未设置默认配置时，应返回 user_id=0 的系统预设配置。"""
+        config = await service.get_user_default_config_by_capability(
+            setup_system_preset_test_data["real_user_id"],
+            "EMBEDDING",
+            provider_type=setup_system_preset_test_data["provider_type"],
+        )
+
+        assert config is not None
+        assert config["user_id"] == 0
+        assert config["is_system_preset"] is True
+        assert config["capability"] == "EMBEDDING"
+        assert config["model_name"] == "system-embedding-model"
+
+    @pytest.mark.asyncio
+    async def test_GetUserConfigById_SystemPreset_Should_Be_Accessible_By_Real_User(
+        self, service: ConfigReaderService, setup_system_preset_test_data: dict
+    ):
+        """真实用户可通过 config_id 切换到 user_id=0 的系统预设配置。"""
+        config = await service.get_user_config_by_id(
+            setup_system_preset_test_data["real_user_id"],
+            setup_system_preset_test_data["config_id"],
+        )
+
+        assert config is not None
+        assert config["id"] == setup_system_preset_test_data["config_id"]
+        assert config["user_id"] == 0
+        assert config["is_system_preset"] is True
+
+    @pytest.mark.asyncio
     async def test_GetUserDefaultConfigByCapability_NonExistent_Should_Return_None(
         self, service: ConfigReaderService, setup_multi_capability_test_data: dict
     ):
         """get_user_default_config_by_capability 查询不存在的能力应返回 None"""
         user_id = setup_multi_capability_test_data["user_id"]
 
-        config = await service.get_user_default_config_by_capability(user_id, "VISION")
+        config = await service.get_user_default_config_by_capability(user_id, "DOES_NOT_EXIST")
         assert config is None
 
     @pytest.mark.asyncio

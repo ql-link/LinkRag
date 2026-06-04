@@ -111,6 +111,26 @@ Topic 名称由 toLink-Rag 的 `.env` 配置决定，业务方对接前需要从
 
 消息以 `file_type` 作为 routing key，便于按文件类型做消费侧分流。
 
+## LLM 配置缓存同步（Java → Python）
+
+### Topic
+
+- 配置项：`CACHE_SYNC_TOPIC`
+- 默认值：`tolink.rag.cache_sync`
+
+Java 管理端新增、更新、删除或切换 LLM 配置后投递缓存同步消息。消息使用标准 MQ 信封，payload 字段如下：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `user_id` | string | ✅ | 被修改配置的所属用户。`"0"` 表示系统预设配置 |
+| `config_id` | string/null | ⬜ | 具体配置 ID。消息体不携带 capability，Python 按用户维度扩大清理 |
+| `action` | string | ⬜ | `refresh` / `invalidate` / `warmup`，默认 `refresh` |
+
+清理规则：
+
+- `user_id!="0"`：清理该用户全部 LLM 配置缓存；如带 `config_id`，同时清理该配置详情缓存；并清理该用户 `ModelFactory` 客户端缓存。
+- `user_id="0"`：系统预设变更会影响所有未设置个人默认配置的用户，因此清理所有用户 LLM 配置缓存、系统厂商缓存和全部 `ModelFactory` 客户端缓存。
+
 ## 终态通知（Python → Java）
 
 ### Topic

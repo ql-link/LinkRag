@@ -40,7 +40,7 @@ CREATE TABLE IF NOT EXISTS llm_system_provider (
     provider_type   VARCHAR(32)    NOT NULL COMMENT '厂商类型：openai/claude/glm/deepseek',
     provider_name   VARCHAR(64)    NOT NULL COMMENT '厂商展示名称，如 "OpenAI"',
     api_base_url    VARCHAR(512)   NOT NULL COMMENT '官方默认 API 地址',
-    supported_models JSON           COMMENT '支持模型与能力映射',
+    supported_capabilities JSON     COMMENT '支持能力列表',
     config_schema   JSON           COMMENT '配置参数 Schema',
     is_active       BOOLEAN        NOT NULL DEFAULT TRUE COMMENT '是否启用',
     priority        INT            NOT NULL DEFAULT 50 COMMENT '厂商优先级（1-100）',

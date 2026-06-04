@@ -13,7 +13,8 @@ src/core/mq/
 ├── exceptions.py              # MQ 异常类型（含 RetriableError 可重试基类）
 ├── retry.py                   # 厂商中立失败兜底编排：有限退避重试 + 死信投递
 ├── consumers/
-│   └── parse_task_consumer.py # 解析任务消费者启动入口
+│   ├── cache_sync_consumer.py # LLM 配置缓存同步消费者
+│   └── parse_task_consumer.py # RAG 消费者启动入口（解析任务 + cache-sync）
 ├── messages/
 │   ├── parse_task.py          # Java -> Python 解析任务消息
 │   ├── parse_result.py        # Python -> Java 解析终态通知
@@ -43,6 +44,9 @@ FastAPI lifespan
     -> MQService.subscribe()
       -> ParseTaskMessage.parse_msg()
       -> ParseTaskPipeline.execute()
+    -> MQService.subscribe()
+      -> CacheSyncMessage.parse_msg()
+      -> CacheSyncService.sync_config_change()
 ```
 
 ## 2. 核心角色
@@ -64,7 +68,7 @@ FastAPI lifespan
 | --- | --- | --- | --- |
 | `ParseTaskMessage` | `tolink-document-pares` | Java -> Python | 触发文档解析任务（含首次解析与重试，由 `is_retry` + `previous_task_id` 区分；详见 [mq_integration.md §ParseTaskPayload](../api/mq_contracts.md)） |
 | `ParseResultMessage` | `tolink.rag.parse_result` | Python -> Java | 回传解析整体终态（重试任务的通知体 **不** 回带 `previous_task_id` / `retry_of_task_id`，Java 自有映射） |
-| `CacheSyncMessage` | `tolink.rag.cache_sync` | Java -> Python | 失效或刷新用户 LLM 配置缓存 |
+| `CacheSyncMessage` | `tolink.rag.cache_sync` | Java -> Python | 失效或刷新用户 LLM 配置缓存；`user_id=0` 系统预设变更会触发全量缓存清理 |
 | `UsageReportMessage` | `tolink.rag.usage_report` | Python -> Java/统计侧 | 上报 LLM 调用用量 |
 
 `ParseResultMessage.serialize()` 输出的是 Java 约定的业务 payload，不包含 `mq_type`、`mq_name`、`payload` 信封。终态通知以 `document_parsed_log_id`（`document_parsed_log.id`）作为 Java 回查解析日志与流水线的关键字段（字段契约见 [mq_contracts.md §ParseResultPayload](../api/mq_contracts.md)）。

@@ -8,7 +8,7 @@
 - 普通 JSON 响应通常使用 `{code, message, data}` 或模块自定义响应模型。
 - 解析和 MQ 路由异常通常返回 HTTP `500`，`detail` 为异常文本。
 - LLM 路由在业务异常中多返回 `APIResponse(code=500, message=..., data=null)`。
-- LLM 用户级接口要求请求头 `X-User-Id`。
+- LLM 用户级接口要求请求头 `X-User-Id`，该值由 Java 侧认证后注入，Python 按该用户 ID 读取配置。
 - 内部 LLM 配置和用量接口为 Java 管理端内部使用，不应直接暴露给公网。
 
 ## 2. Parser API
@@ -138,7 +138,14 @@ Python 发往 Java 的 `tolink.rag.parse_result` 消息不带 MQ 信封，消息
 
 | Header | 说明 |
 | --- | --- |
-| `X-User-Id` | 用户 ID，用于读取用户 LLM 配置 |
+| `X-User-Id` | Java 侧认证后的用户 ID，用于读取 `llm_user_config.user_id` 配置 |
+
+配置选择规则：
+
+- 请求传 `config_id` 时，只读取该用户自己的配置或 `user_id=0` 的系统预设配置；配置不存在、无权限或未启用时返回配置不存在，不再 fallback 到默认配置。
+- 请求不传 `config_id` 时，按接口能力查询默认配置：先查当前用户 `is_active=true AND is_default=true AND capability=<能力>`，未命中再查 `user_id=0` 的系统预设默认配置。
+- 系统预设配置来自 `llm_user_config.user_id=0`，不是 Python `SYSTEM_LLM_*` 环境变量。
+- 解析到的配置 capability 必须与接口能力一致，否则返回配置能力不匹配。
 
 | Method | Path | 用途 | 请求 |
 | --- | --- | --- | --- |
@@ -189,6 +196,9 @@ Python 发往 Java 的 `tolink.rag.parse_result` 消息不带 MQ 信封，消息
 | `GET` | `/usage` | 查询用户用量统计 | Header `X-User-Id`，`start_date/end_date` 可选 |
 
 日期参数格式：`YYYY-MM-DD`。
+
+`GET /providers` 返回的厂商能力字段为 `supported_capabilities`，不再返回旧的 `supported_models`。
+`GET /configs` 只返回当前用户自己的配置列表，不包含 `user_id=0` 系统预设配置详情。
 
 ## 6. Internal Recall API
 

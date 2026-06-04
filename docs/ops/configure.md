@@ -12,7 +12,7 @@
 | 数据库 | `DB_*` | 始终 |
 | 缓存 | `REDIS_*` | 始终 |
 | 安全 | `API_KEY_ENCRYPTION_SECRET` | 始终（必须与 Java 管理端一致） |
-| 系统级 LLM | `SYSTEM_LLM_*` | 始终（兜底 LLM 调用） |
+| 解析/分块内置 LLM | `SYSTEM_LLM_*` | 启用 Markdown 增强或高级语义分块时 |
 | Markdown 增强 | `MARKDOWN_PARSER_*` | 调整解析增强行为时 |
 | 分块策略 | `CHUNKING_*` | 调整分块参数时 |
 | 向量存储 | `VECTOR_STORE_TYPE`, `QDRANT_*`, `ES_*`, `CHUNK_INDEX_*`, `SPARSE_VECTOR_*` | 始终（选择 Qdrant 或 ES，并配置稀疏向量） |
@@ -31,10 +31,12 @@
 | `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` | MySQL 连接 |
 | `REDIS_HOST` / `REDIS_PORT` | Redis 连接 |
 | `API_KEY_ENCRYPTION_SECRET` | API Key 加密 Secret，必须与 Java 管理端一致 |
-| `SYSTEM_LLM_PROVIDER` / `SYSTEM_LLM_API_KEY` / `SYSTEM_LLM_API_BASE` | 系统级兜底 LLM |
 | `KAFKA_BOOTSTRAP_SERVERS` 等（若 `MQ_VENDOR=kafka`） | Kafka 接入信息 |
 | `MINIO_*`（若 `STORAGE_TYPE=minio`） | 对象存储凭据 |
 | `QDRANT_HOST` 或 `ES_HOST`（取决于 `VECTOR_STORE_TYPE`） | 向量存储 |
+
+> 用户 LLM API 的默认配置不从 `SYSTEM_LLM_*` 读取。用户未设置个人默认配置时，Python 读取
+> `llm_user_config.user_id=0` 的系统预设记录；这些记录由 Java 管理端初始化和维护。
 
 ## 关键开关
 

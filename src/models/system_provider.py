@@ -3,7 +3,7 @@ SystemProvider ORM 模型
 对应 llm_system_provider 表
 """
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -17,9 +17,9 @@ class SystemProvider(BaseModel):
     provider_type: str = Field(..., description="厂商类型：openai/claude/glm/deepseek")
     provider_name: str = Field(..., description="厂商展示名称")
     api_base_url: str = Field(..., description="官方默认 API 地址")
-    supported_models: Dict[str, List[str]] = Field(
-        default_factory=dict,
-        description="支持模型与能力映射，如 {\"gpt-4\":[\"CHAT\",\"OCR\"]}"
+    supported_capabilities: List[str] = Field(
+        default_factory=list,
+        description="支持能力列表，如 [\"CHAT\", \"EMBEDDING\"]"
     )
     config_schema: Optional[dict] = Field(None, description="配置参数 Schema")
     is_active: bool = Field(True, description="是否启用")

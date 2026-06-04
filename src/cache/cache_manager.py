@@ -151,6 +151,13 @@ class CacheManager:
             for key in keys:
                 await self._backend.delete(key)
 
+    async def clear_all_user_cache(self) -> None:
+        """清除所有用户 LLM 配置缓存。"""
+        keys = await self._backend.keys("llm:user:*")
+        if keys:
+            for key in keys:
+                await self._backend.delete(key)
+
     async def clear_system_cache(self) -> None:
         """清除系统厂商缓存"""
         pattern = "llm:system:*"

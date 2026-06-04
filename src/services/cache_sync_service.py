@@ -3,7 +3,6 @@ CacheSyncService 缓存同步服务
 监听配置变更，主动清除相关缓存
 """
 from typing import Optional
-import asyncio
 
 from src.services.config_reader_service import ConfigReaderService
 from src.core.llm.factory import ModelFactory
@@ -42,25 +41,17 @@ class CacheSyncService:
             config_id: 配置 ID（具体哪个配置变更）
             event_type: 事件类型 (update/delete)
         """
-        if event_type == "delete":
-            # 删除时清除特定配置缓存
-            if user_id and config_id:
+        if user_id == "0":
+            await self._config_service.clear_cache()
+            self._model_factory.clear_cache()
+            return
+
+        if user_id:
+            if config_id:
                 cache_key = f"llm:user:{user_id}:config:{config_id}"
                 await self._clear_config_cache(cache_key)
-
-                # 清除 ModelFactory 中的客户端缓存
-                self._model_factory.clear_cache(user_id)
-
-        elif event_type == "update":
-            # 更新时清除用户所有配置缓存（简化处理）
-            if user_id:
-                await self._config_service.clear_cache(user_id)
-                self._model_factory.clear_cache(user_id)
-
-        elif event_type == "create":
-            # 新建时清除用户配置列表缓存
-            if user_id:
-                await self._config_service.clear_cache(user_id)
+            await self._config_service.clear_cache(user_id)
+            self._model_factory.clear_cache(user_id)
 
     async def invalidate_cache(
         self,

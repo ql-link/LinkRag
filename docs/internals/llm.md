@@ -57,7 +57,7 @@ src/api/routes/internal.py  # Java 管理端内部配置和用量查询
 ```text
 ParseTaskService / ChunkEmbeddingPipeline / MarkdownEnhancementOrchestrator
   -> ModelFactory or Provider client
-  -> 系统兜底配置 / 用户配置
+  -> 解析/分块内置配置或用户配置
 ```
 
 ## 3. 核心角色
@@ -67,7 +67,7 @@ ParseTaskService / ChunkEmbeddingPipeline / MarkdownEnhancementOrchestrator
 | `CapabilityType` | `interfaces.py` | 定义 `TEXT/EMBEDDING/RERANK/OCR/VISION/TOOL_CALLING` |
 | `BaseProvider` | `base_provider.py` | Provider 公共属性和能力判断 |
 | `ModelFactory` | `factory.py` | 注册 Provider，按用户配置或配置 ID 创建客户端 |
-| `ConfigReaderService` | `src/services/config_reader_service.py` | 读取用户配置、系统厂商、系统兜底配置并管理缓存 |
+| `ConfigReaderService` | `src/services/config_reader_service.py` | 读取用户配置、系统厂商、`user_id=0` 系统预设并管理缓存 |
 | `CacheSyncService` | `src/services/cache_sync_service.py` | 消费缓存同步消息，失效用户配置缓存 |
 | `UsageLogService` | `src/services/usage_log_service.py` | 记录和汇总 LLM 用量 |
 | Provider 实现 | `providers/*.py` | 对接具体厂商 API |
@@ -79,19 +79,11 @@ ParseTaskService / ChunkEmbeddingPipeline / MarkdownEnhancementOrchestrator
 - 数据库 `llm_system_provider`
 - 数据库 `llm_user_config`
 - Redis 配置缓存
-- `src/config.py::Settings` 中的系统级兜底配置
+- `src/config.py::Settings` 中的解析/分块内部增强配置
 
-系统级兜底配置包括：
+用户 API 使用请求头 `X-User-Id` 读取用户配置。若用户指定 `config_id`，按配置 ID 获取，且只允许读取当前用户配置或 `user_id=0` 系统预设；配置不存在、未启用、无权限时不 fallback。若用户未指定 `config_id`，按接口能力类型先查询当前用户默认配置，未命中再查询 `llm_user_config.user_id=0` 的系统预设默认配置。
 
-- `SYSTEM_LLM_PROVIDER`
-- `SYSTEM_LLM_API_KEY`
-- `SYSTEM_LLM_API_BASE`
-- `SYSTEM_LLM_MODEL_CHAT`
-- `SYSTEM_LLM_MODEL_EMBEDDING`
-- `SYSTEM_LLM_MODEL_RERANK`
-- `SYSTEM_LLM_MODEL_VISION`
-
-用户 API 使用请求头 `X-User-Id` 读取用户配置。若用户指定 `config_id`，按配置 ID 获取；否则按能力类型获取默认配置。找不到用户配置时，部分链路会尝试系统兜底配置。
+用户 LLM API 不再使用 Python `SYSTEM_LLM_*` 环境变量作为默认配置兜底。`SYSTEM_LLM_*` 目前只服务于 Markdown 增强、图片增强、语义分块等解析/分块内部链路。
 
 API Key 不应写入文档、测试或提交配置。用户配置中的密钥由数据库密文保存，读取后通过 `ConfigReaderService.decrypt_api_key()` 解密使用。
 
@@ -113,7 +105,7 @@ API Key 不应写入文档、测试或提交配置。用户配置中的密钥由
 1. 在 `src/core/llm/providers/` 下新增 Provider 文件。
 2. 继承 `BaseProvider`，实现对应能力方法。
 3. 在 `ModelFactory._register_default_providers()` 注册默认 Provider，或通过 `register_provider()` 在启动逻辑中注册。
-4. 在 `llm_system_provider` 中维护厂商元数据和模型能力。
+4. 在 `llm_system_provider` 中维护厂商元数据和 `supported_capabilities`。
 5. 如需配置示例，同步 `.env.example` 和 `docs/api/http_contracts.md`。
 6. 增加 `tests/unit/core/llm` 单元测试。
 
@@ -129,6 +121,6 @@ API Key 不应写入文档、测试或提交配置。用户配置中的密钥由
 
 - Provider 注册和恢复默认注册。
 - 按 `config_id` 和能力类型选择配置。
-- 系统兜底配置。
+- `user_id=0` 系统预设配置。
 - API Key 解密和脱敏。
 - Provider 异常映射、限流、连接失败和熔断。
