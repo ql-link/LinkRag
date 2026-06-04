@@ -19,13 +19,14 @@
 ### 需求 → 交付 流程链（按顺序）
 | skill | 职责 | 边界 / 转交 |
 | --- | --- | --- |
-| `brief-generator` | 把新需求/想法收敛成开发者向 brief.md | 冻结后转 acceptance-generator |
+| `flow-router` | 入口分诊，按改动性质判 L1/L2/L3 车道，不产文档 | L1 直转 implementation-execution；L2/L3 转 brief-generator |
+| `brief-generator` | 把新需求/想法收敛成开发者向 brief.md（L2 轻量、跳 TD；L3 完整） | 上游经 flow-router 判级；冻结后转 acceptance-generator |
 | `acceptance-generator` | 基于冻结 brief.md 生成 Gherkin acceptance.feature | 需先有冻结 brief；要技术方案转 technical-design |
 | `technical-design` | 基于 brief+acceptance 产出 technical_design.md | 上游缺失先回退对应 skill |
-| `implementation-execution` | 需求/方案确认后执行编码，必要时产出 implementation_report.md | 无冻结 spec → 回 brief-generator；编码完成 → run-all-tests + code-review-and-quality |
+| `implementation-execution` | 需求/方案确认后执行编码，必要时产出 implementation_report.md；spec 缺口强制回写 + 留痕 | 无冻结 spec → 回 brief-generator；编码完成 → run-all-tests + code-review-and-quality |
 | `run-all-tests` | 跑 `tests` 全量回归，回报结论 | 收口前的测试关口；详见「测试与质量」 |
 | `code-review-and-quality` | 提交/合并前五维质量门禁 | 过关后 → branch-pr-workflow |
-| `branch-pr-workflow` | 从 dev 新建规范分支、提交并发起合并 PR | 链路终点；仅在测试 + 评审通过、收口时用 |
+| `branch-pr-workflow` | 从 dev 新建规范分支、提交并发起合并 PR；收口硬门槛拦截 | 链路终点；测试未过 / 契约失同步 / acceptance 未提升则拒绝收口并回退对应 skill |
 
 ### 测试与质量
 | skill | 职责 | 边界 / 转交 |

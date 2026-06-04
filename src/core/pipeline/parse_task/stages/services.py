@@ -110,6 +110,7 @@ class StageServices:
             source_path,
             payload.file_type,
             source_file=payload.source_filename or payload.md_object_key,
+            user_id=coerce_optional_int(payload.user_id),
             **parser_kwargs,
         )
 
