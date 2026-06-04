@@ -406,13 +406,7 @@ git show <commit-sha>:.specs/<feature>/brief.md
 
 ### 7.1 目录职责
 
-| 目录 | 描述对象 | 受众 |
-| --- | --- | --- |
-| `docs/api/` | 对外契约（HTTP/MQ/Schema/错误码） | Java 业务方、对接方 |
-| `docs/internals/` | 代码内部实现（模块、约定、流程） | 内部开发者 |
-| `docs/ops/` | 部署与配置 | 运维、部署方 |
-| `docs/contributing.md` | 本文（开发流程） | 贡献者 |
-| `.specs/` | feature 临时交付物 | 开发者 |
+各文档目录的职责划分与按角色的导航入口，以 [docs/README.md](README.md) 为单一来源，不在此重复。本节只讲修改 docs/ 时必须遵守的规则。
 
 ### 7.2 单一来源原则
 
