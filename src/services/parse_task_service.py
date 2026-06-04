@@ -21,6 +21,7 @@ class ParseTaskService:
         source_path: Path | None,
         file_type: str,
         source_file: str | None = None,
+        user_id: int | None = None,
         **parser_kwargs,
     ) -> dict:
         start_time = time.time()
@@ -50,6 +51,7 @@ class ParseTaskService:
             enable_image_enhancement=bool(image_bytes_by_url)
             or not metadata.get("image_upload_async", False),
             image_bytes_by_url=image_bytes_by_url,
+            user_id=user_id,
         )
         enhance_elapsed = time.monotonic() - enhance_started_at
         logger.info(
@@ -85,6 +87,7 @@ class ParseTaskService:
         source_path: Path | None,
         file_type: str,
         source_file: str | None = None,
+        user_id: int | None = None,
         **parser_kwargs,
     ) -> dict:
         try:
@@ -95,6 +98,7 @@ class ParseTaskService:
                     source_path,
                     file_type,
                     source_file=source_file,
+                    user_id=user_id,
                     **parser_kwargs,
                 )
             )

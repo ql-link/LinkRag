@@ -137,7 +137,7 @@ StagePipeline.run（唯一的 6 阶段编排）
 
 各阶段的特例（均封装在对应 Stage 子类内，对编排循环透明）：
 
-- **CleaningStage**：`cleaning_status != SUCCESS` 才执行（首次恒执行）；下载/解析/上传失败按错误码归类（`TEMP_DISK_FULL` / `SOURCE_FILE_NOT_FOUND` / `PARSE_ENGINE_FAILED` / `PARSED_FILE_UPLOAD_FAILED`），成功在 `mark_success` 写 `mark_parsed + mark_cleaning_success + mark_post_cleaning`。临时文件早删 + `finally` 兜底封装在 `run` 内。
+- **CleaningStage**：`cleaning_status != SUCCESS` 才执行（首次恒执行）；下载/解析/上传失败按错误码归类（`TEMP_DISK_FULL` / `SOURCE_FILE_NOT_FOUND` / `PARSE_ENGINE_FAILED` / `PARSED_FILE_UPLOAD_FAILED`），其中 Markdown 增强按发起用户（`payload.user_id`）解析 LLM 配置，用户缺少必配 CHAT 默认配置时单独归 `LLM_CONFIG_MISSING`，成功在 `mark_success` 写 `mark_parsed + mark_cleaning_success + mark_post_cleaning`。临时文件早删 + `finally` 兜底封装在 `run` 内。
   - **`md` / `markdown` 透传**：cleaning 的职责是把多源文件「解析为 md」，而 md 源文件本身即目标格式——经 `payload.is_markdown_passthrough` 判定后 `_read_markdown_passthrough` 直接读取已下载的源文件文本作为 markdown 产物（`parse_result=None`，下游 chunking 走纯 markdown 分片路径），**跳过解析引擎**；且 md 在上传阶段已存入对象存储，cleaning **不再重复写 `md_bucket`**。透传仍走完整成功收口（`mark_parsed + mark_cleaning_success + mark_post_cleaning`），`cleaning_status=SUCCESS`，状态语义与正常清洗一致。
   - **markdown 产物坐标解析**：markdown 真实所在位置由 `ParseTaskPayload.markdown_bucket` / `markdown_object_key` 统一解析——**md/markdown 取上传位置 `source_*`，其余格式取 cleaning 写出的 `md_*`**。`mark_parsed`（写 `parsed_bucket_name`/`parsed_object_key`）、`StageServices.load_markdown`（重试从 CHUNKING 恢复读回旧 markdown）、重试 `create_for_retry` 的预写坐标三处一致取用，确保「清洗完成、分片失败」重试时 md 按上传位置读回，不会误用 `md_bucket`。
 - **ChunkingStage**：`chunking_status == SUCCESS` → `on_skip` 调 `StageServices.load_all_chunks_from_db` 反查完整 chunk truth set；反查为空按历史语义落 `vectorizing_failed` + 通知（`finalized`）。否则进入 `run`：有本轮 cleaning 产物用其分片；无 cleaning 产物但旧 markdown 坐标可用（**重试从 CHUNKING 恢复**，LINK-32）则经 `StageServices.load_markdown` 读回旧 markdown 重新分片；二者皆无（无产物也无 markdown 坐标）才视为状态不一致落 `chunking_failed`（`failure_reason` 含 `chunking_not_success_in_retry`）。
@@ -253,6 +253,7 @@ pdf_parser_backend == "mineru"
 - `PARSED_FILE_UPLOAD_FAILED`
 - `RESULT_NOTIFY_FAILED`
 - `INTERNAL_UNKNOWN_ERROR`
+- `LLM_CONFIG_MISSING`（发起用户缺少必配能力 CHAT 的默认 LLM 配置；增强按用户配置解析，仅「确实未配置」时归此码，读取失败仍走 `PARSE_ENGINE_FAILED`。图片增强 VISION 非必配，缺失跳过不报错）
 
 后处理阶段还会构造文件级失败原因，并以来源前缀区分（纯内部排障，Java 仅展示不解析）：
 

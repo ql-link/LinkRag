@@ -15,6 +15,7 @@ from pathlib import Path
 from loguru import logger
 
 from src.config import settings
+from src.core.markdown_parser import LLMConfigMissingError
 
 from .. import temp_workspace
 from .._utils import now
@@ -97,6 +98,12 @@ class CleaningStage(Stage):
                     parse_result = await self._read_markdown_passthrough(source_path)
                 else:
                     parse_result = await self._services.parse_file(source_path, payload)
+            except LLMConfigMissingError as exc:
+                # 发起用户缺少必配能力（CHAT）的默认 LLM 配置：单独归类，便于 Java 端提示用户去配置，
+                # 区别于解析引擎本身失败的 PARSE_ENGINE_FAILED。
+                return self._classified_failure(
+                    payload, ParseFailureCode.LLM_CONFIG_MISSING, exc
+                )
             except Exception as exc:
                 return self._classified_failure(
                     payload, ParseFailureCode.PARSE_ENGINE_FAILED, exc
