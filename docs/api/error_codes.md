@@ -35,7 +35,8 @@ CODE: 中文业务原因；底层详情
 | `INTERNAL_UNKNOWN_ERROR` | 系统异常，请稍后重试 | 未归类内部异常 |
 | `PARSING_FAILED` | 文件解析阶段失败，请检查文件内容或重新解析 | 文档清洗（解析+上传）阶段统一失败前缀，对应 `failed_stage=CLEANING`（brief 称 `PARSING`） |
 | `SPARSE_VECTORIZING_FAILED` | 稀疏向量化失败，请稍后重试 | 稀疏向量阶段任一 chunk 失败、health-check 总数为 0、Qdrant 写入失败等 |
-| `LLM_CONFIG_MISSING` | 未配置默认大模型，请先在系统中配置后重试 | 发起用户缺少必配能力（CHAT）的默认 LLM 配置，解析增强无法按用户配置调用（仅「确实未配置」时；配置读取失败按 `PARSE_ENGINE_FAILED`）。图片增强 VISION 为非必配，缺失时跳过不报错 |
+| `LLM_CONFIG_MISSING` | 未配置默认大模型，请先在系统中配置后重试 | 发起用户缺少必配能力的默认 LLM 配置：解析增强缺 CHAT（无法按用户配置调用，配置读取失败按 `PARSE_ENGINE_FAILED`；图片增强 VISION 非必配，缺失跳过不报错），或稠密向量化缺 EMBEDDING（LINK-91）。仅「确实未配置」时使用 |
+| `EMBEDDING_DIMENSION_UNSUPPORTED` | 所选向量模型维度不受支持，请改用系统支持的向量模型 | 稠密向量化阶段，用户 EMBEDDING 模型输出维度 ≠ `DENSE_VECTOR_DIMENSION`（方案 A 维度约束，LINK-91） |
 | `RETRY_VALIDATION_FAILED` | 重试前置校验失败，请确认上次任务状态 | `ParseTaskGuard.validate_retry_context` 任一校验项不满足，或 `mark_superseded` CAS rowcount=0 |
 
 后处理阶段还会生成以下文件级失败原因前缀，它们不是 `ParseFailureCode` 枚举成员，但会通过 `failure_reason` 发送给 Java：
