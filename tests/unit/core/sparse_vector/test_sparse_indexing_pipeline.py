@@ -7,7 +7,8 @@
 - 空集短路：传入空 chunks → 幂等 no-op，不触达 encoder / Qdrant。
 - 前置断言：任一 chunk ``dense_vector_status != SUCCESS`` → fail-fast 抛
   SparseIndexingError（多值 CAS 拦不住"dense 没成功就跑 sparse"这条前置条件）。
-- bucket_id 从 chunks[0] 自带字段取（关闭 #95：旧实现误传 dataset_id）。
+- bucket_id 从 chunks[0] 自带字段取，并 fail-fast 校验同批一致（关闭 #95：旧实现
+  误传 dataset_id）。
 - 批处理用多值 CAS ``allowed_statuses=(PENDING, FAILED)`` 切 INDEXING。
 """
 
@@ -146,6 +147,31 @@ async def test_missing_bucket_id_raises():
         await pipeline.run(chunks=rows, task_id="t1", db=_FakeDB())
 
     assert "missing_bucket_id" in exc.value.reason
+
+
+@pytest.mark.asyncio
+async def test_mixed_bucket_ids_raise_fail_fast():
+    repo = _RecordingRepo()
+    store = _RecordingStore()
+    pipeline = SparseIndexingPipeline(
+        chunk_repository=repo,
+        sparse_vector_service=_RecordingService(),
+        qdrant_store=store,
+    )
+
+    rows = [
+        _row(chunk_id="c1", bucket_id=42),
+        _row(chunk_id="c2", bucket_id=43),
+    ]
+    with pytest.raises(SparseIndexingError) as exc:
+        await pipeline.run(chunks=rows, task_id="t1", db=_FakeDB())
+
+    assert "bucket_id_mismatch" in exc.value.reason
+    assert "expected=42" in exc.value.reason
+    assert "actual=43" in exc.value.reason
+    assert repo.sparse_indexing_calls == []
+    assert store.ensured == []
+    assert store.upserts == []
 
 
 @pytest.mark.asyncio
