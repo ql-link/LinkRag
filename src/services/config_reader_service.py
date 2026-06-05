@@ -144,15 +144,20 @@ class ConfigReaderService:
         if self._db is None:
             return None
 
+        # 默认配置理论上 (user_id) 维度唯一，但 schema 未强制；用 order_by + limit(1)
+        # 确定性取一条（priority 高者优先），避免脏数据下 scalar_one_or_none 抛
+        # MultipleResultsFound 被上层误判为「读取失败(可重试)」。
         stmt = (
             select(UserLLMConfigDB)
             .options(selectinload(UserLLMConfigDB.provider))
             .where(UserLLMConfigDB.user_id == user_id)
             .where(UserLLMConfigDB.is_default == True)
             .where(UserLLMConfigDB.is_active == True)
+            .order_by(UserLLMConfigDB.priority.desc(), UserLLMConfigDB.id.desc())
+            .limit(1)
         )
         result = await self._db.execute(stmt)
-        cfg = result.scalar_one_or_none()
+        cfg = result.scalars().first()
 
         if cfg is None:
             return None
@@ -216,6 +221,9 @@ class ConfigReaderService:
         if self._db is None:
             return None
 
+        # 同 get_user_default_config：(user_id, provider_type, capability) 默认唯一靠 schema
+        # 约束保证；为防约束缺位/脏数据，查询侧用 order_by + limit(1) 确定性取一条，
+        # 不让 MultipleResultsFound 冒泡成「读取失败(可重试)」误判。
         stmt = (
             select(UserLLMConfigDB)
             .options(selectinload(UserLLMConfigDB.provider))
@@ -227,8 +235,11 @@ class ConfigReaderService:
         if provider_type:
             stmt = stmt.where(UserLLMConfigDB.provider_type == provider_type)
 
+        stmt = stmt.order_by(
+            UserLLMConfigDB.priority.desc(), UserLLMConfigDB.id.desc()
+        ).limit(1)
         result = await self._db.execute(stmt)
-        cfg = result.scalar_one_or_none()
+        cfg = result.scalars().first()
 
         if cfg is None:
             return None

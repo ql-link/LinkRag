@@ -25,6 +25,7 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from src.api.internal_auth import (
     CODE_ALL_SOURCES_FAILED,
+    CODE_EMBEDDING_CONFIG_MISSING,
     CODE_INTERNAL_ERROR,
     CODE_INVALID_REQUEST,
     CODE_SCOPE_FORBIDDEN,
@@ -38,6 +39,7 @@ from src.api.recall_pipeline_provider import get_recall_pipeline
 from src.config import settings
 from src.core.pipeline.recall import (
     RecallError,
+    RecallFatalError,
     RecallPipeline,
     RecallRequest,
     RecallResponse,
@@ -140,6 +142,14 @@ async def _recall_event_stream(
         # 正常已在握手前拦截；此处为 pipeline 自身安全网的兜底。
         logger.info("[recall] validation error request_id={}: {}", request_id, exc)
         yield _event("error", {"code": CODE_INVALID_REQUEST, "message": str(exc)})
+    except RecallFatalError as exc:
+        # 必备前置缺失（当前：发起用户无默认 EMBEDDING 配置，dense 路无法编码 query）。
+        # 须置于 RecallError 之前——RecallFatalError 是其子类。整请求硬失败，不做宽松降级。
+        logger.warning("[recall] embedding config missing request_id={}: {}", request_id, exc)
+        yield _event(
+            "error",
+            {"code": CODE_EMBEDDING_CONFIG_MISSING, "message": "user embedding config missing"},
+        )
     except RecallError as exc:
         logger.warning("[recall] all sources failed request_id={}: {}", request_id, exc)
         yield _event(

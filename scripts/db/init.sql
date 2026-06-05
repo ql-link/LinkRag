@@ -68,11 +68,13 @@ CREATE TABLE IF NOT EXISTS llm_user_config (
     max_retries         INT             DEFAULT 3 COMMENT '最大重试次数',
     stream_enabled      BOOLEAN         DEFAULT TRUE COMMENT '是否支持流式输出',
     capability          VARCHAR(32)     NOT NULL DEFAULT 'CHAT' COMMENT '专用能力标识：CHAT/EMBEDDING/RERANK/OCR',
+    default_marker      INT GENERATED ALWAYS AS (CASE WHEN is_default = 1 AND is_active = 1 THEN 1 ELSE NULL END) STORED COMMENT '默认判别生成列：default+active 时为 1，否则 NULL，仅用于唯一约束',
     extra_config        JSON            COMMENT '扩展配置',
     created_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
     UNIQUE KEY uk_user_provider_model (user_id, provider_id, model_name),
+    UNIQUE KEY uq_user_default_per_capability (user_id, provider_type, capability, default_marker),
     INDEX idx_user_active_default (user_id, is_active, is_default),
     INDEX idx_user_provider_cap (user_id, provider_type, capability)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '用户级 LLM 配置表';

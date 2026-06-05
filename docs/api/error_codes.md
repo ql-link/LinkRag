@@ -146,12 +146,17 @@ CODE: 中文业务原因；底层详情
 
 | 场景 | 事件 | code |
 | --- | --- | --- |
+| 发起用户无默认 EMBEDDING 配置（dense 路无法编码 query） | `error` | `RECALL_EMBEDDING_CONFIG_MISSING` |
 | 全部召回路失败 / 严格模式失败 | `error` | `RECALL_ALL_SOURCES_FAILED` |
 | 召回执行超过 `RECALL_STREAM_TIMEOUT_MS` | `error` | `RECALL_TIMEOUT` |
 | 未预期内部异常 | `error` | `RECALL_INTERNAL_ERROR` |
 
 宽松模式下单路失败但仍有成功路时**不是错误**：正常返回 `recall_done`，失败路计入
 `failed_sources`。客户端（Java）断连不作为业务错误，Python 停止发送事件并取消召回任务。
+
+例外：dense 召回 query 编码按发起用户的 EMBEDDING 配置解析（与写入侧同源）。用户无默认
+EMBEDDING 配置属**必备前置缺失**，走硬失败（`RECALL_EMBEDDING_CONFIG_MISSING`）而非宽松降级——
+即便其余路可用也不返回部分结果，避免"读侧系统模型 / 写侧用户模型"向量空间不一致的误召回。
 
 ## 6. Chunk Status Values
 

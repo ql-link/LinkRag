@@ -231,12 +231,12 @@ def create_chunk_embedding_pipeline() -> ChunkEmbeddingPipeline:
 async def aresolve_user_embedding_client(user_id: int) -> tuple[Any, str | None]:
     """按发起用户的默认 EMBEDDING 配置构造稠密 embedder（LINK-91）。
 
-    与 ``/llm`` 路由及表格/图片增强（LINK-75）一致的「查配置 → 解密 api_key →
-    create_client」范式：经 ``ConfigReaderService`` 按 ``user_id + "EMBEDDING"`` 取默认
-    配置。**解析写入链路必配 EMBEDDING、不保留系统兜底**——用户无默认 EMBEDDING 配置时抛
-    :class:`DenseEmbeddingConfigMissingError`；配置读取本身异常按原样向上传播（不转成
-    「无配置」），便于上层区分「未配置」与「读取失败(可重试)」。复用 ``ModelFactory`` 的按
-    用户客户端缓存与 ``ConfigReaderService`` 的 Redis 配置缓存摊薄每次索引的解析开销。
+    经统一的 :func:`src.core.llm.user_model_resolver.aresolve_user_model` 按
+    ``user_id + "EMBEDDING"`` 取默认配置并构造 embedder。**解析写入链路必配 EMBEDDING、
+    不保留系统兜底**——用户无默认 EMBEDDING 配置时统一解析抛 ``UserModelConfigMissingError``，
+    本函数在边界重抛 :class:`DenseEmbeddingConfigMissingError` 以保留 ``VectorizingStage`` 的
+    ``LLM_CONFIG_MISSING`` 失败码映射；配置读取本身异常按原样向上传播（不转成「无配置」），
+    便于上层区分「未配置」与「读取失败(可重试)」。
 
     Args:
         user_id: 发起解析任务的用户 ID。
@@ -248,31 +248,14 @@ async def aresolve_user_embedding_client(user_id: int) -> tuple[Any, str | None]
         DenseEmbeddingConfigMissingError: 用户无默认 EMBEDDING 配置。
         ValueError: 配置的 provider 不支持 embedding 能力。
     """
-    from src.database import get_async_session_factory
-    from src.services.config_reader_service import ConfigReaderService
+    from src.core.llm.exceptions import UserModelConfigMissingError
+    from src.core.llm.user_model_resolver import aresolve_user_model
 
-    session_factory = get_async_session_factory()
-    async with session_factory() as db:
-        config_service = ConfigReaderService(db)
-        config = await config_service.get_user_default_config_by_capability(
-            user_id=user_id, capability="EMBEDDING"
-        )
-        if not config:
-            raise DenseEmbeddingConfigMissingError(user_id)
-        api_key = await config_service.decrypt_api_key(config.get("api_key", ""))
-
-    embedder = ModelFactory().create_client(
-        provider_type=config.get("provider_type", "openai"),
-        api_key=api_key or "",
-        api_base_url=config.get("custom_api_base_url"),
-        model_name=config.get("model_name"),
-        timeout_ms=settings.MARKDOWN_PARSER_LLM_TIMEOUT_MS,
-    )
-    if not embedder.has_capability(CapabilityType.EMBEDDING):
-        raise ValueError(
-            f"Configured provider '{config.get('provider_type')}' does not support embedding"
-        )
-    return embedder, config.get("model_name")
+    try:
+        resolved = await aresolve_user_model(user_id=user_id, capability="EMBEDDING")
+    except UserModelConfigMissingError as exc:
+        raise DenseEmbeddingConfigMissingError(user_id) from exc
+    return resolved.provider, resolved.model_name
 
 
 def validate_dense_dimension(

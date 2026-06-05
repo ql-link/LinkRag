@@ -123,7 +123,6 @@ def _get_capability_type():
 
 
 async def _resolve_user_provider(
-    capability,
     capability_str: str,
     *,
     user_id: int,
@@ -131,14 +130,13 @@ async def _resolve_user_provider(
 ) -> BaseProvider:
     """按发起用户解析增强用 LLM Provider。
 
-    与 ``src/api/routes/llm.py`` 同一套「查配置 → 解密 api_key → create_client」范式：
-    经 ``ConfigReaderService`` 按 ``user_id + capability`` 取默认配置，命中则用用户的
-    provider/api_key/base_url/model 构造 Provider。用户无该能力默认配置时抛
-    :class:`LLMConfigMissingError`；配置读取异常按原样向上传播（不转成「无配置」）。
+    经统一的 :func:`src.core.llm.user_model_resolver.aresolve_user_model` 按
+    ``user_id + capability`` 取默认配置并构造 Provider。用户无该能力默认配置时统一解析抛
+    ``UserModelConfigMissingError``，本函数在边界重抛 :class:`LLMConfigMissingError` 以保留
+    解析链路既有的失败语义；配置读取异常按原样向上传播（不转成「无配置」）。
 
     Args:
-        capability: ``CapabilityType`` 能力枚举，用于 ``has_capability`` 校验。
-        capability_str: 配置表能力字符串（CHAT / VISION），用于按能力查配置。
+        capability_str: 配置表能力字符串（CHAT / VISION），用于按能力查配置与能力校验。
         user_id: 发起解析任务的用户 ID。
         model_name: 用户配置未指定模型时的回退模型名。
 
@@ -149,58 +147,31 @@ async def _resolve_user_provider(
         LLMConfigMissingError: 用户无该能力的默认 LLM 配置。
         ValueError: 配置的 provider 不支持该能力。
     """
-    from src.database import get_async_session_factory
-    from src.services.config_reader_service import ConfigReaderService
+    from src.core.llm.exceptions import UserModelConfigMissingError
+    from src.core.llm.user_model_resolver import aresolve_user_model
 
-    settings = _get_settings()
-    session_factory = get_async_session_factory()
-    async with session_factory() as db:
-        config_service = ConfigReaderService(db)
-        config = await config_service.get_user_default_config_by_capability(
-            user_id=user_id, capability=capability_str
+    try:
+        resolved = await aresolve_user_model(
+            user_id=user_id, capability=capability_str, fallback_model=model_name
         )
-        if not config:
-            raise LLMConfigMissingError(capability_str, user_id)
-
-        if config.get("is_system_fallback"):
-            api_key = config.get("api_key", "")
-        else:
-            api_key = await config_service.decrypt_api_key(config.get("api_key", ""))
-
-    provider = _get_model_factory().create_client(
-        provider_type=config.get("provider_type", "openai"),
-        api_key=api_key or "",
-        api_base_url=config.get("custom_api_base_url"),
-        model_name=config.get("model_name") or model_name,
-        timeout_ms=settings.MARKDOWN_PARSER_LLM_TIMEOUT_MS,
-    )
-    if not provider.has_capability(capability):
-        raise ValueError(
-            f"Configured provider '{provider.provider_type}' does not support "
-            f"capability '{capability.value}'"
-        )
-    return provider
+    except UserModelConfigMissingError as exc:
+        raise LLMConfigMissingError(capability_str, user_id) from exc
+    return resolved.provider
 
 
 async def abuild_table_client(user_id: int) -> "ProviderTableClient":
     """按发起用户的 CHAT 默认配置构造表格增强 client（缺失则抛 LLMConfigMissingError）。"""
-    capability_type = _get_capability_type()
     settings = _get_settings()
     model_name = settings.MARKDOWN_PARSER_TABLE_MODEL or settings.SYSTEM_LLM_MODEL_CHAT
-    provider = await _resolve_user_provider(
-        capability_type.TEXT, "CHAT", user_id=user_id, model_name=model_name
-    )
+    provider = await _resolve_user_provider("CHAT", user_id=user_id, model_name=model_name)
     return ProviderTableClient(provider=provider)
 
 
 async def abuild_vision_client(user_id: int) -> "ProviderVisionClient":
     """按发起用户的 VISION 默认配置构造图片增强 client（缺失则抛 LLMConfigMissingError）。"""
-    capability_type = _get_capability_type()
     settings = _get_settings()
     model_name = settings.MARKDOWN_PARSER_VISION_MODEL or settings.SYSTEM_LLM_MODEL_VISION
-    provider = await _resolve_user_provider(
-        capability_type.VISION, "VISION", user_id=user_id, model_name=model_name
-    )
+    provider = await _resolve_user_provider("VISION", user_id=user_id, model_name=model_name)
     return ProviderVisionClient(provider=provider, model_name=model_name)
 
 

@@ -1,6 +1,10 @@
 """召回 pipeline 子包对外门面。"""
 
-from src.core.pipeline.recall.exceptions import RecallError, RecallValidationError
+from src.core.pipeline.recall.exceptions import (
+    RecallError,
+    RecallFatalError,
+    RecallValidationError,
+)
 from src.core.pipeline.recall.fusion import fuse_with_rrf
 from src.core.pipeline.recall.models import (
     RecallHit,
@@ -19,6 +23,7 @@ from src.core.pipeline.recall.protocols import (
 
 __all__ = [
     "RecallError",
+    "RecallFatalError",
     "RecallHit",
     "RecallPipeline",
     "RecallPipelineConfig",

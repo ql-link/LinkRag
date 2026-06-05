@@ -8,22 +8,58 @@ from fastapi import APIRouter, Header, HTTPException, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.llm.response import (
-    APIResponse,
-    GenerateResult,
-    EmbeddingResult,
-    RerankResult,
-    StreamChunk,
-    UsageInfo,
-)
-from src.services.config_reader_service import ConfigReaderService
-from src.core.llm.factory import ModelFactory
+from src.core.llm.response import APIResponse
+from src.core.llm.base_provider import BaseProvider
+from src.core.llm.exceptions import UserModelConfigMissingError
+from src.core.llm.user_model_resolver import aresolve_user_model
 from src.database import get_db
 
 router = APIRouter(prefix="/api/v1/llm", tags=["llm"])
 
-# 依赖注入
-model_factory = ModelFactory()
+
+def _coerce_int(value: str, field: str) -> int:
+    """把请求边界传入的 ID 字符串归一成 int，非法值 → 422。
+
+    ``user_id``（来自 ``X-User-Id`` Header）与 ``config_id``（来自请求体）在路由层是
+    字符串，但下游 resolver / ConfigReaderService / ``BigInteger`` 主键都按 int 契约。
+    在此显式转换并校验，避免把弱类型一路下沉到 SQL 靠驱动隐式转换。
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"invalid {field}") from exc
+
+
+async def _resolve_provider(
+    db: AsyncSession,
+    user_id: str,
+    capability: str,
+    *,
+    config_id: Optional[str] = None,
+    override_model: Optional[str] = None,
+) -> BaseProvider:
+    """按用户解析指定能力的 Provider，未命中（含系统兜底）→ 404。
+
+    统一走 :func:`aresolve_user_model`（``/llm`` 路由保留系统兜底）：config_id 指定优先，
+    否则取用户该能力默认配置，仍无则系统环境兜底；都没有抛 ``UserModelConfigMissingError``
+    在此翻成 404，保持原有对外行为。``user_id`` / ``config_id`` 在边界归一成 int。
+    """
+    uid = _coerce_int(user_id, "X-User-Id")
+    cid = _coerce_int(config_id, "config_id") if config_id is not None else None
+    try:
+        resolved = await aresolve_user_model(
+            user_id=uid,
+            capability=capability,
+            config_id=cid,
+            allow_system_fallback=True,
+            override_model=override_model,
+            db=db,
+        )
+    except UserModelConfigMissingError as exc:
+        raise HTTPException(
+            status_code=404, detail=f"{capability} configuration not found"
+        ) from exc
+    return resolved.provider
 
 
 # ============ 请求模型 ============
@@ -81,32 +117,9 @@ async def generate_text(
         APIResponse[GenerateResult]
     """
     try:
-        config_service = ConfigReaderService(db)
-
-        # 获取用户配置
-        if request.config_id:
-            config = await config_service.get_user_config_by_id(x_user_id, request.config_id)
-        else:
-            config = await config_service.get_user_default_config_by_capability(x_user_id, "CHAT")
-
-        if not config:
-            config = config_service.get_system_fallback_config_by_capability("CHAT")
-
-        if not config:
-            raise HTTPException(status_code=404, detail="LLM CHAT configuration not found")
-
-        # 获取 Provider
-        provider_type = config.get("provider_type", "openai")
-        if config.get("is_system_fallback"):
-            api_key = config.get("api_key", "")
-        else:
-            api_key = await config_service.decrypt_api_key(config.get("api_key", ""))
-
-        client = model_factory.create_client(
-            provider_type=provider_type,
-            api_key=api_key,
-            api_base_url=config.get("custom_api_base_url"),
-            model_name=request.model or config.get("model_name"),
+        client = await _resolve_provider(
+            db, x_user_id, "CHAT",
+            config_id=request.config_id, override_model=request.model,
         )
 
         # 调用生成
@@ -147,30 +160,9 @@ async def generate_text_stream(
     from fastapi.responses import StreamingResponse
 
     try:
-        config_service = ConfigReaderService(db)
-
-        if request.config_id:
-            config = await config_service.get_user_config_by_id(x_user_id, request.config_id)
-        else:
-            config = await config_service.get_user_default_config_by_capability(x_user_id, "CHAT")
-
-        if not config:
-            config = config_service.get_system_fallback_config_by_capability("CHAT")
-
-        if not config:
-            raise HTTPException(status_code=404, detail="LLM CHAT configuration not found")
-
-        provider_type = config.get("provider_type", "openai")
-        if config.get("is_system_fallback"):
-            api_key = config.get("api_key", "")
-        else:
-            api_key = await config_service.decrypt_api_key(config.get("api_key", ""))
-
-        client = model_factory.create_client(
-            provider_type=provider_type,
-            api_key=api_key,
-            api_base_url=config.get("custom_api_base_url"),
-            model_name=request.model or config.get("model_name"),
+        client = await _resolve_provider(
+            db, x_user_id, "CHAT",
+            config_id=request.config_id, override_model=request.model,
         )
 
         async def event_generator():
@@ -206,30 +198,9 @@ async def embed_text(
         APIResponse[EmbeddingResult]
     """
     try:
-        config_service = ConfigReaderService(db)
-
-        if request.config_id:
-            config = await config_service.get_user_config_by_id(x_user_id, request.config_id)
-        else:
-            config = await config_service.get_user_default_config_by_capability(x_user_id, "EMBEDDING")
-
-        if not config:
-            config = config_service.get_system_fallback_config_by_capability("EMBEDDING")
-
-        if not config:
-            raise HTTPException(status_code=404, detail="Embedding configuration not found")
-
-        provider_type = config.get("provider_type", "openai")
-        if config.get("is_system_fallback"):
-            api_key = config.get("api_key", "")
-        else:
-            api_key = await config_service.decrypt_api_key(config.get("api_key", ""))
-
-        client = model_factory.create_client(
-            provider_type=provider_type,
-            api_key=api_key,
-            api_base_url=config.get("custom_api_base_url"),
-            model_name=request.model or config.get("model_name"),
+        client = await _resolve_provider(
+            db, x_user_id, "EMBEDDING",
+            config_id=request.config_id, override_model=request.model,
         )
 
         result = await client.embed(texts=request.input, model=request.model)
@@ -258,30 +229,9 @@ async def rerank_documents(
         APIResponse[RerankResult]
     """
     try:
-        config_service = ConfigReaderService(db)
-
-        if request.config_id:
-            config = await config_service.get_user_config_by_id(x_user_id, request.config_id)
-        else:
-            config = await config_service.get_user_default_config_by_capability(x_user_id, "RERANK")
-
-        if not config:
-            config = config_service.get_system_fallback_config_by_capability("RERANK")
-
-        if not config:
-            raise HTTPException(status_code=404, detail="Rerank configuration not found")
-
-        provider_type = config.get("provider_type", "openai")
-        if config.get("is_system_fallback"):
-            api_key = config.get("api_key", "")
-        else:
-            api_key = await config_service.decrypt_api_key(config.get("api_key", ""))
-
-        client = model_factory.create_client(
-            provider_type=provider_type,
-            api_key=api_key,
-            api_base_url=config.get("custom_api_base_url"),
-            model_name=request.model or config.get("model_name"),
+        client = await _resolve_provider(
+            db, x_user_id, "RERANK",
+            config_id=request.config_id, override_model=request.model,
         )
 
         result = await client.rerank(
@@ -315,30 +265,8 @@ async def extract_text_from_image(
         APIResponse[dict]
     """
     try:
-        config_service = ConfigReaderService(db)
-
-        if request.config_id:
-            config = await config_service.get_user_config_by_id(x_user_id, request.config_id)
-        else:
-            config = await config_service.get_user_default_config_by_capability(x_user_id, "OCR")
-
-        if not config:
-            config = config_service.get_system_fallback_config_by_capability("OCR")
-
-        if not config:
-            raise HTTPException(status_code=404, detail="OCR configuration not found")
-
-        provider_type = config.get("provider_type", "openai")
-        if config.get("is_system_fallback"):
-            api_key = config.get("api_key", "")
-        else:
-            api_key = await config_service.decrypt_api_key(config.get("api_key", ""))
-
-        client = model_factory.create_client(
-            provider_type=provider_type,
-            api_key=api_key,
-            api_base_url=config.get("custom_api_base_url"),
-            model_name=request.model or config.get("model_name"),
+        client = await _resolve_provider(
+            db, x_user_id, "OCR", config_id=request.config_id,
         )
 
         result = await client.extract_text(

@@ -14,7 +14,11 @@ import time
 
 from loguru import logger
 
-from src.core.pipeline.recall.exceptions import RecallError, RecallValidationError
+from src.core.pipeline.recall.exceptions import (
+    RecallError,
+    RecallFatalError,
+    RecallValidationError,
+)
 from src.core.pipeline.recall.fusion import fuse_with_rrf
 from src.core.pipeline.recall.models import (
     RecallPipelineConfig,
@@ -164,6 +168,12 @@ class RecallPipeline:
                 )
             else:
                 success_hits[source] = result
+
+        # 致命失败优先：必备前置缺失（如发起用户无默认 EMBEDDING 配置）必须让整请求失败，
+        # **绕过** strict/lenient 逻辑——即便宽松模式也不降级为"少一路"。
+        for _source, exc in failed:
+            if isinstance(exc, RecallFatalError):
+                raise exc
 
         if self._config.strict and failed:
             first_source, first_exc = failed[0]

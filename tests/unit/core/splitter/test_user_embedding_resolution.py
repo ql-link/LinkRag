@@ -50,17 +50,30 @@ def _patch_config_reader(monkeypatch, *, config):
         def __init__(self, db):
             self.db = db
 
-        async def get_user_default_config_by_capability(self, *, user_id, capability):
+        async def get_user_default_config_by_capability(
+            self, *, user_id, capability, use_cache=True
+        ):
             assert capability == "EMBEDDING"
             return config
-
-        async def decrypt_api_key(self, encrypted):
-            return f"decrypted:{encrypted}"
 
     monkeypatch.setattr(
         "src.services.config_reader_service.ConfigReaderService",
         lambda db: _FakeConfigReader(db),
     )
+
+
+def _patch_resolver_model_factory(monkeypatch, created: dict | None = None):
+    """patch 统一解析模块内的 ModelFactory 与 decrypt（解析逻辑已收敛到 user_model_resolver）。"""
+    import src.core.llm.user_model_resolver as umr
+
+    class _FakeMF:
+        def create_client(self, **kwargs):
+            if created is not None:
+                created.update(kwargs)
+            return _FakeEmbedder(provider_type=kwargs["provider_type"])
+
+    monkeypatch.setattr(umr, "ModelFactory", lambda: _FakeMF())
+    monkeypatch.setattr(umr, "decrypt_api_key", lambda enc: f"decrypted:{enc}")
 
 
 @pytest.mark.asyncio
@@ -87,13 +100,7 @@ async def test_resolve_user_embedding_client_uses_user_config(monkeypatch):
     )
 
     created: dict = {}
-
-    class _FakeMF:
-        def create_client(self, **kwargs):
-            created.update(kwargs)
-            return _FakeEmbedder(provider_type=kwargs["provider_type"])
-
-    monkeypatch.setattr(factory, "ModelFactory", lambda: _FakeMF())
+    _patch_resolver_model_factory(monkeypatch, created)
 
     embedder, model_name = await aresolve_user_embedding_client(user_id=7)
 
@@ -120,11 +127,7 @@ async def test_resolve_user_chunk_embedding_pipeline_uses_user_model_and_batch_c
         },
     )
 
-    class _FakeMF:
-        def create_client(self, **kwargs):
-            return _FakeEmbedder(provider_type=kwargs["provider_type"])
-
-    monkeypatch.setattr(factory, "ModelFactory", lambda: _FakeMF())
+    _patch_resolver_model_factory(monkeypatch)
     # 配置一个超过 DashScope 上限的 batch size，验证 cap 生效
     monkeypatch.setattr(factory.settings, "CHUNK_INDEX_EMBED_BATCH_SIZE", 32)
 
