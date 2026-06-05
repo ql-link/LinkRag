@@ -32,7 +32,7 @@ This document records project-level naming rules that should stay stable across 
 
 ## Database
 
-- The current database structure is [scripts/db/init.sql](../../scripts/db/init.sql).
+- The current database structure is [scripts/db/init.sql](../../scripts/db/init.sql); the frozen 0001 baseline is [migrations/db.sql](../../migrations/db.sql).
 - Table and column names use `snake_case`.
 - Status-like values use uppercase string constants in code.
 - Keep database comments in DDL when adding or changing business columns.

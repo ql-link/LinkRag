@@ -45,19 +45,19 @@ Topic 名称由 toLink-Rag 的 `.env` 配置决定，业务方对接前需要从
 | `source_bucket` | string | ✅ | 源文件对象存储 bucket |
 | `source_object_key` | string | ✅ | 源文件对象存储 key |
 | `source_filename` | string | ✅ | 用户上传时的原始文件名 |
-| `md_bucket` | string | ✅ | 解析后 Markdown 输出 bucket |
-| `md_object_key` | string | ✅ | 解析后 Markdown 输出 key |
+| `md_bucket` | string | ✅ | 解析后 Markdown 输出 bucket（`md`/`markdown` 透传时不使用，见下方说明） |
+| `md_object_key` | string | ✅ | 解析后 Markdown 输出 key（`md`/`markdown` 透传时不使用，见下方说明） |
 | `trigger_mode` | string | ⬜ | `upload_auto`（默认） / `manual_retry` |
 | `pdf_parser_backend` | string | ⬜ | `mineru`（默认） / `opendataloader` / `naive` / `auto` |
 | `docling_force_ocr` | bool | ⬜ | 仅 Docling 后端生效 |
 | `image_bucket` | string | ⬜ | PDF 图片输出 bucket |
 | `image_prefix` | string | ⬜ | PDF 图片输出 key 前缀 |
 | `is_retry` | bool | ⬜ | `false`（默认）表示首次解析；`true` 表示用户触发的重试任务。老消息缺省默认 `false`，与首次解析路径完全等价（migration 0009 新增） |
-| `previous_task_id` | string | ⬜ | `is_retry=true` 时必填，指向上一轮失败任务的 `task_id`；Python 端 `ParseTaskGuard.validate_retry_context` 会严格校验上一轮记录存在且 markdown 已成功上传 |
+| `previous_task_id` | string | ⬜ | `is_retry=true` 时必填，指向上一轮失败任务的 `task_id`；Python 端 `ParseTaskGuard.validate_retry_context` 会严格校验上一轮记录存在、pipeline 失败且可恢复。若恢复点晚于 `CLEANING`，还会要求上一轮 markdown 已成功上传 |
 
 > **重试链路约束**（与 [parse_task_pipeline.md §4 重试分支](../internals/parse_task_pipeline.md) 配套）：
-> - 重试请求由 Java 端在判定旧任务 `pipeline_status=FAILED` 且 `parsed_object_key IS NOT NULL` 后发起；Python 端不计数、不限次。
-> - 重试请求的 `md_bucket` / `md_object_key` 必须与上轮一致（Java 直接回填）；否则 `validate_retry_context` 拒绝。
+> - 重试请求由 Java 端在判定旧任务 `pipeline_status=FAILED` 后发起；Python 端不计数、不限次。若旧任务 `recover_from_stage=CLEANING`，允许旧 log 没有 `parsed_object_key`，Python 会重新下载源文件、解析并上传 markdown。
+> - 重试请求的 `md_bucket` / `md_object_key` 是本次 markdown 产物目标坐标。恢复点晚于 `CLEANING` 时应与上轮一致（Java 直接回填）；从 `CLEANING` 恢复时用于承接重新上传后的 markdown。
 > - Python 通过 CAS 第 2 层（`mark_superseded` UPDATE rowcount）仲裁并发重试，失败方仍会建一行 `pipeline_status=FAILED` + `failed_stage=RETRY_VALIDATION` 的审计记录，并通过 parse_result 主题通知 Java FAILED。
 
 ### 消息示例
@@ -84,7 +84,7 @@ Topic 名称由 toLink-Rag 的 `.env` 配置决定，业务方对接前需要从
 }
 ```
 
-重试任务（Java 直接回填上轮 markdown 坐标）：
+重试任务（后处理阶段恢复时 Java 直接回填上轮 markdown 坐标；`CLEANING` 恢复时作为本次重新上传目标坐标）：
 
 ```json
 {
@@ -105,6 +105,8 @@ Topic 名称由 toLink-Rag 的 `.env` 配置决定，业务方对接前需要从
 }
 ```
 
+> **`md` / `markdown` 透传**：源文件本身即目标 Markdown，cleaning 阶段跳过解析引擎转换，也**不再把 markdown 重复写入 `md_bucket`**——markdown 产物坐标直接取上传位置（`source_bucket` / `source_object_key`）。因此对 md/markdown 文件，业务方读取解析产物（预览/下载）须以 `document_parsed_log.parsed_bucket_name` / `parsed_object_key`（即上传位置）为准，不可硬取请求里的 `md_object_key`。其余格式（pdf/docx/html/…）仍把转换后的 markdown 写入 `md_bucket`/`md_object_key`，行为不变。
+
 ### 路由键
 
 消息以 `file_type` 作为 routing key，便于按文件类型做消费侧分流。
@@ -122,7 +124,7 @@ Topic 名称由 toLink-Rag 的 `.env` 配置决定，业务方对接前需要从
 | --- | --- | --- | --- |
 | `task_id` | string | ✅ | 与请求中的 `task_id` 一致，用于关联 |
 | `original_file_id` | int | ✅ | 来自请求 |
-| `document_parse_task_id` | int | ✅ | 来自请求 |
+| `document_parsed_log_id` | int | ✅ | `document_parsed_log.id`，Java 据此回查解析日志与流水线终态 |
 | `dataset_id` | int | ✅ | 来自请求 |
 | `user_id` | int | ✅ | 来自请求 |
 | `task_status` | string | ✅ | `success` / `failed` |

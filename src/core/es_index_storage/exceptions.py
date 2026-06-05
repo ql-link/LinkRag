@@ -20,3 +20,23 @@ class EsBulkError(EsIndexingError):
 
     def __init__(self, message: str) -> None:
         super().__init__(message if message.startswith("es_bulk:") else f"es_bulk: {message}")
+
+
+class EsRecallValidationError(ValueError):
+    """Raised when an ES recall request is invalid."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            message
+            if message.startswith("es_recall_validation:")
+            else f"es_recall_validation: {message}"
+        )
+
+
+class EsRetrievalError(Exception):
+    """Raised when ES retrieval fails."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(
+            message if message.startswith("es_retrieval:") else f"es_retrieval: {message}"
+        )

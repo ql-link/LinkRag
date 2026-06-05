@@ -133,12 +133,52 @@ response = await client.query_points(
 
 **写读不变量**：bucket 路由、vector name、payload 字段、BGE-M3 encoder 实例写入与召回共用同一套，不允许分叉。
 
+### Dense 召回
+
+召回链路通过 `VectorStorageFacade.search_dense_chunks` 发起稠密向量搜索，底层同样由 `QdrantIndexStore._search_chunks` 执行（与 sparse 共用底座，spec dispatch 区分 `SparseQueryVectorSpec` / `DenseQueryVectorSpec`）。
+
+**关键差异（与 sparse 对比）**：dense 是 **unnamed** vector——写入侧 `ensure_collection` 用 `vectors_config=VectorParams(size=1024, distance=COSINE)`（不是 `{name: VectorParams}` dict），`PointStruct(vector=[...])` 裸传；召回侧 `query_points` 调用时 `using=None`、`query` 直接给 `list[float]`。
+
+**SDK 调用形态**（qdrant-client 1.17.1）：
+
+```python
+response = await client.query_points(
+    collection_name="kb_bucket_42",
+    query=[0.1, 0.2, ...],            # list[float]，长度 = SYSTEM_LLM_MODEL_EMBEDDING 输出维度（1024）
+    using=None,                        # dense 是 unnamed vector，**不传 vector name**
+    query_filter=models.Filter(
+        must=[
+            models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id)),
+            models.FieldCondition(key="set_id",  match=models.MatchValue(value=set_id)),
+            # doc_id 可选，非空时用 MatchAny
+        ]
+    ),
+    limit=top_k,
+    score_threshold=score_threshold,   # cosine 上界 [0, 1]
+    with_payload=True,
+    with_vectors=False,
+)
+```
+
+**容错语义**（与 sparse 共用，仅以下一项不同）：
+
+| 场景 | 处理 |
+| --- | --- |
+| collection 不存在 | 返空 hits，不抛；warn 日志带 `bucket_id`（与 sparse 一致） |
+| named vector 未配置 | **不会触发**——dense 是 collection 创建时配齐的 unnamed vector，无中间状态 |
+| Qdrant 网络故障 / 超时 | 抛 `QdrantStoreError`，由 facade 翻译为 `VectorRetrievalBackendError`（与 sparse 一致） |
+| system embedding HTTP 推理失败 | facade 翻译为 `VectorRetrievalEncodingError` |
+
+**写读不变量**：bucket 路由、payload 字段、`embedding_model` 字符串、`embedder` 实例写入与召回共用同一套；**不引入 `DENSE_RETRIEVAL_VECTOR_NAME` 配置**——dense 永远 unnamed，避免分叉风险。
+
+**Embedding 模型升级**：详见 [docs/internals/vectorization.md §9.7](../../internals/vectorization.md)。当前锁定 Qwen `text-embedding-v4`（对称模型，dim=1024）。
+
 ## 一致性约束
 
 - **MySQL 为真值**：`kb_document_chunk` 是 Chunk 真值表，可从中重建 Qdrant 数据。
 - **id 一致**：`chunk_id` 同时作为 MySQL UK 与 Qdrant Point ID。
 - **bucket_id 同步**：MySQL 的 `bucket_id` 字段必须与 Qdrant 实际 collection 一致，由统一的 `BucketRouter` 计算。
-- **状态分离**：`kb_document_chunk.dense_vector_status`、`sparse_vector_status` 是向量侧粗粒度状态（`PENDING/SUCCESS/FAILED`），`es_status` 是 ES 侧状态，**不与 Qdrant 实际存在状态同步**——失败重试时以 MySQL 状态决定是否重做。
+- **状态分离**：`kb_document_chunk.dense_vector_status`、`sparse_vector_status` 是向量侧粗粒度产物状态（`PENDING/SUCCESS/FAILED`），`es_status` 是 ES 侧产物状态，`lifecycle_status` 是 chunk 是否有效的生命周期权威。Qdrant 实际存在状态不直接作为业务真值；失败重试和召回回表以 MySQL 状态决定是否重做或返回。
 - **稀疏向量一致性**：同一 chunk 的 dense 和 sparse 使用相同 Point ID；Qdrant 写入成功但 MySQL 回写失败时，以 MySQL 状态阻断文件级成功和后续检索返回。
 
 ## 常见操作
@@ -151,6 +191,7 @@ response = await client.query_points(
 | 检查 Chunk 是否存在 | `QdrantStore.point_exists` |
 | 删除 Chunk | `QdrantStore.delete_points` |
 | **稀疏向量召回** | **`QdrantStore._search_chunks`（私有底座，由 `VectorStorageFacade.search_sparse_chunks` 调用）** |
+| **稠密向量召回** | **`QdrantStore._search_chunks`（同一底座，由 `VectorStorageFacade.search_dense_chunks` 调用，`using=None`）** |
 | 用户路由 | `BucketRouter.route_user(user_id)` |
 | 按 bucket 取 collection 名 | `BucketRouter.collection_name(bucket_id)` |
 

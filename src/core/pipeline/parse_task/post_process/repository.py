@@ -516,7 +516,6 @@ class ParsePipelineRepository:
         if rowcount > 0:
             # 把内存对象同步成最新值，避免后续读到陈旧 None。
             old_pipeline.superseded_by_task_id = new_task_id
-        await db.commit()
         return rowcount
 
     async def create_with_inherited_state(

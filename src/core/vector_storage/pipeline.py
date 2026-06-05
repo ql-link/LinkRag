@@ -6,12 +6,15 @@ import asyncio
 from collections import defaultdict
 from collections.abc import Sequence
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.config import settings
 from src.core.chunk_fact_storage import ChunkRepository
 from src.core.chunk_fact_storage.constants import (
+    CHUNK_LIFECYCLE_ACTIVE,
     CHUNK_STATUS_FAILED,
+    CHUNK_STATUS_INDEXED,
     CHUNK_STATUS_INDEXING,
     CHUNK_STATUS_PENDING,
     SPARSE_VECTOR_STATUS_FAILED,
@@ -24,14 +27,18 @@ from src.core.qdrant_vector_storage.point_factory import (
     indexed_point_from_record,
     sparse_indexed_point_from_record,
 )
-from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
 from src.core.sparse_vector import SparseChunkVectorizationRequest, SparseVectorService
+from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
+from src.core.splitter.factory import (
+    DenseEmbeddingDimensionError,
+    aresolve_user_chunk_embedding_pipeline,
+    validate_dense_dimension,
+)
 from src.utils.logger import logger
 
 from ._transaction import TransactionalPipelineMixin
 from .draft_factory import ChunkDraftFactory
 from .models import (
-    ChunkIndexingRequest,
     ChunkIndexingResult,
     ChunkStorageRequest,
     VectorBranch,
@@ -102,15 +109,19 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         self.sparse_vector_service = sparse_vector_service
         self.retry_limit = max(
             0,
-            retry_limit
-            if retry_limit is not None
-            else getattr(settings, "CHUNK_INDEX_RETRY_LIMIT", 0),
+            (
+                retry_limit
+                if retry_limit is not None
+                else getattr(settings, "CHUNK_INDEX_RETRY_LIMIT", 0)
+            ),
         )
         self.retry_interval_seconds = max(
             0,
-            retry_interval_seconds
-            if retry_interval_seconds is not None
-            else getattr(settings, "CHUNK_INDEX_RETRY_INTERVAL_SECONDS", 0),
+            (
+                retry_interval_seconds
+                if retry_interval_seconds is not None
+                else getattr(settings, "CHUNK_INDEX_RETRY_INTERVAL_SECONDS", 0)
+            ),
         )
         self.max_inline_retry_sleep_seconds = max(0, max_inline_retry_sleep_seconds)
 
@@ -119,86 +130,107 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         request: ChunkStorageRequest,
     ) -> ChunkIndexingResult:
         """
-            兼容旧入口：只索引已落库 chunk，不再执行 chunk 真值 INSERT。
+            兼容旧入口：按 ``doc_id`` 反查已落库 chunk 真值后委托给 ``index_chunks``；
+            不再执行 chunk 真值 INSERT。
 
         Args:
-            request: 包含业务上下文与待写入 chunk 列表的存储请求。
+            request: 包含业务上下文的存储请求；其中的 ``chunks`` 字段在新边界下被忽略，
+                索引依据来自已落库真值。
 
         Returns:
             ChunkIndexingResult: 本次写入任务的结果汇总。
         """
-        return await self.index_document_chunks(
-            ChunkIndexingRequest(
-                user_id=request.user_id,
-                set_id=request.set_id,
-                doc_id=request.doc_id,
+
+        # 把"按 doc_id 反查 + 现场过滤"收敛进这里，让 ``index_chunks`` 唯一对外。
+        async with self.session_factory() as session:
+            stmt = (
+                select(self.repository.model_cls)
+                .where(self.repository.model_cls.doc_id == request.doc_id)
+                .where(self.repository.model_cls.lifecycle_status == CHUNK_LIFECYCLE_ACTIVE)
+                .order_by(self.repository.model_cls.chunk_index.asc())
             )
+            result = await session.execute(stmt)
+            records = list(result.scalars().all())
+
+        # 现场过滤：仅保留待 dense 处理的 chunk（与 pipeline 现场过滤口径一致）。
+        dense_chunks = [r for r in records if r.dense_vector_status != CHUNK_STATUS_INDEXED]
+
+        return await self.index_chunks(
+            user_id=request.user_id,
+            set_id=request.set_id,
+            doc_id=request.doc_id,
+            chunks=dense_chunks,
         )
 
-    async def index_document_chunks(
+    async def index_chunks(
         self,
-        request: ChunkIndexingRequest,
+        *,
+        user_id: int,
+        set_id: int,
+        doc_id: int,
+        chunks: Sequence[object],
     ) -> ChunkIndexingResult:
-        """从 SQL chunk 真值表读取候选记录，以 batch 为单位向量化并写入向量索引副本。
+        """以 batch 为单位向量化并写入向量索引副本；调用方需提供已过滤的 chunks。
+
+        与被替换的旧 ``index_document_chunks`` 相比，本入口：
+
+        * 不再按 ``doc_id`` 反查 SQL —— chunks 由 pipeline 现场过滤后透传。
+        * 单条 SQL 多值 CAS（``allowed_statuses=(PENDING, FAILED)``）覆盖两种合法旧态，
+          替代旧版 ``_group_records_by_dense_status`` 分组多次 UPDATE 的写法。
+        * ``total_chunks`` 等于 ``len(chunks)``——不再做"全文档已完成数"折算。
 
         以 batch_size 为单位逐批处理：每批 embed 成功后立即写入 Qdrant 并 mark_indexed，
-        某批 embed 失败则将该批标记 FAILED 并停止，后续批次保持 PENDING 等待补偿路径重试。
-
+        某批失败则将该批标记 FAILED 并停止，后续批次保持 PENDING / INDEXING 等待补偿路径重试。
         这样已成功的 batch 不会因后续 batch 失败而重复 embed，同时整篇文章的
         pipeline_status 因存在失败 chunk 而保持 FAILED，搜索路径不会触达部分入库的文章。
+
+        Args:
+            user_id / set_id / doc_id: 业务归属，仅日志可读用途；写入主键由 chunk 自带。
+            chunks: pipeline 现场过滤好的待 dense 处理 chunk 真值序列（``ChunkRecordDB`` 行）。
         """
 
-        async with self.session_factory() as session:
-            records = await self.repository.list_vector_candidates_by_doc_id(
-                session,
-                request.doc_id,
-                sparse_enabled=False,
-            )
+        # set_id / doc_id 仅作日志可读，dense 写入主键由 chunk 自带；user_id 用于解析
+        # 发起用户的稠密 embedder（LINK-91）。
+        _ = (set_id, doc_id)
+
+        records = list(chunks)
+
+        # 空集短路：调用方现场过滤后没有待处理 chunk，等价于成功。
         if not records:
             return ChunkIndexingResult(total_chunks=0, indexed_chunks=0)
 
-        # 只处理首次向量化（PENDING）的 chunk。
-        # FAILED 状态的 chunk 由 compensation_pipeline.reindex_failed_chunks() 负责重试，
-        # 不在此路径混合处理，避免 mark_indexing expected_status 乐观锁失效。
-        dense_records = [
-            r for r in records
-            if getattr(r, "dense_vector_status", None) == CHUNK_STATUS_PENDING
-        ]
-        # 已是终态（INDEXED 等）的记录直接计入成功；FAILED 的不计入，留给补偿路径。
-        already_done_records = [
-            r for r in records
-            if getattr(r, "dense_vector_status", None) not in (
-                CHUNK_STATUS_PENDING, CHUNK_STATUS_FAILED
-            )
-        ]
+        # 方案 A：写入链路按发起用户解析稠密 embedder（必配 EMBEDDING、无系统兜底）。
+        # 配置缺失（DenseEmbeddingConfigMissingError）在此直接向上抛出，不触碰任何 chunk
+        # 状态，由 VectorizingStage 归类为 LLM_CONFIG_MISSING 并通知 Java，而不是被下方
+        # batch 失败路径吞成 generic VECTORIZING_FAILED。
+        embedding_pipeline = await aresolve_user_chunk_embedding_pipeline(user_id)
 
         embedding_model: str | None = None
-        indexed_count = len(already_done_records)
-
-        if not dense_records:
-            return ChunkIndexingResult(
-                total_chunks=len(records),
-                indexed_chunks=indexed_count,
-                embedding_model=embedding_model,
-            )
-
-        batch_size = self.embedding_pipeline.batch_size
+        indexed_count = 0
+        batch_size = embedding_pipeline.batch_size
 
         # ── 以 batch 为单位逐批处理 ────────────────────────────────────────
         # 每批：mark_indexing → embed → 写 Qdrant → mark_indexed
-        # 某批 embed 失败 → 该批标 FAILED，停止，后续批次保持 PENDING
-        # 某批写入失败 → 该批中失败的 chunk 标 FAILED，停止
-        for batch_start in range(0, len(dense_records), batch_size):
-            batch_records = dense_records[batch_start : batch_start + batch_size]
+        # 某批 mark_indexing rowcount 不达预期 → 该批走失败路径，停止后续 batch
+        # 某批 embed 失败 → 该批标 FAILED，停止
+        # 单 chunk 写入失败 → 当前 chunk 标 FAILED，同批后续 chunk 保持 INDEXING
+        for batch_start in range(0, len(records), batch_size):
+            batch_records = records[batch_start : batch_start + batch_size]
             batch_chunk_ids = [str(getattr(r, "chunk_id")) for r in batch_records]
 
-            # 1. 批量 mark_indexing
+            # 1. 批量 mark_indexing：多值 CAS 拦下混入的 SUCCESS / INDEXING chunk。
             try:
-                await self._mark_indexing(
+                indexing_count = await self._mark_indexing(
                     batch_chunk_ids,
                     embedding_model=None,
-                    expected_status=CHUNK_STATUS_PENDING,
+                    allowed_statuses=(CHUNK_STATUS_PENDING, CHUNK_STATUS_FAILED),
                 )
+                if indexing_count != len(batch_chunk_ids):
+                    raise RuntimeError(
+                        "Skipped dense indexing because rowcount "
+                        f"{indexing_count} != {len(batch_chunk_ids)} "
+                        "(some chunks not in (PENDING, FAILED))."
+                    )
             except Exception as exc:
                 compensation_entry = await self._safe_mark_branch_failed(
                     batch_records[0],
@@ -222,12 +254,23 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
             # 2. 批量 embed
             try:
                 batch_chunks = [chunk_from_record(r) for r in batch_records]
-                embedded_batch = await self.embedding_pipeline.aembed_chunks(batch_chunks)
+                embedded_batch = await embedding_pipeline.aembed_chunks(batch_chunks)
                 if len(embedded_batch) != len(batch_records):
                     raise ValueError(
                         f"Embedded chunk count mismatch: got {len(embedded_batch)}, "
                         f"expected {len(batch_records)}."
                     )
+                # 方案 A 维度校验：用户模型输出维度必须等于系统统一维度，否则写入共享
+                # collection 必然冲突。维度不符是「配错模型」而非瞬时故障，故标失败后向上抛出，
+                # 不进补偿重试。校验逻辑与补偿重建链路共用 ``validate_dense_dimension``。
+                validate_dense_dimension(
+                    embedded_batch,
+                    user_id=user_id,
+                    model_name=embedding_pipeline.embedding_model,
+                )
+            except DenseEmbeddingDimensionError:
+                await self._safe_mark_failed(batch_chunk_ids, "EMBEDDING_DIMENSION_UNSUPPORTED")
+                raise
             except Exception as exc:
                 await self._safe_mark_failed(batch_chunk_ids, str(exc))
                 compensation_entry = VectorCompensationEntry(
@@ -249,7 +292,9 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
                     compensation_entry=compensation_entry,
                 )
 
-            embedding_model = self._resolve_embedding_model(embedded_batch)
+            embedding_model = self._resolve_embedding_model(
+                embedded_batch, pipeline=embedding_pipeline
+            )
 
             # 3. 逐条写入 Qdrant + mark_indexed
             # 写入阶段遇到失败立即停止（该 chunk 标 FAILED），
@@ -351,9 +396,15 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
                 )
             except _VectorBranchFailure as exc:
                 last_error = exc
-                if exc.branch == VectorBranch.DENSE and exc.step != VectorFailureStep.SQL_STATUS_WRITE:
+                if (
+                    exc.branch == VectorBranch.DENSE
+                    and exc.step != VectorFailureStep.SQL_STATUS_WRITE
+                ):
                     dense_indexing_marked = True
-                if exc.branch == VectorBranch.SPARSE and exc.step != VectorFailureStep.SQL_STATUS_WRITE:
+                if (
+                    exc.branch == VectorBranch.SPARSE
+                    and exc.step != VectorFailureStep.SQL_STATUS_WRITE
+                ):
                     sparse_indexing_marked = True
                 if attempt >= self.retry_limit:
                     break
@@ -386,7 +437,7 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
                 indexing_count = await self._mark_indexing(
                     [chunk_id],
                     embedding_model=None,
-                    expected_status=str(getattr(record, "dense_vector_status")),
+                    allowed_statuses=(str(getattr(record, "dense_vector_status")),),
                 )
                 if indexing_count != 1:
                     raise RuntimeError(
@@ -402,7 +453,9 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
                 ) from exc
 
         try:
-            embedded_chunks = await self.embedding_pipeline.aembed_chunks([chunk_from_record(record)])
+            embedded_chunks = await self.embedding_pipeline.aembed_chunks(
+                [chunk_from_record(record)]
+            )
             if len(embedded_chunks) != 1:
                 raise ValueError(
                     "Embedded chunk count does not match current chunk: "
@@ -456,7 +509,9 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         if not self._sparse_enabled():
             return None
         if self.sparse_vector_service is None:
-            raise RuntimeError("SPARSE_VECTOR_ENABLED=true but sparse vector service is not configured.")
+            raise RuntimeError(
+                "SPARSE_VECTOR_ENABLED=true but sparse vector service is not configured."
+            )
 
         chunk_id = str(getattr(record, "chunk_id"))
         model_name = self._sparse_model_name()
@@ -465,7 +520,7 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
                 indexing_count = await self._mark_sparse_indexing(
                     [chunk_id],
                     model_name=model_name,
-                    expected_status=str(getattr(record, "sparse_vector_status")),
+                    allowed_statuses=(str(getattr(record, "sparse_vector_status")),),
                 )
                 if indexing_count != 1:
                     raise RuntimeError(
@@ -575,14 +630,16 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         chunk_ids: Sequence[str],
         *,
         embedding_model: str | None,
-        expected_status: str = CHUNK_STATUS_PENDING,
+        allowed_statuses: Sequence[str] = (CHUNK_STATUS_PENDING,),
     ) -> int:
         """
-            在独立事务中把目标记录切换为 `INDEXING` 状态。
+            在独立事务中把目标记录切换为 `INDEXING` 状态（多值 CAS）。
 
         Args:
             chunk_ids: 需要更新状态的 chunk 标识列表。
             embedding_model: 当前批次实际使用的 embedding 模型名称。
+            allowed_statuses: SQL 多值 CAS 的合法旧态集合；默认 ``(PENDING,)`` 服务于
+                单 chunk 补偿路径，批量入口传 ``(PENDING, FAILED)`` 覆盖首次 / retry。
 
         Returns:
             int: 实际切换到 `INDEXING` 的记录数。
@@ -592,7 +649,7 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
                 session,
                 chunk_ids,
                 embedding_model=embedding_model,
-                expected_status=expected_status,
+                allowed_statuses=allowed_statuses,
             )
         )
 
@@ -709,18 +766,24 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         chunk_ids: Sequence[str],
         *,
         model_name: str | None,
-        expected_status: str = SPARSE_VECTOR_STATUS_PENDING,
+        allowed_statuses: Sequence[str] = (SPARSE_VECTOR_STATUS_PENDING,),
     ) -> int:
-        """把当前 chunk 的 sparse 子状态切换为 INDEXING。"""
+        """把当前 chunk 的 sparse 子状态切换为 INDEXING（多值 CAS）。
+
+        ``allowed_statuses`` 默认 ``(PENDING,)`` 服务于单 chunk 补偿路径；批量入口
+        传 ``(PENDING, FAILED)`` 覆盖首次 / retry 两种合法旧态。
+        """
 
         if self.sparse_vector_service is None:
-            raise RuntimeError("SPARSE_VECTOR_ENABLED=true but sparse vector service is not configured.")
+            raise RuntimeError(
+                "SPARSE_VECTOR_ENABLED=true but sparse vector service is not configured."
+            )
         return await self._run_in_transaction_with_result(
             lambda session: self.repository.mark_sparse_indexing(
                 session,
                 chunk_ids,
                 model_name=model_name,
-                expected_status=expected_status,
+                allowed_statuses=allowed_statuses,
             )
         )
 
@@ -761,7 +824,9 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
                     f"{affected_rows} != {len(chunk_ids)} for chunks {chunk_ids}."
                 )
         except Exception as exc:
-            logger.exception(f"[VectorStoragePipeline] Failed to mark sparse chunks as failed: {exc}")
+            logger.exception(
+                f"[VectorStoragePipeline] Failed to mark sparse chunks as failed: {exc}"
+            )
 
     async def _ensure_and_upsert(self, points: Sequence[IndexedPoint]) -> None:
         """
@@ -787,12 +852,17 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
     def _resolve_embedding_model(
         self,
         embedded_chunks: Sequence[object],
+        *,
+        pipeline: ChunkEmbeddingPipeline | None = None,
     ) -> str | None:
         """
             从本次 embedding 输出中推断实际使用的模型名称，并在必要时回退到管线统计值。
 
         Args:
             embedded_chunks: 本次向量化产出的结果列表。
+            pipeline: 本次实际使用的 embedding 管线；LINK-91 后 dense 写入按用户解析
+                per-user 管线，需取该管线的 ``last_stats`` 而非进程级 ``self.embedding_pipeline``。
+                缺省回退到注入的进程级管线（兼容补偿/管理路径）。
 
         Returns:
             str | None: 实际使用的 embedding 模型名称。
@@ -800,5 +870,5 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         for embedded_chunk in embedded_chunks:
             if embedded_chunk.embedding_model:
                 return embedded_chunk.embedding_model
-        stats = getattr(self.embedding_pipeline, "last_stats", None)
+        stats = getattr(pipeline or self.embedding_pipeline, "last_stats", None)
         return getattr(stats, "embedding_model", None)

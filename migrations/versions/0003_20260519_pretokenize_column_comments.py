@@ -2,7 +2,7 @@
 
 0002 通过 op.add_column 加入 pretokenize_status / pretokenize_duration_ms
 时漏掉了 comment=...，导致这两列在实库里没有 COMMENT，与同表其它列
-（init.sql 建表时带 COMMENT）风格不一致。
+（migrations/db.sql baseline 建表时带 COMMENT）风格不一致。
 
 本次仅补 COMMENT，不改类型、可空性、默认值。
 

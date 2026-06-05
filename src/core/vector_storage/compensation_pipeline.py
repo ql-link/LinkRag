@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from src.config import settings
 from src.core.chunk_fact_storage import ChunkRepository
 from src.core.chunk_fact_storage.constants import (
-    CHUNK_STATUS_DELETING,
+    CHUNK_LIFECYCLE_ACTIVE,
     CHUNK_STATUS_FAILED,
     CHUNK_STATUS_INDEXING,
     SPARSE_VECTOR_STATUS_INDEXING,
@@ -21,8 +21,16 @@ from src.core.qdrant_vector_storage.point_factory import (
     indexed_point_from_record,
     sparse_indexed_point_from_record,
 )
-from src.core.sparse_vector import SparseChunkVectorizationRequest, SparseVector, SparseVectorService
+from src.core.sparse_vector import (
+    SparseChunkVectorizationRequest,
+    SparseVector,
+    SparseVectorService,
+)
 from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
+from src.core.splitter.factory import (
+    aresolve_user_chunk_embedding_pipeline,
+    validate_dense_dimension,
+)
 from src.core.splitter.models import EmbeddedChunk
 from src.models.chunk_record import ChunkRecordDB
 from src.utils.logger import logger
@@ -66,57 +74,8 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
         *,
         limit: int = 100,
     ) -> ChunkMutationResult:
-        """重试删除失败或卡住的记录，直到 Qdrant 与 MySQL 删除态一致。"""
-        limit = self.repair_policy.normalize_limit(limit)
-        if limit <= 0:
-            return ChunkMutationResult(total_chunks=0, affected_chunks=0)
-
-        records = await self._load_delete_retry_candidates(limit)
-        if not records:
-            return ChunkMutationResult(total_chunks=0, affected_chunks=0)
-
-        affected_chunks = 0
-        failed_chunk_ids: list[str] = []
-        skipped_chunk_ids: list[str] = []
-
-        for record in records:
-            claimed = await self._claim_delete_for_retry(record.chunk_id)
-            if not claimed:
-                skipped_chunk_ids.append(record.chunk_id)
-                continue
-
-            try:
-                exists = await self.qdrant_store.point_exists(
-                    bucket_id=record.bucket_id,
-                    chunk_id=record.chunk_id,
-                )
-                if exists:
-                    await self.qdrant_store.delete_points(
-                        bucket_id=record.bucket_id,
-                        chunk_ids=[record.chunk_id],
-                    )
-                deleted = await self._mark_deleted([record.chunk_id])
-                if deleted:
-                    affected_chunks += 1
-                else:
-                    skipped_chunk_ids.append(record.chunk_id)
-                    logger.warning(
-                        "[VectorStorageCompensationPipeline] Skipped stale delete completion "
-                        f"for {record.chunk_id}."
-                    )
-            except Exception as exc:
-                failed_chunk_ids.append(record.chunk_id)
-                await self._mark_delete_failed([record.chunk_id], error_msg=str(exc))
-                logger.exception(
-                    f"[VectorStorageCompensationPipeline] Failed delete retry for {record.chunk_id}: {exc}"
-                )
-
-        return ChunkMutationResult(
-            total_chunks=len(records),
-            affected_chunks=affected_chunks,
-            failed_chunk_ids=failed_chunk_ids,
-            skipped_chunk_ids=skipped_chunk_ids,
-        )
+        """删除补偿状态机暂未启用；后续删除流程将基于 REMOVED 记录幂等重试。"""
+        return ChunkMutationResult(total_chunks=0, affected_chunks=0)
 
     async def repair_stale_indexing(self, *, limit: int = 100) -> ChunkMutationResult:
         """检查 Qdrant point 是否存在，并修复超时停留在 INDEXING 的记录。"""
@@ -285,6 +244,7 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
             record.chunk_id: record
             for record in records
             if record.dense_vector_status == CHUNK_STATUS_FAILED
+            and record.lifecycle_status == CHUNK_LIFECYCLE_ACTIVE
         }
         indexed_chunks = 0
         failed_chunk_ids: list[str] = [
@@ -363,16 +323,6 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
             embedding_model=embedding_model,
         )
 
-    async def _load_delete_retry_candidates(self, limit: int) -> list[ChunkRecordDB]:
-        """读取需要重试删除的 chunk 记录。"""
-
-        async with self.session_factory() as session:
-            return await self.repository.list_delete_retry_candidates(
-                session,
-                limit=limit,
-                stale_after_seconds=self.indexing_stale_seconds,
-            )
-
     async def _load_stale_indexing_candidates(self, limit: int) -> list[ChunkRecordDB]:
         """读取超过阈值仍停留在 INDEXING 的 chunk 记录。"""
 
@@ -400,17 +350,11 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
             record.chunk_id: record
             for record in records
             if record.dense_vector_status == CHUNK_STATUS_INDEXING
+            and record.lifecycle_status == CHUNK_LIFECYCLE_ACTIVE
         }
         return (
             [record_map[chunk_id] for chunk_id in chunk_ids if chunk_id in record_map],
             [chunk_id for chunk_id in chunk_ids if chunk_id not in record_map],
-        )
-
-    async def _claim_delete_for_retry(self, chunk_id: str) -> bool:
-        """抢占一个删除重试任务，避免并发补偿重复执行。"""
-
-        return await self._run_in_transaction_with_result(
-            lambda session: self.repository.claim_delete_for_retry(session, chunk_id)
         )
 
     async def _claim_stale_indexing_for_repair(self, chunk_id: str) -> bool:
@@ -430,18 +374,6 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
         return await self._run_in_transaction_with_result(
             lambda session: self.repository.claim_failed_for_reindex(session, chunk_id)
         )
-
-    async def _mark_deleted(self, chunk_ids: Sequence[str]) -> bool:
-        """把删除补偿成功的记录标记为 DELETED。"""
-
-        affected_rows = await self._run_in_transaction_with_result(
-            lambda session: self.repository.mark_deleted(
-                session,
-                chunk_ids,
-                expected_status=CHUNK_STATUS_DELETING,
-            )
-        )
-        return affected_rows == len(chunk_ids)
 
     async def _mark_indexed(
         self,
@@ -479,25 +411,6 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
             )
         return affected_rows == len(chunk_ids)
 
-    async def _mark_delete_failed(self, chunk_ids: Sequence[str], *, error_msg: str) -> bool:
-        """把删除补偿失败的记录标记为 DELETE_FAILED。"""
-
-        affected_rows = await self._run_in_transaction_with_result(
-            lambda session: self.repository.mark_delete_failed(
-                session,
-                chunk_ids,
-                error_msg=error_msg,
-                expected_status=CHUNK_STATUS_DELETING,
-            )
-        )
-        if affected_rows != len(chunk_ids):
-            logger.warning(
-                "[VectorStorageCompensationPipeline] Delete failed status rowcount mismatch: "
-                f"{affected_rows} != {len(chunk_ids)} for chunks {chunk_ids}."
-            )
-        return affected_rows == len(chunk_ids)
-
-
     def _sparse_enabled(self) -> bool:
         """判断当前补偿流程是否需要同步重建 sparse vector。"""
 
@@ -517,13 +430,15 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
         """把补偿目标的 sparse 子状态切换为 INDEXING。"""
 
         if self.sparse_vector_service is None:
-            raise RuntimeError("SPARSE_VECTOR_ENABLED=true but sparse vector service is not configured.")
+            raise RuntimeError(
+                "SPARSE_VECTOR_ENABLED=true but sparse vector service is not configured."
+            )
         return await self._run_in_transaction_with_result(
             lambda session: self.repository.mark_sparse_indexing(
                 session,
                 chunk_ids,
                 model_name=model_name,
-                expected_status=SPARSE_VECTOR_STATUS_PENDING,
+                allowed_statuses=(SPARSE_VECTOR_STATUS_PENDING,),
             )
         )
 
@@ -563,19 +478,30 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
         self,
         record: ChunkRecordDB,
     ) -> tuple[IndexedPoint, str | None, SparseVector | None]:
-        """重新生成 dense point，并在开启 sparse 时同时生成 sparse vector。"""
+        """重新生成 dense point，并在开启 sparse 时同时生成 sparse vector。
 
-        if self.embedding_pipeline is None:
-            raise RuntimeError("embedding pipeline is required for explicit reindex")
+        稠密 embedder 按 chunk 所属用户（``record.user_id``）解析（LINK-91），与写入主链路
+        ``index_chunks`` 同一套「查配置→解密→create_client」范式与维度约束，避免重建时把系统
+        模型向量写回本该是用户模型的共享 collection。用户无默认 EMBEDDING 配置 / 维度不符时
+        分别抛 ``DenseEmbeddingConfigMissingError`` / ``DenseEmbeddingDimensionError``，由
+        ``reindex_failed_chunks`` 的 per-chunk 异常处理标该 chunk FAILED，不影响其余 chunk。
+        """
 
         chunk = chunk_from_record(record)
-        embedded_chunks = await self.embedding_pipeline.aembed_chunks([chunk])
+        embedding_pipeline = await aresolve_user_chunk_embedding_pipeline(record.user_id)
+        embedded_chunks = await embedding_pipeline.aembed_chunks([chunk])
         if len(embedded_chunks) != 1:
             raise ValueError(
                 f"Expected 1 embedded chunk for {record.chunk_id}, got {len(embedded_chunks)}."
             )
 
         embedded_chunk: EmbeddedChunk = embedded_chunks[0]
+        # 方案 A 维度校验：重建与写入共用同一约束，禁止把不一致维度写回共享 collection。
+        validate_dense_dimension(
+            [embedded_chunk],
+            user_id=record.user_id,
+            model_name=embedding_pipeline.embedding_model,
+        )
         sparse_vector = None
         if self._sparse_enabled():
             sparse_vector = await self.sparse_vector_service.vectorize_chunk(
@@ -590,4 +516,8 @@ class VectorStorageCompensationPipeline(TransactionalPipelineMixin):
                     chunk_index=record.chunk_index,
                 )
             )
-        return indexed_point_from_record(record, embedded_chunk), embedded_chunk.embedding_model, sparse_vector
+        return (
+            indexed_point_from_record(record, embedded_chunk),
+            embedded_chunk.embedding_model,
+            sparse_vector,
+        )

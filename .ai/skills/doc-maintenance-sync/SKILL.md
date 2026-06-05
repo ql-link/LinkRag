@@ -62,7 +62,7 @@ when_to_use: "当用户要求修改项目文档，或代码/配置/数据库/MQ/
 - 不要把 `AGENTS.md` 重新膨胀成完整知识库；它只保留入口和阅读路径。
 - 不要为了文档同步引入与用户请求无关的架构重写。
 - 不要把测试报告、一次性排障记录写入稳定架构文档；这类内容应放在 PR 描述或 `.specs/<feature-name>/implementation_report.md`（合并后清理）。
-- 以真实代码、`scripts/db/init.sql`、`src/config.py`、`.env.example` 和当前文档为准。
+- 以真实代码、`migrations/db.sql`（0001 baseline）、`scripts/db/init.sql`（当前完整结构快照）、`src/config.py`、`.env.example` 和当前文档为准。
 
 ## 最终回复
 

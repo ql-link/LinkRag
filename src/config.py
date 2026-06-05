@@ -1,7 +1,9 @@
 import os
-from typing import Optional, List, Union
+from typing import List, Optional, Union
+
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
 
 class Settings(BaseSettings):
     # ==========================================
@@ -22,7 +24,7 @@ class Settings(BaseSettings):
     DB_USER: str = "root"
     DB_PASSWORD: str = ""
     DB_NAME: str = "tolink_rag_db"
-    
+
     # 支持直接从 env 读取 DATABASE_URL，如果不存在则由上述字段构建
     DATABASE_URL: Optional[str] = None
 
@@ -39,7 +41,7 @@ class Settings(BaseSettings):
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
     REDIS_PASSWORD: Optional[str] = None
-    
+
     # 支持直接从 env 读取 REDIS_URL
     REDIS_URL: Optional[str] = None
 
@@ -60,6 +62,32 @@ class Settings(BaseSettings):
     # 安全配置 (Security)
     # ==========================================
     API_KEY_ENCRYPTION_SECRET: str = "default-secret"
+
+    # ==========================================
+    # 内部召回 API 配置 (Internal Recall API)
+    # ==========================================
+    # 外部用户态 Recall API 归属 Java；Python 只暴露内部 recall runtime，
+    # 校验 Java 签发的短期内部 JWT(HS256)。详见 docs/internals/recall.md。
+    RECALL_INTERNAL_AUTH_ENABLED: bool = True
+    RECALL_INTERNAL_JWT_ISSUER: str = "tolink-java"
+    RECALL_INTERNAL_JWT_AUDIENCE: str = "tolink-rag"
+    RECALL_INTERNAL_JWT_SCOPE: str = "recall:execute"
+    # HS256 共享密钥：Java 签发端与 Python 验签端必须一致。
+    # 默认值仅用于本地联调，生产必须通过环境变量 / 密钥管理系统覆盖。
+    RECALL_INTERNAL_JWT_SECRET: str = (
+        "9780df1524906ac133898a8cc74280c512f0334d32d795786c021059ec09b5da"
+    )
+    # 单次召回最大执行时间（毫秒）；超过即以 SSE error RECALL_TIMEOUT 终止。
+    RECALL_STREAM_TIMEOUT_MS: int = 60000
+    # pipeline 严格模式默认值：False=宽松，允许单路失败降级。
+    RECALL_STRICT_DEFAULT: bool = False
+    # 服务端固定返回候选数上限（同时作为各路执行期 top_k）。
+    RECALL_RESULT_LIMIT: int = 20
+    # 启用的召回路（逗号分隔）。dense 是远程 system embedding HTTP 调用，与 sparse
+    # 本地 BGE-M3 推理路径互补；本期默认开启 dense（GitHub issue ql-link/LinkRag#53）。
+    # 升级影响：未显式 set env 的部署在升级后自动开启 dense 召回，system embedding
+    # HTTP 流量增加；如需暂时回退，运维侧 set RECALL_ENABLED_SOURCES=bm25,sparse 重启。
+    RECALL_ENABLED_SOURCES: str = "bm25,sparse,dense"
 
     # ==========================================
     # 系统级兜底 LLM 配置 (Platform Default Fallback LLMs)
@@ -105,11 +133,19 @@ class Settings(BaseSettings):
     CHUNK_INDEX_BUCKET_COUNT: int = 128
     CHUNK_INDEX_COLLECTION_PREFIX: str = "kb_bucket"
     CHUNK_INDEX_EMBED_BATCH_SIZE: int = 32
+    # 稠密向量系统统一维度（方案 A：写入按用户解析 embedder，但所有用户共享 per-bucket
+    # collection、维度首次建表即固定）。写入前校验用户 EMBEDDING 模型输出维度必须等于此值，
+    # 不一致则任务失败（EMBEDDING_DIMENSION_UNSUPPORTED），避免写入既有 collection 时维度冲突。
+    DENSE_VECTOR_DIMENSION: int = 1024
     CHUNK_INDEX_RETRY_LIMIT: int = 3
     CHUNK_INDEX_RETRY_INTERVAL_SECONDS: int = 300
     CHUNK_INDEX_INDEXING_STALE_SECONDS: int = 900
 
-    # Sparse vector / local BGE-M3
+    # Sparse vector / BGE-M3
+    # SPARSE_VECTOR_PROVIDER 切换推理实现：
+    #   bge_m3        → 本地进程内加载模型（下方 MODEL/CACHE/DEVICE/BATCH 等生效）
+    #   bge_m3_http   → 调用早期 bge-m3-server（下方 SPARSE_VECTOR_HTTP_* 生效）
+    #   remote_bge_m3 → 调用独立 bge-m3-service（下方 BGE_M3_* 生效，dense + sparse 同出）
     SPARSE_VECTOR_ENABLED: bool = True
     SPARSE_VECTOR_PROVIDER: str = "bge_m3"
     SPARSE_VECTOR_MODEL_NAME: str = "BAAI/bge-m3"
@@ -118,6 +154,15 @@ class Settings(BaseSettings):
     SPARSE_VECTOR_DEVICE: str = "auto"
     SPARSE_VECTOR_BATCH_SIZE: int = 12
     SPARSE_VECTOR_MAX_LENGTH: int = 8192
+    # 远程 bge-m3-server（仅 SPARSE_VECTOR_PROVIDER=bge_m3_http 时生效）
+    SPARSE_VECTOR_HTTP_ENDPOINT: Optional[str] = None
+    SPARSE_VECTOR_HTTP_TIMEOUT: float = 30.0
+    SPARSE_VECTOR_HTTP_BATCH_SIZE: Optional[int] = None
+    # 独立 bge-m3-service（仅 SPARSE_VECTOR_PROVIDER=remote_bge_m3 时生效）
+    # 同时返回 dense（1024 维）+ sparse；带超时 / 重试。
+    BGE_M3_SERVICE_URL: Optional[str] = None
+    BGE_M3_TIMEOUT_SECONDS: float = 30.0
+    BGE_M3_MAX_RETRIES: int = 3
     SPARSE_VECTOR_QDRANT_VECTOR_NAME: str = "sparse_text"
     SPARSE_VECTOR_TOP_K: int = 256
     SPARSE_VECTOR_MIN_WEIGHT: float = 0.0
@@ -132,6 +177,14 @@ class Settings(BaseSettings):
     # docs/internals/vectorization.md §9 与 PR 描述。
     SPARSE_RETRIEVAL_TOP_K: int = 10
     SPARSE_RETRIEVAL_SCORE_THRESHOLD: float = 0.0
+
+    # Dense retrieval defaults (called by VectorStorageFacade.search_dense_chunks).
+    # 与 SPARSE_RETRIEVAL_* 严格对仗：top_k=10（先广召回后精排），threshold=0.0
+    # （cosine 上界 [0, 1]，不过滤、由 top_k 兜底）；阈值校准待评测 harness follow-up。
+    # 注意：pipeline 路径下实际生效的 top_k 是 RECALL_RESULT_LIMIT；
+    # DENSE_RETRIEVAL_TOP_K 仅作 facade 直调（脚本 / 评测 harness）的兜底默认。
+    DENSE_RETRIEVAL_TOP_K: int = 10
+    DENSE_RETRIEVAL_SCORE_THRESHOLD: float = 0.0
 
     # Elasticsearch
     ES_HOST: str = "http://localhost:9200"
@@ -170,7 +223,6 @@ class Settings(BaseSettings):
     MINERU_API_KEY: Optional[str] = None  # MinerU 云服务专属 Token
     MINERU_TIMEOUT: int = 300  # MinerU API 请求超时（秒）
     MINERU_MODEL_VERSION: str = "vlm"  # pipeline / vlm / MinerU-HTML
-
 
     # ==========================================
     # MQ 消息中台配置 (Message Queue)
@@ -218,7 +270,8 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"),
         env_file_encoding="utf-8",
-        extra="ignore"
+        extra="ignore",
     )
+
 
 settings = Settings()

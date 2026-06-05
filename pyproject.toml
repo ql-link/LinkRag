@@ -35,15 +35,14 @@ dependencies = [
     "numpy>=1.26.0",
     "opencv-python-headless>=4.9.0",
     "transformers>=4.53.0",
+    "nltk>=3.9.0",
     "beautifulsoup4>=4.12.0",
     "trafilatura>=2.0.0",
     "mammoth>=1.6.0",
-    "FlagEmbedding>=1.4.0",
     "python-docx>=1.1.0",
     "chromadb>=0.4.22",
     "openai>=1.10.0",
     "anthropic>=0.18.0",
-    "sentence-transformers>=2.3.0",
     "redis>=5.0.0",
     "pymysql>=1.1.0",
     "aiomysql>=0.2.0",
@@ -56,6 +55,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "loguru>=0.7.0",
     "cryptography>=42.0.0",
+    "PyJWT>=2.8.0",
     "aiokafka>=0.11.0",
     "confluent-kafka>=2.6.0",
     "aio-pika>=9.4.0",
@@ -88,6 +88,28 @@ mq-all = [
 ]
 pretokenization = [
     "infinity-sdk>=0.7.0; python_version >= '3.11'",
+]
+# 本地稀疏向量推理（会引入 torch/CUDA，体积大）。仅当 SPARSE_VECTOR_PROVIDER=bge_m3（本地）时需要；
+# 用远程 bge_m3_http 时无需安装。装法：pip install ".[local-embedding]"
+local-embedding = [
+    "FlagEmbedding>=1.4.0",
+    "sentence-transformers>=2.3.0",
+]
+all = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-bdd>=7.0.0",
+    "httpx>=0.26.0",
+    "black>=24.1.0",
+    "isort>=5.13.0",
+    "mypy>=1.8.0",
+    "reportlab>=4.0.0",
+    "aiokafka>=0.11.0",
+    "confluent-kafka>=2.6.0",
+    "aio-pika>=9.4.0",
+    "infinity-sdk>=0.7.0; python_version >= '3.11'",
+    "FlagEmbedding>=1.4.0",
+    "sentence-transformers>=2.3.0",
 ]
 
 [build-system]

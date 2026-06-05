@@ -12,8 +12,14 @@ class ParseTaskPayload(MessagePayload):
 
     task_id: str = Field(..., title="任务ID", description="文档解析任务的唯一标识")
     original_file_id: int = Field(..., title="原始文件ID", description="原始文件表主键")
+    # 线上字段名为 document_parse_file_id（与 Java 投递、DB 列名一致）；
+    # 同时兼容历史 document_parse_task_id 别名，内部属性沿用 document_parse_task_id。
     document_parse_task_id: int = Field(
-        ..., title="文件解析表ID", description="document_parse_file 表主键，字段名保持历史兼容"
+        ...,
+        title="文件解析表ID",
+        description="document_parse_file 表主键",
+        validation_alias=AliasChoices("document_parse_file_id", "document_parse_task_id"),
+        serialization_alias="document_parse_file_id",
     )
     user_id: int = Field(..., title="用户ID", description="文件所属用户ID")
     dataset_id: int = Field(..., title="数据集ID", description="文件所属数据集ID")
@@ -55,7 +61,26 @@ class ParseTaskPayload(MessagePayload):
         description="重试场景下指向上一轮失败的 task_id；首次解析必须为空",
     )
 
-    model_config = {"title": "文档解析任务载荷"}
+    model_config = {"title": "文档解析任务载荷", "populate_by_name": True}
+
+    @property
+    def is_markdown_passthrough(self) -> bool:
+        """md / markdown 走透传：源文件本身即目标 markdown，无需经解析引擎转换。"""
+        return self.file_type.lower() in ("md", "markdown")
+
+    @property
+    def markdown_bucket(self) -> str:
+        """markdown 产物所在 bucket。
+
+        md/markdown 在上传阶段即以原文件形态存入 minio（``source_*``），cleaning 不再
+        重复写入 md_bucket；其余格式由 cleaning 解析转换后写入 ``md_bucket``。
+        """
+        return self.source_bucket if self.is_markdown_passthrough else self.md_bucket
+
+    @property
+    def markdown_object_key(self) -> str:
+        """markdown 产物对象 key（md 透传取上传位置，其余取 md_object_key）。"""
+        return self.source_object_key if self.is_markdown_passthrough else self.md_object_key
 
 
 class ParseTaskMessage(AbstractMessage):

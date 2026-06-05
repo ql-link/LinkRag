@@ -19,8 +19,10 @@ pytestmark = pytest.mark.skipif(
 
 
 def _parse(name: str) -> str:
-    html_bytes = (BLOG_HTML / name).read_bytes()
-    return HtmlParser(source_file_url="https://www.ruanyifeng.com/blog/x.html").parse(html_bytes)
+    # parser 协议入参为 Path：直接传本地样本文件路径。
+    return HtmlParser(source_file_url="https://www.ruanyifeng.com/blog/x.html").parse(
+        BLOG_HTML / name
+    )
 
 
 def test_ruanyifeng_git_remote_deboilerplated_and_clean():

@@ -3,11 +3,10 @@ from __future__ import annotations
 import pytest
 
 from src.core.chunk_fact_storage.constants import (
+    CHUNK_LIFECYCLE_ACTIVE,
+    CHUNK_LIFECYCLE_REMOVED,
     CHUNK_STATUS_FAILED,
     CHUNK_STATUS_INDEXED,
-    CHUNK_STATUS_DELETE_FAILED,
-    CHUNK_STATUS_DELETED,
-    CHUNK_STATUS_DELETING,
     CHUNK_STATUS_INDEXING,
     CHUNK_STATUS_PENDING,
     ES_STATUS_FAILED,
@@ -153,6 +152,7 @@ async def test_should_insert_pending_records_when_bulk_insert_pending_with_draft
     assert record.content == "alpha"
     assert record.dense_vector_status == CHUNK_STATUS_PENDING
     assert record.es_status == ES_STATUS_PENDING
+    assert record.lifecycle_status == CHUNK_LIFECYCLE_ACTIVE
 
 
 @pytest.mark.asyncio
@@ -203,37 +203,75 @@ async def test_should_record_vector_pending_when_mark_indexing():
 
 
 @pytest.mark.asyncio
-async def test_should_record_delete_failed_when_mark_delete_failed():
+async def test_should_use_multivalue_cas_when_mark_indexing_with_allowed_statuses():
+    """多值 CAS：allowed_statuses 非空时追加 ``dense_vector_status IN (...)`` 谓词。
+
+    WHERE = chunk_id.in_() + dense_vector_status.in_() + _active_predicate = 3。
+    """
     repository = ChunkRepository()
     session = CapturingSession()
 
-    await repository.mark_delete_failed(session, ["chunk-1"], error_msg="qdrant down")
+    await repository.mark_indexing(
+        session,
+        ["chunk-1"],
+        allowed_statuses=(CHUNK_STATUS_PENDING, CHUNK_STATUS_FAILED),
+    )
 
-    values = _values_by_key(session)
-    assert values["dense_vector_status"] == CHUNK_STATUS_DELETE_FAILED
+    assert _where_criteria_count(session) == 3
+    assert "dense_vector_status IN" in str(session.statement)
 
 
 @pytest.mark.asyncio
-async def test_should_record_deleted_when_mark_deleted():
+async def test_should_not_add_dense_cas_when_mark_indexing_without_status_args():
+    """无 allowed_statuses / expected_status：仅 chunk_id.in_() + _active_predicate = 2。"""
     repository = ChunkRepository()
     session = CapturingSession()
 
-    await repository.mark_deleted(session, ["chunk-1"])
+    await repository.mark_indexing(session, ["chunk-1"])
 
-    values = _values_by_key(session)
-    assert values["dense_vector_status"] == CHUNK_STATUS_DELETED
+    assert _where_criteria_count(session) == 2
+    assert "dense_vector_status IN" not in str(session.statement)
 
 
 @pytest.mark.asyncio
-async def test_should_claim_delete_retry_when_record_is_retryable():
+async def test_should_use_multivalue_cas_when_mark_sparse_indexing_with_allowed_statuses():
+    """sparse 多值 CAS：WHERE = chunk_id.in_() + _active_predicate + sparse IN = 3。"""
     repository = ChunkRepository()
-    session = CapturingSession(rowcount=1)
+    session = CapturingSession()
 
-    claimed = await repository.claim_delete_for_retry(session, "chunk-1")
+    await repository.mark_sparse_indexing(
+        session,
+        ["chunk-1"],
+        model_name="BAAI/bge-m3",
+        allowed_statuses=(SPARSE_VECTOR_STATUS_PENDING, SPARSE_VECTOR_STATUS_FAILED),
+    )
+
+    assert _where_criteria_count(session) == 3
+    assert "sparse_vector_status IN" in str(session.statement)
+
+
+@pytest.mark.asyncio
+async def test_should_not_add_sparse_cas_when_mark_sparse_indexing_without_status_args():
+    """无 CAS 参数：sparse 入口仅 chunk_id.in_() + _active_predicate = 2。"""
+    repository = ChunkRepository()
+    session = CapturingSession()
+
+    await repository.mark_sparse_indexing(session, ["chunk-1"], model_name="BAAI/bge-m3")
+
+    assert _where_criteria_count(session) == 2
+    assert "sparse_vector_status IN" not in str(session.statement)
+
+
+@pytest.mark.asyncio
+async def test_should_record_removed_when_mark_removed():
+    repository = ChunkRepository()
+    session = CapturingSession()
+
+    await repository.mark_removed(session, ["chunk-1"])
 
     values = _values_by_key(session)
-    assert claimed is True
-    assert values["dense_vector_status"] == CHUNK_STATUS_DELETING
+    assert values["lifecycle_status"] == CHUNK_LIFECYCLE_REMOVED
+    assert "dense_vector_status" not in values
 
 
 @pytest.mark.asyncio
@@ -324,17 +362,6 @@ async def test_should_update_truth_fields_only_when_update_chunk_metadata():
 
 
 @pytest.mark.asyncio
-async def test_should_record_deleting_when_mark_deleting():
-    repository = ChunkRepository()
-    session = CapturingSession()
-
-    await repository.mark_deleting(session, ["chunk-1"])
-
-    values = _values_by_key(session)
-    assert values["dense_vector_status"] == CHUNK_STATUS_DELETING
-
-
-@pytest.mark.asyncio
 async def test_should_return_records_in_input_order_when_get_updatable_by_chunk_ids():
     repository = ChunkRepository()
     first = repository.model_cls(chunk_id="chunk-1", doc_id=1, set_id=1, user_id=1, content="a", content_hash="a")
@@ -401,6 +428,22 @@ def test_should_decide_completed_when_vector_and_es_success():
     )
 
     assert decide_chunk_post_status(record) == ChunkPostStatus.COMPLETED
+
+
+def test_should_not_decide_completed_when_chunk_is_not_active():
+    record = ChunkRepository().model_cls(
+        chunk_id="chunk-1",
+        doc_id=1,
+        set_id=1,
+        user_id=1,
+        content="a",
+        content_hash="a",
+        dense_vector_status=CHUNK_STATUS_INDEXED,
+        es_status=ES_STATUS_SUCCESS,
+        lifecycle_status=CHUNK_LIFECYCLE_REMOVED,
+    )
+
+    assert decide_chunk_post_status(record) == ChunkPostStatus.PROCESSING
 
 
 @pytest.mark.asyncio

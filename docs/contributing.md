@@ -68,7 +68,7 @@ git fetch && git rebase dev
 - [ ] `mypy src` 无新增报错
 - [ ] `pytest tests/unit` 全部通过
 - [ ] 改动覆盖了对应测试
-- [ ] 改 `src/models/**.py` 或 `scripts/db/init.sql` 必须配 Alembic 迁移（见 §五）
+- [ ] 改 `src/models/**.py` 或 `migrations/db.sql` 必须配 Alembic 迁移（见 §五）
 - [ ] 触发同步规则的改动已同步对应文档（见 §六）
 - [ ] 无未使用依赖
 
@@ -201,7 +201,7 @@ pytest --run-integration -m real_env        # 真实环境
 ### 4.1 强制规则
 
 - 改 `src/models/**.py` → PR 必须包含新的 `migrations/versions/*.py`（同步规则 `db-migration-required`，error 拦截）。
-- `scripts/db/init.sql` 是 **0001 baseline 冻结快照**，**禁止改动**（同步规则 `init-sql-frozen`，error 拦截）。
+- `migrations/db.sql` 是 **0001 baseline 冻结快照**，**禁止改动**（同步规则 `baseline-sql-frozen`，error 拦截）。
 
 ### 4.2 心智模型
 
@@ -218,7 +218,7 @@ ORM 变更 (src/models/*.py)  +  migrations/versions/NNNN_*.py
 ### 4.3 日常工作流
 
 ```bash
-# 1. 改 ORM 模型（不改 init.sql）
+# 1. 改 ORM 模型（不改 migrations/db.sql）
 vim src/models/parse_task.py
 
 # 2. autogen 生成骨架
@@ -242,7 +242,7 @@ pytest tests/unit -q
 ```bash
 docker run --rm -d --name mig-test -e MYSQL_ROOT_PASSWORD=root \
   -e MYSQL_DATABASE=tolink_rag_db -p 3307:3306 mysql:8.0
-mysql -h 127.0.0.1 -P 3307 -uroot -proot tolink_rag_db < scripts/db/init.sql
+mysql -h 127.0.0.1 -P 3307 -uroot -proot tolink_rag_db < migrations/db.sql
 export ALEMBIC_DATABASE_URL="mysql+pymysql://root:root@127.0.0.1:3307/tolink_rag_db"
 alembic stamp 0001
 ```
@@ -277,19 +277,19 @@ NNNN_YYYYMMDD_slug.py
 - Alembic 必须用同步 driver：`mysql+pymysql://`。
 - DB URL 优先级：`ALEMBIC_DATABASE_URL` 环境变量 > `src.config.settings.DATABASE_URL`。
 - `server_default="0"` 才会落到 DDL（`default=0` 只在 ORM 层，不进表）。
-- init.sql 不是"最新 schema 文档"；想看最新 schema 跑 `alembic upgrade head` 后 mysqldump。
+- migrations/db.sql 是 0001 baseline，不是"最新 schema 文档"；想看最新完整结构看 `scripts/db/init.sql`，或跑 `alembic upgrade head` 后 mysqldump。
 
 ### 4.7 常见坑
 
 - **autogen 把 rename 识别为 drop+add**：手工改为 `op.alter_column(..., new_column_name=...)`。
 - **"Target database is not up to date"**：库的 `alembic_version` ≠ head；先 `alembic upgrade head` 或 `alembic stamp head`。
-- **`Duplicate column name`**：同时改了 init.sql 和 migration → 撤掉 init.sql 的改动（这是 `init-sql-frozen` 规则要防的事）。
+- **`Duplicate column name`**：同时改了 migrations/db.sql 和 migration → 撤掉 migrations/db.sql 的改动（这是 `baseline-sql-frozen` 规则要防的事）。
 
 ### 4.8 CI 校验
 
 | Workflow | 触发 | 内容 |
 | --- | --- | --- |
-| [migrations-check.yml](../.github/workflows/migrations-check.yml) | PR/push dev,main | ephemeral MySQL → init.sql → stamp 0001 → upgrade head → 再 upgrade（验幂等） |
+| [migrations-check.yml](../.github/workflows/migrations-check.yml) | PR/push dev,main | ephemeral MySQL → migrations/db.sql → stamp 0001 → upgrade head → 再 upgrade（验幂等） |
 | [docs-sync.yml](../.github/workflows/docs-sync.yml) | PR/push dev,main | 见 §六 |
 
 ---
@@ -298,15 +298,15 @@ NNNN_YYYYMMDD_slug.py
 
 ### 5.1 触发规则一览
 
-机器执行版本：[.claude/doc-sync-rules.yaml](../.claude/doc-sync-rules.yaml)。本表是人读视图。
+机器执行版本：[scripts/doc-sync-rules.yaml](../scripts/doc-sync-rules.yaml)。本表是人读视图。
 
 | 改动 | 同步位置 | 级别 |
 | --- | --- | --- |
 | `src/models/**.py` | [docs/api/schemas/mysql.md](api/schemas/mysql.md) | ❌ error |
 | `src/models/**.py` | 新增 `migrations/versions/*.py` | ❌ error |
-| `scripts/db/init.sql` | **禁止改动** | ❌ error |
+| `migrations/db.sql` | **禁止改动** | ❌ error |
 | `src/core/mq/messages/**` | [docs/api/mq_contracts.md](api/mq_contracts.md) + [docs/internals/mq.md](internals/mq.md) | ❌ error |
-| `src/core/pipeline/**` | [docs/internals/parse_task_pipeline.md](internals/parse_task_pipeline.md) | ❌ error |
+| `src/core/pipeline/parse_task/**` | [docs/internals/parse_task_pipeline.md](internals/parse_task_pipeline.md) | ❌ error |
 
 > 仅保留 error 级规则。内部模块文档同步由 PR 评审兜底，不由 hook 强制。
 
@@ -318,7 +318,7 @@ NNNN_YYYYMMDD_slug.py
 ### 5.3 工具与触发时点
 
 ```
-.claude/doc-sync-rules.yaml      # 规则定义
+scripts/doc-sync-rules.yaml      # 规则定义
 scripts/check_docs_sync.py       # 检测脚本
 .pre-commit-config.yaml          # 本地 hook
 .github/workflows/docs-sync.yml  # CI 检查
@@ -343,7 +343,7 @@ python scripts/check_docs_sync.py --self-check      # 仅验证 yaml 合法
 
 只在出现新的"代码改动 → 文档失同步会引发集成 bug"关系时新增。流程：
 
-1. 编辑 `.claude/doc-sync-rules.yaml`，加规则（参考已有格式）。
+1. 编辑 `scripts/doc-sync-rules.yaml`，加规则（参考已有格式）。
 2. `python scripts/check_docs_sync.py --self-check` 验证。
 3. 同步本节 §5.1 的人读表。
 
@@ -406,13 +406,7 @@ git show <commit-sha>:.specs/<feature>/brief.md
 
 ### 7.1 目录职责
 
-| 目录 | 描述对象 | 受众 |
-| --- | --- | --- |
-| `docs/api/` | 对外契约（HTTP/MQ/Schema/错误码） | Java 业务方、对接方 |
-| `docs/internals/` | 代码内部实现（模块、约定、流程） | 内部开发者 |
-| `docs/ops/` | 部署与配置 | 运维、部署方 |
-| `docs/contributing.md` | 本文（开发流程） | 贡献者 |
-| `.specs/` | feature 临时交付物 | 开发者 |
+各文档目录的职责划分与按角色的导航入口，以 [docs/README.md](README.md) 为单一来源，不在此重复。本节只讲修改 docs/ 时必须遵守的规则。
 
 ### 7.2 单一来源原则
 

@@ -22,6 +22,25 @@ from .llm_integration import TableClient, VisionClient
 logger = logging.getLogger(__name__)
 
 
+class LLMConfigMissingError(RuntimeError):
+    """发起用户缺少某项必配能力的默认 LLM 配置。
+
+    专用于区分「用户确实未配置」与「配置读取失败」：仅在 ``ConfigReaderService``
+    成功返回且结果为空（用户没有该能力的 ``is_default`` 配置）时抛出。读取本身
+    失败（Redis/DB 异常）不在此列，按原异常向上传播，避免被误判为「无配置」。
+
+    解析链路据此把 CHAT（必配）缺失收敛为任务失败（``LLM_CONFIG_MISSING``），
+    而 VISION（非必配）缺失由调用方捕获后跳过图片增强。
+    """
+
+    def __init__(self, capability: str, user_id: int) -> None:
+        self.capability = capability
+        self.user_id = user_id
+        super().__init__(
+            f"User {user_id} has no default LLM config for capability '{capability}'"
+        )
+
+
 def _clean_llm_text(text: str) -> str:
     cleaned = (text or "").strip()
     if cleaned.startswith("```") and cleaned.endswith("```"):
@@ -101,6 +120,88 @@ def _get_capability_type():
     from src.core.llm.interfaces import CapabilityType
 
     return CapabilityType
+
+
+async def _resolve_user_provider(
+    capability,
+    capability_str: str,
+    *,
+    user_id: int,
+    model_name: str | None,
+) -> BaseProvider:
+    """按发起用户解析增强用 LLM Provider。
+
+    与 ``src/api/routes/llm.py`` 同一套「查配置 → 解密 api_key → create_client」范式：
+    经 ``ConfigReaderService`` 按 ``user_id + capability`` 取默认配置，命中则用用户的
+    provider/api_key/base_url/model 构造 Provider。用户无该能力默认配置时抛
+    :class:`LLMConfigMissingError`；配置读取异常按原样向上传播（不转成「无配置」）。
+
+    Args:
+        capability: ``CapabilityType`` 能力枚举，用于 ``has_capability`` 校验。
+        capability_str: 配置表能力字符串（CHAT / VISION），用于按能力查配置。
+        user_id: 发起解析任务的用户 ID。
+        model_name: 用户配置未指定模型时的回退模型名。
+
+    Returns:
+        按用户配置构造的 Provider 实例。
+
+    Raises:
+        LLMConfigMissingError: 用户无该能力的默认 LLM 配置。
+        ValueError: 配置的 provider 不支持该能力。
+    """
+    from src.database import get_async_session_factory
+    from src.services.config_reader_service import ConfigReaderService
+
+    settings = _get_settings()
+    session_factory = get_async_session_factory()
+    async with session_factory() as db:
+        config_service = ConfigReaderService(db)
+        config = await config_service.get_user_default_config_by_capability(
+            user_id=user_id, capability=capability_str
+        )
+        if not config:
+            raise LLMConfigMissingError(capability_str, user_id)
+
+        if config.get("is_system_fallback"):
+            api_key = config.get("api_key", "")
+        else:
+            api_key = await config_service.decrypt_api_key(config.get("api_key", ""))
+
+    provider = _get_model_factory().create_client(
+        provider_type=config.get("provider_type", "openai"),
+        api_key=api_key or "",
+        api_base_url=config.get("custom_api_base_url"),
+        model_name=config.get("model_name") or model_name,
+        timeout_ms=settings.MARKDOWN_PARSER_LLM_TIMEOUT_MS,
+    )
+    if not provider.has_capability(capability):
+        raise ValueError(
+            f"Configured provider '{provider.provider_type}' does not support "
+            f"capability '{capability.value}'"
+        )
+    return provider
+
+
+async def abuild_table_client(user_id: int) -> "ProviderTableClient":
+    """按发起用户的 CHAT 默认配置构造表格增强 client（缺失则抛 LLMConfigMissingError）。"""
+    capability_type = _get_capability_type()
+    settings = _get_settings()
+    model_name = settings.MARKDOWN_PARSER_TABLE_MODEL or settings.SYSTEM_LLM_MODEL_CHAT
+    provider = await _resolve_user_provider(
+        capability_type.TEXT, "CHAT", user_id=user_id, model_name=model_name
+    )
+    return ProviderTableClient(provider=provider)
+
+
+async def abuild_vision_client(user_id: int) -> "ProviderVisionClient":
+    """按发起用户的 VISION 默认配置构造图片增强 client（缺失则抛 LLMConfigMissingError）。"""
+    capability_type = _get_capability_type()
+    settings = _get_settings()
+    model_name = settings.MARKDOWN_PARSER_VISION_MODEL or settings.SYSTEM_LLM_MODEL_VISION
+    provider = await _resolve_user_provider(
+        capability_type.VISION, "VISION", user_id=user_id, model_name=model_name
+    )
+    return ProviderVisionClient(provider=provider, model_name=model_name)
 
 
 class ProviderTableClient(TableClient):

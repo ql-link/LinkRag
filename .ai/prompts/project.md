@@ -15,7 +15,8 @@
 | 应用入口（FastAPI） | [src/main.py](src/main.py) |
 | 运行时配置 | [src/config.py](src/config.py) |
 | 数据库初始化入口 | [src/database.py](src/database.py) |
-| 数据库 DDL baseline（0001 冻结快照，**不应改动**） | [scripts/db/init.sql](scripts/db/init.sql) |
+| 数据库 DDL baseline（0001 冻结快照，**不应改动**） | [migrations/db.sql](migrations/db.sql) |
+| 数据库当前完整结构快照（baseline + 已应用 migration，仅供查阅） | [scripts/db/init.sql](scripts/db/init.sql) |
 | 数据库迁移（Alembic，schema 演进的唯一入口） | [migrations/](migrations/) |
 | HTTP 路由 | [src/api/routes](src/api/routes) |
 | 核心业务模块 | [src/core](src/core) |
@@ -37,8 +38,8 @@ pip install -e ".[dev]"
 # 3. 准备配置
 cp .env.example .env
 
-# 4. 初始化数据库
-mysql -h 127.0.0.1 -P 3306 -u root -p tolink_rag_db < scripts/db/init.sql
+# 4. 初始化数据库（建表 + 后续迁移一步完成）
+alembic upgrade head
 
 # 5. 启动服务
 uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
@@ -72,7 +73,7 @@ python scripts/check_docs_sync.py --staged
 
 - 所有运行时配置统一通过 [src/config.py](src/config.py) 的 `Settings` 加载。
 - 环境变量样例放在 [.env.example](.env.example)，不要硬编码密钥。
-- 数据库结构权威源是 **ORM 模型 + Alembic 迁移链**。[scripts/db/init.sql](scripts/db/init.sql) 是 0001 baseline 冻结快照，新增/修改字段一律只改 ORM + 写 migration，**不要**改 init.sql。
+- 数据库结构权威源是 **ORM 模型 + Alembic 迁移链**。[migrations/db.sql](migrations/db.sql) 是 0001 baseline 冻结快照，新增/修改字段一律只改 ORM + 写 migration，**不要**改 migrations/db.sql；[scripts/db/init.sql](scripts/db/init.sql) 是叠加全部 migration 后的当前完整结构快照，仅供查阅，随迁移落库同步。
 
 ---
 
@@ -110,11 +111,11 @@ docs/
 | --- | --- |
 | `src/models/**.py` | [docs/api/schemas/mysql.md](docs/api/schemas/mysql.md) |
 | `src/models/**.py` | 新增 `migrations/versions/*.py` |
-| `scripts/db/init.sql` | **禁止修改**（0001 baseline 冻结） |
+| `migrations/db.sql` | **禁止修改**（0001 baseline 冻结） |
 | `src/core/mq/messages/**` | [docs/api/mq_contracts.md](docs/api/mq_contracts.md) + [docs/internals/mq.md](docs/internals/mq.md) |
-| `src/core/pipeline/**` | [docs/internals/parse_task_pipeline.md](docs/internals/parse_task_pipeline.md) |
+| `src/core/pipeline/parse_task/**` | [docs/internals/parse_task_pipeline.md](docs/internals/parse_task_pipeline.md) |
 
-机器规则在 [.claude/doc-sync-rules.yaml](.claude/doc-sync-rules.yaml)，由 pre-commit 与 CI 强制。详见 [docs/contributing.md §五](docs/contributing.md#五文档同步规则)。
+机器规则在 [scripts/doc-sync-rules.yaml](scripts/doc-sync-rules.yaml)，由 pre-commit 与 CI 强制。详见 [docs/contributing.md §五](docs/contributing.md#五文档同步规则)。
 
 ---
 
@@ -126,3 +127,13 @@ docs/
 - **提交前**：运行 `python scripts/check_docs_sync.py --staged` 自检；pre-commit hook 会自动执行。
 - **校验**：按改动范围运行对应测试。
 - **CLAUDE.md / AGENTS.md** 已统一为 `.ai/prompts/project.md` 的 symlink，物理同一份文件。新人 / 新 worktree 初始化运行：`python scripts/setup_ai_links.py`。
+
+---
+
+## 八、回答风格（面向开发者沟通）
+
+- 语言清晰、专业、得体，保持一定分寸；不要过度口语化或大白话。
+- 少用生僻术语和生造的比喻（例如"强冻结的线性瀑布"这类说法要避免）；常见技术词可以直接用。
+- 确实要用较专业的术语时，顺带用一句话点明它的含义，但不必刻意降到最通俗。
+- 先给结论，再讲原因；结构清楚，长短结合，不堆砌名词、也不刻意卖弄简单。
+- 目标：读起来顺畅、专业，又不让人被术语挡住。

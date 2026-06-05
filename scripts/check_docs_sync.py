@@ -12,7 +12,7 @@ Exit codes:
     1  - One or more error-level violations
     2  - Configuration or runtime failure (bad yaml, git unavailable, etc.)
 
-The rules live in .claude/doc-sync-rules.yaml. See docs/contributing.md.
+The rules live in scripts/doc-sync-rules.yaml. See docs/contributing.md.
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ except ImportError:
 
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_RULES_PATH = REPO_ROOT / ".claude" / "doc-sync-rules.yaml"
+DEFAULT_RULES_PATH = REPO_ROOT / "scripts" / "doc-sync-rules.yaml"
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +176,30 @@ def _git(*args: str) -> str:
             f"git command failed: git {' '.join(args)}\n{exc.stderr}"
         ) from exc
     return out.stdout
+
+
+# Commit-message escape hatch for sanctioned exceptions (e.g. baseline rebase).
+# Mirrors the pre-commit `SKIP=docs-sync` path so CI has an explicit, auditable
+# waiver: put `[skip docs-sync]` in the commit message and the check is bypassed.
+SKIP_TOKEN_RE = re.compile(r"\[skip[ _-]docs-sync\]", re.IGNORECASE)
+
+
+def _commit_messages(mode: str, base: str | None) -> str:
+    """Return commit messages relevant to the current check, for skip detection.
+
+    For `base` mode, inspect every commit in `base..HEAD` (covers push and PR
+    ranges). For other modes, inspect the tip commit only.
+    """
+    try:
+        if mode == "base" and base:
+            return _git("log", "--format=%B", f"{base}..HEAD")
+        return _git("log", "-1", "--format=%B", "HEAD")
+    except RuntimeError:
+        return ""
+
+
+def skip_requested(mode: str, base: str | None) -> bool:
+    return bool(SKIP_TOKEN_RE.search(_commit_messages(mode, base)))
 
 
 def get_changed_files(mode: str, base: str | None) -> set[str]:
@@ -364,6 +388,15 @@ def main(argv: list[str] | None = None) -> int:
     if not changed:
         if not args.quiet:
             print(_green("No changed files — nothing to check."))
+        return 0
+
+    if skip_requested(mode, base):
+        print(
+            _yellow(
+                "docs-sync skipped: '[skip docs-sync]' token present in commit "
+                "message (sanctioned exception, e.g. baseline rebase)."
+            )
+        )
         return 0
 
     violations = find_violations(rules, changed)

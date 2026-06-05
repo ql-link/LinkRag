@@ -2,11 +2,11 @@
 
 toLink-Rag 业务表模式参考。**权威来源**：ORM 模型 (`src/models/**.py`) + Alembic migrations (`migrations/versions/*.py`)。
 
-- 冷启动 baseline：[scripts/db/init.sql](../../scripts/db/init.sql)（0001，已冻结）
-- 当前完整结构快照（baseline + 已应用 migration）：[migrations/db.sql](../../migrations/db.sql)
+- 冷启动 baseline：[migrations/db.sql](../../migrations/db.sql)（0001，已冻结）
+- 当前完整结构快照（baseline + 已应用 migration）：[scripts/db/init.sql](../../scripts/db/init.sql)
 - 本文是按业务域分组的人读摘要视图
 
-ORM 与 migration 不一致时，以 migration 为准并修正 ORM；db.sql 需在每条 schema 演进的 migration 落库时一并同步。
+ORM 与 migration 不一致时，以 migration 为准并修正 ORM；scripts/db/init.sql 需在每条 schema 演进的 migration 落库时一并同步。
 
 ## 表清单
 
@@ -134,10 +134,12 @@ ORM：[`UsageLogDB`](../../src/models/db_models.py)
 | `name` | VARCHAR(128) | 数据集名称 |
 | `description` | VARCHAR(512) | 数据集描述 |
 | `status` | VARCHAR(16) | 状态，默认 `ACTIVE` |
+| `is_deleted` | BOOLEAN | 逻辑删除标记，默认 `FALSE` |
+| `deleted_seq` | BIGINT UNSIGNED | 删除判别列：活行为 `0`，软删后为自身 `id`，支持删后同名重建 |
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
 
 索引：
-- `uk_dataset_user_name(user_id, name)`
+- `uk_dataset_user_name_seq(user_id, name, deleted_seq)`
 - `idx_dataset_user_updated(user_id, updated_at)`
 
 ### `chat_conversation` — 对话表
@@ -200,10 +202,12 @@ document_original_file (1)──(N) document_parse_file (1)──(N) document_pa
 | `upload_status` | VARCHAR(20) | `uploading` / `success` / `failed` |
 | `is_upload_success` | TINYINT(1) | 是否上传成功 |
 | `failure_reason` | VARCHAR(512) | 上传失败原因 |
+| `is_deleted` | BOOLEAN | 逻辑删除标记，默认 `FALSE`；软删保留原文件和 OSS 对象 |
+| `deleted_seq` | BIGINT UNSIGNED | 删除判别列：活行为 `0`，软删后为自身 `id`，支持删后同名重传 |
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
 
 索引：
-- `uk_dataset_user_name_suffix(dataset_id, user_id, original_filename, file_suffix)`
+- `uk_dof_name_suffix_seq(dataset_id, user_id, original_filename, file_suffix, deleted_seq)`
 - `idx_document_original_dataset_created`
 - `idx_document_original_user_created`
 - `idx_document_original_upload_status`
@@ -338,9 +342,10 @@ ORM：[`ChunkRecordDB`](../../src/models/chunk_record.py)
 | `sparse_vector_status` | VARCHAR(16) | 稀疏向量状态：`PENDING` / `SUCCESS` / `FAILED` |
 | `sparse_vector_model` | VARCHAR(128) | 实际使用的稀疏向量模型 |
 | `es_status` | VARCHAR(16) | `PENDING` / `SUCCESS` / `FAILED` |
+| `lifecycle_status` | VARCHAR(16) | Chunk 业务生命周期状态：`ACTIVE`=业务有效，可参与解析 / 索引 / 检索；`REMOVED`=已从业务视图移除，不再参与解析 / 索引 / 检索，外部索引清理由异步任务处理 |
 | `create_time` / `update_time` | DATETIME | 创建 / 更新时间 |
 
-> 重试治理 (`*_retry_count` / `*_last_retry_at`) 与失败原因 (`*_error_msg`) 已从本表移除（migration 0006）：文件级状态机由 `document_parse_pipeline` 承担，失败原因从 `document_parse_pipeline.failure_reason` 读取；chunk 表仅保留断点续传必需的 `*_status` 反查谓词与产物元数据。
+> 重试治理 (`*_retry_count` / `*_last_retry_at`) 与失败原因 (`*_error_msg`) 已从本表移除（migration 0006）：文件级状态机由 `document_parse_pipeline` 承担，失败原因从 `document_parse_pipeline.failure_reason` 读取；chunk 表仅保留断点续传必需的产物状态反查谓词、业务生命周期状态与产物元数据。`dense_vector_status` / `sparse_vector_status` / `es_status` 只表示产物状态；业务有效性统一由 `lifecycle_status` 表达。
 
 索引：
 - `uk_chunk_id(chunk_id)`
@@ -348,6 +353,8 @@ ORM：[`ChunkRecordDB`](../../src/models/chunk_record.py)
 - `idx_doc_dense_status(doc_id, dense_vector_status)`
 - `idx_doc_sparse_status(doc_id, sparse_vector_status)`
 - `idx_doc_es_status(doc_id, es_status)`
+- `idx_doc_lifecycle_status(doc_id, lifecycle_status)`
+- `idx_lifecycle_update_time(lifecycle_status, update_time)`
 
 ---
 

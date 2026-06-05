@@ -4,7 +4,7 @@
 
 ## 1. 通用约定
 
-- API 前缀按模块划分：`/api/v1/parser`、`/api/v1/mq`、`/api/v1/llm`、`/api/v1/internal/llm`。
+- API 前缀按模块划分：`/api/v1/parser`、`/api/v1/mq`、`/api/v1/llm`、`/api/v1/internal/llm`、`/api/v1/internal/recall`。
 - 普通 JSON 响应通常使用 `{code, message, data}` 或模块自定义响应模型。
 - 解析和 MQ 路由异常通常返回 HTTP `500`，`detail` 为异常文本。
 - LLM 路由在业务异常中多返回 `APIResponse(code=500, message=..., data=null)`。
@@ -189,3 +189,53 @@ Python 发往 Java 的 `tolink.rag.parse_result` 消息不带 MQ 信封，消息
 | `GET` | `/usage` | 查询用户用量统计 | Header `X-User-Id`，`start_date/end_date` 可选 |
 
 日期参数格式：`YYYY-MM-DD`。
+
+## 6. Internal Recall API
+
+路由前缀：`/api/v1/internal/recall`。**仅供 Java Recall Gateway 内部调用**——外部用户态
+Recall API 归属 Java（复用 Sa-Token + dataset/doc 归属校验），Python 只暴露内部 recall
+runtime，校验 Java 签发的短期内部 JWT(HS256)。内部鉴权与运行时细节见
+[docs/internals/recall_http_api.md](../internals/recall_http_api.md)。
+
+| Method | Path | 用途 | 鉴权 |
+| --- | --- | --- | --- |
+| `POST` | `/stream` | 多路召回，SSE 流式返回融合候选 | Header `Authorization: Bearer <internal-jwt>` |
+
+### POST /api/v1/internal/recall/stream
+
+请求头：`Authorization: Bearer <internal-jwt>`、`Accept: text/event-stream`、
+`Content-Type: application/json`、可选 `X-Request-Id`（缺省时由 Python 生成并回写响应头）。
+
+请求体（仅以下三字段；出现 `top_k/sources/strict/include_content/doc_ids` 等非首版字段
+返回 `422`）：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `query` | string | 是 | 用户问题，不能为空或纯空白 |
+| `user_id` | int | 是 | 必须等于内部 JWT `sub`，否则 `403` |
+| `dataset_ids` | list[int] | 是 | 必须是 JWT `dataset_ids` 授权范围子集；JWT 授权范围为空表示全库授权 |
+
+`top_k` / `sources` / `strict` 由服务端配置控制（`RECALL_RESULT_LIMIT` /
+`RECALL_ENABLED_SOURCES` / `RECALL_STRICT_DEFAULT`），不接受请求覆盖。
+
+响应为 `text/event-stream`。握手前错误（鉴权 / 参数 / scope）返回非 2xx 的
+`{code, message, data}` JSON；握手后（pipeline 执行期）的成功与失败统一走 SSE 终态事件。
+
+成功终态事件 `recall_done`（一次性携带 RRF 融合后的最终候选，不含正文）：
+
+```text
+event: recall_done
+data: {"hits":[{"chunk_id":"1001","doc_id":10,"dataset_id":1,"fused_score":0.92,"scores":{"bm25":8.7,"sparse":0.76}}],"failed_sources":[]}
+```
+
+- `hits` 按 `fused_score` 降序，长度 ≤ `RECALL_RESULT_LIMIT`；`scores` 键集合等于已装配召回路。
+- `failed_sources` 表达「降级成功」（如 bm25 成功、sparse 失败）；空列表表示无失败路。
+
+失败终态事件 `error`（发送后关闭流，`message` 不含内部堆栈）：
+
+```text
+event: error
+data: {"code":"RECALL_ALL_SOURCES_FAILED","message":"all retrievers failed"}
+```
+
+错误码与 HTTP 状态见 [error_codes.md](error_codes.md#5-internal-recall-错误码)。

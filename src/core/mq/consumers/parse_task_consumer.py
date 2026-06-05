@@ -18,7 +18,13 @@ PARSE_TASK_GROUP = "tolink.rag.parse_task"
 
 
 async def handle_parse_task(message_body: str, metadata: Dict[str, Any]) -> None:
-    """MQ 回调：接收消息后委托 ParseTaskPipeline 执行业务流程。"""
+    """MQ 回调：接收消息后委托 ParseTaskPipeline 执行业务流程。
+
+    反序列化失败时无 payload / 无解析日志行，无法回发合规 parse_result，
+    直接抛出交由框架死信兜底（Java 端 stuck scanner 最终收敛文件状态）。
+    ``execute`` 逃逸的异常则尽力回发 failed parse_result，避免文件卡在“解析中”，
+    随后仍抛出以保留死信记账。
+    """
     payload = ParseTaskMessage.parse_msg(message_body)
     logger.info(
         f"[ParseTaskConsumer] 收到任务: task_id={payload.task_id}, "
@@ -26,7 +32,15 @@ async def handle_parse_task(message_body: str, metadata: Dict[str, Any]) -> None
     )
 
     pipeline = ParseTaskPipeline()
-    result = await pipeline.execute(payload)
+    try:
+        result = await pipeline.execute(payload)
+    except Exception as exc:
+        logger.error(
+            f"[ParseTaskConsumer] 任务执行逃逸异常，兜底回发失败通知: "
+            f"task_id={payload.task_id}, error={exc}"
+        )
+        await pipeline.notify_unexpected_failure(payload, exc)
+        raise
 
     logger.info(
         f"[ParseTaskConsumer] 任务处理完成: task_id={result.task_id}, "

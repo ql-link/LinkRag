@@ -37,7 +37,6 @@ from .log_repository import ParseLogRepository
 from .models import ParsePipelineResult, PipelineStatus
 from .notifier import ParseResultNotifier
 
-
 # 重试校验失败的统一前缀；具体校验项追加在冒号后，便于 Java 端 / 运维侧排查。
 RETRY_VALIDATION_REASON_PREFIX = ParseFailureCode.RETRY_VALIDATION_FAILED.value
 
@@ -133,6 +132,7 @@ class ParseTaskGuard:
                     PARSE_TASK_STATUS_SUCCESS,
                     existing.parse_finished_at,
                     None,
+                    document_parsed_log_id=existing.id,
                     user_message=DUPLICATE_SUCCESS_USER_MESSAGE,
                 )
                 return ParsePipelineResult(status=PipelineStatus.SUCCESS, task_id=payload.task_id)
@@ -143,6 +143,7 @@ class ParseTaskGuard:
                 PARSE_TASK_STATUS_FAILED,
                 existing.parse_finished_at,
                 failure_reason,
+                document_parsed_log_id=existing.id,
                 user_message=DUPLICATE_FAILED_USER_MESSAGE,
             )
             return ParsePipelineResult(status=PipelineStatus.FAILED, task_id=payload.task_id)
@@ -154,6 +155,7 @@ class ParseTaskGuard:
                 PARSE_TASK_STATUS_SUCCESS,
                 existing.parse_finished_at,
                 None,
+                document_parsed_log_id=existing.id,
                 user_message=DUPLICATE_SUCCESS_USER_MESSAGE,
             )
             return ParsePipelineResult(status=PipelineStatus.SUCCESS, task_id=payload.task_id)
@@ -167,6 +169,7 @@ class ParseTaskGuard:
                 PARSE_TASK_STATUS_FAILED,
                 pipeline_record.finished_at or existing.parse_finished_at,
                 failure_reason,
+                document_parsed_log_id=existing.id,
                 user_message=DUPLICATE_FAILED_USER_MESSAGE,
             )
             return ParsePipelineResult(status=PipelineStatus.FAILED, task_id=payload.task_id)
@@ -185,6 +188,7 @@ class ParseTaskGuard:
             PARSE_TASK_STATUS_FAILED,
             finished_at,
             failure_reason,
+            document_parsed_log_id=existing.id,
             user_message=INTERRUPTED_TASK_USER_MESSAGE,
         )
         return ParsePipelineResult(status=PipelineStatus.FAILED, task_id=payload.task_id)
@@ -276,10 +280,11 @@ class ParseTaskGuard:
         1. payload.previous_task_id 非空 → ``missing_previous_task_id``
         2. payload.md_bucket / md_object_key 都非空 → ``missing_parsed_object_key_in_payload``
         3. 旧 log（按 task_id=previous_task_id）存在 → ``previous_log_not_found``
-        4. 旧 log.parsed_object_key 非空 → ``previous_markdown_missing``
-        5. 旧 pipeline 行存在 → ``previous_pipeline_not_found``
-        6. 旧 pipeline.pipeline_status == FAILED → ``previous_pipeline_not_in_failed_state``
-        7. 旧 pipeline.recover_from_stage 非空 → ``missing_recover_from_stage``
+        4. 旧 pipeline 行存在 → ``previous_pipeline_not_found``
+        5. 旧 pipeline.pipeline_status == FAILED → ``previous_pipeline_not_in_failed_state``
+        6. 旧 pipeline.recover_from_stage 非空 → ``missing_recover_from_stage``
+        7. 当 recover_from_stage 晚于 CLEANING 时，旧 log.parsed_object_key 非空
+           → ``previous_markdown_missing``
         8. 旧 pipeline.superseded_by_task_id IS NULL → ``already_superseded``
            （CAS 第 1 层快速失败；第 2 层由 mark_superseded rowcount 兜底）
         """
@@ -293,8 +298,6 @@ class ParseTaskGuard:
         old_log = await self._log_repository.get_by_task_id(payload.previous_task_id, db)
         if old_log is None:
             raise RetryValidationError(_retry_validation_reason("previous_log_not_found"))
-        if not old_log.parsed_object_key:
-            raise RetryValidationError(_retry_validation_reason("previous_markdown_missing"))
 
         old_pipeline = await self._pipeline_repository.get_by_log_id(db, old_log.id)
         if old_pipeline is None:
@@ -305,6 +308,11 @@ class ParseTaskGuard:
             )
         if old_pipeline.recover_from_stage is None:
             raise RetryValidationError(_retry_validation_reason("missing_recover_from_stage"))
+        if (
+            old_pipeline.recover_from_stage != POST_PROCESS_STAGE_CLEANING
+            and not old_log.parsed_object_key
+        ):
+            raise RetryValidationError(_retry_validation_reason("previous_markdown_missing"))
         if old_pipeline.superseded_by_task_id is not None:
             # CAS 第 1 层快速失败：本层 read-only 存在 TOCTOU 窗口，由 mark_superseded
             # 的 rowcount 仲裁做真正原子保证；这里只是体验/早期短路。

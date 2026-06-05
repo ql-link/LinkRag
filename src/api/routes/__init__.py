@@ -1,6 +1,6 @@
 """
 API 路由
 """
-from src.api.routes import llm, internal
+from src.api.routes import llm, internal, recall
 
-__all__ = ["llm", "internal"]
+__all__ = ["llm", "internal", "recall"]

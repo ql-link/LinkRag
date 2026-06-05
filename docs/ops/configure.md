@@ -135,6 +135,40 @@
 
 不再提供 `SPARSE_VECTOR_USE_FP16` 配置。推理精度只由 `SPARSE_VECTOR_DEVICE` 决定：CPU 使用 fp32，CUDA 使用 fp16。
 
+## 内部召回 API 配置
+
+内部多路召回 SSE 接口 `POST /api/v1/internal/recall/stream` 的配置。详见
+[docs/internals/recall_http_api.md](../internals/recall_http_api.md)。
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `RECALL_INTERNAL_AUTH_ENABLED` | `true` | 是否启用内部 JWT 校验；**生产必须为 true** |
+| `RECALL_INTERNAL_JWT_ISSUER` | `tolink-java` | 期望的 JWT `iss` |
+| `RECALL_INTERNAL_JWT_AUDIENCE` | `tolink-rag` | 期望的 JWT `aud` |
+| `RECALL_INTERNAL_JWT_SCOPE` | `recall:execute` | 期望的 JWT `scope` |
+| `RECALL_INTERNAL_JWT_SECRET` | 本地联调占位值 | HS256 共享密钥；Java 签发端与 Python 验签端必须一致，**生产务必用环境变量覆盖为强随机值** |
+| `RECALL_STREAM_TIMEOUT_MS` | `60000` | 单次召回最大执行时间（毫秒）；超时以 SSE `error` RECALL_TIMEOUT 终止 |
+| `RECALL_STRICT_DEFAULT` | `false` | pipeline 严格模式默认；false=宽松，允许单路失败降级 |
+| `RECALL_RESULT_LIMIT` | `20` | 服务端固定返回候选上限（同时作为各路执行期 `top_k`）|
+| `RECALL_ENABLED_SOURCES` | `bm25,sparse,dense` | 启用的召回路（逗号分隔）。本期默认开启三路；运维侧可显式 set `bm25,sparse` 暂时回退到 dev 旧行为；未登记的 source 出现在配置中装配期 `ValueError` |
+| `SPARSE_RETRIEVAL_TOP_K` | `10` | sparse 召回 facade 直调时的兜底 top_k；pipeline 路径下被 `RECALL_RESULT_LIMIT` 覆盖 |
+| `SPARSE_RETRIEVAL_SCORE_THRESHOLD` | `0.0` | sparse 召回默认 score 阈值（0.0 = 不过滤；详见 [vectorization.md §9.4](../internals/vectorization.md)） |
+| `DENSE_RETRIEVAL_TOP_K` | `10` | dense 召回 facade 直调时的兜底 top_k；pipeline 路径下被 `RECALL_RESULT_LIMIT` 覆盖 |
+| `DENSE_RETRIEVAL_SCORE_THRESHOLD` | `0.0` | dense 召回默认 score 阈值（cosine 上界 [0, 1]，0.0 = 不过滤；facade 入口校验 `> 1.0` 早死） |
+
+### 远程 BGE-M3 推理服务（`remote_bge_m3` provider）
+
+`SPARSE_VECTOR_PROVIDER` 除已有 `bge_m3`（本地）/ `bge_m3_http`（早期 bge-m3-server）
+外，新增 `remote_bge_m3`：对接独立部署的 ``bge-m3-service``，单次 `/encode` 同时
+拿到 dense（1024 维）+ sparse lexical weights，并在客户端做超时 + 重试。详见
+[docs/internals/vectorization.md §6.6](../internals/vectorization.md)。
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `BGE_M3_SERVICE_URL` | 空 | ``bge-m3-service`` 根地址（如 `http://127.0.0.1:7997`），尾部 `/` 会被忽略；provider=`remote_bge_m3` 时必填 |
+| `BGE_M3_TIMEOUT_SECONDS` | `30.0` | 单次 `/encode` 请求超时（秒） |
+| `BGE_M3_MAX_RETRIES` | `3` | 网络错误 / 5xx 的重试次数（不含首次请求；`0` = 不重试；4xx 直接抛错不重试） |
+
 ## 配置加载与覆盖
 
 - `.env` 由 [src/config.py](../../src/config.py) 通过 `Settings`（pydantic-settings）加载。

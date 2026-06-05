@@ -1,16 +1,24 @@
 """
 toLink-RAG API 服务入口
 """
+# NLTK 数据路径必须在引入任何会用到 NLTK 的依赖（deepdoc/infinity-sdk/langchain 等）之前配置，
+# 确保运行时优先命中项目内 nltk_data，而非用户家目录 ~/nltk_data。
+from src.nltk_bootstrap import configure_nltk_data_path
+
+configure_nltk_data_path()
+
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 import uvicorn
 
 from src.config import settings
-from src.api.routes import llm, internal, parse, mq
+from src.api.routes import llm, internal, parse, mq, recall
+from src.api.internal_auth import RecallApiError
 from src.cache.redis_client import redis_client
 from src.database import init_database, close_database
 
@@ -61,7 +69,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
 app = FastAPI(
     title=settings.APP_NAME,
-    version="1.0.0",
+    version="0.1.0",
     description="RAG 系统服务",
     lifespan=lifespan,
 )
@@ -80,6 +88,16 @@ app.include_router(llm.router)
 app.include_router(internal.router)
 app.include_router(parse.router)  # 挂载文档解析路由
 app.include_router(mq.router)    # 挂载 MQ 消息中台路由
+app.include_router(recall.router)  # 挂载内部多路召回 SSE 路由
+
+
+@app.exception_handler(RecallApiError)
+async def recall_api_error_handler(request: Request, exc: RecallApiError) -> JSONResponse:
+    """内部召回握手前错误统一响应：{code, message, data} + 对应 HTTP 状态。"""
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"code": exc.code, "message": exc.message, "data": None},
+    )
 
 
 

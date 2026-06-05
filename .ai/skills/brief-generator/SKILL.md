@@ -1,7 +1,7 @@
 ---
 name: brief-generator
 description: 当用户提出新需求、口头想法、初步框架，或要求"写个 brief / 需求理解 / 业务分析 / 先理清楚需求"时激活；输出面向开发者的 brief.md，覆盖需求摘要、业务流程、核心模块实现思路、风险、待确认问题五章；支持开发者审阅后通过对话迭代修订，直到开发者确认冻结，作为后续 acceptance.feature 生成的输入。若用户已基于 brief.md 提出修改、补充、疑问、回答待确认项，继续用本 skill 做迭代收敛。
-when_to_use: "当用户提出新需求、口头描述、初步想法、粗略框架，或要求'先分析'、'写个 brief'、'写个需求理解'、'搞清楚业务'、'看看影响哪些模块'时激活。若用户已拿到 brief.md 初稿继续回答待确认问题、补充范围、修正流程、要求继续完善，也继续使用本 skill。若用户已有冻结 brief 并明确要求'生成 acceptance / 生成验收 / 生成 Gherkin / 生成测试场景'，转 acceptance-generator。"
+when_to_use: "在 flow-router 判为 L2/L3 后，或用户直接要求'写个 brief / 写个需求理解 / 搞清楚业务 / 看看影响哪些模块'时激活，把需求收敛成 brief.md。若用户只是抛出一个尚未分诊的改代码诉求（车道未定），应先经 flow-router 判级——判为 L1 的小改动不进本 skill，直接转 implementation-execution。若用户已拿到 brief.md 初稿继续回答待确认问题、补充范围、修正流程、要求继续完善，也继续使用本 skill。若用户已有冻结 brief 并明确要求'生成 acceptance / 生成验收 / 生成 Gherkin / 生成测试场景'，转 acceptance-generator。"
 ---
 
 # Brief Generator
@@ -148,7 +148,7 @@ flowchart TD
 
 - README、已有同业务域的 brief / technical_design
 - 相关模块目录、入口文件、状态枚举、消息契约
-- 公共契约（`docs/internals/middleware_contract.md` 等）
+- 公共契约（`docs/api/**`、`docs/internals/naming_conventions.md` 等）
 
 不做完整代码审查，**只读到能支撑模块草图为止**。不要把"读到了什么文件"写成独立章节，转化为对模块归属、复用边界的具体判断。
 
@@ -206,6 +206,7 @@ flowchart TD
 
 ## 8. 与其他 skill 的衔接
 
-- **进入前**：用户提出原始需求、想法或框架
+- **进入前**：`flow-router` 判为 L2/L3，或用户直接要求写 brief（L1 小改动不进本 skill，由 flow-router 直转 implementation-execution）
+- **车道差异**：L2 写轻量 brief 并在冻结后跳过 `technical-design`，直接进编码；L3 走完整链（brief → acceptance → technical-design → …）
 - **冻结后**：转入 `acceptance-generator` 生成 Gherkin 验收契约
 - **不允许**：未经冻结直接跳到 `technical-design`；在 brief 阶段写代码层细节

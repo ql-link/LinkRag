@@ -43,7 +43,7 @@ class RepairPolicy:
         *,
         point_exists: bool | None = None,
     ) -> RepairDecision:
-        """Return the safest supported repair decision for a chunk lifecycle status."""
+        """Return the safest supported repair decision for a dense vector status."""
         if dense_vector_status == CHUNK_STATUS_PENDING and self.allow_stale_indexing_status_repair:
             if point_exists is True:
                 return RepairDecision.LIGHTWEIGHT_STATUS_REPAIR

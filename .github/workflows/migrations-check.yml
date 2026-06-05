@@ -51,13 +51,13 @@ jobs:
           done
           echo "MySQL failed to start"; exit 1
 
-      - name: Bootstrap schema from init.sql
+      - name: Bootstrap schema from baseline (migrations/db.sql)
         env:
           MYSQL_PWD: root
         run: |
-          # 模拟"存量库"：先用 init.sql 建出当前生产形态的 schema，
+          # 模拟"存量库"：先用 migrations/db.sql 建出 0001 baseline 形态的 schema，
           # 然后 stamp 0001 锁定基线，再跑 upgrade head 验证迁移序列。
-          mysql -h 127.0.0.1 -P 3306 -uroot tolink_rag_db < scripts/db/init.sql
+          mysql -h 127.0.0.1 -P 3306 -uroot tolink_rag_db < migrations/db.sql
 
       - name: Stamp baseline (0001)
         env:
