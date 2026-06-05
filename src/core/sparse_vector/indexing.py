@@ -12,8 +12,9 @@
   - chunks 中每条的 ``dense_vector_status`` 必须是 ``SUCCESS``——业务硬约束：sparse
     向量追加在 dense point 上，dense 没成功就不能跑 sparse。本模块在入口前置断言
     （fail-fast）兜底；多值 CAS 只能保护 ``sparse_vector_status`` 维度，拦不住这条前置条件。
-  - chunks 自带 ``bucket_id``，本模块从首条取作权威；不再接受外部 ``bucket_id`` 入参
-    （顺手关闭 GitHub issue #95：旧实现误把 ``payload.dataset_id`` 当作 bucket_id）。
+  - chunks 自带 ``bucket_id``，本模块从首条取作权威，并 fail-fast 校验同批一致；
+    不再接受外部 ``bucket_id`` 入参（顺手关闭 GitHub issue #95：旧实现误把
+    ``payload.dataset_id`` 当作 bucket_id）。
 - 空集短路：传入 chunks 为空（调用方过滤后无待处理）→ 幂等 no-op SUCCESS。
 """
 
@@ -120,16 +121,22 @@ class SparseIndexingPipeline:
             )
 
         # ③ bucket_id 从 chunks 自带字段取（同文档下由写入路径保证一致），不再外部入参。
-        # 下游 Qdrant 按 bucket_id 路由 collection；不一致属于上游 bug。ORM 字段名义
-        # 类型为 int | None，但 chunking 阶段 bulk_insert_pending 要求 bucket_id 必填，
-        # 运行期不可能为 None；显式断言收紧类型并给出可定位的失败原因。
+        # 下游 Qdrant 按 bucket_id 路由 collection；不一致属于上游 bug，直接 fail-fast。
+        # ORM 字段名义类型为 int | None，但 chunking 阶段 bulk_insert_pending 要求
+        # bucket_id 必填，运行期不可能为 None；显式断言收紧类型并给出可定位的失败原因。
         first_bucket_id = records[0].bucket_id
         if first_bucket_id is None:
             raise SparseIndexingError(
-                "SPARSE_VECTORIZING_FAILED:missing_bucket_id;"
-                f"chunk_id={records[0].chunk_id}"
+                "SPARSE_VECTORIZING_FAILED:missing_bucket_id;" f"chunk_id={records[0].chunk_id}"
             )
         bucket_id = int(first_bucket_id)
+        inconsistent = [r for r in records if r.bucket_id is None or int(r.bucket_id) != bucket_id]
+        if inconsistent:
+            sample = inconsistent[0]
+            raise SparseIndexingError(
+                "SPARSE_VECTORIZING_FAILED:bucket_id_mismatch;"
+                f"expected={bucket_id},actual={sample.bucket_id},chunk_id={sample.chunk_id}"
+            )
 
         # ④ 分批编排：encode → Qdrant upsert → mark INDEXED；任一批失败抛文件级异常。
         service = self._get_sparse_vector_service()
@@ -199,9 +206,7 @@ class SparseIndexingPipeline:
                 )
 
             # 4.3 写 Qdrant：先 ensure schema，再 upsert sparse vectors。
-            await store.ensure_sparse_vector_schema(
-                bucket_id=bucket_id, vector_name=vector_name
-            )
+            await store.ensure_sparse_vector_schema(bucket_id=bucket_id, vector_name=vector_name)
             points = [
                 sparse_indexed_point_from_record(row, vec, vector_name=vector_name)
                 for row, vec in zip(batch, vectors)
@@ -228,9 +233,7 @@ class SparseIndexingPipeline:
             await self._safe_mark_failed(db, chunk_ids, reason=str(exc), task_id=task_id)
             raise
         except Exception as exc:
-            reason = (
-                f"SPARSE_VECTORIZING_FAILED:{type(exc).__name__}: {exc}"
-            )
+            reason = f"SPARSE_VECTORIZING_FAILED:{type(exc).__name__}: {exc}"
             await self._safe_mark_failed(db, chunk_ids, reason=reason, task_id=task_id)
             raise SparseIndexingError(reason) from exc
 
