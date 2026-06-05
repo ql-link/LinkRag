@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
 from src.config import settings
@@ -14,6 +14,7 @@ from .exceptions import (
     VectorRetrievalBackendError,
     VectorRetrievalConfigurationError,
     VectorRetrievalEncodingError,
+    VectorRetrievalUserConfigMissingError,
 )
 from .management_pipeline import VectorStorageManagementPipeline
 from .models import (
@@ -53,6 +54,7 @@ class VectorStorageFacade:
         qdrant_store: Any | None = None,
         sparse_vector_service: "SparseVectorService | None" = None,
         embedding_pipeline: "ChunkEmbeddingPipeline | None" = None,
+        query_embedding_resolver: "Callable[[int], Awaitable[ChunkEmbeddingPipeline]] | None" = None,
     ) -> None:
         """
         初始化统一入口，并注入已经装配好的底层服务。
@@ -65,9 +67,14 @@ class VectorStorageFacade:
             sparse_vector_service: 可选的稀疏向量服务；用于召回入口
                 ``search_sparse_chunks``。``SPARSE_VECTOR_ENABLED=False`` 时
                 由工厂传入 ``None``，召回入口会抛 ``VectorRetrievalConfigurationError``。
-            embedding_pipeline: 可选的 chunk embedding 管线；用于召回入口
-                ``search_dense_chunks`` 调用 ``aembed_query`` 做 query 向量化。
-                工厂始终注入；防御性 invariant 检查在 ``search_dense_chunks`` 内做。
+            embedding_pipeline: 可选的 chunk embedding 管线；进程级系统 embedder，
+                作为 ``search_dense_chunks`` 在**未注入** ``query_embedding_resolver`` 时的
+                回退（写入 / management / 单测路径）。
+            query_embedding_resolver: 可选的「按发起 user_id 解析 query embedding pipeline」回调。
+                召回装配（``recall_pipeline_provider``）注入
+                ``aresolve_user_chunk_embedding_pipeline``，使 dense 召回 query 编码与写入侧
+                同源、按用户模型解析；注入后 ``search_dense_chunks`` 优先用它而非进程级
+                ``embedding_pipeline``。
 
         Returns:
             None.
@@ -79,6 +86,7 @@ class VectorStorageFacade:
         # 命名前置 ``_`` 表达"内部状态"语义；外部不直接访问。
         self._sparse_vector_service = sparse_vector_service
         self._embedding_pipeline = embedding_pipeline
+        self._query_embedding_resolver = query_embedding_resolver
 
     async def store_chunks(
         self,
@@ -519,9 +527,11 @@ class VectorStorageFacade:
             )
 
         # ───────────────────── ③ 配置就绪检查（dense 与 sparse 字面差异点）─────
-        # dense 没有 enable 开关（dense 写入是必备链路）；只检查 embedding_pipeline /
+        # dense 没有 enable 开关（dense 写入是必备链路）；只检查 query 编码来源与
         # qdrant_store 注入状态。两者都是工厂层 invariant；正常路径下不会触发。
-        if self._embedding_pipeline is None:
+        # query 编码来源二选一：注入了 query_embedding_resolver（召回路径，按用户模型解析）
+        # 走它；否则回退进程级 embedding_pipeline（写入 / management / 单测路径）。
+        if self._query_embedding_resolver is None and self._embedding_pipeline is None:
             raise VectorRetrievalConfigurationError(
                 "Dense vector recall is unavailable: " "embedding_pipeline is not configured."
             )
@@ -540,7 +550,17 @@ class VectorStorageFacade:
             score_threshold=effective_threshold,
         )
 
-        embedding_pipeline = self._embedding_pipeline
+        # 按发起用户解析 query embedding pipeline（与写入侧同源），缺默认 EMBEDDING 配置 →
+        # 翻成 VectorRetrievalUserConfigMissingError（上层据此硬失败，不做宽松降级）。
+        if self._query_embedding_resolver is not None:
+            from src.core.splitter.factory import DenseEmbeddingConfigMissingError
+
+            try:
+                embedding_pipeline = await self._query_embedding_resolver(user_id)
+            except DenseEmbeddingConfigMissingError as exc:
+                raise VectorRetrievalUserConfigMissingError(str(exc)) from exc
+        else:
+            embedding_pipeline = self._embedding_pipeline
 
         # ───────────────────── ④ query 向量化（异常翻译，与 sparse 字面差异点）──
         # aembed_query 内部不翻译异常（参考 splitter/embedding_pipeline.py 实现）；

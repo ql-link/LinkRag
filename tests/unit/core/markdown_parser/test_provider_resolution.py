@@ -53,7 +53,10 @@ def _patch_config_service(monkeypatch, *, config=None, raises=None):
 
 
 def _patch_model_factory(monkeypatch):
-    """替换 provider 工厂，捕获 create_client 入参并返回支持任意能力的假 provider。"""
+    """替换统一解析模块的 ModelFactory 与 decrypt（解析逻辑已收敛到 user_model_resolver），
+    捕获 create_client 入参并返回支持任意能力的假 provider。"""
+    import src.core.llm.user_model_resolver as umr
+
     captured = {}
     provider = MagicMock(name="provider")
     provider.provider_type = "qwen"
@@ -66,7 +69,9 @@ def _patch_model_factory(monkeypatch):
         return provider
 
     factory.create_client.side_effect = _create_client
-    monkeypatch.setattr(provider_clients, "_get_model_factory", lambda: factory)
+    monkeypatch.setattr(umr, "ModelFactory", lambda: factory)
+    # 非系统兜底走解密：用可识别前缀替换真实 AES 解密，验证「解密分支」。
+    monkeypatch.setattr(umr, "decrypt_api_key", lambda key: f"decrypted::{key}")
     return captured, provider
 
 

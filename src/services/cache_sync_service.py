@@ -6,7 +6,6 @@ from typing import Optional
 import asyncio
 
 from src.services.config_reader_service import ConfigReaderService
-from src.core.llm.factory import ModelFactory
 from src.cache.cache_manager import cache_manager
 
 
@@ -15,17 +14,18 @@ class CacheSyncService:
 
     职责：
     - 监听配置变更事件
-    - 主动清除相关缓存
-    - 与 ModelFactory 联动清除客户端缓存
+    - 主动清除相关（ConfigReaderService）配置缓存
 
     触发场景（由 Java 管理端调用）：
     - 用户更新/删除 LLM 配置
     - 管理员更新系统厂商
+
+    注：模型 client 的解析已收敛到 ``user_model_resolver``，不再维护进程内客户端缓存，
+    因此本服务只负责失效配置缓存，不再与 ModelFactory 联动。
     """
 
     def __init__(self):
         self._config_service = ConfigReaderService()
-        self._model_factory = ModelFactory()
         self._is_listening = False
         self._redis_subscriber = None  # TODO: Redis Pub/Sub
 
@@ -48,14 +48,10 @@ class CacheSyncService:
                 cache_key = f"llm:user:{user_id}:config:{config_id}"
                 await self._clear_config_cache(cache_key)
 
-                # 清除 ModelFactory 中的客户端缓存
-                self._model_factory.clear_cache(user_id)
-
         elif event_type == "update":
             # 更新时清除用户所有配置缓存（简化处理）
             if user_id:
                 await self._config_service.clear_cache(user_id)
-                self._model_factory.clear_cache(user_id)
 
         elif event_type == "create":
             # 新建时清除用户配置列表缓存
@@ -70,18 +66,15 @@ class CacheSyncService:
         """手动失效缓存
 
         Args:
-            cache_type: 缓存类型 (user_config/system_provider/client)
+            cache_type: 缓存类型 (user_config/system_provider/all)
             user_id: 用户 ID
         """
         if cache_type == "user_config" and user_id:
             await self._config_service.clear_cache(user_id)
         elif cache_type == "system_provider":
             await self._config_service.clear_cache()
-        elif cache_type == "client" and user_id:
-            self._model_factory.clear_cache(user_id)
         elif cache_type == "all":
             await self._config_service.clear_cache()
-            self._model_factory.clear_cache()
 
     async def _clear_config_cache(self, cache_key: str) -> None:
         """清除特定配置缓存"""

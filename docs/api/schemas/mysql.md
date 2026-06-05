@@ -90,6 +90,7 @@ ORM：[`UserLLMConfigDB`](../../src/models/db_models.py)
 | `max_retries` | INT | 最大重试次数，默认 3 |
 | `stream_enabled` | BOOLEAN | 是否支持流式输出 |
 | `capability` | VARCHAR(32) | `CHAT` / `EMBEDDING` / `RERANK` / `OCR`，默认 `CHAT` |
+| `default_marker` | INT，生成列 | `default+active` 时为 `1`，否则 `NULL`，仅用于唯一约束（应用层不写入） |
 | `extra_config` | JSON | 扩展配置 |
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
 
@@ -97,6 +98,7 @@ ORM：[`UserLLMConfigDB`](../../src/models/db_models.py)
 - `uk_user_provider_model(user_id, provider_id, model_name)`
 - `idx_user_active_default(user_id, is_active, is_default)`
 - `idx_user_provider_cap(user_id, provider_type, capability)`
+- `uq_user_default_per_capability(user_id, provider_type, capability, default_marker)` — 唯一键。借助生成列 `default_marker`（默认+启用时为 1，否则 NULL）与 MySQL「唯一索引中 NULL 不计重复」语义，保证每个 `(user_id, provider_type, capability)` 至多一条默认且启用的配置；非默认/停用配置不受限（迁移 0012）
 
 ### `llm_usage_log` — LLM 调用用量日志
 

@@ -8,6 +8,7 @@ from typing import Dict, List, Optional
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Computed,
     DateTime,
     ForeignKey,
     Index,
@@ -15,6 +16,7 @@ from sqlalchemy import (
     JSON,
     String,
     Text,
+    UniqueConstraint,
     func,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -82,6 +84,18 @@ class UserLLMConfigDB(Base):
     extra_config: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
     # 新增字段：主要能力类型
     capability: Mapped[str] = mapped_column(String(32), default="CHAT", nullable=False)
+    # 唯一约束判别列（生成列）：仅当 is_default 且 is_active 时为 1，否则 NULL。
+    # MySQL 唯一索引中 NULL 不算重复，故与 (user_id, provider_type, capability) 组成
+    # 唯一键后，效果是「每个 (user_id, provider_type, capability) 至多一条默认且启用的配置」，
+    # 非默认/停用配置（值为 NULL）不受限制。应用层不应写入此列（GENERATED ALWAYS）。
+    default_marker: Mapped[Optional[int]] = mapped_column(
+        Integer,
+        Computed(
+            "(CASE WHEN is_default = 1 AND is_active = 1 THEN 1 ELSE NULL END)",
+            persisted=True,
+        ),
+        nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=func.now(), onupdate=func.now(), nullable=False
@@ -97,6 +111,13 @@ class UserLLMConfigDB(Base):
 
     __table_args__ = (
         Index("idx_user_provider_cap", "user_id", "provider_type", "capability"),
+        UniqueConstraint(
+            "user_id",
+            "provider_type",
+            "capability",
+            "default_marker",
+            name="uq_user_default_per_capability",
+        ),
     )
 
 
