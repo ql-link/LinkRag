@@ -85,10 +85,12 @@ class BaseChunker(ABC):
 
 核心思路：
 
-- 先把文本拆成段落、行或句子级原子单元。
+- 先按 `semantic_unit` 配置把文本拆成语义比较原子；默认 `sentence` 保持原有段落、行、句子逐级降级行为，`paragraph` 则以段落作为相似度计算单位。
 - 调用 embedding 模型计算相邻原子的语义距离。
 - 使用距离分位数作为动态阈值寻找断点。
 - 受 `min_chunk_tokens`、`max_chunk_tokens`、`overlap_tokens` 控制。
+
+`paragraph` 模式只改变相似度计算粒度：单个段落超过 `max_chunk_tokens` 时，不会再改用句子级 embedding 计算断点，但最终输出仍会做长度保底拆分，避免生成超长 Chunk。
 
 它通常不直接作为主分片器使用，而是被 `StructuredSemanticChunker` 注入。
 

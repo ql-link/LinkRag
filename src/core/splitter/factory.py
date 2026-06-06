@@ -12,7 +12,7 @@ from loguru import logger
 
 from src.config import settings
 from src.core.llm.factory import ModelFactory
-from src.core.llm.interfaces import CapabilityType
+from src.core.llm.interfaces import CapabilityType, IEmbedder
 from src.core.llm.tokenizer import Tokenizer
 
 from .chunking_engine import ChunkingEngine
@@ -63,7 +63,7 @@ class DenseEmbeddingDimensionError(RuntimeError):
         )
 
 
-class LazyEmbeddingClient:
+class LazyEmbeddingClient(IEmbedder):
     """延迟初始化的 Embedding 客户端包装器。
 
     Chunk 索引并非主链路 ACK 的前置条件。延迟创建 Embedding 客户端可以避免
@@ -130,6 +130,7 @@ def create_chunking_engine() -> ChunkingEngine:
             embedder=embedder,
             tokenizer=Tokenizer(),
             percentile=settings.CHUNKING_SEMANTIC_PERCENTILE,
+            semantic_unit=settings.CHUNKING_SEMANTIC_UNIT,
             min_chunk_tokens=settings.CHUNKING_MIN_CHUNK_TOKENS,
             max_chunk_tokens=settings.CHUNKING_MAX_CHUNK_TOKENS,
             overlap_tokens=settings.CHUNKING_OVERLAP_TOKENS,
