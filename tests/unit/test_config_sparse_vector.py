@@ -45,3 +45,12 @@ def test_should_reject_invalid_chunking_overlap_tokens():
             assert "CHUNKING_OVERLAP_TOKENS must be between 0 and 64" in str(exc)
         else:
             raise AssertionError("expected ValueError")
+
+
+def test_should_reject_invalid_min_candidate_chunk_tokens():
+    try:
+        Settings(_env_file=None, CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS=0)
+    except ValueError as exc:
+        assert "CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS must be positive" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
