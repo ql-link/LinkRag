@@ -151,38 +151,19 @@ class StructuredSemanticChunker(ASTAwareChunker):
         Returns:
             list[Chunk]: 追加邻接上下文后的 Chunk 列表。
         """
-        overlap_budget = self.semantic_chunker._resolve_overlap_tokens()
-        if overlap_budget <= 0 or len(chunks) <= 1:
+        if self.semantic_chunker.overlapper.effective_tokens <= 0 or len(chunks) <= 1:
             return chunks
 
         base_contents = [chunk.content for chunk in chunks]
 
         for index, chunk in enumerate(chunks):
-            contextual_parts: list[str] = []
-            previous_tokens = 0
-            next_tokens = 0
-
-            if index > 0:
-                previous_context = self.semantic_chunker._take_last_tokens(
-                    base_contents[index - 1],
-                    overlap_budget,
+            chunk.content, previous_tokens, next_tokens = (
+                self.semantic_chunker.overlapper.build_neighbor_context(
+                    previous_content=base_contents[index - 1] if index > 0 else None,
+                    current_content=base_contents[index],
+                    next_content=base_contents[index + 1] if index + 1 < len(chunks) else None,
                 )
-                if previous_context:
-                    previous_tokens = self.semantic_chunker.tokenizer.count_tokens(previous_context)
-                    contextual_parts.append(previous_context)
-
-            contextual_parts.append(base_contents[index])
-
-            if index + 1 < len(chunks):
-                next_context = self.semantic_chunker._take_first_tokens(
-                    base_contents[index + 1],
-                    overlap_budget,
-                )
-                if next_context:
-                    next_tokens = self.semantic_chunker.tokenizer.count_tokens(next_context)
-                    contextual_parts.append(next_context)
-
-            chunk.content = "\n\n".join(contextual_parts).strip()
+            )
             if previous_tokens > 0:
                 chunk.metadata["context_prev_tokens_applied"] = previous_tokens
             if next_tokens > 0:

@@ -149,6 +149,67 @@ async def test_split_should_force_max_token_break_and_preserve_overlap():
     ]
 
 
+async def test_split_should_disable_overlap_when_configured():
+    tokenizer = MockWordTokenizer()
+    embedder = StaticEmbedder(
+        [
+            [1.0, 0.0],
+            [1.0, 0.0],
+            [1.0, 0.0],
+        ]
+    )
+    chunker = PercentileSemanticChunker(
+        embedder=embedder,
+        tokenizer=tokenizer,
+        percentile=95,
+        min_chunk_tokens=1,
+        max_chunk_tokens=5,
+        overlap_enabled=False,
+        overlap_tokens=2,
+        min_distance_gate=0.9,
+    )
+
+    text = "\n\n".join(
+        [
+            "a1 a2 a3",
+            "b1 b2 b3",
+            "c1 c2 c3",
+        ]
+    )
+
+    chunks = await chunker.split(text)
+
+    assert chunks == [
+        "a1 a2 a3",
+        "b1 b2 b3",
+        "c1 c2 c3",
+    ]
+
+
+async def test_split_should_allow_overlap_token_upper_bound():
+    tokenizer = MockWordTokenizer()
+    embedder = StaticEmbedder(
+        [
+            [1.0, 0.0],
+            [1.0, 0.0],
+        ]
+    )
+    chunker = PercentileSemanticChunker(
+        embedder=embedder,
+        tokenizer=tokenizer,
+        percentile=95,
+        min_chunk_tokens=1,
+        max_chunk_tokens=80,
+        overlap_tokens=64,
+        min_distance_gate=0.9,
+    )
+
+    chunks = await chunker.split(" ".join(f"a{i}" for i in range(40)) + "\n\nb1 b2")
+
+    assert chunks == [" ".join(f"a{i}" for i in range(40)) + "\n\nb1 b2"]
+    assert chunker.overlapper.effective_tokens == 64
+
+
 async def test_split_should_fallback_to_length_only_when_embedding_fails():
     tokenizer = MockWordTokenizer()
     chunker = PercentileSemanticChunker(
@@ -249,5 +310,18 @@ def test_splitter_should_reject_invalid_semantic_unit():
         )
     except ValueError as exc:
         assert "semantic_unit must be one of" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_splitter_should_reject_overlap_tokens_outside_supported_range():
+    try:
+        PercentileSemanticChunker(
+            embedder=FailingEmbedder(),
+            tokenizer=MockWordTokenizer(),
+            overlap_tokens=65,
+        )
+    except ValueError as exc:
+        assert "overlap tokens must be between 0 and 64" in str(exc)
     else:
         raise AssertionError("expected ValueError")

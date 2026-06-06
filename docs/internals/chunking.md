@@ -11,6 +11,7 @@ src/core/splitter/
 ├── chunking_engine.py      # Markdown 解析与分片编排入口
 ├── rule_chunker.py         # 基于 Markdown AST 的规则分片
 ├── semantic_chunker.py     # 基于 embedding 距离的语义细分
+├── overlap.py              # chunk overlap 配置与上下文拼接
 ├── pipeline_chunker.py     # 结构分片 + 语义细分两阶段分片器
 └── embedding_pipeline.py   # Chunk 向量化批处理管线
 ```
@@ -88,13 +89,24 @@ class BaseChunker(ABC):
 - 先按 `semantic_unit` 配置把文本拆成语义比较原子；默认 `sentence` 保持原有段落、行、句子逐级降级行为，`paragraph` 则以段落作为相似度计算单位。
 - 调用 embedding 模型计算相邻原子的语义距离。
 - 使用距离分位数作为动态阈值寻找断点。
-- 受 `min_chunk_tokens`、`max_chunk_tokens`、`overlap_tokens` 控制。
+- 受 `min_chunk_tokens`、`max_chunk_tokens` 控制；overlap 由独立配置控制，但仍在原切分位置追加，保证算法流程不变。
 
 `paragraph` 模式只改变相似度计算粒度：单个段落超过 `max_chunk_tokens` 时，不会再改用句子级 embedding 计算断点，但最终输出仍会做长度保底拆分，避免生成超长 Chunk。
 
 它通常不直接作为主分片器使用，而是被 `StructuredSemanticChunker` 注入。
 
-### 3.3 StructuredSemanticChunker
+### 3.3 ChunkOverlapper
+
+`ChunkOverlapper` 负责相邻 Chunk 的上下文 overlap，不参与语义断点计算。
+
+配置：
+
+- `CHUNKING_OVERLAP_ENABLED`：是否启用 overlap。
+- `CHUNKING_OVERLAP_TOKENS`：启用后追加的 token 数上限，范围 `0..64`。
+
+`CHUNKING_OVERLAP_ENABLED=false` 或 `CHUNKING_OVERLAP_TOKENS=0` 时，不追加 overlap。默认 `true + 64` 保持现有分片行为。
+
+### 3.4 StructuredSemanticChunker
 
 `StructuredSemanticChunker` 是两阶段分片器：
 
@@ -201,7 +213,7 @@ chunks = engine.process(markdown)
 修改语义分片时关注：
 
 - token 上下限是否合理。
-- overlap 是否造成内容膨胀。
+- overlap 是否按 `CHUNKING_OVERLAP_ENABLED` 与 `CHUNKING_OVERLAP_TOKENS` 生效，且没有造成内容膨胀。
 - embedding 调用是否批量且可测试。
 - 语义断点失败时是否有 fallback。
 

@@ -86,7 +86,8 @@
 | --- | --- | --- |
 | `CHUNKING_MIN_CHUNK_TOKENS` | 150 | 短文档可减小 |
 | `CHUNKING_MAX_CHUNK_TOKENS` | 512 | 长上下文模型可加大 |
-| `CHUNKING_OVERLAP_TOKENS` | 64 | 提升召回时加大 |
+| `CHUNKING_OVERLAP_ENABLED` | `true` | 是否启用相邻 chunk overlap |
+| `CHUNKING_OVERLAP_TOKENS` | 64 | overlap token 数，范围 `0..64` |
 | `CHUNKING_HEADING_BREAK_LEVEL` | 3 | 提升结构敏感性时减小 |
 | `CHUNKING_SEMANTIC_PERCENTILE` | 95 | 调整语义边界严格度 |
 | `CHUNKING_SEMANTIC_UNIT` | `sentence` | 语义相似度计算粒度：`sentence` / `paragraph` |

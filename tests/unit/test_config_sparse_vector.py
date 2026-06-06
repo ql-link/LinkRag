@@ -22,3 +22,26 @@ def test_should_reject_invalid_chunking_semantic_unit():
         assert "CHUNKING_SEMANTIC_UNIT must be 'sentence' or 'paragraph'" in str(exc)
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_should_allow_chunking_overlap_token_bounds():
+    disabled = Settings(
+        _env_file=None,
+        CHUNKING_OVERLAP_ENABLED=False,
+        CHUNKING_OVERLAP_TOKENS=0,
+    )
+    upper_bound = Settings(_env_file=None, CHUNKING_OVERLAP_TOKENS=64)
+
+    assert disabled.CHUNKING_OVERLAP_ENABLED is False
+    assert disabled.CHUNKING_OVERLAP_TOKENS == 0
+    assert upper_bound.CHUNKING_OVERLAP_TOKENS == 64
+
+
+def test_should_reject_invalid_chunking_overlap_tokens():
+    for value in (-1, 65):
+        try:
+            Settings(_env_file=None, CHUNKING_OVERLAP_TOKENS=value)
+        except ValueError as exc:
+            assert "CHUNKING_OVERLAP_TOKENS must be between 0 and 64" in str(exc)
+        else:
+            raise AssertionError("expected ValueError")

@@ -151,3 +151,56 @@ async def test_aprocess_should_run_rule_then_semantic_pipeline():
 
     for chunk in chunks:
         assert chunk.metadata["source_file"] == "override.md"
+
+
+async def test_aprocess_should_not_apply_neighbor_context_when_overlap_disabled():
+    elements = [
+        MarkdownElement(
+            type=ElementType.HEADING,
+            content="# Intro",
+            start_line=0,
+            end_line=0,
+            metadata={"heading_level": 1, "heading_text": "Intro"},
+        ),
+        MarkdownElement(
+            type=ElementType.PARAGRAPH,
+            content="before table",
+            start_line=2,
+            end_line=2,
+        ),
+        MarkdownElement(
+            type=ElementType.TABLE,
+            content="| a | b |\n|---|---|\n| 1 | 2 |",
+            start_line=4,
+            end_line=6,
+        ),
+        MarkdownElement(
+            type=ElementType.PARAGRAPH,
+            content="after table",
+            start_line=8,
+            end_line=8,
+        ),
+    ]
+    parse_result = ParseResult(
+        elements=elements,
+        tables=[],
+        images=[],
+        source_file="mock-doc.md",
+    )
+
+    semantic_chunker = PercentileSemanticChunker(
+        embedder=StaticEmbedder([]),
+        tokenizer=MockWordTokenizer(),
+        min_chunk_tokens=1,
+        max_chunk_tokens=20,
+        overlap_enabled=False,
+        overlap_tokens=2,
+    )
+    chunker = StructuredSemanticChunker(semantic_chunker=semantic_chunker)
+    engine = ChunkingEngine(chunker=chunker, parser=FakeParser(parse_result))
+
+    chunks = await engine.aprocess("ignored")
+
+    assert len(chunks) == 3
+    assert chunks[1].content == "| a | b |\n|---|---|\n| 1 | 2 |"
+    assert "context_overlap_mode" not in chunks[1].metadata
