@@ -109,11 +109,20 @@ class Settings(BaseSettings):
     CHUNKING_ENABLE_ADVANCED_PIPELINE: bool = True
     CHUNKING_HEADING_BREAK_LEVEL: int = 3
     CHUNKING_SEMANTIC_PERCENTILE: float = 95.0
+    CHUNKING_SEMANTIC_UNIT: str = "sentence"
     CHUNKING_MIN_CHUNK_TOKENS: int = 150
     CHUNKING_MAX_CHUNK_TOKENS: int = 512
     CHUNKING_OVERLAP_TOKENS: int = 64
     CHUNKING_MIN_DISTANCE_GATE: float = 0.25
     CHUNKING_EMBED_BATCH_SIZE: int = 32
+
+    @field_validator("CHUNKING_SEMANTIC_UNIT")
+    @classmethod
+    def validate_chunking_semantic_unit(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if normalized not in {"sentence", "paragraph"}:
+            raise ValueError("CHUNKING_SEMANTIC_UNIT must be 'sentence' or 'paragraph'")
+        return normalized
 
     # ==========================================
     # 向量数据库配置 (Vector Store)

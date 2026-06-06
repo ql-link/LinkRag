@@ -89,6 +89,7 @@
 | `CHUNKING_OVERLAP_TOKENS` | 64 | 提升召回时加大 |
 | `CHUNKING_HEADING_BREAK_LEVEL` | 3 | 提升结构敏感性时减小 |
 | `CHUNKING_SEMANTIC_PERCENTILE` | 95 | 调整语义边界严格度 |
+| `CHUNKING_SEMANTIC_UNIT` | `sentence` | 语义相似度计算粒度：`sentence` / `paragraph` |
 | `CHUNKING_EMBED_BATCH_SIZE` | 32 | 受向量服务并发上限约束 |
 
 详细分块策略见 [chunking.md](../internals/chunking.md)。
