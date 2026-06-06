@@ -13,6 +13,7 @@
 
 缓存策略：本期不启用 Redis 配置缓存，读配置统一 ``use_cache=False`` 直读 DB。
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -41,6 +42,12 @@ _CAPABILITY_TO_TYPE: dict[str, CapabilityType] = {
 }
 
 
+def normalize_provider_type(provider_type: str | None) -> str:
+    """归一化 Java/DB provider_type 到 Python provider 注册键。"""
+    raw = (provider_type or "openai").lower()
+    return {"claude": "anthropic", "aliyun": "qwen"}.get(raw, raw)
+
+
 @dataclass
 class ResolvedModel:
     """一次解析的产物：可直接使用的 Provider + 元信息。"""
@@ -64,7 +71,7 @@ def build_provider_from_config(
 
     Args:
         config: 配置字典，形如 ``ConfigReaderService`` 返回结构（含 provider_type /
-            api_key / custom_api_base_url / model_name；系统兜底配置带 ``is_system_fallback``）。
+            api_key / api_base_url / model_name；系统兜底配置带 ``is_system_fallback``）。
         capability: 能力字符串（CHAT/EMBEDDING/RERANK/VISION/OCR），用于 ``has_capability`` 校验。
         fallback_model: 配置未指定 ``model_name`` 时的回退模型名。
         override_model: 调用方显式指定、优先级最高的模型名（如 ``/llm`` 路由的 ``request.model``）。
@@ -86,13 +93,13 @@ def build_provider_from_config(
         raw_key = config.get("api_key", "")
         api_key = decrypt_api_key(raw_key) if raw_key else ""
 
-    provider_type = config.get("provider_type") or "openai"
+    provider_type = normalize_provider_type(config.get("provider_type"))
     model_name = override_model or config.get("model_name") or fallback_model
 
     provider = ModelFactory().create_client(
         provider_type=provider_type,
         api_key=api_key or "",
-        api_base_url=config.get("custom_api_base_url"),
+        api_base_url=config.get("api_base_url"),
         model_name=model_name,
         timeout_ms=settings.MARKDOWN_PARSER_LLM_TIMEOUT_MS,
     )

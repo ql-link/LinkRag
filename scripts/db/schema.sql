@@ -52,171 +52,59 @@ VALUES
 -- ===============================================
 -- 2. LLM 系统级厂商配置 llm_system_provider
 -- ===============================================
--- provider_type 取值与 src/core/llm/factory.py 注册键严格对齐：
---   openai / anthropic / glm / deepseek / qwen
--- supported_models 为 Dict[str, List[str]]（模型名 -> 能力标签列表），
---   能力标签集合：CHAT / EMBEDDING / RERANK / VISION / OCR / TOOL_CALLING
--- api_base_url 取各 Provider 实现的 DEFAULT_API_BASE。
--- qwen 为系统默认 provider（config.py SYSTEM_LLM_PROVIDER="qwen"），优先级最高。
+-- 运行时生效配置由 llm_user_config 承载；模型能力目录见 llm_provider_model。
 -- ===============================================
 INSERT INTO llm_system_provider
-    (id, provider_type, provider_name, api_base_url, supported_models, config_schema, is_active, priority, created_at, updated_at)
+    (id, provider_type, provider_name, api_base_url, is_active, priority, created_at, updated_at)
 VALUES
-    -- 10001 OpenAI：对话(含视觉/工具) + 文本向量化
-    (10001, 'openai', 'OpenAI', 'https://api.openai.com/v1',
-        JSON_OBJECT(
-            'gpt-4o',                 JSON_ARRAY('CHAT','VISION','TOOL_CALLING'),
-            'gpt-4o-mini',            JSON_ARRAY('CHAT','TOOL_CALLING'),
-            'gpt-4-turbo',            JSON_ARRAY('CHAT','VISION','TOOL_CALLING'),
-            'gpt-4',                  JSON_ARRAY('CHAT','TOOL_CALLING'),
-            'o3',                     JSON_ARRAY('CHAT','TOOL_CALLING'),
-            'o4-mini',                JSON_ARRAY('CHAT','TOOL_CALLING'),
-            'text-embedding-3-small', JSON_ARRAY('EMBEDDING'),
-            'text-embedding-3-large', JSON_ARRAY('EMBEDDING')
-        ),
-        JSON_OBJECT(
-            'api_key',      JSON_OBJECT('type','string', 'required', TRUE,  'label','API Key'),
-            'api_base_url', JSON_OBJECT('type','string', 'required', FALSE, 'default','https://api.openai.com/v1'),
-            'temperature',  JSON_OBJECT('type','number', 'default', 0.7, 'min', 0, 'max', 2),
-            'max_tokens',   JSON_OBJECT('type','integer','default', 4096),
-            'top_p',        JSON_OBJECT('type','number', 'default', 1.0),
-            'dimensions',   JSON_OBJECT('type','integer','required', FALSE, 'note','仅 EMBEDDING 模型生效'),
-            'timeout_ms',   JSON_OBJECT('type','integer','default', 60000)
-        ),
-        TRUE, 85, '2026-04-01 10:00:00', '2026-04-01 10:00:00'),
+    (10001, 'openai', 'OpenAI', 'https://api.openai.com/v1', TRUE, 85, '2026-04-01 10:00:00', '2026-04-01 10:00:00'),
+    (10002, 'claude', 'Anthropic Claude', 'https://api.anthropic.com/v1', TRUE, 80, '2026-04-01 10:00:00', '2026-04-01 10:00:00'),
+    (10003, 'glm', '智谱 GLM', 'https://open.bigmodel.cn/api/paas/v1', TRUE, 70, '2026-04-02 11:30:00', '2026-04-02 11:30:00'),
+    (10004, 'deepseek', 'DeepSeek', 'https://api.deepseek.com/v1', TRUE, 60, '2026-04-05 09:00:00', '2026-04-05 09:00:00'),
+    (10005, 'aliyun', '通义千问 Qwen', 'https://dashscope.aliyuncs.com/compatible-mode/v1', TRUE, 95, '2026-04-01 10:00:00', '2026-04-01 10:00:00');
 
-    -- 10002 Anthropic Claude：对话(含视觉/工具)，无官方 embedding
-    (10002, 'anthropic', 'Anthropic Claude', 'https://api.anthropic.com/v1',
-        JSON_OBJECT(
-            'claude-opus-4-8',            JSON_ARRAY('CHAT','VISION','TOOL_CALLING'),
-            'claude-sonnet-4-6',          JSON_ARRAY('CHAT','VISION','TOOL_CALLING'),
-            'claude-haiku-4-5',           JSON_ARRAY('CHAT','TOOL_CALLING'),
-            'claude-3-5-sonnet-20241022', JSON_ARRAY('CHAT','VISION','TOOL_CALLING'),
-            'claude-3-sonnet-20240229',   JSON_ARRAY('CHAT','VISION')
-        ),
-        JSON_OBJECT(
-            'api_key',      JSON_OBJECT('type','string', 'required', TRUE,  'label','API Key'),
-            'api_base_url', JSON_OBJECT('type','string', 'required', FALSE, 'default','https://api.anthropic.com/v1'),
-            'temperature',  JSON_OBJECT('type','number', 'default', 1.0, 'min', 0, 'max', 1),
-            'max_tokens',   JSON_OBJECT('type','integer','default', 8192),
-            'top_p',        JSON_OBJECT('type','number', 'default', 1.0),
-            'timeout_ms',   JSON_OBJECT('type','integer','default', 90000)
-        ),
-        TRUE, 80, '2026-04-01 10:00:00', '2026-04-01 10:00:00'),
+INSERT INTO llm_provider_model
+    (id, provider_id, model_name, capability, is_active, created_at, updated_at)
+VALUES
+    (10001, 10001, 'gpt-4o', 'CHAT', TRUE, '2026-04-01 10:00:00', '2026-04-01 10:00:00'),
+    (10002, 10001, 'text-embedding-3-small', 'EMBEDDING', TRUE, '2026-04-01 10:00:00', '2026-04-01 10:00:00'),
+    (10003, 10002, 'claude-sonnet-4-6', 'CHAT', TRUE, '2026-04-01 10:00:00', '2026-04-01 10:00:00'),
+    (10004, 10003, 'glm-4-plus', 'CHAT', TRUE, '2026-04-02 11:30:00', '2026-04-02 11:30:00'),
+    (10005, 10003, 'embedding-3', 'EMBEDDING', TRUE, '2026-04-02 11:30:00', '2026-04-02 11:30:00'),
+    (10006, 10004, 'deepseek-chat', 'CHAT', TRUE, '2026-04-05 09:00:00', '2026-04-05 09:00:00'),
+    (10007, 10005, 'qwen-plus', 'CHAT', TRUE, '2026-04-01 10:00:00', '2026-04-01 10:00:00'),
+    (10008, 10005, 'text-embedding-v4', 'EMBEDDING', TRUE, '2026-04-01 10:00:00', '2026-04-01 10:00:00'),
+    (10009, 10005, 'qwen3-vl-rerank', 'RERANK', TRUE, '2026-04-01 10:00:00', '2026-04-01 10:00:00'),
+    (10010, 10005, 'qwen-vl-plus', 'VISION', TRUE, '2026-04-01 10:00:00', '2026-04-01 10:00:00'),
+    (10011, 10005, 'qwen-vl-plus', 'OCR', TRUE, '2026-04-01 10:00:00', '2026-04-01 10:00:00');
 
-    -- 10003 智谱 GLM：对话 + 多模态(视觉/OCR) + 向量化
-    (10003, 'glm', '智谱 GLM', 'https://open.bigmodel.cn/api/paas/v1',
-        JSON_OBJECT(
-            'glm-4-plus',  JSON_ARRAY('CHAT','TOOL_CALLING'),
-            'glm-4-air',   JSON_ARRAY('CHAT','TOOL_CALLING'),
-            'glm-4-flash', JSON_ARRAY('CHAT'),
-            'glm-4',       JSON_ARRAY('CHAT','TOOL_CALLING'),
-            'glm-4v-plus', JSON_ARRAY('CHAT','VISION','OCR'),
-            'embedding-3', JSON_ARRAY('EMBEDDING')
-        ),
-        JSON_OBJECT(
-            'api_key',      JSON_OBJECT('type','string', 'required', TRUE,  'label','API Key'),
-            'api_base_url', JSON_OBJECT('type','string', 'required', FALSE, 'default','https://open.bigmodel.cn/api/paas/v1'),
-            'temperature',  JSON_OBJECT('type','number', 'default', 0.6, 'min', 0, 'max', 1),
-            'max_tokens',   JSON_OBJECT('type','integer','default', 4096),
-            'dimensions',   JSON_OBJECT('type','integer','default', 2048, 'note','embedding-3 维度'),
-            'timeout_ms',   JSON_OBJECT('type','integer','default', 60000)
-        ),
-        TRUE, 70, '2026-04-02 11:30:00', '2026-04-02 11:30:00'),
-
-    -- 10004 DeepSeek：对话(含推理)，OpenAI 兼容协议
-    (10004, 'deepseek', 'DeepSeek', 'https://api.deepseek.com/v1',
-        JSON_OBJECT(
-            'deepseek-chat',     JSON_ARRAY('CHAT','TOOL_CALLING'),
-            'deepseek-reasoner', JSON_ARRAY('CHAT','TOOL_CALLING')
-        ),
-        JSON_OBJECT(
-            'api_key',      JSON_OBJECT('type','string', 'required', TRUE,  'label','API Key'),
-            'api_base_url', JSON_OBJECT('type','string', 'required', FALSE, 'default','https://api.deepseek.com/v1'),
-            'temperature',  JSON_OBJECT('type','number', 'default', 0.5, 'min', 0, 'max', 2),
-            'max_tokens',   JSON_OBJECT('type','integer','default', 4096),
-            'timeout_ms',   JSON_OBJECT('type','integer','default', 60000)
-        ),
-        TRUE, 60, '2026-04-05 09:00:00', '2026-04-05 09:00:00'),
-
-    -- 10005 Qwen（通义千问）：系统默认 provider，覆盖 对话/视觉/OCR/重排/向量化 全能力
-    (10005, 'qwen', '通义千问 Qwen', 'https://dashscope.aliyuncs.com/compatible-mode/v1',
-        JSON_OBJECT(
-            'qwen-plus',         JSON_ARRAY('CHAT','TOOL_CALLING'),
-            'qwen-max',          JSON_ARRAY('CHAT','TOOL_CALLING'),
-            'qwen3.5-flash',     JSON_ARRAY('CHAT','TOOL_CALLING'),
-            'qwen-vl-plus',      JSON_ARRAY('CHAT','VISION','OCR'),
-            'qwen-vl-max',       JSON_ARRAY('CHAT','VISION','OCR'),
-            'qwen3-vl-rerank',   JSON_ARRAY('RERANK'),
-            'text-embedding-v4', JSON_ARRAY('EMBEDDING')
-        ),
-        JSON_OBJECT(
-            'api_key',      JSON_OBJECT('type','string', 'required', TRUE,  'label','DashScope API Key'),
-            'api_base_url', JSON_OBJECT('type','string', 'required', FALSE, 'default','https://dashscope.aliyuncs.com/compatible-mode/v1'),
-            'temperature',  JSON_OBJECT('type','number', 'default', 0.7, 'min', 0, 'max', 2),
-            'max_tokens',   JSON_OBJECT('type','integer','default', 4096),
-            'top_p',        JSON_OBJECT('type','number', 'default', 0.8),
-            'dimensions',   JSON_OBJECT('type','integer','default', 1024, 'note','text-embedding-v4 维度'),
-            'timeout_ms',   JSON_OBJECT('type','integer','default', 60000)
-        ),
-        TRUE, 95, '2026-04-01 10:00:00', '2026-04-01 10:00:00'),
-
-    -- 10006 OpenAI 兼容自建网关：演示一条 is_active=FALSE 的停用厂商
-    (10006, 'openai', 'OpenAI 兼容网关(停用)', 'https://llm-gateway.internal.example.com/v1',
-        JSON_OBJECT(
-            'qwen2.5-72b-instruct', JSON_ARRAY('CHAT','TOOL_CALLING'),
-            'bge-large-zh-v1.5',    JSON_ARRAY('EMBEDDING')
-        ),
-        JSON_OBJECT(
-            'api_key',      JSON_OBJECT('type','string', 'required', TRUE),
-            'api_base_url', JSON_OBJECT('type','string', 'required', TRUE),
-            'temperature',  JSON_OBJECT('type','number', 'default', 0.7),
-            'timeout_ms',   JSON_OBJECT('type','integer','default', 120000)
-        ),
-        FALSE, 30, '2026-05-06 14:00:00', '2026-05-18 09:20:00');
+INSERT INTO llm_system_preset
+    (id, provider_id, model_name, capability, api_key, is_active, created_at, updated_at)
+VALUES
+    (10001, 10005, 'qwen-plus', 'CHAT', 'demo-encrypted-key-chat', TRUE, '2026-04-01 10:00:00', '2026-04-01 10:00:00'),
+    (10002, 10005, 'text-embedding-v4', 'EMBEDDING', 'demo-encrypted-key-embedding', TRUE, '2026-04-01 10:00:00', '2026-04-01 10:00:00'),
+    (10003, 10005, 'qwen3-vl-rerank', 'RERANK', 'demo-encrypted-key-rerank', TRUE, '2026-04-01 10:00:00', '2026-04-01 10:00:00');
 
 -- ===============================================
 -- 3. 用户级 LLM 配置 llm_user_config
---    api_key 为加密后密文（演示用占位 Fernet 风格 token）
+--    api_key 为加密后密文；演示数据使用占位密文，真实种子由 Java/Python 对齐后写入。
 -- ===============================================
 INSERT INTO llm_user_config
-    (id, user_id, provider_id, provider_type, provider_name, config_name, api_key, custom_api_base_url,
-     model_name, priority, is_active, is_default, timeout_ms, max_retries, stream_enabled, capability, extra_config, created_at, updated_at)
+    (id, user_id, provider_id, provider_type, api_key, api_base_url, model_name,
+     capability, is_active, is_default, is_system_preset, created_at, updated_at)
 VALUES
-    -- 张伟：OpenAI 对话（默认）+ OpenAI 向量化（默认）
-    (10001, 10002, 10001, 'openai', 'OpenAI', '我的GPT-4o对话',
-        'gAAAAABm1cQ8xJ3kL5mN7oP9qZl2QyB6cR4sD8fG1hJ3kL5mN7oP9q-encrypted-key-01', NULL,
-        'gpt-4o', 90, TRUE, TRUE, 60000, 3, TRUE, 'CHAT',
-        JSON_OBJECT('temperature', 0.7, 'top_p', 1.0), '2026-04-03 15:00:00', '2026-05-28 10:11:00'),
-
-    (10002, 10002, 10001, 'openai', 'OpenAI', 'OpenAI向量化',
-        'gAAAAABm1cQ8aD5fG8hK0lM2nP4qS6tU8wY0a7sH2kLpQ9mNvR4tYuB-encrypted-key-02', NULL,
-        'text-embedding-3-small', 90, TRUE, TRUE, 30000, 3, FALSE, 'EMBEDDING',
-        JSON_OBJECT('dimensions', 1536), '2026-04-03 15:05:00', '2026-04-03 15:05:00'),
-
-    -- 张伟：Claude 对话（备用，非默认）
-    (10003, 10002, 10002, 'claude', 'Anthropic Claude', 'Claude兜底',
-        'gAAAAABm1cQ8nP4qS6tU8wY0a7sH2kLpQ9mNvR4tYuB6cXeJ1oZ3aD-encrypted-key-03', NULL,
-        'claude-sonnet-4-6', 70, TRUE, FALSE, 90000, 2, TRUE, 'CHAT',
-        JSON_OBJECT('temperature', 1.0), '2026-04-10 09:20:00', '2026-04-10 09:20:00'),
-
-    -- 李芳：GLM 对话（默认）+ GLM 向量化（默认）
-    (10004, 10003, 10003, 'glm', '智谱 GLM', '智谱GLM对话',
-        'gAAAAABm1cQ8tYuB6cXeJ1oZ3aD5fG8hK0lM2nP4qS6tU8wY0a7sH2-encrypted-key-04', NULL,
-        'glm-4-plus', 80, TRUE, TRUE, 60000, 3, TRUE, 'CHAT',
-        JSON_OBJECT('temperature', 0.6), '2026-04-08 10:00:00', '2026-05-29 14:00:00'),
-
-    (10005, 10003, 10003, 'glm', '智谱 GLM', '智谱向量化',
-        'gAAAAABm1cQ8cXeJ1oZ3aD5fG8hK0lM2nP4qS6tU8wY0a7sH2kLpQ9-encrypted-key-05', NULL,
-        'embedding-3', 80, TRUE, TRUE, 30000, 3, FALSE, 'EMBEDDING',
-        JSON_OBJECT('dimensions', 2048), '2026-04-08 10:05:00', '2026-04-08 10:05:00'),
-
-    -- 李芳：DeepSeek 自建网关对话（默认未启用）
-    (10006, 10003, 10004, 'deepseek', 'DeepSeek', 'DeepSeek私有网关',
-        'gAAAAABm1cQ8B6cXeJ1oZ3aD5fG8hK0lM2nP4qS6tU8wY0a7sH2kLp-encrypted-key-06',
-        'https://llm-gateway.internal.lifang.com/v1',
-        'deepseek-chat', 50, FALSE, FALSE, 60000, 3, TRUE, 'CHAT',
-        JSON_OBJECT('temperature', 0.5), '2026-05-01 16:00:00', '2026-05-15 09:30:00');
+    (10001, 10002, 10005, 'aliyun', 'demo-encrypted-key-chat', 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        'qwen-plus', 'CHAT', TRUE, TRUE, TRUE, '2026-04-03 15:00:00', '2026-05-28 10:11:00'),
+    (10002, 10002, 10005, 'aliyun', 'demo-encrypted-key-embedding', 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+        'text-embedding-v4', 'EMBEDDING', TRUE, TRUE, TRUE, '2026-04-03 15:05:00', '2026-04-03 15:05:00'),
+    (10003, 10002, 10002, 'claude', 'demo-encrypted-key-claude', 'https://api.anthropic.com/v1',
+        'claude-sonnet-4-6', 'CHAT', TRUE, FALSE, FALSE, '2026-04-10 09:20:00', '2026-04-10 09:20:00'),
+    (10004, 10003, 10003, 'glm', 'demo-encrypted-key-glm-chat', 'https://open.bigmodel.cn/api/paas/v1',
+        'glm-4-plus', 'CHAT', TRUE, TRUE, FALSE, '2026-04-08 10:00:00', '2026-05-29 14:00:00'),
+    (10005, 10003, 10003, 'glm', 'demo-encrypted-key-glm-embedding', 'https://open.bigmodel.cn/api/paas/v1',
+        'embedding-3', 'EMBEDDING', TRUE, TRUE, FALSE, '2026-04-08 10:05:00', '2026-04-08 10:05:00'),
+    (10006, 10003, 10004, 'deepseek', 'demo-encrypted-key-deepseek', 'https://llm-gateway.internal.lifang.com/v1',
+        'deepseek-chat', 'CHAT', FALSE, FALSE, FALSE, '2026-05-01 16:00:00', '2026-05-15 09:30:00');
 
 -- ===============================================
 -- 4. 数据集 dataset（含软删列）
