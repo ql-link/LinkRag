@@ -17,6 +17,7 @@ from src.api.recall_pipeline_provider import get_recall_pipeline
 from src.config import settings
 from src.core.pipeline.recall import (
     RecallError,
+    RecallFatalError,
     RecallHit,
     RecallResponse,
 )
@@ -290,6 +291,25 @@ def test_all_sources_failed_emits_sse_error(client):
         assert name == "error"
         payload = json.loads(data)
         assert payload["code"] == "RECALL_ALL_SOURCES_FAILED"
+        assert "Traceback" not in payload["message"]
+    finally:
+        app.dependency_overrides.pop(get_recall_pipeline, None)
+
+
+def test_embedding_config_missing_emits_sse_error(client):
+    """发起用户无默认 EMBEDDING 配置 → pipeline 抛 RecallFatalError →
+    SSE error 事件返回 RECALL_EMBEDDING_CONFIG_MISSING（硬失败，不降级）。"""
+    fake = FakePipeline(exc=RecallFatalError("user embedding config missing"))
+    app.dependency_overrides[get_recall_pipeline] = lambda: fake
+    try:
+        resp = _post(TestClient(app), make_token(), {"query": "q", "user_id": 123, "dataset_ids": [1]})
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        import json
+        name, data = _parse_sse(resp.text)[0]
+        assert name == "error"
+        payload = json.loads(data)
+        assert payload["code"] == "RECALL_EMBEDDING_CONFIG_MISSING"
         assert "Traceback" not in payload["message"]
     finally:
         app.dependency_overrides.pop(get_recall_pipeline, None)
