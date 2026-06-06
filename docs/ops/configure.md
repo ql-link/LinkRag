@@ -157,6 +157,26 @@
 | `DENSE_RETRIEVAL_TOP_K` | `10` | dense 召回 facade 直调时的兜底 top_k；pipeline 路径下被 `RECALL_RESULT_LIMIT` 覆盖 |
 | `DENSE_RETRIEVAL_SCORE_THRESHOLD` | `0.0` | dense 召回默认 score 阈值（cosine 上界 [0, 1]，0.0 = 不过滤；facade 入口校验 `> 1.0` 早死） |
 
+### 对外直连召回 SSE 配置（LINK-40）
+
+对外直连召回 SSE 接口 `POST /api/v1/recall/stream` 的配置。前端凭 Java 签发的短期
+session token 直连，**独立密钥**与内部端点隔离。详见
+[recall_http_api.md](../internals/recall_http_api.md)。
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `RECALL_SESSION_AUTH_ENABLED` | `true` | 是否启用 session token 验签；**生产必须为 true** |
+| `RECALL_SESSION_JWT_ISSUER` | `tolink-java` | 期望的 session JWT `iss` |
+| `RECALL_SESSION_JWT_AUDIENCE` | `tolink-rag-frontend` | 期望的 session JWT `aud`（与内部端点 `tolink-rag` 区分）|
+| `RECALL_SESSION_JWT_SCOPE` | `recall:stream` | 期望的 session JWT `scope` |
+| `RECALL_SESSION_JWT_SECRET` | 本地联调占位值 | **独立** HS256 密钥，与 `RECALL_INTERNAL_JWT_SECRET` 物理隔离、可单独轮转；**生产务必覆盖** |
+| `RECALL_SESSION_MAX_CONCURRENT` | `3` | 单用户最大并发召回流数；token 短期可复用，此为资源滥用主闸门，超限返回 `429` |
+| `CORS_ORIGINS` | `["*"]` | **生产对外环境必须收敛为前端可信域名清单**（不可用 `*`，否则带 `Authorization` 头的跨域预检失败）|
+
+> token 短期可复用：Python 只校验 `exp`（建议 Java 签发 30s，仅够建连），不做一次性 /
+> 防重放 / 撤销；连上后流的存活由 `RECALL_STREAM_TIMEOUT_MS` 控制。并发计数依赖 Redis，
+> Redis 不可用时 fail-open（放行，因限流是资源保护非鉴权）。
+
 ### 远程 BGE-M3 推理服务（`remote_bge_m3` provider）
 
 `SPARSE_VECTOR_PROVIDER` 除已有 `bge_m3`（本地）/ `bge_m3_http`（早期 bge-m3-server）

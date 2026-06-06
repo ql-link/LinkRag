@@ -90,6 +90,25 @@ class Settings(BaseSettings):
     RECALL_ENABLED_SOURCES: str = "bm25,sparse,dense"
 
     # ==========================================
+    # 对外直连召回 SSE 配置 (Recall Direct SSE / LINK-40)
+    # ==========================================
+    # 前端凭 Java 签发的短期 session token 直连 Python `POST /api/v1/recall/stream`。
+    # 与内部端点(RECALL_INTERNAL_*)的核心差异：面向浏览器、密钥独立、受众独立。
+    # 详见 docs/internals/recall_http_api.md「对外直连 SSE」。
+    RECALL_SESSION_AUTH_ENABLED: bool = True
+    RECALL_SESSION_JWT_ISSUER: str = "tolink-java"
+    # 受众与内部端点(tolink-rag)区分：前端面凭证独立标识，避免内部 token 误用到对外端点。
+    RECALL_SESSION_JWT_AUDIENCE: str = "tolink-rag-frontend"
+    RECALL_SESSION_JWT_SCOPE: str = "recall:stream"
+    # 独立 HS256 密钥：与 RECALL_INTERNAL_JWT_SECRET 物理隔离，前端面 token 疑似泄露时
+    # 可单独轮转、不牵连 Java 内部调用。默认值仅供本地联调，生产必须用环境变量覆盖。
+    RECALL_SESSION_JWT_SECRET: str = (
+        "3f8c1d6a90b74e2f8a5c0d1e7b3f9a26c4d8e0f1a2b3c4d5e6f7081929a3b4c5d"
+    )
+    # 单用户最大并发召回流数。token 短期可复用、不做一次性，此为资源滥用的主闸门。
+    RECALL_SESSION_MAX_CONCURRENT: int = 3
+
+    # ==========================================
     # 系统级兜底 LLM 配置 (Platform Default Fallback LLMs)
     # ==========================================
     SYSTEM_LLM_PROVIDER: str = "qwen"

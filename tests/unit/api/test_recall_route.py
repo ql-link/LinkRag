@@ -354,12 +354,12 @@ def test_request_id_generated_when_absent(client, fake_pipeline):
 async def test_client_disconnect_cancels_and_emits_no_event():
     import asyncio
 
-    from src.api.routes.recall import _recall_event_stream
+    from src.api.recall_stream_runtime import recall_event_stream
     from src.core.pipeline.recall import RecallRequest
 
     fake = FakePipeline(response=_ok_response(), delay=10.0)
     req = RecallRequest(query="q", user_id=1, dataset_ids=[1], top_k=20)
-    gen = _recall_event_stream(fake, req, "rid")
+    gen = recall_event_stream(fake, req, "rid")
 
     task = asyncio.ensure_future(gen.__anext__())
     await asyncio.sleep(0.02)  # 让流进入执行中

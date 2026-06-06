@@ -57,6 +57,28 @@ class RedisClient:
         """删除键"""
         return await self.client.delete(*keys)
 
+    async def incr(self, key: str) -> int:
+        """原子自增，返回自增后的值。
+
+        用于召回直连端点的「单用户并发流计数」：建连时 INCR 占位，
+        以原子方式判断是否超过并发上限，避免多 worker 下计数漂移。
+        """
+        return await self.client.incr(key)
+
+    async def decr(self, key: str) -> int:
+        """原子自减，返回自减后的值。
+
+        流结束/断连时释放并发名额；与 ``incr`` 成对使用。
+        """
+        return await self.client.decr(key)
+
+    async def expire(self, key: str, ttl: int) -> bool:
+        """设置键的过期时间（秒），返回是否设置成功。
+
+        并发计数 key 设安全 TTL，兜底进程异常退出未 DECR 造成的名额泄漏。
+        """
+        return bool(await self.client.expire(key, ttl))
+
     async def keys(self, pattern: str) -> list[str]:
         """获取匹配模式的键"""
         return await self.client.keys(pattern)
