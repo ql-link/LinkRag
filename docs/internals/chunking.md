@@ -140,10 +140,9 @@ class BaseChunker(ABC):
 
 配置：
 
-- `CHUNKING_OVERLAP_ENABLED`：是否启用 overlap。
-- `CHUNKING_OVERLAP_TOKENS`：启用后追加的 token 数上限，范围 `0..64`。
+- `CHUNKING_OVERLAP_TOKENS`：追加的 token 数上限，范围 `0..64`；`0` 表示关闭 overlap。
 
-`CHUNKING_OVERLAP_ENABLED=false` 或 `CHUNKING_OVERLAP_TOKENS=0` 时，不追加 overlap。默认 `true + 64` 保持现有分片行为。
+`CHUNKING_OVERLAP_TOKENS=0` 时，不追加 overlap。默认 `64` 保持现有分片行为。
 
 ### 3.6 StructuredSemanticChunker
 
@@ -265,7 +264,7 @@ chunks = engine.process(markdown)
 修改语义分片时关注：
 
 - token 上下限是否合理。
-- overlap 是否按 `CHUNKING_OVERLAP_ENABLED` 与 `CHUNKING_OVERLAP_TOKENS` 生效，且没有造成内容膨胀。
+- overlap 是否按 `CHUNKING_OVERLAP_TOKENS` 生效，且没有造成内容膨胀。
 - embedding 调用是否批量且可测试。
 - 语义断点失败时是否有 fallback。
 
