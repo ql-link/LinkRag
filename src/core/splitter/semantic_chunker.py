@@ -51,6 +51,7 @@ class PercentileSemanticChunker:
     """
 
     SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[。！？；])|(?<=[.?!;])\s+")
+    SUPPORTED_SEMANTIC_UNITS = frozenset({"sentence", "paragraph"})
 
     def __init__(
         self,
@@ -62,6 +63,7 @@ class PercentileSemanticChunker:
         overlap_tokens: int = 50,
         overlap_percentage: float | None = None,
         min_distance_gate: float = 0.25,
+        semantic_unit: str = "sentence",
     ):
         """
             初始化语义切片器及其阈值、长度约束与 overlap 配置。
@@ -75,10 +77,12 @@ class PercentileSemanticChunker:
             overlap_tokens: 相邻 Chunk 的固定 token overlap 上限。
             overlap_percentage: 可选的 overlap 百分比配置；当 `overlap_tokens` 为 0 时启用。
             min_distance_gate: 绝对最小语义距离阈值，用于避免过度切分。
+            semantic_unit: 语义相似度计算粒度，支持 `sentence` 或 `paragraph`。
 
         Returns:
             None.
         """
+        semantic_unit = semantic_unit.strip().lower()
         if not 0 < percentile <= 100:
             raise ValueError("percentile must be in (0, 100].")
         if min_chunk_tokens <= 0:
@@ -93,6 +97,9 @@ class PercentileSemanticChunker:
             raise ValueError("overlap_percentage must be in [0, 1).")
         if min_distance_gate < 0:
             raise ValueError("min_distance_gate cannot be negative.")
+        if semantic_unit not in self.SUPPORTED_SEMANTIC_UNITS:
+            supported = ", ".join(sorted(self.SUPPORTED_SEMANTIC_UNITS))
+            raise ValueError(f"semantic_unit must be one of: {supported}.")
 
         self.embedder = embedder
         self.tokenizer = tokenizer
@@ -102,6 +109,7 @@ class PercentileSemanticChunker:
         self.overlap_tokens = overlap_tokens
         self.overlap_percentage = overlap_percentage
         self.min_distance_gate = min_distance_gate
+        self.semantic_unit = semantic_unit
         self.last_stats = SemanticChunkingStats()
 
     def _resolve_overlap_tokens(self) -> int:
@@ -243,6 +251,18 @@ class PercentileSemanticChunker:
             atoms.append(current)
         return atoms
 
+    def _split_paragraphs(self, text: str) -> List[str]:
+        """
+            按 Markdown 段落边界切分文本，过滤空段落并保留段落内部换行。
+
+        Args:
+            text: 待切分的大文本块。
+
+        Returns:
+            List[str]: 非空段落列表。
+        """
+        return [paragraph.strip() for paragraph in re.split(r"\n{2,}", text) if paragraph.strip()]
+
     def _atomize_text(self, text: str) -> List[str]:
         """
             执行原子化拆解，优先按段落切分，必要时降级为按行或按句切分。
@@ -253,7 +273,10 @@ class PercentileSemanticChunker:
         Returns:
             List[str]: 原子化后的文本单元列表。
         """
-        paragraphs = [paragraph.strip() for paragraph in re.split(r"\n{2,}", text) if paragraph.strip()]
+        paragraphs = self._split_paragraphs(text)
+        if self.semantic_unit == "paragraph":
+            return paragraphs
+
         atoms: List[str] = []
 
         for paragraph in paragraphs:
@@ -273,6 +296,25 @@ class PercentileSemanticChunker:
             atoms.extend(self._split_by_sentences(paragraph))
 
         return [atom for atom in atoms if atom.strip()]
+
+    def _append_limited_chunk(self, chunks: list[str], text: str) -> None:
+        """
+            追加最终 Chunk 文本；若文本超长，则只做长度保底拆分。
+
+        Args:
+            chunks: 待追加的最终 Chunk 列表。
+            text: 当前待落盘的 Chunk 文本。
+
+        Returns:
+            None.
+        """
+        cleaned = text.strip()
+        if not cleaned:
+            return
+        if self._count_tokens(cleaned) <= self.max_chunk_tokens:
+            chunks.append(cleaned)
+            return
+        chunks.extend(self._split_oversized_text(cleaned))
 
     @staticmethod
     def _compute_distances(embeddings: Sequence[Sequence[float]]) -> list[float]:
@@ -391,7 +433,9 @@ class PercentileSemanticChunker:
 
         for idx in range(1, len(atoms)):
             next_atom = atoms[idx].strip()
-            distance = distances[idx - 1] if distances is not None and idx - 1 < len(distances) else None
+            distance = (
+                distances[idx - 1] if distances is not None and idx - 1 < len(distances) else None
+            )
 
             semantic_breakpoint = (
                 distance is not None
@@ -454,7 +498,9 @@ class PercentileSemanticChunker:
 
         for idx in range(1, len(atoms)):
             next_atom = atoms[idx].strip()
-            distance = distances[idx - 1] if distances is not None and idx - 1 < len(distances) else None
+            distance = (
+                distances[idx - 1] if distances is not None and idx - 1 < len(distances) else None
+            )
 
             semantic_breakpoint = (
                 distance is not None
@@ -469,7 +515,7 @@ class PercentileSemanticChunker:
             if overflow_forced or (
                 semantic_breakpoint and self._count_tokens(current_text) >= self.min_chunk_tokens
             ):
-                chunks.append(current_text)
+                self._append_limited_chunk(chunks, current_text)
                 if semantic_breakpoint and not overflow_forced:
                     breakpoints.append(idx - 1)
                 current_text = self._build_next_chunk(current_text, next_atom)
@@ -477,7 +523,7 @@ class PercentileSemanticChunker:
                 current_text = merged_candidate
 
         if current_text:
-            chunks.append(current_text)
+            self._append_limited_chunk(chunks, current_text)
 
         self.last_stats = SemanticChunkingStats(
             atom_count=len(atoms),
@@ -509,7 +555,8 @@ class PercentileSemanticChunker:
 
         try:
             embedding_result = await self.embedder.embed(list(atoms))
-            embeddings = [list(map(float, vector)) for vector in embedding_result.embeddings]
+            raw_embeddings = getattr(embedding_result, "embeddings", None) or []
+            embeddings = [list(map(float, vector)) for vector in raw_embeddings]
             if len(embeddings) != len(atoms) or any(not vector for vector in embeddings):
                 raise ValueError(
                     f"Embedding shape mismatch: got {len(embeddings)} vectors, expected {len(atoms)}."
@@ -547,7 +594,8 @@ class PercentileSemanticChunker:
 
         try:
             embedding_result = await self.embedder.embed(list(atoms))
-            embeddings = [list(map(float, vector)) for vector in embedding_result.embeddings]
+            raw_embeddings = getattr(embedding_result, "embeddings", None) or []
+            embeddings = [list(map(float, vector)) for vector in raw_embeddings]
             if len(embeddings) != len(atoms) or any(not vector for vector in embeddings):
                 raise ValueError(
                     f"Embedding shape mismatch: got {len(embeddings)} vectors, expected {len(atoms)}."
