@@ -84,6 +84,7 @@
 
 | 变量 | 默认 | 调整方向 |
 | --- | --- | --- |
+| `CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` | 128 | 第一阶段候选边界粗分片软下限，调大可减少短 chunk |
 | `CHUNKING_MIN_CHUNK_TOKENS` | 150 | 短文档可减小 |
 | `CHUNKING_MAX_CHUNK_TOKENS` | 512 | 长上下文模型可加大 |
 | `CHUNKING_OVERLAP_ENABLED` | `true` | 是否启用相邻 chunk overlap |
