@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 import uvicorn
 
 from src.config import settings
-from src.api.routes import llm, internal, parse, mq, recall
+from src.api.routes import llm, internal, parse, mq, recall, recall_direct
 from src.api.internal_auth import RecallApiError
 from src.cache.redis_client import redis_client
 from src.database import init_database, close_database
@@ -75,6 +75,10 @@ app = FastAPI(
 )
 
 # CORS 配置
+# 注意：CORS 是全局中间件，对所有路由生效。对外直连召回端点（/api/v1/recall/stream）
+# 暴露给浏览器后，生产环境必须把 CORS_ORIGINS 由默认 ["*"] 收敛为前端可信域名清单
+# （携带 Authorization 头的跨域请求需要显式 origin，"*" + allow_credentials 本就非法）。
+# 内部路由是服务端调用，不依赖 CORS，收敛无副作用。
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
@@ -89,6 +93,7 @@ app.include_router(internal.router)
 app.include_router(parse.router)  # 挂载文档解析路由
 app.include_router(mq.router)    # 挂载 MQ 消息中台路由
 app.include_router(recall.router)  # 挂载内部多路召回 SSE 路由
+app.include_router(recall_direct.router)  # 挂载对外直连召回 SSE 路由（LINK-40）
 
 
 @app.exception_handler(RecallApiError)

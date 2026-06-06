@@ -98,3 +98,28 @@ sparse 底座含本地 BGE-M3，装配较重，必须单例。dense 底座走远
 `user_id` / `top_k` 不在装配期注入，而是执行期由 pipeline 透传给
 `Retriever.recall(query, dataset_ids, doc_ids, *, user_id, top_k)`——这是相对 LINK-6
 的契约调整（见 [recall_pipeline.md](recall_pipeline.md)），使单例化成立。
+
+## 7. 对外直连 SSE（LINK-40）
+
+内部端点（§2–§6）面向 Java、内网可信；**对外直连端点**面向浏览器前端，让前端凭 Java
+签发的短期 session token 直连、绕过 Java 中转。两条链路**并存**，召回执行复用同一实现。
+
+- 端点：`POST /api/v1/recall/stream`（[src/api/routes/recall_direct.py](../../src/api/routes/recall_direct.py)）。
+- 会话鉴权：[src/api/recall_session_auth.py](../../src/api/recall_session_auth.py) 的
+  `verify_session_token`——用**独立密钥** `RECALL_SESSION_JWT_SECRET` HS256 验签，校验
+  `aud=tolink-rag-frontend` / `iss=tolink-java` / `scope=recall:stream` / `exp`。与内部端点
+  密码学隔离，前端面 token 疑似泄露可单独轮转。
+- **token 短期可复用**：只校验 `exp`，**不做一次性 / 防重放 / 撤销**。本场景只读、不可越权
+  （只能召回本人授权范围）、且有并发上限作资源闸门，一次性收益不抵复杂度（决策见
+  `.specs/recall-direct-sse/brief.md §3.3`）。断线重连可复用未过期 token，过期后回 Java 重申。
+- 入参：body 只含 `query` + 可选 `dataset_ids`（授权范围内子集选择，`extra=forbid`）；
+  **不含 `user_id`**，身份只取 claims（`_resolve_dataset_ids` 做 ⊆ claims 校验）。
+- 并发限流：[recall_session_auth.py](../../src/api/recall_session_auth.py) 的
+  `acquire_stream_slot` / `release_stream_slot`，按 `user_id` 用 Redis `INCR/DECR` 计数，
+  上限 `RECALL_SESSION_MAX_CONCURRENT`，超限 `429 RECALL_RATE_LIMITED`。`_guarded_stream`
+  在流收尾（含断连 `CancelledError`）的 `finally` 中释放名额。握手顺序：验签 → body 校验
+  → scope → 并发 acquire → 建流。Redis 不可用时 acquire **fail-open**（限流是资源保护非鉴权）。
+- SSE 执行：与内部端点共享 [src/api/recall_stream_runtime.py](../../src/api/recall_stream_runtime.py)
+  的 `recall_event_stream`，事件协议、降级、失败终态完全一致（避免双链路漂移）。
+- CORS：复用全局 `CORSMiddleware`；对外环境必须把 `CORS_ORIGINS` 由 `*` 收敛为前端可信
+  域名清单。错误码见 [error_codes.md §6](../api/error_codes.md#6-对外直连-recall-错误码)。
