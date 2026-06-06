@@ -140,6 +140,7 @@ def create_chunking_engine() -> ChunkingEngine:
         chunker = StructuredSemanticChunker(
             semantic_chunker=semantic_chunker,
             heading_break_level=settings.CHUNKING_HEADING_BREAK_LEVEL,
+            min_candidate_chunk_tokens=settings.CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS,
         )
         return ChunkingEngine(chunker=chunker)
     except Exception as exc:
