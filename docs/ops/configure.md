@@ -8,7 +8,7 @@
 
 | 分组 | 关键变量前缀 | 何时关心 |
 | --- | --- | --- |
-| 应用 | `APP_*`, `LOG_LEVEL` | 始终 |
+| 应用 | `APP_*`, `LOG_LEVEL`, `LOG_*` | 始终 |
 | 数据库 | `DB_*` | 始终 |
 | 缓存 | `REDIS_*` | 始终 |
 | 安全 | `API_KEY_ENCRYPTION_SECRET` | 始终（必须与 Java 管理端一致） |
@@ -56,6 +56,33 @@
 | `CHUNKING_ENABLE_ADVANCED_PIPELINE` | `true` | 是否启用进阶分块流水线 |
 
 > 注：ES 入库失败即终态，无 ES 内部自动重试配置。原 `ES_INDEXING_MAX_RETRY` 已移除（用户侧重试由 `document_parse_pipeline.retry_count` 记录，触发路径待后续需求接线）。
+
+## 日志
+
+日志系统基于 Loguru，统一在 [src/utils/logger.py](../../src/utils/logger.py) 配置。运行时**始终输出到 stdout**（容器 / 本地通用）；开启文件落盘后，额外按 Java 端约定写入按日期归档的本地文件。
+
+| 变量 | 默认 | 含义 |
+| --- | --- | --- |
+| `LOG_LEVEL` | `INFO` | 控制台与全量日志文件的级别下限；ERROR 文件固定只收 ERROR 及以上，不受此项影响 |
+| `LOG_FILE_ENABLED` | `true` | 是否写本地文件。纯容器环境若靠 `docker logs` 采集，可设 `false` 只保留 stdout |
+| `LOG_DIR` | `logs` | 日志根目录 |
+| `LOG_SERVICE_NAME` | `tolink-service` | 日志文件名前缀 |
+| `LOG_RETENTION_DAYS` | `7` | 日志保留天数，超过自动清理旧日期目录 |
+
+落盘结构（每天 0 点切分，按日期目录归档，对齐 Java 端）：
+
+```
+logs/
+├── 2026-06-07/
+│   ├── tolink-service.log          # 当天全量（>= LOG_LEVEL）
+│   └── tolink-service-error.log    # 当天 ERROR 及以上
+├── 2026-06-08/
+│   ├── tolink-service.log
+│   └── tolink-service-error.log
+└── ...
+```
+
+实现要点：文件名中的日期由 Loguru 在创建新文件时求值，配合 `rotation="00:00"` 每天 0 点切分，自然落入新的日期目录；写入开启 `enqueue` 队列，异步刷盘不阻塞业务；保留期由 `LOG_RETENTION_DAYS` 控制，当前为 **7 天**。
 
 ## MQ 失败兜底（重试 + 死信）
 
