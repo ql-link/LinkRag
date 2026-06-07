@@ -68,6 +68,16 @@ class RecallPipeline:
         started_at = time.monotonic()
         self._validate(request)
 
+        # 入口日志：不记 query 原文（可能含用户敏感内容），只记可观测的元信息。
+        logger.info(
+            "[RecallPipeline] start user={} datasets={} docs={} top_k={} mode={}",
+            request.user_id,
+            len(request.dataset_ids or []),
+            len(request.doc_ids or []),
+            request.top_k,
+            "parallel" if self._config.parallel else "serial",
+        )
+
         if self._config.parallel:
             per_source_results = await self._run_parallel(request)
         else:
@@ -82,6 +92,16 @@ class RecallPipeline:
         # 服务端固定返回候选上限：融合后按 top_k 截断（fuse 已按 fused_score 降序）。
         fused_hits = fused_hits[: request.top_k]
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
+
+        # 结果日志：耗时、融合命中数、各路命中分布、失败路（已有数据，原先只进响应不落日志）。
+        logger.info(
+            "[RecallPipeline] done user={} elapsed_ms={} hits={} per_source={} failed={}",
+            request.user_id,
+            elapsed_ms,
+            len(fused_hits),
+            {s: len(success_hits.get(s, [])) for s in self._sources},
+            failed_sources,
+        )
         return self._build_response(
             query=request.query,
             fused_hits=fused_hits,

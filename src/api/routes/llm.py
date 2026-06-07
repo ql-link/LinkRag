@@ -5,6 +5,7 @@ LLM API 路由
 from typing import Optional, List
 
 from fastapi import APIRouter, Header, HTTPException, Depends
+from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -139,6 +140,7 @@ async def generate_text(
     except HTTPException:
         raise
     except Exception as e:
+        logger.exception(f"/llm/generate 调用失败 (user={x_user_id})")
         return APIResponse(
             code=500,
             message=str(e),
@@ -183,6 +185,7 @@ async def generate_text_stream(
     except HTTPException:
         raise
     except Exception as e:
+        logger.exception(f"/llm 接口调用失败 (user={x_user_id})")
         return APIResponse(code=500, message=str(e), data=None)
 
 
@@ -214,6 +217,7 @@ async def embed_text(
     except HTTPException:
         raise
     except Exception as e:
+        logger.exception(f"/llm 接口调用失败 (user={x_user_id})")
         return APIResponse(code=500, message=str(e), data=None)
 
 
@@ -250,6 +254,7 @@ async def rerank_documents(
     except HTTPException:
         raise
     except Exception as e:
+        logger.exception(f"/llm 接口调用失败 (user={x_user_id})")
         return APIResponse(code=500, message=str(e), data=None)
 
 
@@ -283,4 +288,5 @@ async def extract_text_from_image(
     except HTTPException:
         raise
     except Exception as e:
+        logger.exception(f"/llm 接口调用失败 (user={x_user_id})")
         return APIResponse(code=500, message=str(e), data=None)
