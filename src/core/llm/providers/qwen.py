@@ -10,6 +10,7 @@ import httpx
 
 from src.core.llm.base_provider import BaseProvider
 from src.core.llm.interfaces import CapabilityType
+from src.core.llm.providers._sse import iter_sse_json
 from src.core.llm.response import GenerateResult, StreamChunk, EmbeddingResult, UsageInfo
 from src.core.llm.exceptions import (
     AuthenticationError,
@@ -126,6 +127,51 @@ class QwenClient:
         payload.update(kwargs)
 
         return await self._post("/chat/completions", payload)
+
+    async def stream_chat_completions(
+        self,
+        model: str,
+        messages: List[dict],
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        **kwargs
+    ) -> AsyncIterator[dict]:
+        """流式调用 Chat Completions（SSE），逐块 yield 解析后的 JSON chunk。"""
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": True,
+        }
+        if max_tokens:
+            payload["max_tokens"] = max_tokens
+        payload.update(kwargs)
+
+        url = f"{self.api_base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        client = await self._get_client()
+
+        try:
+            async with client.stream("POST", url, json=payload, headers=headers) as response:
+                if response.status_code >= 400:
+                    await response.aread()
+                    if response.status_code == 401:
+                        raise AuthenticationError(message="Invalid API Key", provider_type="qwen")
+                    if response.status_code == 429:
+                        raise RateLimitError(message="Rate limit exceeded", provider_type="qwen")
+                    raise ProviderConnectionError(
+                        message=f"Qwen API error: {response.status_code}",
+                        provider_type="qwen",
+                    )
+                async for chunk in iter_sse_json(response):
+                    yield chunk
+        except httpx.TimeoutException:
+            raise ProviderConnectionError(message="Request timeout", provider_type="qwen")
+        except httpx.ConnectError:
+            raise ProviderConnectionError(message="Connection failed", provider_type="qwen")
 
     async def embeddings(
         self,
@@ -248,27 +294,29 @@ class QwenProvider(BaseProvider):
 
         content_so_far = ""
 
-        async for chunk in self._client.chat_completions(
+        async for chunk in self._client.stream_chat_completions(
             model=self.model_name,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
-            stream=True,
             **kwargs
         ):
-            if chunk.get("choices"):
-                delta = chunk["choices"][0].get("delta", {}).get("content", "")
-                is_end = chunk["choices"][0].get("finish_reason") is not None
+            choices = chunk.get("choices") or []
+            if choices:
+                choice = choices[0] or {}
+                delta = (choice.get("delta") or {}).get("content") or ""
+                is_end = choice.get("finish_reason") is not None
                 content_so_far += delta
 
+                usage = chunk.get("usage") or {}
                 yield StreamChunk(
                     delta=delta,
                     content=content_so_far,
                     is_end=is_end,
                     usage=UsageInfo(
-                        prompt_tokens=chunk.get("usage", {}).get("prompt_tokens", 0),
-                        completion_tokens=chunk.get("usage", {}).get("completion_tokens", 0),
-                        total_tokens=chunk.get("usage", {}).get("total_tokens", 0),
+                        prompt_tokens=usage.get("prompt_tokens", 0),
+                        completion_tokens=usage.get("completion_tokens", 0),
+                        total_tokens=usage.get("total_tokens", 0),
                     ) if is_end else None
                 )
 
