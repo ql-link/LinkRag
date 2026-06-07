@@ -145,11 +145,11 @@ class Settings(BaseSettings):
     MARKDOWN_PARSER_VISION_CONCURRENCY: int = 24
     CHUNKING_ENABLE_ADVANCED_PIPELINE: bool = True
     CHUNKING_HEADING_BREAK_LEVEL: int = 3
+    CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS: int = 128
     CHUNKING_SEMANTIC_PERCENTILE: float = 95.0
     CHUNKING_SEMANTIC_UNIT: str = "sentence"
     CHUNKING_MIN_CHUNK_TOKENS: int = 150
     CHUNKING_MAX_CHUNK_TOKENS: int = 512
-    CHUNKING_OVERLAP_ENABLED: bool = True
     CHUNKING_OVERLAP_TOKENS: int = 64
     CHUNKING_MIN_DISTANCE_GATE: float = 0.25
     CHUNKING_EMBED_BATCH_SIZE: int = 32
@@ -167,6 +167,13 @@ class Settings(BaseSettings):
     def validate_chunking_overlap_tokens(cls, v: int) -> int:
         if v < 0 or v > 64:
             raise ValueError("CHUNKING_OVERLAP_TOKENS must be between 0 and 64")
+        return v
+
+    @field_validator("CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS")
+    @classmethod
+    def validate_chunking_min_candidate_chunk_tokens(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS must be positive")
         return v
 
     # ==========================================

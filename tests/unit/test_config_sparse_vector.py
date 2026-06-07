@@ -25,14 +25,9 @@ def test_should_reject_invalid_chunking_semantic_unit():
 
 
 def test_should_allow_chunking_overlap_token_bounds():
-    disabled = Settings(
-        _env_file=None,
-        CHUNKING_OVERLAP_ENABLED=False,
-        CHUNKING_OVERLAP_TOKENS=0,
-    )
+    disabled = Settings(_env_file=None, CHUNKING_OVERLAP_TOKENS=0)
     upper_bound = Settings(_env_file=None, CHUNKING_OVERLAP_TOKENS=64)
 
-    assert disabled.CHUNKING_OVERLAP_ENABLED is False
     assert disabled.CHUNKING_OVERLAP_TOKENS == 0
     assert upper_bound.CHUNKING_OVERLAP_TOKENS == 64
 
@@ -45,3 +40,12 @@ def test_should_reject_invalid_chunking_overlap_tokens():
             assert "CHUNKING_OVERLAP_TOKENS must be between 0 and 64" in str(exc)
         else:
             raise AssertionError("expected ValueError")
+
+
+def test_should_reject_invalid_min_candidate_chunk_tokens():
+    try:
+        Settings(_env_file=None, CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS=0)
+    except ValueError as exc:
+        assert "CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS must be positive" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")

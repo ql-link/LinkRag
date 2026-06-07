@@ -133,13 +133,13 @@ def create_chunking_engine() -> ChunkingEngine:
             semantic_unit=settings.CHUNKING_SEMANTIC_UNIT,
             min_chunk_tokens=settings.CHUNKING_MIN_CHUNK_TOKENS,
             max_chunk_tokens=settings.CHUNKING_MAX_CHUNK_TOKENS,
-            overlap_enabled=settings.CHUNKING_OVERLAP_ENABLED,
             overlap_tokens=settings.CHUNKING_OVERLAP_TOKENS,
             min_distance_gate=settings.CHUNKING_MIN_DISTANCE_GATE,
         )
         chunker = StructuredSemanticChunker(
             semantic_chunker=semantic_chunker,
             heading_break_level=settings.CHUNKING_HEADING_BREAK_LEVEL,
+            min_candidate_chunk_tokens=settings.CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS,
         )
         return ChunkingEngine(chunker=chunker)
     except Exception as exc:

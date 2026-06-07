@@ -11,6 +11,7 @@ splitter — 文本分片模块
 """
 
 from .base import BaseChunker
+from .candidate_boundary_chunker import CandidateBoundaryChunker
 from .chunking_engine import ChunkingEngine
 from .embedding_pipeline import ChunkEmbeddingPipeline
 from .factory import (
@@ -22,6 +23,7 @@ from .factory import (
 )
 from .models import Chunk, EmbeddedChunk, EmbeddingPipelineStats
 from .overlap import ChunkOverlapConfig, ChunkOverlapper
+from .oversized_chunk_refiner import OversizedChunkRefiner
 from .pipeline_chunker import StructuredSemanticChunker
 from .rule_chunker import ASTAwareChunker
 from .semantic_chunker import PercentileSemanticChunker, SemanticSplitter
@@ -31,10 +33,12 @@ __all__ = [
     "EmbeddedChunk",
     "EmbeddingPipelineStats",
     "BaseChunker",
+    "CandidateBoundaryChunker",
     "ChunkingEngine",
     "ASTAwareChunker",
     "ChunkOverlapConfig",
     "ChunkOverlapper",
+    "OversizedChunkRefiner",
     "StructuredSemanticChunker",
     "PercentileSemanticChunker",
     "SemanticSplitter",

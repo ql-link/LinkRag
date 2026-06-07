@@ -70,6 +70,7 @@ logs/
 # 只有 .specs/README.md 入 git；其他全部本地工作产物，合并后清理。
 /.specs/*
 !/.specs/README.md
+/.papers/*
 
 # Claude Code session worktrees (per-session local clones)
 .claude/worktrees/
