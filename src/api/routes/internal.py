@@ -2,6 +2,7 @@
 内部接口路由
 供 Java 管理端查询配置和用量（不暴露给外部）
 """
+
 from typing import Optional
 from datetime import datetime
 
@@ -40,8 +41,7 @@ async def get_system_providers(
                 "provider_type": p.get("provider_type"),
                 "provider_name": p.get("provider_name"),
                 "api_base_url": p.get("api_base_url"),
-                "supported_models": p.get("supported_models", []),
-                "config_schema": p.get("config_schema"),
+                "models": p.get("models", {}),
                 "is_active": p.get("is_active", True),
             }
             for p in providers
@@ -78,17 +78,14 @@ async def get_user_configs(
         items = [
             {
                 "id": c.get("id"),
-                "config_name": c.get("config_name"),
                 "provider_type": c.get("provider_type"),
-                "provider_name": c.get("provider_name"),
                 "model_name": c.get("model_name"),
+                "capability": c.get("capability"),
                 "api_key_masked": mask_api_key(c.get("api_key", "")),
-                "custom_api_base_url": c.get("custom_api_base_url"),
-                "priority": c.get("priority"),
+                "api_base_url": c.get("api_base_url"),
                 "is_active": c.get("is_active"),
                 "is_default": c.get("is_default"),
-                "stream_enabled": c.get("stream_enabled"),
-                "extra_config": c.get("extra_config"),
+                "is_system_preset": c.get("is_system_preset"),
             }
             for c in configs
         ]

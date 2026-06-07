@@ -61,7 +61,11 @@ class Settings(BaseSettings):
     # ==========================================
     # 安全配置 (Security)
     # ==========================================
-    API_KEY_ENCRYPTION_SECRET: str = "default-secret"
+    # 64-character hex string; decoded to 32 bytes for AES-256-GCM.
+    # Local placeholder only; production must override it with the Java-side secret.
+    API_KEY_ENCRYPTION_SECRET: str = (
+        "0000000000000000000000000000000000000000000000000000000000000000"
+    )
 
     # ==========================================
     # 内部召回 API 配置 (Internal Recall API)
