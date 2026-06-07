@@ -74,15 +74,18 @@
 ```
 logs/
 ├── 2026-06-07/
-│   ├── tolink-service.log          # 当天全量（>= LOG_LEVEL）
-│   └── tolink-service-error.log    # 当天 ERROR 及以上
+│   ├── tolink-service-<pid>.log          # 当天全量（>= LOG_LEVEL）
+│   └── tolink-service-error-<pid>.log    # 当天 ERROR 及以上
 ├── 2026-06-08/
-│   ├── tolink-service.log
-│   └── tolink-service-error.log
+│   ├── tolink-service-<pid>.log
+│   └── tolink-service-error-<pid>.log
 └── ...
 ```
 
 实现要点：文件名中的日期由 Loguru 在创建新文件时求值，配合 `rotation="00:00"` 每天 0 点切分，自然落入新的日期目录；写入开启 `enqueue` 队列，异步刷盘不阻塞业务；保留期由 `LOG_RETENTION_DAYS` 控制，当前为 **7 天**。
+
+文件名带 **PID** 后缀（`<pid>` 为进程号）：多 worker（gunicorn）部署时各进程写各自文件，避免多进程共写同一文件导致的写入交错与 0 点切分/清理竞争；单进程部署同样安全，仅文件名多一段 PID。每行日志同时携带进程号（控制台格式的 `{process}` 字段），多 worker 共写 stdout 时也能区分来源进程。
+> 注意：PID 在 `setup_logger()` 调用时求值。gunicorn 若启用 `--preload`，需在 `post_fork` 钩子里重新调用 `setup_logger()`，否则各 worker 会复用 master 的 PID 写到同一文件。
 
 ### 统一日志管道（标准库 logging 桥接）
 
@@ -93,6 +96,8 @@ logs/
 - 日志在 [src/main.py](../../src/main.py) 顶部**显式初始化**（`setup_logger()`），不依赖 import 副作用；放在其余模块导入之前，确保导入期日志也被捕获。
 - `uvicorn`/`uvicorn.access`/`uvicorn.error`/`gunicorn` 等自带 handler 的 logger 会被显式接管（清空其 handler、打开 propagate），其访问日志与未捕获异常的 500 堆栈因此也进入日期文件。`uvicorn.run` 传 `log_config=None`，不再安装 uvicorn 自己的日志配置。
 - 异常堆栈开启 `backtrace`、关闭 `diagnose`：保留完整调用栈，但不展开局部变量值，避免在生产日志里泄露密钥 / PII。
+- 全局未捕获异常由 [src/main.py](../../src/main.py) 的 `Exception` handler 兜底：带请求方法 / 路径记录完整堆栈，再返回统一 500 错误体 `{code, message, data}`。
+- 应用关闭（lifespan shutdown）时 `await logger.complete()`，等待 `enqueue` 队列里的日志全部落盘，避免退出丢尾部日志。
 - 约定：**应用代码新增日志一律用 Loguru**；遗留的标准库 logging 会被自动桥接，无需改写，但不要再新增标准库 logging 用法。
 
 ## MQ 失败兜底（重试 + 死信）

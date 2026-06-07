@@ -1,19 +1,22 @@
 import logging
+import os
 import sys
 
 from loguru import logger
 
 from src.config import settings
 
-# 控制台格式：带颜色，便于本地开发查看
+# 控制台格式：带颜色，便于本地开发查看。带 {process}（PID），多 worker
+# 共写 stdout 时可区分来源进程。
 _CONSOLE_FORMAT = (
     "<green>{time:YYYY-MM-DD HH:mm:ss}</green> | "
     "<level>{level: <8}</level> | "
+    "<magenta>{process}</magenta> | "
     "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - "
     "<level>{message}</level>"
 )
 
-# 文件格式：无颜色控制符，便于落盘与日志采集
+# 文件格式：无颜色控制符，便于落盘与日志采集。文件名已带 PID 隔离，行内不再重复进程号。
 _FILE_FORMAT = (
     "{time:YYYY-MM-DD HH:mm:ss.SSS} | "
     "{level: <8} | "
@@ -100,6 +103,12 @@ def setup_logger():
     if settings.LOG_FILE_ENABLED:
         base = settings.LOG_DIR.rstrip("/")
         service = settings.LOG_SERVICE_NAME
+        # 文件名带 PID 隔离：多 worker（gunicorn）部署时各进程写各自文件，
+        # 避免多进程共写同一文件导致的写入交错与 0 点切分/清理竞争。
+        # 单进程部署也安全，仅文件名多一段 PID。
+        # 注意：PID 在 setup_logger 调用时求值；gunicorn 若用 --preload，
+        # 需在 post_fork 钩子里重新调用 setup_logger，否则各 worker 会复用 master 的 PID。
+        pid = os.getpid()
         common = dict(
             rotation="00:00",
             retention=f"{settings.LOG_RETENTION_DAYS} days",
@@ -112,14 +121,14 @@ def setup_logger():
 
         # 当天全量日志
         logger.add(
-            base + "/{time:YYYY-MM-DD}/" + f"{service}.log",
+            base + "/{time:YYYY-MM-DD}/" + f"{service}-{pid}.log",
             level=settings.LOG_LEVEL,
             **common,
         )
 
         # 当天 ERROR 日志（独立文件）
         logger.add(
-            base + "/{time:YYYY-MM-DD}/" + f"{service}-error.log",
+            base + "/{time:YYYY-MM-DD}/" + f"{service}-error-{pid}.log",
             level="ERROR",
             **common,
         )
