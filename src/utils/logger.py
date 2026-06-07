@@ -101,8 +101,10 @@ def setup_logger():
     )
 
     if settings.LOG_FILE_ENABLED:
-        base = settings.LOG_DIR.rstrip("/")
-        service = settings.LOG_SERVICE_NAME
+        # 空值回退默认，避免误配（如 .env 里 `LOG_DIR=` 留空）解析成绝对路径 `/`，
+        # 把日志写到文件系统根目录或导致启动期权限错误。
+        base = (settings.LOG_DIR.strip() or "logs").rstrip("/")
+        service = settings.LOG_SERVICE_NAME.strip() or "tolink-service"
         # 文件名带 PID 隔离：多 worker（gunicorn）部署时各进程写各自文件，
         # 避免多进程共写同一文件导致的写入交错与 0 点切分/清理竞争。
         # 单进程部署也安全，仅文件名多一段 PID。
