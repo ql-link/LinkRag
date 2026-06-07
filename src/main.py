@@ -7,6 +7,13 @@ from src.nltk_bootstrap import configure_nltk_data_path
 
 configure_nltk_data_path()
 
+# 显式初始化日志：装好 Loguru sink 与标准库 logging 桥接（InterceptHandler），
+# 放在其余 src 导入之前，确保后续模块导入期产生的日志也被统一捕获，
+# 而非依赖某个 core 模块被 import 时的副作用触发。
+from src.utils.logger import logger, setup_logger
+
+setup_logger()
+
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
@@ -65,6 +72,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         pass
     await redis_client.close()
     await close_database()
+    # 等待 enqueue 异步队列里的日志全部落盘，避免退出时丢失尾部日志。
+    await logger.complete()
 
 
 app = FastAPI(
@@ -105,6 +114,22 @@ async def recall_api_error_handler(request: Request, exc: RecallApiError) -> JSO
     )
 
 
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """兜底未捕获异常：带请求上下文记录完整堆栈，再返回统一 500 响应。
+
+    框架层异常虽已由 InterceptHandler 桥接的 uvicorn logger 记录，但缺业务上下文；
+    此处补记请求方法 / 路径，便于排障，并保证对外错误体格式统一。
+    """
+    logger.opt(exception=exc).error(
+        f"未捕获异常 {request.method} {request.url.path}: {exc!r}"
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"code": "INTERNAL_ERROR", "message": "服务内部错误", "data": None},
+    )
+
+
 
 @app.get("/health")
 async def health_check():
@@ -122,4 +147,7 @@ if __name__ == "__main__":
         host=settings.APP_HOST,
         port=settings.APP_PORT,
         reload=True,
+        # 不让 uvicorn 安装自己的 dictConfig；日志交由 setup_logger 的
+        # InterceptHandler 统一接管（CLI 启动路径同样在 import 期被接管覆盖）。
+        log_config=None,
     )

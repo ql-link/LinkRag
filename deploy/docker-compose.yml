@@ -10,6 +10,11 @@ services:
       - ../.env
     ports:
       - "8000:8000"
+    volumes:
+      # 日志持久化到宿主机，避免容器重建（每次重新部署）丢失按日期归档的日志文件。
+      # 相对路径以本 compose 文件所在目录为基准（与 ../.env 同级），即部署目录根
+      # /opt/tolink/toLink-Rag/logs/<YYYY-MM-DD>/...。需保持 .env 中 LOG_DIR=logs（相对路径）。
+      - ../logs:/app/logs
     networks:
       - tolink-app-net
     # 启动前如需执行 Alembic 迁移，可改用：

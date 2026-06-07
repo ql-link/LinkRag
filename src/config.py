@@ -15,6 +15,13 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     APP_ENV: str = "development"
 
+    # 日志文件落盘（对齐 Java 端：logs/<YYYY-MM-DD>/<service>.log + <service>-error.log）。
+    # 每天 0 点切分，按目录归档；保留 LOG_RETENTION_DAYS 天后自动清理。
+    LOG_FILE_ENABLED: bool = True
+    LOG_DIR: str = "logs"
+    LOG_SERVICE_NAME: str = "tolink-service"
+    LOG_RETENTION_DAYS: int = 7
+
     # ==========================================
     # 存储 & 缓存配置 (Storage & Cache)
     # ==========================================
