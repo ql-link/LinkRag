@@ -217,8 +217,12 @@ async def test_markdown_parser_to_splitter_should_cover_all_markdown_types_and_g
 
     assert len(embedded_chunks) == 6
     assert all(
-        chunk.metadata["split_strategy"] == "candidate_boundary" for chunk in embedded_chunks
+        chunk.metadata["split_strategy"] in {"candidate_boundary", "semantic"}
+        for chunk in embedded_chunks
+        if chunk.metadata.get("chunk_role") != "derived_element"
     )
+    assert any(chunk.metadata["split_strategy"] == "semantic" for chunk in embedded_chunks)
+    assert any(chunk.metadata["split_strategy"] == "derived_element" for chunk in embedded_chunks)
     assert not any(chunk.metadata["split_strategy"] == "isolated" for chunk in embedded_chunks)
     assert any(
         "The metrics table shows healthy recall, stable latency, and broad coverage for the pipeline."
@@ -234,18 +238,63 @@ async def test_markdown_parser_to_splitter_should_cover_all_markdown_types_and_g
     assert any(
         chunk.metadata.get("context_overlap_mode") == "neighbor" for chunk in embedded_chunks
     )
+    assert not any(
+        chunk.metadata.get("context_overlap_mode") == "neighbor"
+        for chunk in embedded_chunks
+        if chunk.metadata.get("chunk_role") == "derived_element"
+    )
+    assert not any(
+        chunk.metadata.get("context_overlap_mode") == "neighbor"
+        for chunk in embedded_chunks
+        if chunk.metadata.get("protected_element_types")
+    )
 
     image_chunk = next(
-        chunk for chunk in embedded_chunks if "image" in chunk.metadata.get("element_types", [])
+        chunk
+        for chunk in embedded_chunks
+        if "image" in chunk.metadata.get("element_types", [])
+        and chunk.metadata.get("chunk_role") != "derived_element"
     )
     assert "A compact architecture sketch" in image_chunk.content
     assert "## Quoted Insight" in image_chunk.content
-    assert image_chunk.metadata.get("context_next_tokens_applied", 0) > 0
-    assert image_chunk.metadata["protected_element_types"] == ["image"]
+    assert "context_next_tokens_applied" not in image_chunk.metadata
+    assert "image" in image_chunk.metadata["protected_element_types"]
 
-    assert len(embedder.calls) == 1
-    assert embedder.calls[0]["model"] == "visual-test-embedding"
-    assert len(embedder.calls[0]["texts"]) == len(embedded_chunks)
+    image_derived_chunk = next(
+        chunk
+        for chunk in embedded_chunks
+        if chunk.metadata.get("chunk_role") == "derived_element"
+        and chunk.metadata.get("element_type") == "image"
+    )
+    assert image_derived_chunk.metadata["element_id"] == "image_001"
+    assert image_derived_chunk.metadata["source_chunk_index"] == 0
+    assert "类型：图片" in image_derived_chunk.content
+    assert "图片ID：image_001" in image_derived_chunk.content
+    assert "A dashboard screenshot with cards, charts, and highlighted retrieval metrics." in (
+        image_derived_chunk.content
+    )
+    assert "相邻上下文：" in image_derived_chunk.content
+
+    table_derived_chunk = next(
+        chunk
+        for chunk in embedded_chunks
+        if chunk.metadata.get("chunk_role") == "derived_element"
+        and chunk.metadata.get("element_type") == "table"
+    )
+    assert table_derived_chunk.metadata["element_id"] == "table_001"
+    assert table_derived_chunk.metadata["source_chunk_index"] == 2
+    assert table_derived_chunk.metadata["table_inline_in_source"] is True
+    assert "类型：表格" in table_derived_chunk.content
+    assert "表格ID：table_001" in table_derived_chunk.content
+    assert "| Metric | Value | Trend |" in table_derived_chunk.content
+    assert (
+        "The metrics table shows healthy recall, stable latency, and broad coverage for the pipeline."
+        in table_derived_chunk.content
+    )
+
+    assert len(embedder.calls) == 2
+    assert embedder.calls[-1]["model"] == "visual-test-embedding"
+    assert len(embedder.calls[-1]["texts"]) == len(embedded_chunks)
 
     _write_visualization(parse_result, embedded_chunks, vision_client, table_client, embedder)
     assert ARTIFACT_PATH.exists() is True

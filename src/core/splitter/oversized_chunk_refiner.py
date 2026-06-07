@@ -72,7 +72,7 @@ class OversizedChunkRefiner:
     @staticmethod
     def _reindex(chunks: list[Chunk]) -> list[Chunk]:
         """
-            重新生成连续 chunk_index。
+            重新生成连续 chunk_index，并同步 derived chunk 的 source_chunk_index。
 
         Args:
             chunks: 待重编号的 chunk 列表。
@@ -80,24 +80,23 @@ class OversizedChunkRefiner:
         Returns:
             list[Chunk]: 已重编号 chunk 列表。
         """
+        original_to_final_index: dict[int, int] = {}
+
         for index, chunk in enumerate(chunks):
+            original_index = chunk.metadata.get("chunk_index")
+            if original_index is not None:
+                original_to_final_index.setdefault(int(original_index), index)
             chunk.metadata["chunk_index"] = index
+
+        for chunk in chunks:
+            source_chunk_index = chunk.metadata.get("source_chunk_index")
+            if source_chunk_index is None:
+                continue
+            resolved_index = original_to_final_index.get(int(source_chunk_index))
+            if resolved_index is not None:
+                chunk.metadata["source_chunk_index"] = resolved_index
+
         return chunks
-
-    def _mark_protected_skip(self, chunk: Chunk) -> Chunk:
-        """
-            为含 protected element 的 oversized chunk 写入保守降级标记。
-
-        Args:
-            chunk: 待标记 chunk。
-
-        Returns:
-            Chunk: 原 chunk。
-        """
-        chunk.metadata["oversized_refine_skipped"] = True
-        chunk.metadata["oversized_refine_skip_reason"] = "protected_element"
-        chunk.metadata["oversized_token_count"] = self._count_tokens(chunk.content)
-        return chunk
 
     async def _refine_text_chunk(self, chunk: Chunk) -> list[Chunk]:
         """
@@ -160,7 +159,7 @@ class OversizedChunkRefiner:
                 continue
 
             if self._has_protected_element(chunk):
-                refined_chunks.append(self._mark_protected_skip(chunk))
+                refined_chunks.append(chunk)
                 continue
 
             refined_chunks.extend(await self._refine_text_chunk(chunk))

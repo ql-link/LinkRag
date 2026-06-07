@@ -3,6 +3,7 @@ from __future__ import annotations
 import src.core.splitter.factory as factory
 from src.core.llm.interfaces import CapabilityType
 from src.core.splitter import StructuredSemanticChunker
+from src.core.splitter.element_derived_chunker import INLINE_TABLE_MAX_TOKENS
 
 
 class _FakeEmbedder:
@@ -24,6 +25,7 @@ def test_create_chunking_engine_should_pass_semantic_unit_from_settings(monkeypa
     assert engine.chunker.semantic_chunker.overlapper.effective_tokens == 7
     assert engine.chunker.semantic_chunker.overlapper.config.tokens == 7
     assert engine.chunker.candidate_chunker.min_candidate_chunk_tokens == 99
+    assert INLINE_TABLE_MAX_TOKENS == 256
 
 
 def test_create_chunking_engine_should_disable_overlap_when_tokens_is_zero(monkeypatch):

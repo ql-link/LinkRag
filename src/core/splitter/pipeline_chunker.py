@@ -53,6 +53,7 @@ class StructuredSemanticChunker(BaseChunker):
             tokenizer=semantic_chunker.tokenizer,
             min_candidate_chunk_tokens=min_candidate_chunk_tokens,
             heading_break_level=heading_break_level,
+            overlapper=semantic_chunker.overlapper,
         )
         self.oversized_refiner = oversized_refiner or OversizedChunkRefiner(
             semantic_chunker=semantic_chunker,
@@ -83,9 +84,24 @@ class StructuredSemanticChunker(BaseChunker):
             "Use await chunker.achunk(...) or await ChunkingEngine.aprocess(...)."
         )
 
+    @staticmethod
+    def _can_apply_neighbor_context(chunk: Chunk) -> bool:
+        """
+            判断最终 chunk 是否适合参与 neighbor overlap。
+
+        Args:
+            chunk: 待判断的最终 chunk。
+
+        Returns:
+            bool: derived chunk 或含 protected element 的 chunk 返回 False。
+        """
+        return chunk.metadata.get("chunk_role") != "derived_element" and not chunk.metadata.get(
+            "protected_element_types"
+        )
+
     def _apply_neighbor_context(self, chunks: list[Chunk]) -> list[Chunk]:
         """
-            为最终相邻 Chunk 追加前后文 overlap，补齐候选边界粗分片后的邻接语境。
+            为最终相邻普通 Chunk 追加前后文 overlap，补齐候选边界粗分片后的邻接语境。
 
         Args:
             chunks: 已完成结构与语义分片的最终 Chunk 列表。
@@ -97,13 +113,23 @@ class StructuredSemanticChunker(BaseChunker):
             return chunks
 
         base_contents = [chunk.content for chunk in chunks]
+        contextual_indexes = [
+            index for index, chunk in enumerate(chunks) if self._can_apply_neighbor_context(chunk)
+        ]
 
-        for index, chunk in enumerate(chunks):
+        for position, index in enumerate(contextual_indexes):
+            chunk = chunks[index]
             chunk.content, previous_tokens, next_tokens = (
                 self.semantic_chunker.overlapper.build_neighbor_context(
-                    previous_content=base_contents[index - 1] if index > 0 else None,
+                    previous_content=(
+                        base_contents[contextual_indexes[position - 1]] if position > 0 else None
+                    ),
                     current_content=base_contents[index],
-                    next_content=base_contents[index + 1] if index + 1 < len(chunks) else None,
+                    next_content=(
+                        base_contents[contextual_indexes[position + 1]]
+                        if position + 1 < len(contextual_indexes)
+                        else None
+                    ),
                 )
             )
             if previous_tokens > 0:

@@ -84,7 +84,7 @@ async def test_refine_should_semantically_split_oversized_text_chunk():
     assert chunks[0].metadata["semantic_source_chunk_index"] == 3
 
 
-async def test_refine_should_skip_protected_oversized_chunk():
+async def test_refine_should_keep_protected_oversized_chunk_without_skip_metadata():
     chunk = Chunk(
         content="before table " + " ".join(f"cell{i}" for i in range(10)),
         start_line=1,
@@ -96,6 +96,55 @@ async def test_refine_should_skip_protected_oversized_chunk():
     chunks = await refiner.refine([chunk])
 
     assert chunks == [chunk]
-    assert chunks[0].metadata["oversized_refine_skipped"] is True
-    assert chunks[0].metadata["oversized_refine_skip_reason"] == "protected_element"
-    assert chunks[0].metadata["oversized_token_count"] > 5
+    assert "oversized_refine_skipped" not in chunks[0].metadata
+    assert "oversized_refine_skip_reason" not in chunks[0].metadata
+    assert "oversized_token_count" not in chunks[0].metadata
+
+
+async def test_refine_should_update_derived_source_chunk_index_after_reindex():
+    oversized_text = Chunk(
+        content="alpha one two\n\nalpha three four\n\nbeta five six",
+        start_line=1,
+        end_line=5,
+        metadata={"chunk_index": 0, "element_types": ["paragraph"]},
+    )
+    source_chunk = Chunk(
+        content="[图片引用: image_001]\n图片说明：diagram",
+        start_line=7,
+        end_line=7,
+        metadata={
+            "chunk_index": 1,
+            "chunk_role": "mixed",
+            "element_types": ["image"],
+            "protected_element_types": ["image"],
+        },
+    )
+    derived_chunk = Chunk(
+        content="类型：图片\n图片ID：image_001",
+        start_line=7,
+        end_line=7,
+        metadata={
+            "chunk_index": 2,
+            "chunk_role": "derived_element",
+            "element_type": "image",
+            "source_chunk_index": 1,
+            "element_types": ["image"],
+        },
+    )
+    refiner = OversizedChunkRefiner(
+        _semantic_chunker(
+            [
+                [1.0, 0.0],
+                [1.0, 0.0],
+                [0.0, 1.0],
+            ],
+            max_chunk_tokens=5,
+        )
+    )
+
+    chunks = await refiner.refine([oversized_text, source_chunk, derived_chunk])
+
+    assert [chunk.metadata["chunk_index"] for chunk in chunks] == [0, 1, 2, 3, 4]
+    assert chunks[3] is source_chunk
+    assert chunks[4] is derived_chunk
+    assert chunks[4].metadata["source_chunk_index"] == 3

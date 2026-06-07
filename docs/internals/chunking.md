@@ -11,6 +11,7 @@ src/core/splitter/
 ├── chunking_engine.py      # Markdown 解析与分片编排入口
 ├── rule_chunker.py         # 基于 Markdown AST 的规则分片
 ├── candidate_boundary_chunker.py # 基于候选结构边界的粗分片
+├── element_derived_chunker.py     # 图片/表格 derived chunk 构造与标题路径追踪
 ├── oversized_chunk_refiner.py    # oversized 粗 chunk 二次细分
 ├── semantic_chunker.py     # 基于 embedding 距离的语义细分
 ├── overlap.py              # chunk overlap 配置与上下文拼接
@@ -47,6 +48,7 @@ ChunkingEngine(chunker=StructuredSemanticChunker(...))
 | `ChunkingEngine` | `chunking_engine.py` | 连接 `MarkdownParser` 和具体 chunker |
 | `ASTAwareChunker` | `rule_chunker.py` | 按标题、表格、图片、代码块等结构规则分片 |
 | `CandidateBoundaryChunker` | `candidate_boundary_chunker.py` | 第一阶段结构候选边界粗分片，避免短小节被过度切碎 |
+| `HeadingTrailTracker` / `DerivedElementChunkBuilder` | `element_derived_chunker.py` | 复用标题路径规则，并为图片、表格生成 derived chunk |
 | `OversizedChunkRefiner` | `oversized_chunk_refiner.py` | 第二阶段只处理超过最大 token 上限的粗 chunk |
 | `PercentileSemanticChunker` | `semantic_chunker.py` | 对超长文本执行语义断点切分 |
 | `StructuredSemanticChunker` | `pipeline_chunker.py` | 串联候选边界粗分片、oversized 细分和相邻上下文 overlap |
@@ -107,10 +109,14 @@ class BaseChunker(ABC):
 行为：
 
 - 忽略 front matter、水平分割线等噪声元素。
-- 标题、段落、列表、引用、代码块、公式、表格、图片等块级结构都作为候选边界。
-- 候选边界不等于硬 chunk 边界；只有当前 buffer 达到 `CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` 后，才在下一个候选边界处切分。
+- 标题、段落、列表、引用、代码块、公式、表格、图片等块级结构都作为候选元素。
+- 候选边界不等于硬 chunk 边界；只有当前 buffer 达到 `CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` 后，才在下一个 heading 边界处切分，优先保证多数 chunk 从标题结构开始，并避免同一标题下的正文被普通段落边界拆开。
 - 纯标题 buffer 不会因为达到软下限而单独输出；文档尾部只有标题时会并入前一个 chunk，除非全文只有标题。
-- 代码块、公式、表格、图片作为 protected element 参与粗 chunk 聚合，不默认单独成块，不在元素内部截断。
+- 代码块、公式、表格、图片作为 protected element 参与粗 chunk 聚合，不在元素内部截断。
+- 图片、表格会在保留 mixed chunk 原文位置连续性的同时生成 derived chunk，用于独立召回。
+- 图片在 mixed chunk 中替换为稳定图片引用和视觉说明；derived chunk 保留图片说明、标题路径、相邻上下文和原始引用。
+- 表格总是生成 table-derived chunk；短表格在 mixed chunk 中保留原始 Markdown 表格结构，长表格在 mixed chunk 中替换为稳定表格引用和表格摘要。
+- 短表格判定为：表格 token 数 `<= 256`、表格所有非空行数 `<= 12`、最大列数 `<= 5`。这些阈值是 splitter 模块内部常量，不作为运维配置暴露；行数包含表头、分隔行和数据行。
 - 第一阶段允许输出超过 `CHUNKING_MAX_CHUNK_TOKENS` 的粗 chunk，是否二次细分由第二阶段判断。
 
 输出 metadata 包含：
@@ -122,6 +128,20 @@ class BaseChunker(ABC):
 - `split_strategy="candidate_boundary"`
 - `coarse_token_count`
 - `protected_element_types`（仅当 chunk 内包含 protected element 时出现）
+- `chunk_role="mixed"`（第一阶段 source chunk）
+- `derived_element_ids`（仅当 source chunk 产生图片或表格 derived chunk 时出现）
+
+derived chunk 额外包含：
+
+- `chunk_role="derived_element"`
+- `split_strategy="derived_element"`
+- `element_type`（`image` / `table`）
+- `element_id`，以及对应的 `image_id` 或 `table_id`
+- `source_chunk_index`（指向最终输出中的 source mixed chunk）
+- `heading_trail`
+- 表格 derived chunk 会记录 `table_inline_in_source`、`table_row_count`、`table_col_count`、`table_token_count`
+
+derived chunk 不使用 parent/child chunk 关系，不改向量库 schema；它作为普通最终 chunk 进入后续 embedding 与索引流程。
 
 ### 3.4 OversizedChunkRefiner
 
@@ -132,7 +152,7 @@ class BaseChunker(ABC):
 - 只处理 token 数超过 `CHUNKING_MAX_CHUNK_TOKENS` 的粗 chunk。
 - 未超长 chunk 原样保留。
 - 纯文本 oversized chunk 复用 `PercentileSemanticChunker.split()` 做语义细分。
-- 含代码块、公式、表格、图片的 oversized chunk 本期保守保留，不在 protected element 内部截断；metadata 会标记 `oversized_refine_skipped=true` 与 `oversized_refine_skip_reason="protected_element"`。
+- 含代码块、公式、表格、图片的 oversized chunk 本期保守保留，不在 protected element 内部截断；第二阶段不额外写入跳过状态 metadata。
 
 ### 3.5 ChunkOverlapper
 
@@ -143,6 +163,8 @@ class BaseChunker(ABC):
 - `CHUNKING_OVERLAP_TOKENS`：追加的 token 数上限，范围 `0..64`；`0` 表示关闭 overlap。
 
 `CHUNKING_OVERLAP_TOKENS=0` 时，不追加 overlap。默认 `64` 保持现有分片行为。
+
+图片/表格 derived chunk 的 `相邻上下文` 也复用 `ChunkOverlapper` 的 token 截取能力：取异构元素前一个可见元素尾部 N tokens 与后一个可见元素头部 N tokens，N 同样由 `CHUNKING_OVERLAP_TOKENS` 决定。`CHUNKING_OVERLAP_TOKENS=0` 时 derived chunk 仍会生成，但不写入相邻上下文。最终相邻 Chunk overlap 只在非 derived、且不含 protected element 的 chunk 之间追加，避免表格、代码块、公式块或图片引用片段通过 overlap 泄漏到其他 chunk。
 
 ### 3.6 StructuredSemanticChunker
 

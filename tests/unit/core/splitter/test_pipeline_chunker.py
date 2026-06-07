@@ -180,10 +180,14 @@ async def test_aprocess_should_not_apply_neighbor_context_when_overlap_disabled(
 
     chunks = await engine.aprocess("ignored")
 
-    assert len(chunks) == 1
+    assert len(chunks) == 2
     assert chunks[0].content == (
         "# Intro\n\nbefore table\n\n| a | b |\n|---|---|\n| 1 | 2 |\n\nafter table"
     )
     assert chunks[0].metadata["split_strategy"] == "candidate_boundary"
     assert chunks[0].metadata["protected_element_types"] == ["table"]
     assert "context_overlap_mode" not in chunks[0].metadata
+    assert chunks[1].metadata["chunk_role"] == "derived_element"
+    assert chunks[1].metadata["element_type"] == "table"
+    assert chunks[1].metadata["source_chunk_index"] == 0
+    assert "相邻上下文：" not in chunks[1].content
