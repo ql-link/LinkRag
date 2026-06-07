@@ -15,6 +15,13 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     APP_ENV: str = "development"
 
+    # 日志文件落盘（对齐 Java 端：logs/<YYYY-MM-DD>/<service>.log + <service>-error.log）。
+    # 每天 0 点切分，按目录归档；保留 LOG_RETENTION_DAYS 天后自动清理。
+    LOG_FILE_ENABLED: bool = True
+    LOG_DIR: str = "logs"
+    LOG_SERVICE_NAME: str = "tolink-service"
+    LOG_RETENTION_DAYS: int = 7
+
     # ==========================================
     # 存储 & 缓存配置 (Storage & Cache)
     # ==========================================
@@ -61,7 +68,11 @@ class Settings(BaseSettings):
     # ==========================================
     # 安全配置 (Security)
     # ==========================================
-    API_KEY_ENCRYPTION_SECRET: str = "default-secret"
+    # 64-character hex string; decoded to 32 bytes for AES-256-GCM.
+    # Local placeholder only; production must override it with the Java-side secret.
+    API_KEY_ENCRYPTION_SECRET: str = (
+        "0000000000000000000000000000000000000000000000000000000000000000"
+    )
 
     # ==========================================
     # 内部召回 API 配置 (Internal Recall API)
@@ -90,6 +101,32 @@ class Settings(BaseSettings):
     RECALL_ENABLED_SOURCES: str = "bm25,sparse,dense"
 
     # ==========================================
+    # 对外直连召回 SSE 配置 (Recall Direct SSE / LINK-40)
+    # ==========================================
+    # 前端凭 Java 签发的短期 session token 直连 Python `POST /api/v1/recall/stream`。
+    # 与内部端点(RECALL_INTERNAL_*)的核心差异：面向浏览器、密钥独立、受众独立。
+    # 详见 docs/internals/recall_http_api.md「对外直连 SSE」。
+    RECALL_SESSION_AUTH_ENABLED: bool = True
+    RECALL_SESSION_JWT_ISSUER: str = "tolink-java"
+    # 受众与内部端点(tolink-rag)区分：前端面凭证独立标识，避免内部 token 误用到对外端点。
+    RECALL_SESSION_JWT_AUDIENCE: str = "tolink-rag-frontend"
+    RECALL_SESSION_JWT_SCOPE: str = "recall:stream"
+    # 独立 HS256 密钥：与 RECALL_INTERNAL_JWT_SECRET 物理隔离，前端面 token 疑似泄露时
+    # 可单独轮转、不牵连 Java 内部调用。默认值仅供本地联调，生产必须用环境变量覆盖。
+    RECALL_SESSION_JWT_SECRET: str = (
+        "3f8c1d6a90b74e2f8a5c0d1e7b3f9a26c4d8e0f1a2b3c4d5e6f7081929a3b4c5d"
+    )
+    # 单用户最大并发召回流数。token 短期可复用、不做一次性，此为资源滥用的主闸门。
+    RECALL_SESSION_MAX_CONCURRENT: int = 3
+
+    # ==========================================
+    # 召回后 LLM 答案生成 (Recall Answer Generation)
+    # ==========================================
+    # 召回融合并回填片段正文后，拼装生成上下文的 token 预算上限。片段按融合分数
+    # 从高到低纳入，累计超过该预算即截断尾部低分片段（见 recall_stream_runtime 生成段）。
+    RECALL_GENERATION_CONTEXT_TOKEN_BUDGET: int = 4000
+
+    # ==========================================
     # 系统级兜底 LLM 配置 (Platform Default Fallback LLMs)
     # ==========================================
     SYSTEM_LLM_PROVIDER: str = "qwen"
@@ -108,12 +145,36 @@ class Settings(BaseSettings):
     MARKDOWN_PARSER_VISION_CONCURRENCY: int = 24
     CHUNKING_ENABLE_ADVANCED_PIPELINE: bool = True
     CHUNKING_HEADING_BREAK_LEVEL: int = 3
+    CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS: int = 128
     CHUNKING_SEMANTIC_PERCENTILE: float = 95.0
+    CHUNKING_SEMANTIC_UNIT: str = "sentence"
     CHUNKING_MIN_CHUNK_TOKENS: int = 150
     CHUNKING_MAX_CHUNK_TOKENS: int = 512
     CHUNKING_OVERLAP_TOKENS: int = 64
     CHUNKING_MIN_DISTANCE_GATE: float = 0.25
     CHUNKING_EMBED_BATCH_SIZE: int = 32
+
+    @field_validator("CHUNKING_SEMANTIC_UNIT")
+    @classmethod
+    def validate_chunking_semantic_unit(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if normalized not in {"sentence", "paragraph"}:
+            raise ValueError("CHUNKING_SEMANTIC_UNIT must be 'sentence' or 'paragraph'")
+        return normalized
+
+    @field_validator("CHUNKING_OVERLAP_TOKENS")
+    @classmethod
+    def validate_chunking_overlap_tokens(cls, v: int) -> int:
+        if v < 0 or v > 64:
+            raise ValueError("CHUNKING_OVERLAP_TOKENS must be between 0 and 64")
+        return v
+
+    @field_validator("CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS")
+    @classmethod
+    def validate_chunking_min_candidate_chunk_tokens(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS must be positive")
+        return v
 
     # ==========================================
     # 向量数据库配置 (Vector Store)
@@ -133,6 +194,10 @@ class Settings(BaseSettings):
     CHUNK_INDEX_BUCKET_COUNT: int = 128
     CHUNK_INDEX_COLLECTION_PREFIX: str = "kb_bucket"
     CHUNK_INDEX_EMBED_BATCH_SIZE: int = 32
+    # 稠密向量系统统一维度（方案 A：写入按用户解析 embedder，但所有用户共享 per-bucket
+    # collection、维度首次建表即固定）。写入前校验用户 EMBEDDING 模型输出维度必须等于此值，
+    # 不一致则任务失败（EMBEDDING_DIMENSION_UNSUPPORTED），避免写入既有 collection 时维度冲突。
+    DENSE_VECTOR_DIMENSION: int = 1024
     CHUNK_INDEX_RETRY_LIMIT: int = 3
     CHUNK_INDEX_RETRY_INTERVAL_SECONDS: int = 300
     CHUNK_INDEX_INDEXING_STALE_SECONDS: int = 900

@@ -1,9 +1,10 @@
+"""ConfigReaderService 配置读取服务。
+
+Java 管理端负责写入 LLM 配置，Python 只读取运行时生效配置：
+``llm_user_config`` 中 ``user_id + capability + is_default + is_active`` 命中的记录。
 """
-ConfigReaderService 配置读取服务
-从数据库读取 LLM 配置，支持 Redis 缓存
-"""
-import json
-from typing import Any, Dict, List, Optional, Union
+
+from typing import Any, Dict, List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,15 +15,21 @@ from src.core.llm.encryption import decrypt_api_key as decrypt_api_key_util
 from src.models.db_models import SystemProviderDB, UserLLMConfigDB
 
 
-def _parse_json_field(value: Union[str, dict, list, None]) -> Optional[Any]:
-    """解析 JSON 字段，兼容字符串和已转换的字典类型"""
-    if value is None:
-        return None
-    if isinstance(value, (dict, list)):
-        return value
-    if isinstance(value, str):
-        return json.loads(value)
-    return value
+def _user_config_to_dict(cfg: UserLLMConfigDB) -> Dict[str, Any]:
+    """将 ORM 用户配置行转换为运行时配置字典。"""
+    return {
+        "id": cfg.id,
+        "user_id": cfg.user_id,
+        "provider_id": cfg.provider_id,
+        "provider_type": cfg.provider_type,
+        "api_key": cfg.api_key,
+        "api_base_url": cfg.api_base_url,
+        "model_name": cfg.model_name,
+        "capability": cfg.capability,
+        "is_active": cfg.is_active,
+        "is_default": cfg.is_default,
+        "is_system_preset": cfg.is_system_preset,
+    }
 
 
 class ConfigReaderService:
@@ -57,9 +64,7 @@ class ConfigReaderService:
         """设置数据库 Session"""
         self._db = db
 
-    async def get_user_configs(
-        self, user_id: int, use_cache: bool = True
-    ) -> List[Dict[str, Any]]:
+    async def get_user_configs(self, user_id: int, use_cache: bool = True) -> List[Dict[str, Any]]:
         """获取用户的所有 LLM 配置
 
         Args:
@@ -83,36 +88,14 @@ class ConfigReaderService:
 
         stmt = (
             select(UserLLMConfigDB)
-            .options(selectinload(UserLLMConfigDB.provider))
             .where(UserLLMConfigDB.user_id == user_id)
             .where(UserLLMConfigDB.is_active == True)
-            .order_by(UserLLMConfigDB.priority.desc())
+            .order_by(UserLLMConfigDB.id.desc())
         )
         result = await self._db.execute(stmt)
         configs_db = result.scalars().all()
 
-        configs = []
-        for cfg in configs_db:
-            provider = cfg.provider
-            configs.append({
-                "id": cfg.id,
-                "user_id": cfg.user_id,
-                "provider_id": cfg.provider_id,
-                "provider_type": provider.provider_type if provider else None,
-                "provider_name": provider.provider_name if provider else None,
-                "config_name": cfg.config_name,
-                "api_key": cfg.api_key,  # 加密存储
-                "custom_api_base_url": cfg.custom_api_base_url,
-                "model_name": cfg.model_name,
-                "priority": cfg.priority,
-                "is_active": cfg.is_active,
-                "is_default": cfg.is_default,
-                "timeout_ms": cfg.timeout_ms,
-                "max_retries": cfg.max_retries,
-                "stream_enabled": cfg.stream_enabled,
-                "extra_config": _parse_json_field(cfg.extra_config),
-                "capability": cfg.capability,  # 新增字段
-            })
+        configs = [_user_config_to_dict(cfg) for cfg in configs_db]
 
         # 回填缓存
         if use_cache:
@@ -120,76 +103,12 @@ class ConfigReaderService:
 
         return configs
 
-    async def get_user_default_config(
-        self, user_id: int, use_cache: bool = True
-    ) -> Optional[Dict[str, Any]]:
-        """获取用户默认 LLM 配置
-
-        Args:
-            user_id: 用户 ID
-            use_cache: 是否使用缓存
-
-        Returns:
-            默认配置，未设置则返回 None
-        """
-        cache_key = self._cache.user_default_key(str(user_id))
-
-        # 先查缓存
-        if use_cache:
-            cached = await self._cache.get(cache_key)
-            if cached is not None:
-                return cached
-
-        # 缓存未命中，从数据库查询
-        if self._db is None:
-            return None
-
-        stmt = (
-            select(UserLLMConfigDB)
-            .options(selectinload(UserLLMConfigDB.provider))
-            .where(UserLLMConfigDB.user_id == user_id)
-            .where(UserLLMConfigDB.is_default == True)
-            .where(UserLLMConfigDB.is_active == True)
-        )
-        result = await self._db.execute(stmt)
-        cfg = result.scalar_one_or_none()
-
-        if cfg is None:
-            return None
-
-        provider = cfg.provider
-        config = {
-            "id": cfg.id,
-            "user_id": cfg.user_id,
-            "provider_id": cfg.provider_id,
-            "provider_type": provider.provider_type if provider else None,
-            "provider_name": provider.provider_name if provider else None,
-            "config_name": cfg.config_name,
-            "api_key": cfg.api_key,
-            "custom_api_base_url": cfg.custom_api_base_url,
-            "model_name": cfg.model_name,
-            "priority": cfg.priority,
-            "is_active": cfg.is_active,
-            "is_default": cfg.is_default,
-            "timeout_ms": cfg.timeout_ms,
-            "max_retries": cfg.max_retries,
-            "stream_enabled": cfg.stream_enabled,
-            "extra_config": _parse_json_field(cfg.extra_config),
-            "capability": cfg.capability,  # 新增字段
-        }
-
-        # 回填缓存
-        if use_cache:
-            await self._cache.set(cache_key, config)
-
-        return config
-
     async def get_user_default_config_by_capability(
         self,
         user_id: int,
         capability: str,
         provider_type: Optional[str] = None,
-        use_cache: bool = True
+        use_cache: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """获取用户指定能力的默认 LLM 配置
 
@@ -202,7 +121,8 @@ class ConfigReaderService:
         Returns:
             该能力的默认配置，未设置则返回 None
         """
-        cache_key = f"llm:user:{user_id}:default:{capability}"
+        capability_upper = capability.upper()
+        cache_key = f"llm:user:{user_id}:default:{capability_upper}"
         if provider_type:
             cache_key = f"{cache_key}:{provider_type}"
 
@@ -216,43 +136,27 @@ class ConfigReaderService:
         if self._db is None:
             return None
 
+        # 默认配置的业务唯一性由 Java 管理端保证；为防脏数据，查询侧用 limit(1)
+        # 确定性取最新一条，
+        # 不让 MultipleResultsFound 冒泡成「读取失败(可重试)」误判。
         stmt = (
             select(UserLLMConfigDB)
-            .options(selectinload(UserLLMConfigDB.provider))
             .where(UserLLMConfigDB.user_id == user_id)
-            .where(UserLLMConfigDB.capability == capability.upper())
+            .where(UserLLMConfigDB.capability == capability_upper)
             .where(UserLLMConfigDB.is_default == True)
             .where(UserLLMConfigDB.is_active == True)
         )
         if provider_type:
             stmt = stmt.where(UserLLMConfigDB.provider_type == provider_type)
 
+        stmt = stmt.order_by(UserLLMConfigDB.id.desc()).limit(1)
         result = await self._db.execute(stmt)
-        cfg = result.scalar_one_or_none()
+        cfg = result.scalars().first()
 
         if cfg is None:
             return None
 
-        provider = cfg.provider
-        config = {
-            "id": cfg.id,
-            "user_id": cfg.user_id,
-            "provider_id": cfg.provider_id,
-            "provider_type": provider.provider_type if provider else None,
-            "provider_name": provider.provider_name if provider else None,
-            "config_name": cfg.config_name,
-            "api_key": cfg.api_key,
-            "custom_api_base_url": cfg.custom_api_base_url,
-            "model_name": cfg.model_name,
-            "priority": cfg.priority,
-            "is_active": cfg.is_active,
-            "is_default": cfg.is_default,
-            "timeout_ms": cfg.timeout_ms,
-            "max_retries": cfg.max_retries,
-            "stream_enabled": cfg.stream_enabled,
-            "extra_config": _parse_json_field(cfg.extra_config),
-            "capability": cfg.capability,
-        }
+        config = _user_config_to_dict(cfg)
 
         # 回填缓存
         if use_cache:
@@ -287,7 +191,6 @@ class ConfigReaderService:
 
         stmt = (
             select(UserLLMConfigDB)
-            .options(selectinload(UserLLMConfigDB.provider))
             .where(UserLLMConfigDB.id == config_id)
             .where(UserLLMConfigDB.user_id == user_id)
             .where(UserLLMConfigDB.is_active == True)
@@ -298,26 +201,7 @@ class ConfigReaderService:
         if cfg is None:
             return None
 
-        provider = cfg.provider
-        config = {
-            "id": cfg.id,
-            "user_id": cfg.user_id,
-            "provider_id": cfg.provider_id,
-            "provider_type": provider.provider_type if provider else None,
-            "provider_name": provider.provider_name if provider else None,
-            "config_name": cfg.config_name,
-            "api_key": cfg.api_key,
-            "custom_api_base_url": cfg.custom_api_base_url,
-            "model_name": cfg.model_name,
-            "priority": cfg.priority,
-            "is_active": cfg.is_active,
-            "is_default": cfg.is_default,
-            "timeout_ms": cfg.timeout_ms,
-            "max_retries": cfg.max_retries,
-            "stream_enabled": cfg.stream_enabled,
-            "extra_config": _parse_json_field(cfg.extra_config),
-            "capability": cfg.capability,  # 新增字段
-        }
+        config = _user_config_to_dict(cfg)
 
         # 回填缓存
         if use_cache:
@@ -326,10 +210,7 @@ class ConfigReaderService:
         return config
 
     async def get_user_configs_by_capability(
-        self,
-        user_id: int,
-        capability: str,
-        use_cache: bool = True
+        self, user_id: int, capability: str, use_cache: bool = True
     ) -> List[Dict[str, Any]]:
         """获取用户指定能力的所有配置
 
@@ -341,7 +222,8 @@ class ConfigReaderService:
         Returns:
             该能力的所有配置列表
         """
-        cache_key = f"llm:user:{user_id}:configs:{capability}"
+        capability_upper = capability.upper()
+        cache_key = f"llm:user:{user_id}:configs:{capability_upper}"
 
         # 先查缓存
         if use_cache:
@@ -355,37 +237,15 @@ class ConfigReaderService:
 
         stmt = (
             select(UserLLMConfigDB)
-            .options(selectinload(UserLLMConfigDB.provider))
             .where(UserLLMConfigDB.user_id == user_id)
-            .where(UserLLMConfigDB.capability == capability.upper())
+            .where(UserLLMConfigDB.capability == capability_upper)
             .where(UserLLMConfigDB.is_active == True)
-            .order_by(UserLLMConfigDB.priority.desc())
+            .order_by(UserLLMConfigDB.id.desc())
         )
         result = await self._db.execute(stmt)
         configs_db = result.scalars().all()
 
-        configs = []
-        for cfg in configs_db:
-            provider = cfg.provider
-            configs.append({
-                "id": cfg.id,
-                "user_id": cfg.user_id,
-                "provider_id": cfg.provider_id,
-                "provider_type": provider.provider_type if provider else None,
-                "provider_name": provider.provider_name if provider else None,
-                "config_name": cfg.config_name,
-                "api_key": cfg.api_key,
-                "custom_api_base_url": cfg.custom_api_base_url,
-                "model_name": cfg.model_name,
-                "priority": cfg.priority,
-                "is_active": cfg.is_active,
-                "is_default": cfg.is_default,
-                "timeout_ms": cfg.timeout_ms,
-                "max_retries": cfg.max_retries,
-                "stream_enabled": cfg.stream_enabled,
-                "extra_config": _parse_json_field(cfg.extra_config),
-                "capability": cfg.capability,
-            })
+        configs = [_user_config_to_dict(cfg) for cfg in configs_db]
 
         # 回填缓存
         if use_cache:
@@ -420,7 +280,11 @@ class ConfigReaderService:
         if self._db is None:
             return []
 
-        stmt = select(SystemProviderDB).where(SystemProviderDB.is_active == True)
+        stmt = (
+            select(SystemProviderDB)
+            .options(selectinload(SystemProviderDB.provider_models))
+            .where(SystemProviderDB.is_active == True)
+        )
         if provider_type:
             stmt = stmt.where(SystemProviderDB.provider_type == provider_type)
         stmt = stmt.order_by(SystemProviderDB.priority.desc())
@@ -430,16 +294,22 @@ class ConfigReaderService:
 
         providers = []
         for p in providers_db:
-            providers.append({
-                "id": p.id,
-                "provider_type": p.provider_type,
-                "provider_name": p.provider_name,
-                "api_base_url": p.api_base_url,
-                "supported_models": _parse_json_field(p.supported_models) or {},
-                "config_schema": _parse_json_field(p.config_schema),
-                "is_active": p.is_active,
-                "priority": p.priority,
-            })
+            models: Dict[str, List[str]] = {}
+            for model in p.provider_models:
+                if not model.is_active:
+                    continue
+                models.setdefault(model.model_name, []).append(model.capability)
+            providers.append(
+                {
+                    "id": p.id,
+                    "provider_type": p.provider_type,
+                    "provider_name": p.provider_name,
+                    "api_base_url": p.api_base_url,
+                    "models": models,
+                    "is_active": p.is_active,
+                    "priority": p.priority,
+                }
+            )
 
         # 回填缓存
         if use_cache:
@@ -459,7 +329,9 @@ class ConfigReaderService:
         Returns:
             厂商详情
         """
-        providers = await self.get_system_providers(provider_type=provider_type, use_cache=use_cache)
+        providers = await self.get_system_providers(
+            provider_type=provider_type, use_cache=use_cache
+        )
         return providers[0] if providers else None
 
     async def clear_cache(self, user_id: Optional[str] = None) -> None:
@@ -490,10 +362,10 @@ class ConfigReaderService:
     def get_system_fallback_config_by_capability(self, capability: str) -> Optional[Dict[str, Any]]:
         """获取从系统环境变量中读取的兜底 LLM 配置"""
         from src.config import settings
-        
+
         if not settings.SYSTEM_LLM_API_KEY:
             return None
-            
+
         model_name = None
         cap_upper = capability.upper()
         if cap_upper == "CHAT":
@@ -504,27 +376,21 @@ class ConfigReaderService:
             model_name = settings.SYSTEM_LLM_MODEL_RERANK
         elif cap_upper in ["VISION", "OCR"]:
             model_name = settings.SYSTEM_LLM_MODEL_VISION
-            
+
         if not model_name:
             return None
-            
+
         return {
             "id": "system-default",
             "user_id": "system",
             "provider_id": "system",
             "provider_type": settings.SYSTEM_LLM_PROVIDER,
-            "provider_name": "System Default",
-            "config_name": f"System Default {cap_upper}",
             "api_key": settings.SYSTEM_LLM_API_KEY,
-            "custom_api_base_url": settings.SYSTEM_LLM_API_BASE,
+            "api_base_url": settings.SYSTEM_LLM_API_BASE,
             "model_name": model_name,
-            "priority": 0,
             "is_active": True,
             "is_default": True,
-            "timeout_ms": 60000,
-            "max_retries": 3,
-            "stream_enabled": True,
-            "extra_config": {},
             "capability": cap_upper,
-            "is_system_fallback": True, # 特殊标识，免于解密
+            "is_system_preset": False,
+            "is_system_fallback": True,  # 特殊标识，免于解密
         }

@@ -1,6 +1,6 @@
 ---
 name: alembic-migration
-description: 编写、校验 Alembic 迁移，保证 schema 演进唯一通过「ORM 模型 + 迁移链」落地，不触碰冻结的 migrations/db.sql baseline。 - 当用户改动 src/models/**.py、要求新增/修改表字段、写数据库迁移、对齐 ORM 与 DDL、或排查迁移链断裂时激活。触发示例：'给这个模型加个字段'、'写个迁移'、'alembic 迁移怎么写'、'schema 改了要同步什么'、'升级数据库结构'
+description: 编写、校验 Alembic 迁移，保证 schema 演进唯一通过「ORM 模型 + 迁移链」落地，不触碰冻结的 migrations/db.sql baseline。
 when_to_use: "当用户改动 src/models/**.py、要求新增/修改表字段、写数据库迁移、对齐 ORM 与 DDL、或排查迁移链断裂时激活。触发示例：'给这个模型加个字段'、'写个迁移'、'alembic 迁移怎么写'、'schema 改了要同步什么'、'升级数据库结构'。若用户只是要建表 DDL 规范（命名/索引/类型），转 mysql-ddl-conventions；只要同步文档转 doc-maintenance-sync。"
 ---
 

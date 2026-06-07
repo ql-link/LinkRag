@@ -10,12 +10,12 @@ ORM 与 migration 不一致时，以 migration 为准并修正 ORM；scripts/db/
 
 ## 表清单
 
-按业务域共 12 张表：
+按业务域共 14 张表：
 
 | 业务域 | 表 | 主键 ID 起始 |
 | --- | --- | --- |
 | [用户](#1-用户) | `sys_user` | 10000 |
-| [LLM 配置与用量](#2-llm-配置与用量) | `llm_system_provider`, `llm_user_config`, `llm_usage_log` | 10000 |
+| [LLM 配置与用量](#2-llm-配置与用量) | `llm_system_provider`, `llm_provider_model`, `llm_system_preset`, `llm_user_config`, `llm_usage_log` | 10000 |
 | [数据集与对话](#3-数据集与对话) | `dataset`, `chat_conversation`, `chat_message` | 10000 |
 | [文档解析](#4-文档解析) | `document_original_file`, `document_parse_file`, `document_parsed_log`, `document_parse_pipeline` | 10000 |
 | [知识索引](#5-知识索引) | `kb_document_chunk` | 10000 |
@@ -60,13 +60,46 @@ ORM：[`SystemProviderDB`](../../src/models/db_models.py)
 | `provider_type` | VARCHAR(32) UNIQUE | `openai` / `claude` / `glm` / `deepseek` 等 |
 | `provider_name` | VARCHAR(64) | 厂商展示名 |
 | `api_base_url` | VARCHAR(512) | 官方默认 API 地址 |
-| `supported_models` | JSON | 支持模型与能力映射 |
-| `config_schema` | JSON | 配置参数 Schema |
 | `is_active` | BOOLEAN | 是否启用 |
 | `priority` | INT | 厂商优先级（1-100），默认 50 |
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
 
 索引：`uk_provider_type`。
+
+### `llm_provider_model` — 厂商模型能力目录
+
+ORM：[`ProviderModelDB`](../../src/models/db_models.py)
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | BIGINT UNSIGNED PK | 主键 |
+| `provider_id` | BIGINT UNSIGNED | 关联 `llm_system_provider.id` |
+| `model_name` | VARCHAR(128) | 模型名 |
+| `capability` | VARCHAR(32) | 单能力；一模型多能力拆成多行 |
+| `is_active` | BOOLEAN | 该模型能力是否上架 |
+| `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
+
+索引：
+- `uk_provider_model_cap(provider_id, model_name, capability)`
+- `idx_provider_cap(provider_id, capability)`
+
+### `llm_system_preset` — 系统预设模板
+
+ORM：[`SystemPresetDB`](../../src/models/db_models.py)
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | BIGINT UNSIGNED PK | 主键 |
+| `provider_id` | BIGINT UNSIGNED | 关联 `llm_system_provider.id` |
+| `model_name` | VARCHAR(128) | 模型名 |
+| `capability` | VARCHAR(32) | 能力标识 |
+| `api_key` | VARCHAR(512) | 平台 Key，**加密存储** |
+| `is_active` | BOOLEAN | 是否对新用户下发 |
+| `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
+
+索引：`uk_preset_provider_model_cap(provider_id, model_name, capability)`。
+
+说明：Python 运行时不直接读取本表决定生效配置；Java 注册时会将 active 预设复制进 `llm_user_config`。
 
 ### `llm_user_config` — 用户级 LLM 配置
 
@@ -77,26 +110,32 @@ ORM：[`UserLLMConfigDB`](../../src/models/db_models.py)
 | `id` | BIGINT UNSIGNED PK | 配置唯一标识 |
 | `user_id` | BIGINT UNSIGNED | 所属用户 |
 | `provider_id` | BIGINT UNSIGNED | 关联 `llm_system_provider.id` |
-| `provider_type` | VARCHAR(32) | 厂商类型快照 |
-| `provider_name` | VARCHAR(64) | 厂商名快照 |
-| `config_name` | VARCHAR(64) | 用户自定义配置名 |
+| `provider_type` | VARCHAR(32) | 厂商类型快照，用于下游路由到对应 SDK |
 | `api_key` | VARCHAR(512) | **加密存储**，由 `API_KEY_ENCRYPTION_SECRET` 解密 |
-| `custom_api_base_url` | VARCHAR(512) | 自定义 API 地址 |
+| `api_base_url` | VARCHAR(512) | 实际生效地址 |
 | `model_name` | VARCHAR(128) | 具体模型名 |
-| `priority` | INT | 优先级 1-100 |
-| `is_active` | BOOLEAN | 是否启用 |
-| `is_default` | BOOLEAN | 是否默认配置 |
-| `timeout_ms` | INT | 超时（毫秒），默认 60000 |
-| `max_retries` | INT | 最大重试次数，默认 3 |
-| `stream_enabled` | BOOLEAN | 是否支持流式输出 |
-| `capability` | VARCHAR(32) | `CHAT` / `EMBEDDING` / `RERANK` / `OCR`，默认 `CHAT` |
-| `extra_config` | JSON | 扩展配置 |
+| `capability` | VARCHAR(32) | `CHAT` / `EMBEDDING` / `RERANK` / `OCR` / `VISION` 等，默认 `CHAT` |
+| `is_active` | BOOLEAN | 模型启停 + 生效过滤 |
+| `is_default` | BOOLEAN | 该能力是否生效 |
+| `is_system_preset` | BOOLEAN | 是否系统预设行 |
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
 
 索引：
-- `uk_user_provider_model(user_id, provider_id, model_name)`
+- `uk_user_provider_model_capability(user_id, provider_id, model_name, capability, is_system_preset)`
 - `idx_user_active_default(user_id, is_active, is_default)`
 - `idx_user_provider_cap(user_id, provider_type, capability)`
+
+运行时读取生效配置：
+
+```sql
+SELECT *
+FROM llm_user_config
+WHERE user_id = :user_id
+  AND capability = :capability
+  AND is_default = TRUE
+  AND is_active = TRUE
+LIMIT 1;
+```
 
 ### `llm_usage_log` — LLM 调用用量日志
 
@@ -156,6 +195,7 @@ ORM：[`UsageLogDB`](../../src/models/db_models.py)
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
 
 索引：
+- `uk_conversation_user_dataset_title(user_id, dataset_id, title)`
 - `idx_chat_conversation_user_pinned_updated(user_id, is_pinned, updated_at)`
 - `idx_chat_conversation_dataset_updated(dataset_id, updated_at)`
 

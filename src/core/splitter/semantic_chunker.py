@@ -9,6 +9,8 @@ import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, List, Sequence
 
+from .overlap import ChunkOverlapConfig, ChunkOverlapper
+
 if TYPE_CHECKING:
     from src.core.llm.interfaces import IEmbedder
     from src.core.llm.tokenizer import Tokenizer
@@ -51,6 +53,7 @@ class PercentileSemanticChunker:
     """
 
     SENTENCE_BOUNDARY_RE = re.compile(r"(?<=[。！？；])|(?<=[.?!;])\s+")
+    SUPPORTED_SEMANTIC_UNITS = frozenset({"sentence", "paragraph"})
 
     def __init__(
         self,
@@ -59,9 +62,12 @@ class PercentileSemanticChunker:
         percentile: float = 95.0,
         min_chunk_tokens: int = 150,
         max_chunk_tokens: int = 512,
-        overlap_tokens: int = 50,
+        overlap_tokens: int = 64,
         overlap_percentage: float | None = None,
+        overlap_enabled: bool = True,
+        overlapper: ChunkOverlapper | None = None,
         min_distance_gate: float = 0.25,
+        semantic_unit: str = "sentence",
     ):
         """
             初始化语义切片器及其阈值、长度约束与 overlap 配置。
@@ -72,13 +78,17 @@ class PercentileSemanticChunker:
             percentile: 动态阈值使用的距离分位数，默认取 95。
             min_chunk_tokens: 允许执行语义断点前的最小 Chunk token 数。
             max_chunk_tokens: 单个 Chunk 的最大 token 数上限。
-            overlap_tokens: 相邻 Chunk 的固定 token overlap 上限。
-            overlap_percentage: 可选的 overlap 百分比配置；当 `overlap_tokens` 为 0 时启用。
+            overlap_tokens: 相邻 Chunk 的固定 token overlap 上限，允许范围为 0 到 64。
+            overlap_percentage: 兼容旧调用的百分比配置；仅在 `overlap_tokens` 为 0 时换算。
+            overlap_enabled: 是否启用 overlap。
+            overlapper: 可选的独立 overlap 处理器；传入后优先使用该实例。
             min_distance_gate: 绝对最小语义距离阈值，用于避免过度切分。
+            semantic_unit: 语义相似度计算粒度，支持 `sentence` 或 `paragraph`。
 
         Returns:
             None.
         """
+        semantic_unit = semantic_unit.strip().lower()
         if not 0 < percentile <= 100:
             raise ValueError("percentile must be in (0, 100].")
         if min_chunk_tokens <= 0:
@@ -87,38 +97,34 @@ class PercentileSemanticChunker:
             raise ValueError("max_chunk_tokens must be positive.")
         if min_chunk_tokens > max_chunk_tokens:
             raise ValueError("min_chunk_tokens cannot exceed max_chunk_tokens.")
-        if overlap_tokens < 0:
-            raise ValueError("overlap_tokens cannot be negative.")
         if overlap_percentage is not None and not 0 <= overlap_percentage < 1:
             raise ValueError("overlap_percentage must be in [0, 1).")
         if min_distance_gate < 0:
             raise ValueError("min_distance_gate cannot be negative.")
+        if semantic_unit not in self.SUPPORTED_SEMANTIC_UNITS:
+            supported = ", ".join(sorted(self.SUPPORTED_SEMANTIC_UNITS))
+            raise ValueError(f"semantic_unit must be one of: {supported}.")
 
         self.embedder = embedder
         self.tokenizer = tokenizer
         self.percentile = percentile
         self.min_chunk_tokens = min_chunk_tokens
         self.max_chunk_tokens = max_chunk_tokens
-        self.overlap_tokens = overlap_tokens
-        self.overlap_percentage = overlap_percentage
+        if overlapper is None:
+            resolved_overlap_tokens = overlap_tokens
+            if resolved_overlap_tokens == 0 and overlap_percentage is not None:
+                resolved_overlap_tokens = int(max_chunk_tokens * overlap_percentage)
+            overlapper = ChunkOverlapper(
+                tokenizer=tokenizer,
+                config=ChunkOverlapConfig(
+                    enabled=overlap_enabled,
+                    tokens=resolved_overlap_tokens,
+                ),
+            )
+        self.overlapper = overlapper
         self.min_distance_gate = min_distance_gate
+        self.semantic_unit = semantic_unit
         self.last_stats = SemanticChunkingStats()
-
-    def _resolve_overlap_tokens(self) -> int:
-        """
-            统一解析 overlap 配置，优先使用显式 token 数，其次回退到百分比配置。
-
-        Args:
-            None.
-
-        Returns:
-            int: 当前配置下应使用的 overlap token 数。
-        """
-        if self.overlap_tokens > 0:
-            return self.overlap_tokens
-        if self.overlap_percentage is None:
-            return 0
-        return max(0, int(self.max_chunk_tokens * self.overlap_percentage))
 
     def _count_tokens(self, text: str) -> int:
         """
@@ -131,55 +137,6 @@ class PercentileSemanticChunker:
             int: 统计得到的 token 数。
         """
         return self.tokenizer.count_tokens(text.strip()) if text else 0
-
-    def _take_first_tokens(self, text: str, token_limit: int) -> str:
-        """
-            取出文本开头的指定数量 token，并对齐 tokenizer 的截断语义。
-
-        Args:
-            text: 需要截取的原始文本。
-            token_limit: 允许保留的最大 token 数。
-
-        Returns:
-            str: 截取后的头部文本。
-        """
-        if not text or token_limit <= 0:
-            return ""
-        truncated, _ = self.tokenizer.truncate_text(text, token_limit)
-        return truncated.strip()
-
-    def _take_last_tokens(self, text: str, token_limit: int) -> str:
-        """
-            取出文本末尾的指定数量 token，用于拼接相邻 Chunk 的 overlap 上下文。
-
-        Args:
-            text: 需要截取的原始文本。
-            token_limit: 允许保留的最大 token 数。
-
-        Returns:
-            str: 截取后的尾部文本。
-        """
-        cleaned = text.strip()
-        if not cleaned or token_limit <= 0:
-            return ""
-        if self._count_tokens(cleaned) <= token_limit:
-            return cleaned
-
-        left = 0
-        right = len(cleaned) - 1
-        best_start = right
-
-        while left <= right:
-            mid = (left + right) // 2
-            candidate = cleaned[mid:].lstrip()
-            tokens = self._count_tokens(candidate)
-            if tokens <= token_limit:
-                best_start = mid
-                right = mid - 1
-            else:
-                left = mid + 1
-
-        return cleaned[best_start:].lstrip()
 
     def _split_oversized_text(self, text: str) -> List[str]:
         """
@@ -198,7 +155,7 @@ class PercentileSemanticChunker:
         pieces: List[str] = []
         remaining = cleaned
         while remaining:
-            head = self._take_first_tokens(remaining, self.max_chunk_tokens)
+            head = self.overlapper.take_first_tokens(remaining, self.max_chunk_tokens)
             if not head:
                 break
             pieces.append(head)
@@ -243,6 +200,18 @@ class PercentileSemanticChunker:
             atoms.append(current)
         return atoms
 
+    def _split_paragraphs(self, text: str) -> List[str]:
+        """
+            按 Markdown 段落边界切分文本，过滤空段落并保留段落内部换行。
+
+        Args:
+            text: 待切分的大文本块。
+
+        Returns:
+            List[str]: 非空段落列表。
+        """
+        return [paragraph.strip() for paragraph in re.split(r"\n{2,}", text) if paragraph.strip()]
+
     def _atomize_text(self, text: str) -> List[str]:
         """
             执行原子化拆解，优先按段落切分，必要时降级为按行或按句切分。
@@ -253,7 +222,10 @@ class PercentileSemanticChunker:
         Returns:
             List[str]: 原子化后的文本单元列表。
         """
-        paragraphs = [paragraph.strip() for paragraph in re.split(r"\n{2,}", text) if paragraph.strip()]
+        paragraphs = self._split_paragraphs(text)
+        if self.semantic_unit == "paragraph":
+            return paragraphs
+
         atoms: List[str] = []
 
         for paragraph in paragraphs:
@@ -273,6 +245,25 @@ class PercentileSemanticChunker:
             atoms.extend(self._split_by_sentences(paragraph))
 
         return [atom for atom in atoms if atom.strip()]
+
+    def _append_limited_chunk(self, chunks: list[str], text: str) -> None:
+        """
+            追加最终 Chunk 文本；若文本超长，则只做长度保底拆分。
+
+        Args:
+            chunks: 待追加的最终 Chunk 列表。
+            text: 当前待落盘的 Chunk 文本。
+
+        Returns:
+            None.
+        """
+        cleaned = text.strip()
+        if not cleaned:
+            return
+        if self._count_tokens(cleaned) <= self.max_chunk_tokens:
+            chunks.append(cleaned)
+            return
+        chunks.extend(self._split_oversized_text(cleaned))
 
     @staticmethod
     def _compute_distances(embeddings: Sequence[Sequence[float]]) -> list[float]:
@@ -343,23 +334,11 @@ class PercentileSemanticChunker:
         Returns:
             str: 带有 overlap 前缀的下一块文本。
         """
-        overlap_budget = self._resolve_overlap_tokens()
-        if overlap_budget <= 0:
-            return next_atom
-
-        next_tokens = self._count_tokens(next_atom)
-        available_for_overlap = max(0, self.max_chunk_tokens - next_tokens)
-        if available_for_overlap <= 0:
-            return next_atom
-
-        overlap_tail = self._take_last_tokens(
+        return self.overlapper.build_next_chunk(
             previous_chunk,
-            min(overlap_budget, available_for_overlap),
+            next_atom,
+            max_chunk_tokens=self.max_chunk_tokens,
         )
-        if not overlap_tail:
-            return next_atom
-
-        return f"{overlap_tail}\n\n{next_atom}".strip()
 
     def _group_atom_indices(
         self,
@@ -391,7 +370,9 @@ class PercentileSemanticChunker:
 
         for idx in range(1, len(atoms)):
             next_atom = atoms[idx].strip()
-            distance = distances[idx - 1] if distances is not None and idx - 1 < len(distances) else None
+            distance = (
+                distances[idx - 1] if distances is not None and idx - 1 < len(distances) else None
+            )
 
             semantic_breakpoint = (
                 distance is not None
@@ -454,7 +435,9 @@ class PercentileSemanticChunker:
 
         for idx in range(1, len(atoms)):
             next_atom = atoms[idx].strip()
-            distance = distances[idx - 1] if distances is not None and idx - 1 < len(distances) else None
+            distance = (
+                distances[idx - 1] if distances is not None and idx - 1 < len(distances) else None
+            )
 
             semantic_breakpoint = (
                 distance is not None
@@ -469,7 +452,7 @@ class PercentileSemanticChunker:
             if overflow_forced or (
                 semantic_breakpoint and self._count_tokens(current_text) >= self.min_chunk_tokens
             ):
-                chunks.append(current_text)
+                self._append_limited_chunk(chunks, current_text)
                 if semantic_breakpoint and not overflow_forced:
                     breakpoints.append(idx - 1)
                 current_text = self._build_next_chunk(current_text, next_atom)
@@ -477,7 +460,7 @@ class PercentileSemanticChunker:
                 current_text = merged_candidate
 
         if current_text:
-            chunks.append(current_text)
+            self._append_limited_chunk(chunks, current_text)
 
         self.last_stats = SemanticChunkingStats(
             atom_count=len(atoms),
@@ -509,7 +492,8 @@ class PercentileSemanticChunker:
 
         try:
             embedding_result = await self.embedder.embed(list(atoms))
-            embeddings = [list(map(float, vector)) for vector in embedding_result.embeddings]
+            raw_embeddings = getattr(embedding_result, "embeddings", None) or []
+            embeddings = [list(map(float, vector)) for vector in raw_embeddings]
             if len(embeddings) != len(atoms) or any(not vector for vector in embeddings):
                 raise ValueError(
                     f"Embedding shape mismatch: got {len(embeddings)} vectors, expected {len(atoms)}."
@@ -547,7 +531,8 @@ class PercentileSemanticChunker:
 
         try:
             embedding_result = await self.embedder.embed(list(atoms))
-            embeddings = [list(map(float, vector)) for vector in embedding_result.embeddings]
+            raw_embeddings = getattr(embedding_result, "embeddings", None) or []
+            embeddings = [list(map(float, vector)) for vector in raw_embeddings]
             if len(embeddings) != len(atoms) or any(not vector for vector in embeddings):
                 raise ValueError(
                     f"Embedding shape mismatch: got {len(embeddings)} vectors, expected {len(atoms)}."

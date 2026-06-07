@@ -29,12 +29,14 @@ CODE: 中文业务原因；底层详情
 | `SOURCE_FILE_NOT_FOUND` | 原始文件不存在或无法访问 | 对象存储下载源文件失败（对象 404 / 网络异常 / 权限） |
 | `TEMP_DISK_FULL` | 服务器临时磁盘空间不足，请联系运维 | 流式下载阶段 worker 本机 `PARSE_TEMP_DIR` 所在盘写满，捕获 `OSError errno=ENOSPC` |
 | `UNSUPPORTED_FILE_TYPE` | 当前文件类型暂不支持解析 | `ParserFactory` 不支持文件类型 |
-| `PARSE_ENGINE_FAILED` | 文件解析失败，请检查文件内容 | 文件解析、Markdown 增强、分片失败 |
+| `PARSE_ENGINE_FAILED` | 文件解析失败，请检查文件内容 | 文件解析、Markdown 增强、分片失败（含增强环节读取 LLM 配置失败等可重试异常） |
 | `PARSED_FILE_UPLOAD_FAILED` | 解析结果保存失败，请重新解析 | Markdown 上传对象存储失败 |
 | `RESULT_NOTIFY_FAILED` | 解析结果通知失败，请重新解析 | parse_result 终态通知 MQ 发送失败 |
 | `INTERNAL_UNKNOWN_ERROR` | 系统异常，请稍后重试 | 未归类内部异常 |
 | `PARSING_FAILED` | 文件解析阶段失败，请检查文件内容或重新解析 | 文档清洗（解析+上传）阶段统一失败前缀，对应 `failed_stage=CLEANING`（brief 称 `PARSING`） |
 | `SPARSE_VECTORIZING_FAILED` | 稀疏向量化失败，请稍后重试 | 稀疏向量阶段任一 chunk 失败、health-check 总数为 0、Qdrant 写入失败等 |
+| `LLM_CONFIG_MISSING` | 未配置默认大模型，请先在系统中配置后重试 | 发起用户缺少必配能力的默认 LLM 配置：解析增强缺 CHAT（无法按用户配置调用，配置读取失败按 `PARSE_ENGINE_FAILED`；图片增强 VISION 非必配，缺失跳过不报错），或稠密向量化缺 EMBEDDING（LINK-91）。仅「确实未配置」时使用 |
+| `EMBEDDING_DIMENSION_UNSUPPORTED` | 所选向量模型维度不受支持，请改用系统支持的向量模型 | 稠密向量化阶段，用户 EMBEDDING 模型输出维度 ≠ `DENSE_VECTOR_DIMENSION`（方案 A 维度约束，LINK-91） |
 | `RETRY_VALIDATION_FAILED` | 重试前置校验失败，请确认上次任务状态 | `ParseTaskGuard.validate_retry_context` 任一校验项不满足，或 `mark_superseded` CAS rowcount=0 |
 
 后处理阶段还会生成以下文件级失败原因前缀，它们不是 `ParseFailureCode` 枚举成员，但会通过 `failure_reason` 发送给 Java：
@@ -144,6 +146,7 @@ CODE: 中文业务原因；底层详情
 
 | 场景 | 事件 | code |
 | --- | --- | --- |
+| 发起用户无默认 EMBEDDING 配置（dense 路无法编码 query） | `error` | `RECALL_EMBEDDING_CONFIG_MISSING` |
 | 全部召回路失败 / 严格模式失败 | `error` | `RECALL_ALL_SOURCES_FAILED` |
 | 召回执行超过 `RECALL_STREAM_TIMEOUT_MS` | `error` | `RECALL_TIMEOUT` |
 | 未预期内部异常 | `error` | `RECALL_INTERNAL_ERROR` |
@@ -151,7 +154,41 @@ CODE: 中文业务原因；底层详情
 宽松模式下单路失败但仍有成功路时**不是错误**：正常返回 `recall_done`，失败路计入
 `failed_sources`。客户端（Java）断连不作为业务错误，Python 停止发送事件并取消召回任务。
 
-## 6. Chunk Status Values
+例外：dense 召回 query 编码按发起用户的 EMBEDDING 配置解析（与写入侧同源）。用户无默认
+EMBEDDING 配置属**必备前置缺失**，走硬失败（`RECALL_EMBEDDING_CONFIG_MISSING`）而非宽松降级——
+即便其余路可用也不返回部分结果，避免"读侧系统模型 / 写侧用户模型"向量空间不一致的误召回。
+
+## 6. 对外直连 Recall 错误码
+
+对外直连召回 SSE 接口 `POST /api/v1/recall/stream`（LINK-40，见
+[http_contracts.md §7](http_contracts.md#7-对外直连-recall-sseapilink-40)）。与内部端点
+区分专属错误码，便于审计区分「Java 内部调用」与「前端直连会话」。
+
+**握手前**（会话鉴权 / 参数 / scope / 限流失败）→ 非 2xx 的 `{code, message, data}` JSON：
+
+| 场景 | HTTP | code |
+| --- | --- | --- |
+| 缺失 / 验签 / iss / aud / scope / exp 失败、用内部密钥签发的 token | `401` | `RECALL_SESSION_UNAUTHORIZED` |
+| `dataset_ids` 超出 token 授权范围 | `403` | `RECALL_SCOPE_FORBIDDEN` |
+| JSON 非法 / 缺字段（含缺 `config_id`）/ 类型错 / 出现未知字段（含 `user_id`） | `422` | `RECALL_INVALID_REQUEST` |
+| `query` 为空或纯空白 | `400` | `RECALL_INVALID_REQUEST` |
+| 单用户并发流数超过 `RECALL_SESSION_MAX_CONCURRENT` | `429` | `RECALL_RATE_LIMITED` |
+
+**握手后**（pipeline 执行期）→ SSE `error` 事件，与内部端点共享同一 runtime、语义一致：
+`RECALL_EMBEDDING_CONFIG_MISSING` / `RECALL_ALL_SOURCES_FAILED` / `RECALL_TIMEOUT` /
+`RECALL_INTERNAL_ERROR`。
+
+对外直连端点还在召回前置/生成阶段新增两个 SSE `error` code（召回后 LLM 答案生成，见
+[http_contracts.md §7](http_contracts.md#7-对外直连-recall-sseapilink-40)）：
+
+| 场景 | 事件 | code |
+| --- | --- | --- |
+| 所选模型 `config_id` 不属本用户 / 非 CHAT 能力 / 已停用 / 不存在（召回前置校验，不进入召回） | `error` | `RECALL_MODEL_CONFIG_MISSING` |
+| 生成阶段 LLM 调用失败（超时 / 报错 / 限流），整请求失败 | `error` | `RECALL_GENERATION_FAILED` |
+
+token **短期可复用**：有效期内重复建连均放行，无重放类错误码。
+
+## 7. Chunk Status Values
 
 | Status | 含义 |
 | --- | --- |

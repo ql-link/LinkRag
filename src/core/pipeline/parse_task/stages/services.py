@@ -31,6 +31,10 @@ from src.core.preprocessor.models import FilePostIndexPlan
 from src.core.qdrant_vector_storage import BucketRouter
 from src.core.qdrant_vector_storage.constants import DEFAULT_BUCKET_COUNT, DEFAULT_COLLECTION_PREFIX
 from src.core.splitter import create_chunking_engine
+from src.core.splitter.factory import (
+    DenseEmbeddingConfigMissingError,
+    DenseEmbeddingDimensionError,
+)
 from src.core.splitter.models import Chunk
 from src.core.vector_storage import compose_vector_storage_facade
 from src.core.vector_storage.draft_factory import ChunkDraftFactory
@@ -106,6 +110,7 @@ class StageServices:
             source_path,
             payload.file_type,
             source_file=payload.source_filename or payload.md_object_key,
+            user_id=coerce_optional_int(payload.user_id),
             **parser_kwargs,
         )
 
@@ -314,6 +319,10 @@ class StageServices:
                 doc_id=doc_id,
                 chunks=dense_chunks,
             )
+        except (DenseEmbeddingConfigMissingError, DenseEmbeddingDimensionError):
+            # 必配缺失 / 维度不支持：交给 VectorizingStage 归类为明确错误码（LLM_CONFIG_MISSING /
+            # EMBEDDING_DIMENSION_UNSUPPORTED）并通知 Java，不在此吞成 generic 失败结果。
+            raise
         except Exception as exc:
             logger.error(
                 "[StageServices] vector indexing failed: task_id={} error={}",

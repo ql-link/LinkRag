@@ -69,3 +69,13 @@ class VectorRetrievalEncodingError(VectorRetrievalError):
     由 facade 把底层 ``SparseVectorEncodingError`` /
     ``SparseVectorOutputError`` 翻译而来。
     """
+
+
+class VectorRetrievalUserConfigMissingError(VectorRetrievalError):
+    """召回 dense 路：发起用户缺少默认 EMBEDDING 配置。
+
+    dense 召回 query 编码改为按发起用户的 EMBEDDING 配置解析（与写入侧同源）。用户无默认
+    EMBEDDING 配置时，facade 把统一解析层的 ``UserModelConfigMissingError`` /
+    ``DenseEmbeddingConfigMissingError`` 翻译为本异常。区别于一般召回失败：这是**必配缺失**，
+    上层（``DenseRetriever`` → recall pipeline）据此走硬失败、不做宽松降级。
+    """

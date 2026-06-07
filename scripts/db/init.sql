@@ -8,7 +8,7 @@
 --   - schema 演进的唯一权威源是 src/models/**.py + migrations/versions/*.py；
 --   - 修改字段必须先改 ORM 模型并新增 migration，再同步本文件。
 -- 同步时机：每条会改动表结构的 migration 落库时一并更新本文件。
--- 末次同步：migration 0011_20260530_add_java_soft_delete_columns
+-- 末次同步：migration 0013_20260606_llm_config_refactor
 -- ===============================================
 
 CREATE DATABASE IF NOT EXISTS tolink_rag_db DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -40,8 +40,6 @@ CREATE TABLE IF NOT EXISTS llm_system_provider (
     provider_type   VARCHAR(32)    NOT NULL COMMENT '厂商类型：openai/claude/glm/deepseek',
     provider_name   VARCHAR(64)    NOT NULL COMMENT '厂商展示名称，如 "OpenAI"',
     api_base_url    VARCHAR(512)   NOT NULL COMMENT '官方默认 API 地址',
-    supported_models JSON           COMMENT '支持模型与能力映射',
-    config_schema   JSON           COMMENT '配置参数 Schema',
     is_active       BOOLEAN        NOT NULL DEFAULT TRUE COMMENT '是否启用',
     priority        INT            NOT NULL DEFAULT 50 COMMENT '厂商优先级（1-100）',
     created_at      DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -50,29 +48,51 @@ CREATE TABLE IF NOT EXISTS llm_system_provider (
     UNIQUE KEY uk_provider_type (provider_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT 'LLM 系统级厂商配置表';
 
--- 3. 用户级 LLM 配置表
+-- 2.1 厂商模型能力目录表
+CREATE TABLE IF NOT EXISTS llm_provider_model (
+    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
+    provider_id     BIGINT UNSIGNED NOT NULL COMMENT '关联 llm_system_provider.id',
+    model_name      VARCHAR(128)    NOT NULL COMMENT '模型名',
+    capability      VARCHAR(32)     NOT NULL COMMENT '单能力；一模型多能力=多行',
+    is_active       BOOLEAN         NOT NULL DEFAULT TRUE COMMENT '该模型能力是否上架',
+    created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uk_provider_model_cap (provider_id, model_name, capability),
+    INDEX idx_provider_cap (provider_id, capability)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '厂商模型能力目录表';
+
+-- 2.2 系统预设表
+CREATE TABLE IF NOT EXISTS llm_system_preset (
+    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
+    provider_id     BIGINT UNSIGNED NOT NULL COMMENT '关联 llm_system_provider.id',
+    model_name      VARCHAR(128)    NOT NULL COMMENT '模型名',
+    capability      VARCHAR(32)     NOT NULL COMMENT '能力标识',
+    api_key         VARCHAR(512)    NOT NULL COMMENT '平台 Key（加密）',
+    is_active       BOOLEAN         NOT NULL DEFAULT TRUE COMMENT '是否对新用户下发',
+    created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uk_preset_provider_model_cap (provider_id, model_name, capability)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '系统预设表';
+
+-- 3. 用户级 LLM 配置表（下游唯一生效源）
 CREATE TABLE IF NOT EXISTS llm_user_config (
     id                  BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '配置唯一标识',
     user_id             BIGINT UNSIGNED NOT NULL COMMENT '用户 ID',
     provider_id         BIGINT UNSIGNED NOT NULL COMMENT '关联 SystemProvider ID',
-    provider_type       VARCHAR(32)     NOT NULL COMMENT '厂商类型快照',
-    provider_name       VARCHAR(64)     NOT NULL COMMENT '厂商名称快照',
-    config_name         VARCHAR(64)     NOT NULL COMMENT '用户自定义配置名称',
-    api_key             VARCHAR(512)    NOT NULL COMMENT 'API Key（加密存储）',
-    custom_api_base_url VARCHAR(512)    COMMENT '自定义 API 地址',
+    provider_type       VARCHAR(32)     NOT NULL COMMENT '厂商类型快照，下游路由 SDK',
+    api_key             VARCHAR(512)    NOT NULL COMMENT '厂商级 API Key（加密存储）',
+    api_base_url        VARCHAR(512)    COMMENT '实际生效地址：用户自定义或厂商默认',
     model_name          VARCHAR(128)    NOT NULL COMMENT '具体模型名',
-    priority            INT             NOT NULL DEFAULT 50 COMMENT '优先级 1-100',
-    is_active           BOOLEAN         NOT NULL DEFAULT TRUE COMMENT '是否启用',
-    is_default          BOOLEAN         NOT NULL DEFAULT FALSE COMMENT '是否为默认配置',
-    timeout_ms          INT             DEFAULT 60000 COMMENT '超时时间(毫秒)',
-    max_retries         INT             DEFAULT 3 COMMENT '最大重试次数',
-    stream_enabled      BOOLEAN         DEFAULT TRUE COMMENT '是否支持流式输出',
-    capability          VARCHAR(32)     NOT NULL DEFAULT 'CHAT' COMMENT '专用能力标识：CHAT/EMBEDDING/RERANK/OCR',
-    extra_config        JSON            COMMENT '扩展配置',
+    capability          VARCHAR(32)     NOT NULL DEFAULT 'CHAT' COMMENT '专用能力标识：CHAT/EMBEDDING/RERANK/OCR 等',
+    is_active           BOOLEAN         NOT NULL DEFAULT TRUE COMMENT '模型启停 + 生效过滤',
+    is_default          BOOLEAN         NOT NULL DEFAULT FALSE COMMENT '该能力是否生效（单用户单能力唯一）',
+    is_system_preset    BOOLEAN         NOT NULL DEFAULT FALSE COMMENT '系统预设行（只读）',
     created_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-    UNIQUE KEY uk_user_provider_model (user_id, provider_id, model_name),
+    UNIQUE KEY uk_user_provider_model_capability (user_id, provider_id, model_name, capability, is_system_preset),
     INDEX idx_user_active_default (user_id, is_active, is_default),
     INDEX idx_user_provider_cap (user_id, provider_type, capability)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '用户级 LLM 配置表';
@@ -105,6 +125,7 @@ CREATE TABLE IF NOT EXISTS chat_conversation (
     created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
+    UNIQUE KEY uk_conversation_user_dataset_title (user_id, dataset_id, title),
     INDEX idx_chat_conversation_user_pinned_updated (user_id, is_pinned, updated_at),
     INDEX idx_chat_conversation_dataset_updated (dataset_id, updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '对话表';

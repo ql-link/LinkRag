@@ -43,8 +43,14 @@ def _build_sparse_retriever() -> Retriever:
 
 
 def _build_dense_retriever() -> Retriever:
+    # dense 召回 query 编码按发起用户的 EMBEDDING 配置解析（与写入侧 index_chunks 同源）：
+    # 注入 aresolve_user_chunk_embedding_pipeline，facade.search_dense_chunks 据 user_id 解析。
+    from src.core.splitter.factory import aresolve_user_chunk_embedding_pipeline
+
     return DenseRetriever(
-        backend=compose_vector_storage_facade(),
+        backend=compose_vector_storage_facade(
+            query_embedding_resolver=aresolve_user_chunk_embedding_pipeline,
+        ),
         score_threshold=settings.DENSE_RETRIEVAL_SCORE_THRESHOLD,
     )
 

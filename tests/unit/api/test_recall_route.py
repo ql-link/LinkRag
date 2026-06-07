@@ -17,6 +17,7 @@ from src.api.recall_pipeline_provider import get_recall_pipeline
 from src.config import settings
 from src.core.pipeline.recall import (
     RecallError,
+    RecallFatalError,
     RecallHit,
     RecallResponse,
 )
@@ -295,6 +296,25 @@ def test_all_sources_failed_emits_sse_error(client):
         app.dependency_overrides.pop(get_recall_pipeline, None)
 
 
+def test_embedding_config_missing_emits_sse_error(client):
+    """发起用户无默认 EMBEDDING 配置 → pipeline 抛 RecallFatalError →
+    SSE error 事件返回 RECALL_EMBEDDING_CONFIG_MISSING（硬失败，不降级）。"""
+    fake = FakePipeline(exc=RecallFatalError("user embedding config missing"))
+    app.dependency_overrides[get_recall_pipeline] = lambda: fake
+    try:
+        resp = _post(TestClient(app), make_token(), {"query": "q", "user_id": 123, "dataset_ids": [1]})
+        assert resp.status_code == 200
+        assert resp.headers["content-type"].startswith("text/event-stream")
+        import json
+        name, data = _parse_sse(resp.text)[0]
+        assert name == "error"
+        payload = json.loads(data)
+        assert payload["code"] == "RECALL_EMBEDDING_CONFIG_MISSING"
+        assert "Traceback" not in payload["message"]
+    finally:
+        app.dependency_overrides.pop(get_recall_pipeline, None)
+
+
 def test_timeout_emits_sse_error(client, monkeypatch):
     monkeypatch.setattr(settings, "RECALL_STREAM_TIMEOUT_MS", 10)
     fake = FakePipeline(response=_ok_response(), delay=0.5)
@@ -334,12 +354,12 @@ def test_request_id_generated_when_absent(client, fake_pipeline):
 async def test_client_disconnect_cancels_and_emits_no_event():
     import asyncio
 
-    from src.api.routes.recall import _recall_event_stream
+    from src.api.recall_stream_runtime import recall_event_stream
     from src.core.pipeline.recall import RecallRequest
 
     fake = FakePipeline(response=_ok_response(), delay=10.0)
     req = RecallRequest(query="q", user_id=1, dataset_ids=[1], top_k=20)
-    gen = _recall_event_stream(fake, req, "rid")
+    gen = recall_event_stream(fake, req, "rid")
 
     task = asyncio.ensure_future(gen.__anext__())
     await asyncio.sleep(0.02)  # 让流进入执行中

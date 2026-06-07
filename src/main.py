@@ -7,6 +7,13 @@ from src.nltk_bootstrap import configure_nltk_data_path
 
 configure_nltk_data_path()
 
+# 显式初始化日志：装好 Loguru sink 与标准库 logging 桥接（InterceptHandler），
+# 放在其余 src 导入之前，确保后续模块导入期产生的日志也被统一捕获，
+# 而非依赖某个 core 模块被 import 时的副作用触发。
+from src.utils.logger import logger, setup_logger
+
+setup_logger()
+
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
@@ -17,7 +24,7 @@ from fastapi.responses import JSONResponse
 import uvicorn
 
 from src.config import settings
-from src.api.routes import llm, internal, parse, mq, recall
+from src.api.routes import llm, internal, parse, mq, recall, recall_direct
 from src.api.internal_auth import RecallApiError
 from src.cache.redis_client import redis_client
 from src.database import init_database, close_database
@@ -65,6 +72,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         pass
     await redis_client.close()
     await close_database()
+    # 等待 enqueue 异步队列里的日志全部落盘，避免退出时丢失尾部日志。
+    await logger.complete()
 
 
 app = FastAPI(
@@ -75,6 +84,10 @@ app = FastAPI(
 )
 
 # CORS 配置
+# 注意：CORS 是全局中间件，对所有路由生效。对外直连召回端点（/api/v1/recall/stream）
+# 暴露给浏览器后，生产环境必须把 CORS_ORIGINS 由默认 ["*"] 收敛为前端可信域名清单
+# （携带 Authorization 头的跨域请求需要显式 origin，"*" + allow_credentials 本就非法）。
+# 内部路由是服务端调用，不依赖 CORS，收敛无副作用。
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
@@ -89,14 +102,36 @@ app.include_router(internal.router)
 app.include_router(parse.router)  # 挂载文档解析路由
 app.include_router(mq.router)    # 挂载 MQ 消息中台路由
 app.include_router(recall.router)  # 挂载内部多路召回 SSE 路由
+app.include_router(recall_direct.router)  # 挂载对外直连召回 SSE 路由（LINK-40）
 
 
 @app.exception_handler(RecallApiError)
 async def recall_api_error_handler(request: Request, exc: RecallApiError) -> JSONResponse:
     """内部召回握手前错误统一响应：{code, message, data} + 对应 HTTP 状态。"""
+    # 握手失败（鉴权 / 入参 / 限流等）记 warning：便于排查对接问题与发现异常调用。
+    logger.warning(
+        f"召回握手失败 {request.method} {request.url.path}: "
+        f"code={exc.code} status={exc.status_code} msg={exc.message}"
+    )
     return JSONResponse(
         status_code=exc.status_code,
         content={"code": exc.code, "message": exc.message, "data": None},
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """兜底未捕获异常：带请求上下文记录完整堆栈，再返回统一 500 响应。
+
+    框架层异常虽已由 InterceptHandler 桥接的 uvicorn logger 记录，但缺业务上下文；
+    此处补记请求方法 / 路径，便于排障，并保证对外错误体格式统一。
+    """
+    logger.opt(exception=exc).error(
+        f"未捕获异常 {request.method} {request.url.path}: {exc!r}"
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"code": "INTERNAL_ERROR", "message": "服务内部错误", "data": None},
     )
 
 
@@ -117,4 +152,7 @@ if __name__ == "__main__":
         host=settings.APP_HOST,
         port=settings.APP_PORT,
         reload=True,
+        # 不让 uvicorn 安装自己的 dictConfig；日志交由 setup_logger 的
+        # InterceptHandler 统一接管（CLI 启动路径同样在 import 期被接管覆盖）。
+        log_config=None,
     )

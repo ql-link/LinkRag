@@ -54,6 +54,23 @@ class ConfigNotFoundError(ConfigurationException):
     pass
 
 
+class UserModelConfigMissingError(ConfigurationException):
+    """发起用户缺少指定能力的默认 LLM 配置。
+
+    统一用户模型解析（``user_model_resolver``）在「未启用系统兜底且用户无该能力默认配置」时
+    抛出。各领域调用点可在边界捕获后重抛自己的领域异常（如 ``DenseEmbeddingConfigMissingError`` /
+    ``LLMConfigMissingError``）以保留既有失败码映射。``capability`` 为配置表能力字符串
+    （CHAT / EMBEDDING / RERANK / VISION / OCR）。
+    """
+
+    def __init__(self, capability: str, user_id: int) -> None:
+        self.capability = capability
+        self.user_id = user_id
+        super().__init__(
+            f"User {user_id} has no default {capability} config",
+        )
+
+
 class InvalidConfigError(ConfigurationException):
     """无效配置"""
     pass

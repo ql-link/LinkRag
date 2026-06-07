@@ -8,6 +8,7 @@
 from pathlib import Path
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from loguru import logger
 
 from src.config import settings
 from src.services.parse_task_service import ParseTaskService
@@ -87,6 +88,7 @@ async def extract_sync(
             "time_cost_ms": result["time_cost_ms"],
         }
     except Exception as e:
+        logger.exception("/parser 接口处理失败")
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         temp_workspace.safe_unlink(upload_path)
@@ -130,4 +132,5 @@ async def submit_async_task(request: TaskSubmitRequest):
             },
         )
     except Exception as e:
+        logger.exception("/parser 接口处理失败")
         raise HTTPException(status_code=500, detail=str(e))

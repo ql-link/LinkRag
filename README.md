@@ -14,176 +14,71 @@
   <img alt="License" src="https://img.shields.io/badge/License-MIT-blue">
 </p>
 
-
-
 ## LinkRag 是什么？
 
-`LinkRag` 是一个面向企业知识库场景的完整 RAG 系统，目标是覆盖从文档接入、解析、分片、向量化、检索到生成问答的全链路能力。
+`LinkRag` 是面向企业知识库场景的完整 RAG 系统，覆盖从文档接入、解析、分片、向量化、检索到问答生成的全链路能力。
 
-当前版本优先打磨 RAG 系统中最关键的知识入库链路：将复杂文档解析为结构化 Markdown，通过层次化语义分片形成可检索的知识单元，再完成 Embedding 与向量索引构建。后续可在此基础上扩展检索、重排、上下文组装和问答生成能力。
+本仓库是其中的 **Python RAG 服务**，当前阶段聚焦最关键的知识入库链路：把复杂文档解析为结构化 Markdown，经层次化语义分片形成可检索的知识单元，再完成 Embedding 与向量索引构建，并通过消息队列与业务系统异步集成。
 
-## 主要功能
-
-### 高质量文档理解
-
-- 支持 PDF、Word、HTML 等常见文档接入。
-- PDF 解析后端可插拔，默认接入 MinerU API。
-- 解析结果统一沉淀为 Markdown，便于审计、增强和复用。
-
-### 层次化语义分片
-
-- 结合文档结构和语义边界进行 Chunk 切分。
-- 保留标题、表格、图片、代码块等上下文信息。
-- 兼顾可解释性、召回质量和后续上下文组装。
-
-### 向量化与索引构建
-
-- 支持 Embedding 批处理和向量索引写入。
-- 使用 MySQL 维护 Chunk 状态，便于失败补偿和一致性恢复。
-- 当前以 Qdrant 作为主要向量检索存储。
-
-### 企业级异步集成
-
-- 通过 Kafka / RabbitMQ 接入业务系统。
-- 支持解析任务投递、终态通知、缓存同步和用量上报。
-- 提供 FastAPI 接口，便于调试、联调和二次集成。
-
-## 系统架构
-
-```text
-业务系统 / Java 管理端
-        |
-        | MQ 解析任务
-        v
-toLink-Rag
-        |
-        | 文档解析 -> Markdown -> 分片 -> Embedding
-        v
-MySQL + Qdrant + 对象存储
-        |
-        | MQ 终态通知
-        v
-业务系统 / Java 管理端
-```
-
-`toLink-Rag` 的目标是成为可嵌入企业业务系统的 RAG 基础平台。当前阶段以文档理解、知识入库和索引构建为核心，后续可继续扩展检索、重排、上下文组装和问答生成能力。
+能力细节见技术文档：[文件解析](./docs/internals/file_parser.md) · [分块](./docs/internals/chunking.md) · [向量化](./docs/internals/vectorization.md) · [召回](./docs/internals/recall_pipeline.md)。
 
 ## 快速开始
 
-### 前提条件
-
-- Python `3.10+`
-- Docker 与 Docker Compose
-- MySQL、Redis、MinIO、Kafka 或 RabbitMQ、Qdrant
-- 可用的 LLM / Embedding 服务
-- 可选：MinerU API 服务
-
-### 启动依赖
+前提：Python `3.10+`、Docker、以及 MySQL / Redis / 对象存储 / Kafka 或 RabbitMQ / Qdrant 等依赖服务，外加可用的 LLM / Embedding 服务（PDF 解析可选 MinerU）。
 
 ```bash
-docker compose up -d
+docker compose up -d                       # 1. 启动外部依赖
+python -m venv .venv && source .venv/bin/activate
+pip install -e ".[dev]"                     # 2. 安装项目
+cp .env.example .env                        # 3. 准备配置（按需修改连接信息，勿提交密钥）
+alembic upgrade head                        # 4. 初始化数据库
+uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload  # 5. 启动服务
 ```
 
-### 安装项目
+启动后访问 Swagger UI `http://localhost:8000/docs`、健康检查 `http://localhost:8000/health`。
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
-```
+完整前提条件、配置项与联调清单见 [部署](./docs/ops/deploy.md) 与 [配置](./docs/ops/configure.md)；测试运行方式见 [docs/contributing.md §三](./docs/contributing.md#三测试)。
 
-### 准备配置
+## 关联仓库
 
-```bash
-cp .env.example .env
-```
+LinkRag 由三个仓库协作组成：
 
-根据实际环境修改 `.env` 中的数据库、对象存储、MQ、Qdrant、LLM 和 PDF 解析配置。
+| 仓库 | 角色 |
+| --- | --- |
+| [ql-link/LinkRag](https://github.com/ql-link/LinkRag)（本仓） | Python RAG 服务：文档解析、分片、向量化、索引与召回 |
+| [ql-link/LinkRag-Service](https://github.com/ql-link/LinkRag-Service) | Java 管理端：业务编排、任务下发与终态回收 |
+| [ql-link/LinkRag-Web](https://github.com/ql-link/LinkRag-Web) | 前端：知识库管理与交互界面 |
 
-> 不要将真实密钥、Token、密码提交到仓库。
+## 架构导览
 
-### 初始化数据库
+LinkRag 以本仓的 Python RAG 服务为核心，前端与 Java 管理端在业务侧协作，通过消息队列与 RAG 服务异步集成，数据落在共享基础设施。
 
-```bash
-alembic upgrade head
-```
+![LinkRag 系统架构](./docs/assets/architecture-overview.svg)
 
-### 启动服务
+- **外部协作边界**：前端与 Java 管理端负责业务编排，只通过消息队列与 RAG 服务交互（Java 发 `parse_task`、RAG 回 `parse_result`），不直接耦合解析实现。
+- **本仓内部主链路**：文档接入 → 解析 → Markdown → 分片 → 向量化 → 索引/召回，状态由 MySQL 维护以支持失败补偿与一致性恢复。
 
-```bash
-uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
-```
+### 解析流水线
 
-启动后访问：
+文档入库走六阶段状态机，任一阶段失败即终态并回发 `parse_result failed`。完整状态语义见 [解析任务状态机](./docs/internals/parse_task_pipeline.md) 与 [解析 Pipeline 架构](./docs/internals/pipeline_architecture.md)。
 
-- Swagger UI: `http://localhost:8000/docs`
-- Health Check: `http://localhost:8000/health`
+![解析任务流水线](./docs/assets/parse-pipeline.svg)
 
-## 配置说明
+### 召回流水线
 
-常用配置集中在 `.env` 与 `src/config.py`：
+查询侧并行触发多路 Retriever，按容错策略收敛后做 RRF 粗融合。详见 [召回 Pipeline](./docs/internals/recall_pipeline.md)。
 
-- 应用服务：端口、日志、运行环境
-- 数据库与缓存：MySQL、Redis
-- 对象存储：MinIO / S3 兼容存储
-- 消息队列：Kafka / RabbitMQ
-- 模型服务：LLM、Embedding、Rerank、OCR
-- PDF 解析：MinerU、OpenDataLoader、本地解析回退
-- 向量索引：Qdrant collection 与分桶策略
+![召回流水线](./docs/assets/recall-pipeline.svg)
 
-冷启动建库以 `migrations/db.sql`（0001 baseline）为准；叠加全部迁移后的当前完整结构见 `scripts/db/init.sql`。
-
-## 源码启动
-
-开发环境推荐直接通过 Uvicorn 启动：
-
-```bash
-source .venv/bin/activate
-uvicorn src.main:app --reload
-```
-
-如果需要完整链路联调，请确认：
-
-- 依赖服务已启动。
-- `.env` 中的连接地址可访问。
-- MQ topic / queue 已由业务侧或部署流程创建。
-- 对象存储中存在待解析文件。
-- LLM / Embedding / MinerU 配置可用。
-
-## 测试
-
-运行单元测试：
-
-```bash
-.venv/bin/pytest tests/unit -q
-```
-
-运行全部测试：
-
-```bash
-.venv/bin/pytest tests -q
-```
-
-部分集成测试依赖真实外部服务。运行前请阅读 `tests/README.md`，并确认对应环境变量已经配置。
-
-## 技术文档
+## 深入文档
 
 完整导航见 [docs/README.md](./docs/README.md)。常用入口：
 
-- [API 契约](./docs/api/http_contracts.md) / [MQ 契约](./docs/api/mq_contracts.md) / [错误码](./docs/api/error_codes.md)
-- [MySQL Schema](./docs/api/schemas/mysql.md) / [Qdrant Schema](./docs/api/schemas/qdrant.md) / [Elasticsearch Schema](./docs/api/schemas/elasticsearch.md)
-- [文件解析](./docs/internals/file_parser.md) / [分块](./docs/internals/chunking.md) / [向量化](./docs/internals/vectorization.md)
-- [部署](./docs/ops/deploy.md) / [配置](./docs/ops/configure.md)
-
-## 贡献指南
-
-欢迎提交 Issue 和 Pull Request。提交前建议先阅读：
-
-- [CLAUDE.md](./CLAUDE.md) — 项目使用入口
-- [docs/contributing.md](./docs/contributing.md) — 分支、提交、测试、迁移、文档同步
-- [tests/README.md](./tests/README.md)
-
-请确保新增配置、API、数据结构或模块边界变化时，同步更新相关文档。
+- **对外契约**：[HTTP](./docs/api/http_contracts.md) / [MQ](./docs/api/mq_contracts.md) / [错误码](./docs/api/error_codes.md) / [MySQL](./docs/api/schemas/mysql.md) · [Qdrant](./docs/api/schemas/qdrant.md) · [Elasticsearch](./docs/api/schemas/elasticsearch.md) Schema
+- **内部实现**：[file_parser](./docs/internals/file_parser.md) / [chunking](./docs/internals/chunking.md) / [vectorization](./docs/internals/vectorization.md) / [mq](./docs/internals/mq.md)
+- **部署与配置**：[deploy](./docs/ops/deploy.md) / [configure](./docs/ops/configure.md)
+- **贡献者规范**：[docs/contributing.md](./docs/contributing.md) — 分支、提交、测试、迁移、文档同步
+- **项目入口（AI / 新成员）**：[CLAUDE.md](./CLAUDE.md)
 
 ## 许可证
 

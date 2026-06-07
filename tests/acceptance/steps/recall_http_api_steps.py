@@ -355,12 +355,12 @@ def _call_with_request_id(recall_acc_state, rid, query, user_id, ds):
 
 @when(parsers.parse("Java 主动断开到 Python 的 SSE 连接"))
 def _java_disconnect(recall_acc_state):
-    from src.api.routes.recall import _recall_event_stream
+    from src.api.recall_stream_runtime import recall_event_stream
 
     req = RecallRequest(query="q", user_id=123, dataset_ids=[1], top_k=20)
 
     async def _drive() -> None:
-        gen = _recall_event_stream(recall_acc_state.fake, req, "rid")
+        gen = recall_event_stream(recall_acc_state.fake, req, "rid")
         task = asyncio.ensure_future(gen.__anext__())
         await asyncio.sleep(0.02)
         task.cancel()

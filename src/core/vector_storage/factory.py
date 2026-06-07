@@ -28,6 +28,7 @@ def create_vector_storage_facade(
     repository: ChunkRepository | None = None,
     qdrant_store: QdrantIndexStore | None = None,
     qdrant_client: Any | None = None,
+    query_embedding_resolver: Any | None = None,
 ) -> VectorStorageFacade:
     """
     使用项目默认配置装配向量存储统一入口。
@@ -89,6 +90,7 @@ def create_vector_storage_facade(
         qdrant_store=resolved_qdrant_store,
         sparse_vector_service=sparse_vector_service,
         embedding_pipeline=embedding_pipeline,
+        query_embedding_resolver=query_embedding_resolver,
     )
 
 
@@ -100,10 +102,13 @@ def compose_vector_storage_facade(
     repository: ChunkRepository | None = None,
     qdrant_store: QdrantIndexStore | None = None,
     qdrant_client: Any | None = None,
+    query_embedding_resolver: Any | None = None,
 ) -> VectorStorageFacade:
     """一站式装配：未传 embedding_pipeline 时按系统配置自动构造。
 
     适合调用方只关心"我要一个开箱即用的 VectorStorageFacade"的场景。
+    ``query_embedding_resolver``：召回路径传入「按 user_id 解析 query embedding pipeline」回调，
+    使 dense 召回 query 编码按发起用户模型解析（写入侧已按用户解析，两侧同源）。
     """
     if embedding_pipeline is None:
         from src.core.splitter.factory import create_chunk_embedding_pipeline
@@ -116,4 +121,5 @@ def compose_vector_storage_facade(
         repository=repository,
         qdrant_store=qdrant_store,
         qdrant_client=qdrant_client,
+        query_embedding_resolver=query_embedding_resolver,
     )

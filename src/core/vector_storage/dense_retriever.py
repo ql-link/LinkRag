@@ -132,16 +132,26 @@ class DenseRetriever:
         if not dataset_ids:
             return []
 
+        # 发起用户缺默认 EMBEDDING 配置 → dense 路无法编码 query：翻成 recall 层
+        # RecallFatalError，让 pipeline 绕过宽松降级、整请求硬失败（区别于普通单路失败）。
+        from src.core.pipeline.recall.exceptions import RecallFatalError
+        from src.core.vector_storage.exceptions import (
+            VectorRetrievalUserConfigMissingError,
+        )
+
         accumulated: list[RetrieverHit] = []
         for dataset_id in dataset_ids:
-            result = await self._backend.search_dense_chunks(
-                query=query,
-                user_id=user_id,
-                set_id=dataset_id,
-                doc_id=list(doc_ids) if doc_ids else None,
-                top_k=top_k,
-                score_threshold=self._score_threshold,
-            )
+            try:
+                result = await self._backend.search_dense_chunks(
+                    query=query,
+                    user_id=user_id,
+                    set_id=dataset_id,
+                    doc_id=list(doc_ids) if doc_ids else None,
+                    top_k=top_k,
+                    score_threshold=self._score_threshold,
+                )
+            except VectorRetrievalUserConfigMissingError as exc:
+                raise RecallFatalError(str(exc)) from exc
             for hit in result.hits:
                 accumulated.append(
                     RetrieverHit(

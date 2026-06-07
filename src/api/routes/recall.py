@@ -10,39 +10,31 @@
 4. 以上握手前错误统一走 HTTP JSON；建流后 pipeline 的成功/失败/超时统一走 SSE 终态事件。
 
 不返回 chunk 正文；``top_k`` / ``sources`` / ``strict`` 由服务端配置控制。
+
+SSE 流式执行与事件序列化复用 ``src/api/recall_stream_runtime.py``——与对外直连端点
+``/api/v1/recall/stream`` 共享同一实现，避免双链路语义漂移。
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
-from collections.abc import AsyncGenerator
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
-from loguru import logger
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from src.api.internal_auth import (
-    CODE_ALL_SOURCES_FAILED,
-    CODE_INTERNAL_ERROR,
     CODE_INVALID_REQUEST,
     CODE_SCOPE_FORBIDDEN,
-    CODE_TIMEOUT,
     CODE_USER_MISMATCH,
     InternalAuthContext,
     RecallApiError,
     verify_internal_jwt,
 )
 from src.api.recall_pipeline_provider import get_recall_pipeline
+from src.api.recall_stream_runtime import recall_event_stream
 from src.config import settings
-from src.core.pipeline.recall import (
-    RecallError,
-    RecallPipeline,
-    RecallRequest,
-    RecallResponse,
-    RecallValidationError,
-)
+from src.core.pipeline.recall import RecallPipeline, RecallRequest
 
 router = APIRouter(prefix="/api/v1/internal/recall", tags=["internal-recall"])
 
@@ -98,65 +90,6 @@ def _check_scope(body: RecallStreamRequest, ctx: InternalAuthContext) -> None:
             )
 
 
-def _event(name: str, payload: dict) -> str:
-    """序列化为单帧 SSE 事件（``data`` 为单行 JSON）。"""
-    return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
-
-
-def _serialize_hits(response: RecallResponse) -> list[dict]:
-    return [
-        {
-            "chunk_id": str(h.chunk_id),
-            "doc_id": h.doc_id,
-            "dataset_id": h.dataset_id,
-            "fused_score": h.fused_score,
-            "scores": h.scores,
-        }
-        for h in response.hits
-    ]
-
-
-async def _recall_event_stream(
-    pipeline: RecallPipeline,
-    recall_req: RecallRequest,
-    request_id: str,
-) -> AsyncGenerator[str, None]:
-    """流内执行 pipeline，把结果/异常映射为 SSE 终态事件。
-
-    成功（含宽松降级）→ ``recall_done``；全路失败 → ``error`` ALL_SOURCES_FAILED；
-    超时 → ``error`` TIMEOUT；客户端断连 → 停止发送并向上传播取消（pipeline 协程随之
-    取消）；未预期异常 → ``error`` INTERNAL_ERROR。错误 message 不含内部堆栈。
-    """
-    timeout_seconds = settings.RECALL_STREAM_TIMEOUT_MS / 1000
-    try:
-        response = await asyncio.wait_for(
-            pipeline.execute(recall_req), timeout=timeout_seconds
-        )
-        yield _event(
-            "recall_done",
-            {"hits": _serialize_hits(response), "failed_sources": response.failed_sources},
-        )
-    except RecallValidationError as exc:
-        # 正常已在握手前拦截；此处为 pipeline 自身安全网的兜底。
-        logger.info("[recall] validation error request_id={}: {}", request_id, exc)
-        yield _event("error", {"code": CODE_INVALID_REQUEST, "message": str(exc)})
-    except RecallError as exc:
-        logger.warning("[recall] all sources failed request_id={}: {}", request_id, exc)
-        yield _event(
-            "error", {"code": CODE_ALL_SOURCES_FAILED, "message": "all retrievers failed"}
-        )
-    except asyncio.TimeoutError:
-        logger.warning("[recall] timeout request_id={}", request_id)
-        yield _event("error", {"code": CODE_TIMEOUT, "message": "recall timeout"})
-    except asyncio.CancelledError:
-        # 客户端（Java）断连：停止发送事件，向上传播取消，让 pipeline 协程随之结束。
-        logger.info("[recall] client disconnected, cancelling request_id={}", request_id)
-        raise
-    except Exception:  # noqa: BLE001 - 兜底，避免未预期异常泄露堆栈给调用方
-        logger.exception("[recall] unexpected error request_id={}", request_id)
-        yield _event("error", {"code": CODE_INTERNAL_ERROR, "message": "internal error"})
-
-
 @router.post("/stream")
 async def recall_stream(
     request: Request,
@@ -176,7 +109,7 @@ async def recall_stream(
     )
 
     return StreamingResponse(
-        _recall_event_stream(pipeline, recall_req, ctx.request_id),
+        recall_event_stream(pipeline, recall_req, ctx.request_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

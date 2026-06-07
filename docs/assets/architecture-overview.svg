@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 660" width="1000" height="660" font-family="'PingFang SC','Heiti SC','Microsoft YaHei',sans-serif">
+  <defs>
+    <marker id="a_blue" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L9,3.5 L0,7 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="a_orange" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L9,3.5 L0,7 Z" fill="#ea580c"/>
+    </marker>
+    <marker id="a_green" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L9,3.5 L0,7 Z" fill="#059669"/>
+    </marker>
+    <marker id="a_purple" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L9,3.5 L0,7 Z" fill="#7c3aed"/>
+    </marker>
+    <marker id="a_red" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L9,3.5 L0,7 Z" fill="#dc2626"/>
+    </marker>
+    <marker id="a_slate" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L9,3.5 L0,7 Z" fill="#475569"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="1000" height="660" fill="#ffffff"/>
+  <text x="500" y="40" font-size="20" fill="#0f172a" text-anchor="middle" font-weight="700">LinkRag 系统架构</text>
+  <rect x="60" y="64" width="880" height="92" rx="12" fill="#eff6ff" stroke="#bfdbfe" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="82" y="88" font-size="13" fill="#2563eb" text-anchor="start" font-weight="600">业务侧</text>
+  <rect x="150" y="90" width="250" height="52" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="275" y="114" font-size="14" fill="#0f172a" text-anchor="middle" font-weight="600">前端</text>
+  <text x="275" y="131" font-size="11" fill="#475569" text-anchor="middle" font-weight="400">LinkRag-Web</text>
+  <rect x="560" y="90" width="260" height="52" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="690" y="114" font-size="14" fill="#0f172a" text-anchor="middle" font-weight="600">Java 管理端</text>
+  <text x="690" y="131" font-size="11" fill="#475569" text-anchor="middle" font-weight="400">LinkRag-Service</text>
+  <path d="M400,116 H554" fill="none" stroke="#2563eb" stroke-width="1.8" marker-end="url(#a_blue)"/>
+  <text x="480" y="108" font-size="11" fill="#475569" text-anchor="middle" font-weight="400">业务编排</text>
+  <rect x="150" y="196" width="670" height="52" rx="26" fill="#fff7ed" stroke="#fb923c" stroke-width="1.5"/>
+  <text x="485" y="227" font-size="14" fill="#c2410c" text-anchor="middle" font-weight="600">消息队列 · Kafka / RabbitMQ</text>
+  <path d="M650,144 V194" fill="none" stroke="#ea580c" stroke-width="1.8" marker-end="url(#a_orange)"/>
+  <text x="598" y="176" font-size="10.5" fill="#9a3412" text-anchor="middle" font-weight="400">解析任务</text>
+  <path d="M745,196 V146" fill="none" stroke="#ea580c" stroke-width="1.8" marker-end="url(#a_orange)"/>
+  <text x="792" y="176" font-size="10.5" fill="#9a3412" text-anchor="middle" font-weight="400">解析结果</text>
+  <rect x="60" y="292" width="880" height="150" rx="12" fill="#f0fdf4" stroke="#86efac" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="82" y="314" font-size="13" fill="#047857" text-anchor="start" font-weight="600">Python RAG 服务（本仓）</text>
+  <rect x="80" y="350" width="110" height="62" rx="8" fill="#ffffff" stroke="#10b981" stroke-width="1.5"/>
+  <text x="135.0" y="386" font-size="13.5" fill="#0f172a" text-anchor="middle" font-weight="600">文档接入</text>
+  <rect x="226" y="350" width="110" height="62" rx="8" fill="#ffffff" stroke="#10b981" stroke-width="1.5"/>
+  <text x="281.0" y="386" font-size="13.5" fill="#0f172a" text-anchor="middle" font-weight="600">解析</text>
+  <path d="M190,381.0 H224" fill="none" stroke="#059669" stroke-width="1.8" marker-end="url(#a_green)"/>
+  <rect x="372" y="350" width="110" height="62" rx="8" fill="#ffffff" stroke="#10b981" stroke-width="1.5"/>
+  <text x="427.0" y="386" font-size="13.5" fill="#0f172a" text-anchor="middle" font-weight="600">Markdown</text>
+  <path d="M336,381.0 H370" fill="none" stroke="#059669" stroke-width="1.8" marker-end="url(#a_green)"/>
+  <rect x="518" y="350" width="110" height="62" rx="8" fill="#ffffff" stroke="#10b981" stroke-width="1.5"/>
+  <text x="573.0" y="386" font-size="13.5" fill="#0f172a" text-anchor="middle" font-weight="600">分片</text>
+  <path d="M482,381.0 H516" fill="none" stroke="#059669" stroke-width="1.8" marker-end="url(#a_green)"/>
+  <rect x="664" y="350" width="110" height="62" rx="8" fill="#ffffff" stroke="#10b981" stroke-width="1.5"/>
+  <text x="719.0" y="386" font-size="13.5" fill="#0f172a" text-anchor="middle" font-weight="600">向量化</text>
+  <path d="M628,381.0 H662" fill="none" stroke="#059669" stroke-width="1.8" marker-end="url(#a_green)"/>
+  <rect x="810" y="350" width="110" height="62" rx="8" fill="#ffffff" stroke="#10b981" stroke-width="1.5"/>
+  <text x="865.0" y="386" font-size="13.5" fill="#0f172a" text-anchor="middle" font-weight="600">索引 / 召回</text>
+  <path d="M774,381.0 H808" fill="none" stroke="#059669" stroke-width="1.8" marker-end="url(#a_green)"/>
+  <path d="M300,248 V272 H135 V348" fill="none" stroke="#ea580c" stroke-width="1.8" marker-end="url(#a_orange)"/>
+  <text x="176" y="266" font-size="10.5" fill="#9a3412" text-anchor="middle" font-weight="400">投递</text>
+  <path d="M865,348 V272 H700 V250" fill="none" stroke="#ea580c" stroke-width="1.8" marker-end="url(#a_orange)"/>
+  <text x="812" y="266" font-size="10.5" fill="#9a3412" text-anchor="middle" font-weight="400">解析结果</text>
+  <rect x="60" y="478" width="880" height="140" rx="12" fill="#faf5ff" stroke="#d8b4fe" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="82" y="500" font-size="13" fill="#7c3aed" text-anchor="start" font-weight="600">基础设施</text>
+  <path d="M80,530 A75.0,8 0 0 1 230,530 L230,588 A75.0,8 0 0 1 80,588 Z" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5"/>
+  <path d="M80,530 A75.0,8 0 0 0 230,530" fill="none" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="155" y="556" font-size="13" fill="#0f172a" text-anchor="middle" font-weight="600">MySQL</text>
+  <text x="155" y="575" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="400">任务 / 分片状态机</text>
+  <path d="M310,530 A75.0,8 0 0 1 460,530 L460,588 A75.0,8 0 0 1 310,588 Z" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5"/>
+  <path d="M310,530 A75.0,8 0 0 0 460,530" fill="none" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="385" y="556" font-size="13" fill="#0f172a" text-anchor="middle" font-weight="600">对象存储</text>
+  <text x="385" y="575" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="400">源文件 / Markdown</text>
+  <path d="M540,530 A75.0,8 0 0 1 690,530 L690,588 A75.0,8 0 0 1 540,588 Z" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5"/>
+  <path d="M540,530 A75.0,8 0 0 0 690,530" fill="none" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="615" y="556" font-size="13" fill="#0f172a" text-anchor="middle" font-weight="600">Qdrant</text>
+  <text x="615" y="575" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="400">dense 向量</text>
+  <path d="M770,530 A75.0,8 0 0 1 920,530 L920,588 A75.0,8 0 0 1 770,588 Z" fill="#ffffff" stroke="#7c3aed" stroke-width="1.5"/>
+  <path d="M770,530 A75.0,8 0 0 0 920,530" fill="none" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="845" y="556" font-size="13" fill="#0f172a" text-anchor="middle" font-weight="600">Elasticsearch</text>
+  <text x="845" y="575" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="400">BM25 / 稀疏</text>
+  <path d="M200,442 V484 H155 V520" fill="none" stroke="#7c3aed" stroke-width="1.6" marker-end="url(#a_purple)"/>
+  <text x="155" y="472" font-size="10" fill="#7c3aed" text-anchor="middle" font-weight="400">状态</text>
+  <path d="M380,442 V484 H385 V520" fill="none" stroke="#7c3aed" stroke-width="1.6" marker-end="url(#a_purple)"/>
+  <text x="352" y="472" font-size="10" fill="#7c3aed" text-anchor="end" font-weight="400">文件</text>
+  <path d="M700,442 V484 H615 V520" fill="none" stroke="#7c3aed" stroke-width="1.6" marker-end="url(#a_purple)"/>
+  <text x="615" y="472" font-size="10" fill="#7c3aed" text-anchor="middle" font-weight="400">dense</text>
+  <path d="M865,442 V484 H845 V520" fill="none" stroke="#7c3aed" stroke-width="1.6" marker-end="url(#a_purple)"/>
+  <text x="845" y="472" font-size="10" fill="#7c3aed" text-anchor="middle" font-weight="400">BM25/稀疏</text>
+  <line x1="120" y1="640" x2="146" y2="640" stroke="#2563eb" stroke-width="3"/>
+  <text x="152" y="644" font-size="11" fill="#475569" text-anchor="start" font-weight="400">业务调用</text>
+  <line x1="340" y1="640" x2="366" y2="640" stroke="#ea580c" stroke-width="3"/>
+  <text x="372" y="644" font-size="11" fill="#475569" text-anchor="start" font-weight="400">MQ 消息</text>
+  <line x1="560" y1="640" x2="586" y2="640" stroke="#059669" stroke-width="3"/>
+  <text x="592" y="644" font-size="11" fill="#475569" text-anchor="start" font-weight="400">内部主链路</text>
+  <line x1="790" y1="640" x2="816" y2="640" stroke="#7c3aed" stroke-width="3"/>
+  <text x="822" y="644" font-size="11" fill="#475569" text-anchor="start" font-weight="400">存储读写</text>
+</svg>

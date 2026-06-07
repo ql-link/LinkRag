@@ -9,6 +9,7 @@ import httpx
 
 from src.core.llm.base_provider import BaseProvider
 from src.core.llm.interfaces import CapabilityType
+from src.core.llm.providers._sse import iter_sse_json
 from src.core.llm.response import GenerateResult, StreamChunk, UsageInfo
 from src.core.llm.exceptions import (
     AuthenticationError,
@@ -136,6 +137,55 @@ class AnthropicClient:
 
         return await self._request("/messages", payload)
 
+    async def stream_messages(
+        self,
+        model: str,
+        messages: List[dict],
+        system: Optional[str] = None,
+        temperature: float = 1.0,
+        max_tokens: int = 1024,
+        auth_version: str = "2021-06-17",
+        **kwargs
+    ) -> AsyncIterator[dict]:
+        """流式调用 Messages API（SSE），逐块 yield 解析后的事件 JSON。"""
+        payload = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+        if system:
+            payload["system"] = system
+        payload.update(kwargs)
+
+        url = f"{self.api_base_url}/messages"
+        headers = {
+            "x-api-key": self.api_key,
+            "anthropic-version": auth_version,
+            "Content-Type": "application/json",
+        }
+        client = await self._get_client()
+
+        try:
+            async with client.stream("POST", url, json=payload, headers=headers) as response:
+                if response.status_code >= 400:
+                    await response.aread()
+                    if response.status_code == 401:
+                        raise AuthenticationError(message="Invalid API Key", provider_type="anthropic")
+                    if response.status_code == 429:
+                        raise RateLimitError(message="Rate limit exceeded", provider_type="anthropic")
+                    raise ProviderConnectionError(
+                        message=f"Anthropic API error: {response.status_code}",
+                        provider_type="anthropic",
+                    )
+                async for chunk in iter_sse_json(response):
+                    yield chunk
+        except httpx.TimeoutException:
+            raise ProviderConnectionError(message="Request timeout", provider_type="anthropic")
+        except httpx.ConnectError:
+            raise ProviderConnectionError(message="Connection failed", provider_type="anthropic")
+
 
 class AnthropicProvider(BaseProvider):
     """Anthropic Claude Provider
@@ -229,17 +279,16 @@ class AnthropicProvider(BaseProvider):
         messages = [{"role": "user", "content": prompt}]
         max_output_tokens = max_tokens or 1024
 
-        async for chunk in self._client.messages(
+        async for chunk in self._client.stream_messages(
             model=self.model_name,
             messages=messages,
             system=system_prompt,
             temperature=temperature,
             max_tokens=max_output_tokens,
-            stream=True,
             **kwargs
         ):
             if chunk.get("type") == "content_block_delta":
-                delta = chunk.get("delta", {}).get("text", "")
+                delta = chunk.get("delta", {}).get("text") or ""
                 yield StreamChunk(
                     delta=delta,
                     content="",  # 由调用方累积

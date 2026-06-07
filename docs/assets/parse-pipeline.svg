@@ -1,0 +1,73 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 784" width="900" height="784" font-family="'PingFang SC','Heiti SC','Microsoft YaHei',sans-serif">
+  <defs>
+    <marker id="a_blue" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L9,3.5 L0,7 Z" fill="#2563eb"/>
+    </marker>
+    <marker id="a_orange" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L9,3.5 L0,7 Z" fill="#ea580c"/>
+    </marker>
+    <marker id="a_green" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L9,3.5 L0,7 Z" fill="#059669"/>
+    </marker>
+    <marker id="a_purple" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L9,3.5 L0,7 Z" fill="#7c3aed"/>
+    </marker>
+    <marker id="a_red" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L9,3.5 L0,7 Z" fill="#dc2626"/>
+    </marker>
+    <marker id="a_slate" markerWidth="9" markerHeight="7" refX="8" refY="3.5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L9,3.5 L0,7 Z" fill="#475569"/>
+    </marker>
+  </defs>
+  <rect x="0" y="0" width="900" height="784" fill="#ffffff"/>
+  <text x="450" y="40" font-size="19" fill="#0f172a" text-anchor="middle" font-weight="700">文档解析流程</text>
+  <rect x="320" y="64" width="300" height="58" rx="8" fill="#fff7ed" stroke="#fb923c" stroke-width="1.5"/>
+  <text x="470" y="90" font-size="14" fill="#0f172a" text-anchor="middle" font-weight="700">收到解析请求</text>
+  <text x="470" y="108" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="400">业务系统投递一篇待解析文档</text>
+  <rect x="320" y="142" width="300" height="58" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="470" y="168" font-size="14" fill="#0f172a" text-anchor="middle" font-weight="700">登记任务</text>
+  <text x="470" y="186" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="400">校验请求 · 避免重复处理</text>
+  <path d="M470,122 V140" fill="none" stroke="#059669" stroke-width="1.8" marker-end="url(#a_green)"/>
+  <rect x="320" y="220" width="300" height="58" rx="8" fill="#ffffff" stroke="#10b981" stroke-width="1.5"/>
+  <text x="470" y="246" font-size="14" fill="#0f172a" text-anchor="middle" font-weight="700">解析文档</text>
+  <text x="470" y="264" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="400">下载源文件，转成 Markdown</text>
+  <path d="M470,200 V218" fill="none" stroke="#059669" stroke-width="1.8" marker-end="url(#a_green)"/>
+  <rect x="320" y="298" width="300" height="58" rx="8" fill="#ffffff" stroke="#10b981" stroke-width="1.5"/>
+  <text x="470" y="324" font-size="14" fill="#0f172a" text-anchor="middle" font-weight="700">切分片段</text>
+  <text x="470" y="342" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="400">把文档拆成可检索的小块</text>
+  <path d="M470,278 V296" fill="none" stroke="#059669" stroke-width="1.8" marker-end="url(#a_green)"/>
+  <rect x="320" y="376" width="300" height="58" rx="8" fill="#ffffff" stroke="#10b981" stroke-width="1.5"/>
+  <text x="470" y="402" font-size="14" fill="#0f172a" text-anchor="middle" font-weight="700">生成语义向量</text>
+  <text x="470" y="420" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="400">为每个片段计算向量并入库</text>
+  <path d="M470,356 V374" fill="none" stroke="#059669" stroke-width="1.8" marker-end="url(#a_green)"/>
+  <rect x="320" y="454" width="300" height="58" rx="8" fill="#ffffff" stroke="#10b981" stroke-width="1.5"/>
+  <text x="470" y="480" font-size="14" fill="#0f172a" text-anchor="middle" font-weight="700">准备全文检索</text>
+  <text x="470" y="498" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="400">对片段做分词预处理</text>
+  <path d="M470,434 V452" fill="none" stroke="#059669" stroke-width="1.8" marker-end="url(#a_green)"/>
+  <rect x="320" y="532" width="300" height="58" rx="8" fill="#ffffff" stroke="#10b981" stroke-width="1.5"/>
+  <text x="470" y="558" font-size="14" fill="#0f172a" text-anchor="middle" font-weight="700">建全文索引</text>
+  <text x="470" y="576" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="400">重建这篇文档的全文索引</text>
+  <path d="M470,512 V530" fill="none" stroke="#059669" stroke-width="1.8" marker-end="url(#a_green)"/>
+  <rect x="320" y="610" width="300" height="58" rx="8" fill="#ffffff" stroke="#10b981" stroke-width="1.5"/>
+  <text x="470" y="636" font-size="14" fill="#0f172a" text-anchor="middle" font-weight="700">生成稀疏向量</text>
+  <text x="470" y="654" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="400">最后一步，全部完成才算成功</text>
+  <path d="M470,590 V608" fill="none" stroke="#059669" stroke-width="1.8" marker-end="url(#a_green)"/>
+  <rect x="320" y="688" width="300" height="58" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="470" y="714" font-size="14" fill="#0f172a" text-anchor="middle" font-weight="700">解析完成</text>
+  <text x="470" y="732" font-size="10.5" fill="#475569" text-anchor="middle" font-weight="400">通知业务系统：整体成功</text>
+  <path d="M470,668 V686" fill="none" stroke="#059669" stroke-width="1.8" marker-end="url(#a_green)"/>
+  <rect x="680" y="219.0" width="200" height="450.0" rx="12" fill="#fef2f2" stroke="#f87171" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="780.0" y="366.0" font-size="13.5" fill="#b91c1c" text-anchor="middle" font-weight="700">任一步失败即停止</text>
+  <text x="780.0" y="400.0" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="400">记录失败的步骤和原因</text>
+  <text x="780.0" y="424.0" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="400">通知业务系统解析失败</text>
+  <text x="780.0" y="448.0" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="400">不自动重试，需手动触发</text>
+  <line x1="706" y1="468.0" x2="854" y2="468.0" stroke="#fca5a5" stroke-width="1"/>
+  <text x="780.0" y="492.0" font-size="11" fill="#b91c1c" text-anchor="middle" font-weight="700">重试从失败那步继续</text>
+  <text x="780.0" y="516.0" font-size="10.5" fill="#b91c1c" text-anchor="middle" font-weight="400">已完成的步骤自动跳过</text>
+  <path d="M620,249.0 H678" fill="none" stroke="#dc2626" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#a_red)"/>
+  <path d="M620,327.0 H678" fill="none" stroke="#dc2626" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#a_red)"/>
+  <path d="M620,405.0 H678" fill="none" stroke="#dc2626" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#a_red)"/>
+  <path d="M620,483.0 H678" fill="none" stroke="#dc2626" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#a_red)"/>
+  <path d="M620,561.0 H678" fill="none" stroke="#dc2626" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#a_red)"/>
+  <path d="M620,639.0 H678" fill="none" stroke="#dc2626" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#a_red)"/>
+</svg>

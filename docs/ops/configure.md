@@ -8,7 +8,7 @@
 
 | 分组 | 关键变量前缀 | 何时关心 |
 | --- | --- | --- |
-| 应用 | `APP_*`, `LOG_LEVEL` | 始终 |
+| 应用 | `APP_*`, `LOG_LEVEL`, `LOG_*` | 始终 |
 | 数据库 | `DB_*` | 始终 |
 | 缓存 | `REDIS_*` | 始终 |
 | 安全 | `API_KEY_ENCRYPTION_SECRET` | 始终（必须与 Java 管理端一致） |
@@ -30,7 +30,7 @@
 | --- | --- |
 | `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` | MySQL 连接 |
 | `REDIS_HOST` / `REDIS_PORT` | Redis 连接 |
-| `API_KEY_ENCRYPTION_SECRET` | API Key 加密 Secret，必须与 Java 管理端一致 |
+| `API_KEY_ENCRYPTION_SECRET` | API Key 加密 Secret，必须与 Java 管理端一致；64 位 hex，解码后 32 字节，用于 AES-256-GCM |
 | `SYSTEM_LLM_PROVIDER` / `SYSTEM_LLM_API_KEY` / `SYSTEM_LLM_API_BASE` | 系统级兜底 LLM |
 | `KAFKA_BOOTSTRAP_SERVERS` 等（若 `MQ_VENDOR=kafka`） | Kafka 接入信息 |
 | `MINIO_*`（若 `STORAGE_TYPE=minio`） | 对象存储凭据 |
@@ -56,6 +56,51 @@
 | `CHUNKING_ENABLE_ADVANCED_PIPELINE` | `true` | 是否启用进阶分块流水线 |
 
 > 注：ES 入库失败即终态，无 ES 内部自动重试配置。原 `ES_INDEXING_MAX_RETRY` 已移除（用户侧重试由 `document_parse_pipeline.retry_count` 记录，触发路径待后续需求接线）。
+
+## 日志
+
+日志系统基于 Loguru，统一在 [src/utils/logger.py](../../src/utils/logger.py) 配置。运行时**始终输出到 stdout**（容器 / 本地通用）；开启文件落盘后，额外按 Java 端约定写入按日期归档的本地文件。
+
+| 变量 | 默认 | 含义 |
+| --- | --- | --- |
+| `LOG_LEVEL` | `INFO` | 控制台与全量日志文件的级别下限；ERROR 文件固定只收 ERROR 及以上，不受此项影响 |
+| `LOG_FILE_ENABLED` | `true` | 是否写本地文件。纯容器环境若靠 `docker logs` 采集，可设 `false` 只保留 stdout |
+| `LOG_DIR` | `logs` | 日志根目录 |
+| `LOG_SERVICE_NAME` | `tolink-service` | 日志文件名前缀 |
+| `LOG_RETENTION_DAYS` | `7` | 日志保留天数，超过自动清理旧日期目录 |
+
+落盘结构（每天 0 点切分，按日期目录归档，对齐 Java 端）：
+
+```
+logs/
+├── 2026-06-07/
+│   ├── tolink-service-<pid>.log          # 当天全量（>= LOG_LEVEL）
+│   └── tolink-service-error-<pid>.log    # 当天 ERROR 及以上
+├── 2026-06-08/
+│   ├── tolink-service-<pid>.log
+│   └── tolink-service-error-<pid>.log
+└── ...
+```
+
+实现要点：文件名中的日期由 Loguru 在创建新文件时求值，配合 `rotation="00:00"` 每天 0 点切分，自然落入新的日期目录；写入开启 `enqueue` 队列，异步刷盘不阻塞业务。
+
+保留清理按 **日期目录整体删除**：删除 `<LOG_DIR>/<YYYY-MM-DD>/` 中日期早于 `LOG_RETENTION_DAYS`（当前 **7 天**）的目录，在进程启动时与每天 0 点切分时各执行一次。之所以不用 Loguru 自带 `retention`：日志文件名带 PID，Loguru 的清理 glob 会带上字面 PID，只能清掉当前进程写的文件，进程重启（部署 / 崩溃 / 扩缩容）后旧 PID 的日期目录无人回收、会无限堆积。按日期目录清理与 PID 无关，重启与多 worker 场景都能正确回收（非 `YYYY-MM-DD` 命名的目录不受影响）。
+
+文件名带 **PID** 后缀（`<pid>` 为进程号）：多 worker（gunicorn）部署时各进程写各自文件，避免多进程共写同一文件导致的写入交错与 0 点切分/清理竞争；单进程部署同样安全，仅文件名多一段 PID。每行日志同时携带进程号（控制台格式的 `{process}` 字段），多 worker 共写 stdout 时也能区分来源进程。
+> 注意：PID 在 `setup_logger()` 调用时求值。gunicorn 若启用 `--preload`，需在 `post_fork` 钩子里重新调用 `setup_logger()`，否则各 worker 会复用 master 的 PID 写到同一文件。
+
+### 统一日志管道（标准库 logging 桥接）
+
+项目自身代码统一用 Loguru（`from src.utils.logger import logger`），但 uvicorn、SQLAlchemy、kafka、transformers 等第三方库以及少数遗留模块仍走 Python 标准库 `logging`。[src/utils/logger.py](../../src/utils/logger.py) 通过 `InterceptHandler` 把标准库 logging 全量桥接进 Loguru，使运行时**只有一条输出管道**：所有日志（无论来自 Loguru 还是标准库）都进同一份日期文件、同一种格式、由 `LOG_LEVEL` 统一过滤。
+
+要点：
+
+- 日志在 [src/main.py](../../src/main.py) 顶部**显式初始化**（`setup_logger()`），不依赖 import 副作用；放在其余模块导入之前，确保导入期日志也被捕获。
+- `uvicorn`/`uvicorn.access`/`uvicorn.error`/`gunicorn` 等自带 handler 的 logger 会被显式接管（清空其 handler、打开 propagate），其访问日志与未捕获异常的 500 堆栈因此也进入日期文件。`uvicorn.run` 传 `log_config=None`，不再安装 uvicorn 自己的日志配置。
+- 异常堆栈开启 `backtrace`、关闭 `diagnose`：保留完整调用栈，但不展开局部变量值，避免在生产日志里泄露密钥 / PII。
+- 全局未捕获异常由 [src/main.py](../../src/main.py) 的 `Exception` handler 兜底：带请求方法 / 路径记录完整堆栈，再返回统一 500 错误体 `{code, message, data}`。
+- 应用关闭（lifespan shutdown）时 `await logger.complete()`，等待 `enqueue` 队列里的日志全部落盘，避免退出丢尾部日志。
+- 约定：**应用代码新增日志一律用 Loguru**；遗留的标准库 logging 会被自动桥接，无需改写，但不要再新增标准库 logging 用法。
 
 ## MQ 失败兜底（重试 + 死信）
 
@@ -84,11 +129,13 @@
 
 | 变量 | 默认 | 调整方向 |
 | --- | --- | --- |
+| `CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` | 128 | 第一阶段候选边界粗分片软下限，调大可减少短 chunk |
 | `CHUNKING_MIN_CHUNK_TOKENS` | 150 | 短文档可减小 |
 | `CHUNKING_MAX_CHUNK_TOKENS` | 512 | 长上下文模型可加大 |
-| `CHUNKING_OVERLAP_TOKENS` | 64 | 提升召回时加大 |
+| `CHUNKING_OVERLAP_TOKENS` | 64 | overlap token 数，范围 `0..64`；`0` 表示关闭 |
 | `CHUNKING_HEADING_BREAK_LEVEL` | 3 | 提升结构敏感性时减小 |
 | `CHUNKING_SEMANTIC_PERCENTILE` | 95 | 调整语义边界严格度 |
+| `CHUNKING_SEMANTIC_UNIT` | `sentence` | 语义相似度计算粒度：`sentence` / `paragraph` |
 | `CHUNKING_EMBED_BATCH_SIZE` | 32 | 受向量服务并发上限约束 |
 
 详细分块策略见 [chunking.md](../internals/chunking.md)。
@@ -155,6 +202,27 @@
 | `SPARSE_RETRIEVAL_SCORE_THRESHOLD` | `0.0` | sparse 召回默认 score 阈值（0.0 = 不过滤；详见 [vectorization.md §9.4](../internals/vectorization.md)） |
 | `DENSE_RETRIEVAL_TOP_K` | `10` | dense 召回 facade 直调时的兜底 top_k；pipeline 路径下被 `RECALL_RESULT_LIMIT` 覆盖 |
 | `DENSE_RETRIEVAL_SCORE_THRESHOLD` | `0.0` | dense 召回默认 score 阈值（cosine 上界 [0, 1]，0.0 = 不过滤；facade 入口校验 `> 1.0` 早死） |
+| `RECALL_GENERATION_CONTEXT_TOKEN_BUDGET` | `4000` | 召回后 LLM 生成拼装上下文的 token 预算上限；命中片段按融合分数从高到低纳入，累计超预算即截断尾部低分片段（仅对外直连端点的生成阶段生效） |
+
+### 对外直连召回 SSE 配置（LINK-40）
+
+对外直连召回 SSE 接口 `POST /api/v1/recall/stream` 的配置。前端凭 Java 签发的短期
+session token 直连，**独立密钥**与内部端点隔离。详见
+[recall_http_api.md](../internals/recall_http_api.md)。
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `RECALL_SESSION_AUTH_ENABLED` | `true` | 是否启用 session token 验签；**生产必须为 true** |
+| `RECALL_SESSION_JWT_ISSUER` | `tolink-java` | 期望的 session JWT `iss` |
+| `RECALL_SESSION_JWT_AUDIENCE` | `tolink-rag-frontend` | 期望的 session JWT `aud`（与内部端点 `tolink-rag` 区分）|
+| `RECALL_SESSION_JWT_SCOPE` | `recall:stream` | 期望的 session JWT `scope` |
+| `RECALL_SESSION_JWT_SECRET` | 本地联调占位值 | **独立** HS256 密钥，与 `RECALL_INTERNAL_JWT_SECRET` 物理隔离、可单独轮转；**生产务必覆盖** |
+| `RECALL_SESSION_MAX_CONCURRENT` | `3` | 单用户最大并发召回流数；token 短期可复用，此为资源滥用主闸门，超限返回 `429` |
+| `CORS_ORIGINS` | `["*"]` | **生产对外环境必须收敛为前端可信域名清单**（不可用 `*`，否则带 `Authorization` 头的跨域预检失败）|
+
+> token 短期可复用：Python 只校验 `exp`（建议 Java 签发 30s，仅够建连），不做一次性 /
+> 防重放 / 撤销；连上后流的存活由 `RECALL_STREAM_TIMEOUT_MS` 控制。并发计数依赖 Redis，
+> Redis 不可用时 fail-open（放行，因限流是资源保护非鉴权）。
 
 ### 远程 BGE-M3 推理服务（`remote_bge_m3` provider）
 

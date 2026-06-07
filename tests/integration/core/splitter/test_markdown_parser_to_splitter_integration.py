@@ -17,9 +17,10 @@ from src.core.splitter import (
     StructuredSemanticChunker,
 )
 
-
-FIXTURE_PATH = Path(__file__).parent / "fixtures" / "full_markdown_pipeline_fixture.md"
-ARTIFACT_PATH = Path(__file__).parent / "artifacts" / "markdown_parser_to_splitter_visualization.md"
+FIXTURE_PATH = Path("tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md")
+ARTIFACT_PATH = Path(
+    "tests/integration/core/splitter/artifacts/markdown_parser_to_splitter_visualization.md"
+)
 
 EXPECTED_ELEMENT_TYPES = {
     ElementType.FRONT_MATTER,
@@ -92,11 +93,15 @@ class MockTableClient(TableClient):
                 "source_file": source_file,
             }
         )
-        return {
-            tables[0]: (
-                "The metrics table shows healthy recall, stable latency, and broad coverage for the pipeline."
-            )
-        } if tables else {}
+        return (
+            {
+                tables[0]: (
+                    "The metrics table shows healthy recall, stable latency, and broad coverage for the pipeline."
+                )
+            }
+            if tables
+            else {}
+        )
 
 
 class HybridMockEmbedder:
@@ -164,7 +169,8 @@ async def test_markdown_parser_to_splitter_should_cover_all_markdown_types_and_g
         if element.type == ElementType.PARAGRAPH
     )
     assert any(
-        "A dashboard screenshot with cards, charts, and highlighted retrieval metrics." in element.content
+        "A dashboard screenshot with cards, charts, and highlighted retrieval metrics."
+        in element.content
         for element in parse_result.elements
         if element.type == ElementType.IMAGE
     )
@@ -209,9 +215,15 @@ async def test_markdown_parser_to_splitter_should_cover_all_markdown_types_and_g
 
     embedded_chunks = await pipeline.aprocess_parse_result(parse_result)
 
-    assert len(embedded_chunks) >= 12
+    assert len(embedded_chunks) == 6
+    assert all(
+        chunk.metadata["split_strategy"] in {"candidate_boundary", "semantic"}
+        for chunk in embedded_chunks
+        if chunk.metadata.get("chunk_role") != "derived_element"
+    )
     assert any(chunk.metadata["split_strategy"] == "semantic" for chunk in embedded_chunks)
-    assert any(chunk.metadata["split_strategy"] == "isolated" for chunk in embedded_chunks)
+    assert any(chunk.metadata["split_strategy"] == "derived_element" for chunk in embedded_chunks)
+    assert not any(chunk.metadata["split_strategy"] == "isolated" for chunk in embedded_chunks)
     assert any(
         "The metrics table shows healthy recall, stable latency, and broad coverage for the pipeline."
         in chunk.content
@@ -219,29 +231,70 @@ async def test_markdown_parser_to_splitter_should_cover_all_markdown_types_and_g
     )
     assert any(
         "A compact architecture sketch" in chunk.content
-        or "A dashboard screenshot with cards, charts, and highlighted retrieval metrics." in chunk.content
+        or "A dashboard screenshot with cards, charts, and highlighted retrieval metrics."
+        in chunk.content
         for chunk in embedded_chunks
     )
-    assert any(chunk.metadata.get("context_overlap_mode") == "neighbor" for chunk in embedded_chunks)
+    assert any(
+        chunk.metadata.get("context_overlap_mode") == "neighbor" for chunk in embedded_chunks
+    )
+    assert not any(
+        chunk.metadata.get("context_overlap_mode") == "neighbor"
+        for chunk in embedded_chunks
+        if chunk.metadata.get("chunk_role") == "derived_element"
+    )
+    assert not any(
+        chunk.metadata.get("context_overlap_mode") == "neighbor"
+        for chunk in embedded_chunks
+        if chunk.metadata.get("protected_element_types")
+    )
 
     image_chunk = next(
         chunk
         for chunk in embedded_chunks
-        if chunk.metadata.get("split_strategy") == "isolated"
-        and "image" in chunk.metadata.get("element_types", [])
+        if "image" in chunk.metadata.get("element_types", [])
+        and chunk.metadata.get("chunk_role") != "derived_element"
     )
     assert "A compact architecture sketch" in image_chunk.content
     assert "## Quoted Insight" in image_chunk.content
-    assert image_chunk.metadata.get("context_prev_tokens_applied", 0) > 0
-    assert image_chunk.metadata.get("context_prev_tokens_applied", 0) <= 64
-    assert image_chunk.metadata.get("context_next_tokens_applied", 0) > 0
+    assert "context_next_tokens_applied" not in image_chunk.metadata
+    assert "image" in image_chunk.metadata["protected_element_types"]
+
+    image_derived_chunk = next(
+        chunk
+        for chunk in embedded_chunks
+        if chunk.metadata.get("chunk_role") == "derived_element"
+        and chunk.metadata.get("element_type") == "image"
+    )
+    assert image_derived_chunk.metadata["element_id"] == "image_001"
+    assert image_derived_chunk.metadata["source_chunk_index"] == 0
+    assert "类型：图片" in image_derived_chunk.content
+    assert "图片ID：image_001" in image_derived_chunk.content
+    assert "A dashboard screenshot with cards, charts, and highlighted retrieval metrics." in (
+        image_derived_chunk.content
+    )
+    assert "相邻上下文：" in image_derived_chunk.content
+
+    table_derived_chunk = next(
+        chunk
+        for chunk in embedded_chunks
+        if chunk.metadata.get("chunk_role") == "derived_element"
+        and chunk.metadata.get("element_type") == "table"
+    )
+    assert table_derived_chunk.metadata["element_id"] == "table_001"
+    assert table_derived_chunk.metadata["source_chunk_index"] == 2
+    assert table_derived_chunk.metadata["table_inline_in_source"] is True
+    assert "类型：表格" in table_derived_chunk.content
+    assert "表格ID：table_001" in table_derived_chunk.content
+    assert "| Metric | Value | Trend |" in table_derived_chunk.content
+    assert (
+        "The metrics table shows healthy recall, stable latency, and broad coverage for the pipeline."
+        in table_derived_chunk.content
+    )
 
     assert len(embedder.calls) == 2
-    assert embedder.calls[0]["model"] is None
-    assert embedder.calls[0]["texts"][0] == "## Semantic Pressure Test"
-    assert len(embedder.calls[0]["texts"]) == 6
-    assert embedder.calls[1]["model"] == "visual-test-embedding"
-    assert len(embedder.calls[1]["texts"]) == len(embedded_chunks)
+    assert embedder.calls[-1]["model"] == "visual-test-embedding"
+    assert len(embedder.calls[-1]["texts"]) == len(embedded_chunks)
 
     _write_visualization(parse_result, embedded_chunks, vision_client, table_client, embedder)
     assert ARTIFACT_PATH.exists() is True

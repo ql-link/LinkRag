@@ -30,6 +30,18 @@ CODE_INVALID_REQUEST = "RECALL_INVALID_REQUEST"
 CODE_ALL_SOURCES_FAILED = "RECALL_ALL_SOURCES_FAILED"
 CODE_TIMEOUT = "RECALL_TIMEOUT"
 CODE_INTERNAL_ERROR = "RECALL_INTERNAL_ERROR"
+# 发起用户无默认 EMBEDDING 配置：dense 召回无法编码 query，整请求硬失败。
+CODE_EMBEDDING_CONFIG_MISSING = "RECALL_EMBEDDING_CONFIG_MISSING"
+# 对外直连 SSE（LINK-40）专属错误码：与内部端点的 RECALL_INTERNAL_* 区分，便于审计区分
+# 是「Java 内部调用」还是「前端直连会话」失败。
+CODE_SESSION_UNAUTHORIZED = "RECALL_SESSION_UNAUTHORIZED"
+CODE_RATE_LIMITED = "RECALL_RATE_LIMITED"
+# 召回后 LLM 生成（recall-answer-generation）：
+# 前置模型校验失败——所选 config_id 不属于本用户 / 非 CHAT 能力 / 已停用 / 不存在；
+# 模型不可用，整请求前置硬失败、不进入召回。
+CODE_MODEL_CONFIG_MISSING = "RECALL_MODEL_CONFIG_MISSING"
+# 生成阶段 LLM 调用失败（超时/报错/限流）：生成是召回固有部分，生成失败即整请求失败。
+CODE_GENERATION_FAILED = "RECALL_GENERATION_FAILED"
 
 
 class RecallApiError(Exception):

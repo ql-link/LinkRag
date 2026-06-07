@@ -239,3 +239,60 @@ data: {"code":"RECALL_ALL_SOURCES_FAILED","message":"all retrievers failed"}
 ```
 
 错误码与 HTTP 状态见 [error_codes.md](error_codes.md#5-internal-recall-错误码)。
+
+## 7. 对外直连 Recall SSE API（LINK-40）
+
+路由前缀：`/api/v1/recall`。**面向浏览器前端**：前端凭 Java 签发的**短期 session token**
+直连，绕过 Java 中转。与 §6 内部端点是**两条并存**链路（本端点是新增可选路径）。运行时
+与会话鉴权细节见 [docs/internals/recall_http_api.md](../internals/recall_http_api.md)。
+
+| Method | Path | 用途 | 鉴权 |
+| --- | --- | --- | --- |
+| `POST` | `/stream` | 前端直连多路召回，SSE 流式返回融合候选 | Header `Authorization: Bearer <session-token>` |
+
+### POST /api/v1/recall/stream
+
+前端以 fetch 流式（`ReadableStream`）建连，**不使用** `EventSource`（无法设鉴权头）。
+请求头：`Authorization: Bearer <session-token>`、`Content-Type: application/json`、可选
+`Origin`（CORS）、`X-Request-Id`。
+
+session token 由 Java 签发、Python 用**独立密钥**验签（与内部端点密钥隔离）；claims：
+`iss=tolink-java`、`aud=tolink-rag-frontend`、`scope=recall:stream`、`sub`、`dataset_ids`、
+`exp`。**token 短期可复用**（只校验 `exp`，不做一次性 / 防重放 / 撤销）。
+
+请求体（仅以下字段；出现 `user_id` / `top_k` / `sources` / `strict` / `doc_ids` 等任何未知
+字段返回 `422`）：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `query` | string | 是 | 用户问题，不能为空或纯空白 |
+| `config_id` | int | 是 | 本次生成所用 CHAT 模型配置 id（前端选中、用户已配置）。缺失 `422`；不属本用户 / 非 CHAT / 已停用 / 不存在 → 召回前置失败 `RECALL_MODEL_CONFIG_MISSING` |
+| `dataset_ids` | list[int] | 否 | 本次查询的数据集**子集选择**，必须 ⊆ token 授权范围（超出 `403`）；省略/空 = 用 token 全量授权范围 |
+
+**身份只取 token claims**——body 不含 `user_id`，前端自报一律不信任。`top_k` / `sources` /
+`strict` 同内部端点，由服务端配置控制。模型按 `(user_id, config_id)` 解析、不回退系统配置。
+
+并发：按 `user_id` 限并发流数（`RECALL_SESSION_MAX_CONCURRENT`），超限返回 `429`。
+
+**召回即包含 LLM 答案生成**（与内部 Java 端点的纯召回不同）：召回前置先校验模型，融合命中后
+回填片段正文、按 token 预算（`RECALL_GENERATION_CONTEXT_TOKEN_BUDGET`）拼装上下文，用所选模型
+流式生成答案。SSE 事件：
+
+```
+event: answer_delta
+data: {"text": "<增量 token>"}
+
+event: answer_done
+data: {"answer": "<完整答案>", "hits": [...], "failed_sources": []}
+```
+
+- `answer_delta`：流式增量 token，可 0 到多帧；
+- `answer_done`：生成结束终态，`hits` 为 RRF 融合候选（不含正文），发送后关闭流；
+- **空命中 / 全部片段缺正文**：不生成，发 `recall_done`（`hits` 可空），与 §6 一致；
+- **生成阶段失败**：整请求失败，发 `error` `RECALL_GENERATION_FAILED`，不返回部分召回片段。
+
+握手鉴权 / scope / 限流 / 断连及失败终态（`RECALL_*`）与 §6 内部端点共享同一 runtime。
+错误码见 [error_codes.md](error_codes.md#6-对外直连-recall-错误码)。
+
+> CORS：本端点暴露给浏览器，生产环境必须把 `CORS_ORIGINS` 收敛为前端可信域名清单
+> （不可用 `*`）。
