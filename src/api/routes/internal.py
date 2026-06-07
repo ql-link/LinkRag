@@ -7,6 +7,7 @@ from typing import Optional
 from datetime import datetime
 
 from fastapi import APIRouter, Header, HTTPException, Depends
+from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.llm.response import APIResponse
@@ -54,6 +55,7 @@ async def get_system_providers(
         )
 
     except Exception as e:
+        logger.exception("/internal/llm 接口调用失败")
         return APIResponse(code=500, message=str(e), data=None)
 
 
@@ -97,6 +99,7 @@ async def get_user_configs(
         )
 
     except Exception as e:
+        logger.exception("/internal/llm 接口调用失败")
         return APIResponse(code=500, message=str(e), data=None)
 
 
@@ -134,4 +137,5 @@ async def get_user_usage(
         )
 
     except Exception as e:
+        logger.exception("/internal/llm 接口调用失败")
         return APIResponse(code=500, message=str(e), data=None)
