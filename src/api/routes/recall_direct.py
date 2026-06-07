@@ -46,14 +46,16 @@ router = APIRouter(prefix="/api/v1/recall", tags=["recall-direct"])
 class RecallDirectStreamRequest(BaseModel):
     """对外直连召回请求体。
 
-    只接受 ``query``（必填）与可选 ``dataset_ids``（本人授权范围内的子集选择）。
-    **不含 ``user_id``**——身份只取 token claims；body 出现 ``user_id`` / ``top_k`` /
-    ``sources`` / ``strict`` / ``doc_ids`` 等任何未知字段，``extra=forbid`` 触发 422。
+    接受 ``query``（必填）、``config_id``（必填，本次生成所用 CHAT 模型配置 id）与可选
+    ``dataset_ids``（本人授权范围内的子集选择）。**不含 ``user_id``**——身份只取 token
+    claims；body 出现 ``user_id`` / ``top_k`` / ``sources`` / ``strict`` / ``doc_ids``
+    等任何未知字段，``extra=forbid`` 触发 422；缺 ``config_id`` 同样触发 422。
     """
 
     model_config = ConfigDict(extra="forbid")
 
     query: str
+    config_id: int
     dataset_ids: list[int] | None = None
 
 
@@ -100,6 +102,7 @@ async def _guarded_stream(
     recall_req: RecallRequest,
     request_id: str,
     user_id: int,
+    config_id: int,
 ) -> AsyncGenerator[str, None]:
     """包裹召回事件流，确保并发名额在任何收尾路径都被释放。
 
@@ -107,7 +110,9 @@ async def _guarded_stream(
     （Starlette 会对响应体生成器调用 ``aclose``），避免名额泄漏。
     """
     try:
-        async for event in recall_event_stream(pipeline, recall_req, request_id):
+        async for event in recall_event_stream(
+            pipeline, recall_req, request_id, config_id=config_id
+        ):
             yield event
     finally:
         await release_stream_slot(user_id)
@@ -136,7 +141,7 @@ async def recall_stream_direct(
     )
 
     return StreamingResponse(
-        _guarded_stream(pipeline, recall_req, ctx.request_id, ctx.user_id),
+        _guarded_stream(pipeline, recall_req, ctx.request_id, ctx.user_id, body.config_id),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

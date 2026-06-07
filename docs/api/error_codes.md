@@ -170,13 +170,21 @@ EMBEDDING 配置属**必备前置缺失**，走硬失败（`RECALL_EMBEDDING_CON
 | --- | --- | --- |
 | 缺失 / 验签 / iss / aud / scope / exp 失败、用内部密钥签发的 token | `401` | `RECALL_SESSION_UNAUTHORIZED` |
 | `dataset_ids` 超出 token 授权范围 | `403` | `RECALL_SCOPE_FORBIDDEN` |
-| JSON 非法 / 缺字段 / 类型错 / 出现未知字段（含 `user_id`） | `422` | `RECALL_INVALID_REQUEST` |
+| JSON 非法 / 缺字段（含缺 `config_id`）/ 类型错 / 出现未知字段（含 `user_id`） | `422` | `RECALL_INVALID_REQUEST` |
 | `query` 为空或纯空白 | `400` | `RECALL_INVALID_REQUEST` |
 | 单用户并发流数超过 `RECALL_SESSION_MAX_CONCURRENT` | `429` | `RECALL_RATE_LIMITED` |
 
 **握手后**（pipeline 执行期）→ SSE `error` 事件，与内部端点共享同一 runtime、语义一致：
 `RECALL_EMBEDDING_CONFIG_MISSING` / `RECALL_ALL_SOURCES_FAILED` / `RECALL_TIMEOUT` /
 `RECALL_INTERNAL_ERROR`。
+
+对外直连端点还在召回前置/生成阶段新增两个 SSE `error` code（召回后 LLM 答案生成，见
+[http_contracts.md §7](http_contracts.md#7-对外直连-recall-sseapilink-40)）：
+
+| 场景 | 事件 | code |
+| --- | --- | --- |
+| 所选模型 `config_id` 不属本用户 / 非 CHAT 能力 / 已停用 / 不存在（召回前置校验，不进入召回） | `error` | `RECALL_MODEL_CONFIG_MISSING` |
+| 生成阶段 LLM 调用失败（超时 / 报错 / 限流），整请求失败 | `error` | `RECALL_GENERATION_FAILED` |
 
 token **短期可复用**：有效期内重复建连均放行，无重放类错误码。
 

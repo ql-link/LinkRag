@@ -120,6 +120,13 @@ class Settings(BaseSettings):
     RECALL_SESSION_MAX_CONCURRENT: int = 3
 
     # ==========================================
+    # 召回后 LLM 答案生成 (Recall Answer Generation)
+    # ==========================================
+    # 召回融合并回填片段正文后，拼装生成上下文的 token 预算上限。片段按融合分数
+    # 从高到低纳入，累计超过该预算即截断尾部低分片段（见 recall_stream_runtime 生成段）。
+    RECALL_GENERATION_CONTEXT_TOKEN_BUDGET: int = 4000
+
+    # ==========================================
     # 系统级兜底 LLM 配置 (Platform Default Fallback LLMs)
     # ==========================================
     SYSTEM_LLM_PROVIDER: str = "qwen"

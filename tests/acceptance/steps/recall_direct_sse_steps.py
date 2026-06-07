@@ -14,6 +14,7 @@ import asyncio
 import json
 import time
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import jwt
 import pytest
@@ -22,15 +23,36 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 from pytest_bdd import given, parsers, then, when
 
-from src.api import recall_session_auth
+from src.api import recall_stream_runtime
 from src.api.recall_pipeline_provider import get_recall_pipeline
 from src.api.routes import recall_direct
 from src.cache.redis_client import redis_client
 from src.config import settings
+from src.core.llm.response import StreamChunk
 from src.core.pipeline.recall import RecallHit, RecallRequest, RecallResponse
 from src.main import app
 
 URL = "/api/v1/recall/stream"
+
+# 本特性聚焦握手/鉴权/并发/传输语义，不验证生成内容；模型解析与正文回填、流式生成
+# 用确定性替身隔离，使生成模式下命中片段稳定走到 answer_done 终态。
+CONFIG_ID = 77
+
+
+class _FakeProvider:
+    async def stream(self, prompt, system_prompt=None, **kwargs):
+        yield StreamChunk(delta="答案", is_end=False)
+        yield StreamChunk(delta="完成", is_end=True)
+
+
+async def _fake_resolve_user_model(*args, **kwargs):
+    return SimpleNamespace(
+        provider=_FakeProvider(), model_name="fake", provider_type="openai", source="user"
+    )
+
+
+async def _fake_fetch_chunk_contents(chunk_ids, user_id):
+    return {cid: f"片段正文 {cid}" for cid in chunk_ids}
 
 
 class FakePipeline:
@@ -95,6 +117,7 @@ class _State:
     cancel_raised: bool = False
     _settings_snapshot: dict = field(default_factory=dict)
     _redis_snapshot: dict = field(default_factory=dict)
+    _runtime_snapshot: dict = field(default_factory=dict)
 
     def set_setting(self, name: str, value) -> None:
         if name not in self._settings_snapshot:
@@ -106,11 +129,20 @@ class _State:
             self._redis_snapshot[name] = getattr(redis_client, name)
             setattr(redis_client, name, getattr(self.redis, name))
 
+    def install_generation_stubs(self) -> None:
+        # 模型解析与正文回填用确定性替身，隔离 DB / LLM，使生成模式稳定走到 answer_done。
+        self._runtime_snapshot["aresolve_user_model"] = recall_stream_runtime.aresolve_user_model
+        self._runtime_snapshot["fetch_chunk_contents"] = recall_stream_runtime.fetch_chunk_contents
+        recall_stream_runtime.aresolve_user_model = _fake_resolve_user_model
+        recall_stream_runtime.fetch_chunk_contents = _fake_fetch_chunk_contents
+
     def restore(self) -> None:
         for name, value in self._settings_snapshot.items():
             setattr(settings, name, value)
         for name, value in self._redis_snapshot.items():
             setattr(redis_client, name, value)
+        for name, value in self._runtime_snapshot.items():
+            setattr(recall_stream_runtime, name, value)
 
 
 @pytest.fixture
@@ -128,6 +160,7 @@ def direct_acc_state():
         elapsed_ms=12,
     )
     state.install_redis()
+    state.install_generation_stubs()
     yield state
     state.restore()
     app.dependency_overrides.pop(get_recall_pipeline, None)
@@ -204,9 +237,13 @@ def _fire(state: _State, *, with_token: bool) -> None:
     if state.raw_body is not None:
         resp = client.post(URL, content=state.raw_body, headers=headers)
     elif state.omit_dataset:
-        resp = client.post(URL, json={"query": state.body["query"]}, headers=headers)
+        resp = client.post(
+            URL, json={"query": state.body["query"], "config_id": CONFIG_ID}, headers=headers
+        )
     else:
-        resp = client.post(URL, json=state.body, headers=headers)
+        # config_id 现为必填（模型由前端传入）；未显式提供则注入确定性替身 id。
+        body = {"config_id": CONFIG_ID, **state.body}
+        resp = client.post(URL, json=body, headers=headers)
     state.response = resp
     if resp.headers.get("content-type", "").startswith("text/event-stream"):
         state.events = _parse_sse(resp.text)
@@ -447,7 +484,7 @@ def _w_disconnect(direct_acc_state):
     # 直接驱动 _guarded_stream 生成器并取消，断言 finally 释放并发名额。
     direct_acc_state.redis.store["recall:concurrent:123"] = 1
     req = RecallRequest(query="q", user_id=123, dataset_ids=[1], top_k=20)
-    gen = recall_direct._guarded_stream(direct_acc_state.fake, req, "rid", 123)
+    gen = recall_direct._guarded_stream(direct_acc_state.fake, req, "rid", 123, CONFIG_ID)
 
     async def _drive() -> None:
         task = asyncio.ensure_future(gen.__anext__())
@@ -492,22 +529,22 @@ def _got_event(direct_acc_state, name):
     assert any(n == name for n, _ in direct_acc_state.events)
 
 
-@then(parsers.parse("recall_done.data 含字段 hits 与 failed_sources"))
-def _recall_done_fields(direct_acc_state):
-    data = _event_data(direct_acc_state, "recall_done")
+@then(parsers.parse("answer_done.data 含字段 hits 与 failed_sources"))
+def _answer_done_fields(direct_acc_state):
+    data = _event_data(direct_acc_state, "answer_done")
     assert "hits" in data and "failed_sources" in data
 
 
 @then(parsers.parse("hits 中每个 hit 不含字段 content"))
 def _no_content(direct_acc_state):
-    for h in _event_data(direct_acc_state, "recall_done")["hits"]:
+    for h in _event_data(direct_acc_state, "answer_done")["hits"]:
         assert "content" not in h
 
 
-@then(parsers.parse("发送 recall_done 后关闭 SSE 流"))
+@then(parsers.parse("发送 answer_done 后关闭 SSE 流"))
 def _close_after_done(direct_acc_state):
     names = [n for n, _ in direct_acc_state.events]
-    assert names[-1] == "recall_done"
+    assert names[-1] == "answer_done"
 
 
 @then(parsers.re(r'响应体 code 等于 "(?P<code>[^"]+)"'))
@@ -560,19 +597,19 @@ def _acao_ne(direct_acc_state, origin):
 @then(parsers.parse("当前 SSE 流不因 token 过期被中断"))
 def _stream_not_interrupted(direct_acc_state):
     assert direct_acc_state.response.status_code == 200
-    assert any(n == "recall_done" for n, _ in direct_acc_state.events)
+    assert any(n == "answer_done" for n, _ in direct_acc_state.events)
 
 
-@then(parsers.parse("流仍以 recall_done 或 error 正常终态结束"))
+@then(parsers.parse("流仍以 answer_done 或 error 正常终态结束"))
 def _stream_terminal(direct_acc_state):
     names = [n for n, _ in direct_acc_state.events]
-    assert names and names[-1] in {"recall_done", "error"}
+    assert names and names[-1] in {"answer_done", "error"}
 
 
 @then(parsers.parse("流的最大执行时间仍由 RECALL_STREAM_TIMEOUT_MS 控制"))
 def _stream_timeout_governed(direct_acc_state):
-    # 已在 timeout 范围内正常完成（recall_done）；超时路径由 scenario「超时」独立覆盖。
-    assert any(n == "recall_done" for n, _ in direct_acc_state.events)
+    # 已在 timeout 范围内正常完成（answer_done）；超时路径由 scenario「超时」独立覆盖。
+    assert any(n == "answer_done" for n, _ in direct_acc_state.events)
 
 
 @then(parsers.parse("Python 停止继续发送 SSE 事件"))
