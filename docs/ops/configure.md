@@ -84,6 +84,17 @@ logs/
 
 实现要点：文件名中的日期由 Loguru 在创建新文件时求值，配合 `rotation="00:00"` 每天 0 点切分，自然落入新的日期目录；写入开启 `enqueue` 队列，异步刷盘不阻塞业务；保留期由 `LOG_RETENTION_DAYS` 控制，当前为 **7 天**。
 
+### 统一日志管道（标准库 logging 桥接）
+
+项目自身代码统一用 Loguru（`from src.utils.logger import logger`），但 uvicorn、SQLAlchemy、kafka、transformers 等第三方库以及少数遗留模块仍走 Python 标准库 `logging`。[src/utils/logger.py](../../src/utils/logger.py) 通过 `InterceptHandler` 把标准库 logging 全量桥接进 Loguru，使运行时**只有一条输出管道**：所有日志（无论来自 Loguru 还是标准库）都进同一份日期文件、同一种格式、由 `LOG_LEVEL` 统一过滤。
+
+要点：
+
+- 日志在 [src/main.py](../../src/main.py) 顶部**显式初始化**（`setup_logger()`），不依赖 import 副作用；放在其余模块导入之前，确保导入期日志也被捕获。
+- `uvicorn`/`uvicorn.access`/`uvicorn.error`/`gunicorn` 等自带 handler 的 logger 会被显式接管（清空其 handler、打开 propagate），其访问日志与未捕获异常的 500 堆栈因此也进入日期文件。`uvicorn.run` 传 `log_config=None`，不再安装 uvicorn 自己的日志配置。
+- 异常堆栈开启 `backtrace`、关闭 `diagnose`：保留完整调用栈，但不展开局部变量值，避免在生产日志里泄露密钥 / PII。
+- 约定：**应用代码新增日志一律用 Loguru**；遗留的标准库 logging 会被自动桥接，无需改写，但不要再新增标准库 logging 用法。
+
 ## MQ 失败兜底（重试 + 死信）
 
 消费框架对业务回调异常做有限退避重试 + 死信兜底；详细行为见 [mq.md §4.1](../internals/mq.md#41-失败兜底重试--死信)。
