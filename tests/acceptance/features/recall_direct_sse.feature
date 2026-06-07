@@ -31,7 +31,7 @@ Feature: 前端直连 Python 召回 SSE
 
   # ==== 主流程 ====
 
-  Scenario: 有效会话凭证建连并以 recall_done 直接返回融合候选
+  Scenario: 有效会话凭证建连并以 answer_done 返回生成答案与融合候选
     Given session token claims sub=123 aud=tolink-rag-frontend iss=tolink-java scope=recall:stream dataset_ids=[1,2] 未过期
     And bm25 与 sparse 两路均返回命中
     When 前端携带该 token 以 Authorization Bearer 调用 POST /api/v1/recall/stream body query="数据治理" dataset_ids=[1,2]
@@ -39,17 +39,17 @@ Feature: 前端直连 Python 召回 SSE
     And 响应 Content-Type 为 "text/event-stream"
     And 响应头 Cache-Control 为 "no-cache"
     And 响应头 X-Accel-Buffering 为 "no"
-    And 收到 SSE 事件 "recall_done"
-    And recall_done.data 含字段 hits 与 failed_sources
+    And 收到 SSE 事件 "answer_done"
+    And answer_done.data 含字段 hits 与 failed_sources
     And hits 中每个 hit 不含字段 content
-    And 发送 recall_done 后关闭 SSE 流
+    And 发送 answer_done 后关闭 SSE 流
 
   Scenario: token 仅约束建连，建连后流执行期间 token 过期不中断流
     Given session token claims sub=123 dataset_ids=[1] scope=recall:stream 合法
     And 已用该 token 成功建连且召回正在执行
     When token 的 exp 在流执行期间到达
     Then 当前 SSE 流不因 token 过期被中断
-    And 流仍以 recall_done 或 error 正常终态结束
+    And 流仍以 answer_done 或 error 正常终态结束
     And 流的最大执行时间仍由 RECALL_STREAM_TIMEOUT_MS 控制
 
   # ==== 会话凭证鉴权（握手前，返回非 2xx JSON，不执行 pipeline）====
@@ -89,7 +89,7 @@ Feature: 前端直连 Python 召回 SSE
     And 已用该 token 成功建连过一次且连接已结束
     When 前端在 token 未过期时携带同一 token 再次调用 POST /api/v1/recall/stream body query="任意" dataset_ids=[1]
     Then HTTP 响应状态为 200
-    And 收到 SSE 事件 "recall_done"
+    And 收到 SSE 事件 "answer_done"
 
   # ==== 身份与授权范围（身份只取 claims；dataset_ids 为授权范围内子集选择）====
 
@@ -171,7 +171,7 @@ Feature: 前端直连 Python 召回 SSE
     And 用户 123 已有 2 条召回流在执行
     When 前端携带新 token 为用户 123 发起第 3 条 POST /api/v1/recall/stream
     Then HTTP 响应状态为 200
-    And 收到 SSE 事件 "recall_done"
+    And 收到 SSE 事件 "answer_done"
 
   # ==== 前端可直接观测的失败终态 ====
 
