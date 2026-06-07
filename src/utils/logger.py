@@ -102,13 +102,14 @@ def setup_logger():
     """配置 Loguru 日志系统。
 
     - 始终输出到 stdout（容器 / 本地通用）。
-    - LOG_FILE_ENABLED 开启时，额外按 Java 端约定落盘：
+    - LOG_FILE_ENABLED 开启时，额外按 Java 端约定落盘（文件名带 PID 隔离多 worker）：
 
-        logs/<YYYY-MM-DD>/tolink-service.log         当天全量（>= LOG_LEVEL）
-        logs/<YYYY-MM-DD>/tolink-service-error.log   当天 ERROR 及以上
+        logs/<YYYY-MM-DD>/<service>-<pid>.log         当天全量（>= LOG_LEVEL）
+        logs/<YYYY-MM-DD>/<service>-error-<pid>.log   当天 ERROR 及以上
 
       文件名中的 {time} 由 Loguru 在「创建新文件」时求值，配合每天 0 点切分
-      （rotation="00:00"），每天自然落入新的日期目录；保留 LOG_RETENTION_DAYS 天。
+      （rotation="00:00"），每天自然落入新的日期目录。保留清理见
+      _cleanup_old_log_dirs：按日期目录整体删除早于 LOG_RETENTION_DAYS 的目录。
     - 通过 InterceptHandler 把标准库 logging（含 uvicorn / 第三方库 / 遗留模块）
       桥接进 Loguru，使运行时只有一条统一的日志管道。
 
