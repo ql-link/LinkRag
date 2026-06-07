@@ -40,9 +40,7 @@ class _FakeEmbedder:
 
 
 def _patch_session_factory(monkeypatch):
-    monkeypatch.setattr(
-        "src.database.get_async_session_factory", lambda: _FakeSessionFactory()
-    )
+    monkeypatch.setattr("src.database.get_async_session_factory", lambda: _FakeSessionFactory())
 
 
 def _patch_config_reader(monkeypatch, *, config):
@@ -94,7 +92,7 @@ async def test_resolve_user_embedding_client_uses_user_config(monkeypatch):
         config={
             "provider_type": "qwen",
             "api_key": "ENC",
-            "custom_api_base_url": "https://user.example/v1",
+            "api_base_url": "https://user.example/v1",
             "model_name": "user-embed-model",
         },
     )
@@ -121,7 +119,7 @@ async def test_resolve_user_chunk_embedding_pipeline_uses_user_model_and_batch_c
         config={
             "provider_type": "qwen",
             "api_key": "ENC",
-            "custom_api_base_url": None,
+            "api_base_url": None,
             # DashScope text-embedding-v4 已知单次上限 10
             "model_name": "text-embedding-v4",
         },

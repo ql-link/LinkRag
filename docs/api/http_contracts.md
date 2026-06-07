@@ -239,3 +239,42 @@ data: {"code":"RECALL_ALL_SOURCES_FAILED","message":"all retrievers failed"}
 ```
 
 错误码与 HTTP 状态见 [error_codes.md](error_codes.md#5-internal-recall-错误码)。
+
+## 7. 对外直连 Recall SSE API（LINK-40）
+
+路由前缀：`/api/v1/recall`。**面向浏览器前端**：前端凭 Java 签发的**短期 session token**
+直连，绕过 Java 中转。与 §6 内部端点是**两条并存**链路（本端点是新增可选路径）。运行时
+与会话鉴权细节见 [docs/internals/recall_http_api.md](../internals/recall_http_api.md)。
+
+| Method | Path | 用途 | 鉴权 |
+| --- | --- | --- | --- |
+| `POST` | `/stream` | 前端直连多路召回，SSE 流式返回融合候选 | Header `Authorization: Bearer <session-token>` |
+
+### POST /api/v1/recall/stream
+
+前端以 fetch 流式（`ReadableStream`）建连，**不使用** `EventSource`（无法设鉴权头）。
+请求头：`Authorization: Bearer <session-token>`、`Content-Type: application/json`、可选
+`Origin`（CORS）、`X-Request-Id`。
+
+session token 由 Java 签发、Python 用**独立密钥**验签（与内部端点密钥隔离）；claims：
+`iss=tolink-java`、`aud=tolink-rag-frontend`、`scope=recall:stream`、`sub`、`dataset_ids`、
+`exp`。**token 短期可复用**（只校验 `exp`，不做一次性 / 防重放 / 撤销）。
+
+请求体（仅以下字段；出现 `user_id` / `top_k` / `sources` / `strict` / `doc_ids` 等任何未知
+字段返回 `422`）：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `query` | string | 是 | 用户问题，不能为空或纯空白 |
+| `dataset_ids` | list[int] | 否 | 本次查询的数据集**子集选择**，必须 ⊆ token 授权范围（超出 `403`）；省略/空 = 用 token 全量授权范围 |
+
+**身份只取 token claims**——body 不含 `user_id`，前端自报一律不信任。`top_k` / `sources` /
+`strict` 同内部端点，由服务端配置控制。
+
+并发：按 `user_id` 限并发流数（`RECALL_SESSION_MAX_CONCURRENT`），超限返回 `429`。
+
+响应、SSE 事件协议（`recall_done` / `error`）与 §6 内部端点**完全一致**（复用同一执行链）。
+错误码见 [error_codes.md](error_codes.md#6-对外直连-recall-错误码)。
+
+> CORS：本端点暴露给浏览器，生产环境必须把 `CORS_ORIGINS` 收敛为前端可信域名清单
+> （不可用 `*`）。

@@ -6,8 +6,8 @@ ConfigReaderService 集成测试 - 真实 MySQL 数据库
 - 测试时注入 NullCacheBackend，不依赖 Redis
 - 生产时使用 RedisCacheBackend
 """
+
 import asyncio
-import json
 import time
 import uuid
 import pytest
@@ -26,6 +26,7 @@ from src.config import settings
 def create_unique_user_id():
     """生成唯一的用户 ID"""
     import random
+
     return int(f"2{random.randint(100000000, 999999999)}")  # 以2开头的10位数字
 
 
@@ -60,6 +61,7 @@ def create_unique_provider_type():
 def reset_db_engine():
     """每个测试前重置数据库引擎连接池"""
     import src.database as db_module
+
     if db_module._async_engine is not None:
         try:
             loop = asyncio.get_event_loop()
@@ -118,43 +120,55 @@ class TestConfigReaderServiceIntegration:
         try:
             with conn.cursor() as cursor:
                 # 插入测试 SystemProvider
-                cursor.execute("""
+                cursor.execute(
+                    """
                     INSERT INTO llm_system_provider
-                    (provider_type, provider_name, api_base_url, supported_models, config_schema, is_active, priority)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    provider_type,
-                    "OpenAI Test",
-                    "https://api.openai.com/v1",
-                    json.dumps({"gpt-4": ["CHAT", "OCR"], "gpt-3.5-turbo": ["CHAT"]}),
-                    json.dumps({"temperature": {"type": "float", "default": 0.7}}),
-                    1,
-                    100
-                ))
+                    (provider_type, provider_name, api_base_url, is_active, priority)
+                    VALUES (%s, %s, %s, %s, %s)
+                """,
+                    (provider_type, "OpenAI Test", "https://api.openai.com/v1", 1, 100),
+                )
                 test_ids["provider_id"] = cursor.lastrowid
                 test_ids["provider_type"] = provider_type
 
-                # 插入测试 UserLLMConfig（带 capability 字段）
-                cursor.execute("""
+                cursor.execute(
+                    """
+                    INSERT INTO llm_provider_model
+                    (provider_id, model_name, capability, is_active)
+                    VALUES (%s, %s, %s, %s), (%s, %s, %s, %s)
+                """,
+                    (
+                        test_ids["provider_id"],
+                        "gpt-4",
+                        "CHAT",
+                        1,
+                        test_ids["provider_id"],
+                        "gpt-4",
+                        "OCR",
+                        1,
+                    ),
+                )
+
+                # 插入测试 UserLLMConfig（Java 写入后的运行时生效结构）
+                cursor.execute(
+                    """
                     INSERT INTO llm_user_config
-                    (user_id, provider_id, provider_type, provider_name, config_name, api_key, model_name, priority, is_active, is_default, timeout_ms, max_retries, stream_enabled, capability)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    test_user_id,
-                    test_ids["provider_id"],
-                    provider_type,
-                    "OpenAI Test",
-                    "Test GPT-4 Config",
-                    "encrypted_test_key",
-                    "gpt-4",
-                    50,
-                    1,
-                    1,
-                    60000,
-                    3,
-                    1,
-                    "CHAT"  # 新增 capability 字段
-                ))
+                    (user_id, provider_id, provider_type, api_key, api_base_url, model_name, capability, is_active, is_default, is_system_preset)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                    (
+                        test_user_id,
+                        test_ids["provider_id"],
+                        provider_type,
+                        "encrypted_test_key",
+                        "https://api.openai.com/v1",
+                        "gpt-4",
+                        "CHAT",
+                        1,
+                        1,
+                        0,
+                    ),
+                )
                 test_ids["config_id"] = cursor.lastrowid
                 test_ids["user_id"] = test_user_id
         finally:
@@ -168,14 +182,18 @@ class TestConfigReaderServiceIntegration:
         try:
             with conn.cursor() as cursor:
                 cursor.execute(f"DELETE FROM llm_user_config WHERE id = {test_ids['config_id']}")
-                cursor.execute(f"DELETE FROM llm_system_provider WHERE id = {test_ids['provider_id']}")
+                cursor.execute(
+                    f"DELETE FROM llm_provider_model WHERE provider_id = {test_ids['provider_id']}"
+                )
+                cursor.execute(
+                    f"DELETE FROM llm_system_provider WHERE id = {test_ids['provider_id']}"
+                )
         finally:
             conn.close()
 
     @pytest_asyncio.fixture
     async def setup_multi_capability_test_data(self, db_session: AsyncSession):
         """创建多种 capability 的测试数据"""
-        import random
         provider_type1 = create_unique_provider_type()
         provider_type2 = f"anthropic_test_{uuid.uuid4().hex[:8]}"
         test_user_id = create_unique_user_id()
@@ -185,101 +203,115 @@ class TestConfigReaderServiceIntegration:
         try:
             with conn.cursor() as cursor:
                 # 插入两个测试 SystemProvider
-                cursor.execute("""
+                cursor.execute(
+                    """
                     INSERT INTO llm_system_provider
-                    (provider_type, provider_name, api_base_url, supported_models, is_active, priority)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                """, (
-                    provider_type1,
-                    "OpenAI Test",
-                    "https://api.openai.com/v1",
-                    json.dumps({"gpt-4": ["CHAT"], "text-embedding-3": ["EMBEDDING"]}),
-                    1,
-                    100
-                ))
+                    (provider_type, provider_name, api_base_url, is_active, priority)
+                    VALUES (%s, %s, %s, %s, %s)
+                """,
+                    (provider_type1, "OpenAI Test", "https://api.openai.com/v1", 1, 100),
+                )
                 provider_id1 = cursor.lastrowid
 
-                cursor.execute("""
+                cursor.execute(
+                    """
                     INSERT INTO llm_system_provider
-                    (provider_type, provider_name, api_base_url, supported_models, is_active, priority)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                """, (
-                    provider_type2,
-                    "Anthropic Test",
-                    "https://api.anthropic.com",
-                    json.dumps({"claude-3": ["CHAT", "VISION"]}),
-                    1,
-                    90
-                ))
+                    (provider_type, provider_name, api_base_url, is_active, priority)
+                    VALUES (%s, %s, %s, %s, %s)
+                """,
+                    (provider_type2, "Anthropic Test", "https://api.anthropic.com", 1, 90),
+                )
                 provider_id2 = cursor.lastrowid
 
+                cursor.execute(
+                    """
+                    INSERT INTO llm_provider_model
+                    (provider_id, model_name, capability, is_active)
+                    VALUES
+                        (%s, %s, %s, %s),
+                        (%s, %s, %s, %s),
+                        (%s, %s, %s, %s)
+                """,
+                    (
+                        provider_id1,
+                        "gpt-4",
+                        "CHAT",
+                        1,
+                        provider_id1,
+                        "text-embedding-3",
+                        "EMBEDDING",
+                        1,
+                        provider_id2,
+                        "claude-3-rerank",
+                        "RERANK",
+                        1,
+                    ),
+                )
+
                 # 插入 CHAT 配置（默认）
-                cursor.execute("""
+                cursor.execute(
+                    """
                     INSERT INTO llm_user_config
-                    (user_id, provider_id, provider_type, provider_name, config_name, api_key, model_name, priority, is_active, is_default, timeout_ms, max_retries, stream_enabled, capability)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    test_user_id,
-                    provider_id1,
-                    provider_type1,
-                    "OpenAI Test",
-                    "Chat Config",
-                    "encrypted_key_1",
-                    "gpt-4",
-                    50,
-                    1,
-                    1,  # is_default
-                    60000,
-                    3,
-                    1,
-                    "CHAT"
-                ))
+                    (user_id, provider_id, provider_type, api_key, api_base_url, model_name, capability, is_active, is_default, is_system_preset)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                    (
+                        test_user_id,
+                        provider_id1,
+                        provider_type1,
+                        "encrypted_key_1",
+                        "https://api.openai.com/v1",
+                        "gpt-4",
+                        "CHAT",
+                        1,
+                        1,  # is_default
+                        0,
+                    ),
+                )
                 chat_config_id = cursor.lastrowid
 
                 # 插入 EMBEDDING 配置
-                cursor.execute("""
+                cursor.execute(
+                    """
                     INSERT INTO llm_user_config
-                    (user_id, provider_id, provider_type, provider_name, config_name, api_key, model_name, priority, is_active, is_default, timeout_ms, max_retries, stream_enabled, capability)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    test_user_id,
-                    provider_id1,
-                    provider_type1,
-                    "OpenAI Test",
-                    "Embedding Config",
-                    "encrypted_key_2",
-                    "text-embedding-3",
-                    40,
-                    1,
-                    1,  # is_default for EMBEDDING
-                    60000,
-                    3,
-                    1,
-                    "EMBEDDING"
-                ))
+                    (user_id, provider_id, provider_type, api_key, api_base_url, model_name, capability, is_active, is_default, is_system_preset)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                    (
+                        test_user_id,
+                        provider_id1,
+                        provider_type1,
+                        "encrypted_key_2",
+                        "https://api.openai.com/v1",
+                        "text-embedding-3",
+                        "EMBEDDING",
+                        1,
+                        1,  # is_default for EMBEDDING
+                        0,
+                    ),
+                )
                 embedding_config_id = cursor.lastrowid
 
                 # 插入 RERANK 配置
-                cursor.execute("""
+                cursor.execute(
+                    """
                     INSERT INTO llm_user_config
-                    (user_id, provider_id, provider_type, provider_name, config_name, api_key, model_name, priority, is_active, is_default, timeout_ms, max_retries, stream_enabled, capability)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (
-                    test_user_id,
-                    provider_id2,
-                    provider_type2,
-                    "Anthropic Test",
-                    "Rerank Config",
-                    "encrypted_key_3",
-                    "claude-3-rerank",
-                    30,
-                    1,
-                    1,  # is_default for RERANK
-                    60000,
-                    3,
-                    1,
-                    "RERANK"
-                ))
+                    (user_id, provider_id, provider_type, api_key, api_base_url, model_name, capability, is_active, is_default, is_system_preset)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                    (
+                        test_user_id,
+                        provider_id2,
+                        provider_type2,
+                        "encrypted_key_3",
+                        "https://api.anthropic.com",
+                        "claude-3-rerank",
+                        "RERANK",
+                        1,
+                        1,  # is_default for RERANK
+                        0,
+                    ),
+                )
                 rerank_config_id = cursor.lastrowid
 
                 test_ids = {
@@ -303,7 +335,12 @@ class TestConfigReaderServiceIntegration:
         try:
             with conn.cursor() as cursor:
                 cursor.execute(f"DELETE FROM llm_user_config WHERE user_id = {test_user_id}")
-                cursor.execute(f"DELETE FROM llm_system_provider WHERE id IN ({provider_id1}, {provider_id2})")
+                cursor.execute(
+                    f"DELETE FROM llm_provider_model WHERE provider_id IN ({provider_id1}, {provider_id2})"
+                )
+                cursor.execute(
+                    f"DELETE FROM llm_system_provider WHERE id IN ({provider_id1}, {provider_id2})"
+                )
         finally:
             conn.close()
 
@@ -338,23 +375,21 @@ class TestConfigReaderServiceIntegration:
             assert p["provider_type"] == provider_type
 
     @pytest.mark.asyncio
-    async def test_GetSystemProviders_SupportedModels_Should_Be_Parsed_Correctly(
+    async def test_GetSystemProviders_Models_Should_Be_Aggregated_Correctly(
         self, service: ConfigReaderService, setup_test_data
     ):
-        """get_system_providers 返回的 supported_models 应正确解析为 dict"""
+        """get_system_providers 返回的 models 应按模型聚合能力"""
         providers = await service.get_system_providers()
 
         provider_type = setup_test_data["provider_type"]
-        test_provider = next(
-            (p for p in providers if p["provider_type"] == provider_type), None
-        )
+        test_provider = next((p for p in providers if p["provider_type"] == provider_type), None)
         assert test_provider is not None
 
-        supported_models = test_provider["supported_models"]
-        assert isinstance(supported_models, dict)
-        assert "gpt-4" in supported_models
-        assert "CHAT" in supported_models["gpt-4"]
-        assert "OCR" in supported_models["gpt-4"]
+        models = test_provider["models"]
+        assert isinstance(models, dict)
+        assert "gpt-4" in models
+        assert "CHAT" in models["gpt-4"]
+        assert "OCR" in models["gpt-4"]
 
     @pytest.mark.asyncio
     async def test_GetSystemProviderByType_Should_Return_Single_Provider(
@@ -387,9 +422,7 @@ class TestConfigReaderServiceIntegration:
         assert isinstance(configs, list)
         assert len(configs) > 0
 
-        test_config = next(
-            (c for c in configs if c["id"] == setup_test_data["config_id"]), None
-        )
+        test_config = next((c for c in configs if c["id"] == setup_test_data["config_id"]), None)
         assert test_config is not None, f"测试配置 {setup_test_data['config_id']} 未找到"
         assert test_config["user_id"] == user_id
         assert test_config["provider_id"] == setup_test_data["provider_id"]
@@ -397,12 +430,12 @@ class TestConfigReaderServiceIntegration:
         assert test_config["is_default"] is True
 
     @pytest.mark.asyncio
-    async def test_GetUserDefaultConfig_Should_Return_Default_Config(
+    async def test_GetUserDefaultConfigByCapability_Should_Return_Default_Config(
         self, service: ConfigReaderService, setup_test_data
     ):
-        """get_user_default_config 应返回用户的默认配置"""
+        """get_user_default_config_by_capability 应返回用户该能力默认配置"""
         user_id = setup_test_data["user_id"]
-        config = await service.get_user_default_config(user_id)
+        config = await service.get_user_default_config_by_capability(user_id, "CHAT")
 
         assert config is not None
         assert config["user_id"] == user_id
@@ -485,7 +518,10 @@ class TestConfigReaderServiceIntegration:
             user_id, "CHAT", provider_type=setup_multi_capability_test_data["provider_type1"]
         )
         assert config_correct_provider is not None
-        assert config_correct_provider["provider_type"] == setup_multi_capability_test_data["provider_type1"]
+        assert (
+            config_correct_provider["provider_type"]
+            == setup_multi_capability_test_data["provider_type1"]
+        )
 
     @pytest.mark.asyncio
     async def test_GetUserDefaultConfigByCapability_NonExistent_Should_Return_None(
@@ -523,15 +559,15 @@ class TestConfigReaderServiceIntegration:
         assert vision_configs == []
 
     @pytest.mark.asyncio
-    async def test_GetUserConfigsByCapability_Should_Order_By_Priority(
+    async def test_GetUserConfigsByCapability_Should_Order_By_Id_Desc(
         self, service: ConfigReaderService, setup_multi_capability_test_data: dict
     ):
-        """get_user_configs_by_capability 返回的配置应按优先级降序排列"""
+        """get_user_configs_by_capability 返回的配置应按 id 降序排列"""
         user_id = setup_multi_capability_test_data["user_id"]
 
         configs = await service.get_user_configs_by_capability(user_id, "CHAT")
 
-        # 验证按优先级降序排列
+        # priority 已由 Java 侧配置模型移除；读取侧只保证稳定的 id 降序。
         if len(configs) > 1:
             for i in range(len(configs) - 1):
-                assert configs[i]["priority"] >= configs[i + 1]["priority"]
+                assert configs[i]["id"] >= configs[i + 1]["id"]

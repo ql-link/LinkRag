@@ -158,7 +158,29 @@ CODE: 中文业务原因；底层详情
 EMBEDDING 配置属**必备前置缺失**，走硬失败（`RECALL_EMBEDDING_CONFIG_MISSING`）而非宽松降级——
 即便其余路可用也不返回部分结果，避免"读侧系统模型 / 写侧用户模型"向量空间不一致的误召回。
 
-## 6. Chunk Status Values
+## 6. 对外直连 Recall 错误码
+
+对外直连召回 SSE 接口 `POST /api/v1/recall/stream`（LINK-40，见
+[http_contracts.md §7](http_contracts.md#7-对外直连-recall-sseapilink-40)）。与内部端点
+区分专属错误码，便于审计区分「Java 内部调用」与「前端直连会话」。
+
+**握手前**（会话鉴权 / 参数 / scope / 限流失败）→ 非 2xx 的 `{code, message, data}` JSON：
+
+| 场景 | HTTP | code |
+| --- | --- | --- |
+| 缺失 / 验签 / iss / aud / scope / exp 失败、用内部密钥签发的 token | `401` | `RECALL_SESSION_UNAUTHORIZED` |
+| `dataset_ids` 超出 token 授权范围 | `403` | `RECALL_SCOPE_FORBIDDEN` |
+| JSON 非法 / 缺字段 / 类型错 / 出现未知字段（含 `user_id`） | `422` | `RECALL_INVALID_REQUEST` |
+| `query` 为空或纯空白 | `400` | `RECALL_INVALID_REQUEST` |
+| 单用户并发流数超过 `RECALL_SESSION_MAX_CONCURRENT` | `429` | `RECALL_RATE_LIMITED` |
+
+**握手后**（pipeline 执行期）→ SSE `error` 事件，与内部端点共享同一 runtime、语义一致：
+`RECALL_EMBEDDING_CONFIG_MISSING` / `RECALL_ALL_SOURCES_FAILED` / `RECALL_TIMEOUT` /
+`RECALL_INTERNAL_ERROR`。
+
+token **短期可复用**：有效期内重复建连均放行，无重放类错误码。
+
+## 7. Chunk Status Values
 
 | Status | 含义 |
 | --- | --- |

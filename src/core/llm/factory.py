@@ -2,6 +2,7 @@
 ModelFactory 注册式工厂
 按 Capability 分发 Provider，支持动态注册新 Provider
 """
+
 from typing import Dict, Type, Optional, Any
 
 from src.core.llm.base_provider import BaseProvider
@@ -20,6 +21,7 @@ class ModelFactory:
 
     _instance: Optional["ModelFactory"] = None
     _providers: Dict[str, Type[BaseProvider]] = {}
+    _provider_aliases = {"claude": "anthropic", "aliyun": "qwen"}
     _default_provider_types = {"openai", "anthropic", "glm", "deepseek", "qwen"}
 
     def __new__(cls) -> "ModelFactory":
@@ -53,6 +55,12 @@ class ModelFactory:
         if provider_type in self._default_provider_types and provider_type not in self._providers:
             self._register_default_providers()
 
+    @classmethod
+    def normalize_provider_type(cls, provider_type: str | None) -> str:
+        """归一化 Java/DB provider_type 到 Python provider 注册键。"""
+        raw = (provider_type or "openai").lower()
+        return cls._provider_aliases.get(raw, raw)
+
     def register_provider(self, provider_type: str, provider_cls: Type[BaseProvider]) -> None:
         """注册 Provider
 
@@ -79,10 +87,11 @@ class ModelFactory:
         Raises:
             KeyError: 如果该类型未注册
         """
-        self._ensure_default_provider_available(provider_type)
-        if provider_type not in self._providers:
+        normalized = self.normalize_provider_type(provider_type)
+        self._ensure_default_provider_available(normalized)
+        if normalized not in self._providers:
             raise KeyError(f"Provider type '{provider_type}' is not registered")
-        return self._providers[provider_type]
+        return self._providers[normalized]
 
     def create_client(
         self,
@@ -90,7 +99,7 @@ class ModelFactory:
         api_key: str,
         api_base_url: Optional[str] = None,
         model_name: Optional[str] = None,
-        **kwargs
+        **kwargs,
     ) -> BaseProvider:
         """创建 Provider 实例
 
@@ -104,14 +113,15 @@ class ModelFactory:
         Returns:
             Provider 实例
         """
-        provider_cls = self.get_provider_class(provider_type)
+        normalized = self.normalize_provider_type(provider_type)
+        provider_cls = self.get_provider_class(normalized)
         return provider_cls(
-            provider_type=provider_type,
-            provider_name=provider_type,
+            provider_type=normalized,
+            provider_name=normalized,
             api_key=api_key,
             api_base_url=api_base_url,
             model_name=model_name,
-            **kwargs
+            **kwargs,
         )
 
     def list_registered_providers(self) -> list[str]:
@@ -127,16 +137,17 @@ class ModelFactory:
         Returns:
             Provider 信息字典
         """
-        provider_cls = self.get_provider_class(provider_type)
+        normalized = self.normalize_provider_type(provider_type)
+        provider_cls = self.get_provider_class(normalized)
 
         # 创建临时实例获取能力信息
         temp_instance = provider_cls(
-            provider_type=provider_type,
-            provider_name=provider_type,
+            provider_type=normalized,
+            provider_name=normalized,
             api_key="",
         )
 
         return {
-            "type": provider_type,
+            "type": normalized,
             "capabilities": [c.value for c in temp_instance.get_capabilities()],
         }

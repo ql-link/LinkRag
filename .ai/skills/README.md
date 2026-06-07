@@ -34,6 +34,7 @@
 | `auto-test` | 生成 pytest 单测/集成/冒烟，强调 Mock 隔离与边界覆盖 | 只写测试；TDD 红绿循环 → 无（tdd 已下线） |
 | `run-all-tests` | 跑 `tests` 全量（含 `--run-integration`）并回报结论 | 不落本地报告文件 |
 | `code-review-and-quality` | 提交/合并前五维质量门禁审查 | 安全专项可叠加内置 `/security-review` |
+| `feature-completion-audit` | 对照原始需求六维取证，判功能是否真做完（缺口/偏离） | 入口 A 对话内实现用子 agent 复核、入口 B 审 PR 用当前 agent；质量门禁转 code-review-and-quality、跑全量转 run-all-tests |
 | `code-annotator` | 生成恰到好处的 Python Docstring 注释 | 只补注释，不改逻辑 |
 | `swagger-annotation` | 为 FastAPI 路由/Pydantic 生成中文 Swagger 注解 | — |
 

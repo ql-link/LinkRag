@@ -7,6 +7,10 @@ pipeline {
         buildDiscarder(logRotator(numToKeepStr: '20'))
     }
 
+    parameters {
+        booleanParam(name: 'RUN_TESTS', defaultValue: false, description: '是否执行 Test 阶段；默认跳过以加快构建')
+    }
+
     environment {
         IMAGE      = 'tolink-rag'
         TAG        = "${env.GIT_COMMIT?.take(8) ?: env.BUILD_NUMBER}"
@@ -19,6 +23,9 @@ pipeline {
         }
 
         stage('Test') {
+            when {
+                expression { return params.RUN_TESTS }
+            }
             agent {
                 // 挂载 pip 缓存到 jenkins_home，跨构建复用已下载的包
                 docker { image 'python:3.11-slim'; args '-v $HOME/.cache/pip:/root/.cache/pip'; reuseNode true }

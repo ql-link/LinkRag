@@ -10,6 +10,7 @@
 - 能力不支持 → ValueError；能力字符串未知 → ValueError；
 - override_model 优先级最高。
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -18,6 +19,7 @@ import pytest
 
 import src.core.llm.user_model_resolver as umr
 from src.core.llm.exceptions import UserModelConfigMissingError
+from src.core.llm.factory import ModelFactory
 from src.core.llm.interfaces import CapabilityType
 from src.core.llm.user_model_resolver import (
     aresolve_user_model,
@@ -65,7 +67,7 @@ def test_build_provider_from_config_user_decrypts(monkeypatch):
         {
             "provider_type": "qwen",
             "api_key": "ENC",
-            "custom_api_base_url": "https://u/v1",
+            "api_base_url": "https://u/v1",
             "model_name": "m-user",
         },
         capability="CHAT",
@@ -75,6 +77,31 @@ def test_build_provider_from_config_user_decrypts(monkeypatch):
     assert captured["api_key"] == "dec::ENC"
     assert captured["api_base_url"] == "https://u/v1"
     provider.has_capability.assert_called_with(CapabilityType.TEXT)
+
+
+def test_build_provider_normalizes_java_provider_type_alias(monkeypatch):
+    captured, _ = _patch_factory(monkeypatch)
+    rm = build_provider_from_config(
+        {
+            "provider_type": "aliyun",
+            "api_key": "ENC",
+            "api_base_url": "https://dashscope.example/v1",
+            "model_name": "qwen-plus",
+        },
+        capability="CHAT",
+    )
+    assert rm.provider_type == "qwen"
+    assert captured["provider_type"] == "qwen"
+
+
+def test_model_factory_normalizes_provider_type_aliases():
+    factory = ModelFactory()
+
+    qwen_client = factory.create_client(provider_type="aliyun", api_key="k")
+    anthropic_client = factory.create_client(provider_type="claude", api_key="k")
+
+    assert qwen_client.provider_type == "qwen"
+    assert anthropic_client.provider_type == "anthropic"
 
 
 def test_build_provider_from_config_system_fallback_skips_decrypt(monkeypatch):

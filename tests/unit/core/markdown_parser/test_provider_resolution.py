@@ -84,7 +84,7 @@ async def test_table_client_uses_user_chat_config(monkeypatch):
         config={
             "provider_type": "qwen",
             "api_key": "enc-key",
-            "custom_api_base_url": "https://user.example.com/v1",
+            "api_base_url": "https://user.example.com/v1",
             "model_name": "qwen-max",
         },
     )
@@ -109,7 +109,7 @@ async def test_system_fallback_config_skips_decrypt(monkeypatch):
         config={
             "provider_type": "openai",
             "api_key": "plain-key",
-            "custom_api_base_url": None,
+            "api_base_url": None,
             "model_name": "gpt-x",
             "is_system_fallback": True,
         },

@@ -78,6 +78,9 @@ tests/api_keys.json
 
 /requirements
 
+# 本地 Docker Compose 覆盖（KRaft Kafka、无认证），不入 Git
+docker-compose.override.yml
+
 /.specs/
 /.kiro/
 /blog/
