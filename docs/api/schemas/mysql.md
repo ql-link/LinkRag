@@ -158,6 +158,7 @@ ORM：[`UsageLogDB`](../../src/models/db_models.py)
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
 
 索引：
+- `uk_conversation_user_dataset_title(user_id, dataset_id, title)`
 - `idx_chat_conversation_user_pinned_updated(user_id, is_pinned, updated_at)`
 - `idx_chat_conversation_dataset_updated(dataset_id, updated_at)`
 
