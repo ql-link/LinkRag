@@ -1,6 +1,9 @@
 import logging
 import os
+import shutil
 import sys
+from datetime import datetime, timedelta
+from pathlib import Path
 
 from loguru import logger
 
@@ -57,6 +60,29 @@ class InterceptHandler(logging.Handler):
         )
 
 
+def _cleanup_old_log_dirs(base: str, retention_days: int) -> None:
+    """按日期目录整体清理早于 retention_days 的旧日志（PID 无关、重启安全）。
+
+    日志文件名带 PID，loguru 自带 retention 的清理 glob 会带上字面 PID，
+    只能清掉「当前进程」写的文件；进程重启后 PID 变化，旧 PID 写的日期目录
+    无人清理、会无限堆积，使 LOG_RETENTION_DAYS 形同虚设。这里改为按
+    `<base>/<YYYY-MM-DD>/` 目录的日期整体清理，覆盖重启 / 多 worker / 崩溃残留。
+    """
+    base_path = Path(base)
+    if not base_path.is_dir():
+        return
+    cutoff = (datetime.now() - timedelta(days=retention_days)).date()
+    for child in base_path.iterdir():
+        if not child.is_dir():
+            continue
+        try:
+            dir_date = datetime.strptime(child.name, "%Y-%m-%d").date()
+        except ValueError:
+            continue  # 非日期目录，跳过（不误删用户其它内容）
+        if dir_date < cutoff:
+            shutil.rmtree(child, ignore_errors=True)
+
+
 def _setup_intercept() -> None:
     """将标准库 logging 全量桥接到 Loguru。"""
     # root 级别置 0：放行所有记录，真正的级别过滤交给 Loguru sink 的 LOG_LEVEL。
@@ -111,9 +137,19 @@ def setup_logger():
         # 注意：PID 在 setup_logger 调用时求值；gunicorn 若用 --preload，
         # 需在 post_fork 钩子里重新调用 setup_logger，否则各 worker 会复用 master 的 PID。
         pid = os.getpid()
+        retention_days = settings.LOG_RETENTION_DAYS
+
+        # 自定义 retention：忽略 loguru 按 PID 过滤的文件列表，改为按日期目录整体清理，
+        # 使重启后旧 PID 的日志也能被回收。每天 0 点切分时触发（覆盖长跑进程跨天）。
+        def _retention(_files):
+            _cleanup_old_log_dirs(base, retention_days)
+
+        # 启动时先扫一遍：进程刚拉起、尚未发生 rotation 时即回收上次运行残留的旧日期目录。
+        _cleanup_old_log_dirs(base, retention_days)
+
         common = dict(
             rotation="00:00",
-            retention=f"{settings.LOG_RETENTION_DAYS} days",
+            retention=_retention,
             encoding="utf-8",
             enqueue=True,  # 多进程 / 异步安全，避免写入竞争阻塞业务
             format=_FILE_FORMAT,

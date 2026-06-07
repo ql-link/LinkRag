@@ -82,7 +82,9 @@ logs/
 └── ...
 ```
 
-实现要点：文件名中的日期由 Loguru 在创建新文件时求值，配合 `rotation="00:00"` 每天 0 点切分，自然落入新的日期目录；写入开启 `enqueue` 队列，异步刷盘不阻塞业务；保留期由 `LOG_RETENTION_DAYS` 控制，当前为 **7 天**。
+实现要点：文件名中的日期由 Loguru 在创建新文件时求值，配合 `rotation="00:00"` 每天 0 点切分，自然落入新的日期目录；写入开启 `enqueue` 队列，异步刷盘不阻塞业务。
+
+保留清理按 **日期目录整体删除**：删除 `<LOG_DIR>/<YYYY-MM-DD>/` 中日期早于 `LOG_RETENTION_DAYS`（当前 **7 天**）的目录，在进程启动时与每天 0 点切分时各执行一次。之所以不用 Loguru 自带 `retention`：日志文件名带 PID，Loguru 的清理 glob 会带上字面 PID，只能清掉当前进程写的文件，进程重启（部署 / 崩溃 / 扩缩容）后旧 PID 的日期目录无人回收、会无限堆积。按日期目录清理与 PID 无关，重启与多 worker 场景都能正确回收（非 `YYYY-MM-DD` 命名的目录不受影响）。
 
 文件名带 **PID** 后缀（`<pid>` 为进程号）：多 worker（gunicorn）部署时各进程写各自文件，避免多进程共写同一文件导致的写入交错与 0 点切分/清理竞争；单进程部署同样安全，仅文件名多一段 PID。每行日志同时携带进程号（控制台格式的 `{process}` 字段），多 worker 共写 stdout 时也能区分来源进程。
 > 注意：PID 在 `setup_logger()` 调用时求值。gunicorn 若启用 `--preload`，需在 `post_fork` 钩子里重新调用 `setup_logger()`，否则各 worker 会复用 master 的 PID 写到同一文件。
