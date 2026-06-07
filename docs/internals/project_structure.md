@@ -38,13 +38,20 @@ toLink-Rag/                         # 仓库根目录
 │   │   └── schemas/              # MySQL / Qdrant / Elasticsearch
 │   ├── internals/                # 内部实现：模块、约定
 │   │   ├── project_structure.md
+│   │   ├── pipeline_architecture.md
 │   │   ├── parse_task_pipeline.md
+│   │   ├── recall_pipeline.md
+│   │   ├── recall_http_api.md
 │   │   ├── file_parser.md
 │   │   ├── markdown_parser.md
 │   │   ├── chunking.md
 │   │   ├── vectorization.md
+│   │   ├── sparse_vector.md
+│   │   ├── preprocessor.md
+│   │   ├── es_index_storage.md
 │   │   ├── mq.md
 │   │   ├── llm.md
+│   │   ├── cache.md
 │   │   ├── object_storage.md
 │   │   └── naming_conventions.md
 │   ├── ops/                      # 部署与配置
@@ -65,32 +72,61 @@ toLink-Rag/                         # 仓库根目录
 │   ├── config.py                 # 全局配置
 │   ├── database.py               # 数据库初始化入口
 │   ├── main.py                   # FastAPI 应用入口
+│   ├── nltk_bootstrap.py         # NLTK 数据路径引导（项目内 nltk_data 优先）
 │   ├── api/                      # HTTP API 分层
+│   │   ├── internal_auth.py       # Java 管理端内部接口鉴权
+│   │   ├── recall_session_auth.py # 召回会话鉴权
+│   │   ├── recall_pipeline_provider.py # 召回 Pipeline 装配/提供
+│   │   ├── recall_stream_runtime.py    # 召回流式运行时
 │   │   ├── routes/               # 路由层
 │   │   │   ├── internal.py        # Java 管理端内部 LLM 配置/用量接口
 │   │   │   ├── llm.py
 │   │   │   ├── mq.py
-│   │   │   └── parse.py
+│   │   │   ├── parse.py
+│   │   │   ├── recall.py          # 召回 HTTP 入口
+│   │   │   └── recall_direct.py   # 直连召回入口
 │   │   └── schemas/              # HTTP 请求/响应模型
 │   │       ├── mq.py
 │   │       └── parse.py
 │   ├── cache/                    # 缓存客户端与缓存基础设施
-│   │   └── redis_client.py       # Redis 客户端
+│   │   ├── redis_client.py       # 异步 Redis 连接单例
+│   │   └── cache_manager.py      # CacheManager + 后端抽象（Redis / Null）
 │   ├── core/                     # 核心能力与基础设施
 │   │   ├── database.py
 │   │   ├── llm/                  # LLM 抽象、工厂与厂商适配
 │   │   │   ├── factory.py
 │   │   │   ├── interfaces.py
-│   │   │   └── providers/        # LLM 提供方实现
-│   │   ├── pipeline/             # 文档解析业务流水线编排
-│   │   │   └── parse_task/        # 解析任务主编排
-│   │   │       ├── pipeline.py     # ParseTaskPipeline 薄编排（分流/幂等/校验/重试）
-│   │   │       ├── constants.py    # 解析任务状态、通知文案等流水线常量
-│   │   │       ├── error_codes.py
-│   │   │       ├── models.py
-│   │   │       ├── log_repository.py / source.py / notifier.py / validator.py / temp_workspace.py / _utils.py
-│   │   │       ├── stages/         # 6 阶段类化编排（base/context/services + 6 个 Stage）
-│   │   │       └── post_process/   # 文件级后处理状态机（constants/models/repository）
+│   │   │   ├── base_provider.py
+│   │   │   ├── circuit_breaker.py  # 厂商调用熔断
+│   │   │   ├── encryption.py       # 用户密钥加解密
+│   │   │   ├── exceptions.py
+│   │   │   ├── response.py
+│   │   │   ├── tokenizer.py
+│   │   │   ├── user_model_resolver.py # 用户模型选择解析
+│   │   │   └── providers/        # LLM 提供方实现（openai/anthropic/qwen/glm/deepseek）
+│   │   ├── pipeline/             # 业务流水线编排
+│   │   │   ├── parse_task/        # 解析任务主编排
+│   │   │   │   ├── pipeline.py     # ParseTaskPipeline 薄编排（分流/幂等/校验/重试）
+│   │   │   │   ├── constants.py    # 解析任务状态、通知文案等流水线常量
+│   │   │   │   ├── error_codes.py
+│   │   │   │   ├── models.py
+│   │   │   │   ├── log_repository.py / source.py / notifier.py / validator.py / temp_workspace.py / _utils.py
+│   │   │   │   ├── stages/         # 类化阶段编排（base/context/services + cleaning/chunking/
+│   │   │   │   │                   #   vectorizing/sparse_vectorizing/pretokenize/es_indexing）
+│   │   │   │   └── post_process/   # 文件级后处理状态机（constants/models/repository）
+│   │   │   └── recall/            # 多路召回 Pipeline（pipeline/models/protocols/fusion/exceptions）
+│   │   ├── preprocessor/         # ES 预分词：RAGFlow 分词 → FilePostIndexPlan
+│   │   │   ├── service.py         # Preprocessor：读 chunk 构建预分词计划
+│   │   │   ├── ragflow_tokenizer.py # RagFlowTokenizer 适配
+│   │   │   └── models.py          # FileIndexMeta / ChunkWithTokens / FilePostIndexPlan
+│   │   ├── sparse_vector/        # BGE-M3 稀疏向量编码与索引
+│   │   │   ├── encoder.py / http_encoder.py / remote_encoder.py # 本地 / 远程编码器
+│   │   │   ├── factory.py         # 按 provider 装配 SparseVectorService
+│   │   │   ├── pipeline.py        # SparseVectorService 服务接口
+│   │   │   ├── indexing.py        # SparseIndexingPipeline 文件级索引阶段
+│   │   │   ├── sparse_retriever.py # 召回 Pipeline 适配器
+│   │   │   ├── deploy_bge_m3.py   # 本地模型部署/冒烟脚本
+│   │   │   └── constants.py / models.py / exceptions.py
 │   │   ├── prompts/              # LLM 提示词模板
 │   │   │   └── markdown_enhancement.py
 │   │   ├── markdown_parser/      # Markdown 解析与增强编排
@@ -105,6 +141,8 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── factory.py        # MQFactory
 │   │   │   ├── interfaces.py
 │   │   │   ├── message.py        # AbstractMessage / MessagePayload
+│   │   │   ├── exceptions.py
+│   │   │   ├── retry.py          # 消费重试策略
 │   │   │   ├── topic_admin.py    # Topic 初始化逻辑
 │   │   │   ├── consumers/        # MQ 消费者
 │   │   │   │   └── parse_task_consumer.py
@@ -153,9 +191,16 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── exceptions.py
 │   │   │   ├── models.py
 │   │   │   └── repository.py
-│   │   ├── es_index_storage/      # Elasticsearch 文件级索引阶段
-│   │   │   ├── models.py
-│   │   │   └── pipeline.py
+│   │   ├── es_index_storage/      # ES 入库 + BM25 检索
+│   │   │   ├── client.py          # 进程级 AsyncElasticsearch 单例
+│   │   │   ├── mapping.py         # ES index settings + mappings
+│   │   │   ├── document_factory.py / batcher.py # chunk → bulk action / 分批
+│   │   │   ├── pipeline.py        # EsIndexingPipeline 入库阶段
+│   │   │   ├── retrieval.py       # EsBm25Retriever BM25 检索
+│   │   │   ├── bm25_retriever.py  # 召回 Pipeline 适配器
+│   │   │   ├── retrieval_models.py # Bm25RecallRequest / Bm25ChunkHit
+│   │   │   ├── smoke.py           # 集成测试冒烟工具
+│   │   │   └── models.py / exceptions.py
 │   │   ├── qdrant_vector_storage/ # Qdrant 向量索引存储
 │   │   │   ├── bucket_router.py
 │   │   │   ├── constants.py
