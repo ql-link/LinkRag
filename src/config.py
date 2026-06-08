@@ -127,6 +127,13 @@ class Settings(BaseSettings):
     RECALL_GENERATION_CONTEXT_TOKEN_BUDGET: int = 4000
 
     # ==========================================
+    # 召回后重排 (Post-Recall Rerank / LINK-130)
+    # ==========================================
+    # 重排模块输出的候选条数兜底默认值。调用方未显式传 top_n 时生效；
+    # 调用方传入则以传入为准。值参考业界 rerank top_n（RAGFlow 默认 6，本项目放宽到 8）。
+    RERANK_DEFAULT_TOP_N: int = 8
+
+    # ==========================================
     # 系统级兜底 LLM 配置 (Platform Default Fallback LLMs)
     # ==========================================
     SYSTEM_LLM_PROVIDER: str = "qwen"
