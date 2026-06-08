@@ -29,7 +29,7 @@ ParseTaskService
 ```text
 ParseResult
   -> ChunkingEngine.process_parse_result()
-  -> ASTAwareChunker / StructuredSemanticChunker
+  -> StructuredSemanticChunker
 ```
 
 ## 2. 核心角色

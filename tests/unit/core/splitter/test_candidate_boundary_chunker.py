@@ -109,6 +109,175 @@ def test_candidate_boundary_should_split_at_next_boundary_after_min_tokens():
     assert [chunk.metadata["chunk_index"] for chunk in chunks] == [0, 1]
 
 
+def test_candidate_boundary_should_keep_deepest_level_3_sibling_headings_together():
+    chunker = CandidateBoundaryChunker(
+        tokenizer=MockWordTokenizer(),
+        min_candidate_chunk_tokens=128,
+    )
+
+    chunks = chunker.chunk(
+        [
+            _heading("## A", 0, 2, "A"),
+            _heading("### A.1", 2, 3, "A.1"),
+            _element(ElementType.PARAGRAPH, "short content", 4),
+            _heading("### A.2", 6, 3, "A.2"),
+            _element(ElementType.PARAGRAPH, "short content", 8),
+        ]
+    )
+
+    assert len(chunks) == 1
+    assert "### A.1" in chunks[0].content
+    assert "### A.2" in chunks[0].content
+    assert chunks[0].metadata["heading_trail"] == ["A", "A.2"]
+
+
+def test_candidate_boundary_should_split_when_level_3_returns_to_level_2():
+    chunker = CandidateBoundaryChunker(
+        tokenizer=MockWordTokenizer(),
+        min_candidate_chunk_tokens=128,
+    )
+
+    chunks = chunker.chunk(
+        [
+            _heading("## A", 0, 2, "A"),
+            _heading("### A.1", 2, 3, "A.1"),
+            _element(ElementType.PARAGRAPH, "short content", 4),
+            _heading("## B", 6, 2, "B"),
+            _element(ElementType.PARAGRAPH, "opening paragraph", 8),
+        ]
+    )
+
+    assert len(chunks) == 2
+    assert chunks[0].content == "## A\n\n### A.1\n\nshort content"
+    assert chunks[1].content == "## B\n\nopening paragraph"
+
+
+def test_candidate_boundary_should_split_level_3_siblings_when_level_4_exists():
+    chunker = CandidateBoundaryChunker(
+        tokenizer=MockWordTokenizer(),
+        min_candidate_chunk_tokens=128,
+    )
+
+    chunks = chunker.chunk(
+        [
+            _heading("## A", 0, 2, "A"),
+            _heading("### A.1", 2, 3, "A.1"),
+            _element(ElementType.PARAGRAPH, "short content", 4),
+            _heading("### A.2", 6, 3, "A.2"),
+            _heading("#### A.2.a", 8, 4, "A.2.a"),
+            _element(ElementType.PARAGRAPH, "short content", 10),
+        ]
+    )
+
+    assert len(chunks) == 2
+    assert chunks[0].content == "## A\n\n### A.1\n\nshort content"
+    assert chunks[1].content == "### A.2\n\n#### A.2.a\n\nshort content"
+
+
+def test_candidate_boundary_should_keep_deepest_level_4_sibling_headings_together():
+    chunker = CandidateBoundaryChunker(
+        tokenizer=MockWordTokenizer(),
+        min_candidate_chunk_tokens=128,
+    )
+
+    chunks = chunker.chunk(
+        [
+            _heading("### A.1", 0, 3, "A.1"),
+            _heading("#### A.1.a", 2, 4, "A.1.a"),
+            _element(ElementType.PARAGRAPH, "short content", 4),
+            _heading("#### A.1.b", 6, 4, "A.1.b"),
+            _element(ElementType.PARAGRAPH, "short content", 8),
+        ]
+    )
+
+    assert len(chunks) == 1
+    assert "#### A.1.a" in chunks[0].content
+    assert "#### A.1.b" in chunks[0].content
+
+
+def test_candidate_boundary_should_split_when_level_4_returns_to_level_3():
+    chunker = CandidateBoundaryChunker(
+        tokenizer=MockWordTokenizer(),
+        min_candidate_chunk_tokens=128,
+    )
+
+    chunks = chunker.chunk(
+        [
+            _heading("### A.1", 0, 3, "A.1"),
+            _heading("#### A.1.a", 2, 4, "A.1.a"),
+            _element(ElementType.PARAGRAPH, "short content", 4),
+            _heading("### A.2", 6, 3, "A.2"),
+            _element(ElementType.PARAGRAPH, "short content", 8),
+        ]
+    )
+
+    assert len(chunks) == 2
+    assert chunks[0].content == "### A.1\n\n#### A.1.a\n\nshort content"
+    assert chunks[1].content == "### A.2\n\nshort content"
+
+
+def test_candidate_boundary_should_keep_deepest_level_5_sibling_headings_together():
+    chunker = CandidateBoundaryChunker(
+        tokenizer=MockWordTokenizer(),
+        min_candidate_chunk_tokens=128,
+    )
+
+    chunks = chunker.chunk(
+        [
+            _heading("#### A.1.a", 0, 4, "A.1.a"),
+            _heading("##### Leaf 1", 2, 5, "Leaf 1"),
+            _element(ElementType.PARAGRAPH, "short content", 4),
+            _heading("##### Leaf 2", 6, 5, "Leaf 2"),
+            _element(ElementType.PARAGRAPH, "short content", 8),
+        ]
+    )
+
+    assert len(chunks) == 1
+    assert "##### Leaf 1" in chunks[0].content
+    assert "##### Leaf 2" in chunks[0].content
+    assert chunks[0].metadata["heading_trail"] == ["A.1.a", "Leaf 2"]
+
+
+def test_candidate_boundary_should_ignore_level_6_for_dynamic_protection():
+    chunker = CandidateBoundaryChunker(
+        tokenizer=MockWordTokenizer(),
+        min_candidate_chunk_tokens=128,
+    )
+
+    chunks = chunker.chunk(
+        [
+            _heading("##### Leaf 1", 0, 5, "Leaf 1"),
+            _element(ElementType.PARAGRAPH, "short content", 2),
+            _heading("###### Detail", 4, 6, "Detail"),
+            _element(ElementType.PARAGRAPH, "short content", 6),
+            _heading("##### Leaf 2", 8, 5, "Leaf 2"),
+            _element(ElementType.PARAGRAPH, "short content", 10),
+        ]
+    )
+
+    assert len(chunks) == 1
+    assert "###### Detail" in chunks[0].content
+    assert "##### Leaf 2" in chunks[0].content
+    assert chunks[0].metadata["heading_trail"] == ["Leaf 2"]
+
+
+def test_candidate_boundary_should_keep_original_behavior_without_headings():
+    chunker = CandidateBoundaryChunker(
+        tokenizer=MockWordTokenizer(),
+        min_candidate_chunk_tokens=2,
+    )
+
+    chunks = chunker.chunk(
+        [
+            _element(ElementType.PARAGRAPH, "one two", 0),
+            _element(ElementType.PARAGRAPH, "three four", 2),
+        ]
+    )
+
+    assert len(chunks) == 1
+    assert chunks[0].content == "one two\n\nthree four"
+
+
 def test_candidate_boundary_should_not_emit_heading_only_chunk_when_heading_hits_min_tokens():
     chunker = CandidateBoundaryChunker(
         tokenizer=MockWordTokenizer(),
@@ -399,6 +568,38 @@ def test_candidate_boundary_should_generate_derived_chunk_without_adjacent_conte
     assert "相邻上下文：" not in chunks[1].content
     assert "adjacent_context_prev_tokens" not in chunks[1].metadata
     assert "adjacent_context_next_tokens" not in chunks[1].metadata
+
+
+def test_candidate_boundary_should_limit_derived_adjacent_context_by_overlap_tokens():
+    tokenizer = MockWordTokenizer()
+    chunker = CandidateBoundaryChunker(
+        tokenizer=tokenizer,
+        min_candidate_chunk_tokens=128,
+        overlapper=ChunkOverlapper(
+            tokenizer=tokenizer,
+            config=ChunkOverlapConfig(tokens=3),
+        ),
+    )
+
+    chunks = chunker.chunk(
+        [
+            _element(ElementType.PARAGRAPH, "prev0 prev1 prev2 prev3 prev4", 0),
+            _element(
+                ElementType.IMAGE,
+                "![diagram](./diagram.png)\n\n[视觉描述: A diagram.]",
+                2,
+            ),
+            _element(ElementType.PARAGRAPH, "next0 next1 next2 next3 next4", 4),
+        ]
+    )
+
+    derived_chunk = chunks[1]
+    assert derived_chunk.metadata["chunk_role"] == "derived_element"
+    assert derived_chunk.metadata["adjacent_context_prev_tokens"] == 3
+    assert derived_chunk.metadata["adjacent_context_next_tokens"] == 3
+    assert "相邻上下文：prev2 prev3 prev4；next0 next1 next2" in derived_chunk.content
+    assert "prev0" not in derived_chunk.content
+    assert "next3" not in derived_chunk.content
 
 
 def test_candidate_boundary_should_not_generate_derived_chunks_for_code_or_math_blocks():
