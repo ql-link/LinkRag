@@ -4,7 +4,8 @@
 FROM python:3.11-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    TZ=Asia/Shanghai
 # 不设 PIP_NO_CACHE_DIR：配合下方 BuildKit 缓存挂载，让 pip 复用已下载的 wheel
 
 WORKDIR /app
@@ -18,6 +19,7 @@ RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.li
         curl \
         libgl1 \
         libglib2.0-0 \
+        tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # 先只装依赖：用占位 src 满足 setuptools 构建后端，使「依赖层」独立缓存。
