@@ -18,7 +18,6 @@ from src.core.llm.tokenizer import Tokenizer
 from .chunking_engine import ChunkingEngine
 from .embedding_pipeline import ChunkEmbeddingPipeline
 from .pipeline_chunker import StructuredSemanticChunker
-from .rule_chunker import ASTAwareChunker
 from .semantic_chunker import PercentileSemanticChunker
 
 
@@ -116,38 +115,34 @@ def create_lazy_system_embedding_client() -> LazyEmbeddingClient:
     return LazyEmbeddingClient(create_system_embedding_client)
 
 
+def _create_structured_chunking_engine(embedder: Any) -> ChunkingEngine:
+    """使用当前配置创建标准两阶段分片引擎。"""
+    semantic_chunker = PercentileSemanticChunker(
+        embedder=embedder,
+        tokenizer=Tokenizer(),
+        percentile=settings.CHUNKING_SEMANTIC_PERCENTILE,
+        semantic_unit=settings.CHUNKING_SEMANTIC_UNIT,
+        min_chunk_tokens=settings.CHUNKING_MIN_CHUNK_TOKENS,
+        max_chunk_tokens=settings.CHUNKING_MAX_CHUNK_TOKENS,
+        overlap_tokens=settings.CHUNKING_OVERLAP_TOKENS,
+        min_distance_gate=settings.CHUNKING_MIN_DISTANCE_GATE,
+    )
+    chunker = StructuredSemanticChunker(
+        semantic_chunker=semantic_chunker,
+        heading_break_level=settings.CHUNKING_HEADING_BREAK_LEVEL,
+        min_candidate_chunk_tokens=settings.CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS,
+    )
+    return ChunkingEngine(chunker=chunker)
+
+
 def create_chunking_engine() -> ChunkingEngine:
     """按配置构建 Markdown 分块引擎。
 
-    高级语义分块初始化失败时降级为规则分块，保持解析主链路可用。
+    当前分片主路径固定使用 ``StructuredSemanticChunker``，不再保留旧版规则分片
+    fallback。Embedding 配置异常应向上暴露，由解析任务编排层收敛为明确失败，
+    而不是静默切换到另一套分片语义。
     """
-    if not settings.CHUNKING_ENABLE_ADVANCED_PIPELINE:
-        return ChunkingEngine(chunker=ASTAwareChunker())
-
-    try:
-        embedder = create_system_embedding_client()
-        semantic_chunker = PercentileSemanticChunker(
-            embedder=embedder,
-            tokenizer=Tokenizer(),
-            percentile=settings.CHUNKING_SEMANTIC_PERCENTILE,
-            semantic_unit=settings.CHUNKING_SEMANTIC_UNIT,
-            min_chunk_tokens=settings.CHUNKING_MIN_CHUNK_TOKENS,
-            max_chunk_tokens=settings.CHUNKING_MAX_CHUNK_TOKENS,
-            overlap_tokens=settings.CHUNKING_OVERLAP_TOKENS,
-            min_distance_gate=settings.CHUNKING_MIN_DISTANCE_GATE,
-        )
-        chunker = StructuredSemanticChunker(
-            semantic_chunker=semantic_chunker,
-            heading_break_level=settings.CHUNKING_HEADING_BREAK_LEVEL,
-            min_candidate_chunk_tokens=settings.CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS,
-        )
-        return ChunkingEngine(chunker=chunker)
-    except Exception as exc:
-        logger.warning(
-            "[splitter.factory] advanced chunking init failed, fallback to rule chunking: {}",
-            exc,
-        )
-        return ChunkingEngine(chunker=ASTAwareChunker())
+    return _create_structured_chunking_engine(create_system_embedding_client())
 
 
 # DashScope text-embedding-* 系列单次 /embeddings 请求的 input 条数上限。
@@ -211,20 +206,21 @@ def _resolve_embed_batch_size(
 def create_chunk_embedding_pipeline() -> ChunkEmbeddingPipeline:
     """按配置构建 chunk embedding pipeline。
 
-    内部固定使用 ASTAwareChunker，因为 embedding pipeline 仅承担向量化阶段，
-    更精细的分块策略由独立的 ``create_chunking_engine`` 负责。
+    分片阶段与向量化阶段复用同一个系统级 embedding 客户端包装器，确保最终写入路径
+    与主分片策略一致。
 
     batch_size 会根据 provider / model 的已知单次请求上限自动 cap，
     避免因配置值超限导致 DashScope 等 provider 返回 400。
     """
+    embedder = create_lazy_system_embedding_client()
     batch_size = _resolve_embed_batch_size(
         provider_type=settings.SYSTEM_LLM_PROVIDER,
         model_name=settings.SYSTEM_LLM_MODEL_EMBEDDING,
         configured_batch_size=settings.CHUNK_INDEX_EMBED_BATCH_SIZE,
     )
     return ChunkEmbeddingPipeline(
-        chunking_engine=ChunkingEngine(chunker=ASTAwareChunker()),
-        embedder=create_lazy_system_embedding_client(),
+        chunking_engine=_create_structured_chunking_engine(embedder),
+        embedder=embedder,
         embedding_model=settings.SYSTEM_LLM_MODEL_EMBEDDING,
         batch_size=batch_size,
     )
@@ -312,7 +308,7 @@ async def aresolve_user_chunk_embedding_pipeline(user_id: int) -> ChunkEmbedding
         configured_batch_size=settings.CHUNK_INDEX_EMBED_BATCH_SIZE,
     )
     return ChunkEmbeddingPipeline(
-        chunking_engine=ChunkingEngine(chunker=ASTAwareChunker()),
+        chunking_engine=_create_structured_chunking_engine(embedder),
         embedder=embedder,
         embedding_model=model_name,
         batch_size=batch_size,

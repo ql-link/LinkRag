@@ -146,7 +146,6 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── embedding_pipeline.py
 │   │   │   ├── models.py
 │   │   │   ├── pipeline_chunker.py
-│   │   │   ├── rule_chunker.py
 │   │   │   └── semantic_chunker.py
 │   │   ├── chunk_fact_storage/   # Chunk SQL 事实存储
 │   │   │   ├── constants.py
