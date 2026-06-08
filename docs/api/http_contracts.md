@@ -102,7 +102,7 @@
 
 | 消息 | Topic/Name | 说明 |
 | --- | --- | --- |
-| ParseTask | `tolink-document-pares` | Java/Python 解析任务输入 |
+| ParseTask | `tolink.rag.parse_task` | Java/Python 解析任务输入 |
 | ParseResult | `tolink.rag.parse_result` | Python 解析终态通知 Java |
 | CacheSync | `tolink.rag.cache_sync` | 缓存同步 |
 | UsageReport | `tolink.rag.usage_report` | 用量上报 |
@@ -249,7 +249,7 @@ data: {"answer": "<完整答案>", "hits": [...], "failed_sources": []}
 `hits` 按 `fused_score` 降序，长度 ≤ `RECALL_RESULT_LIMIT`，`scores` 键集合等于已装配召回路；
 `failed_sources` 表达「降级成功」（如 bm25 成功、sparse 失败），空列表表示无失败路。失败终态
 `error` 发送后关闭流，`message` 不含内部堆栈。错误码见
-[error_codes.md](error_codes.md#6-对外直连-recall-错误码)。
+[error_codes.md §5](error_codes.md#5-recall-错误码对外直连-sse)。
 
 > CORS：本端点暴露给浏览器，生产环境必须把 `CORS_ORIGINS` 收敛为前端可信域名清单
 > （不可用 `*`）。

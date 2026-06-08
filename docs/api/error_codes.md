@@ -54,7 +54,7 @@ CODE: 中文业务原因；底层详情
 {
   "task_id": "...",
   "original_file_id": 10001,
-  "document_parse_task_id": 10002,
+  "document_parsed_log_id": 10002,
   "dataset_id": 10003,
   "user_id": 10002,
   "task_status": "failed",
@@ -126,6 +126,7 @@ CODE: 中文业务原因；底层详情
 | --- | --- |
 | `RecallValidationError` | 召回入参非法（query 空白 / user_id 非正 / top_k 非正）|
 | `RecallError` | 严格模式任一路失败，或宽松模式全路失败 |
+| `RecallFatalError` | `RecallError` 子类；前置必备条件缺失（当前唯一来源：发起用户无默认 EMBEDDING 配置）时**绕过宽松降级**强制整请求失败，映射为 `RECALL_EMBEDDING_CONFIG_MISSING` |
 
 ## 5. Recall 错误码（对外直连 SSE）
 

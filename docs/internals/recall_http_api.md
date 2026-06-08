@@ -1,8 +1,8 @@
 # 召回 HTTP API（对外直连 SSE）
 
 本文描述 Python 侧的**多路召回 SSE 运行时**：暴露面、会话鉴权、请求装配与降级语义。
-对外契约见 [docs/api/http_contracts.md §6](../api/http_contracts.md#6-recall-api)；
-错误码见 [docs/api/error_codes.md §6](../api/error_codes.md#6-对外直连-recall-错误码)；
+对外契约见 [docs/api/http_contracts.md §6](../api/http_contracts.md#6-recall-api对外直连-sse)；
+错误码见 [docs/api/error_codes.md §5](../api/error_codes.md#5-recall-错误码对外直连-sse)；
 配置见 [docs/ops/configure.md](../ops/configure.md#对外直连召回-sse-配置)；召回 pipeline 编排见
 [recall_pipeline.md](recall_pipeline.md)。
 

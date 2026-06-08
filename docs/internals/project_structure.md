@@ -83,8 +83,7 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── llm.py
 │   │   │   ├── mq.py
 │   │   │   ├── parse.py
-│   │   │   ├── recall.py          # 召回 HTTP 入口
-│   │   │   └── recall_direct.py   # 直连召回入口
+│   │   │   └── recall_direct.py   # 对外直连召回 SSE 入口（内部召回网关 recall.py 已随 LINK-122 删除）
 │   │   └── schemas/              # HTTP 请求/响应模型
 │   │       ├── mq.py
 │   │       └── parse.py
@@ -114,7 +113,7 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   │   ├── stages/         # 类化阶段编排（base/context/services + cleaning/chunking/
 │   │   │   │   │                   #   vectorizing/sparse_vectorizing/pretokenize/es_indexing）
 │   │   │   │   └── post_process/   # 文件级后处理状态机（constants/models/repository）
-│   │   │   └── recall/            # 多路召回 Pipeline（pipeline/models/protocols/fusion/exceptions）
+│   │   │   └── recall/            # 多路召回 Pipeline（pipeline/models/protocols/fusion/exceptions）+ generation.py（召回后正文回填/上下文拼装）
 │   │   ├── preprocessor/         # ES 预分词：RAGFlow 分词 → FilePostIndexPlan
 │   │   │   ├── service.py         # Preprocessor：读 chunk 构建预分词计划
 │   │   │   ├── ragflow_tokenizer.py # RagFlowTokenizer 适配
@@ -128,7 +127,8 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── deploy_bge_m3.py   # 本地模型部署/冒烟脚本
 │   │   │   └── constants.py / models.py / exceptions.py
 │   │   ├── prompts/              # LLM 提示词模板
-│   │   │   └── markdown_enhancement.py
+│   │   │   ├── markdown_enhancement.py
+│   │   │   └── rag_generation.py   # 召回生成阶段提示词
 │   │   ├── markdown_parser/      # Markdown 解析与增强编排
 │   │   │   ├── image_extractor.py
 │   │   │   ├── llm_integration.py
@@ -180,11 +180,16 @@ toLink-Rag/                         # 仓库根目录
 │   │   │       └── word_parser.py
 │   │   ├── splitter/             # 文本切分与嵌入流水线
 │   │   │   ├── base.py
+│   │   │   ├── factory.py          # create_chunking_engine 等装配入口
 │   │   │   ├── chunking_engine.py
+│   │   │   ├── candidate_boundary_chunker.py # 第一阶段结构候选边界粗分片
+│   │   │   ├── element_derived_chunker.py    # 标题路径跟踪 + 图片/表格 derived chunk
+│   │   │   ├── oversized_chunk_refiner.py     # 第二阶段超长 chunk 细分
+│   │   │   ├── overlap.py          # 相邻 chunk 上下文 overlap
+│   │   │   ├── semantic_chunker.py
+│   │   │   ├── pipeline_chunker.py # StructuredSemanticChunker：串联候选边界/细分/overlap
 │   │   │   ├── embedding_pipeline.py
-│   │   │   ├── models.py
-│   │   │   ├── pipeline_chunker.py
-│   │   │   └── semantic_chunker.py
+│   │   │   └── models.py
 │   │   ├── chunk_fact_storage/   # Chunk SQL 事实存储
 │   │   │   ├── constants.py
 │   │   │   ├── exceptions.py
@@ -210,6 +215,7 @@ toLink-Rag/                         # 仓库根目录
 │   │   └── vector_storage/       # 向量存储编排层
 │   │       ├── compensation_pipeline.py
 │   │       ├── constants.py
+│   │       ├── dense_retriever.py  # 召回 Pipeline 的 dense 路适配器（DenseRetriever）
 │   │       ├── draft_factory.py
 │   │       ├── exceptions.py
 │   │       ├── facade.py

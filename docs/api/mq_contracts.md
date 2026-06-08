@@ -11,8 +11,7 @@ Java 管理端                          toLink-Rag (Python)
     │                                      │
     │  ① 投递解析任务 (ParseTaskMessage)   │
     ├─────────────────────────────────────►│
-    │      topic: PARSE_TASK_TOPIC         │
-    │      默认 tolink-document-pares      │
+    │      topic: tolink.rag.parse_task    │
     │                                      │
     │                                      │  ② 异步处理：
     │                                      │     解析 → 分片 → 向量化 → 索引
@@ -23,14 +22,14 @@ Java 管理端                          toLink-Rag (Python)
     │      默认 tolink.rag.parse_result    │
 ```
 
-Topic 名称由 toLink-Rag 的 `.env` 配置决定，业务方对接前需要从 toLink-Rag 部署侧获取实际值。
+收发 topic 名由消息类的 `MQ_NAME` 常量固定（见 [src/core/mq/messages](../../src/core/mq/messages)），不随 `.env` 改变；环境变量 `PARSE_TASK_TOPIC` / `PARSE_RESULT_TOPIC` 仅用于 Kafka topic 的自动创建（`topic_admin`），不影响实际投递/订阅的 topic。业务方按下方固定值对接即可。
 
 ## 解析任务投递（Java → Python）
 
 ### Topic
 
-- 配置项：`PARSE_TASK_TOPIC`
-- 默认值：`tolink-document-pares`（注意是 `pares`，历史遗留拼写）
+- 实际收发 topic：`tolink.rag.parse_task`（由 `ParseTaskMessage.MQ_NAME` 固定）
+- 环境变量 `PARSE_TASK_TOPIC` 仅用于 Kafka topic 自动创建，默认值同样是 `tolink.rag.parse_task`；改它不会改变 Python 端实际订阅的 topic
 
 ### 消息体（ParseTaskPayload）
 
@@ -38,7 +37,7 @@ Topic 名称由 toLink-Rag 的 `.env` 配置决定，业务方对接前需要从
 | --- | --- | --- | --- |
 | `task_id` | string | ✅ | 任务唯一 ID（业务方生成的幂等键） |
 | `original_file_id` | int | ✅ | 业务方原始文件表主键 |
-| `document_parse_task_id` | int | ✅ | 业务方文件解析表主键（`document_parse_file.id`） |
+| `document_parse_file_id` | int | ✅ | 业务方文件解析表主键（`document_parse_file.id`）。这是序列化输出的规范字段名；为兼容历史也接受别名 `document_parse_task_id`（任投递其一即可） |
 | `user_id` | int | ✅ | 文件所属用户 |
 | `dataset_id` | int | ✅ | 文件所属数据集 |
 | `file_type` | string | ✅ | 文件格式：`pdf` / `docx` / `html` / ... |
@@ -68,7 +67,7 @@ Topic 名称由 toLink-Rag 的 `.env` 配置决定，业务方对接前需要从
 {
   "task_id": "task-20260516-001",
   "original_file_id": 12345,
-  "document_parse_task_id": 67890,
+  "document_parse_file_id": 67890,
   "user_id": 1001,
   "dataset_id": 2001,
   "file_type": "pdf",
@@ -90,7 +89,7 @@ Topic 名称由 toLink-Rag 的 `.env` 配置决定，业务方对接前需要从
 {
   "task_id": "task-20260527-002",
   "original_file_id": 12345,
-  "document_parse_task_id": 67890,
+  "document_parse_file_id": 67890,
   "user_id": 1001,
   "dataset_id": 2001,
   "file_type": "pdf",

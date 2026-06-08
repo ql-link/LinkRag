@@ -21,7 +21,7 @@
 - 跨路原始分数归一化。
 - reranker 精排、上下文拼装、答案生成。
 
-这些能力归属各路 Retriever 自己或下游 RAG 阶段。
+这些能力归属各路 Retriever 自己或下游 RAG 阶段。其中"召回后生成准备"（按 chunk_id 回填 MySQL 正文、按 token 预算拼装上下文）由同包的 `generation.py` 承担，它独立于 `RecallPipeline`、不属于召回编排本身；`generation.py` 同样不调用 LLM，最终生成调用在 runtime 编排层。
 
 ---
 
@@ -34,7 +34,8 @@ src/core/pipeline/recall/
 ├── models.py         # RecallRequest / RetrieverHit / RecallHit / RecallResponse / Config
 ├── protocols.py      # Retriever 协议 + SOURCE_DENSE / SOURCE_SPARSE / SOURCE_BM25
 ├── fusion.py         # RRF 粗融合
-└── exceptions.py     # RecallError / RecallValidationError
+├── generation.py     # 召回后生成准备：正文回填 + 按 token 预算拼装上下文（独立于 RecallPipeline，见 §1 说明）
+└── exceptions.py     # RecallError / RecallValidationError / RecallFatalError
 ```
 
 当前适配器示例：
@@ -144,9 +145,12 @@ class Retriever(Protocol):
 | 宽松模式，部分路失败 | 继续融合成功路；失败 source 写入 `failed_sources` |
 | 宽松模式，全部路失败 | 抛 `RecallError` |
 | 严格模式，任一路失败 | 抛 `RecallError` |
+| 任一路抛 `RecallFatalError`（前置必备条件缺失） | **绕过宽松降级**，`_check_failures` 立即重抛，由路由映射为明确错误码 |
 | 某路合法返回空列表 | 不算失败；该路 `per_source_counts[source] = 0` |
 
 `per_source_counts` 的键集合等于已装配的全部 source。失败路与返回空列表的路都计 0；二者通过 `failed_sources` 区分。
+
+`RecallFatalError`（`RecallError` 子类）是宽松模式的例外：当前唯一来源是发起用户无默认 EMBEDDING 配置、dense 路无法编码 query——此时即便宽松模式也不能"降级为其余路继续"，否则会静默返回不完整结果。由 `DenseRetriever` 捕获 `VectorRetrievalUserConfigMissingError` 后抛出（见 [dense_retriever](../../src/core/vector_storage/dense_retriever.py)）。
 
 ---
 

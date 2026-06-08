@@ -702,7 +702,7 @@ ordered = [
 
 | 调用方 | 鬼影 hit 责任归属 |
 | --- | --- |
-| SSE API → Java Recall Gateway → chunk-content-fetch | **Java 侧**按 lifecycle_status 过滤；本期 Python 不实现 |
+| 对外直连 SSE 召回（`recall_direct.py` → 召回 Pipeline → `generation.fetch_chunk_contents`） | **Python 侧**：`fetch_chunk_contents` 反查 MySQL 时已强制 `lifecycle_status == ACTIVE`，鬼影 hit 在正文回填阶段被剔除（见 [generation.py](../../src/core/pipeline/recall/generation.py)）。〔历史：LINK-122 前曾走 Java Recall Gateway 由 Java 侧过滤，该内部网关链路已删除〕 |
 | 内部 Python 直调（调试脚本 / 内部 service / 评测 harness） | **caller 侧**按上面模式自行处理 |
 | 未来 hybrid 融合 reranker | hybrid issue 中实现，在 RRF 融合后一次性反查 MySQL + lifecycle 过滤 |
 
