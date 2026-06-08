@@ -78,7 +78,9 @@ class DeepSeekClient:
                 )
             elif response.status_code >= 500:
                 if retry_count < self.max_retries:
-                    await self._post(endpoint, json, retry_count + 1)
+                    # 必须 return：否则重试结果被丢弃，控制流落到下方 response.raise_for_status()
+                    # 对原始 5xx 抛错，把可恢复的 5xx 变成硬失败。
+                    return await self._post(endpoint, json, retry_count + 1)
                 else:
                     raise ProviderConnectionError(
                         message=f"DeepSeek API error: {response.status_code}",
