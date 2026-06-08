@@ -130,7 +130,7 @@ class Settings(BaseSettings):
     MARKDOWN_PARSER_LLM_TIMEOUT_MS: int = 60000
     MARKDOWN_PARSER_VISION_CONCURRENCY: int = 24
     CHUNKING_ENABLE_ADVANCED_PIPELINE: bool = True
-    CHUNKING_HEADING_BREAK_LEVEL: int = 3
+    CHUNKING_HEADING_BREAK_LEVEL: int = 5
     CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS: int = 128
     CHUNKING_SEMANTIC_PERCENTILE: float = 95.0
     CHUNKING_SEMANTIC_UNIT: str = "sentence"
@@ -158,8 +158,8 @@ class Settings(BaseSettings):
     @field_validator("CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS")
     @classmethod
     def validate_chunking_min_candidate_chunk_tokens(cls, v: int) -> int:
-        if v <= 0:
-            raise ValueError("CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS must be positive")
+        if v < 128 or v > 256:
+            raise ValueError("CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS must be between 128 and 256")
         return v
 
     # ==========================================
