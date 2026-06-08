@@ -42,10 +42,19 @@ def test_should_reject_invalid_chunking_overlap_tokens():
             raise AssertionError("expected ValueError")
 
 
+def test_should_allow_min_candidate_chunk_token_bounds():
+    lower_bound = Settings(_env_file=None, CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS=128)
+    upper_bound = Settings(_env_file=None, CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS=256)
+
+    assert lower_bound.CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS == 128
+    assert upper_bound.CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS == 256
+
+
 def test_should_reject_invalid_min_candidate_chunk_tokens():
-    try:
-        Settings(_env_file=None, CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS=0)
-    except ValueError as exc:
-        assert "CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS must be positive" in str(exc)
-    else:
-        raise AssertionError("expected ValueError")
+    for value in (127, 257):
+        try:
+            Settings(_env_file=None, CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS=value)
+        except ValueError as exc:
+            assert "CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS must be between 128 and 256" in str(exc)
+        else:
+            raise AssertionError("expected ValueError")

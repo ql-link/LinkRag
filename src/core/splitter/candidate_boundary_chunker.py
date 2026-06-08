@@ -46,6 +46,7 @@ class CandidateBoundaryChunker(BaseChunker):
     """
 
     NOISE_TYPES = frozenset([ElementType.FRONT_MATTER, ElementType.HORIZONTAL_RULE])
+    MAX_DYNAMIC_HEADING_LEVEL = 5
     PROTECTED_TYPES = frozenset(
         [
             ElementType.CODE_BLOCK,
@@ -59,7 +60,7 @@ class CandidateBoundaryChunker(BaseChunker):
         self,
         tokenizer: Tokenizer,
         min_candidate_chunk_tokens: int = 128,
-        heading_break_level: int = 3,
+        heading_break_level: int = 5,
         overlapper: ChunkOverlapper | None = None,
     ) -> None:
         """
@@ -82,6 +83,10 @@ class CandidateBoundaryChunker(BaseChunker):
         self.tokenizer = tokenizer
         self.min_candidate_chunk_tokens = min_candidate_chunk_tokens
         self.heading_break_level = heading_break_level
+        self.dynamic_heading_break_level = min(
+            heading_break_level,
+            self.MAX_DYNAMIC_HEADING_LEVEL,
+        )
         self.overlapper = overlapper or ChunkOverlapper(
             tokenizer=tokenizer,
             config=ChunkOverlapConfig(tokens=64),
@@ -137,11 +142,100 @@ class CandidateBoundaryChunker(BaseChunker):
         """
         return bool(elements) and all(element.type == ElementType.HEADING for element in elements)
 
+    def _heading_level(self, element: MarkdownElement) -> int | None:
+        """
+            解析参与动态边界保护的标题层级。
+
+        Args:
+            element: 待检查的 Markdown 元素。
+
+        Returns:
+            int | None: 1 到动态上限内的标题层级；非受保护标题返回 None。
+        """
+        if element.type != ElementType.HEADING:
+            return None
+
+        try:
+            level = int(element.metadata.get("heading_level", 1) or 1)
+        except (TypeError, ValueError):
+            return None
+
+        if level < 1 or level > self.dynamic_heading_break_level:
+            return None
+        return level
+
+    def _deepest_heading_level(self, elements: list[MarkdownElement]) -> int | None:
+        """
+            计算当前文档中参与动态保护的最深标题层级。
+
+        Args:
+            elements: 已过滤噪声元素后的可见元素列表。
+
+        Returns:
+            int | None: 文档最深标题层级；无受保护标题时返回 None。
+        """
+        levels = [
+            level for element in elements if (level := self._heading_level(element)) is not None
+        ]
+        return max(levels) if levels else None
+
+    def _last_heading_level(self, elements: list[MarkdownElement]) -> int | None:
+        """
+            查找当前 buffer 内最后一个参与动态保护的标题层级。
+
+        Args:
+            elements: 当前 buffer 内的元素。
+
+        Returns:
+            int | None: 最后一个受保护标题层级；不存在时返回 None。
+        """
+        for element in reversed(elements):
+            level = self._heading_level(element)
+            if level is not None:
+                return level
+        return None
+
+    def _is_dynamic_heading_boundary(
+        self,
+        *,
+        next_heading: MarkdownElement,
+        buffer_elements: list[MarkdownElement],
+        deepest_heading_level: int | None,
+    ) -> bool:
+        """
+            判断未达 token 软下限时是否应因标题层级切换提前 flush。
+
+        Args:
+            next_heading: 即将进入 buffer 的标题元素。
+            buffer_elements: 当前 buffer 内的元素。
+            deepest_heading_level: 当前文档参与动态保护的最深标题层级。
+
+        Returns:
+            bool: 遇到非最深叶子同级或上级标题切换时返回 True。
+        """
+        if deepest_heading_level is None:
+            return False
+
+        next_level = self._heading_level(next_heading)
+        if next_level is None:
+            return False
+
+        last_level = self._last_heading_level(buffer_elements)
+        if last_level is None:
+            return False
+
+        if next_level > last_level:
+            return False
+
+        same_deepest_leaf = next_level == last_level == deepest_heading_level
+        return not same_deepest_leaf
+
     def _should_flush_before(
         self,
         element: MarkdownElement,
         buffer_elements: list[MarkdownElement],
         buffer_token_count: int,
+        deepest_heading_level: int | None,
     ) -> bool:
         """
             判断当前元素之前是否应输出 buffer。
@@ -150,15 +244,24 @@ class CandidateBoundaryChunker(BaseChunker):
             element: 即将进入 buffer 的元素。
             buffer_elements: 当前 buffer 内的元素。
             buffer_token_count: 当前 buffer 的 token 数。
+            deepest_heading_level: 当前文档参与动态保护的最深标题层级。
 
         Returns:
-            bool: 达到软下限且下一个元素是标题边界时返回 True。
+            bool: 达到软下限或触发动态标题层级保护时返回 True。
         """
-        return (
-            bool(buffer_elements)
-            and buffer_token_count >= self.min_candidate_chunk_tokens
-            and element.type == ElementType.HEADING
-            and not self._is_heading_only(buffer_elements)
+        if not buffer_elements or element.type != ElementType.HEADING:
+            return False
+
+        if self._is_heading_only(buffer_elements):
+            return False
+
+        if buffer_token_count >= self.min_candidate_chunk_tokens:
+            return True
+
+        return self._is_dynamic_heading_boundary(
+            next_heading=element,
+            buffer_elements=buffer_elements,
+            deepest_heading_level=deepest_heading_level,
         )
 
     def _merge_trailing_heading_chunk(self, bundles: list[_ChunkBundle]) -> None:
@@ -328,8 +431,14 @@ class CandidateBoundaryChunker(BaseChunker):
             buffer_token_count = 0
 
         visible_elements = [element for element in elements if element.type not in self.NOISE_TYPES]
+        deepest_heading_level = self._deepest_heading_level(visible_elements)
         for element_index, element in enumerate(visible_elements):
-            if self._should_flush_before(element, buffer_elements, buffer_token_count):
+            if self._should_flush_before(
+                element,
+                buffer_elements,
+                buffer_token_count,
+                deepest_heading_level,
+            ):
                 flush_buffer()
 
             heading_tracker.observe(element)

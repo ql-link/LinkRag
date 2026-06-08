@@ -83,8 +83,8 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── llm.py
 │   │   │   ├── mq.py
 │   │   │   ├── parse.py
-│   │   │   ├── recall.py          # 召回 HTTP 入口
-│   │   │   └── recall_direct.py   # 直连召回入口
+│   │   │   ├── rag.py             # 对外 RAG 问答流 SSE 入口
+│   │   │   └── recall.py          # 对外纯召回 JSON 入口
 │   │   └── schemas/              # HTTP 请求/响应模型
 │   │       ├── mq.py
 │   │       └── parse.py
@@ -184,7 +184,6 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── embedding_pipeline.py
 │   │   │   ├── models.py
 │   │   │   ├── pipeline_chunker.py
-│   │   │   ├── rule_chunker.py
 │   │   │   └── semantic_chunker.py
 │   │   ├── chunk_fact_storage/   # Chunk SQL 事实存储
 │   │   │   ├── constants.py

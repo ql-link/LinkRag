@@ -75,19 +75,9 @@ class Settings(BaseSettings):
     )
 
     # ==========================================
-    # 内部召回 API 配置 (Internal Recall API)
+    # 召回执行配置 (Recall Pipeline)
     # ==========================================
-    # 外部用户态 Recall API 归属 Java；Python 只暴露内部 recall runtime，
-    # 校验 Java 签发的短期内部 JWT(HS256)。详见 docs/internals/recall.md。
-    RECALL_INTERNAL_AUTH_ENABLED: bool = True
-    RECALL_INTERNAL_JWT_ISSUER: str = "tolink-java"
-    RECALL_INTERNAL_JWT_AUDIENCE: str = "tolink-rag"
-    RECALL_INTERNAL_JWT_SCOPE: str = "recall:execute"
-    # HS256 共享密钥：Java 签发端与 Python 验签端必须一致。
-    # 默认值仅用于本地联调，生产必须通过环境变量 / 密钥管理系统覆盖。
-    RECALL_INTERNAL_JWT_SECRET: str = (
-        "9780df1524906ac133898a8cc74280c512f0334d32d795786c021059ec09b5da"
-    )
+    # 召回融合 pipeline 的通用执行参数，两条召回链路共用。
     # 单次召回最大执行时间（毫秒）；超过即以 SSE error RECALL_TIMEOUT 终止。
     RECALL_STREAM_TIMEOUT_MS: int = 60000
     # pipeline 严格模式默认值：False=宽松，允许单路失败降级。
@@ -101,18 +91,18 @@ class Settings(BaseSettings):
     RECALL_ENABLED_SOURCES: str = "bm25,sparse,dense"
 
     # ==========================================
-    # 对外直连召回 SSE 配置 (Recall Direct SSE / LINK-40)
+    # 对外会话鉴权配置 (RAG 流 / 纯召回 JSON / LINK-40, LINK-131)
     # ==========================================
-    # 前端凭 Java 签发的短期 session token 直连 Python `POST /api/v1/recall/stream`。
-    # 与内部端点(RECALL_INTERNAL_*)的核心差异：面向浏览器、密钥独立、受众独立。
-    # 详见 docs/internals/recall_http_api.md「对外直连 SSE」。
+    # 前端凭 Java 签发的短期 session token 直连 Python 对外端点
+    # `POST /api/v1/rag/stream`（RAG 问答流）与 `POST /api/v1/recall`（纯召回 JSON）。
+    # 详见 docs/internals/recall_http_api.md。
     RECALL_SESSION_AUTH_ENABLED: bool = True
     RECALL_SESSION_JWT_ISSUER: str = "tolink-java"
-    # 受众与内部端点(tolink-rag)区分：前端面凭证独立标识，避免内部 token 误用到对外端点。
+    # 前端面凭证独立受众标识，避免与其他 token 混用。
     RECALL_SESSION_JWT_AUDIENCE: str = "tolink-rag-frontend"
     RECALL_SESSION_JWT_SCOPE: str = "recall:stream"
-    # 独立 HS256 密钥：与 RECALL_INTERNAL_JWT_SECRET 物理隔离，前端面 token 疑似泄露时
-    # 可单独轮转、不牵连 Java 内部调用。默认值仅供本地联调，生产必须用环境变量覆盖。
+    # 独立 HS256 密钥：前端面 token 疑似泄露时可单独轮转。
+    # 默认值仅供本地联调，生产必须用环境变量覆盖。
     RECALL_SESSION_JWT_SECRET: str = (
         "3f8c1d6a90b74e2f8a5c0d1e7b3f9a26c4d8e0f1a2b3c4d5e6f7081929a3b4c5d"
     )
@@ -142,7 +132,10 @@ class Settings(BaseSettings):
 
     SYSTEM_LLM_MODEL_CHAT: str = "qwen3.5-flash"
     SYSTEM_LLM_MODEL_EMBEDDING: str = "text-embedding-v4"
-    SYSTEM_LLM_MODEL_RERANK: Optional[str] = "qwen3-vl-rerank"
+    # RERANK 不走系统兜底：必须由用户在 RERANK 能力配置里显式指定 provider + rerank 模型
+    # （如硅基流动 BAAI/bge-reranker-v2-m3）。置空后 get_system_fallback_config_by_capability("RERANK")
+    # 返回 None，召回链路 allow_system_fallback=False 时即抛 UserModelConfigMissingError（必配不兜底）。
+    SYSTEM_LLM_MODEL_RERANK: Optional[str] = None
     SYSTEM_LLM_MODEL_VISION: Optional[str] = None
     MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT: bool = True
     MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT: bool = True
@@ -150,8 +143,7 @@ class Settings(BaseSettings):
     MARKDOWN_PARSER_VISION_MODEL: Optional[str] = None
     MARKDOWN_PARSER_LLM_TIMEOUT_MS: int = 60000
     MARKDOWN_PARSER_VISION_CONCURRENCY: int = 24
-    CHUNKING_ENABLE_ADVANCED_PIPELINE: bool = True
-    CHUNKING_HEADING_BREAK_LEVEL: int = 3
+    CHUNKING_HEADING_BREAK_LEVEL: int = 5
     CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS: int = 128
     CHUNKING_SEMANTIC_PERCENTILE: float = 95.0
     CHUNKING_SEMANTIC_UNIT: str = "sentence"
@@ -179,8 +171,8 @@ class Settings(BaseSettings):
     @field_validator("CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS")
     @classmethod
     def validate_chunking_min_candidate_chunk_tokens(cls, v: int) -> int:
-        if v <= 0:
-            raise ValueError("CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS must be positive")
+        if v < 128 or v > 256:
+            raise ValueError("CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS must be between 128 and 256")
         return v
 
     # ==========================================

@@ -94,18 +94,18 @@ async def test_defective_token_rejected(overrides):
 
 
 @pytest.mark.asyncio
-async def test_internal_secret_token_rejected():
-    """用内部端点密钥+scope 签发的 token 必须被对外端点拒绝（密钥隔离）。"""
+async def test_foreign_secret_token_rejected():
+    """用其它密钥签发、claims 全对的 token 必须被对外端点拒绝（密钥隔离）。"""
     token = jwt.encode(
         {
-            "iss": settings.RECALL_INTERNAL_JWT_ISSUER,
-            "aud": settings.RECALL_INTERNAL_JWT_AUDIENCE,
-            "scope": settings.RECALL_INTERNAL_JWT_SCOPE,
+            "iss": settings.RECALL_SESSION_JWT_ISSUER,
+            "aud": settings.RECALL_SESSION_JWT_AUDIENCE,
+            "scope": settings.RECALL_SESSION_JWT_SCOPE,
             "sub": "123",
             "dataset_ids": [1],
             "exp": int(time.time()) + 300,
         },
-        settings.RECALL_INTERNAL_JWT_SECRET,
+        "some-other-service-secret-not-the-session-key",
         algorithm="HS256",
     )
     with pytest.raises(RecallApiError) as exc:

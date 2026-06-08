@@ -53,7 +53,6 @@
 | `MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT` | `true` | 是否启用表格 LLM 增强 |
 | `MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT` | `true` | 是否启用图片 LLM 增强 |
 | `MARKDOWN_PARSER_VISION_CONCURRENCY` | `24` | 图片视觉增强最大并发数，可降为 `16` / `8` / `1` 控制限流风险 |
-| `CHUNKING_ENABLE_ADVANCED_PIPELINE` | `true` | 是否启用进阶分块流水线 |
 
 > 注：ES 入库失败即终态，无 ES 内部自动重试配置。原 `ES_INDEXING_MAX_RETRY` 已移除（用户侧重试由 `document_parse_pipeline.retry_count` 记录，触发路径待后续需求接线）。
 
@@ -129,11 +128,11 @@ logs/
 
 | 变量 | 默认 | 调整方向 |
 | --- | --- | --- |
-| `CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` | 128 | 第一阶段候选边界粗分片软下限，调大可减少短 chunk |
+| `CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` | 128 | 第一阶段候选边界粗分片软下限，范围 `128..256`；调大可减少短 chunk |
 | `CHUNKING_MIN_CHUNK_TOKENS` | 150 | 短文档可减小 |
 | `CHUNKING_MAX_CHUNK_TOKENS` | 512 | 长上下文模型可加大 |
 | `CHUNKING_OVERLAP_TOKENS` | 64 | overlap token 数，范围 `0..64`；`0` 表示关闭 |
-| `CHUNKING_HEADING_BREAK_LEVEL` | 3 | 提升结构敏感性时减小 |
+| `CHUNKING_HEADING_BREAK_LEVEL` | 5 | heading trail 与动态标题边界保护的最大层级；最多保护到 5 级 |
 | `CHUNKING_SEMANTIC_PERCENTILE` | 95 | 调整语义边界严格度 |
 | `CHUNKING_SEMANTIC_UNIT` | `sentence` | 语义相似度计算粒度：`sentence` / `paragraph` |
 | `CHUNKING_EMBED_BATCH_SIZE` | 32 | 受向量服务并发上限约束 |
@@ -182,19 +181,14 @@ logs/
 
 不再提供 `SPARSE_VECTOR_USE_FP16` 配置。推理精度只由 `SPARSE_VECTOR_DEVICE` 决定：CPU 使用 fp32，CUDA 使用 fp16。
 
-## 内部召回 API 配置
+## 召回执行配置
 
-内部多路召回 SSE 接口 `POST /api/v1/internal/recall/stream` 的配置。详见
+召回融合 pipeline 的通用执行参数（RAG 问答流与纯召回 JSON 两端点共用）。详见
 [docs/internals/recall_http_api.md](../internals/recall_http_api.md)。
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `RECALL_INTERNAL_AUTH_ENABLED` | `true` | 是否启用内部 JWT 校验；**生产必须为 true** |
-| `RECALL_INTERNAL_JWT_ISSUER` | `tolink-java` | 期望的 JWT `iss` |
-| `RECALL_INTERNAL_JWT_AUDIENCE` | `tolink-rag` | 期望的 JWT `aud` |
-| `RECALL_INTERNAL_JWT_SCOPE` | `recall:execute` | 期望的 JWT `scope` |
-| `RECALL_INTERNAL_JWT_SECRET` | 本地联调占位值 | HS256 共享密钥；Java 签发端与 Python 验签端必须一致，**生产务必用环境变量覆盖为强随机值** |
-| `RECALL_STREAM_TIMEOUT_MS` | `60000` | 单次召回最大执行时间（毫秒）；超时以 SSE `error` RECALL_TIMEOUT 终止 |
+| `RECALL_STREAM_TIMEOUT_MS` | `60000` | 单次召回最大执行时间（毫秒）；超时 RAG 流以 SSE `error` RECALL_TIMEOUT 终止，纯召回 JSON 返回 `504` RECALL_TIMEOUT |
 | `RECALL_STRICT_DEFAULT` | `false` | pipeline 严格模式默认；false=宽松，允许单路失败降级 |
 | `RECALL_RESULT_LIMIT` | `20` | 服务端固定返回候选上限（同时作为各路执行期 `top_k`）|
 | `RECALL_ENABLED_SOURCES` | `bm25,sparse,dense` | 启用的召回路（逗号分隔）。本期默认开启三路；运维侧可显式 set `bm25,sparse` 暂时回退到 dev 旧行为；未登记的 source 出现在配置中装配期 `ValueError` |
@@ -202,22 +196,23 @@ logs/
 | `SPARSE_RETRIEVAL_SCORE_THRESHOLD` | `0.0` | sparse 召回默认 score 阈值（0.0 = 不过滤；详见 [vectorization.md §9.4](../internals/vectorization.md)） |
 | `DENSE_RETRIEVAL_TOP_K` | `10` | dense 召回 facade 直调时的兜底 top_k；pipeline 路径下被 `RECALL_RESULT_LIMIT` 覆盖 |
 | `DENSE_RETRIEVAL_SCORE_THRESHOLD` | `0.0` | dense 召回默认 score 阈值（cosine 上界 [0, 1]，0.0 = 不过滤；facade 入口校验 `> 1.0` 早死） |
-| `RECALL_GENERATION_CONTEXT_TOKEN_BUDGET` | `4000` | 召回后 LLM 生成拼装上下文的 token 预算上限；命中片段按融合分数从高到低纳入，累计超预算即截断尾部低分片段（仅对外直连端点的生成阶段生效） |
+| `RECALL_GENERATION_CONTEXT_TOKEN_BUDGET` | `4000` | 召回后 LLM 生成拼装上下文的 token 预算上限；命中片段按融合分数从高到低纳入，累计超预算即截断尾部低分片段（仅 RAG 问答流的生成阶段生效） |
 | `RERANK_DEFAULT_TOP_N` | `8` | 召回后重排模块（LINK-130）输出候选条数兜底默认值；调用方未显式传 `top_n` 时生效。参考 RAGFlow rerank `top_n`（默认 6，本项目放宽到 8） |
 
-### 对外直连召回 SSE 配置（LINK-40）
+### 对外会话鉴权配置（RAG 流 / 纯召回 JSON）
 
-对外直连召回 SSE 接口 `POST /api/v1/recall/stream` 的配置。前端凭 Java 签发的短期
-session token 直连，**独立密钥**与内部端点隔离。详见
+对外端点 `POST /api/v1/rag/stream`（RAG 问答流）与 `POST /api/v1/recall`（纯召回 JSON）的
+会话鉴权配置。前端凭 Java 签发的短期 session token 直连，使用**独立专用密钥**验签。并发限流
+（`RECALL_SESSION_MAX_CONCURRENT`）**仅 RAG 流生效**，纯召回不限流。详见
 [recall_http_api.md](../internals/recall_http_api.md)。
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `RECALL_SESSION_AUTH_ENABLED` | `true` | 是否启用 session token 验签；**生产必须为 true** |
 | `RECALL_SESSION_JWT_ISSUER` | `tolink-java` | 期望的 session JWT `iss` |
-| `RECALL_SESSION_JWT_AUDIENCE` | `tolink-rag-frontend` | 期望的 session JWT `aud`（与内部端点 `tolink-rag` 区分）|
+| `RECALL_SESSION_JWT_AUDIENCE` | `tolink-rag-frontend` | 期望的 session JWT `aud` |
 | `RECALL_SESSION_JWT_SCOPE` | `recall:stream` | 期望的 session JWT `scope` |
-| `RECALL_SESSION_JWT_SECRET` | 本地联调占位值 | **独立** HS256 密钥，与 `RECALL_INTERNAL_JWT_SECRET` 物理隔离、可单独轮转；**生产务必覆盖** |
+| `RECALL_SESSION_JWT_SECRET` | 本地联调占位值 | **独立专用** HS256 密钥，可单独轮转；**生产务必覆盖** |
 | `RECALL_SESSION_MAX_CONCURRENT` | `3` | 单用户最大并发召回流数；token 短期可复用，此为资源滥用主闸门，超限返回 `429` |
 | `CORS_ORIGINS` | `["*"]` | **生产对外环境必须收敛为前端可信域名清单**（不可用 `*`，否则带 `Authorization` 头的跨域预检失败）|
 

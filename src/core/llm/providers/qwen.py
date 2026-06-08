@@ -11,7 +11,8 @@ import httpx
 from src.core.llm.base_provider import BaseProvider
 from src.core.llm.interfaces import CapabilityType
 from src.core.llm.providers._sse import iter_sse_json
-from src.core.llm.response import GenerateResult, StreamChunk, EmbeddingResult, UsageInfo
+from src.core.llm.providers._rerank import standard_rerank
+from src.core.llm.response import GenerateResult, StreamChunk, EmbeddingResult, RerankResult, UsageInfo
 from src.core.llm.exceptions import (
     AuthenticationError,
     RateLimitError,
@@ -229,7 +230,12 @@ class QwenProvider(BaseProvider):
             **kwargs
         )
         self.model_name = model_name or self.DEFAULT_MODEL
-        self._capabilities = {CapabilityType.TEXT, CapabilityType.EMBEDDING, CapabilityType.VISION}
+        self._capabilities = {
+            CapabilityType.TEXT,
+            CapabilityType.EMBEDDING,
+            CapabilityType.RERANK,
+            CapabilityType.VISION,
+        }
         self._client = QwenClient(
             api_key=api_key,
             api_base_url=self.api_base_url,
@@ -351,9 +357,27 @@ class QwenProvider(BaseProvider):
             ),
         )
 
-    async def rerank(self, query, documents, model=None, top_n=None, **kwargs):
-        """千问不支持原生 rerank"""
-        raise NotImplementedError("Qwen does not support rerank, use a dedicated rerank service")
+    async def rerank(
+        self,
+        query: str,
+        documents: List[str],
+        model: Optional[str] = None,
+        top_n: Optional[int] = None,
+        **kwargs,
+    ) -> RerankResult:
+        """语义重排（标准 ``/rerank`` 契约，见 providers/_rerank.py）。
+
+        rerank 模型由 ``model`` 显式指定，缺省回退到构造时的 ``model_name``（用户 RERANK 配置的模型名）。
+        ``top_n=None`` 时不在 provider 侧截断，对全部 ``documents`` 打分。
+        """
+        return await standard_rerank(
+            self._client._post,
+            query=query,
+            documents=documents,
+            model=model or self.model_name,
+            top_n=top_n,
+            **kwargs,
+        )
 
     async def extract_text(self, image_base64, prompt=None, **kwargs):
         """千问不支持原生 OCR"""

@@ -305,6 +305,92 @@ async def test_markdown_parser_to_splitter_should_cover_all_markdown_types_and_g
     assert "### Chunk 0" in artifact_text
 
 
+async def test_markdown_parser_to_splitter_should_keep_level_4_and_5_heading_trails():
+    markdown = """# Root
+
+## Parent
+
+### Group
+
+#### Branch
+
+##### Leaf A
+Leaf A body.
+
+##### Leaf B
+Leaf B body.
+
+| Metric | Value |
+| --- | --- |
+| Recall | Good |
+
+#### Next Branch
+Next branch body.
+"""
+    parser = MarkdownParser()
+    parse_result = parser.parse(markdown, source_file="heading-depth.md")
+    tokenizer = MockWordTokenizer()
+    semantic_chunker = PercentileSemanticChunker(
+        embedder=HybridMockEmbedder(),
+        tokenizer=tokenizer,
+        min_chunk_tokens=1,
+        max_chunk_tokens=512,
+        overlap_tokens=0,
+    )
+    chunker = StructuredSemanticChunker(
+        semantic_chunker=semantic_chunker,
+        heading_break_level=5,
+        min_candidate_chunk_tokens=128,
+    )
+
+    chunks = await chunker.achunk(parse_result.elements)
+
+    mixed_chunks = [
+        chunk for chunk in chunks if chunk.metadata.get("chunk_role") != "derived_element"
+    ]
+    assert len(mixed_chunks) == 2
+
+    first_mixed = mixed_chunks[0]
+    second_mixed = mixed_chunks[1]
+    assert "##### Leaf A" in first_mixed.content
+    assert "##### Leaf B" in first_mixed.content
+    assert "#### Next Branch" not in first_mixed.content
+    assert "Leaf B body." not in second_mixed.content
+    assert second_mixed.content.startswith("#### Next Branch")
+
+    assert first_mixed.metadata["heading_trail"] == [
+        "Root",
+        "Parent",
+        "Group",
+        "Branch",
+        "Leaf B",
+    ]
+    assert ["Root", "Parent", "Group", "Branch", "Leaf A"] in first_mixed.metadata["heading_trails"]
+    assert ["Root", "Parent", "Group", "Branch", "Leaf B"] in first_mixed.metadata["heading_trails"]
+    assert second_mixed.metadata["heading_trail"] == [
+        "Root",
+        "Parent",
+        "Group",
+        "Next Branch",
+    ]
+
+    table_derived_chunk = next(
+        chunk
+        for chunk in chunks
+        if chunk.metadata.get("chunk_role") == "derived_element"
+        and chunk.metadata.get("element_type") == "table"
+    )
+    assert table_derived_chunk.metadata["source_chunk_index"] == first_mixed.metadata["chunk_index"]
+    assert table_derived_chunk.metadata["heading_trail"] == [
+        "Root",
+        "Parent",
+        "Group",
+        "Branch",
+        "Leaf B",
+    ]
+    assert "标题路径：Root / Parent / Group / Branch / Leaf B" in table_derived_chunk.content
+
+
 def _write_visualization(parse_result, embedded_chunks, vision_client, table_client, embedder):
     """Render a markdown artifact that is convenient for manual chunk review."""
     ARTIFACT_PATH.parent.mkdir(parents=True, exist_ok=True)

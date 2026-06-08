@@ -11,6 +11,7 @@ from __future__ import annotations
 import pytest
 
 import src.core.splitter.factory as factory
+from src.core.splitter import StructuredSemanticChunker
 from src.core.splitter.factory import (
     DenseEmbeddingConfigMissingError,
     aresolve_user_chunk_embedding_pipeline,
@@ -133,3 +134,4 @@ async def test_resolve_user_chunk_embedding_pipeline_uses_user_model_and_batch_c
 
     assert pipeline.embedding_model == "text-embedding-v4"
     assert pipeline.batch_size == 10  # 被 provider 已知上限 cap 到 10
+    assert isinstance(pipeline.chunking_engine.chunker, StructuredSemanticChunker)
