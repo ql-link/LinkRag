@@ -24,7 +24,7 @@ from fastapi.responses import JSONResponse
 import uvicorn
 
 from src.config import settings
-from src.api.routes import llm, internal, parse, mq, recall, recall_direct
+from src.api.routes import llm, internal, parse, mq, recall_direct
 from src.api.internal_auth import RecallApiError
 from src.cache.redis_client import redis_client
 from src.database import init_database, close_database
@@ -101,13 +101,12 @@ app.include_router(llm.router)
 app.include_router(internal.router)
 app.include_router(parse.router)  # 挂载文档解析路由
 app.include_router(mq.router)    # 挂载 MQ 消息中台路由
-app.include_router(recall.router)  # 挂载内部多路召回 SSE 路由
 app.include_router(recall_direct.router)  # 挂载对外直连召回 SSE 路由（LINK-40）
 
 
 @app.exception_handler(RecallApiError)
 async def recall_api_error_handler(request: Request, exc: RecallApiError) -> JSONResponse:
-    """内部召回握手前错误统一响应：{code, message, data} + 对应 HTTP 状态。"""
+    """召回握手前错误统一响应：{code, message, data} + 对应 HTTP 状态。"""
     # 握手失败（鉴权 / 入参 / 限流等）记 warning：便于排查对接问题与发现异常调用。
     logger.warning(
         f"召回握手失败 {request.method} {request.url.path}: "

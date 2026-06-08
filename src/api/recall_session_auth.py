@@ -8,8 +8,8 @@
 - ``verify_session_token``：FastAPI 依赖，用**独立密钥**验签 + 校验 iss/aud/scope/exp；
 - ``acquire_stream_slot`` / ``release_stream_slot``：按 ``user_id`` 的并发流计数。
 
-与内部端点（``internal_auth.py``）的关键差异：面向浏览器、密钥/受众独立；token
-**短期可复用**——只校验 ``exp``，不做一次性消费 / 防重放 / 撤销，资源滥用由并发上限封顶。
+面向浏览器、使用独立专用密钥/受众；token **短期可复用**——只校验 ``exp``，不做一次性
+消费 / 防重放 / 撤销，资源滥用由并发上限封顶。
 设计依据见 .specs/recall-direct-sse/{brief,technical_design}.md。
 """
 
@@ -51,7 +51,7 @@ class SessionAuthContext:
 def _extract_session_token(request: Request) -> str:
     """从 ``Authorization: Bearer`` 提取 session token。
 
-    缺失或格式不符抛 ``RECALL_SESSION_UNAUTHORIZED``（区别于内部端点的错误码）。
+    缺失或格式不符抛 ``RECALL_SESSION_UNAUTHORIZED``。
     """
     header = request.headers.get("Authorization")
     if not header or not header.startswith("Bearer "):

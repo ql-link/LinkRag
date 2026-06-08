@@ -1,8 +1,7 @@
 """对外直连多路召回 SSE 流式路由（LINK-40）。
 
-端点：``POST /api/v1/recall/stream``（面向**浏览器前端**，区别于 internal-only 的
-``/api/v1/internal/recall/stream``）。前端凭 Java 签发的短期 session token 直连，绕过
-Java 中转。
+端点：``POST /api/v1/recall/stream``（面向**浏览器前端**）。前端凭 Java 签发的短期
+session token 直连，绕过 Java 中转。
 
 握手顺序（全部在建流前，失败走 HTTP JSON）：
 1. ``verify_session_token`` 依赖：独立密钥验签 + iss/aud/scope/exp；
@@ -10,7 +9,7 @@ Java 中转。
 3. scope：body ``dataset_ids`` 必须是 claims 授权范围子集（省略 = 全量授权范围）；
 4. 并发 acquire：按 ``user_id`` 限并发流数，超限 → 429。
 
-通过后建流，SSE 执行复用 ``recall_stream_runtime``（与内部端点同一实现）。
+通过后建流，SSE 执行复用 ``recall_stream_runtime``。
 身份只取 claims，前端自报一律不信任；``top_k`` / ``sources`` / ``strict`` 由服务端配置控制。
 """
 
