@@ -9,7 +9,6 @@ src/core/splitter/
 ├── base.py                 # 分片器抽象接口
 ├── models.py               # Chunk、EmbeddedChunk、统计模型
 ├── chunking_engine.py      # Markdown 解析与分片编排入口
-├── rule_chunker.py         # 基于 Markdown AST 的规则分片
 ├── candidate_boundary_chunker.py # 基于候选结构边界的粗分片
 ├── element_derived_chunker.py     # 图片/表格 derived chunk 构造与标题路径追踪
 ├── oversized_chunk_refiner.py    # oversized 粗 chunk 二次细分
@@ -32,8 +31,8 @@ ParseTaskPipeline
     -> ChunkRepository.bulk_insert_pending()
 ```
 
-解析任务流水线通过配置构建分片器。`CHUNKING_ENABLE_ADVANCED_PIPELINE=true` 时优先使用
-`StructuredSemanticChunker`，初始化失败时回退到 `ASTAwareChunker`：
+解析任务流水线通过配置构建分片器。当前默认且唯一的主路径是
+`StructuredSemanticChunker`；旧版规则分片已移除，不再提供静默 fallback：
 
 ```text
 ChunkingEngine(chunker=StructuredSemanticChunker(...))
@@ -46,7 +45,6 @@ ChunkingEngine(chunker=StructuredSemanticChunker(...))
 | `Chunk` | `models.py` | 分片输出基础模型，包含内容、行号、metadata |
 | `BaseChunker` | `base.py` | 所有分片策略的统一接口 |
 | `ChunkingEngine` | `chunking_engine.py` | 连接 `MarkdownParser` 和具体 chunker |
-| `ASTAwareChunker` | `rule_chunker.py` | 按标题、表格、图片、代码块等结构规则分片 |
 | `CandidateBoundaryChunker` | `candidate_boundary_chunker.py` | 第一阶段结构候选边界粗分片，避免短小节被过度切碎 |
 | `HeadingTrailTracker` / `DerivedElementChunkBuilder` | `element_derived_chunker.py` | 复用标题路径规则，并为图片、表格生成 derived chunk |
 | `OversizedChunkRefiner` | `oversized_chunk_refiner.py` | 第二阶段只处理超过最大 token 上限的粗 chunk |
@@ -67,27 +65,13 @@ class BaseChunker(ABC):
 - 输入是 `MarkdownParser` 输出的 `MarkdownElement` 列表。
 - 输出是按文档顺序排列的 `Chunk` 列表。
 - `Chunk.metadata` 应携带 `chunk_index`、`element_types` 等下游可用信息。
+- `StructuredSemanticChunker` 会在第一阶段输出进入 oversized refine 前校验行号范围、`chunk_index`、`element_types` 和 derived chunk 的 `source_chunk_index`，避免不完整算法输出继续进入第二阶段。
 - 分片器不负责写数据库、调用 MQ 或写向量库。
 - 解析流水线的 chunking 阶段会在分片完成后批量写入 `kb_document_chunk` 真值记录；这是编排层职责，不属于分片器职责。
 
 ## 3. 当前分片策略
 
-### 3.1 ASTAwareChunker
-
-`ASTAwareChunker` 是当前解析流水线默认分片器。
-
-行为：
-
-- 忽略 front matter、水平分割线等噪声元素。
-- `h1` 到 `h3` 标题触发结构边界。
-- 代码块、数学块、表格、图片作为独立 Chunk。
-- 普通段落按标题上下文聚合。
-- 输出 metadata 包含：
-  - `element_types`
-  - `chunk_index`
-  - `heading_trail`
-
-### 3.2 PercentileSemanticChunker
+### 3.1 PercentileSemanticChunker
 
 `PercentileSemanticChunker` 用于超长文本语义细分。
 
@@ -102,7 +86,7 @@ class BaseChunker(ABC):
 
 它通常不直接作为主分片器使用，而是被 `StructuredSemanticChunker` 注入。
 
-### 3.3 CandidateBoundaryChunker
+### 3.2 CandidateBoundaryChunker
 
 `CandidateBoundaryChunker` 用于 `StructuredSemanticChunker` 的第一阶段粗分片。
 
@@ -110,7 +94,9 @@ class BaseChunker(ABC):
 
 - 忽略 front matter、水平分割线等噪声元素。
 - 标题、段落、列表、引用、代码块、公式、表格、图片等块级结构都作为候选元素。
-- 候选边界不等于硬 chunk 边界；只有当前 buffer 达到 `CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` 后，才在下一个 heading 边界处切分，优先保证多数 chunk 从标题结构开始，并避免同一标题下的正文被普通段落边界拆开。
+- 候选边界不等于硬 chunk 边界；只有当前 buffer 达到 `CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` 后，才在下一个 heading 边界处切分，优先保证多数 chunk 从标题结构开始，并避免同一标题下的正文被普通段落边界拆开。生产配置范围为 `128..256`，它是第一阶段软下限，不是最终 chunk 的绝对最小值。
+- 未达到 token 软下限时，会按当前文档实际标题结构执行动态标题层级保护：参与判断的标题层级由 `CHUNKING_HEADING_BREAK_LEVEL` 控制，最多到 5 级；同级或回到上级标题默认提前切分，但当前文档最深叶子标题之间允许继续合并。
+- 6 级标题不参与动态标题层级保护，也不会作为文档最深标题层级参与判断。
 - 纯标题 buffer 不会因为达到软下限而单独输出；文档尾部只有标题时会并入前一个 chunk，除非全文只有标题。
 - 代码块、公式、表格、图片作为 protected element 参与粗 chunk 聚合，不在元素内部截断。
 - 图片、表格会在保留 mixed chunk 原文位置连续性的同时生成 derived chunk，用于独立召回。
@@ -143,7 +129,7 @@ derived chunk 额外包含：
 
 derived chunk 不使用 parent/child chunk 关系，不改向量库 schema；它作为普通最终 chunk 进入后续 embedding 与索引流程。
 
-### 3.4 OversizedChunkRefiner
+### 3.3 OversizedChunkRefiner
 
 `OversizedChunkRefiner` 是 `StructuredSemanticChunker` 的第二阶段。
 
@@ -154,7 +140,7 @@ derived chunk 不使用 parent/child chunk 关系，不改向量库 schema；它
 - 纯文本 oversized chunk 复用 `PercentileSemanticChunker.split()` 做语义细分。
 - 含代码块、公式、表格、图片的 oversized chunk 本期保守保留，不在 protected element 内部截断；第二阶段不额外写入跳过状态 metadata。
 
-### 3.5 ChunkOverlapper
+### 3.4 ChunkOverlapper
 
 `ChunkOverlapper` 负责相邻 Chunk 的上下文 overlap，不参与语义断点计算。
 
@@ -166,7 +152,7 @@ derived chunk 不使用 parent/child chunk 关系，不改向量库 schema；它
 
 图片/表格 derived chunk 的 `相邻上下文` 也复用 `ChunkOverlapper` 的 token 截取能力：取异构元素前一个可见元素尾部 N tokens 与后一个可见元素头部 N tokens，N 同样由 `CHUNKING_OVERLAP_TOKENS` 决定。`CHUNKING_OVERLAP_TOKENS=0` 时 derived chunk 仍会生成，但不写入相邻上下文。最终相邻 Chunk overlap 只在非 derived、且不含 protected element 的 chunk 之间追加，避免表格、代码块、公式块或图片引用片段通过 overlap 泄漏到其他 chunk。
 
-### 3.6 StructuredSemanticChunker
+### 3.5 StructuredSemanticChunker
 
 `StructuredSemanticChunker` 是两阶段分片器：
 
@@ -201,11 +187,9 @@ chunks = await services.run_chunking(
 ### 4.2 直接使用 ChunkingEngine
 
 ```python
-from src.core.markdown_parser import MarkdownParser
-from src.core.splitter import ChunkingEngine
-from src.core.splitter.rule_chunker import ASTAwareChunker
+from src.core.splitter import create_chunking_engine
 
-engine = ChunkingEngine(chunker=ASTAwareChunker(), parser=MarkdownParser())
+engine = create_chunking_engine()
 chunks = engine.process(markdown, source_file="example.md")
 ```
 
@@ -264,18 +248,14 @@ chunks = engine.process(markdown)
 
 ## 6. 修改已有分片器
 
-修改 `ASTAwareChunker` 时关注：
-
-- 标题边界是否仍然稳定。
-- 表格、图片、代码块是否仍保持独立。
-- `heading_trail`、`chunk_index` 是否仍正确。
-
 修改 `CandidateBoundaryChunker` 时关注：
 
 - `CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` 是否只作为第一阶段软下限。
 - 标题、段落、列表和 protected element 是否只作为候选边界。
+- 动态标题保护是否只考虑 `CHUNKING_HEADING_BREAK_LEVEL` 内且不超过 5 级的标题。
 - protected element 是否保持完整，不在元素内部截断。
 - `heading_trail` 与 `heading_trails` 是否能表达跨小节粗 chunk。
+- 第一阶段输出是否能通过 `StructuredSemanticChunker` 的完整性校验。
 
 修改 `OversizedChunkRefiner` 时关注：
 

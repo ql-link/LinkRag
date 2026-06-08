@@ -1,7 +1,11 @@
+import pytest
+
 from src.core.markdown_parser import ElementType, MarkdownElement, ParseResult
 from src.core.splitter import (
+    Chunk,
     ChunkingEngine,
     PercentileSemanticChunker,
+    SplitterOutputValidationError,
     StructuredSemanticChunker,
 )
 
@@ -49,6 +53,25 @@ class FakeParser:
     def parse_file(self, filepath: str, encoding: str = "utf-8") -> ParseResult:
         del filepath, encoding
         return self.parse("", source_file=self._parse_result.source_file)
+
+
+class StaticCandidateChunker:
+    def __init__(self, chunks: list[Chunk]) -> None:
+        self._chunks = chunks
+
+    def chunk(self, elements: list[MarkdownElement], **kwargs) -> list[Chunk]:
+        del elements, kwargs
+        return self._chunks
+
+
+def _semantic_chunker_without_refine() -> PercentileSemanticChunker:
+    return PercentileSemanticChunker(
+        embedder=StaticEmbedder([]),
+        tokenizer=MockWordTokenizer(),
+        min_chunk_tokens=1,
+        max_chunk_tokens=100,
+        overlap_tokens=0,
+    )
 
 
 async def test_aprocess_should_run_candidate_then_semantic_pipeline():
@@ -191,3 +214,75 @@ async def test_aprocess_should_not_apply_neighbor_context_when_overlap_disabled(
     assert chunks[1].metadata["element_type"] == "table"
     assert chunks[1].metadata["source_chunk_index"] == 0
     assert "相邻上下文：" not in chunks[1].content
+
+
+async def test_achunk_should_fail_fast_when_candidate_chunk_misses_element_types():
+    chunker = StructuredSemanticChunker(
+        semantic_chunker=_semantic_chunker_without_refine(),
+        candidate_chunker=StaticCandidateChunker(
+            [
+                Chunk(
+                    content="missing metadata",
+                    start_line=0,
+                    end_line=0,
+                    metadata={"chunk_index": 0},
+                )
+            ]
+        ),
+    )
+
+    with pytest.raises(SplitterOutputValidationError, match="element_types"):
+        await chunker.achunk([])
+
+
+async def test_achunk_should_fail_fast_when_candidate_chunk_line_range_is_invalid():
+    chunker = StructuredSemanticChunker(
+        semantic_chunker=_semantic_chunker_without_refine(),
+        candidate_chunker=StaticCandidateChunker(
+            [
+                Chunk(
+                    content="bad lines",
+                    start_line=4,
+                    end_line=2,
+                    metadata={"chunk_index": 0, "element_types": ["paragraph"]},
+                )
+            ]
+        ),
+    )
+
+    with pytest.raises(SplitterOutputValidationError, match="invalid line range"):
+        await chunker.achunk([])
+
+
+async def test_achunk_should_fail_fast_when_derived_source_chunk_index_is_missing():
+    chunker = StructuredSemanticChunker(
+        semantic_chunker=_semantic_chunker_without_refine(),
+        candidate_chunker=StaticCandidateChunker(
+            [
+                Chunk(
+                    content="source",
+                    start_line=0,
+                    end_line=0,
+                    metadata={
+                        "chunk_index": 0,
+                        "chunk_role": "mixed",
+                        "element_types": ["paragraph"],
+                    },
+                ),
+                Chunk(
+                    content="derived",
+                    start_line=1,
+                    end_line=1,
+                    metadata={
+                        "chunk_index": 1,
+                        "chunk_role": "derived_element",
+                        "element_types": ["image"],
+                        "source_chunk_index": 99,
+                    },
+                ),
+            ]
+        ),
+    )
+
+    with pytest.raises(SplitterOutputValidationError, match="references missing"):
+        await chunker.achunk([])
