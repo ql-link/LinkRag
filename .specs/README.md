@@ -39,9 +39,12 @@
 python scripts/flow-guard.py init <feature> --lane <L2|L3>   # 链起点初始化
 python scripts/flow-guard.py check <feature> acceptance      # 进入 acceptance 前的前置校验
 python scripts/flow-guard.py validate <feature>              # 仅校验 state.yaml 结构
+python scripts/flow-guard.py status                          # 报当前 feature/phase/下一站(跨会话恢复)
 ```
 
 前置不满足时打印 `HARD STOP` + 可执行的下一步并以非 0 退出。"冻结"因此从 agent 自觉降级为有脚本兜底的显式动作。
+
+**跨会话恢复**:长 feature（尤其 L3）跨会话续做时，先跑一条 `flow-guard status`，它扫描 `.specs/` 报出当前 active feature（唯一非 `done` 项）、所在 `phase`、唯一允许的下一站和该读的单个输入文件——无需重读全部 `.specs` 产物。有多个在途 feature 时全部列出，由你指明继续哪个。
 
 ## 工作流
 

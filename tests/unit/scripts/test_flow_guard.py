@@ -178,6 +178,49 @@ def test_brief_phase_has_no_precondition(fg):
     assert fg.cmd_check("feat-f", "brief") == 0
 
 
+# --- status(LINK-109) ------------------------------------------------------
+def test_status_empty_specs(fg, capsys):
+    assert fg.cmd_status() == 0
+    assert "无 feature" in capsys.readouterr().err
+
+
+def test_status_single_active_reports_phase_and_next(fg, capsys):
+    _write_state(fg, "alpha", phase="acceptance", **{"artifacts.brief.frozen": True})
+    assert fg.cmd_status() == 0
+    err = capsys.readouterr().err
+    assert "active feature" in err
+    assert "alpha" in err
+    assert "acceptance" in err
+    assert "acceptance-generator" in err  # 唯一下一站
+    assert ".specs/alpha/brief.md" in err  # 指向该读的单文件
+
+
+def test_status_multiple_inprogress_lists_all(fg, capsys):
+    _write_state(fg, "alpha", phase="acceptance", **{"artifacts.brief.frozen": True})
+    _write_state(fg, "beta", phase="brief")
+    assert fg.cmd_status() == 0
+    err = capsys.readouterr().err
+    assert "2 个在途" in err
+    assert "alpha" in err and "beta" in err
+
+
+def test_status_all_done(fg, capsys):
+    _write_state(fg, "alpha", phase="done")
+    assert fg.cmd_status() == 0
+    assert "无在途" in capsys.readouterr().err
+
+
+def test_status_tolerates_invalid_state(fg, capsys):
+    _write_state(fg, "good", phase="brief")
+    bad = fg.SPECS_DIR / "bad" / "state.yaml"
+    bad.parent.mkdir(parents=True)
+    bad.write_text("phase: nope\n", encoding="utf-8")  # schema 不过
+    assert fg.cmd_status() == 0  # 不因单个坏文件中断
+    err = capsys.readouterr().err
+    assert "bad" in err  # 坏文件被告警列出
+    assert "good" in err  # 好文件仍被报告
+
+
 # --- 输入安全 ---------------------------------------------------------------
 @pytest.mark.parametrize("bad", ["../etc", "a/b", "a\\b", "", ".."])
 def test_feature_name_rejects_traversal(fg, bad):

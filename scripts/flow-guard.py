@@ -71,6 +71,21 @@ VALID_LANES = ("L2", "L3")
 PHASE_ORDER = ("brief", "acceptance", "technical_design", "implementation", "done")
 VALID_PHASES = PHASE_ORDER
 
+# phase -> 该阶段应工作的 skill(下一站) + 恢复工作所需的最小输入文件清单。
+# status 用它把"我在第几站、该读哪个文件"一次性报出,避免跨会话重读全部 .specs 产物。
+# 语义:phase=X 表示已放行到第 X 站(冻结上一站产物时由对应 skill 推进而来),
+# 因此 phase 字段本身即"当前唯一允许的下一站"。
+STATION = {
+    "brief": ("brief-generator", ["(收敛需求中,暂无上游输入)"]),
+    "acceptance": ("acceptance-generator", ["brief.md"]),
+    "technical_design": ("technical-design", ["brief.md", "acceptance.feature"]),
+    "implementation": (
+        "implementation-execution",
+        ["brief.md", "acceptance.feature", "technical_design.md(L3)"],
+    ),
+    "done": (None, []),  # 已完成:无下一站,进收口/清理
+}
+
 # artifacts 子结构:每个 artifact 的布尔不变量。
 # key -> 该 artifact 下允许出现的布尔字段集合。
 ARTIFACT_FIELDS = {
@@ -314,6 +329,91 @@ notes: |
 """
 
 
+def _scan_features() -> tuple[list[tuple[str, dict]], list[str]]:
+    """扫描 .specs/ 下所有带 state.yaml 的 feature。
+
+    返回 (valid, invalid):
+    - valid: [(feature, data)],data 已过 schema 校验
+    - invalid: 文件损坏 / yaml 非法 / schema 不过的 feature 名
+
+    不调用会 sys.exit 的 load_state——status 要容忍单个坏文件,继续报其余。
+    """
+    valid: list[tuple[str, dict]] = []
+    invalid: list[str] = []
+    if not SPECS_DIR.is_dir():
+        return valid, invalid
+    for child in sorted(SPECS_DIR.iterdir()):
+        if not child.is_dir():
+            continue
+        sp = child / "state.yaml"
+        if not sp.is_file():
+            continue
+        try:
+            data = yaml.safe_load(sp.read_text(encoding="utf-8"))
+        except yaml.YAMLError:
+            invalid.append(child.name)
+            continue
+        if not isinstance(data, dict) or any(
+            i.level == "error" for i in validate_state(data)
+        ):
+            invalid.append(child.name)
+            continue
+        valid.append((child.name, data))
+    return valid, invalid
+
+
+def _render_feature(feature: str, data: dict) -> list[str]:
+    """把单个 feature 的恢复信息渲染成多行文本:feature/lane/phase/下一站/待读文件。"""
+    phase = data.get("phase", "?")
+    lane = data.get("lane", "?")
+    skill, reads = STATION.get(phase, (None, []))
+    lines = [f"feature : {feature}", f"lane    : {lane}", f"phase   : {phase}"]
+    if phase == "done":
+        lines.append("下一站  : (已完成)进入收口 branch-pr-workflow 或合并后 rm -rf 清理")
+        return lines
+    # 当前站产物若已冻结,说明状态本应推进,提示一句(正常情况下不该出现)。
+    art = phase if phase in ARTIFACT_FIELDS else None
+    frozen = bool((data.get("artifacts") or {}).get(art, {}).get("frozen")) if art else False
+    # 真实产物名补上目录前缀;占位说明(以 "(" 开头)原样输出。
+    read_items = [r if r.startswith("(") else f".specs/{feature}/{r}" for r in reads]
+    lines.append(f"下一站  : {skill}")
+    lines.append(f"待读    : {', '.join(read_items)}")
+    lines.append(f"前置校验: python scripts/flow-guard.py check {feature} {phase}")
+    if frozen:
+        lines.append(yellow(f"注意    : artifacts.{art}.frozen 已为 true,phase 本应推进到下一站,请检查"))
+    return lines
+
+
+def cmd_status() -> int:
+    """报告当前 active feature + phase + 唯一下一站,供跨会话恢复(LINK-109)。"""
+    valid, invalid = _scan_features()
+    inprogress = [(f, d) for f, d in valid if d.get("phase") != "done"]
+
+    if invalid:
+        print(yellow(f"[WARN] state.yaml 异常的 feature(跳过): {', '.join(invalid)}"), file=sys.stderr)
+        print(yellow("       Next: 逐个 `python scripts/flow-guard.py validate <feature>` 修复"), file=sys.stderr)
+
+    if not valid:
+        print(green("[STATUS] 无 feature(.specs/ 下尚无 state.yaml)。新需求从 flow-router 起。"), file=sys.stderr)
+        return 0
+    if not inprogress:
+        print(green("[STATUS] 无在途 feature(均已 done)。"), file=sys.stderr)
+        return 0
+
+    if len(inprogress) == 1:
+        f, d = inprogress[0]
+        print(green("[STATUS] active feature:"), file=sys.stderr)
+        for line in _render_feature(f, d):
+            print("  " + line, file=sys.stderr)
+        return 0
+
+    # 多个在途:不猜 active,全部列出让用户指明。
+    print(yellow(f"[STATUS] 有 {len(inprogress)} 个在途 feature,请指明要继续哪个:"), file=sys.stderr)
+    for f, d in inprogress:
+        print(yellow(f"  - {f}(phase={d.get('phase')},下一站={STATION.get(d.get('phase'), (None,))[0]})"), file=sys.stderr)
+    return 0
+
+
 def cmd_init(feature: str, lane: str) -> int:
     if lane not in VALID_LANES:
         print(red(f"ERROR: lane 非法: '{lane}',应为 {list(VALID_LANES)}"), file=sys.stderr)
@@ -353,6 +453,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Feature 流程阶段门禁(state.yaml + 前置校验)。")
     sub = parser.add_subparsers(dest="command", required=True)
 
+    sub.add_parser("status", help="报告当前 active feature + phase + 下一站(跨会话恢复)")
+
     p_init = sub.add_parser("init", help="按模板初始化 state.yaml")
     p_init.add_argument("feature")
     p_init.add_argument("--lane", default="L3", help="车道 L2/L3(默认 L3)")
@@ -365,6 +467,10 @@ def main(argv: list[str] | None = None) -> int:
     p_chk.add_argument("phase", help=f"目标阶段:{'|'.join(VALID_PHASES)}")
 
     args = parser.parse_args(argv)
+
+    if args.command == "status":
+        return cmd_status()  # 不带 feature 参数,扫描全部
+
     validate_feature_name(args.feature)
 
     if args.command == "init":

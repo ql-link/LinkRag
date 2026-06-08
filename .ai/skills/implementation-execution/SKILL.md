@@ -30,6 +30,16 @@ python scripts/flow-guard.py check <feature-name> implementation
 
 返回 `HARD STOP` 时按 `Next:` 回上游冻结对应产物，不得在前置未满足时开始编码。
 
+## 跨会话恢复
+
+接手一个进行中的 feature（尤其 L3 跨会话续做）时，先跑一条命令定位进度，不要逐个重读 `.specs` 产物：
+
+```bash
+python scripts/flow-guard.py status
+```
+
+它报出当前 active feature、所在 `phase`、唯一下一站和该读的单个输入文件。据此只读必要文件再继续。
+
 ## 必读文件
 
 1. `CLAUDE.md` / `AGENTS.md`（同一份，项目使用入口）
