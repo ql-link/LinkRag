@@ -124,7 +124,10 @@ class Settings(BaseSettings):
 
     SYSTEM_LLM_MODEL_CHAT: str = "qwen3.5-flash"
     SYSTEM_LLM_MODEL_EMBEDDING: str = "text-embedding-v4"
-    SYSTEM_LLM_MODEL_RERANK: Optional[str] = "qwen3-vl-rerank"
+    # RERANK 不走系统兜底：必须由用户在 RERANK 能力配置里显式指定 provider + rerank 模型
+    # （如硅基流动 BAAI/bge-reranker-v2-m3）。置空后 get_system_fallback_config_by_capability("RERANK")
+    # 返回 None，召回链路 allow_system_fallback=False 时即抛 UserModelConfigMissingError（必配不兜底）。
+    SYSTEM_LLM_MODEL_RERANK: Optional[str] = None
     SYSTEM_LLM_MODEL_VISION: Optional[str] = None
     MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT: bool = True
     MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT: bool = True
