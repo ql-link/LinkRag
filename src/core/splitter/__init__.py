@@ -24,7 +24,7 @@ from .factory import (
 from .models import Chunk, EmbeddedChunk, EmbeddingPipelineStats
 from .overlap import ChunkOverlapConfig, ChunkOverlapper
 from .oversized_chunk_refiner import OversizedChunkRefiner
-from .pipeline_chunker import StructuredSemanticChunker
+from .pipeline_chunker import SplitterOutputValidationError, StructuredSemanticChunker
 from .rule_chunker import ASTAwareChunker
 from .semantic_chunker import PercentileSemanticChunker, SemanticSplitter
 
@@ -40,6 +40,7 @@ __all__ = [
     "ChunkOverlapper",
     "OversizedChunkRefiner",
     "StructuredSemanticChunker",
+    "SplitterOutputValidationError",
     "PercentileSemanticChunker",
     "SemanticSplitter",
     "ChunkEmbeddingPipeline",
