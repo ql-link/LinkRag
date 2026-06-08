@@ -60,7 +60,7 @@ when_to_use: 当用户明确要求"生成技术方案 / 生成技术实现文档
 1. `AGENTS.md`
 2. `.specs/<feature-name>/brief.md`
 3. `.specs/<feature-name>/acceptance.feature`
-4. `.specs/<feature-name>/feature_info.md`（若存在）
+4. `.specs/<feature-name>/state.yaml`（机器拥有的阶段状态，取代旧 `feature_info.md`）
 5. `.ai/skills/technical-design/technical_design.template.md`
 6. 公共契约文档：`docs/api/**`、`docs/internals/naming_conventions.md`、`docs/internals/mq.md`（按改动涉及面选读）
 
@@ -97,7 +97,7 @@ when_to_use: 当用户明确要求"生成技术方案 / 生成技术实现文档
 - 结构遵循 `.ai/skills/technical-design/technical_design.template.md`
 - 若已有旧版 TD：先读，判断修订 / 覆盖 / 增量，不允许无说明地重写关键技术结论
 
-同时更新 `feature_info.md`：状态改为 `technical_design 待审核` / `technical_design 已冻结`。
+同时回写 `state.yaml`：`phase` 保持 `technical_design`；冻结时把 `artifacts.technical_design.frozen` 置为 `true`。
 
 ## 6. 输出内容要求
 
@@ -160,6 +160,14 @@ when_to_use: 当用户明确要求"生成技术方案 / 生成技术实现文档
 ## 7. 工作步骤
 
 ### 步骤 1：校验输入
+
+先用脚本做机器门禁：
+
+```bash
+python scripts/flow-guard.py check <feature-name> technical_design
+```
+
+该命令校验 `state.yaml` 合法且 `brief`、`acceptance` 均已冻结。返回 `HARD STOP` 时按 `Next:` 回上游，不得继续。通过后再确认：
 
 - `brief.md` 存在
 - `acceptance.feature` 存在
@@ -233,7 +241,7 @@ when_to_use: 当用户明确要求"生成技术方案 / 生成技术实现文档
 
 ### 步骤 8：冻结
 
-- 更新 `feature_info.md`：状态 `technical_design 已冻结`
+- 回写 `state.yaml`：把 `artifacts.technical_design.frozen` 置为 `true`，`phase` 推进到 `implementation`
 - 告知用户下一步：进入 `implementation-execution`
 
 ## 8. 提问门禁

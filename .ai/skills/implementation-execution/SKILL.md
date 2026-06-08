@@ -22,10 +22,18 @@ when_to_use: "当需求和技术方案已确认并且给出需求和技术方案
 - `.specs/<feature-name>/acceptance.feature` 已冻结
 - 若存在 `.specs/<feature-name>/technical_design.md`，则其也已审核通过
 
+编码前先用脚本做机器门禁（L3 要求 TD 已冻结，L2 跳过 TD）：
+
+```bash
+python scripts/flow-guard.py check <feature-name> implementation
+```
+
+返回 `HARD STOP` 时按 `Next:` 回上游冻结对应产物，不得在前置未满足时开始编码。
+
 ## 必读文件
 
 1. `CLAUDE.md` / `AGENTS.md`（同一份，项目使用入口）
-2. `.specs/<feature-name>/feature_info.md`（若存在）
+2. `.specs/<feature-name>/state.yaml`（机器拥有的阶段状态，取代旧 `feature_info.md`）
 3. `.specs/<feature-name>/brief.md`
 4. `.specs/<feature-name>/acceptance.feature`
 5. `.specs/<feature-name>/technical_design.md`（若存在）
@@ -72,7 +80,7 @@ when_to_use: "当需求和技术方案已确认并且给出需求和技术方案
 1. `.specs/<feature-name>/brief.md` + `acceptance.feature`
 2. `.specs/<feature-name>/technical_design.md`（若存在）
 3. 实际代码 diff
-4. `.specs/<feature-name>/feature_info.md`
+4. `.specs/<feature-name>/state.yaml`
 
 ## 改造报告应包含什么
 
@@ -152,5 +160,5 @@ when_to_use: "当需求和技术方案已确认并且给出需求和技术方案
 
 1. 代码实现完成
 2. 必要时写好 `implementation_report.md`
-3. 更新 `feature_info.md`
+3. 回写 `state.yaml`：写过改造报告则把 `artifacts.implementation.report_written` 置为 `true`；测试全绿后由收口段置 `verified: true`、`phase: done`
 4. 进入测试与收口段：先 `run-all-tests` 跑全量回归，再 `code-review-and-quality` 过质量门禁，最终经 `branch-pr-workflow` 提 PR

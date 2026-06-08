@@ -20,6 +20,7 @@
 .specs/
 ├── README.md                # 本文（唯一会被 git 跟踪的文件）
 └── <feature-name>/          # 当前在开发的 feature（本地工作目录，不入 git）
+    ├── state.yaml           # 机器拥有的阶段状态（取代旧的手维护 feature_info.md）
     ├── brief.md
     ├── acceptance.feature
     ├── technical_design.md
@@ -27,6 +28,20 @@
 ```
 
 命名建议：英文 kebab-case。
+
+### 阶段状态：`state.yaml` + `flow-guard`
+
+`state.yaml` 是这个 feature 的**机器拥有**阶段状态：`phase`、各 artifact 的 `frozen`、`acceptance_promoted`、`verified` 等不变量都记在结构化字段里，人类可读摘要放 `notes`。它取代了过去靠 agent 记得更新的散文 `feature_info.md`。
+
+阶段推进由 [scripts/flow-guard.py](../scripts/flow-guard.py) 兜底，**进入下游阶段前由对应 skill 主动调用**（`.specs/` 整目录 git-ignored，无法做 git hook）：
+
+```bash
+python scripts/flow-guard.py init <feature> --lane <L2|L3>   # 链起点初始化
+python scripts/flow-guard.py check <feature> acceptance      # 进入 acceptance 前的前置校验
+python scripts/flow-guard.py validate <feature>              # 仅校验 state.yaml 结构
+```
+
+前置不满足时打印 `HARD STOP` + 可执行的下一步并以非 0 退出。"冻结"因此从 agent 自觉降级为有脚本兜底的显式动作。
 
 ## 工作流
 
@@ -41,8 +56,8 @@
 
 **约束**：
 
-- 上游产物未冻结，不进入下游阶段。`brief.md` 未确认前不要生成 `acceptance.feature`。
-- 短小改动（一行 bugfix、一处配置）不走全流程，直接 PR 即可。
+- 上游产物未冻结，不进入下游阶段。`brief.md` 未确认前不要生成 `acceptance.feature`——这条不变量由 `flow-guard.py check` 机器校验，不再只靠 agent 自觉（见上文「阶段状态」）。
+- 短小改动（一行 bugfix、一处配置）不走全流程，直接 PR 即可，也不需要 `state.yaml`。
 
 ## 合并前必须沉淀的内容
 
