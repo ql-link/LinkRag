@@ -91,10 +91,11 @@ class Settings(BaseSettings):
     RECALL_ENABLED_SOURCES: str = "bm25,sparse,dense"
 
     # ==========================================
-    # 对外直连召回 SSE 配置 (Recall Direct SSE / LINK-40)
+    # 对外会话鉴权配置 (RAG 流 / 纯召回 JSON / LINK-40, LINK-131)
     # ==========================================
-    # 前端凭 Java 签发的短期 session token 直连 Python `POST /api/v1/recall/stream`。
-    # 详见 docs/internals/recall_http_api.md「对外直连 SSE」。
+    # 前端凭 Java 签发的短期 session token 直连 Python 对外端点
+    # `POST /api/v1/rag/stream`（RAG 问答流）与 `POST /api/v1/recall`（纯召回 JSON）。
+    # 详见 docs/internals/recall_http_api.md。
     RECALL_SESSION_AUTH_ENABLED: bool = True
     RECALL_SESSION_JWT_ISSUER: str = "tolink-java"
     # 前端面凭证独立受众标识，避免与其他 token 混用。

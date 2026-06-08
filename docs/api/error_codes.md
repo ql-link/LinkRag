@@ -127,26 +127,27 @@ CODE: 中文业务原因；底层详情
 | `RecallValidationError` | 召回入参非法（query 空白 / user_id 非正 / top_k 非正）|
 | `RecallError` | 严格模式任一路失败，或宽松模式全路失败 |
 
-## 5. Recall 错误码（对外直连 SSE）
+## 5. Recall 错误码（对外 RAG 流 / 纯召回 JSON）
 
-对外直连召回 SSE 接口 `POST /api/v1/recall/stream`（见
-[http_contracts.md §6](http_contracts.md#6-recall-api对外直连-sse)）的错误分两类。
+对外两个端点（见 [http_contracts.md §6](http_contracts.md#6-rag--recall-api对外)）：RAG 问答流
+`POST /api/v1/rag/stream`（SSE）与纯召回 `POST /api/v1/recall`（JSON）。两端点**握手前错误码相同**；
+**执行期错误的载体不同**——RAG 流走 SSE `error` 帧，纯召回走 HTTP 状态码。
 
-> 历史背景：早期 Java 网关链路（内部端点 `/api/v1/internal/recall/stream`）的
-> `RECALL_INTERNAL_UNAUTHORIZED` / `RECALL_USER_MISMATCH` 等错误码随该链路废弃清理
-> （LINK-122）后不再使用。
+> 历史背景：早期 `POST /api/v1/recall/stream` 以 `recall` 之名承载完整 RAG 问答，LINK-131 拆分后
+> 删除；更早 Java 网关链路（内部端点 `/api/v1/internal/recall/stream`）的
+> `RECALL_INTERNAL_UNAUTHORIZED` / `RECALL_USER_MISMATCH` 等错误码随该链路废弃清理（LINK-122）后不再使用。
 
-**握手前**（会话鉴权 / 参数 / scope / 限流失败）→ 非 2xx 的 `{code, message, data}` JSON：
+**握手前**（会话鉴权 / 参数 / scope / 限流失败）→ 非 2xx 的 `{code, message, data}` JSON，两端点一致：
 
 | 场景 | HTTP | code |
 | --- | --- | --- |
 | 缺失 / 验签 / iss / aud / scope / exp 失败、用非 session 密钥签发的 token | `401` | `RECALL_SESSION_UNAUTHORIZED` |
 | `dataset_ids` 超出 token 授权范围 | `403` | `RECALL_SCOPE_FORBIDDEN` |
-| JSON 非法 / 缺字段（含缺 `config_id`）/ 类型错 / 出现未知字段（含 `user_id`） | `422` | `RECALL_INVALID_REQUEST` |
+| JSON 非法 / 缺字段 / 类型错 / 出现未知字段（含 `user_id`；纯召回端点的 `config_id` 亦属未知字段；RAG 流缺 `config_id`） | `422` | `RECALL_INVALID_REQUEST` |
 | `query` 为空或纯空白 | `400` | `RECALL_INVALID_REQUEST` |
-| 单用户并发流数超过 `RECALL_SESSION_MAX_CONCURRENT` | `429` | `RECALL_RATE_LIMITED` |
+| 单用户并发流数超过 `RECALL_SESSION_MAX_CONCURRENT`（**仅 RAG 流**；纯召回不限流） | `429` | `RECALL_RATE_LIMITED` |
 
-**握手后**（pipeline 执行期 / 召回前置 / 生成阶段）→ SSE `error` 事件，发送后关闭流：
+**RAG 流握手后**（pipeline 执行期 / 召回前置 / 生成阶段）→ SSE `error` 事件，发送后关闭流：
 
 | 场景 | 事件 | code |
 | --- | --- | --- |
@@ -156,6 +157,15 @@ CODE: 中文业务原因；底层详情
 | 召回执行超过 `RECALL_STREAM_TIMEOUT_MS` | `error` | `RECALL_TIMEOUT` |
 | 生成阶段 LLM 调用失败（超时 / 报错 / 限流），整请求失败 | `error` | `RECALL_GENERATION_FAILED` |
 | 未预期内部异常 | `error` | `RECALL_INTERNAL_ERROR` |
+
+**纯召回执行期**（`POST /api/v1/recall`，无生成）→ HTTP 状态码 + `{code, message, data}` JSON：
+
+| 场景 | HTTP | code |
+| --- | --- | --- |
+| 发起用户无默认 EMBEDDING 配置 | `422` | `RECALL_EMBEDDING_CONFIG_MISSING` |
+| 全部召回路失败 / 严格模式失败 | `500` | `RECALL_ALL_SOURCES_FAILED` |
+| 召回执行超过 `RECALL_STREAM_TIMEOUT_MS` | `504` | `RECALL_TIMEOUT` |
+| 未预期内部异常 | `500` | `RECALL_INTERNAL_ERROR` |
 
 宽松模式下单路失败但仍有成功路时**不是错误**：正常生成并返回 `answer_done`（0 命中 / 全部片段
 缺正文时为 `recall_done`），失败路计入 `failed_sources`。客户端断连不作为业务错误，Python

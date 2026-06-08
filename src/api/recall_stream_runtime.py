@@ -1,11 +1,12 @@
 """召回 SSE 流式执行 runtime。
 
-对外直连端点 ``/api/v1/recall/stream``（``routes/recall_direct.py``）的召回融合 +
+对外 RAG 问答流端点 ``/api/v1/rag/stream``（``routes/rag.py``）的召回融合 +
 LLM 流式生成执行与事件序列化的**单一来源**。
 
 - ``recall_event``：序列化单帧 SSE 事件；
-- ``serialize_hits``：把 ``RecallResponse`` 命中裁剪为最小候选（不含正文）；
 - ``recall_event_stream``：流内执行 pipeline，把结果/异常映射为 SSE 终态事件。
+
+hits 序列化（``serialize_hits``）抽至 ``recall_serialization``，与纯召回 JSON 端点共用。
 """
 
 from __future__ import annotations
@@ -25,6 +26,7 @@ from src.api.internal_auth import (
     CODE_MODEL_CONFIG_MISSING,
     CODE_TIMEOUT,
 )
+from src.api.recall_serialization import serialize_hits
 from src.config import settings
 from src.core.llm.exceptions import UserModelConfigMissingError
 from src.core.llm.user_model_resolver import aresolve_user_model
@@ -43,20 +45,6 @@ from src.core.prompts import RAG_GENERATION_SYSTEM_PROMPT, build_rag_user_prompt
 def recall_event(name: str, payload: dict) -> str:
     """序列化为单帧 SSE 事件（``data`` 为单行 JSON）。"""
     return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
-
-
-def serialize_hits(response: RecallResponse) -> list[dict]:
-    """把融合命中裁剪为最小候选；不含 chunk 正文。"""
-    return [
-        {
-            "chunk_id": str(h.chunk_id),
-            "doc_id": h.doc_id,
-            "dataset_id": h.dataset_id,
-            "fused_score": h.fused_score,
-            "scores": h.scores,
-        }
-        for h in response.hits
-    ]
 
 
 async def recall_event_stream(
@@ -90,7 +78,9 @@ async def recall_event_stream(
         except (UserModelConfigMissingError, ValueError) as exc:
             logger.warning(
                 "[recall] model config unavailable request_id={} config_id={}: {}",
-                request_id, config_id, exc,
+                request_id,
+                config_id,
+                exc,
             )
             yield recall_event(
                 "error",
@@ -101,9 +91,7 @@ async def recall_event_stream(
             )
             return
 
-        response = await asyncio.wait_for(
-            pipeline.execute(recall_req), timeout=timeout_seconds
-        )
+        response = await asyncio.wait_for(pipeline.execute(recall_req), timeout=timeout_seconds)
 
         # 空命中 / 正文回填 / 流式生成。
         async for event in _generate_answer(resolved, response, recall_req, request_id):
@@ -160,16 +148,17 @@ async def _generate_answer(
         return
 
     # 正文回填 + 上下文拼装。
-    contents = await fetch_chunk_contents(
-        [h.chunk_id for h in response.hits], recall_req.user_id
-    )
+    contents = await fetch_chunk_contents([h.chunk_id for h in response.hits], recall_req.user_id)
     assembled = assemble_context(
         response.hits, contents, settings.RECALL_GENERATION_CONTEXT_TOKEN_BUDGET
     )
     logger.info(
         "[recall] generation context request_id={} hits={} blocks={} skipped_no_content={} truncated={}",
-        request_id, len(response.hits), len(assembled.blocks),
-        assembled.skipped_no_content, assembled.truncated,
+        request_id,
+        len(response.hits),
+        len(assembled.blocks),
+        assembled.skipped_no_content,
+        assembled.truncated,
     )
 
     # 全部片段缺正文：按空命中处理，不生成。
