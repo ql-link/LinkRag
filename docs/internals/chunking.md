@@ -67,6 +67,7 @@ class BaseChunker(ABC):
 - 输入是 `MarkdownParser` 输出的 `MarkdownElement` 列表。
 - 输出是按文档顺序排列的 `Chunk` 列表。
 - `Chunk.metadata` 应携带 `chunk_index`、`element_types` 等下游可用信息。
+- `StructuredSemanticChunker` 会在第一阶段输出进入 oversized refine 前校验行号范围、`chunk_index`、`element_types` 和 derived chunk 的 `source_chunk_index`，避免不完整算法输出继续进入第二阶段。
 - 分片器不负责写数据库、调用 MQ 或写向量库。
 - 解析流水线的 chunking 阶段会在分片完成后批量写入 `kb_document_chunk` 真值记录；这是编排层职责，不属于分片器职责。
 
@@ -110,7 +111,9 @@ class BaseChunker(ABC):
 
 - 忽略 front matter、水平分割线等噪声元素。
 - 标题、段落、列表、引用、代码块、公式、表格、图片等块级结构都作为候选元素。
-- 候选边界不等于硬 chunk 边界；只有当前 buffer 达到 `CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` 后，才在下一个 heading 边界处切分，优先保证多数 chunk 从标题结构开始，并避免同一标题下的正文被普通段落边界拆开。
+- 候选边界不等于硬 chunk 边界；只有当前 buffer 达到 `CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` 后，才在下一个 heading 边界处切分，优先保证多数 chunk 从标题结构开始，并避免同一标题下的正文被普通段落边界拆开。生产配置范围为 `128..256`，它是第一阶段软下限，不是最终 chunk 的绝对最小值。
+- 未达到 token 软下限时，会按当前文档实际标题结构执行动态标题层级保护：参与判断的标题层级由 `CHUNKING_HEADING_BREAK_LEVEL` 控制，最多到 5 级；同级或回到上级标题默认提前切分，但当前文档最深叶子标题之间允许继续合并。
+- 6 级标题不参与动态标题层级保护，也不会作为文档最深标题层级参与判断。
 - 纯标题 buffer 不会因为达到软下限而单独输出；文档尾部只有标题时会并入前一个 chunk，除非全文只有标题。
 - 代码块、公式、表格、图片作为 protected element 参与粗 chunk 聚合，不在元素内部截断。
 - 图片、表格会在保留 mixed chunk 原文位置连续性的同时生成 derived chunk，用于独立召回。
@@ -274,8 +277,10 @@ chunks = engine.process(markdown)
 
 - `CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` 是否只作为第一阶段软下限。
 - 标题、段落、列表和 protected element 是否只作为候选边界。
+- 动态标题保护是否只考虑 `CHUNKING_HEADING_BREAK_LEVEL` 内且不超过 5 级的标题。
 - protected element 是否保持完整，不在元素内部截断。
 - `heading_trail` 与 `heading_trails` 是否能表达跨小节粗 chunk。
+- 第一阶段输出是否能通过 `StructuredSemanticChunker` 的完整性校验。
 
 修改 `OversizedChunkRefiner` 时关注：
 
