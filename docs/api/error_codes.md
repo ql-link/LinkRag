@@ -127,68 +127,45 @@ CODE: 中文业务原因；底层详情
 | `RecallValidationError` | 召回入参非法（query 空白 / user_id 非正 / top_k 非正）|
 | `RecallError` | 严格模式任一路失败，或宽松模式全路失败 |
 
-## 5. Internal Recall 错误码
+## 5. Recall 错误码（对外直连 SSE）
 
-内部召回 SSE 接口 `POST /api/v1/internal/recall/stream`（见
-[http_contracts.md §6](http_contracts.md#6-internal-recall-api)）的错误分两类：
+对外直连召回 SSE 接口 `POST /api/v1/recall/stream`（见
+[http_contracts.md §6](http_contracts.md#6-recall-api对外直连-sse)）的错误分两类。
 
-**握手前**（鉴权 / 参数 / scope 校验失败）→ 非 2xx 的 `{code, message, data}` JSON：
-
-| 场景 | HTTP | code |
-| --- | --- | --- |
-| 缺失 / 验签 / iss / aud / scope / exp 校验失败 | `401` | `RECALL_INTERNAL_UNAUTHORIZED` |
-| `body.user_id` 与凭证 `sub` 不一致 | `403` | `RECALL_USER_MISMATCH` |
-| `body.dataset_ids` 超出凭证授权范围 | `403` | `RECALL_SCOPE_FORBIDDEN` |
-| JSON 非法 / 缺字段 / 类型错 / 出现非首版字段 | `422` | `RECALL_INVALID_REQUEST` |
-| `query` 为空或纯空白 | `400` | `RECALL_INVALID_REQUEST` |
-
-**握手后**（pipeline 执行期）→ SSE `error` 事件，发送后关闭流：
-
-| 场景 | 事件 | code |
-| --- | --- | --- |
-| 发起用户无默认 EMBEDDING 配置（dense 路无法编码 query） | `error` | `RECALL_EMBEDDING_CONFIG_MISSING` |
-| 全部召回路失败 / 严格模式失败 | `error` | `RECALL_ALL_SOURCES_FAILED` |
-| 召回执行超过 `RECALL_STREAM_TIMEOUT_MS` | `error` | `RECALL_TIMEOUT` |
-| 未预期内部异常 | `error` | `RECALL_INTERNAL_ERROR` |
-
-宽松模式下单路失败但仍有成功路时**不是错误**：正常返回 `recall_done`，失败路计入
-`failed_sources`。客户端（Java）断连不作为业务错误，Python 停止发送事件并取消召回任务。
-
-例外：dense 召回 query 编码按发起用户的 EMBEDDING 配置解析（与写入侧同源）。用户无默认
-EMBEDDING 配置属**必备前置缺失**，走硬失败（`RECALL_EMBEDDING_CONFIG_MISSING`）而非宽松降级——
-即便其余路可用也不返回部分结果，避免"读侧系统模型 / 写侧用户模型"向量空间不一致的误召回。
-
-## 6. 对外直连 Recall 错误码
-
-对外直连召回 SSE 接口 `POST /api/v1/recall/stream`（LINK-40，见
-[http_contracts.md §7](http_contracts.md#7-对外直连-recall-sseapilink-40)）。与内部端点
-区分专属错误码，便于审计区分「Java 内部调用」与「前端直连会话」。
+> 历史背景：早期 Java 网关链路（内部端点 `/api/v1/internal/recall/stream`）的
+> `RECALL_INTERNAL_UNAUTHORIZED` / `RECALL_USER_MISMATCH` 等错误码随该链路废弃清理
+> （LINK-122）后不再使用。
 
 **握手前**（会话鉴权 / 参数 / scope / 限流失败）→ 非 2xx 的 `{code, message, data}` JSON：
 
 | 场景 | HTTP | code |
 | --- | --- | --- |
-| 缺失 / 验签 / iss / aud / scope / exp 失败、用内部密钥签发的 token | `401` | `RECALL_SESSION_UNAUTHORIZED` |
+| 缺失 / 验签 / iss / aud / scope / exp 失败、用非 session 密钥签发的 token | `401` | `RECALL_SESSION_UNAUTHORIZED` |
 | `dataset_ids` 超出 token 授权范围 | `403` | `RECALL_SCOPE_FORBIDDEN` |
 | JSON 非法 / 缺字段（含缺 `config_id`）/ 类型错 / 出现未知字段（含 `user_id`） | `422` | `RECALL_INVALID_REQUEST` |
 | `query` 为空或纯空白 | `400` | `RECALL_INVALID_REQUEST` |
 | 单用户并发流数超过 `RECALL_SESSION_MAX_CONCURRENT` | `429` | `RECALL_RATE_LIMITED` |
 
-**握手后**（pipeline 执行期）→ SSE `error` 事件，与内部端点共享同一 runtime、语义一致：
-`RECALL_EMBEDDING_CONFIG_MISSING` / `RECALL_ALL_SOURCES_FAILED` / `RECALL_TIMEOUT` /
-`RECALL_INTERNAL_ERROR`。
-
-对外直连端点还在召回前置/生成阶段新增两个 SSE `error` code（召回后 LLM 答案生成，见
-[http_contracts.md §7](http_contracts.md#7-对外直连-recall-sseapilink-40)）：
+**握手后**（pipeline 执行期 / 召回前置 / 生成阶段）→ SSE `error` 事件，发送后关闭流：
 
 | 场景 | 事件 | code |
 | --- | --- | --- |
 | 所选模型 `config_id` 不属本用户 / 非 CHAT 能力 / 已停用 / 不存在（召回前置校验，不进入召回） | `error` | `RECALL_MODEL_CONFIG_MISSING` |
+| 发起用户无默认 EMBEDDING 配置（dense 路无法编码 query） | `error` | `RECALL_EMBEDDING_CONFIG_MISSING` |
+| 全部召回路失败 / 严格模式失败 | `error` | `RECALL_ALL_SOURCES_FAILED` |
+| 召回执行超过 `RECALL_STREAM_TIMEOUT_MS` | `error` | `RECALL_TIMEOUT` |
 | 生成阶段 LLM 调用失败（超时 / 报错 / 限流），整请求失败 | `error` | `RECALL_GENERATION_FAILED` |
+| 未预期内部异常 | `error` | `RECALL_INTERNAL_ERROR` |
 
-token **短期可复用**：有效期内重复建连均放行，无重放类错误码。
+宽松模式下单路失败但仍有成功路时**不是错误**：正常生成并返回 `answer_done`（0 命中 / 全部片段
+缺正文时为 `recall_done`），失败路计入 `failed_sources`。客户端断连不作为业务错误，Python
+停止发送事件并取消召回任务。token **短期可复用**：有效期内重复建连均放行，无重放类错误码。
 
-## 7. Chunk Status Values
+例外：dense 召回 query 编码按发起用户的 EMBEDDING 配置解析（与写入侧同源）。用户无默认
+EMBEDDING 配置属**必备前置缺失**，走硬失败（`RECALL_EMBEDDING_CONFIG_MISSING`）而非宽松降级——
+即便其余路可用也不返回部分结果，避免"读侧系统模型 / 写侧用户模型"向量空间不一致的误召回。
+
+## 6. Chunk Status Values
 
 | Status | 含义 |
 | --- | --- |

@@ -20,7 +20,7 @@ Feature: 前端直连 Python 召回 SSE
     And 配置 session token 的 RECALL_SESSION_JWT_ISSUER=tolink-java
     And 配置 session token 的 RECALL_SESSION_JWT_AUDIENCE=tolink-rag-frontend
     And 配置 session token 的 RECALL_SESSION_JWT_SCOPE=recall:stream
-    And session token 的签名密钥与内部 JWT 的 RECALL_INTERNAL_JWT_SECRET 是不同的独立密钥
+    And session token 使用 RECALL_SESSION_JWT_SECRET 这一独立专用签名密钥
     And session token 短期可复用，有效期内只校验 exp，不做一次性消费
     And 配置 RECALL_RESULT_LIMIT=20
     And 配置 RECALL_ENABLED_SOURCES=bm25,sparse
@@ -75,8 +75,8 @@ Feature: 前端直连 Python 召回 SSE
       | scope 不是 recall:stream      |
       | exp 已过期                    |
 
-  Scenario: 用内部 JWT 密钥签发的 token 被拒绝以隔离两条链路
-    Given 一个 token 用内部端点的 RECALL_INTERNAL_JWT_SECRET 签发 scope=recall:execute
+  Scenario: 用其它服务密钥签发的 token 被拒绝以隔离会话凭证
+    Given 一个 token 用非 session 密钥的其它密钥签发 claims 全对
     When 前端携带该 token 调用 POST /api/v1/recall/stream body query="任意" dataset_ids=[1]
     Then HTTP 响应状态为 401
     And 响应体 code 等于 "RECALL_SESSION_UNAUTHORIZED"

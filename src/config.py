@@ -75,19 +75,9 @@ class Settings(BaseSettings):
     )
 
     # ==========================================
-    # 内部召回 API 配置 (Internal Recall API)
+    # 召回执行配置 (Recall Pipeline)
     # ==========================================
-    # 外部用户态 Recall API 归属 Java；Python 只暴露内部 recall runtime，
-    # 校验 Java 签发的短期内部 JWT(HS256)。详见 docs/internals/recall.md。
-    RECALL_INTERNAL_AUTH_ENABLED: bool = True
-    RECALL_INTERNAL_JWT_ISSUER: str = "tolink-java"
-    RECALL_INTERNAL_JWT_AUDIENCE: str = "tolink-rag"
-    RECALL_INTERNAL_JWT_SCOPE: str = "recall:execute"
-    # HS256 共享密钥：Java 签发端与 Python 验签端必须一致。
-    # 默认值仅用于本地联调，生产必须通过环境变量 / 密钥管理系统覆盖。
-    RECALL_INTERNAL_JWT_SECRET: str = (
-        "9780df1524906ac133898a8cc74280c512f0334d32d795786c021059ec09b5da"
-    )
+    # 召回融合 pipeline 的通用执行参数，两条召回链路共用。
     # 单次召回最大执行时间（毫秒）；超过即以 SSE error RECALL_TIMEOUT 终止。
     RECALL_STREAM_TIMEOUT_MS: int = 60000
     # pipeline 严格模式默认值：False=宽松，允许单路失败降级。
@@ -104,15 +94,14 @@ class Settings(BaseSettings):
     # 对外直连召回 SSE 配置 (Recall Direct SSE / LINK-40)
     # ==========================================
     # 前端凭 Java 签发的短期 session token 直连 Python `POST /api/v1/recall/stream`。
-    # 与内部端点(RECALL_INTERNAL_*)的核心差异：面向浏览器、密钥独立、受众独立。
     # 详见 docs/internals/recall_http_api.md「对外直连 SSE」。
     RECALL_SESSION_AUTH_ENABLED: bool = True
     RECALL_SESSION_JWT_ISSUER: str = "tolink-java"
-    # 受众与内部端点(tolink-rag)区分：前端面凭证独立标识，避免内部 token 误用到对外端点。
+    # 前端面凭证独立受众标识，避免与其他 token 混用。
     RECALL_SESSION_JWT_AUDIENCE: str = "tolink-rag-frontend"
     RECALL_SESSION_JWT_SCOPE: str = "recall:stream"
-    # 独立 HS256 密钥：与 RECALL_INTERNAL_JWT_SECRET 物理隔离，前端面 token 疑似泄露时
-    # 可单独轮转、不牵连 Java 内部调用。默认值仅供本地联调，生产必须用环境变量覆盖。
+    # 独立 HS256 密钥：前端面 token 疑似泄露时可单独轮转。
+    # 默认值仅供本地联调，生产必须用环境变量覆盖。
     RECALL_SESSION_JWT_SECRET: str = (
         "3f8c1d6a90b74e2f8a5c0d1e7b3f9a26c4d8e0f1a2b3c4d5e6f7081929a3b4c5d"
     )
