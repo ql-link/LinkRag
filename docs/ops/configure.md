@@ -183,12 +183,12 @@ logs/
 
 ## 召回执行配置
 
-召回融合 pipeline 的通用执行参数（对外直连 SSE 端点共用）。详见
+召回融合 pipeline 的通用执行参数（RAG 问答流与纯召回 JSON 两端点共用）。详见
 [docs/internals/recall_http_api.md](../internals/recall_http_api.md)。
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `RECALL_STREAM_TIMEOUT_MS` | `60000` | 单次召回最大执行时间（毫秒）；超时以 SSE `error` RECALL_TIMEOUT 终止 |
+| `RECALL_STREAM_TIMEOUT_MS` | `60000` | 单次召回最大执行时间（毫秒）；超时 RAG 流以 SSE `error` RECALL_TIMEOUT 终止，纯召回 JSON 返回 `504` RECALL_TIMEOUT |
 | `RECALL_STRICT_DEFAULT` | `false` | pipeline 严格模式默认；false=宽松，允许单路失败降级 |
 | `RECALL_RESULT_LIMIT` | `20` | 服务端固定返回候选上限（同时作为各路执行期 `top_k`）|
 | `RECALL_ENABLED_SOURCES` | `bm25,sparse,dense` | 启用的召回路（逗号分隔）。本期默认开启三路；运维侧可显式 set `bm25,sparse` 暂时回退到 dev 旧行为；未登记的 source 出现在配置中装配期 `ValueError` |
@@ -196,12 +196,13 @@ logs/
 | `SPARSE_RETRIEVAL_SCORE_THRESHOLD` | `0.0` | sparse 召回默认 score 阈值（0.0 = 不过滤；详见 [vectorization.md §9.4](../internals/vectorization.md)） |
 | `DENSE_RETRIEVAL_TOP_K` | `10` | dense 召回 facade 直调时的兜底 top_k；pipeline 路径下被 `RECALL_RESULT_LIMIT` 覆盖 |
 | `DENSE_RETRIEVAL_SCORE_THRESHOLD` | `0.0` | dense 召回默认 score 阈值（cosine 上界 [0, 1]，0.0 = 不过滤；facade 入口校验 `> 1.0` 早死） |
-| `RECALL_GENERATION_CONTEXT_TOKEN_BUDGET` | `4000` | 召回后 LLM 生成拼装上下文的 token 预算上限；命中片段按融合分数从高到低纳入，累计超预算即截断尾部低分片段（仅对外直连端点的生成阶段生效） |
+| `RECALL_GENERATION_CONTEXT_TOKEN_BUDGET` | `4000` | 召回后 LLM 生成拼装上下文的 token 预算上限；命中片段按融合分数从高到低纳入，累计超预算即截断尾部低分片段（仅 RAG 问答流的生成阶段生效） |
 
-### 对外直连召回 SSE 配置（LINK-40）
+### 对外会话鉴权配置（RAG 流 / 纯召回 JSON）
 
-对外直连召回 SSE 接口 `POST /api/v1/recall/stream` 的配置。前端凭 Java 签发的短期
-session token 直连，使用**独立专用密钥**验签。详见
+对外端点 `POST /api/v1/rag/stream`（RAG 问答流）与 `POST /api/v1/recall`（纯召回 JSON）的
+会话鉴权配置。前端凭 Java 签发的短期 session token 直连，使用**独立专用密钥**验签。并发限流
+（`RECALL_SESSION_MAX_CONCURRENT`）**仅 RAG 流生效**，纯召回不限流。详见
 [recall_http_api.md](../internals/recall_http_api.md)。
 
 | 变量 | 默认 | 说明 |
