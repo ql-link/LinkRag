@@ -15,12 +15,23 @@ src/core/llm/
 ├── tokenizer.py           # token 估算
 ├── exceptions.py          # LLM 异常类型
 └── providers/
+    ├── _rerank.py          # 标准 /rerank 契约的共享调用与解析助手
     ├── openai.py
     ├── anthropic.py
     ├── glm.py
     ├── deepseek.py
     └── qwen.py
 ```
+
+### RERANK 能力
+
+`openai` / `qwen` / `glm` / `deepseek` 四个 OpenAI 兼容 provider 都声明 `CapabilityType.RERANK`，并复用 `providers/_rerank.py` 的 `standard_rerank()` 发起标准 `POST /rerank` 调用（Jina / Cohere / 硅基流动 同构契约：请求 `{model, query, documents, top_n?, return_documents}`，响应 `{results:[{index, relevance_score, document}], tokens|usage}`），统一解析为 `RerankResult`。要点：
+
+- rerank 模型由调用方 `model` 指定，缺省回退到 provider 构造时的 `model_name`（即用户 RERANK 配置的模型名）；没有内置默认 rerank 模型。
+- `top_n=None` 时不写入请求体、不在 provider 侧截断，对全部 `documents` 打分；截断与取 Top-K 由调用方负责。
+- 实际能否走通取决于配置的 `api_base_url` 是否提供 `/rerank` 端点（推荐 provider=`openai` + base_url 指向硅基流动 + 模型 `BAAI/bge-reranker-v2-m3`）。
+- `anthropic` 用 Messages API、无 `/rerank`，`rerank()` 仍抛 `NotImplementedError`。
+- **RERANK 不走系统兜底**：`SYSTEM_LLM_MODEL_RERANK` 留空，必须由用户在 RERANK 能力配置里显式指定。
 
 相关服务：
 
@@ -88,7 +99,7 @@ ParseTaskService / ChunkEmbeddingPipeline / MarkdownEnhancementOrchestrator
 - `SYSTEM_LLM_API_BASE`
 - `SYSTEM_LLM_MODEL_CHAT`
 - `SYSTEM_LLM_MODEL_EMBEDDING`
-- `SYSTEM_LLM_MODEL_RERANK`
+- `SYSTEM_LLM_MODEL_RERANK`（默认留空：RERANK 不走系统兜底，必须由用户配置）
 - `SYSTEM_LLM_MODEL_VISION`
 
 用户 API 使用请求头 `X-User-Id` 读取用户配置。若用户指定 `config_id`，按配置 ID 获取；否则按能力类型获取默认配置。找不到用户配置时，部分链路会尝试系统兜底配置。
