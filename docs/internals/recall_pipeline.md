@@ -111,7 +111,7 @@ class Retriever(Protocol):
 - 合法但无命中时返回 `[]`，不要抛异常。
 - 模型不可达、ES 超时、存储异常等不可恢复失败可抛任意 Exception，由 Pipeline 根据容错配置处理。
 - `RetrieverHit.chunk_id` 必须锚定 MySQL `kb_document_chunk.chunk_id`，下游 reranker / 上下文拼装阶段用它反查正文。
-- `user_id` / `top_k` 在**执行期**由 Pipeline 透传（来自 `RecallRequest`），retriever 不在装配期持有它们——这样 Pipeline 与 retriever 可单例复用，HTTP 入口按请求注入用户上下文。内部召回 HTTP 入口见 [recall_http_api.md](recall_http_api.md)。
+- `user_id` / `top_k` 在**执行期**由 Pipeline 透传（来自 `RecallRequest`），retriever 不在装配期持有它们——这样 Pipeline 与 retriever 可单例复用，HTTP 入口按请求注入用户上下文。召回 HTTP 入口见 [recall_http_api.md](recall_http_api.md)。
 
 ---
 

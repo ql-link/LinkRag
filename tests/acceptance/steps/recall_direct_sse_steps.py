@@ -105,7 +105,7 @@ class _FakeRedis:
 class _State:
     claims: dict = field(default_factory=dict)
     defect: str | None = None
-    sign_with_internal: bool = False
+    sign_with_foreign: bool = False
     body: dict | None = None
     raw_body: str | None = None
     omit_dataset: bool = False
@@ -173,18 +173,18 @@ def direct_acc_state():
 
 def _make_token(state: _State) -> str:
     """按 state 签发 session token（含缺陷注入）。"""
-    if state.sign_with_internal:
-        # 用内部端点密钥 + 内部 scope 签发：对外端点应因密钥/aud/scope 不符而拒绝。
+    if state.sign_with_foreign:
+        # claims 全对、但用其它服务的密钥签发：对外端点应因验签失败而拒绝（密钥隔离）。
         return jwt.encode(
             {
-                "iss": settings.RECALL_INTERNAL_JWT_ISSUER,
-                "aud": settings.RECALL_INTERNAL_JWT_AUDIENCE,
-                "scope": settings.RECALL_INTERNAL_JWT_SCOPE,
+                "iss": settings.RECALL_SESSION_JWT_ISSUER,
+                "aud": settings.RECALL_SESSION_JWT_AUDIENCE,
+                "scope": settings.RECALL_SESSION_JWT_SCOPE,
                 "sub": state.claims.get("sub", "123"),
                 "dataset_ids": state.claims.get("dataset_ids", [1]),
                 "exp": int(time.time()) + 300,
             },
-            settings.RECALL_INTERNAL_JWT_SECRET,
+            "some-other-service-secret-not-the-session-key",
             algorithm="HS256",
         )
 
@@ -277,10 +277,10 @@ def _set_session_config(direct_acc_state, name, value):
     direct_acc_state.set_setting(name, value)
 
 
-@given(parsers.parse("session token 的签名密钥与内部 JWT 的 RECALL_INTERNAL_JWT_SECRET 是不同的独立密钥"))
+@given(parsers.parse("session token 使用 RECALL_SESSION_JWT_SECRET 这一独立专用签名密钥"))
 def _distinct_secret(direct_acc_state):
-    # 配置默认即独立；显式断言两者不同，避免回归时被改成同一个。
-    assert settings.RECALL_SESSION_JWT_SECRET != settings.RECALL_INTERNAL_JWT_SECRET
+    # 显式断言会话密钥已配置且非占位空值，避免回归时被清空。
+    assert settings.RECALL_SESSION_JWT_SECRET
 
 
 @given(parsers.parse("session token 短期可复用，有效期内只校验 exp，不做一次性消费"))
@@ -326,10 +326,10 @@ def _claims_defect(direct_acc_state, defect):
     direct_acc_state.defect = defect
 
 
-@given(parsers.parse("一个 token 用内部端点的 RECALL_INTERNAL_JWT_SECRET 签发 scope=recall:execute"))
-def _internal_signed(direct_acc_state):
+@given(parsers.parse("一个 token 用非 session 密钥的其它密钥签发 claims 全对"))
+def _foreign_signed(direct_acc_state):
     direct_acc_state.claims = {"sub": "123", "dataset_ids": [1]}
-    direct_acc_state.sign_with_internal = True
+    direct_acc_state.sign_with_foreign = True
 
 
 @given(parsers.parse("bm25 与 sparse 两路均返回命中"))
