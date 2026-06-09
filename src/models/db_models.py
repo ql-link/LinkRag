@@ -13,7 +13,9 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    SmallInteger,
     String,
+    Text,
     UniqueConstraint,
     func,
 )
@@ -274,4 +276,37 @@ class BlogAssetDB(Base):
     __table_args__ = (
         UniqueConstraint("object_key", name="uk_blog_asset_object_key"),
         Index("idx_blog_asset_post_type", "post_id", "asset_type", "is_deleted", "created_at"),
+    )
+
+
+class UserFeedbackDB(Base):
+    """匿名用户反馈
+
+    表：user_feedback
+    """
+
+    __tablename__ = "user_feedback"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    type: Mapped[str] = mapped_column(String(32), default="OTHER", nullable=False)
+    title: Mapped[str] = mapped_column(String(128), nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    attachment_object_key: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    status: Mapped[str] = mapped_column(String(32), default="PENDING", nullable=False)
+    priority: Mapped[int] = mapped_column(SmallInteger, default=3, nullable=False)
+    admin_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    admin_reply: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    processed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        Index("idx_feedback_created", "created_at"),
+        Index("idx_feedback_status_priority", "status", "priority", "created_at"),
+        Index("idx_feedback_type_created", "type", "created_at"),
     )
