@@ -125,7 +125,7 @@ python scripts/flow-guard.py status
 
 1. **先回写 spec**：涉及业务规则 / 验收断言的，回写 `acceptance.feature`；涉及范围 / 流程 / 模块判断的，回写 `brief.md` 对应章节。回写后再继续编码。
 2. **留痕**：在 `implementation_report.md` 的「Spec 偏差记录」章节记一条（原 spec 怎么写、实际怎么改、回写到哪）。任何一次 spec 回写都使本次实现落入「必须写改造报告」。
-3. **收口对齐**：回写过的 `acceptance.feature` 在 `branch-pr-workflow` 收口时需提升到 `tests/acceptance/features/`，保证追溯链不断。
+3. **收口对齐**：回写过的 `acceptance.feature` 在 `branch-pr-workflow` 收口时用 `python scripts/promote_acceptance.py <feature>` 提升到 `tests/acceptance/features/`(搬运 + 校验 0 undefined step)，保证追溯链不断。
 
 这条规则给原本单向的链补上返回边：缺口 → 回写 spec → 留痕 → 收口提升，而不是悄悄改代码。
 

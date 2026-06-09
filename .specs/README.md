@@ -69,7 +69,7 @@ python scripts/flow-guard.py status                          # 报当前 feature
 | `.specs/` 里 | 沉淀到 |
 | --- | --- |
 | 关键设计决策、风险、权衡 | PR 描述 |
-| 可执行的 Gherkin 验收场景 | `tests/acceptance/features/<name>.feature` + `tests/acceptance/test_<name>.py` + step 实现 |
+| 可执行的 Gherkin 验收场景 | `tests/acceptance/features/<name>.feature` + `tests/acceptance/test_<name>.py` + step 实现（用 `python scripts/promote_acceptance.py <feature>` 提升，自动搬运 + 校验 0 undefined step + 防漂移） |
 | 新模块或边界变化 | `docs/internals/<module>.md` |
 | 新对外契约 | `docs/api/` 对应文件 |
 | 新配置项 | `docs/ops/configure.md` |
