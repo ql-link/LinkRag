@@ -41,6 +41,7 @@ toLink-Rag/                         # 仓库根目录
 │   │   ├── pipeline_architecture.md
 │   │   ├── parse_task_pipeline.md
 │   │   ├── recall_pipeline.md
+│   │   ├── recall_generation.md
 │   │   ├── recall_http_api.md
 │   │   ├── file_parser.md
 │   │   ├── markdown_parser.md
@@ -49,6 +50,7 @@ toLink-Rag/                         # 仓库根目录
 │   │   ├── sparse_vector.md
 │   │   ├── preprocessor.md
 │   │   ├── es_index_storage.md
+│   │   ├── chunk_fact_storage.md
 │   │   ├── mq.md
 │   │   ├── llm.md
 │   │   ├── cache.md
