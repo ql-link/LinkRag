@@ -197,14 +197,23 @@ def post_process_repository_stub():
     pipeline_row = SimpleNamespace(
         id=1,
         pipeline_status="PENDING",
+        # LINK-37 后处理拆分为 6 阶段，cleaning 是首阶段；Stage.should_run 会无默认
+        # getattr 读取对应 status_field，桩必须显式带上每个阶段位，否则 AttributeError。
+        cleaning_status="PENDING",
+        cleaning_duration_ms=None,
         chunking_status="PENDING",
         vectorizing_status="PENDING",
         es_indexing_status="PENDING",
         pretokenize_status="PENDING",
+        sparse_vectorizing_status="PENDING",
         started_at=None,
     )
     repo.get_by_log_id = AsyncMock(return_value=pipeline_row)
     repo.mark_processing = AsyncMock()
+    repo.mark_cleaning_started = AsyncMock()
+    repo.mark_cleaning_success = AsyncMock()
+    repo.mark_cleaning_failed = AsyncMock()
+    repo.mark_post_cleaning = AsyncMock()
     repo.mark_chunking_success = AsyncMock()
     repo.mark_chunking_failed = AsyncMock()
     repo.mark_vectorizing_success = AsyncMock()
@@ -295,10 +304,16 @@ def pipeline_factory(
             id=1,
             parse_started_at=None,
             parse_finished_at=None,
+            parse_duration_ms=None,
             task_status="CREATED",
         )
         log_repo = MagicMock()
         log_repo.create = AsyncMock(return_value=log_row)
+        # CleaningStage.mark_success/mark_failed 与 _handle_unclassified_failure 会 await
+        # 这两个接口；MagicMock 默认返回的非 awaitable 会让 await 抛 TypeError。
+        log_repo.mark_parsed = AsyncMock()
+        log_repo.mark_parse_finished = AsyncMock()
+        log_repo.get_by_task_id = AsyncMock(return_value=log_row)
         log_repo.get_parse_task = AsyncMock(
             return_value=SimpleNamespace(
                 task_id="t-acc-001",
