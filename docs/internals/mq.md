@@ -62,10 +62,14 @@ FastAPI lifespan
 
 | 消息 | 默认 Topic/Queue | 方向 | 说明 |
 | --- | --- | --- | --- |
-| `ParseTaskMessage` | `tolink-document-pares` | Java -> Python | 触发文档解析任务（含首次解析与重试，由 `is_retry` + `previous_task_id` 区分；详见 [mq_integration.md §ParseTaskPayload](../api/mq_contracts.md)） |
+| `ParseTaskMessage` | `tolink.rag.parse_task` | Java -> Python | 触发文档解析任务（含首次解析与重试，由 `is_retry` + `previous_task_id` 区分；详见 [mq_integration.md §ParseTaskPayload](../api/mq_contracts.md)） |
 | `ParseResultMessage` | `tolink.rag.parse_result` | Python -> Java | 回传解析整体终态（重试任务的通知体 **不** 回带 `previous_task_id` / `retry_of_task_id`，Java 自有映射） |
 | `CacheSyncMessage` | `tolink.rag.cache_sync` | Java -> Python | 失效或刷新用户 LLM 配置缓存 |
 | `UsageReportMessage` | `tolink.rag.usage_report` | Python -> Java/统计侧 | 上报 LLM 调用用量 |
+
+> 当前 `consumers/` 下只有 `parse_task_consumer.py` 一个消费入口。`CacheSyncMessage` / `UsageReportMessage` 仅定义了消息类与 topic，本服务侧暂未注册对应消费者（生产/订阅由各自业务链路按需接入），不要据此假定本服务会自动消费这两类消息。
+>
+> 收发 topic 名由各消息类的 `MQ_NAME` 常量固定，`PARSE_TASK_TOPIC` 等环境变量仅用于 §4.1 的 Kafka topic 自动创建，不改变实际收发 topic。
 
 `ParseResultMessage.serialize()` 输出的是 Java 约定的业务 payload，不包含 `mq_type`、`mq_name`、`payload` 信封。终态通知以 `document_parsed_log_id`（`document_parsed_log.id`）作为 Java 回查解析日志与流水线的关键字段（字段契约见 [mq_contracts.md §ParseResultPayload](../api/mq_contracts.md)）。
 

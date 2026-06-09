@@ -21,15 +21,18 @@ src/core/splitter/
 上游调用链：
 
 ```text
-ParseTaskPipeline
-  -> _chunk_markdown()
-    -> ChunkingEngine
-      -> MarkdownParser
-      -> BaseChunker
-  -> _persist_chunk_facts()
-    -> ChunkDraftFactory
-    -> ChunkRepository.bulk_insert_pending()
+ChunkingStage
+  -> StageServices.run_chunking()
+    -> StageServices._chunk_markdown()
+      -> create_chunking_engine() -> ChunkingEngine
+        -> MarkdownParser
+        -> BaseChunker
+    -> StageServices._persist_chunk_facts()
+      -> ChunkDraftFactory
+      -> ChunkRepository.bulk_insert_pending()
 ```
+
+> `_chunk_markdown()` / `_persist_chunk_facts()` 属于 `StageServices`（`stages/services.py`），由 `ChunkingStage` 经 `run_chunking()` 调用；`ParseTaskPipeline` 只做阶段编排，不再直接持有这两个方法。
 
 解析任务流水线通过配置构建分片器。当前默认且唯一的主路径是
 `StructuredSemanticChunker`；旧版规则分片已移除，不再提供静默 fallback：
@@ -244,7 +247,7 @@ engine = ChunkingEngine(chunker=SimpleChunker())
 chunks = engine.process(markdown)
 ```
 
-如果要替换解析流水线默认策略，需要修改 `ParseTaskPipeline._build_chunk_processor()`。
+> 解析流水线的默认链路并不用上面的 `SimpleChunker`，而是 `StructuredSemanticChunker`（见 §1）。如果要替换默认策略，需要修改装配入口 `create_chunking_engine()`（`src/core/splitter/factory.py`），它被 `StageServices._chunk_markdown()` 调用。
 
 ## 6. 修改已有分片器
 

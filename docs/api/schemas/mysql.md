@@ -265,7 +265,7 @@ ORM：[`DocumentParseTask`](../../src/models/parse_task.py)
 | `document_original_file_id` | BIGINT UNSIGNED UNIQUE | 原文件 ID |
 | `dataset_id` | BIGINT UNSIGNED | 数据集 ID |
 | `user_id` | BIGINT UNSIGNED | 用户 ID |
-| `latest_parse_task_id` | VARCHAR(36) | 最新解析 task_id |
+| `latest_parse_task_id` | VARCHAR(36) NULL | 最新解析 task_id |
 | `original_filename` | VARCHAR(255) | 原文件名快照 |
 | `parse_count` | INT | 累计解析次数 |
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
@@ -286,7 +286,7 @@ ORM：[`DocumentParsedLog`](../../src/models/parse_task.py)
 | `id` | BIGINT UNSIGNED PK | 主键 |
 | `task_id` | VARCHAR(36) UNIQUE | 解析任务 UUID |
 | `document_original_file_id` | BIGINT UNSIGNED | 原文件 ID |
-| `document_parse_file_id` | BIGINT UNSIGNED | 文件解析表 ID |
+| `document_parse_file_id` | BIGINT UNSIGNED NULL | 文件解析表 ID |
 | `trigger_mode` | VARCHAR(20) | `upload_auto` / `manual_retry` |
 | `parsed_filename` | VARCHAR(255) | 解析后文件名 |
 | `parsed_bucket_name` | VARCHAR(64) | 解析结果桶 |
@@ -320,7 +320,7 @@ ORM：[`DocumentParsePipeline`](../../src/models/parse_task.py)
 | `document_parsed_log_id` | BIGINT UNSIGNED UNIQUE | 解析日志主键 |
 | `task_id` | VARCHAR(36) | 解析任务 ID |
 | `document_original_file_id` | BIGINT UNSIGNED | 原文件 ID |
-| `document_parse_file_id` | BIGINT UNSIGNED | 文件解析表 ID |
+| `document_parse_file_id` | BIGINT UNSIGNED NULL | 文件解析表 ID |
 | `pipeline_status` | VARCHAR(20) | 整体任务状态：`PENDING` / `PROCESSING` / `SUCCESS` / `FAILED`（Java 侧判定"上次任务是否整体成功"的唯一字段；`SUCCESS` 翻转点为 sparse 阶段成功） |
 | `cleaning_status` | VARCHAR(20) | 文档清洗（=解析+上传 markdown）阶段状态：`PENDING` / `PROCESSING` / `SUCCESS` / `FAILED`（brief 称 `parsing_status`） |
 | `chunking_status` | VARCHAR(20) | `PENDING` / `PROCESSING` / `SUCCESS` / `FAILED` |
@@ -425,7 +425,7 @@ ORM：[`ChunkRecordDB`](../../src/models/chunk_record.py)
 | `doc_id` | BIGINT UNSIGNED | 文档 ID（对应原始文件） |
 | `set_id` | BIGINT UNSIGNED | 知识集 / 数据集 ID |
 | `user_id` | BIGINT UNSIGNED | 用户 ID |
-| `bucket_id` | INT | 路由后的 Qdrant 物理桶编号 |
+| `bucket_id` | INT NULL | 路由后的 Qdrant 物理桶编号（路由前为空） |
 | `content` | TEXT | Splitter 最终产出的可检索 Chunk 原文 |
 | `content_hash` | VARCHAR(64) | 内容 SHA-256 |
 | `chunk_type` | VARCHAR(32) | `paragraph` / `image` / `table` / `code_block` / `heading` / `mixed` / `text` |
