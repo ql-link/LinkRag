@@ -76,6 +76,7 @@ logs/
 .claude/worktrees/
 # Claude Code per-user permission allowlist
 .claude/settings.local.json
+/.agents/skills
 
 /requirements
 
