@@ -221,3 +221,33 @@ RecallPipelineConfig(
 - 单路查询、预处理、过滤和打分逻辑放在各自 Retriever 内。
 - Pipeline 只消费 `RetrieverHit`，只输出 `RecallHit`，不携带 chunk 正文。
 - 不做跨路原始分归一化；需要更精细排序时放到 reranker 阶段。
+
+---
+
+## 11. 召回后重排模块（独立下游，LINK-130）
+
+`RecallPipeline` 只到 RRF 粗融合为止。RRF 之后的精排由一个**独立模块**承接，与纯召回解耦：
+
+```text
+src/core/pipeline/
+├── chunk_content.py     # 中立正文回填 helper：按 chunk_id 批量取本用户 ACTIVE 非空正文
+│                        #   （rerank 与 recall.generation 共享，避免 rerank 反向依赖 generation）
+└── rerank/
+    ├── __init__.py      # 导出 PostRecallReranker / RerankRequest / RerankResponse / RerankedHit
+    ├── models.py        # RerankRequest / RerankedHit / RerankResponse
+    └── reranker.py      # PostRecallReranker：回填正文 → 解析用户 RERANK 模型 → 调用 → 映射/降级
+```
+
+流程：`RecallHit 列表 → 回表取正文 → 按 RRF 顺序构造 documents → 调用用户 RERANK 模型 →
+按返回 index/score 映射回候选、补 rerank_score/rerank_rank → 截断 top_n`。
+
+边界与语义：
+
+- **不触碰召回边界**：`RecallPipeline` 仍只返回 RRF 后 `RecallResponse`，不查正文、不调 rerank。
+- **输出保留 RRF 解释信息**：`RerankedHit` 在 chunk 元信息上保留 `fused_score` 与各路 `scores`，新增 `rerank_score` / `rerank_rank`。
+- **失败语义**：用户未配置 RERANK 模型 → 硬失败（异常上抛，不降级）；rerank 调用失败 / 返回不可用 → 降级返回 RRF 顺序候选并标记 `rerank_applied=False`。
+- **top_n**：调用方传入，缺省取 `RERANK_DEFAULT_TOP_N`（默认 8）。
+- **本期独立交付**：模块不接入对外直连生成链路（`recall_stream_runtime`），编排接入与召回候选池放大（`RECALL_RESULT_LIMIT` 20→64，LINK-136）为后续 issue。
+- 测试：`tests/unit/core/pipeline/rerank/`，以替身注入正文回填与模型解析，不连真实 DB / LLM。
+
+> 注：当前 LLM provider 尚无具体 RERANK 实现（各 provider `rerank()` 为 `NotImplementedError`、未声明 `CapabilityType.RERANK`）。本模块按 `IReranker` 接口契约实现并以替身单测，接入真实 rerank-capable provider 后即可端到端生效。

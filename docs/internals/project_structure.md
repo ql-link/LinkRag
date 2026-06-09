@@ -79,13 +79,16 @@ toLink-Rag/                         # 仓库根目录
 │   │   ├── internal_auth.py       # Java 管理端内部接口鉴权
 │   │   ├── recall_session_auth.py # 召回会话鉴权
 │   │   ├── recall_pipeline_provider.py # 召回 Pipeline 装配/提供
-│   │   ├── recall_stream_runtime.py    # 召回流式运行时
+│   │   ├── recall_stream_runtime.py    # RAG 问答流 SSE 运行时（/api/v1/rag/stream）
+│   │   ├── recall_json_runtime.py      # 纯召回 JSON 运行时（/api/v1/recall）
+│   │   ├── recall_serialization.py     # 召回结果序列化
 │   │   ├── routes/               # 路由层
 │   │   │   ├── internal.py        # Java 管理端内部 LLM 配置/用量接口
 │   │   │   ├── llm.py
 │   │   │   ├── mq.py
 │   │   │   ├── parse.py
-│   │   │   └── recall_direct.py   # 对外直连召回 SSE 入口（内部召回网关 recall.py 已随 LINK-122 删除）
+│   │   │   ├── rag.py             # 对外 RAG 问答流 SSE 入口（POST /api/v1/rag/stream）
+│   │   │   └── recall.py          # 对外纯召回 JSON 入口（POST /api/v1/recall）
 │   │   └── schemas/              # HTTP 请求/响应模型
 │   │       ├── mq.py
 │   │       └── parse.py

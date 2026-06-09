@@ -1,8 +1,8 @@
 # 召回后生成（RAG 答案生成）
 
-本文说明**对外直连 SSE 召回**在拿到候选 chunk 之后、到流式产出答案之间的"生成阶段"。它是 [召回 Pipeline](recall_pipeline.md) 的下游姊妹环节：召回只负责返回不含正文的候选，生成阶段负责回填正文、按预算拼装上下文、调用用户模型流式作答。
+本文说明**对外 RAG 问答流**（`POST /api/v1/rag/stream`，路由 `routes/rag.py`，SSE）在拿到候选 chunk 之后、到流式产出答案之间的"生成阶段"。它是 [召回 Pipeline](recall_pipeline.md) 的下游姊妹环节：召回只负责返回不含正文的候选，生成阶段负责回填正文、按预算拼装上下文、调用用户模型流式作答。（与之并列的 `POST /api/v1/recall` 是纯召回 JSON、不进入生成，见 [recall_http_api.md](recall_http_api.md)。）
 
-入口端点与 SSE 事件契约见 [recall_http_api.md](recall_http_api.md) 与 [http_contracts.md §6](../api/http_contracts.md#6-recall-api对外直连-sse)；错误码见 [error_codes.md §5](../api/error_codes.md#5-recall-错误码对外直连-sse)。
+入口端点与 SSE 事件契约见 [recall_http_api.md](recall_http_api.md) 与 [http_contracts.md §6](../api/http_contracts.md#6-rag--recall-api对外)；错误码见 [error_codes.md §5](../api/error_codes.md)。
 
 ---
 
@@ -64,7 +64,7 @@
 
 ## 4. SSE 终态事件与错误码
 
-`recall_event_stream` 把每类结果/异常映射为一帧终态 SSE 事件后关闭流（错误码常量定义在 [`src/api/internal_auth.py`](../../src/api/internal_auth.py)，语义见 [error_codes.md §5](../api/error_codes.md#5-recall-错误码对外直连-sse)）：
+`recall_event_stream` 把每类结果/异常映射为一帧终态 SSE 事件后关闭流（错误码常量定义在 [`src/api/internal_auth.py`](../../src/api/internal_auth.py)，语义见 [error_codes.md §5](../api/error_codes.md)）：
 
 | 情况 | 事件 | code |
 | --- | --- | --- |
@@ -91,7 +91,7 @@
 | `RECALL_STREAM_TIMEOUT_MS` | 召回执行超时（毫秒）；超时发 `RECALL_TIMEOUT` |
 | `RECALL_GENERATION_CONTEXT_TOKEN_BUDGET` | 上下文拼装的 token 预算上限 |
 
-详见 [ops/configure.md](../ops/configure.md#对外直连召回-sse-配置)。
+详见 [ops/configure.md](../ops/configure.md)。
 
 ---
 

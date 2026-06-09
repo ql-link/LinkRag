@@ -4,7 +4,7 @@
 
 ## 1. 通用约定
 
-- API 前缀按模块划分：`/api/v1/parser`、`/api/v1/mq`、`/api/v1/llm`、`/api/v1/internal/llm`、`/api/v1/recall`。
+- API 前缀按模块划分：`/api/v1/parser`、`/api/v1/mq`、`/api/v1/llm`、`/api/v1/internal/llm`、`/api/v1/rag`、`/api/v1/recall`。
 - 普通 JSON 响应通常使用 `{code, message, data}` 或模块自定义响应模型。
 - 解析和 MQ 路由异常通常返回 HTTP `500`，`detail` 为异常文本。
 - LLM 路由在业务异常中多返回 `APIResponse(code=500, message=..., data=null)`。
@@ -190,21 +190,24 @@ Python 发往 Java 的 `tolink.rag.parse_result` 消息不带 MQ 信封，消息
 
 日期参数格式：`YYYY-MM-DD`。
 
-## 6. Recall API（对外直连 SSE）
+## 6. RAG / Recall API（对外）
 
-路由前缀：`/api/v1/recall`。**面向浏览器前端**：前端凭 Java 签发的**短期 session token**
-直连，绕过 Java 中转。运行时与会话鉴权细节见
+**面向浏览器前端**：前端凭 Java 签发的**短期 session token** 直连，绕过 Java 中转。
+两个端点拆分语义（LINK-131）——`/api/v1/rag/stream` 承接「召回 + LLM 流式生成」的完整 RAG
+问答（SSE），`/api/v1/recall` 是纯召回 JSON（一次性返回 hits，不生成）。运行时与会话鉴权细节见
 [docs/internals/recall_http_api.md](../internals/recall_http_api.md)。
 
-> 历史背景：早期曾存在一条 Java Recall Gateway → Python 内部端点
-> `/api/v1/internal/recall/stream` 的网关链路（纯召回、无生成），已随本直连方案废弃清理
-> （LINK-122）。
+> 历史背景：早期 `/api/v1/recall/stream` 曾以 `recall` 之名承载完整 RAG 问答（SSE），语义已超出
+> 召回；LINK-131 拆为 `/api/v1/rag/stream`（RAG 问答流）与 `/api/v1/recall`（纯召回 JSON），旧
+> `/api/v1/recall/stream` 删除、不留兼容。更早还存在一条 Java Recall Gateway → Python 内部端点
+> `/api/v1/internal/recall/stream` 的网关链路（纯召回、无生成），已随直连方案废弃清理（LINK-122）。
 
-| Method | Path | 用途 | 鉴权 |
-| --- | --- | --- | --- |
-| `POST` | `/stream` | 前端直连多路召回，SSE 流式返回融合候选 | Header `Authorization: Bearer <session-token>` |
+| Method | Path | 用途 | 返回 | 鉴权 |
+| --- | --- | --- | --- | --- |
+| `POST` | `/api/v1/rag/stream` | 召回 + LLM 流式生成的完整 RAG 问答 | `text/event-stream` | Header `Authorization: Bearer <session-token>` |
+| `POST` | `/api/v1/recall` | 纯召回，一次性返回融合候选（预留实现） | `application/json` | Header `Authorization: Bearer <session-token>` |
 
-### POST /api/v1/recall/stream
+### POST /api/v1/rag/stream
 
 前端以 fetch 流式（`ReadableStream`）建连，**不使用** `EventSource`（无法设鉴权头）。
 请求头：`Authorization: Bearer <session-token>`、`Content-Type: application/json`、可选
@@ -249,7 +252,32 @@ data: {"answer": "<完整答案>", "hits": [...], "failed_sources": []}
 `hits` 按 `fused_score` 降序，长度 ≤ `RECALL_RESULT_LIMIT`，`scores` 键集合等于已装配召回路；
 `failed_sources` 表达「降级成功」（如 bm25 成功、sparse 失败），空列表表示无失败路。失败终态
 `error` 发送后关闭流，`message` 不含内部堆栈。错误码见
-[error_codes.md §5](error_codes.md#5-recall-错误码对外直连-sse)。
+[error_codes.md §5](error_codes.md#5-recall-错误码对外-rag-流--纯召回-json)。
 
 > CORS：本端点暴露给浏览器，生产环境必须把 `CORS_ORIGINS` 收敛为前端可信域名清单
 > （不可用 `*`）。
+
+### POST /api/v1/recall
+
+纯召回 JSON：一次性返回融合候选，**不调 CHAT 模型、不回填正文、不建立 SSE、不做并发限流**。
+当前阶段为接口预留实现，前端暂不真正接入。请求头：`Authorization: Bearer <session-token>`、
+`Content-Type: application/json`、可选 `Origin`（CORS）、`X-Request-Id`。
+
+会话鉴权与 `dataset_ids` scope 校验同 `/api/v1/rag/stream`。请求体（仅以下字段；出现 `config_id` /
+`user_id` / `top_k` / `sources` / `strict` / `doc_ids` 等任何未知字段返回 `422`）：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `query` | string | 是 | 检索词，不能为空或纯空白 |
+| `dataset_ids` | list[int] | 否 | 数据集**子集选择**，必须 ⊆ token 授权范围（超出 `403`）；省略/空 = 用 token 全量授权范围 |
+
+**不要求 `config_id`**（纯召回不生成）。成功返回 `200`，体与 RAG 流的 `recall_done` 帧同构：
+
+```json
+{ "hits": [ {"chunk_id": "...", "doc_id": 10, "dataset_id": 1, "fused_score": 0.92, "scores": {"bm25": 8.7, "sparse": 0.76}} ], "failed_sources": [] }
+```
+
+`hits` 按 `fused_score` 降序、不含正文，长度 ≤ `RECALL_RESULT_LIMIT`；`failed_sources` 表达降级。
+执行期错误走 **HTTP 状态码**（区别于 SSE error 帧）：无默认 EMBEDDING 配置 `422`、全路失败 `500`、
+召回超时 `504`、未预期异常 `500`，错误体为 `{code, message, data}`，`message` 不含内部堆栈。错误码见
+[error_codes.md §5](error_codes.md#5-recall-错误码对外-rag-流--纯召回-json)。

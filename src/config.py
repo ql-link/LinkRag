@@ -91,10 +91,11 @@ class Settings(BaseSettings):
     RECALL_ENABLED_SOURCES: str = "bm25,sparse,dense"
 
     # ==========================================
-    # 对外直连召回 SSE 配置 (Recall Direct SSE / LINK-40)
+    # 对外会话鉴权配置 (RAG 流 / 纯召回 JSON / LINK-40, LINK-131)
     # ==========================================
-    # 前端凭 Java 签发的短期 session token 直连 Python `POST /api/v1/recall/stream`。
-    # 详见 docs/internals/recall_http_api.md「对外直连 SSE」。
+    # 前端凭 Java 签发的短期 session token 直连 Python 对外端点
+    # `POST /api/v1/rag/stream`（RAG 问答流）与 `POST /api/v1/recall`（纯召回 JSON）。
+    # 详见 docs/internals/recall_http_api.md。
     RECALL_SESSION_AUTH_ENABLED: bool = True
     RECALL_SESSION_JWT_ISSUER: str = "tolink-java"
     # 前端面凭证独立受众标识，避免与其他 token 混用。
@@ -116,6 +117,13 @@ class Settings(BaseSettings):
     RECALL_GENERATION_CONTEXT_TOKEN_BUDGET: int = 4000
 
     # ==========================================
+    # 召回后重排 (Post-Recall Rerank / LINK-130)
+    # ==========================================
+    # 重排模块输出的候选条数兜底默认值。调用方未显式传 top_n 时生效；
+    # 调用方传入则以传入为准。值参考业界 rerank top_n（RAGFlow 默认 6，本项目放宽到 8）。
+    RERANK_DEFAULT_TOP_N: int = 8
+
+    # ==========================================
     # 系统级兜底 LLM 配置 (Platform Default Fallback LLMs)
     # ==========================================
     SYSTEM_LLM_PROVIDER: str = "qwen"
@@ -124,7 +132,10 @@ class Settings(BaseSettings):
 
     SYSTEM_LLM_MODEL_CHAT: str = "qwen3.5-flash"
     SYSTEM_LLM_MODEL_EMBEDDING: str = "text-embedding-v4"
-    SYSTEM_LLM_MODEL_RERANK: Optional[str] = "qwen3-vl-rerank"
+    # RERANK 不走系统兜底：必须由用户在 RERANK 能力配置里显式指定 provider + rerank 模型
+    # （如硅基流动 BAAI/bge-reranker-v2-m3）。置空后 get_system_fallback_config_by_capability("RERANK")
+    # 返回 None，召回链路 allow_system_fallback=False 时即抛 UserModelConfigMissingError（必配不兜底）。
+    SYSTEM_LLM_MODEL_RERANK: Optional[str] = None
     SYSTEM_LLM_MODEL_VISION: Optional[str] = None
     MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT: bool = True
     MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT: bool = True
@@ -261,6 +272,7 @@ class Settings(BaseSettings):
     MINIO_ACCESS_KEY: str = "minioadmin"
     MINIO_SECRET_KEY: str = "minioadmin"
     MINIO_BUCKET_NAME: str = "tolink-rag-docs"
+    MINIO_BLOG_BUCKET: str = "tolink-blog"
     MINIO_USE_SSL: bool = False
     LOCAL_DOCS_PATH: str = "./data/documents"
     PDF_PARSER_BACKEND: str = "mineru"  # auto / mineru / opendataloader / naive

@@ -10,10 +10,12 @@ import httpx
 from src.core.llm.base_provider import BaseProvider
 from src.core.llm.interfaces import CapabilityType
 from src.core.llm.providers._sse import iter_sse_json
+from src.core.llm.providers._rerank import standard_rerank
 from src.core.llm.response import (
     GenerateResult,
     StreamChunk,
     EmbeddingResult,
+    RerankResult,
     UsageInfo,
 )
 from src.core.llm.exceptions import (
@@ -96,8 +98,9 @@ class OpenAIClient:
                 )
             elif response.status_code >= 500:
                 if retry_count < self.max_retries:
-                    # 服务器错误，重试
-                    await self._post(endpoint, json, retry_count + 1)
+                    # 服务器错误，重试。必须 return：否则重试结果被丢弃，控制流落到下方
+                    # response.raise_for_status() 对原始 5xx 抛错，把可恢复的 5xx 变成硬失败。
+                    return await self._post(endpoint, json, retry_count + 1)
                 else:
                     raise ProviderConnectionError(
                         message=f"OpenAI API error: {response.status_code}",
@@ -258,7 +261,11 @@ class OpenAIProvider(BaseProvider):
             **kwargs
         )
         self.model_name = model_name or self.DEFAULT_MODEL
-        self._capabilities = {CapabilityType.TEXT, CapabilityType.EMBEDDING}
+        self._capabilities = {
+            CapabilityType.TEXT,
+            CapabilityType.EMBEDDING,
+            CapabilityType.RERANK,
+        }
         self._client = OpenAIClient(
             api_key=api_key,
             api_base_url=self.api_base_url,
@@ -378,4 +385,26 @@ class OpenAIProvider(BaseProvider):
                 completion_tokens=0,
                 total_tokens=usage.get("total_tokens", 0),
             ),
+        )
+
+    async def rerank(
+        self,
+        query: str,
+        documents: List[str],
+        model: Optional[str] = None,
+        top_n: Optional[int] = None,
+        **kwargs,
+    ) -> RerankResult:
+        """语义重排（标准 ``/rerank`` 契约，见 providers/_rerank.py）。
+
+        rerank 模型由 ``model`` 显式指定，缺省回退到构造时的 ``model_name``（用户 RERANK 配置的模型名）。
+        ``top_n=None`` 时不在 provider 侧截断，对全部 ``documents`` 打分。
+        """
+        return await standard_rerank(
+            self._client._post,
+            query=query,
+            documents=documents,
+            model=model or self.model_name,
+            top_n=top_n,
+            **kwargs,
         )
