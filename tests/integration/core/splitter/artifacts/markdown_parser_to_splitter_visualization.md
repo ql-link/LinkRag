@@ -109,16 +109,16 @@
 
 | Chunk | Strategy | Heading Trail | Lines | Cached | Prev Ctx | Next Ctx | Vector Preview |
 | ---: | --- | --- | --- | --- | --- | --- | --- |
-| 0 | `candidate_boundary` | `Overview > Code Sample` | `L6-L32` | `False` | `0` | `0` | `0.5581, 0.9270, 0.4695, 0.4437` |
-| 1 | `derived_element` | `Overview` | `L9-L9` | `False` | `0` | `0` | `0.7735, 0.1396, 0.1524, 0.7168` |
-| 2 | `candidate_boundary` | `Overview > Deep Dive` | `L34-L61` | `False` | `0` | `0` | `0.8737, 0.7652, 0.9578, 0.3511` |
-| 3 | `derived_element` | `Overview > Metrics Table` | `L37-L41` | `False` | `0` | `0` | `0.5885, 0.8628, 0.5686, 0.3729` |
-| 4 | `semantic` | `Overview > Semantic Pressure Test` | `L63-L72` | `False` | `0` | `64` | `0.1940, 0.7348, 0.1116, 0.0561` |
-| 5 | `semantic` | `Overview > Semantic Pressure Test` | `L63-L72` | `False` | `64` | `0` | `0.1617, 0.4241, 0.7032, 0.4251` |
+| 0 | `candidate_boundary + semantic_oversized` | `Overview > Code Sample` | `L6-L32` | `False` | `0` | `0` | `0.5581, 0.9270, 0.4695, 0.4437` |
+| 1 | `candidate_boundary + semantic_oversized` | `Overview` | `L9-L9` | `False` | `0` | `0` | `0.7735, 0.1396, 0.1524, 0.7168` |
+| 2 | `candidate_boundary + semantic_oversized` | `Overview > Deep Dive` | `L34-L61` | `False` | `0` | `0` | `0.8737, 0.7652, 0.9578, 0.3511` |
+| 3 | `candidate_boundary + semantic_oversized` | `Overview > Metrics Table` | `L37-L41` | `False` | `0` | `0` | `0.5885, 0.8628, 0.5686, 0.3729` |
+| 4 | `candidate_boundary + semantic_oversized` | `Overview > Semantic Pressure Test` | `L63-L72` | `False` | `0` | `64` | `0.1940, 0.7348, 0.1116, 0.0561` |
+| 5 | `candidate_boundary + semantic_oversized` | `Overview > Semantic Pressure Test` | `L63-L72` | `False` | `64` | `0` | `0.1617, 0.4241, 0.7032, 0.4251` |
 
 ### Chunk 0
 
-- Strategy: `candidate_boundary`
+- Strategy: `candidate_boundary + semantic_oversized`
 - Heading trail: `['Overview', 'Code Sample']`
 - Source file: `tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element types: `['blockquote', 'code_block', 'heading', 'image', 'list', 'paragraph']`
@@ -169,7 +169,7 @@ def summarize_metrics(total_requests: int, failures: int) -> float:
 
 ### Chunk 1
 
-- Strategy: `derived_element`
+- Strategy: `candidate_boundary + semantic_oversized`
 - Heading trail: `['Overview']`
 - Source file: `tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element types: `['image']`
@@ -192,7 +192,7 @@ def summarize_metrics(total_requests: int, failures: int) -> float:
 
 ### Chunk 2
 
-- Strategy: `candidate_boundary`
+- Strategy: `candidate_boundary + semantic_oversized`
 - Heading trail: `['Overview', 'Deep Dive']`
 - Source file: `tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element types: `['heading', 'math_block', 'paragraph', 'table']`
@@ -240,7 +240,7 @@ The closing paragraph stays in the incident response theme and should therefore 
 
 ### Chunk 3
 
-- Strategy: `derived_element`
+- Strategy: `candidate_boundary + semantic_oversized`
 - Heading trail: `['Overview', 'Metrics Table']`
 - Source file: `tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element types: `['table']`
@@ -266,7 +266,7 @@ The closing paragraph stays in the incident response theme and should therefore 
 
 ### Chunk 4
 
-- Strategy: `semantic`
+- Strategy: `candidate_boundary + semantic_oversized`
 - Heading trail: `['Overview', 'Semantic Pressure Test']`
 - Source file: `tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element types: `['heading', 'paragraph']`
@@ -290,7 +290,7 @@ compare nearby reasoning without losing context. Evidence packaging keeps benchm
 
 ### Chunk 5
 
-- Strategy: `semantic`
+- Strategy: `candidate_boundary + semantic_oversized`
 - Heading trail: `['Overview', 'Semantic Pressure Test']`
 - Source file: `tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element types: `['heading', 'paragraph']`

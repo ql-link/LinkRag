@@ -1,4 +1,10 @@
-from src.core.splitter import Chunk, OversizedChunkRefiner, PercentileSemanticChunker
+from src.core.splitter import (
+    CoarseChunk,
+    CoarseChunkSet,
+    PercentileSemanticChunker,
+    ProtectedRange,
+    SemanticOversizedStageTwoAlgorithm,
+)
 
 
 class MockWordTokenizer:
@@ -22,6 +28,7 @@ class StaticEmbedder:
         self._embeddings = embeddings
 
     async def embed(self, texts, model=None, **kwargs):
+        del model, kwargs
         if len(texts) != len(self._embeddings):
             raise AssertionError(f"expected {len(self._embeddings)} texts, got {len(texts)}")
         return MockEmbeddingResult(self._embeddings)
@@ -39,29 +46,65 @@ def _semantic_chunker(embeddings, max_chunk_tokens: int = 5) -> PercentileSemant
     )
 
 
-async def test_refine_should_keep_non_oversized_chunk_unchanged():
-    chunk = Chunk(
-        content="small text",
-        start_line=1,
-        end_line=1,
-        metadata={"chunk_index": 7, "element_types": ["paragraph"]},
-    )
-    refiner = OversizedChunkRefiner(_semantic_chunker([], max_chunk_tokens=5))
-
-    chunks = await refiner.refine([chunk])
-
-    assert chunks == [chunk]
-    assert chunks[0].metadata["chunk_index"] == 0
-
-
-async def test_refine_should_semantically_split_oversized_text_chunk():
-    chunk = Chunk(
-        content="alpha one two\n\nalpha three four\n\nbeta five six",
+def _coarse_chunk(
+    *,
+    content: str,
+    chunk_id: str = "coarse_1",
+    role: str = "mixed",
+    source_coarse_chunk_id: str | None = None,
+    protected_ranges: list[ProtectedRange] | None = None,
+    element_types: list[str] | None = None,
+) -> CoarseChunk:
+    return CoarseChunk(
+        id=chunk_id,
+        content=content,
         start_line=1,
         end_line=5,
-        metadata={"chunk_index": 3, "element_types": ["heading", "paragraph"]},
+        token_count=MockWordTokenizer().count_tokens(content),
+        source_element_indexes=[0],
+        element_types=element_types or ["paragraph"],
+        protected_ranges=protected_ranges or [],
+        heading_trail=["Intro"],
+        heading_trails=[["Intro"]],
+        role=role,
+        strategy="candidate_boundary",
+        source_coarse_chunk_id=source_coarse_chunk_id,
+        metadata={"coarse_token_count": MockWordTokenizer().count_tokens(content)},
     )
-    refiner = OversizedChunkRefiner(
+
+
+async def test_run_should_keep_non_oversized_chunk_as_final_chunk():
+    coarse_set = CoarseChunkSet(
+        strategy="candidate_boundary",
+        chunks=[_coarse_chunk(content="small text")],
+        source_file="source.md",
+    )
+    algorithm = SemanticOversizedStageTwoAlgorithm(
+        _semantic_chunker([], max_chunk_tokens=5),
+    )
+
+    final_set = await algorithm.run(coarse_set)
+
+    assert final_set.stage1_strategy == "candidate_boundary"
+    assert final_set.stage2_strategy == "semantic_oversized"
+    assert final_set.source_file == "source.md"
+    assert len(final_set.chunks) == 1
+    assert final_set.chunks[0].content == "small text"
+    assert final_set.chunks[0].source_coarse_chunk_id == "coarse_1"
+    assert final_set.chunks[0].stage2_strategy == "semantic_oversized"
+
+
+async def test_run_should_semantically_split_oversized_text_chunk():
+    coarse_set = CoarseChunkSet(
+        strategy="candidate_boundary",
+        chunks=[
+            _coarse_chunk(
+                content="alpha one two\n\nalpha three four\n\nbeta five six",
+                chunk_id="coarse_text",
+            )
+        ],
+    )
+    algorithm = SemanticOversizedStageTwoAlgorithm(
         _semantic_chunker(
             [
                 [1.0, 0.0],
@@ -72,79 +115,71 @@ async def test_refine_should_semantically_split_oversized_text_chunk():
         )
     )
 
-    chunks = await refiner.refine([chunk])
+    final_set = await algorithm.run(coarse_set)
 
-    assert [item.content for item in chunks] == [
+    assert [item.content for item in final_set.chunks] == [
         "alpha one two",
         "alpha three four",
         "beta five six",
     ]
-    assert [item.metadata["chunk_index"] for item in chunks] == [0, 1, 2]
-    assert all(item.metadata["split_strategy"] == "semantic" for item in chunks)
-    assert chunks[0].metadata["semantic_source_chunk_index"] == 3
+    assert all(item.stage1_strategy == "candidate_boundary" for item in final_set.chunks)
+    assert all(item.stage2_strategy == "semantic_oversized" for item in final_set.chunks)
+    assert all(item.source_coarse_chunk_id == "coarse_text" for item in final_set.chunks)
+    assert final_set.chunks[0].metadata["semantic_source_coarse_chunk_id"] == "coarse_text"
+    assert final_set.chunks[0].metadata["semantic_subchunk_index"] == 0
 
 
-async def test_refine_should_keep_protected_oversized_chunk_without_skip_metadata():
-    chunk = Chunk(
-        content="before table " + " ".join(f"cell{i}" for i in range(10)),
-        start_line=1,
-        end_line=4,
-        metadata={"chunk_index": 0, "element_types": ["paragraph", "table"]},
+async def test_run_should_keep_protected_oversized_chunk_without_skip_metadata():
+    coarse_set = CoarseChunkSet(
+        strategy="candidate_boundary",
+        chunks=[
+            _coarse_chunk(
+                content="before table " + " ".join(f"cell{i}" for i in range(10)),
+                protected_ranges=[
+                    ProtectedRange(
+                        kind="table",
+                        start_line=1,
+                        end_line=4,
+                        element_index=0,
+                    )
+                ],
+                element_types=["paragraph", "table"],
+            )
+        ],
     )
-    refiner = OversizedChunkRefiner(_semantic_chunker([], max_chunk_tokens=5))
-
-    chunks = await refiner.refine([chunk])
-
-    assert chunks == [chunk]
-    assert "oversized_refine_skipped" not in chunks[0].metadata
-    assert "oversized_refine_skip_reason" not in chunks[0].metadata
-    assert "oversized_token_count" not in chunks[0].metadata
-
-
-async def test_refine_should_update_derived_source_chunk_index_after_reindex():
-    oversized_text = Chunk(
-        content="alpha one two\n\nalpha three four\n\nbeta five six",
-        start_line=1,
-        end_line=5,
-        metadata={"chunk_index": 0, "element_types": ["paragraph"]},
+    algorithm = SemanticOversizedStageTwoAlgorithm(
+        _semantic_chunker([], max_chunk_tokens=5),
     )
-    source_chunk = Chunk(
-        content="[图片引用: image_001]\n图片说明：diagram",
-        start_line=7,
-        end_line=7,
-        metadata={
-            "chunk_index": 1,
-            "chunk_role": "mixed",
-            "element_types": ["image"],
-            "protected_element_types": ["image"],
-        },
-    )
-    derived_chunk = Chunk(
+
+    final_set = await algorithm.run(coarse_set)
+
+    assert len(final_set.chunks) == 1
+    assert final_set.chunks[0].content.startswith("before table")
+    assert "oversized_refine_skipped" not in final_set.chunks[0].metadata
+    assert "oversized_refine_skip_reason" not in final_set.chunks[0].metadata
+    assert final_set.chunks[0].element_types == ["paragraph", "table"]
+
+
+async def test_run_should_pass_derived_chunk_through_and_reference_source_coarse_chunk():
+    source_chunk = _coarse_chunk(content="[图片引用: image_001]", chunk_id="coarse_source")
+    derived_chunk = _coarse_chunk(
         content="类型：图片\n图片ID：image_001",
-        start_line=7,
-        end_line=7,
-        metadata={
-            "chunk_index": 2,
-            "chunk_role": "derived_element",
-            "element_type": "image",
-            "source_chunk_index": 1,
-            "element_types": ["image"],
-        },
+        chunk_id="coarse_derived",
+        role="derived_element",
+        source_coarse_chunk_id="coarse_source",
+        element_types=["image"],
     )
-    refiner = OversizedChunkRefiner(
-        _semantic_chunker(
-            [
-                [1.0, 0.0],
-                [1.0, 0.0],
-                [0.0, 1.0],
-            ],
-            max_chunk_tokens=5,
-        )
+    coarse_set = CoarseChunkSet(
+        strategy="candidate_boundary",
+        chunks=[source_chunk, derived_chunk],
+    )
+    algorithm = SemanticOversizedStageTwoAlgorithm(
+        _semantic_chunker([], max_chunk_tokens=5),
     )
 
-    chunks = await refiner.refine([oversized_text, source_chunk, derived_chunk])
+    final_set = await algorithm.run(coarse_set)
 
-    assert [chunk.metadata["chunk_index"] for chunk in chunks] == [0, 1, 2, 3, 4]
-    assert chunks[3] is source_chunk
-    assert chunks[4] is derived_chunk
-    assert chunks[4].metadata["source_chunk_index"] == 3
+    assert len(final_set.chunks) == 2
+    assert final_set.chunks[1].role == "derived_element"
+    assert final_set.chunks[1].source_coarse_chunk_id == "coarse_source"
+    assert final_set.chunks[1].element_types == ["image"]

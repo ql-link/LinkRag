@@ -24,6 +24,34 @@ def test_should_reject_invalid_chunking_semantic_unit():
         raise AssertionError("expected ValueError")
 
 
+def test_should_normalize_chunking_stage_algorithm_names():
+    settings = Settings(
+        _env_file=None,
+        CHUNKING_STAGE_ONE_ALGORITHM=" Candidate_Boundary ",
+        CHUNKING_STAGE_TWO_ALGORITHM=" Noop ",
+    )
+
+    assert settings.CHUNKING_STAGE_ONE_ALGORITHM == "candidate_boundary"
+    assert settings.CHUNKING_STAGE_TWO_ALGORITHM == "noop"
+    assert not hasattr(settings, "CHUNKING_ENABLE_ADVANCED_PIPELINE")
+
+
+def test_should_reject_invalid_chunking_stage_algorithm_names():
+    try:
+        Settings(_env_file=None, CHUNKING_STAGE_ONE_ALGORITHM="unknown")
+    except ValueError as exc:
+        assert "CHUNKING_STAGE_ONE_ALGORITHM must be 'candidate_boundary'" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+    try:
+        Settings(_env_file=None, CHUNKING_STAGE_TWO_ALGORITHM="unknown")
+    except ValueError as exc:
+        assert "CHUNKING_STAGE_TWO_ALGORITHM must be 'semantic_oversized' or 'noop'" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
 def test_should_allow_chunking_overlap_token_bounds():
     disabled = Settings(_env_file=None, CHUNKING_OVERLAP_TOKENS=0)
     upper_bound = Settings(_env_file=None, CHUNKING_OVERLAP_TOKENS=64)
