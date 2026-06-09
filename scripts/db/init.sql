@@ -8,7 +8,7 @@
 --   - schema 演进的唯一权威源是 src/models/**.py + migrations/versions/*.py；
 --   - 修改字段必须先改 ORM 模型并新增 migration，再同步本文件。
 -- 同步时机：每条会改动表结构的 migration 落库时一并更新本文件。
--- 末次同步：migration 0013_20260606_llm_config_refactor
+-- 末次同步：migration 0015_20260609_add_blog_tables
 -- ===============================================
 
 CREATE DATABASE IF NOT EXISTS tolink_rag_db DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -278,7 +278,47 @@ CREATE TABLE IF NOT EXISTS document_parse_pipeline (
     KEY idx_parse_pipeline_superseded (superseded_by_task_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '文件解析流程状态表';
 
--- 12. 文档 Chunk 真值记录表
+-- 12. 博客文章表
+CREATE TABLE IF NOT EXISTS blog_post (
+    id                  BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '博客文章唯一标识',
+    title               VARCHAR(255)    NOT NULL COMMENT '文章标题',
+    slug                VARCHAR(255)    NOT NULL COMMENT '公开访问标识',
+    summary             VARCHAR(1000)   DEFAULT NULL COMMENT '文章摘要',
+    content_object_key  VARCHAR(512)    DEFAULT NULL COMMENT 'Markdown 正文私有对象 Key',
+    cover_asset_id      BIGINT UNSIGNED DEFAULT NULL COMMENT '封面资源 ID，对应 blog_asset.id',
+    status              VARCHAR(20)     NOT NULL DEFAULT 'DRAFT' COMMENT '状态：DRAFT/PUBLISHED',
+    published_at        DATETIME        DEFAULT NULL COMMENT '首次发布时间',
+    created_by          BIGINT UNSIGNED NOT NULL COMMENT '创建管理员用户 ID，仅用于审计',
+    is_deleted          BOOLEAN         NOT NULL DEFAULT FALSE COMMENT '逻辑删除标记',
+    deleted_seq         BIGINT UNSIGNED NOT NULL DEFAULT 0 COMMENT '删除判别列：活行=0，软删后置为自身 ID',
+    created_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+
+    UNIQUE KEY uk_blog_post_slug_seq (slug, deleted_seq),
+    KEY idx_blog_post_public_list (status, published_at, id),
+    KEY idx_blog_post_admin_list (is_deleted, updated_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '博客文章表';
+
+-- 13. 博客文章资源表
+CREATE TABLE IF NOT EXISTS blog_asset (
+    id                  BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '博客资源唯一标识',
+    post_id             BIGINT UNSIGNED NOT NULL COMMENT '所属博客文章 ID',
+    asset_type          VARCHAR(20)     NOT NULL COMMENT '资源类型：COVER/CONTENT_IMAGE',
+    original_filename   VARCHAR(255)    NOT NULL COMMENT '上传时的原始文件名',
+    content_type        VARCHAR(128)    NOT NULL COMMENT '文件 MIME 类型',
+    file_size           BIGINT UNSIGNED NOT NULL COMMENT '文件大小，单位字节',
+    object_key          VARCHAR(512)    NOT NULL COMMENT 'MinIO 对象 Key',
+    public_url          VARCHAR(1024)   NOT NULL COMMENT '资源公开访问 URL',
+    created_by          BIGINT UNSIGNED NOT NULL COMMENT '上传管理员用户 ID',
+    is_deleted          BOOLEAN         NOT NULL DEFAULT FALSE COMMENT '逻辑删除标记',
+    created_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+
+    UNIQUE KEY uk_blog_asset_object_key (object_key),
+    KEY idx_blog_asset_post_type (post_id, asset_type, is_deleted, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '博客文章资源表';
+
+-- 14. 文档 Chunk 真值记录表
 -- 经 migration 0004 引入稀疏向量字段；0005 把 status/error_msg/retry_count/last_retry_at/embedding_model
 --   重命名为 dense_vector_*，并删除冗余的 vector_status / vector_error_msg 与对应索引；
 -- 0006 删除 dense/sparse 的 retry_count/last_retry_at/error_msg 与 es_error_msg
@@ -330,4 +370,6 @@ ALTER TABLE document_original_file AUTO_INCREMENT = 10000;
 ALTER TABLE document_parse_file AUTO_INCREMENT = 10000;
 ALTER TABLE document_parsed_log AUTO_INCREMENT = 10000;
 ALTER TABLE document_parse_pipeline AUTO_INCREMENT = 10000;
+ALTER TABLE blog_post AUTO_INCREMENT = 10000;
+ALTER TABLE blog_asset AUTO_INCREMENT = 10000;
 ALTER TABLE kb_document_chunk AUTO_INCREMENT = 10000;

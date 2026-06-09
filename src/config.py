@@ -272,6 +272,7 @@ class Settings(BaseSettings):
     MINIO_ACCESS_KEY: str = "minioadmin"
     MINIO_SECRET_KEY: str = "minioadmin"
     MINIO_BUCKET_NAME: str = "tolink-rag-docs"
+    MINIO_BLOG_BUCKET: str = "tolink-blog"
     MINIO_USE_SSL: bool = False
     LOCAL_DOCS_PATH: str = "./data/documents"
     PDF_PARSER_BACKEND: str = "mineru"  # auto / mineru / opendataloader / naive
