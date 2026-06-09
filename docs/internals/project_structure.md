@@ -184,8 +184,8 @@ toLink-Rag/                         # 仓库根目录
 │   │   │       ├── pdf_parser.py
 │   │   │       └── word_parser.py
 │   │   ├── splitter/             # 文本切分与嵌入流水线
-│   │   │   ├── base.py
-│   │   │   ├── factory.py          # create_chunking_engine 等装配入口
+│   │   │   ├── candidate_boundary_chunker.py # 第一阶段 candidate_boundary 算法
+│   │   │   ├── chunk_exporter.py  # FinalChunkSet → list[Chunk] 导出
 │   │   │   ├── chunking_engine.py
 │   │   │   ├── candidate_boundary_chunker.py # 第一阶段结构候选边界粗分片
 │   │   │   ├── element_derived_chunker.py    # 标题路径跟踪 + 图片/表格 derived chunk
@@ -194,7 +194,16 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── semantic_chunker.py
 │   │   │   ├── pipeline_chunker.py # StructuredSemanticChunker：串联候选边界/细分/overlap
 │   │   │   ├── embedding_pipeline.py
-│   │   │   └── models.py
+│   │   │   ├── input_adapter.py   # ParseResult / MarkdownElement[] → SplitInput
+│   │   │   ├── models.py
+│   │   │   ├── oversized_chunk_refiner.py # 第二阶段 semantic_oversized 算法
+│   │   │   ├── pipeline_chunker.py
+│   │   │   ├── stage_contracts.py
+│   │   │   ├── stage_models.py
+│   │   │   ├── stage_routers.py
+│   │   │   ├── stage_two_noop.py
+│   │   │   ├── validators.py
+│   │   │   └── semantic_chunker.py
 │   │   ├── chunk_fact_storage/   # Chunk SQL 事实存储
 │   │   │   ├── constants.py
 │   │   │   ├── exceptions.py

@@ -29,7 +29,8 @@ ParseTaskService
 ```text
 ParseResult
   -> ChunkingEngine.process_parse_result()
-  -> StructuredSemanticChunker
+  -> splitter stage pipeline
+  -> list[Chunk]
 ```
 
 ## 2. 核心角色

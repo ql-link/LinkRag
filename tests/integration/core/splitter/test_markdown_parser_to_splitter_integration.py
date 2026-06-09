@@ -217,12 +217,11 @@ async def test_markdown_parser_to_splitter_should_cover_all_markdown_types_and_g
 
     assert len(embedded_chunks) == 6
     assert all(
-        chunk.metadata["split_strategy"] in {"candidate_boundary", "semantic"}
+        chunk.metadata["split_strategy"] == "candidate_boundary + semantic_oversized"
         for chunk in embedded_chunks
-        if chunk.metadata.get("chunk_role") != "derived_element"
     )
-    assert any(chunk.metadata["split_strategy"] == "semantic" for chunk in embedded_chunks)
-    assert any(chunk.metadata["split_strategy"] == "derived_element" for chunk in embedded_chunks)
+    assert any("semantic_subchunk_index" in chunk.metadata for chunk in embedded_chunks)
+    assert any(chunk.metadata.get("chunk_role") == "derived_element" for chunk in embedded_chunks)
     assert not any(chunk.metadata["split_strategy"] == "isolated" for chunk in embedded_chunks)
     assert any(
         "The metrics table shows healthy recall, stable latency, and broad coverage for the pipeline."

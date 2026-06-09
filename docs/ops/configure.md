@@ -55,6 +55,10 @@
 | `MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT` | `true` | 是否启用表格 LLM 增强 |
 | `MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT` | `true` | 是否启用图片 LLM 增强 |
 | `MARKDOWN_PARSER_VISION_CONCURRENCY` | `24` | 图片视觉增强最大并发数，可降为 `16` / `8` / `1` 控制限流风险 |
+| `CHUNKING_STAGE_ONE_ALGORITHM` | `candidate_boundary` | splitter 第一阶段算法名；当前支持 `candidate_boundary`，未知值启动失败 |
+| `CHUNKING_STAGE_TWO_ALGORITHM` | `semantic_oversized` | splitter 第二阶段算法名；当前支持 `semantic_oversized` / `noop`，未知值启动失败 |
+
+> splitter 不再保留 `CHUNKING_ENABLE_ADVANCED_PIPELINE` 布尔开关，也不再回退到旧规则分片器。若不需要第二阶段实际细分，显式设置 `CHUNKING_STAGE_TWO_ALGORITHM=noop`。
 
 > 注：ES 入库失败即终态，无 ES 内部自动重试配置。原 `ES_INDEXING_MAX_RETRY` 已移除（用户侧重试由 `document_parse_pipeline.retry_count` 记录，触发路径待后续需求接线）。
 

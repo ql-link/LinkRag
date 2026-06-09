@@ -9,8 +9,6 @@ from typing import TYPE_CHECKING, Any
 
 from src.core.markdown_parser import ElementType, MarkdownElement
 
-from .models import Chunk
-
 if TYPE_CHECKING:
     from src.core.llm.tokenizer import Tokenizer
 
@@ -27,6 +25,25 @@ MAX_TRACKED_HEADING_LEVEL = 5
 
 
 @dataclass(slots=True)
+class DerivedElementChunkDraft:
+    """
+    candidate_boundary 内部派生元素 chunk 草稿。
+
+    Args:
+        None.
+
+    Returns:
+        None.
+    """
+
+    content: str
+    start_line: int
+    end_line: int
+    source_element_index: int
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class DerivedElementBuildResult:
     """
         单个 source chunk 的混合内容与派生 chunk 构建结果。
@@ -39,7 +56,7 @@ class DerivedElementBuildResult:
     """
 
     mixed_content: str
-    derived_chunks: list[Chunk] = field(default_factory=list)
+    derived_chunks: list[DerivedElementChunkDraft] = field(default_factory=list)
     derived_element_ids: list[str] = field(default_factory=list)
 
 
@@ -377,24 +394,26 @@ class DerivedElementChunkBuilder:
         *,
         element: MarkdownElement,
         element_id: str,
+        source_element_index: int,
         heading_trail: list[str],
         adjacent_context: str,
         previous_context_tokens: int,
         next_context_tokens: int,
-    ) -> tuple[str, Chunk]:
+    ) -> tuple[str, DerivedElementChunkDraft]:
         """
             构建图片在 mixed chunk 中的引用文本与对应派生 chunk。
 
         Args:
             element: 图片 Markdown 元素。
             element_id: 当前图片元素 ID。
+            source_element_index: 图片元素在 SplitInput.elements 中的原始索引。
             heading_trail: 图片所在位置的标题路径。
             adjacent_context: 图片前后元素的截断上下文。
             previous_context_tokens: 前置上下文实际 token 数。
             next_context_tokens: 后置上下文实际 token 数。
 
         Returns:
-            tuple[str, Chunk]: mixed chunk 引用文本与图片派生 chunk。
+            tuple[str, DerivedElementChunkDraft]: mixed chunk 引用文本与图片派生草稿。
         """
         original_ref = self._first_nonempty_line(element.content)
         description = self._extract_image_description(element.content, element)
@@ -411,22 +430,21 @@ class DerivedElementChunkBuilder:
         content_parts.append(f"原始引用：{original_ref}")
 
         metadata: dict[str, Any] = {
-            "chunk_role": "derived_element",
             "element_type": ElementType.IMAGE.value,
             "element_id": element_id,
             "image_id": element_id,
             "element_types": [ElementType.IMAGE.value],
             "heading_trail": list(heading_trail),
-            "split_strategy": "derived_element",
         }
         if adjacent_context:
             metadata["adjacent_context_prev_tokens"] = previous_context_tokens
             metadata["adjacent_context_next_tokens"] = next_context_tokens
 
-        return mixed_content, Chunk(
+        return mixed_content, DerivedElementChunkDraft(
             content="\n".join(content_parts),
             start_line=element.start_line,
             end_line=element.end_line,
+            source_element_index=source_element_index,
             metadata=metadata,
         )
 
@@ -435,24 +453,27 @@ class DerivedElementChunkBuilder:
         *,
         element: MarkdownElement,
         element_id: str,
+        source_element_index: int,
         heading_trail: list[str],
         adjacent_context: str,
         previous_context_tokens: int,
         next_context_tokens: int,
-    ) -> tuple[str, Chunk]:
+    ) -> tuple[str, DerivedElementChunkDraft]:
         """
             构建表格在 mixed chunk 中的内容或引用文本与对应派生 chunk。
 
         Args:
             element: 表格 Markdown 元素。
             element_id: 当前表格元素 ID。
+            source_element_index: 表格元素在 SplitInput.elements 中的原始索引。
             heading_trail: 表格所在位置的标题路径。
             adjacent_context: 表格前后元素的截断上下文。
             previous_context_tokens: 前置上下文实际 token 数。
             next_context_tokens: 后置上下文实际 token 数。
 
         Returns:
-            tuple[str, Chunk]: mixed chunk 中的表格内容或引用文本，以及表格派生 chunk。
+            tuple[str, DerivedElementChunkDraft]: mixed chunk 中的表格内容或引用文本，
+            以及表格派生草稿。
         """
         raw_table = self._extract_raw_table(element.content)
         summary = self._extract_table_summary(element.content)
@@ -474,13 +495,11 @@ class DerivedElementChunkBuilder:
         content_parts.extend(["原始表格：", raw_table])
 
         metadata: dict[str, Any] = {
-            "chunk_role": "derived_element",
             "element_type": ElementType.TABLE.value,
             "element_id": element_id,
             "table_id": element_id,
             "element_types": [ElementType.TABLE.value],
             "heading_trail": list(heading_trail),
-            "split_strategy": "derived_element",
             "table_inline_in_source": inline_in_mixed,
             "table_row_count": self._table_rows(raw_table),
             "table_col_count": self._table_cols(raw_table),
@@ -490,10 +509,11 @@ class DerivedElementChunkBuilder:
             metadata["adjacent_context_prev_tokens"] = previous_context_tokens
             metadata["adjacent_context_next_tokens"] = next_context_tokens
 
-        return mixed_content, Chunk(
+        return mixed_content, DerivedElementChunkDraft(
             content="\n".join(content_parts),
             start_line=element.start_line,
             end_line=element.end_line,
+            source_element_index=source_element_index,
             metadata=metadata,
         )
 
@@ -504,6 +524,7 @@ class DerivedElementChunkBuilder:
         neighbor_elements: (
             list[tuple[MarkdownElement | None, MarkdownElement | None]] | None
         ) = None,
+        source_element_indexes: list[int] | None = None,
     ) -> DerivedElementBuildResult:
         """
             渲染单个候选 source chunk 的 mixed 内容并生成派生 chunk。
@@ -512,12 +533,13 @@ class DerivedElementChunkBuilder:
             elements: 当前候选 source chunk 内的 Markdown 元素列表。
             heading_trails: 与 elements 对齐的标题路径快照列表。
             neighbor_elements: 可选的全局相邻元素列表，用于跨 chunk 截取上下文。
+            source_element_indexes: 与 elements 对齐的 SplitInput 原始元素索引。
 
         Returns:
             DerivedElementBuildResult: mixed 内容、派生 chunk 列表与派生元素 ID 列表。
         """
         mixed_parts: list[str] = []
-        derived_chunks: list[Chunk] = []
+        derived_chunks: list[DerivedElementChunkDraft] = []
         derived_element_ids: list[str] = []
 
         for index, element in enumerate(elements):
@@ -527,6 +549,11 @@ class DerivedElementChunkBuilder:
                 continue
 
             element_id = self._next_element_id(element.type)
+            source_element_index = (
+                source_element_indexes[index]
+                if source_element_indexes is not None and index < len(source_element_indexes)
+                else index
+            )
             heading_trail = heading_trails[index] if index < len(heading_trails) else []
             previous_element, next_element = (
                 neighbor_elements[index]
@@ -545,6 +572,7 @@ class DerivedElementChunkBuilder:
                 mixed_content, derived_chunk = self._build_image_chunks(
                     element=element,
                     element_id=element_id,
+                    source_element_index=source_element_index,
                     heading_trail=heading_trail,
                     adjacent_context=adjacent_context,
                     previous_context_tokens=previous_tokens,
@@ -554,6 +582,7 @@ class DerivedElementChunkBuilder:
                 mixed_content, derived_chunk = self._build_table_chunks(
                     element=element,
                     element_id=element_id,
+                    source_element_index=source_element_index,
                     heading_trail=heading_trail,
                     adjacent_context=adjacent_context,
                     previous_context_tokens=previous_tokens,

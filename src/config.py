@@ -143,6 +143,8 @@ class Settings(BaseSettings):
     MARKDOWN_PARSER_VISION_MODEL: Optional[str] = None
     MARKDOWN_PARSER_LLM_TIMEOUT_MS: int = 60000
     MARKDOWN_PARSER_VISION_CONCURRENCY: int = 24
+    CHUNKING_STAGE_ONE_ALGORITHM: str = "candidate_boundary"
+    CHUNKING_STAGE_TWO_ALGORITHM: str = "semantic_oversized"
     CHUNKING_HEADING_BREAK_LEVEL: int = 5
     CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS: int = 128
     CHUNKING_SEMANTIC_PERCENTILE: float = 95.0
@@ -152,6 +154,22 @@ class Settings(BaseSettings):
     CHUNKING_OVERLAP_TOKENS: int = 64
     CHUNKING_MIN_DISTANCE_GATE: float = 0.25
     CHUNKING_EMBED_BATCH_SIZE: int = 32
+
+    @field_validator("CHUNKING_STAGE_ONE_ALGORITHM")
+    @classmethod
+    def validate_chunking_stage_one_algorithm(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if normalized not in {"candidate_boundary"}:
+            raise ValueError("CHUNKING_STAGE_ONE_ALGORITHM must be 'candidate_boundary'")
+        return normalized
+
+    @field_validator("CHUNKING_STAGE_TWO_ALGORITHM")
+    @classmethod
+    def validate_chunking_stage_two_algorithm(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if normalized not in {"semantic_oversized", "noop"}:
+            raise ValueError("CHUNKING_STAGE_TWO_ALGORITHM must be 'semantic_oversized' or 'noop'")
+        return normalized
 
     @field_validator("CHUNKING_SEMANTIC_UNIT")
     @classmethod
