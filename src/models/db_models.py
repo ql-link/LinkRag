@@ -209,3 +209,69 @@ class UsageLogDB(Base):
         Index("idx_config_date", "config_id", "created_at"),
         Index("idx_conversation_id", "conversation_id"),
     )
+
+
+class BlogPostDB(Base):
+    """博客文章元数据
+
+    表：blog_post
+    """
+
+    __tablename__ = "blog_post"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    title: Mapped[str] = mapped_column(String(255), nullable=False)
+    slug: Mapped[str] = mapped_column(String(255), nullable=False)
+    summary: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    content_object_key: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    cover_asset_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    status: Mapped[str] = mapped_column(String(20), default="DRAFT", nullable=False)
+    published_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    deleted_seq: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("slug", "deleted_seq", name="uk_blog_post_slug_seq"),
+        Index("idx_blog_post_public_list", "status", "published_at", "id"),
+        Index("idx_blog_post_admin_list", "is_deleted", "updated_at", "id"),
+    )
+
+
+class BlogAssetDB(Base):
+    """博客文章资源元数据
+
+    表：blog_asset
+    """
+
+    __tablename__ = "blog_asset"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    post_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    asset_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    file_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    object_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    public_url: Mapped[str] = mapped_column(String(1024), nullable=False)
+    created_by: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    is_deleted: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+    __table_args__ = (
+        UniqueConstraint("object_key", name="uk_blog_asset_object_key"),
+        Index("idx_blog_asset_post_type", "post_id", "asset_type", "is_deleted", "created_at"),
+    )
