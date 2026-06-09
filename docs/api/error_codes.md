@@ -1,6 +1,6 @@
 # Error Codes
 
-本文档记录当前项目错误码和异常约定。实现来源以 `src/core/pipeline/error_codes.py` 及各模块异常类为准。
+本文档记录当前项目错误码和异常约定。实现来源以 `src/core/pipeline/parse_task/error_codes.py` 及各模块异常类为准。
 
 ## 1. HTTP 错误约定
 

@@ -339,6 +339,24 @@ python scripts/check_docs_sync.py --base origin/dev # 检查相对分支
 python scripts/check_docs_sync.py --self-check      # 仅验证 yaml 合法
 ```
 
+### 5.5 内容级事实校验（check_docs_facts）
+
+`check_docs_sync.py` 只管"改代码时有没有**一起改**文档"（文件级耦合），不看文档**内容对不对**。
+`scripts/check_docs_facts.py` 补这一层，对账文档与真实代码，专抓耦合规则抓不到的内容失真：
+
+| 校验 | 规则 | 拦住的典型失真 |
+| --- | --- | --- |
+| 死路径引用 | 文档里 `src/` `migrations/` `scripts/` 路径必须真实存在 | 模块删除/移动后文档仍引用旧路径 |
+| MQ topic 对账 | MQ 文档里点状 `tolink.*` topic 必须是代码里真实的 `MQ_NAME`；退役串禁止再现 | 文档写了不存在的 topic 名 |
+| 文档内锚点 | 仓库内 `.md#anchor` 链接的目标文件与标题锚点必须存在 | 章节改名/重排后锚点失效 |
+
+同样在 pre-commit 与 CI（`docs-sync.yml`）强制。手动运行：
+
+```bash
+python scripts/check_docs_facts.py          # 全量校验 docs/
+python scripts/check_docs_facts.py --quiet  # 只打印问题
+```
+
 ### 5.5 新增规则
 
 只在出现新的"代码改动 → 文档失同步会引发集成 bug"关系时新增。流程：

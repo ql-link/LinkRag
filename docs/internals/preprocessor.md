@@ -2,7 +2,7 @@
 
 本文说明 `src/core/preprocessor/`。它是 ES/BM25 链路的**上游**：把已落库的 chunk 正文用 RAGFlow 分词器预先切成 token，产出文件级"ES 后置索引计划"（`FilePostIndexPlan`），交给 [es_index_storage](es_index_storage.md) 写入 Elasticsearch。
 
-"预分词"指**写入侧提前完成分词**：ES 索引文档里直接存空格分隔的 token 串，ES 端只做 `whitespace` 切分不再二次分词，从而索引侧与 BM25 召回侧共用同一份分词产物，避免 token 分布漂移（召回侧分词见 [es_index_storage.md §4.2](es_index_storage.md#42-bm25retrieverbm25_retrieverpy--召回-pipeline-适配器)）。
+"预分词"指**写入侧提前完成分词**：ES 索引文档里直接存空格分隔的 token 串，ES 端只做 `whitespace` 切分不再二次分词，从而索引侧与 BM25 召回侧共用同一份分词产物，避免 token 分布漂移（召回侧分词见 [es_index_storage.md §4.2](es_index_storage.md#42-bm25retrieverbm25_retrieverpy-召回-pipeline-适配器)）。
 
 ---
 
