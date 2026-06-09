@@ -179,12 +179,19 @@ toLink-Rag/                         # 仓库根目录
 │   │   │       ├── pdf_parser.py
 │   │   │       └── word_parser.py
 │   │   ├── splitter/             # 文本切分与嵌入流水线
-│   │   │   ├── base.py
+│   │   │   ├── candidate_boundary_chunker.py # 第一阶段 candidate_boundary 算法
+│   │   │   ├── chunk_exporter.py  # FinalChunkSet → list[Chunk] 导出
 │   │   │   ├── chunking_engine.py
 │   │   │   ├── embedding_pipeline.py
+│   │   │   ├── input_adapter.py   # ParseResult / MarkdownElement[] → SplitInput
 │   │   │   ├── models.py
+│   │   │   ├── oversized_chunk_refiner.py # 第二阶段 semantic_oversized 算法
 │   │   │   ├── pipeline_chunker.py
-│   │   │   ├── rule_chunker.py
+│   │   │   ├── stage_contracts.py
+│   │   │   ├── stage_models.py
+│   │   │   ├── stage_routers.py
+│   │   │   ├── stage_two_noop.py
+│   │   │   ├── validators.py
 │   │   │   └── semantic_chunker.py
 │   │   ├── chunk_fact_storage/   # Chunk SQL 事实存储
 │   │   │   ├── constants.py

@@ -1,193 +1,328 @@
 # Chunking Module
 
-本文说明 `src/core/splitter` 分片模块的架构、使用方式，以及新增或修改分片策略的方法。
+本文说明 `src/core/splitter` 分片模块的目标架构、阶段契约、配置方式，以及新增或修改分片算法的方法。
 
-## 1. 模块框架
+## 1. 模块边界
 
-```text
-src/core/splitter/
-├── base.py                 # 分片器抽象接口
-├── models.py               # Chunk、EmbeddedChunk、统计模型
-├── chunking_engine.py      # Markdown 解析与分片编排入口
-├── rule_chunker.py         # 基于 Markdown AST 的规则分片
-├── candidate_boundary_chunker.py # 基于候选结构边界的粗分片
-├── element_derived_chunker.py     # 图片/表格 derived chunk 构造与标题路径追踪
-├── oversized_chunk_refiner.py    # oversized 粗 chunk 二次细分
-├── semantic_chunker.py     # 基于 embedding 距离的语义细分
-├── overlap.py              # chunk overlap 配置与上下文拼接
-├── pipeline_chunker.py     # 候选边界粗分片 + oversized 细分编排
-└── embedding_pipeline.py   # Chunk 向量化批处理管线
+splitter 的输入边界是 parse pipeline 已生成的结构化 Markdown 结果，例如 `ParseResult` 或 `MarkdownElement[]`。splitter 不负责 raw markdown 解析、数据库写入、MQ、向量库或 ES。
+
+splitter 对后续流程的外部输出保持为：
+
+```python
+list[Chunk]
 ```
 
-上游调用链：
+该输出继续由 parse task pipeline、`ChunkDraftFactory`、dense / sparse / ES 后续阶段消费。内部实现不再把 `list[Chunk]` 作为阶段算法之间的传递结构。
+
+目标主链路：
 
 ```text
-ParseTaskPipeline
-  -> _chunk_markdown()
-    -> ChunkingEngine
-      -> MarkdownParser
-      -> BaseChunker
-  -> _persist_chunk_facts()
-    -> ChunkDraftFactory
-    -> ChunkRepository.bulk_insert_pending()
+ParseResult / MarkdownElement[]
+  -> InputAdapter
+  -> SplitInput
+  -> StageOneRouter
+  -> StageOneAlgorithm
+  -> CoarseChunkSet
+  -> CoarseChunkSetValidator
+  -> StageTwoRouter
+  -> StageTwoAlgorithm
+  -> FinalChunkSet
+  -> ChunkExporter
+  -> list[Chunk]
 ```
 
-解析任务流水线通过配置构建分片器。`CHUNKING_ENABLE_ADVANCED_PIPELINE=true` 时优先使用
-`StructuredSemanticChunker`，初始化失败时回退到 `ASTAwareChunker`：
-
-```text
-ChunkingEngine(chunker=StructuredSemanticChunker(...))
+```mermaid
+flowchart LR
+    A["ParseResult / MarkdownElement[]"] --> B["InputAdapter"]
+    B --> C["SplitInput"]
+    C --> D["StageOneRouter"]
+    D --> E["StageOneAlgorithm"]
+    E --> F["CoarseChunkSet"]
+    F --> G["CoarseChunkSetValidator"]
+    G --> H["StageTwoRouter"]
+    H --> I["StageTwoAlgorithm"]
+    I --> J["FinalChunkSet"]
+    J --> K["ChunkExporter"]
+    K --> L["list[Chunk]"]
 ```
 
 ## 2. 核心角色
 
-| 组件 | 文件 | 职责 |
-| --- | --- | --- |
-| `Chunk` | `models.py` | 分片输出基础模型，包含内容、行号、metadata |
-| `BaseChunker` | `base.py` | 所有分片策略的统一接口 |
-| `ChunkingEngine` | `chunking_engine.py` | 连接 `MarkdownParser` 和具体 chunker |
-| `ASTAwareChunker` | `rule_chunker.py` | 按标题、表格、图片、代码块等结构规则分片 |
-| `CandidateBoundaryChunker` | `candidate_boundary_chunker.py` | 第一阶段结构候选边界粗分片，避免短小节被过度切碎 |
-| `HeadingTrailTracker` / `DerivedElementChunkBuilder` | `element_derived_chunker.py` | 复用标题路径规则，并为图片、表格生成 derived chunk |
-| `OversizedChunkRefiner` | `oversized_chunk_refiner.py` | 第二阶段只处理超过最大 token 上限的粗 chunk |
-| `PercentileSemanticChunker` | `semantic_chunker.py` | 对超长文本执行语义断点切分 |
-| `StructuredSemanticChunker` | `pipeline_chunker.py` | 串联候选边界粗分片、oversized 细分和相邻上下文 overlap |
-| `ChunkEmbeddingPipeline` | `embedding_pipeline.py` | 对最终 Chunk 做批量 embedding |
+| 组件 | 职责 |
+| --- | --- |
+| `SplitInput` | splitter 内部输入模型，承接 `MarkdownElement[]`、`source_file` 与文档级 metadata |
+| `StageOneRouter` | 按配置在文档级选择第一阶段算法；当前仅支持 `candidate_boundary` |
+| `StageOneAlgorithm` | 第一阶段算法契约：`SplitInput -> CoarseChunkSet` |
+| `CoarseChunkSetValidator` | 在第一阶段后立即校验必填字段、顺序、行号、来源关系和 protected ranges |
+| `StageTwoRouter` | 按配置在文档级选择第二阶段算法；当前支持 `semantic_oversized` / `noop` |
+| `StageTwoAlgorithm` | 第二阶段算法契约：`CoarseChunkSet -> FinalChunkSet` |
+| `ChunkExporter` | 将 `FinalChunkSet` 导出为后续流程稳定消费的 `list[Chunk]` |
+| `Chunk` | splitter 对外最终输出模型，包含 `content`、`start_line`、`end_line`、`metadata` |
 
-通用分片器接口：
+`BaseChunker` / `base.py` 不再作为新架构核心抽象保留。旧规则分片器 `ASTAwareChunker` / `rule_chunker.py` 不再作为 fallback 保留。重构实现后，源码中不应保留 `ASTAwareChunker` 类定义、`rule_chunker.py` 文件、导出、import、实例化、factory fallback 或测试引用。
+
+## 3. 配置
+
+splitter 算法选择使用显式算法名，不再使用布尔开关：
+
+| 配置 | 默认 | 说明 |
+| --- | --- | --- |
+| `CHUNKING_STAGE_ONE_ALGORITHM` | `candidate_boundary` | 第一阶段算法名；当前仅支持 `candidate_boundary` |
+| `CHUNKING_STAGE_TWO_ALGORITHM` | `semantic_oversized` | 第二阶段算法名；当前支持 `semantic_oversized` / `noop` |
+
+约定：
+
+- router 只做纯配置路由，不根据 token 数、文档类型、protected element 或初始化状态自动选择算法。
+- 未知算法名直接失败，不做隐式 fallback。
+- `CHUNKING_ENABLE_ADVANCED_PIPELINE` 已废弃并移除。
+- 不需要第二阶段实际细分时，应显式配置 `CHUNKING_STAGE_TWO_ALGORITHM=noop`。
+- 第二阶段算法初始化失败或运行失败时的处理策略属于具体算法内部设计，本模块不提供旧规则分片 fallback。
+
+## 4. 阶段模型
+
+### 4.1 SplitInput
 
 ```python
-class BaseChunker(ABC):
-    def chunk(self, elements: list[MarkdownElement], **kwargs) -> list[Chunk]:
-        ...
+@dataclass
+class SplitInput:
+    elements: list[MarkdownElement]
+    source_file: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+```
+
+`InputAdapter` 可接收 `ParseResult` 或 `MarkdownElement[]`，但不重新解析 raw markdown。
+
+### 4.2 CoarseChunkSet
+
+`CoarseChunkSet` 是第一阶段输出，只供第二阶段消费，不是最终产物。
+
+```python
+@dataclass
+class CoarseChunkSet:
+    chunks: list[CoarseChunk]
+    source_file: str | None = None
+    strategy: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+```
+
+### 4.3 CoarseChunk
+
+```python
+@dataclass
+class CoarseChunk:
+    id: str
+    content: str
+    start_line: int
+    end_line: int
+    token_count: int
+    source_element_indexes: list[int]
+    element_types: list[str]
+    protected_ranges: list[ProtectedRange]
+    heading_trail: list[str]
+    heading_trails: list[list[str]]
+    role: str
+    strategy: str
+    source_coarse_chunk_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+```
+
+约束：
+
+- `id` 是 splitter 单次运行内唯一、顺序确定的内部 ID，例如 `coarse_000001`。
+- `role` 当前使用 `mixed` / `derived_element`。
+- derived chunk 通过 `source_coarse_chunk_id` 指向其 source mixed coarse chunk。
+- `source_element_indexes` 和 `protected_ranges` 是第一阶段给第二阶段使用的内部结构字段，不进入最终 `Chunk`。
+- `strategy` 是第一阶段算法名；derived chunk 仍属于 `candidate_boundary` 的内部产物，不把 `derived_element` 写成算法名。
+
+### 4.4 ProtectedRange
+
+`ProtectedRange` 表达 mixed chunk 内第二阶段默认不得盲切的结构化元素，例如 table、image、code block、math block。
+
+```python
+@dataclass
+class ProtectedRange:
+    kind: str
+    start_line: int
+    end_line: int
+    element_index: int
+    reason: str = "protected_element"
+    metadata: dict[str, Any] = field(default_factory=dict)
 ```
 
 约定：
 
-- 输入是 `MarkdownParser` 输出的 `MarkdownElement` 列表。
-- 输出是按文档顺序排列的 `Chunk` 列表。
-- `Chunk.metadata` 应携带 `chunk_index`、`element_types` 等下游可用信息。
-- `StructuredSemanticChunker` 会在第一阶段输出进入 oversized refine 前校验行号范围、`chunk_index`、`element_types` 和 derived chunk 的 `source_chunk_index`，避免不完整算法输出继续进入第二阶段。
-- 分片器不负责写数据库、调用 MQ 或写向量库。
-- 解析流水线的 chunking 阶段会在分片完成后批量写入 `kb_document_chunk` 真值记录；这是编排层职责，不属于分片器职责。
+- 初版不包含 `content_start_offset` / `content_end_offset`。
+- 如果未来引入需要在 `chunk.content` 字符串内绕开 protected element 精确切分的第二阶段算法，再扩展 offset 字段。
+- `ProtectedRange` 只挂在 mixed/source chunk 上。
+- derived chunk 不包含 `protected_ranges`，使用 `role`、`element_type`、`source_coarse_chunk_id` 表达身份和来源。
 
-## 3. 当前分片策略
+### 4.5 FinalChunkSet
 
-### 3.1 ASTAwareChunker
+`FinalChunkSet` 是第二阶段输出，语义上表示“已完成第二阶段处理，可以导出为最终 `Chunk`”。
 
-`ASTAwareChunker` 是当前解析流水线默认分片器。
+```python
+@dataclass
+class FinalChunkSet:
+    chunks: list[FinalChunk]
+    source_file: str | None = None
+    stage1_strategy: str = ""
+    stage2_strategy: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+```
 
-行为：
+### 4.6 FinalChunk
 
-- 忽略 front matter、水平分割线等噪声元素。
-- `h1` 到 `h3` 标题触发结构边界。
-- 代码块、数学块、表格、图片作为独立 Chunk。
-- 普通段落按标题上下文聚合。
-- 输出 metadata 包含：
-  - `element_types`
-  - `chunk_index`
-  - `heading_trail`
+`FinalChunk` 只保留导出 `list[Chunk]` 与下游入库、向量化、索引需要的信息。对最终阶段无意义的内部辅助字段不继续保留。
 
-### 3.2 PercentileSemanticChunker
+```python
+@dataclass
+class FinalChunk:
+    id: str
+    content: str
+    start_line: int
+    end_line: int
+    element_types: list[str]
+    heading_trail: list[str]
+    heading_trails: list[list[str]]
+    role: str
+    stage1_strategy: str
+    stage2_strategy: str
+    source_coarse_chunk_id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+```
 
-`PercentileSemanticChunker` 用于超长文本语义细分。
+不进入 `FinalChunk` 的字段包括：
 
-核心思路：
+- `source_element_indexes`
+- `protected_ranges`
+- 第一阶段 validator 专用信息
+- 不会写入最终 `Chunk.metadata` 的 parser 结构细节
 
-- 先按 `semantic_unit` 配置把文本拆成语义比较原子；默认 `sentence` 保持原有段落、行、句子逐级降级行为，`paragraph` 则以段落作为相似度计算单位。
-- 调用 embedding 模型计算相邻原子的语义距离。
-- 使用距离分位数作为动态阈值寻找断点。
-- 受 `min_chunk_tokens`、`max_chunk_tokens` 控制；overlap 由独立配置控制，但仍在原切分位置追加，保证算法流程不变。
+`id` 同样是运行内唯一、顺序确定的内部 ID，例如 `final_000001`。
 
-`paragraph` 模式只改变相似度计算粒度：单个段落超过 `max_chunk_tokens` 时，不会再改用句子级 embedding 计算断点，但最终输出仍会做长度保底拆分，避免生成超长 Chunk。
+## 5. 第一阶段算法
 
-它通常不直接作为主分片器使用，而是被 `StructuredSemanticChunker` 注入。
+### 5.1 StageOneRouter
 
-### 3.3 CandidateBoundaryChunker
+`StageOneRouter` 是文档级纯配置路由。当前只支持：
 
-`CandidateBoundaryChunker` 用于 `StructuredSemanticChunker` 的第一阶段粗分片。
+```env
+CHUNKING_STAGE_ONE_ALGORITHM=candidate_boundary
+```
 
-行为：
+未知算法名直接失败。
+
+### 5.2 candidate_boundary
+
+`candidate_boundary` 是当前唯一第一阶段算法，输入输出契约为：
+
+```text
+SplitInput -> CoarseChunkSet
+```
+
+行为保持现有算法语义：
 
 - 忽略 front matter、水平分割线等噪声元素。
 - 标题、段落、列表、引用、代码块、公式、表格、图片等块级结构都作为候选元素。
-- 候选边界不等于硬 chunk 边界；只有当前 buffer 达到 `CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` 后，才在下一个 heading 边界处切分，优先保证多数 chunk 从标题结构开始，并避免同一标题下的正文被普通段落边界拆开。生产配置范围为 `128..256`，它是第一阶段软下限，不是最终 chunk 的绝对最小值。
-- 未达到 token 软下限时，会按当前文档实际标题结构执行动态标题层级保护：参与判断的标题层级由 `CHUNKING_HEADING_BREAK_LEVEL` 控制，最多到 5 级；同级或回到上级标题默认提前切分，但当前文档最深叶子标题之间允许继续合并。
-- 6 级标题不参与动态标题层级保护，也不会作为文档最深标题层级参与判断。
+- 候选边界不等于硬 chunk 边界；`CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` 是第一阶段软下限。
+- 未达到 token 软下限时，按当前文档实际标题结构执行动态标题层级保护；参与判断的标题层级由 `CHUNKING_HEADING_BREAK_LEVEL` 控制，最多到 5 级。
+- 6 级标题不参与动态标题层级保护。
 - 纯标题 buffer 不会因为达到软下限而单独输出；文档尾部只有标题时会并入前一个 chunk，除非全文只有标题。
-- 代码块、公式、表格、图片作为 protected element 参与粗 chunk 聚合，不在元素内部截断。
-- 图片、表格会在保留 mixed chunk 原文位置连续性的同时生成 derived chunk，用于独立召回。
-- 图片在 mixed chunk 中替换为稳定图片引用和视觉说明；derived chunk 保留图片说明、标题路径、相邻上下文和原始引用。
+- 代码块、公式、表格、图片作为 protected element 参与 mixed chunk 聚合，不在元素内部截断。
+- 图片、表格在保留 mixed chunk 原文位置连续性的同时生成 derived chunk，用于独立召回。
 - 表格总是生成 table-derived chunk；短表格在 mixed chunk 中保留原始 Markdown 表格结构，长表格在 mixed chunk 中替换为稳定表格引用和表格摘要。
-- 短表格判定为：表格 token 数 `<= 256`、表格所有非空行数 `<= 12`、最大列数 `<= 5`。这些阈值是 splitter 模块内部常量，不作为运维配置暴露；行数包含表头、分隔行和数据行。
-- 第一阶段允许输出超过 `CHUNKING_MAX_CHUNK_TOKENS` 的粗 chunk，是否二次细分由第二阶段判断。
+- 短表格判定为：表格 token 数 `<= 256`、表格所有非空行数 `<= 12`、最大列数 `<= 5`。这些阈值是 splitter 内部常量。
 
-输出 metadata 包含：
+第一阶段输出必须覆盖所有可见输入元素，不得静默丢弃内容。缺字段、行号异常、range 越界、derived/source 关系不完整等问题应由 `CoarseChunkSetValidator` 失败暴露。
 
-- `element_types`
+## 6. 第二阶段算法
+
+### 6.1 StageTwoRouter
+
+`StageTwoRouter` 是文档级纯配置路由。当前支持：
+
+```env
+CHUNKING_STAGE_TWO_ALGORITHM=semantic_oversized
+CHUNKING_STAGE_TWO_ALGORITHM=noop
+```
+
+未知算法名直接失败。router 不根据 token 数或 protected element 自动选择算法。
+
+### 6.2 noop
+
+`noop` 表达“不做第二阶段实际细分”，但仍然产生 `FinalChunkSet`：
+
+```text
+CoarseChunkSet -> NoopStageTwoAlgorithm -> FinalChunkSet
+```
+
+这样所有链路统一经过第二阶段，不存在“绕过第二阶段直接导出”的分支。
+
+### 6.3 semantic_oversized
+
+`semantic_oversized` 是现有 oversized 语义细分能力的第二阶段算法封装。
+
+行为边界：
+
+- 输入完整 `CoarseChunkSet`，输出 `FinalChunkSet`。
+- 只处理超过 `CHUNKING_MAX_CHUNK_TOKENS` 的候选粗 chunk。
+- 纯文本 oversized chunk 复用 `PercentileSemanticChunker` 做语义细分。
+- derived chunk 默认 pass-through。
+- protected range 如何处理属于该算法内部规则；当前可保持保守策略，不在 protected element 内部盲切。
+- 算法初始化或运行失败时的具体策略由该算法自身定义，不由 router 自动 fallback。
+
+## 7. ChunkExporter
+
+`ChunkExporter` 负责把 `FinalChunkSet` 导出为当前后续流程需要的 `list[Chunk]`。
+
+最终 `Chunk.metadata` 至少保持：
+
 - `chunk_index`
+- `element_types`
+- `chunk_role`
 - `heading_trail`
-- `heading_trails`（当一个粗 chunk 横跨多个标题路径时记录完整路径集合）
-- `split_strategy="candidate_boundary"`
-- `coarse_token_count`
-- `protected_element_types`（仅当 chunk 内包含 protected element 时出现）
-- `chunk_role="mixed"`（第一阶段 source chunk）
-- `derived_element_ids`（仅当 source chunk 产生图片或表格 derived chunk 时出现）
+- `heading_trails`，仅在存在跨标题路径信息时写入
+- `split_strategy`
+- `source_file`，如果输入存在
 
-derived chunk 额外包含：
+derived chunk 还应写入：
 
-- `chunk_role="derived_element"`
-- `split_strategy="derived_element"`
-- `element_type`（`image` / `table`）
-- `element_id`，以及对应的 `image_id` 或 `table_id`
-- `source_chunk_index`（指向最终输出中的 source mixed chunk）
-- `heading_trail`
-- 表格 derived chunk 会记录 `table_inline_in_source`、`table_row_count`、`table_col_count`、`table_token_count`
+- `element_type`
+- `element_id`
+- `image_id` 或 `table_id`
+- `source_chunk_index`
+- 表格统计字段，例如 `table_inline_in_source`、`table_row_count`、`table_col_count`、`table_token_count`
 
-derived chunk 不使用 parent/child chunk 关系，不改向量库 schema；它作为普通最终 chunk 进入后续 embedding 与索引流程。
+`split_strategy` 使用阶段算法拼接字符串：
 
-### 3.4 OversizedChunkRefiner
+```text
+<stage1_algorithm> + <stage2_algorithm>
+```
 
-`OversizedChunkRefiner` 是 `StructuredSemanticChunker` 的第二阶段。
+示例：
 
-行为：
+```text
+candidate_boundary + noop
+candidate_boundary + semantic_oversized
+```
 
-- 只处理 token 数超过 `CHUNKING_MAX_CHUNK_TOKENS` 的粗 chunk。
-- 未超长 chunk 原样保留。
-- 纯文本 oversized chunk 复用 `PercentileSemanticChunker.split()` 做语义细分。
-- 含代码块、公式、表格、图片的 oversized chunk 本期保守保留，不在 protected element 内部截断；第二阶段不额外写入跳过状态 metadata。
+`derived_element` 是 `candidate_boundary` 第一阶段内部产物，不写入 `split_strategy`；derived 身份通过 `chunk_role="derived_element"` 表达。
 
-### 3.5 ChunkOverlapper
+## 8. Overlap
 
-`ChunkOverlapper` 负责相邻 Chunk 的上下文 overlap，不参与语义断点计算。
+`ChunkOverlapper` 负责相邻最终 chunk 的上下文 overlap，不参与语义断点计算。
 
 配置：
 
 - `CHUNKING_OVERLAP_TOKENS`：追加的 token 数上限，范围 `0..64`；`0` 表示关闭 overlap。
 
-`CHUNKING_OVERLAP_TOKENS=0` 时，不追加 overlap。默认 `64` 保持现有分片行为。
+图片/表格 derived chunk 的相邻上下文也复用 `ChunkOverlapper` 的 token 截取能力：取异构元素前一个可见元素尾部 N tokens 与后一个可见元素头部 N tokens，N 同样由 `CHUNKING_OVERLAP_TOKENS` 控制。
 
-图片/表格 derived chunk 的 `相邻上下文` 也复用 `ChunkOverlapper` 的 token 截取能力：取异构元素前一个可见元素尾部 N tokens 与后一个可见元素头部 N tokens，N 同样由 `CHUNKING_OVERLAP_TOKENS` 决定。`CHUNKING_OVERLAP_TOKENS=0` 时 derived chunk 仍会生成，但不写入相邻上下文。最终相邻 Chunk overlap 只在非 derived、且不含 protected element 的 chunk 之间追加，避免表格、代码块、公式块或图片引用片段通过 overlap 泄漏到其他 chunk。
+最终相邻 chunk overlap 应只在适合追加上下文的 chunk 间执行，避免 derived chunk 或含 protected element 的片段通过 overlap 泄漏到其他 chunk。具体判断可以在第二阶段算法或导出后处理内实现，但不得影响阶段契约。
 
-### 3.6 StructuredSemanticChunker
+## 9. 使用方式
 
-`StructuredSemanticChunker` 是两阶段分片器：
-
-```text
-MarkdownElement[]
-  -> 候选边界粗分片
-  -> oversized Chunk 语义细分
-  -> 邻接上下文 overlap
-  -> Chunk[]
-```
-
-适用于既要减少短结构化 Markdown 过度切分，又要控制长正文 chunk 尺寸的场景。
-
-## 4. 使用方式
-
-### 4.1 解析流水线中的使用
-
-解析 Pipeline 的 `ChunkingStage` 会通过 `StageServices.run_chunking()` 优先使用上游已经生成的 `ParseResult`：
+解析 Pipeline 的 `ChunkingStage` 通过 `StageServices.run_chunking()` 获取最终 `list[Chunk]`：
 
 ```python
 chunks = await services.run_chunking(
@@ -197,105 +332,53 @@ chunks = await services.run_chunking(
 )
 ```
 
-如果没有 `parse_result`，`ChunkingEngine` 会先调用 `MarkdownParser.parse()` 再分片。
+如果已有 `ParseResult`，`ChunkingEngine` 应直接消费该结构化结果；如果没有，则先调用 `MarkdownParser.parse()`。无论入口如何，最终对 parse pipeline 输出仍为 `list[Chunk]`。
 
-`ChunkingStage` 在获得 `list[Chunk]` 后，会把分片转换为 chunk 真值草稿，并在同一 chunking 阶段通过 `ChunkRepository.bulk_insert_pending()` 单事务写入 MySQL。写入成功后才标记文件级 `chunking_status=SUCCESS`；写入失败会回滚整批 chunk 真值并终止流水线，不进入 vectorizing。
+`ChunkingStage` 获得 `list[Chunk]` 后，会把分片转换为 chunk 真值草稿，并通过 `ChunkRepository.bulk_insert_pending()` 单事务写入 MySQL。写入成功后才标记文件级 `chunking_status=SUCCESS`；写入失败会回滚整批 chunk 真值并终止流水线。
 
-### 4.2 直接使用 ChunkingEngine
+## 10. 新增算法接入
 
-```python
-from src.core.markdown_parser import MarkdownParser
-from src.core.splitter import ChunkingEngine
-from src.core.splitter.rule_chunker import ASTAwareChunker
+新增第一阶段算法时：
 
-engine = ChunkingEngine(chunker=ASTAwareChunker(), parser=MarkdownParser())
-chunks = engine.process(markdown, source_file="example.md")
-```
+- 实现 `StageOneAlgorithm`，接收 `SplitInput`，返回 `CoarseChunkSet`。
+- 在第一阶段 registry / router 中注册算法名。
+- 直接产出完整 `CoarseChunk` 字段，不依赖第二阶段补救。
+- 输出覆盖所有可见输入元素，顺序稳定，line range 合法。
+- 对 table / image / code block / math block 生成 `ProtectedRange`。
+- 不直接写数据库、MQ、向量库或 ES。
+- 补充第一阶段契约测试。
 
-### 4.3 直接消费 ParseResult
+新增第二阶段算法时：
 
-```python
-chunks = engine.process_parse_result(parse_result)
-```
+- 实现 `StageTwoAlgorithm`，接收完整 `CoarseChunkSet`，返回 `FinalChunkSet`。
+- 在第二阶段 registry / router 中注册算法名。
+- 不从 `content` 重新猜测 protected element，优先消费 `protected_ranges`。
+- 若改变 chunk 数量或顺序，必须保证输出可被 `ChunkExporter` 稳定导出。
+- 支持空 `CoarseChunkSet`。
+- 明确 derived chunk 的 pass-through 或映射策略。
+- 不直接写数据库、MQ、向量库或 ES。
+- 补充第二阶段算法测试和 exporter 回归测试。
 
-该方式会跳过 Markdown 重新解析，适合解析服务已经产出结构化结果的场景。
+## 11. 修改已有能力
 
-## 5. 新增分片策略
+修改 `candidate_boundary` 时关注：
 
-新增策略时：
-
-1. 在 `src/core/splitter/` 下新增 chunker 文件。
-2. 继承 `BaseChunker`。
-3. 实现 `chunk(elements, **kwargs) -> list[Chunk]`。
-4. 必要时实现 `achunk`。
-5. 补充单元测试。
-
-示例：
-
-```python
-from src.core.markdown_parser import MarkdownElement
-from src.core.splitter.base import BaseChunker
-from src.core.splitter.models import Chunk
-
-
-class SimpleChunker(BaseChunker):
-    def chunk(self, elements: list[MarkdownElement], **kwargs) -> list[Chunk]:
-        chunks = []
-        for index, element in enumerate(elements):
-            chunks.append(
-                Chunk(
-                    content=element.content,
-                    start_line=element.start_line,
-                    end_line=element.end_line,
-                    metadata={
-                        "chunk_index": index,
-                        "element_types": [element.type.value],
-                    },
-                )
-            )
-        return chunks
-```
-
-接入方式：
-
-```python
-engine = ChunkingEngine(chunker=SimpleChunker())
-chunks = engine.process(markdown)
-```
-
-如果要替换解析流水线默认策略，需要修改 `ParseTaskPipeline._build_chunk_processor()`。
-
-## 6. 修改已有分片器
-
-修改 `ASTAwareChunker` 时关注：
-
-- 标题边界是否仍然稳定。
-- 表格、图片、代码块是否仍保持独立。
-- `heading_trail`、`chunk_index` 是否仍正确。
-
-修改 `CandidateBoundaryChunker` 时关注：
-
-- `CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` 是否只作为第一阶段软下限。
-- 标题、段落、列表和 protected element 是否只作为候选边界。
-- 动态标题保护是否只考虑 `CHUNKING_HEADING_BREAK_LEVEL` 内且不超过 5 级的标题。
+- `CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` 是否仍只作为第一阶段软下限。
+- 动态标题保护是否仍只考虑 `CHUNKING_HEADING_BREAK_LEVEL` 内且不超过 5 级的标题。
 - protected element 是否保持完整，不在元素内部截断。
+- mixed chunk 与 derived chunk 的关系是否通过内部稳定 ID 表达。
 - `heading_trail` 与 `heading_trails` 是否能表达跨小节粗 chunk。
-- 第一阶段输出是否能通过 `StructuredSemanticChunker` 的完整性校验。
+- `CoarseChunkSet` 是否能通过 validator。
 
-修改 `OversizedChunkRefiner` 时关注：
+修改第二阶段算法时关注：
 
-- 第二阶段是否只处理超过 `CHUNKING_MAX_CHUNK_TOKENS` 的粗 chunk。
-- 含 protected element 的 oversized chunk 是否按保守策略跳过内部截断。
-- 语义细分后 `chunk_index` 是否连续。
+- router 是否仍只按配置选择算法。
+- `noop` 是否保持等价通过语义。
+- `semantic_oversized` 是否只处理自身算法定义范围内的 oversized chunk。
+- 最终 `FinalChunkSet` 是否只保留下游有意义的信息。
+- `ChunkExporter` 是否继续生成连续 `chunk_index` 和正确的 `source_chunk_index`。
 
-修改语义分片时关注：
-
-- token 上下限是否合理。
-- overlap 是否按 `CHUNKING_OVERLAP_TOKENS` 生效，且没有造成内容膨胀。
-- embedding 调用是否批量且可测试。
-- 语义断点失败时是否有 fallback。
-
-## 7. 测试建议
+## 12. 测试建议
 
 常用测试范围：
 
@@ -306,10 +389,11 @@ chunks = engine.process(markdown)
 
 建议覆盖：
 
-- 标题边界分片。
-- 候选边界达到软下限前的短小节合并。
-- 表格、图片、代码块、公式作为 protected element 参与粗 chunk。
-- `source_file` 元数据注入。
-- chunking 阶段成功后批量落库 chunk 真值，失败时整批回滚。
-- 超长文本语义细分。
-- 空文档或纯噪声文档。
+- `InputAdapter` 对 `ParseResult` / `MarkdownElement[]` 的适配。
+- `StageOneRouter` / `StageTwoRouter` 的纯配置路由和未知算法失败。
+- `candidate_boundary` 输出 `CoarseChunkSet` 的普通文本、多标题、derived chunk、protected range。
+- `CoarseChunkSetValidator` 对缺字段、非法行号、重复 ID、derived/source 关系异常的失败。
+- `noop` 第二阶段输出 `FinalChunkSet`。
+- `semantic_oversized` 保持现有 oversized 细分语义。
+- `ChunkExporter` 生成 `chunk_index`、`source_chunk_index`、`split_strategy`、`heading_trail` / `heading_trails`。
+- parse pipeline 仍拿到最终 `list[Chunk]` 并可批量落库。
