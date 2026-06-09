@@ -15,11 +15,18 @@ from src.core.llm.factory import ModelFactory
 from src.core.llm.interfaces import CapabilityType, IEmbedder
 from src.core.llm.tokenizer import Tokenizer
 
+from .candidate_boundary_chunker import CandidateBoundaryChunker
+from .chunk_exporter import ChunkExporter
 from .chunking_engine import ChunkingEngine
 from .embedding_pipeline import ChunkEmbeddingPipeline
+from .overlap import ChunkOverlapConfig, ChunkOverlapper
+from .oversized_chunk_refiner import SemanticOversizedStageTwoAlgorithm
 from .pipeline_chunker import StructuredSemanticChunker
-from .rule_chunker import ASTAwareChunker
 from .semantic_chunker import PercentileSemanticChunker
+from .stage_contracts import StageTwoAlgorithm
+from .stage_routers import StageOneRouter, StageTwoRouter
+from .stage_two_noop import NoopStageTwoAlgorithm
+from .validators import CoarseChunkSetValidator
 
 
 class DenseEmbeddingConfigMissingError(RuntimeError):
@@ -119,35 +126,57 @@ def create_lazy_system_embedding_client() -> LazyEmbeddingClient:
 def create_chunking_engine() -> ChunkingEngine:
     """按配置构建 Markdown 分块引擎。
 
-    高级语义分块初始化失败时降级为规则分块，保持解析主链路可用。
+    按显式阶段算法配置装配 splitter 闭环，不保留旧规则分片器 fallback。
     """
-    if not settings.CHUNKING_ENABLE_ADVANCED_PIPELINE:
-        return ChunkingEngine(chunker=ASTAwareChunker())
+    tokenizer = Tokenizer()
+    overlapper = ChunkOverlapper(
+        tokenizer=tokenizer,
+        config=ChunkOverlapConfig(tokens=settings.CHUNKING_OVERLAP_TOKENS),
+    )
+    candidate_algorithm = CandidateBoundaryChunker(
+        tokenizer=tokenizer,
+        min_candidate_chunk_tokens=settings.CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS,
+        heading_break_level=settings.CHUNKING_HEADING_BREAK_LEVEL,
+        overlapper=overlapper,
+    )
+    stage_one_router = StageOneRouter(
+        algorithm_name=settings.CHUNKING_STAGE_ONE_ALGORITHM,
+        algorithms=[candidate_algorithm],
+    )
 
-    try:
-        embedder = create_system_embedding_client()
+    stage_two_algorithms: list[StageTwoAlgorithm] = [NoopStageTwoAlgorithm()]
+    semantic_chunker: PercentileSemanticChunker | None = None
+    if settings.CHUNKING_STAGE_TWO_ALGORITHM == "semantic_oversized":
         semantic_chunker = PercentileSemanticChunker(
-            embedder=embedder,
-            tokenizer=Tokenizer(),
+            embedder=create_lazy_system_embedding_client(),
+            tokenizer=tokenizer,
             percentile=settings.CHUNKING_SEMANTIC_PERCENTILE,
             semantic_unit=settings.CHUNKING_SEMANTIC_UNIT,
             min_chunk_tokens=settings.CHUNKING_MIN_CHUNK_TOKENS,
             max_chunk_tokens=settings.CHUNKING_MAX_CHUNK_TOKENS,
-            overlap_tokens=settings.CHUNKING_OVERLAP_TOKENS,
+            overlapper=overlapper,
             min_distance_gate=settings.CHUNKING_MIN_DISTANCE_GATE,
         )
-        chunker = StructuredSemanticChunker(
-            semantic_chunker=semantic_chunker,
-            heading_break_level=settings.CHUNKING_HEADING_BREAK_LEVEL,
-            min_candidate_chunk_tokens=settings.CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS,
+        stage_two_algorithms.append(
+            SemanticOversizedStageTwoAlgorithm(
+                semantic_chunker=semantic_chunker,
+            )
         )
-        return ChunkingEngine(chunker=chunker)
-    except Exception as exc:
-        logger.warning(
-            "[splitter.factory] advanced chunking init failed, fallback to rule chunking: {}",
-            exc,
-        )
-        return ChunkingEngine(chunker=ASTAwareChunker())
+
+    stage_two_router = StageTwoRouter(
+        algorithm_name=settings.CHUNKING_STAGE_TWO_ALGORITHM,
+        algorithms=stage_two_algorithms,
+    )
+    chunker = StructuredSemanticChunker(
+        semantic_chunker=semantic_chunker,
+        candidate_chunker=candidate_algorithm,
+        stage_one_router=stage_one_router,
+        stage_two_router=stage_two_router,
+        validator=CoarseChunkSetValidator(),
+        exporter=ChunkExporter(),
+        overlapper=overlapper,
+    )
+    return ChunkingEngine(chunker=chunker)
 
 
 # DashScope text-embedding-* 系列单次 /embeddings 请求的 input 条数上限。
@@ -211,9 +240,6 @@ def _resolve_embed_batch_size(
 def create_chunk_embedding_pipeline() -> ChunkEmbeddingPipeline:
     """按配置构建 chunk embedding pipeline。
 
-    内部固定使用 ASTAwareChunker，因为 embedding pipeline 仅承担向量化阶段，
-    更精细的分块策略由独立的 ``create_chunking_engine`` 负责。
-
     batch_size 会根据 provider / model 的已知单次请求上限自动 cap，
     避免因配置值超限导致 DashScope 等 provider 返回 400。
     """
@@ -223,7 +249,7 @@ def create_chunk_embedding_pipeline() -> ChunkEmbeddingPipeline:
         configured_batch_size=settings.CHUNK_INDEX_EMBED_BATCH_SIZE,
     )
     return ChunkEmbeddingPipeline(
-        chunking_engine=ChunkingEngine(chunker=ASTAwareChunker()),
+        chunking_engine=create_chunking_engine(),
         embedder=create_lazy_system_embedding_client(),
         embedding_model=settings.SYSTEM_LLM_MODEL_EMBEDDING,
         batch_size=batch_size,
@@ -312,7 +338,7 @@ async def aresolve_user_chunk_embedding_pipeline(user_id: int) -> ChunkEmbedding
         configured_batch_size=settings.CHUNK_INDEX_EMBED_BATCH_SIZE,
     )
     return ChunkEmbeddingPipeline(
-        chunking_engine=ChunkingEngine(chunker=ASTAwareChunker()),
+        chunking_engine=create_chunking_engine(),
         embedder=embedder,
         embedding_model=model_name,
         batch_size=batch_size,

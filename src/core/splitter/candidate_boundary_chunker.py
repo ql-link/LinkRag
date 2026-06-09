@@ -1,16 +1,27 @@
 # -*- coding: utf-8 -*-
-"""Candidate-boundary coarse chunking for Markdown elements."""
+"""candidate_boundary 第一阶段算法。"""
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from src.core.markdown_parser import ElementType, MarkdownElement
 
-from .base import BaseChunker
-from .element_derived_chunker import DerivedElementChunkBuilder, HeadingTrailTracker
-from .models import Chunk
+from .element_derived_chunker import (
+    DerivedElementBuildResult,
+    DerivedElementChunkBuilder,
+    DerivedElementChunkDraft,
+    HeadingTrailTracker,
+)
 from .overlap import ChunkOverlapConfig, ChunkOverlapper
+from .stage_models import (
+    CoarseChunk,
+    CoarseChunkSet,
+    ProtectedRange,
+    SplitInput,
+    StageIdFactory,
+)
 
 if TYPE_CHECKING:
     from src.core.llm.tokenizer import Tokenizer
@@ -18,9 +29,10 @@ else:
     Tokenizer = Any
 
 
+@dataclass(slots=True)
 class _ChunkBundle:
     """
-        保存一个 mixed source chunk 及其派生元素 chunk，便于尾部标题合并后统一编号。
+    保存一个 mixed coarse chunk 及其派生元素 coarse chunk。
 
     Args:
         None.
@@ -29,14 +41,13 @@ class _ChunkBundle:
         None.
     """
 
-    def __init__(self, source_chunk: Chunk, derived_chunks: list[Chunk]) -> None:
-        self.source_chunk = source_chunk
-        self.derived_chunks = derived_chunks
+    source_chunk: CoarseChunk
+    derived_chunks: list[CoarseChunk]
 
 
-class CandidateBoundaryChunker(BaseChunker):
+class CandidateBoundaryChunker:
     """
-        将 Markdown 结构边界作为候选信号执行第一阶段粗分片。
+    将 Markdown 结构边界作为候选信号执行第一阶段粗分片。
 
     Args:
         None.
@@ -44,6 +55,8 @@ class CandidateBoundaryChunker(BaseChunker):
     Returns:
         None.
     """
+
+    name = "candidate_boundary"
 
     NOISE_TYPES = frozenset([ElementType.FRONT_MATTER, ElementType.HORIZONTAL_RULE])
     MAX_DYNAMIC_HEADING_LEVEL = 5
@@ -64,7 +77,7 @@ class CandidateBoundaryChunker(BaseChunker):
         overlapper: ChunkOverlapper | None = None,
     ) -> None:
         """
-            初始化候选边界粗分片器。
+        初始化候选边界粗分片器。
 
         Args:
             tokenizer: 用于统计粗 chunk token 数的分词器。
@@ -98,7 +111,7 @@ class CandidateBoundaryChunker(BaseChunker):
 
     def _count_tokens(self, text: str) -> int:
         """
-            统计文本 token 数。
+        统计文本 token 数。
 
         Args:
             text: 待统计文本。
@@ -111,7 +124,7 @@ class CandidateBoundaryChunker(BaseChunker):
     @staticmethod
     def _unique_heading_trails(heading_trails: list[list[str]]) -> list[list[str]]:
         """
-            保留出现顺序，去重标题路径。
+        保留出现顺序，去重标题路径。
 
         Args:
             heading_trails: 元素对应的标题路径快照。
@@ -132,7 +145,7 @@ class CandidateBoundaryChunker(BaseChunker):
     @staticmethod
     def _is_heading_only(elements: list[MarkdownElement]) -> bool:
         """
-            判断当前 buffer 是否只包含标题元素。
+        判断当前 buffer 是否只包含标题元素。
 
         Args:
             elements: 当前 buffer 内的元素列表。
@@ -144,7 +157,7 @@ class CandidateBoundaryChunker(BaseChunker):
 
     def _heading_level(self, element: MarkdownElement) -> int | None:
         """
-            解析参与动态边界保护的标题层级。
+        解析参与动态边界保护的标题层级。
 
         Args:
             element: 待检查的 Markdown 元素。
@@ -166,7 +179,7 @@ class CandidateBoundaryChunker(BaseChunker):
 
     def _deepest_heading_level(self, elements: list[MarkdownElement]) -> int | None:
         """
-            计算当前文档中参与动态保护的最深标题层级。
+        计算当前文档中参与动态保护的最深标题层级。
 
         Args:
             elements: 已过滤噪声元素后的可见元素列表。
@@ -181,7 +194,7 @@ class CandidateBoundaryChunker(BaseChunker):
 
     def _last_heading_level(self, elements: list[MarkdownElement]) -> int | None:
         """
-            查找当前 buffer 内最后一个参与动态保护的标题层级。
+        查找当前 buffer 内最后一个参与动态保护的标题层级。
 
         Args:
             elements: 当前 buffer 内的元素。
@@ -203,7 +216,7 @@ class CandidateBoundaryChunker(BaseChunker):
         deepest_heading_level: int | None,
     ) -> bool:
         """
-            判断未达 token 软下限时是否应因标题层级切换提前 flush。
+        判断未达 token 软下限时是否应因标题层级切换提前 flush。
 
         Args:
             next_heading: 即将进入 buffer 的标题元素。
@@ -238,7 +251,7 @@ class CandidateBoundaryChunker(BaseChunker):
         deepest_heading_level: int | None,
     ) -> bool:
         """
-            判断当前元素之前是否应输出 buffer。
+        判断当前元素之前是否应输出 buffer。
 
         Args:
             element: 即将进入 buffer 的元素。
@@ -266,7 +279,7 @@ class CandidateBoundaryChunker(BaseChunker):
 
     def _merge_trailing_heading_chunk(self, bundles: list[_ChunkBundle]) -> None:
         """
-            将文档尾部的纯标题 chunk 并入前一个 chunk，避免生成无正文标题 chunk。
+        将文档尾部的纯标题 chunk 并入前一个 chunk，避免生成无正文标题 chunk。
 
         Args:
             bundles: 当前已经输出的 mixed chunk bundle 列表。
@@ -278,135 +291,212 @@ class CandidateBoundaryChunker(BaseChunker):
             return
 
         tail_chunk = bundles[-1].source_chunk
-        if tail_chunk.metadata.get("element_types") != ["heading"]:
+        if tail_chunk.element_types != [ElementType.HEADING.value]:
             return
 
         previous_chunk = bundles[-2].source_chunk
         previous_chunk.content = f"{previous_chunk.content}\n\n{tail_chunk.content}".strip()
         previous_chunk.end_line = tail_chunk.end_line
-
-        previous_types = set(
-            str(value) for value in previous_chunk.metadata.get("element_types", [])
+        previous_chunk.token_count = self._count_tokens(previous_chunk.content)
+        previous_chunk.source_element_indexes.extend(tail_chunk.source_element_indexes)
+        previous_chunk.element_types = sorted(
+            {str(value) for value in previous_chunk.element_types} | {ElementType.HEADING.value}
         )
-        previous_types.add(ElementType.HEADING.value)
-        previous_chunk.metadata["element_types"] = sorted(previous_types)
-        previous_chunk.metadata["coarse_token_count"] = self._count_tokens(previous_chunk.content)
+        previous_chunk.protected_ranges.extend(tail_chunk.protected_ranges)
+        previous_chunk.metadata["coarse_token_count"] = previous_chunk.token_count
+        previous_chunk.metadata["element_types"] = list(previous_chunk.element_types)
 
-        existing_trails = previous_chunk.metadata.get("heading_trails") or []
-        merged_trails = [list(trail) for trail in existing_trails]
-        merged_trails.extend(tail_chunk.metadata.get("heading_trails") or [])
+        merged_trails = [list(trail) for trail in previous_chunk.heading_trails]
+        merged_trails.extend(tail_chunk.heading_trails)
         unique_heading_trails = self._unique_heading_trails(merged_trails)
         if unique_heading_trails:
+            previous_chunk.heading_trails = unique_heading_trails
+            previous_chunk.heading_trail = list(unique_heading_trails[-1])
             previous_chunk.metadata["heading_trails"] = unique_heading_trails
             previous_chunk.metadata["heading_trail"] = list(unique_heading_trails[-1])
 
         bundles.pop()
 
+    def _protected_ranges(
+        self,
+        elements: list[MarkdownElement],
+        source_element_indexes: list[int],
+    ) -> list[ProtectedRange]:
+        """
+        生成 mixed coarse chunk 内的受保护元素范围。
+
+        Args:
+            elements: 当前 mixed coarse chunk 的元素列表。
+            source_element_indexes: 与 elements 对齐的 SplitInput 原始元素索引。
+
+        Returns:
+            list[ProtectedRange]: 第一阶段供第二阶段算法参考的受保护范围。
+        """
+        protected_ranges: list[ProtectedRange] = []
+        for element, element_index in zip(elements, source_element_indexes, strict=True):
+            if element.type not in self.PROTECTED_TYPES:
+                continue
+            protected_ranges.append(
+                ProtectedRange(
+                    kind=element.type.value,
+                    start_line=element.start_line,
+                    end_line=element.end_line,
+                    element_index=element_index,
+                    metadata=dict(element.metadata),
+                )
+            )
+        return protected_ranges
+
+    def _build_derived_coarse_chunk(
+        self,
+        *,
+        draft: DerivedElementChunkDraft,
+        source_coarse_chunk_id: str,
+        id_factory: StageIdFactory,
+    ) -> CoarseChunk:
+        """
+        将派生元素草稿转换为第一阶段 CoarseChunk。
+
+        Args:
+            draft: candidate_boundary 内部派生元素草稿。
+            source_coarse_chunk_id: 对应 mixed coarse chunk 的内部 ID。
+            id_factory: coarse ID 生成器。
+
+        Returns:
+            CoarseChunk: derived_element 角色的第一阶段分片。
+        """
+        metadata = dict(draft.metadata)
+        element_types = [
+            str(value)
+            for value in metadata.get("element_types") or [metadata.get("element_type")]
+            if value
+        ]
+        heading_trail = list(metadata.get("heading_trail") or [])
+        return CoarseChunk(
+            id=id_factory.next(),
+            content=draft.content,
+            start_line=draft.start_line,
+            end_line=draft.end_line,
+            token_count=self._count_tokens(draft.content),
+            source_element_indexes=[draft.source_element_index],
+            element_types=element_types,
+            protected_ranges=[],
+            heading_trail=heading_trail,
+            heading_trails=[heading_trail] if heading_trail else [],
+            role="derived_element",
+            strategy=self.name,
+            source_coarse_chunk_id=source_coarse_chunk_id,
+            metadata=metadata,
+        )
+
     def _build_chunk_bundle(
         self,
         elements: list[MarkdownElement],
+        source_element_indexes: list[int],
         heading_trails: list[list[str]],
         neighbor_elements: list[tuple[MarkdownElement | None, MarkdownElement | None]],
+        id_factory: StageIdFactory,
     ) -> _ChunkBundle:
         """
-            构造第一阶段 mixed source chunk 及其派生元素 chunk。
+        构造第一阶段 mixed source chunk 及其派生元素 chunk。
 
         Args:
             elements: 组成当前粗 chunk 的 Markdown 元素。
+            source_element_indexes: 与 elements 对齐的 SplitInput 原始元素索引。
             heading_trails: 元素对应的标题路径快照。
             neighbor_elements: 元素在完整文档序列中的前后相邻元素。
+            id_factory: coarse ID 生成器。
 
         Returns:
             _ChunkBundle: 构造完成的 mixed chunk 与 derived chunks。
         """
-        derived_result = self.derived_element_builder.build(
+        derived_result: DerivedElementBuildResult = self.derived_element_builder.build(
             elements,
             heading_trails,
             neighbor_elements,
+            source_element_indexes=source_element_indexes,
         )
         content = derived_result.mixed_content
         unique_heading_trails = self._unique_heading_trails(heading_trails)
         element_types = sorted({element.type.value for element in elements})
-        protected_element_types = sorted(
-            {element.type.value for element in elements if element.type in self.PROTECTED_TYPES}
-        )
+        token_count = self._count_tokens(content)
+        source_coarse_chunk_id = id_factory.next()
         metadata: dict[str, Any] = {
             "element_types": element_types,
-            "chunk_role": "mixed",
             "heading_trail": list(unique_heading_trails[-1]) if unique_heading_trails else [],
-            "split_strategy": "candidate_boundary",
-            "coarse_token_count": self._count_tokens(content),
+            "coarse_token_count": token_count,
         }
         if unique_heading_trails:
             metadata["heading_trails"] = unique_heading_trails
-        if protected_element_types:
-            metadata["protected_element_types"] = protected_element_types
         if derived_result.derived_element_ids:
             metadata["derived_element_ids"] = derived_result.derived_element_ids
 
-        return _ChunkBundle(
-            source_chunk=Chunk(
-                content=content,
-                start_line=elements[0].start_line,
-                end_line=elements[-1].end_line,
-                metadata=metadata,
-            ),
-            derived_chunks=derived_result.derived_chunks,
+        source_chunk = CoarseChunk(
+            id=source_coarse_chunk_id,
+            content=content,
+            start_line=elements[0].start_line,
+            end_line=elements[-1].end_line,
+            token_count=token_count,
+            source_element_indexes=list(source_element_indexes),
+            element_types=element_types,
+            protected_ranges=self._protected_ranges(elements, source_element_indexes),
+            heading_trail=list(unique_heading_trails[-1]) if unique_heading_trails else [],
+            heading_trails=unique_heading_trails,
+            role="mixed",
+            strategy=self.name,
+            metadata=metadata,
         )
+        derived_chunks = [
+            self._build_derived_coarse_chunk(
+                draft=draft,
+                source_coarse_chunk_id=source_coarse_chunk_id,
+                id_factory=id_factory,
+            )
+            for draft in derived_result.derived_chunks
+        ]
+        return _ChunkBundle(source_chunk=source_chunk, derived_chunks=derived_chunks)
 
     @staticmethod
-    def _flatten_bundles(bundles: list[_ChunkBundle]) -> list[Chunk]:
+    def _flatten_bundles(bundles: list[_ChunkBundle]) -> list[CoarseChunk]:
         """
-            将 mixed chunk bundle 展开为按文档顺序排列的最终 chunk，并补齐索引关系。
+        将 mixed chunk bundle 展开为按文档顺序排列的 coarse chunk。
 
         Args:
             bundles: 待展开的 source/derived bundle 列表。
 
         Returns:
-            list[Chunk]: 已补齐 `chunk_index` 与 `source_chunk_index` 的 chunk 列表。
+            list[CoarseChunk]: 第一阶段输出 chunk 列表。
         """
-        chunks: list[Chunk] = []
+        chunks: list[CoarseChunk] = []
         for bundle in bundles:
-            source_index = len(chunks)
-            bundle.source_chunk.metadata["chunk_index"] = source_index
             chunks.append(bundle.source_chunk)
-
-            for derived_chunk in bundle.derived_chunks:
-                derived_chunk.metadata["source_chunk_index"] = source_index
-                derived_chunk.metadata["chunk_index"] = len(chunks)
-                chunks.append(derived_chunk)
-
+            chunks.extend(bundle.derived_chunks)
         return chunks
 
-    def chunk(
-        self,
-        elements: list[MarkdownElement],
-        **kwargs,
-    ) -> list[Chunk]:
+    def run(self, split_input: SplitInput) -> CoarseChunkSet:
         """
-            执行候选边界粗分片。
+        执行候选边界粗分片。
 
         Args:
-            elements: 解析后的 Markdown 元素列表。
-            **kwargs: 预留扩展参数；当前实现未使用。
+            split_input: splitter 内部输入。
 
         Returns:
-            list[Chunk]: 第一阶段粗 chunk 列表。
+            CoarseChunkSet: 第一阶段粗分片集合。
         """
-        del kwargs
-
         self.derived_element_builder.reset()
 
         bundles: list[_ChunkBundle] = []
+        id_factory = StageIdFactory("coarse")
         heading_tracker = HeadingTrailTracker(heading_break_level=self.heading_break_level)
         buffer_elements: list[MarkdownElement] = []
+        buffer_source_element_indexes: list[int] = []
         buffer_heading_trails: list[list[str]] = []
         buffer_neighbor_elements: list[tuple[MarkdownElement | None, MarkdownElement | None]] = []
         buffer_token_count = 0
 
         def flush_buffer() -> None:
             """
-                将当前 buffer 输出为一个粗 chunk。
+            将当前 buffer 输出为一个 coarse chunk。
 
             Args:
                 None.
@@ -421,18 +511,26 @@ class CandidateBoundaryChunker(BaseChunker):
             bundles.append(
                 self._build_chunk_bundle(
                     elements=buffer_elements,
+                    source_element_indexes=buffer_source_element_indexes,
                     heading_trails=buffer_heading_trails,
                     neighbor_elements=buffer_neighbor_elements,
+                    id_factory=id_factory,
                 )
             )
             buffer_elements.clear()
+            buffer_source_element_indexes.clear()
             buffer_heading_trails.clear()
             buffer_neighbor_elements.clear()
             buffer_token_count = 0
 
-        visible_elements = [element for element in elements if element.type not in self.NOISE_TYPES]
+        visible_entries = [
+            (index, element)
+            for index, element in enumerate(split_input.elements)
+            if element.type not in self.NOISE_TYPES
+        ]
+        visible_elements = [element for _, element in visible_entries]
         deepest_heading_level = self._deepest_heading_level(visible_elements)
-        for element_index, element in enumerate(visible_elements):
+        for visible_index, (source_element_index, element) in enumerate(visible_entries):
             if self._should_flush_before(
                 element,
                 buffer_elements,
@@ -444,13 +542,14 @@ class CandidateBoundaryChunker(BaseChunker):
             heading_tracker.observe(element)
 
             buffer_elements.append(element)
+            buffer_source_element_indexes.append(source_element_index)
             buffer_heading_trails.append(heading_tracker.current_trail())
             buffer_neighbor_elements.append(
                 (
-                    visible_elements[element_index - 1] if element_index > 0 else None,
+                    visible_entries[visible_index - 1][1] if visible_index > 0 else None,
                     (
-                        visible_elements[element_index + 1]
-                        if element_index + 1 < len(visible_elements)
+                        visible_entries[visible_index + 1][1]
+                        if visible_index + 1 < len(visible_entries)
                         else None
                     ),
                 )
@@ -459,4 +558,9 @@ class CandidateBoundaryChunker(BaseChunker):
 
         flush_buffer()
         self._merge_trailing_heading_chunk(bundles)
-        return self._flatten_bundles(bundles)
+        return CoarseChunkSet(
+            chunks=self._flatten_bundles(bundles),
+            source_file=split_input.source_file,
+            strategy=self.name,
+            metadata=dict(split_input.metadata),
+        )
