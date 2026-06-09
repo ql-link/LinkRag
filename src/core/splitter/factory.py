@@ -123,11 +123,8 @@ def create_lazy_system_embedding_client() -> LazyEmbeddingClient:
     return LazyEmbeddingClient(create_system_embedding_client)
 
 
-def create_chunking_engine() -> ChunkingEngine:
-    """按配置构建 Markdown 分块引擎。
-
-    按显式阶段算法配置装配 splitter 闭环，不保留旧规则分片器 fallback。
-    """
+def _create_structured_chunking_engine(embedder: Any | None = None) -> ChunkingEngine:
+    """使用当前阶段算法配置创建标准 splitter 引擎。"""
     tokenizer = Tokenizer()
     overlapper = ChunkOverlapper(
         tokenizer=tokenizer,
@@ -148,7 +145,7 @@ def create_chunking_engine() -> ChunkingEngine:
     semantic_chunker: PercentileSemanticChunker | None = None
     if settings.CHUNKING_STAGE_TWO_ALGORITHM == "semantic_oversized":
         semantic_chunker = PercentileSemanticChunker(
-            embedder=create_lazy_system_embedding_client(),
+            embedder=embedder or create_lazy_system_embedding_client(),
             tokenizer=tokenizer,
             percentile=settings.CHUNKING_SEMANTIC_PERCENTILE,
             semantic_unit=settings.CHUNKING_SEMANTIC_UNIT,
@@ -177,6 +174,14 @@ def create_chunking_engine() -> ChunkingEngine:
         overlapper=overlapper,
     )
     return ChunkingEngine(chunker=chunker)
+
+
+def create_chunking_engine() -> ChunkingEngine:
+    """按配置构建 Markdown 分块引擎。
+
+    按显式阶段算法配置装配 splitter 闭环，不保留旧规则分片器 fallback。
+    """
+    return _create_structured_chunking_engine(create_lazy_system_embedding_client())
 
 
 # DashScope text-embedding-* 系列单次 /embeddings 请求的 input 条数上限。
@@ -240,17 +245,21 @@ def _resolve_embed_batch_size(
 def create_chunk_embedding_pipeline() -> ChunkEmbeddingPipeline:
     """按配置构建 chunk embedding pipeline。
 
+    分片阶段与向量化阶段复用同一个系统级 embedding 客户端包装器，确保最终写入路径
+    与主分片策略一致。
+
     batch_size 会根据 provider / model 的已知单次请求上限自动 cap，
     避免因配置值超限导致 DashScope 等 provider 返回 400。
     """
+    embedder = create_lazy_system_embedding_client()
     batch_size = _resolve_embed_batch_size(
         provider_type=settings.SYSTEM_LLM_PROVIDER,
         model_name=settings.SYSTEM_LLM_MODEL_EMBEDDING,
         configured_batch_size=settings.CHUNK_INDEX_EMBED_BATCH_SIZE,
     )
     return ChunkEmbeddingPipeline(
-        chunking_engine=create_chunking_engine(),
-        embedder=create_lazy_system_embedding_client(),
+        chunking_engine=_create_structured_chunking_engine(embedder),
+        embedder=embedder,
         embedding_model=settings.SYSTEM_LLM_MODEL_EMBEDDING,
         batch_size=batch_size,
     )
@@ -338,7 +347,7 @@ async def aresolve_user_chunk_embedding_pipeline(user_id: int) -> ChunkEmbedding
         configured_batch_size=settings.CHUNK_INDEX_EMBED_BATCH_SIZE,
     )
     return ChunkEmbeddingPipeline(
-        chunking_engine=create_chunking_engine(),
+        chunking_engine=_create_structured_chunking_engine(embedder),
         embedder=embedder,
         embedding_model=model_name,
         batch_size=batch_size,

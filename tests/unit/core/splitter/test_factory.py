@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 import src.core.splitter.factory as factory
 from src.core.splitter import StructuredSemanticChunker
 from src.core.splitter.element_derived_chunker import INLINE_TABLE_MAX_TOKENS

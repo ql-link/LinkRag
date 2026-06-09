@@ -50,6 +50,7 @@ GENERATED_ARTIFACTS = frozenset(
         "acceptance.feature",
         "technical_design.md",
         "implementation_report.md",
+        "state.yaml",
         "feature_info.md",
         "requirement.md",
         "testing_delivery.md",

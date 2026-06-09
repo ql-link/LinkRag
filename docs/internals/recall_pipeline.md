@@ -21,7 +21,7 @@
 - 跨路原始分数归一化。
 - reranker 精排、上下文拼装、答案生成。
 
-这些能力归属各路 Retriever 自己或下游 RAG 阶段。
+这些能力归属各路 Retriever 自己或下游 RAG 阶段。其中"召回后生成准备"（按 chunk_id 回填 MySQL 正文、按 token 预算拼装上下文）由同包的 `generation.py` 承担，它独立于 `RecallPipeline`、不属于召回编排本身；`generation.py` 同样不调用 LLM，最终生成调用在 runtime 编排层。完整的生成阶段（含流式作答与 SSE 终态事件）见 [recall_generation.md](recall_generation.md)。
 
 ---
 
@@ -34,7 +34,8 @@ src/core/pipeline/recall/
 ├── models.py         # RecallRequest / RetrieverHit / RecallHit / RecallResponse / Config
 ├── protocols.py      # Retriever 协议 + SOURCE_DENSE / SOURCE_SPARSE / SOURCE_BM25
 ├── fusion.py         # RRF 粗融合
-└── exceptions.py     # RecallError / RecallValidationError
+├── generation.py     # 召回后生成准备：正文回填 + 按 token 预算拼装上下文（独立于 RecallPipeline，见 §1 说明）
+└── exceptions.py     # RecallError / RecallValidationError / RecallFatalError
 ```
 
 当前适配器示例：
@@ -111,7 +112,7 @@ class Retriever(Protocol):
 - 合法但无命中时返回 `[]`，不要抛异常。
 - 模型不可达、ES 超时、存储异常等不可恢复失败可抛任意 Exception，由 Pipeline 根据容错配置处理。
 - `RetrieverHit.chunk_id` 必须锚定 MySQL `kb_document_chunk.chunk_id`，下游 reranker / 上下文拼装阶段用它反查正文。
-- `user_id` / `top_k` 在**执行期**由 Pipeline 透传（来自 `RecallRequest`），retriever 不在装配期持有它们——这样 Pipeline 与 retriever 可单例复用，HTTP 入口按请求注入用户上下文。内部召回 HTTP 入口见 [recall_http_api.md](recall_http_api.md)。
+- `user_id` / `top_k` 在**执行期**由 Pipeline 透传（来自 `RecallRequest`），retriever 不在装配期持有它们——这样 Pipeline 与 retriever 可单例复用，HTTP 入口按请求注入用户上下文。召回 HTTP 入口见 [recall_http_api.md](recall_http_api.md)。
 
 ---
 
@@ -144,9 +145,12 @@ class Retriever(Protocol):
 | 宽松模式，部分路失败 | 继续融合成功路；失败 source 写入 `failed_sources` |
 | 宽松模式，全部路失败 | 抛 `RecallError` |
 | 严格模式，任一路失败 | 抛 `RecallError` |
+| 任一路抛 `RecallFatalError`（前置必备条件缺失） | **绕过宽松降级**，`_check_failures` 立即重抛，由路由映射为明确错误码 |
 | 某路合法返回空列表 | 不算失败；该路 `per_source_counts[source] = 0` |
 
 `per_source_counts` 的键集合等于已装配的全部 source。失败路与返回空列表的路都计 0；二者通过 `failed_sources` 区分。
+
+`RecallFatalError`（`RecallError` 子类）是宽松模式的例外：当前唯一来源是发起用户无默认 EMBEDDING 配置、dense 路无法编码 query——此时即便宽松模式也不能"降级为其余路继续"，否则会静默返回不完整结果。由 `DenseRetriever` 捕获 `VectorRetrievalUserConfigMissingError` 后抛出（见 [dense_retriever](../../src/core/vector_storage/dense_retriever.py)）。
 
 ---
 
@@ -217,3 +221,33 @@ RecallPipelineConfig(
 - 单路查询、预处理、过滤和打分逻辑放在各自 Retriever 内。
 - Pipeline 只消费 `RetrieverHit`，只输出 `RecallHit`，不携带 chunk 正文。
 - 不做跨路原始分归一化；需要更精细排序时放到 reranker 阶段。
+
+---
+
+## 11. 召回后重排模块（独立下游，LINK-130）
+
+`RecallPipeline` 只到 RRF 粗融合为止。RRF 之后的精排由一个**独立模块**承接，与纯召回解耦：
+
+```text
+src/core/pipeline/
+├── chunk_content.py     # 中立正文回填 helper：按 chunk_id 批量取本用户 ACTIVE 非空正文
+│                        #   （rerank 与 recall.generation 共享，避免 rerank 反向依赖 generation）
+└── rerank/
+    ├── __init__.py      # 导出 PostRecallReranker / RerankRequest / RerankResponse / RerankedHit
+    ├── models.py        # RerankRequest / RerankedHit / RerankResponse
+    └── reranker.py      # PostRecallReranker：回填正文 → 解析用户 RERANK 模型 → 调用 → 映射/降级
+```
+
+流程：`RecallHit 列表 → 回表取正文 → 按 RRF 顺序构造 documents → 调用用户 RERANK 模型 →
+按返回 index/score 映射回候选、补 rerank_score/rerank_rank → 截断 top_n`。
+
+边界与语义：
+
+- **不触碰召回边界**：`RecallPipeline` 仍只返回 RRF 后 `RecallResponse`，不查正文、不调 rerank。
+- **输出保留 RRF 解释信息**：`RerankedHit` 在 chunk 元信息上保留 `fused_score` 与各路 `scores`，新增 `rerank_score` / `rerank_rank`。
+- **失败语义**：用户未配置 RERANK 模型 → 硬失败（异常上抛，不降级）；rerank 调用失败 / 返回不可用 → 降级返回 RRF 顺序候选并标记 `rerank_applied=False`。
+- **top_n**：调用方传入，缺省取 `RERANK_DEFAULT_TOP_N`（默认 8）。
+- **本期独立交付**：模块不接入对外直连生成链路（`recall_stream_runtime`），编排接入与召回候选池放大（`RECALL_RESULT_LIMIT` 20→64，LINK-136）为后续 issue。
+- 测试：`tests/unit/core/pipeline/rerank/`，以替身注入正文回填与模型解析，不连真实 DB / LLM。
+
+> 注：当前 LLM provider 尚无具体 RERANK 实现（各 provider `rerank()` 为 `NotImplementedError`、未声明 `CapabilityType.RERANK`）。本模块按 `IReranker` 接口契约实现并以替身单测，接入真实 rerank-capable provider 后即可端到端生效。

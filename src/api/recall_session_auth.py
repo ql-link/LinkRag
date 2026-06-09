@@ -1,15 +1,15 @@
-"""对外直连召回 SSE（LINK-40）的会话鉴权与并发治理。
+"""对外召回端点（LINK-40 / LINK-131）的会话鉴权与并发治理。
 
 外部用户态 Recall 入口归属 Java：Java 用 Sa-Token 鉴权并校验 dataset 归属后，签发
-**短期 session token**；前端凭该 token 直连 Python ``POST /api/v1/recall/stream``。
-本模块提供：
+**短期 session token**；前端凭该 token 直连 Python 对外端点 ``POST /api/v1/rag/stream``
+（RAG 问答流）与 ``POST /api/v1/recall``（纯召回 JSON）。本模块提供：
 
-- ``SessionAuthContext``：从可信 claims 解析出的请求上下文；
+- ``SessionAuthContext``：从可信 claims 解析出的请求上下文（两端点共用）；
 - ``verify_session_token``：FastAPI 依赖，用**独立密钥**验签 + 校验 iss/aud/scope/exp；
-- ``acquire_stream_slot`` / ``release_stream_slot``：按 ``user_id`` 的并发流计数。
+- ``acquire_stream_slot`` / ``release_stream_slot``：按 ``user_id`` 的并发流计数（**仅 RAG 流用**）。
 
-与内部端点（``internal_auth.py``）的关键差异：面向浏览器、密钥/受众独立；token
-**短期可复用**——只校验 ``exp``，不做一次性消费 / 防重放 / 撤销，资源滥用由并发上限封顶。
+面向浏览器、使用独立专用密钥/受众；token **短期可复用**——只校验 ``exp``，不做一次性
+消费 / 防重放 / 撤销，资源滥用由并发上限封顶。
 设计依据见 .specs/recall-direct-sse/{brief,technical_design}.md。
 """
 
@@ -22,6 +22,7 @@ from fastapi import Request
 from loguru import logger
 
 from src.api.internal_auth import (
+    CODE_SCOPE_FORBIDDEN,
     CODE_SESSION_UNAUTHORIZED,
     RecallApiError,
     _request_id,
@@ -51,7 +52,7 @@ class SessionAuthContext:
 def _extract_session_token(request: Request) -> str:
     """从 ``Authorization: Bearer`` 提取 session token。
 
-    缺失或格式不符抛 ``RECALL_SESSION_UNAUTHORIZED``（区别于内部端点的错误码）。
+    缺失或格式不符抛 ``RECALL_SESSION_UNAUTHORIZED``。
     """
     header = request.headers.get("Authorization")
     if not header or not header.startswith("Bearer "):
@@ -74,13 +75,9 @@ def _context_from_session_claims(claims: dict, request_id: str) -> SessionAuthCo
 
     dataset_ids = claims.get("dataset_ids")
     if dataset_ids is not None and not isinstance(dataset_ids, list):
-        raise RecallApiError(
-            401, CODE_SESSION_UNAUTHORIZED, "invalid dataset_ids in credential"
-        )
+        raise RecallApiError(401, CODE_SESSION_UNAUTHORIZED, "invalid dataset_ids in credential")
 
-    return SessionAuthContext(
-        user_id=user_id, dataset_ids=dataset_ids, request_id=request_id
-    )
+    return SessionAuthContext(user_id=user_id, dataset_ids=dataset_ids, request_id=request_id)
 
 
 async def verify_session_token(request: Request) -> SessionAuthContext:
@@ -123,6 +120,25 @@ async def verify_session_token(request: Request) -> SessionAuthContext:
         raise RecallApiError(401, CODE_SESSION_UNAUTHORIZED, "credential scope not permitted")
 
     return _context_from_session_claims(claims, request_id)
+
+
+def resolve_dataset_scope(body_dataset_ids: list[int] | None, ctx: SessionAuthContext) -> list[int]:
+    """解析本次召回的最终数据集范围并做 scope 子集校验（两对外端点共用）。
+
+    这是租户隔离的**授权边界**，两个对外端点（RAG 问答流、纯召回 JSON）必须行为一致——
+    因此抽为单一来源，避免各端点各持一份副本后悄悄漂移、在被忽视的端点上敞开越权。
+
+    - body 省略 / 空 ``dataset_ids`` → 用 claims 全量授权范围（claims 也空表示 Java 已授权
+      全库，返回空列表交由 pipeline 做全库召回）；
+    - body 指定子集 → 必须 ⊆ claims 授权范围，否则 403 SCOPE_FORBIDDEN；claims 为空
+      （全库授权）时不限制 body。
+    """
+    if not body_dataset_ids:
+        return ctx.dataset_ids or []
+
+    if ctx.dataset_ids and not set(body_dataset_ids) <= set(ctx.dataset_ids):
+        raise RecallApiError(403, CODE_SCOPE_FORBIDDEN, "dataset_ids exceed authorized scope")
+    return body_dataset_ids
 
 
 def _concurrent_key(user_id: int) -> str:

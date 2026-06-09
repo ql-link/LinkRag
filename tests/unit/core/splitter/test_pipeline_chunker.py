@@ -2,6 +2,7 @@ import pytest
 
 from src.core.markdown_parser import ElementType, MarkdownElement, ParseResult
 from src.core.splitter import (
+    Chunk,
     ChunkingEngine,
     CoarseChunk,
     CoarseChunkSet,

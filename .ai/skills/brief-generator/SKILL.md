@@ -63,7 +63,11 @@ when_to_use: "在 flow-router 判为 L2/L3 后，或用户直接要求'写个 br
 - `.specs/` 整目录已 git-ignored，是 feature 临时工作目录；详见 [.specs/README.md](../../../.specs/README.md)。
 - feature 名称使用英文 kebab-case，与 `.specs/` 目录约定一致。
 - 若用户未提供 feature 名称，从需求内容提取候选并向用户确认后再创建目录。
-- 同目录同时维护 `feature_info.md`，记录当前阶段（如 `brief 迭代中` / `brief 已冻结`）、产物清单、推荐阅读顺序。
+- 首次创建目录时，用脚本初始化机器拥有的阶段状态文件 `state.yaml`（取代旧的手维护 `feature_info.md`）：
+  ```bash
+  python scripts/flow-guard.py init <feature-name> --lane <L2|L3>
+  ```
+  该文件由 [scripts/flow-guard.py](../../../scripts/flow-guard.py) 校验，记录 `phase`、各 artifact 的 `frozen`、`verified` 等阶段不变量；人类可读的产物清单 / 推荐阅读顺序写入其 `notes` 字段。**不再手维护 `feature_info.md`**。
 - 若目录已存在 `brief.md`，先读旧版判断是修订还是覆盖，不允许无说明地重写关键结论。
 
 ## 5. 模板
@@ -182,7 +186,7 @@ flowchart TD
 冻结时：
 
 1. 删除"待确认问题"章节（如果还有非阻塞性的，需用户确认后保留或删除）
-2. 更新 `feature_info.md`：状态改为 `brief 已冻结`，记录冻结时间
+2. 回写 `state.yaml`：把 `artifacts.brief.frozen` 置为 `true`，`phase` 推进到 `acceptance`。冻结是被记录、被校验的显式动作——下游 `acceptance-generator` 会用 `flow-guard.py` 校验本字段。
 3. 告知用户下一步：进入 `acceptance-generator` 生成 acceptance.feature
 
 ## 7. 输出质量标准

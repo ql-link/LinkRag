@@ -10,7 +10,7 @@ ORM 与 migration 不一致时，以 migration 为准并修正 ORM；scripts/db/
 
 ## 表清单
 
-按业务域共 14 张表：
+按业务域共 16 张表：
 
 | 业务域 | 表 | 主键 ID 起始 |
 | --- | --- | --- |
@@ -18,7 +18,8 @@ ORM 与 migration 不一致时，以 migration 为准并修正 ORM；scripts/db/
 | [LLM 配置与用量](#2-llm-配置与用量) | `llm_system_provider`, `llm_provider_model`, `llm_system_preset`, `llm_user_config`, `llm_usage_log` | 10000 |
 | [数据集与对话](#3-数据集与对话) | `dataset`, `chat_conversation`, `chat_message` | 10000 |
 | [文档解析](#4-文档解析) | `document_original_file`, `document_parse_file`, `document_parsed_log`, `document_parse_pipeline` | 10000 |
-| [知识索引](#5-知识索引) | `kb_document_chunk` | 10000 |
+| [博客](#5-博客) | `blog_post`, `blog_asset` | 10000 |
+| [知识索引](#6-知识索引) | `kb_document_chunk` | 10000 |
 
 所有表统一：`InnoDB` / `utf8mb4_unicode_ci`，主键自增从 `10000` 起。
 
@@ -264,7 +265,7 @@ ORM：[`DocumentParseTask`](../../src/models/parse_task.py)
 | `document_original_file_id` | BIGINT UNSIGNED UNIQUE | 原文件 ID |
 | `dataset_id` | BIGINT UNSIGNED | 数据集 ID |
 | `user_id` | BIGINT UNSIGNED | 用户 ID |
-| `latest_parse_task_id` | VARCHAR(36) | 最新解析 task_id |
+| `latest_parse_task_id` | VARCHAR(36) NULL | 最新解析 task_id |
 | `original_filename` | VARCHAR(255) | 原文件名快照 |
 | `parse_count` | INT | 累计解析次数 |
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
@@ -285,7 +286,7 @@ ORM：[`DocumentParsedLog`](../../src/models/parse_task.py)
 | `id` | BIGINT UNSIGNED PK | 主键 |
 | `task_id` | VARCHAR(36) UNIQUE | 解析任务 UUID |
 | `document_original_file_id` | BIGINT UNSIGNED | 原文件 ID |
-| `document_parse_file_id` | BIGINT UNSIGNED | 文件解析表 ID |
+| `document_parse_file_id` | BIGINT UNSIGNED NULL | 文件解析表 ID |
 | `trigger_mode` | VARCHAR(20) | `upload_auto` / `manual_retry` |
 | `parsed_filename` | VARCHAR(255) | 解析后文件名 |
 | `parsed_bucket_name` | VARCHAR(64) | 解析结果桶 |
@@ -319,7 +320,7 @@ ORM：[`DocumentParsePipeline`](../../src/models/parse_task.py)
 | `document_parsed_log_id` | BIGINT UNSIGNED UNIQUE | 解析日志主键 |
 | `task_id` | VARCHAR(36) | 解析任务 ID |
 | `document_original_file_id` | BIGINT UNSIGNED | 原文件 ID |
-| `document_parse_file_id` | BIGINT UNSIGNED | 文件解析表 ID |
+| `document_parse_file_id` | BIGINT UNSIGNED NULL | 文件解析表 ID |
 | `pipeline_status` | VARCHAR(20) | 整体任务状态：`PENDING` / `PROCESSING` / `SUCCESS` / `FAILED`（Java 侧判定"上次任务是否整体成功"的唯一字段；`SUCCESS` 翻转点为 sparse 阶段成功） |
 | `cleaning_status` | VARCHAR(20) | 文档清洗（=解析+上传 markdown）阶段状态：`PENDING` / `PROCESSING` / `SUCCESS` / `FAILED`（brief 称 `parsing_status`） |
 | `chunking_status` | VARCHAR(20) | `PENDING` / `PROCESSING` / `SUCCESS` / `FAILED` |
@@ -356,7 +357,60 @@ ORM：[`DocumentParsePipeline`](../../src/models/parse_task.py)
 
 ---
 
-## 5. 知识索引
+## 5. 博客
+
+### `blog_post` — 博客文章表
+
+ORM：[`BlogPostDB`](../../src/models/db_models.py)
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | BIGINT UNSIGNED PK | 博客文章唯一标识 |
+| `title` | VARCHAR(255) | 文章标题 |
+| `slug` | VARCHAR(255) | 公开访问标识，由 Java 侧生成 |
+| `summary` | VARCHAR(1000) | 文章摘要 |
+| `content_object_key` | VARCHAR(512) | Markdown 正文对象 Key |
+| `cover_asset_id` | BIGINT UNSIGNED | 封面资源 ID，对应 `blog_asset.id` |
+| `status` | VARCHAR(20) | `DRAFT` / `PUBLISHED`，默认 `DRAFT` |
+| `published_at` | DATETIME | 首次发布时间 |
+| `created_by` | BIGINT UNSIGNED | 创建管理员用户 ID，仅用于审计 |
+| `is_deleted` | BOOLEAN | 逻辑删除标记 |
+| `deleted_seq` | BIGINT UNSIGNED | 删除判别列：活行为 `0`，软删后为自身 `id` |
+| `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
+
+索引：
+- `uk_blog_post_slug_seq(slug, deleted_seq)`
+- `idx_blog_post_public_list(status, published_at, id)`
+- `idx_blog_post_admin_list(is_deleted, updated_at, id)`
+
+### `blog_asset` — 博客文章资源表
+
+ORM：[`BlogAssetDB`](../../src/models/db_models.py)
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | BIGINT UNSIGNED PK | 博客资源唯一标识 |
+| `post_id` | BIGINT UNSIGNED | 所属博客文章 ID |
+| `asset_type` | VARCHAR(20) | `COVER` / `CONTENT_IMAGE` |
+| `original_filename` | VARCHAR(255) | 上传时的原始文件名 |
+| `content_type` | VARCHAR(128) | 文件 MIME 类型 |
+| `file_size` | BIGINT UNSIGNED | 文件大小，单位字节 |
+| `object_key` | VARCHAR(512) | MinIO 对象 Key |
+| `public_url` | VARCHAR(1024) | 资源公开访问 URL |
+| `created_by` | BIGINT UNSIGNED | 上传管理员用户 ID |
+| `is_deleted` | BOOLEAN | 逻辑删除标记 |
+| `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
+
+索引：
+- `uk_blog_asset_object_key(object_key)`
+- `idx_blog_asset_post_type(post_id, asset_type, is_deleted, created_at)`
+
+说明：博客 HTTP 工作流由 Java 侧负责；Python 侧迁移链负责创建共享库表。`MINIO_BLOG_BUCKET`
+默认 `tolink-blog`，该桶需由部署环境配置公开读策略。
+
+---
+
+## 6. 知识索引
 
 ### `kb_document_chunk` — 文档 Chunk 真值记录表
 
@@ -371,7 +425,7 @@ ORM：[`ChunkRecordDB`](../../src/models/chunk_record.py)
 | `doc_id` | BIGINT UNSIGNED | 文档 ID（对应原始文件） |
 | `set_id` | BIGINT UNSIGNED | 知识集 / 数据集 ID |
 | `user_id` | BIGINT UNSIGNED | 用户 ID |
-| `bucket_id` | INT | 路由后的 Qdrant 物理桶编号 |
+| `bucket_id` | INT NULL | 路由后的 Qdrant 物理桶编号（路由前为空） |
 | `content` | TEXT | Splitter 最终产出的可检索 Chunk 原文 |
 | `content_hash` | VARCHAR(64) | 内容 SHA-256 |
 | `chunk_type` | VARCHAR(32) | `paragraph` / `image` / `table` / `code_block` / `heading` / `mixed` / `text` |

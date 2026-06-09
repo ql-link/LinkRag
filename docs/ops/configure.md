@@ -34,6 +34,7 @@
 | `SYSTEM_LLM_PROVIDER` / `SYSTEM_LLM_API_KEY` / `SYSTEM_LLM_API_BASE` | 系统级兜底 LLM |
 | `KAFKA_BOOTSTRAP_SERVERS` 等（若 `MQ_VENDOR=kafka`） | Kafka 接入信息 |
 | `MINIO_*`（若 `STORAGE_TYPE=minio`） | 对象存储凭据 |
+| `MINIO_BLOG_BUCKET`（若启用 Java 博客模块） | 博客图片与 Markdown 正文公开桶，默认 `tolink-blog`，需配置匿名读 |
 | `QDRANT_HOST` 或 `ES_HOST`（取决于 `VECTOR_STORE_TYPE`） | 向量存储 |
 
 ## 关键开关
@@ -44,6 +45,7 @@
 | `VECTOR_STORE_TYPE` | `qdrant` | 切换 Qdrant / Elasticsearch |
 | `SPARSE_VECTOR_ENABLED` | `true` | 是否在向量化阶段同步生成 BGE-M3 稀疏向量；关闭后保持旧 dense-only 语义 |
 | `STORAGE_TYPE` | `minio` | 切换 MinIO / 本地存储 |
+| `MINIO_BLOG_BUCKET` | `tolink-blog` | Java 博客模块使用的 MinIO 公开读桶；Python 解析链路仍以 MQ 消息里的 bucket 为实际读写坐标 |
 | `PARSE_TEMP_DIR` | `/tmp/tolink-rag-parse` | 解析任务源文件临时落盘目录。流式下载在此创建临时文件；解析为 markdown 后立即清理；worker 启动时清空兜底。不预设最小容量，沿用部署机系统盘大小；写满会归类为 `TEMP_DISK_FULL` 错误码。扩消费者时容量需要 ≥ 单文件上限 × 并发数 |
 | `PDF_PARSER_BACKEND` | `mineru` | PDF 解析后端：`auto` / `mineru` / `opendataloader` / `naive` |
 | `PDF_PARSER_FALLBACKS` | 空 | 逗号分隔回退链，空表示不回退 |
@@ -123,10 +125,10 @@ logs/
 
 | 变量 | 默认值 | 用途 |
 | --- | --- | --- |
-| `PARSE_TASK_TOPIC` | `tolink-document-pares` | 解析任务入队 |
+| `PARSE_TASK_TOPIC` | `tolink.rag.parse_task` | 解析任务入队 |
 | `PARSE_RESULT_TOPIC` | `tolink.rag.parse_result` | 解析终态通知 |
 
-> 注意默认值中的 `pares`（非 `parse`）是历史遗留，业务方对接时以实际配置为准。
+> 这些变量只决定启动时**自动创建**哪些 Kafka topic。实际收发的 topic 名由消息类的 `MQ_NAME` 常量固定（同为 `tolink.rag.parse_task` / `tolink.rag.parse_result`），改这两个变量不会改变 Python 端实际订阅/投递的 topic。
 
 ## 分块参数建议
 
@@ -185,19 +187,14 @@ logs/
 
 不再提供 `SPARSE_VECTOR_USE_FP16` 配置。推理精度只由 `SPARSE_VECTOR_DEVICE` 决定：CPU 使用 fp32，CUDA 使用 fp16。
 
-## 内部召回 API 配置
+## 召回执行配置
 
-内部多路召回 SSE 接口 `POST /api/v1/internal/recall/stream` 的配置。详见
+召回融合 pipeline 的通用执行参数（RAG 问答流与纯召回 JSON 两端点共用）。详见
 [docs/internals/recall_http_api.md](../internals/recall_http_api.md)。
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `RECALL_INTERNAL_AUTH_ENABLED` | `true` | 是否启用内部 JWT 校验；**生产必须为 true** |
-| `RECALL_INTERNAL_JWT_ISSUER` | `tolink-java` | 期望的 JWT `iss` |
-| `RECALL_INTERNAL_JWT_AUDIENCE` | `tolink-rag` | 期望的 JWT `aud` |
-| `RECALL_INTERNAL_JWT_SCOPE` | `recall:execute` | 期望的 JWT `scope` |
-| `RECALL_INTERNAL_JWT_SECRET` | 本地联调占位值 | HS256 共享密钥；Java 签发端与 Python 验签端必须一致，**生产务必用环境变量覆盖为强随机值** |
-| `RECALL_STREAM_TIMEOUT_MS` | `60000` | 单次召回最大执行时间（毫秒）；超时以 SSE `error` RECALL_TIMEOUT 终止 |
+| `RECALL_STREAM_TIMEOUT_MS` | `60000` | 单次召回最大执行时间（毫秒）；超时 RAG 流以 SSE `error` RECALL_TIMEOUT 终止，纯召回 JSON 返回 `504` RECALL_TIMEOUT |
 | `RECALL_STRICT_DEFAULT` | `false` | pipeline 严格模式默认；false=宽松，允许单路失败降级 |
 | `RECALL_RESULT_LIMIT` | `20` | 服务端固定返回候选上限（同时作为各路执行期 `top_k`）|
 | `RECALL_ENABLED_SOURCES` | `bm25,sparse,dense` | 启用的召回路（逗号分隔）。本期默认开启三路；运维侧可显式 set `bm25,sparse` 暂时回退到 dev 旧行为；未登记的 source 出现在配置中装配期 `ValueError` |
@@ -205,21 +202,23 @@ logs/
 | `SPARSE_RETRIEVAL_SCORE_THRESHOLD` | `0.0` | sparse 召回默认 score 阈值（0.0 = 不过滤；详见 [vectorization.md §9.4](../internals/vectorization.md)） |
 | `DENSE_RETRIEVAL_TOP_K` | `10` | dense 召回 facade 直调时的兜底 top_k；pipeline 路径下被 `RECALL_RESULT_LIMIT` 覆盖 |
 | `DENSE_RETRIEVAL_SCORE_THRESHOLD` | `0.0` | dense 召回默认 score 阈值（cosine 上界 [0, 1]，0.0 = 不过滤；facade 入口校验 `> 1.0` 早死） |
-| `RECALL_GENERATION_CONTEXT_TOKEN_BUDGET` | `4000` | 召回后 LLM 生成拼装上下文的 token 预算上限；命中片段按融合分数从高到低纳入，累计超预算即截断尾部低分片段（仅对外直连端点的生成阶段生效） |
+| `RECALL_GENERATION_CONTEXT_TOKEN_BUDGET` | `4000` | 召回后 LLM 生成拼装上下文的 token 预算上限；命中片段按融合分数从高到低纳入，累计超预算即截断尾部低分片段（仅 RAG 问答流的生成阶段生效） |
+| `RERANK_DEFAULT_TOP_N` | `8` | 召回后重排模块（LINK-130）输出候选条数兜底默认值；调用方未显式传 `top_n` 时生效。参考 RAGFlow rerank `top_n`（默认 6，本项目放宽到 8） |
 
-### 对外直连召回 SSE 配置（LINK-40）
+### 对外会话鉴权配置（RAG 流 / 纯召回 JSON）
 
-对外直连召回 SSE 接口 `POST /api/v1/recall/stream` 的配置。前端凭 Java 签发的短期
-session token 直连，**独立密钥**与内部端点隔离。详见
+对外端点 `POST /api/v1/rag/stream`（RAG 问答流）与 `POST /api/v1/recall`（纯召回 JSON）的
+会话鉴权配置。前端凭 Java 签发的短期 session token 直连，使用**独立专用密钥**验签。并发限流
+（`RECALL_SESSION_MAX_CONCURRENT`）**仅 RAG 流生效**，纯召回不限流。详见
 [recall_http_api.md](../internals/recall_http_api.md)。
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `RECALL_SESSION_AUTH_ENABLED` | `true` | 是否启用 session token 验签；**生产必须为 true** |
 | `RECALL_SESSION_JWT_ISSUER` | `tolink-java` | 期望的 session JWT `iss` |
-| `RECALL_SESSION_JWT_AUDIENCE` | `tolink-rag-frontend` | 期望的 session JWT `aud`（与内部端点 `tolink-rag` 区分）|
+| `RECALL_SESSION_JWT_AUDIENCE` | `tolink-rag-frontend` | 期望的 session JWT `aud` |
 | `RECALL_SESSION_JWT_SCOPE` | `recall:stream` | 期望的 session JWT `scope` |
-| `RECALL_SESSION_JWT_SECRET` | 本地联调占位值 | **独立** HS256 密钥，与 `RECALL_INTERNAL_JWT_SECRET` 物理隔离、可单独轮转；**生产务必覆盖** |
+| `RECALL_SESSION_JWT_SECRET` | 本地联调占位值 | **独立专用** HS256 密钥，可单独轮转；**生产务必覆盖** |
 | `RECALL_SESSION_MAX_CONCURRENT` | `3` | 单用户最大并发召回流数；token 短期可复用，此为资源滥用主闸门，超限返回 `429` |
 | `CORS_ORIGINS` | `["*"]` | **生产对外环境必须收敛为前端可信域名清单**（不可用 `*`，否则带 `Authorization` 头的跨域预检失败）|
 

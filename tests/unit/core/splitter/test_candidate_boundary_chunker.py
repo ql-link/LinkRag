@@ -250,6 +250,29 @@ def test_candidate_boundary_should_generate_table_derived_chunk_with_inline_boun
     assert long_table in derived_chunks[1].content
 
 
+def test_candidate_boundary_should_limit_derived_adjacent_context_by_overlap_tokens():
+    coarse_set = _run(
+        [
+            _element(ElementType.PARAGRAPH, "prev0 prev1 prev2 prev3 prev4", 0),
+            _element(
+                ElementType.IMAGE,
+                "![diagram](./diagram.png)\n\n[视觉描述: A diagram.]",
+                2,
+            ),
+            _element(ElementType.PARAGRAPH, "next0 next1 next2 next3 next4", 4),
+        ],
+        overlap_tokens=3,
+    )
+
+    derived_chunk = coarse_set.chunks[1]
+    assert derived_chunk.role == "derived_element"
+    assert derived_chunk.metadata["adjacent_context_prev_tokens"] == 3
+    assert derived_chunk.metadata["adjacent_context_next_tokens"] == 3
+    assert "相邻上下文：prev2 prev3 prev4；next0 next1 next2" in derived_chunk.content
+    assert "prev0" not in derived_chunk.content
+    assert "next3" not in derived_chunk.content
+
+
 def test_candidate_boundary_should_not_generate_derived_chunks_for_code_or_math_blocks():
     coarse_set = _run(
         [

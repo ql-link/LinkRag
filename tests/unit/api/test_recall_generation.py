@@ -156,11 +156,3 @@ async def test_generation_failure_fails_whole_request(monkeypatch):
     assert names[-1] == "error"
     assert events[-1][1]["code"] == "RECALL_GENERATION_FAILED"
     assert "answer_done" not in names
-
-
-@pytest.mark.asyncio
-async def test_internal_mode_without_config_id_keeps_recall_done(stub_generation):
-    pipe = _FakePipeline(_response(_hits("c1")))
-    events = await _collect(rt.recall_event_stream(pipe, _req(), "rid"))  # config_id=None
-    assert [e for e, _ in events] == ["recall_done"]
-    assert len(events[0][1]["hits"]) == 1

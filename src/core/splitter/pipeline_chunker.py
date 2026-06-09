@@ -158,6 +158,98 @@ class StructuredSemanticChunker:
             "protected_element_types"
         )
 
+    @staticmethod
+    def _validate_candidate_chunks(chunks: list[Chunk]) -> None:
+        """
+            校验第一阶段输出是否满足第二阶段和入库前的最低契约。
+
+        Args:
+            chunks: 第一阶段候选边界算法输出的 chunk 列表。
+
+        Returns:
+            None.
+        """
+        if not chunks:
+            return
+
+        chunk_indexes: set[int] = set()
+        source_chunk_indexes: set[int] = set()
+        derived_source_refs: list[tuple[int, int]] = []
+
+        for position, chunk in enumerate(chunks):
+            if (
+                not isinstance(chunk.start_line, int)
+                or not isinstance(chunk.end_line, int)
+                or chunk.start_line < 0
+                or chunk.end_line < chunk.start_line
+            ):
+                raise SplitterOutputValidationError(
+                    f"candidate chunk at position {position} has invalid line range: "
+                    f"{chunk.start_line}-{chunk.end_line}"
+                )
+
+            metadata = chunk.metadata or {}
+            element_types = metadata.get("element_types")
+            if not isinstance(element_types, list) or not element_types:
+                raise SplitterOutputValidationError(
+                    f"candidate chunk at position {position} is missing element_types."
+                )
+
+            chunk_index = metadata.get("chunk_index")
+            if chunk_index is None:
+                raise SplitterOutputValidationError(
+                    f"candidate chunk at position {position} is missing chunk_index."
+                )
+
+            try:
+                resolved_chunk_index = int(chunk_index)
+            except (TypeError, ValueError) as exc:
+                raise SplitterOutputValidationError(
+                    f"candidate chunk at position {position} has invalid chunk_index: "
+                    f"{chunk_index!r}"
+                ) from exc
+
+            if resolved_chunk_index < 0:
+                raise SplitterOutputValidationError(
+                    f"candidate chunk at position {position} has negative chunk_index: "
+                    f"{resolved_chunk_index}"
+                )
+            if resolved_chunk_index in chunk_indexes:
+                raise SplitterOutputValidationError(
+                    f"candidate chunk_index {resolved_chunk_index} is duplicated."
+                )
+
+            chunk_indexes.add(resolved_chunk_index)
+            if metadata.get("chunk_role") == "derived_element":
+                source_chunk_index = metadata.get("source_chunk_index")
+                if source_chunk_index is None:
+                    raise SplitterOutputValidationError(
+                        f"derived chunk at position {position} is missing source_chunk_index."
+                    )
+                try:
+                    derived_source_refs.append((position, int(source_chunk_index)))
+                except (TypeError, ValueError) as exc:
+                    raise SplitterOutputValidationError(
+                        f"derived chunk at position {position} has invalid "
+                        f"source_chunk_index: {source_chunk_index!r}"
+                    ) from exc
+            else:
+                source_chunk_indexes.add(resolved_chunk_index)
+
+        expected_indexes = set(range(len(chunks)))
+        if chunk_indexes != expected_indexes:
+            raise SplitterOutputValidationError(
+                "candidate chunk_index values must be continuous from 0 to "
+                f"{len(chunks) - 1}; got {sorted(chunk_indexes)}."
+            )
+
+        for position, source_chunk_index in derived_source_refs:
+            if source_chunk_index not in source_chunk_indexes:
+                raise SplitterOutputValidationError(
+                    f"derived chunk at position {position} references missing "
+                    f"source_chunk_index {source_chunk_index}."
+                )
+
     def _apply_neighbor_context(self, chunks: list[Chunk]) -> list[Chunk]:
         """
         为最终相邻普通 Chunk 追加前后文 overlap。
