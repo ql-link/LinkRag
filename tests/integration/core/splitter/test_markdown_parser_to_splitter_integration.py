@@ -215,12 +215,10 @@ async def test_markdown_parser_to_splitter_should_cover_all_markdown_types_and_g
 
     embedded_chunks = await pipeline.aprocess_parse_result(parse_result)
 
-    assert len(embedded_chunks) == 6
+    assert len(embedded_chunks) == 5
     assert all(
-        chunk.metadata["split_strategy"] == "candidate_boundary + semantic_oversized"
-        for chunk in embedded_chunks
+        chunk.metadata["split_strategy"] == "candidate_boundary + noop" for chunk in embedded_chunks
     )
-    assert any("semantic_subchunk_index" in chunk.metadata for chunk in embedded_chunks)
     assert any(chunk.metadata.get("chunk_role") == "derived_element" for chunk in embedded_chunks)
     assert not any(chunk.metadata["split_strategy"] == "isolated" for chunk in embedded_chunks)
     assert any(
@@ -234,7 +232,7 @@ async def test_markdown_parser_to_splitter_should_cover_all_markdown_types_and_g
         in chunk.content
         for chunk in embedded_chunks
     )
-    assert any(
+    assert not any(
         chunk.metadata.get("context_overlap_mode") == "neighbor" for chunk in embedded_chunks
     )
     assert not any(
@@ -291,7 +289,7 @@ async def test_markdown_parser_to_splitter_should_cover_all_markdown_types_and_g
         in table_derived_chunk.content
     )
 
-    assert len(embedder.calls) == 2
+    assert len(embedder.calls) == 1
     assert embedder.calls[-1]["model"] == "visual-test-embedding"
     assert len(embedder.calls[-1]["texts"]) == len(embedded_chunks)
 

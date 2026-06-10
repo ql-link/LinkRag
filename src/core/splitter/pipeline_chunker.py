@@ -12,11 +12,11 @@ from .chunk_exporter import ChunkExporter
 from .input_adapter import InputAdapter
 from .models import Chunk
 from .overlap import ChunkOverlapper
-from .oversized_chunk_refiner import SemanticOversizedStageTwoAlgorithm
 from .semantic_chunker import PercentileSemanticChunker
 from .stage_contracts import StageOneAlgorithm, StageTwoAlgorithm
 from .stage_models import SplitInput
 from .stage_routers import StageOneRouter, StageTwoRouter
+from .stage_two_noop import NoopStageTwoAlgorithm
 from .validators import CoarseChunkSetValidator, SplitterOutputValidationError
 
 
@@ -40,7 +40,7 @@ class StructuredSemanticChunker:
         stage_one_router: StageOneRouter | None = None,
         stage_two_router: StageTwoRouter | None = None,
         stage_one_algorithm_name: str = "candidate_boundary",
-        stage_two_algorithm_name: str = "semantic_oversized",
+        stage_two_algorithm_name: str = "noop",
         stage_two_algorithm: StageTwoAlgorithm | None = None,
         validator: CoarseChunkSetValidator | None = None,
         exporter: ChunkExporter | None = None,
@@ -50,7 +50,8 @@ class StructuredSemanticChunker:
         初始化 splitter 顶层编排器。
 
         Args:
-            semantic_chunker: 可选语义切片器；兼容旧测试入口并用于默认 semantic_oversized。
+            semantic_chunker: 可选语义切片器；兼容旧测试入口，默认第一阶段用其 tokenizer
+                和 overlapper 构造 candidate_boundary，不再注册第二阶段算法。
             heading_break_level: 纳入 heading trail 的标题最大层级。
             min_candidate_chunk_tokens: 接受第一阶段候选边界前的 token 软下限。
             candidate_chunker: 可选第一阶段算法实例。
@@ -67,7 +68,7 @@ class StructuredSemanticChunker:
             None.
 
         Raises:
-            ValueError: 无法构造默认第一或第二阶段算法。
+            ValueError: 无法构造默认第一阶段算法或自定义第二阶段算法。
         """
         self.semantic_chunker = semantic_chunker
         self.heading_break_level = heading_break_level
@@ -96,11 +97,7 @@ class StructuredSemanticChunker:
         self.stage_one_router = stage_one_router
 
         if stage_two_algorithm is None and stage_two_router is None:
-            if semantic_chunker is None:
-                raise ValueError("semantic_chunker is required when stage_two_router is omitted.")
-            stage_two_algorithm = SemanticOversizedStageTwoAlgorithm(
-                semantic_chunker=semantic_chunker,
-            )
+            stage_two_algorithm = NoopStageTwoAlgorithm()
         if stage_two_router is None:
             if stage_two_algorithm is None:
                 raise ValueError(
@@ -111,7 +108,7 @@ class StructuredSemanticChunker:
                 algorithms=[stage_two_algorithm],
             )
         self.stage_two_router = stage_two_router
-        self.oversized_refiner = stage_two_algorithm or stage_two_router.algorithm
+        self.stage_two_algorithm = stage_two_algorithm or stage_two_router.algorithm
         self.overlapper = (
             overlapper
             or getattr(semantic_chunker, "overlapper", None)

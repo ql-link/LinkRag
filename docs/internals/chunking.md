@@ -54,7 +54,7 @@ flowchart LR
 | `StageOneRouter` | 按配置在文档级选择第一阶段算法；当前仅支持 `candidate_boundary` |
 | `StageOneAlgorithm` | 第一阶段算法契约：`SplitInput -> CoarseChunkSet` |
 | `CoarseChunkSetValidator` | 在第一阶段后立即校验必填字段、顺序、行号、来源关系和 protected ranges |
-| `StageTwoRouter` | 按配置在文档级选择第二阶段算法；当前支持 `semantic_oversized` / `noop` |
+| `StageTwoRouter` | 按配置在文档级选择第二阶段算法；当前仅支持 `noop` |
 | `StageTwoAlgorithm` | 第二阶段算法契约：`CoarseChunkSet -> FinalChunkSet` |
 | `ChunkExporter` | 将 `FinalChunkSet` 导出为后续流程稳定消费的 `list[Chunk]` |
 | `Chunk` | splitter 对外最终输出模型，包含 `content`、`start_line`、`end_line`、`metadata` |
@@ -68,14 +68,14 @@ splitter 算法选择使用显式算法名，不再使用布尔开关：
 | 配置 | 默认 | 说明 |
 | --- | --- | --- |
 | `CHUNKING_STAGE_ONE_ALGORITHM` | `candidate_boundary` | 第一阶段算法名；当前仅支持 `candidate_boundary` |
-| `CHUNKING_STAGE_TWO_ALGORITHM` | `semantic_oversized` | 第二阶段算法名；当前支持 `semantic_oversized` / `noop` |
+| `CHUNKING_STAGE_TWO_ALGORITHM` | `noop` | 第二阶段算法名；当前仅支持 `noop` |
 
 约定：
 
 - router 只做纯配置路由，不根据 token 数、文档类型、protected element 或初始化状态自动选择算法。
 - 未知算法名直接失败，不做隐式 fallback。
 - `CHUNKING_ENABLE_ADVANCED_PIPELINE` 已废弃并移除。
-- 不需要第二阶段实际细分时，应显式配置 `CHUNKING_STAGE_TWO_ALGORITHM=noop`。
+- 当前第二阶段默认使用 `noop`。新的 mixed-aware 第二阶段算法落地前，不提供 oversized 语义细分路由。
 - 第二阶段算法初始化失败或运行失败时的处理策略属于具体算法内部设计，本模块不提供旧规则分片 fallback。
 
 ## 4. 阶段模型
@@ -242,7 +242,6 @@ SplitInput -> CoarseChunkSet
 `StageTwoRouter` 是文档级纯配置路由。当前支持：
 
 ```env
-CHUNKING_STAGE_TWO_ALGORITHM=semantic_oversized
 CHUNKING_STAGE_TWO_ALGORITHM=noop
 ```
 
@@ -257,19 +256,6 @@ CoarseChunkSet -> NoopStageTwoAlgorithm -> FinalChunkSet
 ```
 
 这样所有链路统一经过第二阶段，不存在“绕过第二阶段直接导出”的分支。
-
-### 6.3 semantic_oversized
-
-`semantic_oversized` 是现有 oversized 语义细分能力的第二阶段算法封装。
-
-行为边界：
-
-- 输入完整 `CoarseChunkSet`，输出 `FinalChunkSet`。
-- 只处理超过 `CHUNKING_MAX_CHUNK_TOKENS` 的候选粗 chunk。
-- 纯文本 oversized chunk 复用 `PercentileSemanticChunker` 做语义细分。
-- derived chunk 默认 pass-through。
-- protected range 如何处理属于该算法内部规则；当前可保持保守策略，不在 protected element 内部盲切。
-- 算法初始化或运行失败时的具体策略由该算法自身定义，不由 router 自动 fallback。
 
 ## 7. ChunkExporter
 
@@ -303,7 +289,6 @@ derived chunk 还应写入：
 
 ```text
 candidate_boundary + noop
-candidate_boundary + semantic_oversized
 ```
 
 `derived_element` 是 `candidate_boundary` 第一阶段内部产物，不写入 `split_strategy`；derived 身份通过 `chunk_role="derived_element"` 表达。
@@ -374,7 +359,7 @@ chunks = await services.run_chunking(
 
 - router 是否仍只按配置选择算法。
 - `noop` 是否保持等价通过语义。
-- `semantic_oversized` 是否只处理自身算法定义范围内的 oversized chunk。
+- 新算法是否基于 `CoarseChunk` 的结构化信息定义清晰行为边界。
 - 最终 `FinalChunkSet` 是否只保留下游有意义的信息。
 - `ChunkExporter` 是否继续生成连续 `chunk_index` 和正确的 `source_chunk_index`。
 
@@ -394,6 +379,5 @@ chunks = await services.run_chunking(
 - `candidate_boundary` 输出 `CoarseChunkSet` 的普通文本、多标题、derived chunk、protected range。
 - `CoarseChunkSetValidator` 对缺字段、非法行号、重复 ID、derived/source 关系异常的失败。
 - `noop` 第二阶段输出 `FinalChunkSet`。
-- `semantic_oversized` 保持现有 oversized 细分语义。
 - `ChunkExporter` 生成 `chunk_index`、`source_chunk_index`、`split_strategy`、`heading_trail` / `heading_trails`。
 - parse pipeline 仍拿到最终 `list[Chunk]` 并可批量落库。
