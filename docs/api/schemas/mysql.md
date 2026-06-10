@@ -10,13 +10,13 @@ ORM 与 migration 不一致时，以 migration 为准并修正 ORM；scripts/db/
 
 ## 表清单
 
-按业务域共 16 张表：
+按业务域共 17 张表：
 
 | 业务域 | 表 | 主键 ID 起始 |
 | --- | --- | --- |
 | [用户](#1-用户) | `sys_user` | 10000 |
 | [LLM 配置与用量](#2-llm-配置与用量) | `llm_system_provider`, `llm_provider_model`, `llm_system_preset`, `llm_user_config`, `llm_usage_log` | 10000 |
-| [数据集与对话](#3-数据集与对话) | `dataset`, `chat_conversation`, `chat_message` | 10000 |
+| [数据集与对话](#3-数据集与对话) | `dataset`, `dataset_parse_config`, `chat_conversation`, `chat_message` | 10000 |
 | [文档解析](#4-文档解析) | `document_original_file`, `document_parse_file`, `document_parsed_log`, `document_parse_pipeline` | 10000 |
 | [博客](#5-博客) | `blog_post`, `blog_asset` | 10000 |
 | [知识索引](#6-知识索引) | `kb_document_chunk` | 10000 |
@@ -181,6 +181,28 @@ ORM：[`UsageLogDB`](../../src/models/db_models.py)
 索引：
 - `uk_dataset_user_name_seq(user_id, name, deleted_seq)`
 - `idx_dataset_user_updated(user_id, updated_at)`
+
+### `dataset_parse_config` — 数据集解析/检索参数配置表
+
+按数据集独立设置解析/检索参数。四个 JSON 列分别承载分块、Markdown 增强、PDF 解析、召回检索四类配置；未配置或缺字段时由 Python 侧回退系统默认值。
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | BIGINT UNSIGNED PK | 配置唯一标识 |
+| `user_id` | BIGINT UNSIGNED | 所属用户 ID |
+| `dataset_id` | BIGINT UNSIGNED | 所属数据集 ID，对应 `dataset.id` |
+| `chunking_config` | JSON | 分块配置（8 项：heading_break_level / min_candidate_chunk_tokens / semantic_percentile / semantic_unit / min_chunk_tokens / max_chunk_tokens / overlap_tokens / min_distance_gate） |
+| `enhancement_config` | JSON | Markdown 增强配置（4 项：enable_table_enhancement / enable_image_enhancement / table_model / vision_model） |
+| `pdf_config` | JSON | PDF 解析配置（1 项：pdf_parser_backend，null 表示用系统默认） |
+| `recall_config` | JSON | 召回检索配置（6 项：recall_result_limit / recall_context_token_budget / sparse_top_k / sparse_score_threshold / dense_top_k / dense_score_threshold） |
+| `is_active` | BOOLEAN | 是否启用，默认 `TRUE` |
+| `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
+
+索引：
+- `uk_user_dataset(user_id, dataset_id)`
+- `idx_dataset_parse_config_dataset(dataset_id)`
+
+> 所有权：表结构由 Python 侧 Alembic 迁移管理；**行数据的增删改由 Java 侧负责**，Python 侧只读，无配置行时使用内存默认。
 
 ### `chat_conversation` — 对话表
 

@@ -52,8 +52,12 @@ async def recall_event_stream(
     recall_req: RecallRequest,
     request_id: str,
     config_id: int,
+    token_budget: int,
 ) -> AsyncGenerator[str, None]:
     """流内执行召回 + 生成，把结果/异常映射为 SSE 终态事件。
+
+    ``token_budget`` 为生成阶段上下文拼装的 token 预算，来自数据集级
+    ``recall_config.recall_context_token_budget``（无数据集配置时为系统默认）。
 
     先按 ``(user_id, CHAT, config_id)`` 前置校验用户模型——不可用即 ``error``
     MODEL_CONFIG_MISSING、**不进入召回**；通过后执行召回融合，回填片段正文、按 token
@@ -94,7 +98,9 @@ async def recall_event_stream(
         response = await asyncio.wait_for(pipeline.execute(recall_req), timeout=timeout_seconds)
 
         # 空命中 / 正文回填 / 流式生成。
-        async for event in _generate_answer(resolved, response, recall_req, request_id):
+        async for event in _generate_answer(
+            resolved, response, recall_req, request_id, token_budget
+        ):
             yield event
     except RecallValidationError as exc:
         # 正常已在握手前拦截；此处为 pipeline 自身安全网的兜底。
@@ -130,6 +136,7 @@ async def _generate_answer(
     response: RecallResponse,
     recall_req: RecallRequest,
     request_id: str,
+    token_budget: int,
 ) -> AsyncGenerator[str, None]:
     """生成模式后续：空命中判定 → 正文回填 → 上下文拼装 → 流式生成。
 
@@ -149,9 +156,7 @@ async def _generate_answer(
 
     # 正文回填 + 上下文拼装。
     contents = await fetch_chunk_contents([h.chunk_id for h in response.hits], recall_req.user_id)
-    assembled = assemble_context(
-        response.hits, contents, settings.RECALL_GENERATION_CONTEXT_TOKEN_BUDGET
-    )
+    assembled = assemble_context(response.hits, contents, token_budget)
     logger.info(
         "[recall] generation context request_id={} hits={} blocks={} skipped_no_content={} truncated={}",
         request_id,

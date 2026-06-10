@@ -15,10 +15,11 @@ from pathlib import Path
 from loguru import logger
 
 from src.config import settings
-from src.core.markdown_parser import LLMConfigMissingError
+from src.core.dataset_config import DatasetConfigService
+from src.core.markdown_parser import EnhancementModelMissingError, LLMConfigMissingError
 
 from .. import temp_workspace
-from .._utils import now
+from .._utils import coerce_optional_int, now
 from ..error_codes import ParseFailureCode, build_failure_reason
 from ..post_process.constants import POST_PROCESS_STAGE_CLEANING
 from .base import Stage
@@ -95,9 +96,21 @@ class CleaningStage(Stage):
                 if payload.is_markdown_passthrough:
                     # md/markdown 源文件本身即目标格式：cleaning 阶段的职责是把多源文件
                     # 「解析为 md」，md 无需任何引擎转换，直接读取源文件文本透传，跳过解析。
+                    # 透传不经增强/PDF，无需数据集配置。
                     parse_result = await self._read_markdown_passthrough(source_path)
                 else:
-                    parse_result = await self._services.parse_file(source_path, payload)
+                    # 读取数据集级配置（PDF 后端 + 增强模型/开关）注入解析。get_config 内部已对
+                    # DB 故障降级为默认；JSON 内容非法时 ValidationError 在此向上抛，由下方
+                    # except 归类为 PARSE_ENGINE_FAILED（reason 含具体字段名，便于排查）。
+                    dataset_cfg = await self._load_dataset_config(payload, ctx)
+                    parse_result = await self._services.parse_file(
+                        source_path, payload, dataset_cfg
+                    )
+            except EnhancementModelMissingError as exc:
+                # 数据集开启增强但未配 table/vision 模型：按约定不兜底，直接失败，单独归类。
+                return self._classified_failure(
+                    payload, ParseFailureCode.ENHANCEMENT_MODEL_MISSING, exc
+                )
             except LLMConfigMissingError as exc:
                 # 发起用户缺少必配能力（CHAT）的默认 LLM 配置：单独归类，便于 Java 端提示用户去配置，
                 # 区别于解析引擎本身失败的 PARSE_ENGINE_FAILED。
@@ -163,6 +176,19 @@ class CleaningStage(Stage):
             duration_ms=ctx.log_record.parse_duration_ms,
             finished_at=now(),
         )
+
+    @staticmethod
+    async def _load_dataset_config(payload, ctx: StageContext):
+        """读取数据集级解析配置（PDF + 增强）。
+
+        ``user_id`` / ``dataset_id`` 缺失（理论上不应发生）时返回 ``None``，由 ``parse_file``
+        全量回退系统默认。DB 故障在 ``DatasetConfigService`` 内已降级为默认，不在此处理。
+        """
+        user_id = coerce_optional_int(payload.user_id)
+        dataset_id = coerce_optional_int(payload.dataset_id)
+        if user_id is None or dataset_id is None:
+            return None
+        return await DatasetConfigService().get_config(user_id, dataset_id, ctx.db)
 
     @staticmethod
     async def _read_markdown_passthrough(source_path: Path | None) -> dict:

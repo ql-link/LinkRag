@@ -29,6 +29,10 @@ class ParseFailureCode(str, Enum):
     # 发起用户缺少必配能力的默认 LLM 配置，无法执行解析增强（CHAT）或稠密向量化（EMBEDDING）。
     # 区别于配置读取失败（按引擎/INTERNAL 异常处理），仅在「确实未配置」时使用。
     LLM_CONFIG_MISSING = "LLM_CONFIG_MISSING"
+    # 数据集开启了表格/图片增强，但未在 enhancement_config 中配置对应模型名（table_model /
+    # vision_model）。按需求约定不做兜底，直接失败；与 LLM_CONFIG_MISSING（用户无能力默认配置）
+    # 区分，便于 Java 端提示用户去补数据集增强模型配置。
+    ENHANCEMENT_MODEL_MISSING = "ENHANCEMENT_MODEL_MISSING"
     # 用户 EMBEDDING 模型输出维度与系统统一维度（DENSE_VECTOR_DIMENSION）不一致，
     # 无法写入按 bucket 共享、维度固定的稠密 collection（方案 A 维度约束）。
     EMBEDDING_DIMENSION_UNSUPPORTED = "EMBEDDING_DIMENSION_UNSUPPORTED"
@@ -50,6 +54,7 @@ FAILURE_REASON_TEXT: dict[ParseFailureCode, str] = {
     ParseFailureCode.PARSING_FAILED: "文件解析阶段失败，请检查文件内容或重新解析",
     ParseFailureCode.SPARSE_VECTORIZING_FAILED: "稀疏向量化失败，请稍后重试",
     ParseFailureCode.LLM_CONFIG_MISSING: "未配置默认大模型，请先在系统中配置后重试",
+    ParseFailureCode.ENHANCEMENT_MODEL_MISSING: "已开启增强但未配置增强模型，请先在知识库配置中设置后重试",
     ParseFailureCode.EMBEDDING_DIMENSION_UNSUPPORTED: "所选向量模型维度不受支持，请改用系统支持的向量模型",
     ParseFailureCode.RETRY_VALIDATION_FAILED: "重试前置校验失败，请确认上次任务状态",
 }

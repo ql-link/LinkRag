@@ -95,7 +95,7 @@ def stub_generation(monkeypatch):
 @pytest.mark.asyncio
 async def test_happy_streams_answer_delta_then_done(stub_generation):
     pipe = _FakePipeline(_response(_hits("c1", "c2")))
-    events = await _collect(rt.recall_event_stream(pipe, _req(), "rid", config_id=77))
+    events = await _collect(rt.recall_event_stream(pipe, _req(), "rid", config_id=77, token_budget=4000))
     names = [e for e, _ in events]
     assert names == ["answer_delta", "answer_delta", "answer_done"]
     assert "".join(d["text"] for e, d in events if e == "answer_delta") == "答案"
@@ -112,7 +112,7 @@ async def test_model_config_missing_blocks_recall(monkeypatch):
 
     monkeypatch.setattr(rt, "aresolve_user_model", _missing)
     pipe = _FakePipeline(_response(_hits("c1")))
-    events = await _collect(rt.recall_event_stream(pipe, _req(), "rid", config_id=77))
+    events = await _collect(rt.recall_event_stream(pipe, _req(), "rid", config_id=77, token_budget=4000))
     assert events == [("error", events[0][1])]
     assert events[0][1]["code"] == "RECALL_MODEL_CONFIG_MISSING"
     assert pipe.calls == []  # 前置失败，不进入召回
@@ -121,7 +121,7 @@ async def test_model_config_missing_blocks_recall(monkeypatch):
 @pytest.mark.asyncio
 async def test_empty_hits_returns_recall_done_no_generation(stub_generation):
     pipe = _FakePipeline(_response([]))
-    events = await _collect(rt.recall_event_stream(pipe, _req(), "rid", config_id=77))
+    events = await _collect(rt.recall_event_stream(pipe, _req(), "rid", config_id=77, token_budget=4000))
     assert [e for e, _ in events] == ["recall_done"]
     assert events[0][1]["hits"] == []
 
@@ -133,7 +133,7 @@ async def test_all_chunks_missing_content_returns_recall_done(monkeypatch, stub_
 
     monkeypatch.setattr(rt, "fetch_chunk_contents", _no_content)
     pipe = _FakePipeline(_response(_hits("c1", "c2")))
-    events = await _collect(rt.recall_event_stream(pipe, _req(), "rid", config_id=77))
+    events = await _collect(rt.recall_event_stream(pipe, _req(), "rid", config_id=77, token_budget=4000))
     assert [e for e, _ in events] == ["recall_done"]
     assert len(events[0][1]["hits"]) == 2  # 召回到了，只是无正文不生成
 
@@ -151,7 +151,7 @@ async def test_generation_failure_fails_whole_request(monkeypatch):
     monkeypatch.setattr(rt, "aresolve_user_model", _resolve)
     monkeypatch.setattr(rt, "fetch_chunk_contents", _contents)
     pipe = _FakePipeline(_response(_hits("c1")))
-    events = await _collect(rt.recall_event_stream(pipe, _req(), "rid", config_id=77))
+    events = await _collect(rt.recall_event_stream(pipe, _req(), "rid", config_id=77, token_budget=4000))
     names = [e for e, _ in events]
     assert names[-1] == "error"
     assert events[-1][1]["code"] == "RECALL_GENERATION_FAILED"

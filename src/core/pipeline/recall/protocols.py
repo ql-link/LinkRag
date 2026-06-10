@@ -30,6 +30,8 @@ class Retriever(Protocol):
       按严格 / 宽松策略处理。
     - ``user_id`` 与 ``top_k`` 在**执行期**由 pipeline 透传（来自 ``RecallRequest``），
       retriever 不在装配期持有它们——这样 pipeline 与 retriever 可单例复用。
+    - ``score_threshold_override`` 在执行期由 pipeline 按 source 透传（来自数据集级 recall
+      配置）：``None`` 表示沿用装配期默认阈值。无分数阈值概念的路（如 bm25）应接受但忽略。
     """
 
     source: str
@@ -42,5 +44,6 @@ class Retriever(Protocol):
         *,
         user_id: int,
         top_k: int,
+        score_threshold_override: float | None = None,
     ) -> list[RetrieverHit]:
         ...

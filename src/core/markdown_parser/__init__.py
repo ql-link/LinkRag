@@ -26,6 +26,7 @@ from .scanner import MarkdownScanner
 from .image_extractor import ImageExtractor
 from .llm_integration import VisionClient, ImageDescriber, TableClient, TableDescriber
 from .provider_clients import (
+    EnhancementModelMissingError,
     LLMConfigMissingError,
     ProviderTableClient,
     ProviderVisionClient,
@@ -51,6 +52,7 @@ __all__ = [
     "ProviderTableClient",
     "ProviderVisionClient",
     "LLMConfigMissingError",
+    "EnhancementModelMissingError",
     "abuild_table_client",
     "abuild_vision_client",
     "build_default_table_client",

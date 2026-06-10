@@ -31,7 +31,7 @@ from src.api.internal_auth import (
     CODE_RATE_LIMITED,
     RecallApiError,
 )
-from src.api.recall_pipeline_provider import get_recall_pipeline
+from src.api.recall_pipeline_provider import aresolve_recall_config, get_recall_pipeline
 from src.api.recall_session_auth import (
     SessionAuthContext,
     acquire_stream_slot,
@@ -40,7 +40,6 @@ from src.api.recall_session_auth import (
     verify_session_token,
 )
 from src.api.recall_stream_runtime import recall_event_stream
-from src.config import settings
 from src.core.pipeline.recall import RecallPipeline, RecallRequest
 
 router = APIRouter(prefix="/api/v1/rag", tags=["rag"])
@@ -86,6 +85,7 @@ async def _guarded_stream(
     request_id: str,
     user_id: int,
     config_id: int,
+    token_budget: int,
 ) -> AsyncGenerator[str, None]:
     """包裹召回事件流，确保并发名额在任何收尾路径都被释放。
 
@@ -94,7 +94,7 @@ async def _guarded_stream(
     """
     try:
         async for event in recall_event_stream(
-            pipeline, recall_req, request_id, config_id=config_id
+            pipeline, recall_req, request_id, config_id=config_id, token_budget=token_budget
         ):
             yield event
     finally:
@@ -111,6 +111,10 @@ async def rag_stream(
     body = await _parse_and_validate_body(request)
     dataset_ids = resolve_dataset_scope(body.dataset_ids, ctx)
 
+    # 数据集级 recall 配置在建流前读出（短 session），把 top_k / 阈值 / token 预算固化为
+    # 普通值带进流，避免 SSE 生成器执行期再触 DB。
+    recall_cfg = await aresolve_recall_config(ctx.user_id, dataset_ids)
+
     # 并发 acquire 在建流前：超限直接 429（握手前 JSON），不建流、不触发 pipeline。
     if not await acquire_stream_slot(ctx.user_id):
         raise RecallApiError(429, CODE_RATE_LIMITED, "too many concurrent recall streams")
@@ -120,11 +124,20 @@ async def rag_stream(
         user_id=ctx.user_id,  # 身份以凭证 claims 为准，不信任 body
         dataset_ids=dataset_ids,
         doc_ids=None,
-        top_k=settings.RECALL_RESULT_LIMIT,
+        top_k=recall_cfg.recall_result_limit,
+        sparse_score_threshold_override=recall_cfg.sparse_score_threshold,
+        dense_score_threshold_override=recall_cfg.dense_score_threshold,
     )
 
     return StreamingResponse(
-        _guarded_stream(pipeline, recall_req, ctx.request_id, ctx.user_id, body.config_id),
+        _guarded_stream(
+            pipeline,
+            recall_req,
+            ctx.request_id,
+            ctx.user_id,
+            body.config_id,
+            recall_cfg.recall_context_token_budget,
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",

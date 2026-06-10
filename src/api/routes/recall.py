@@ -27,13 +27,12 @@ from pydantic import BaseModel, ConfigDict, ValidationError
 
 from src.api.internal_auth import CODE_INVALID_REQUEST, RecallApiError
 from src.api.recall_json_runtime import run_recall_json
-from src.api.recall_pipeline_provider import get_recall_pipeline
+from src.api.recall_pipeline_provider import aresolve_recall_config, get_recall_pipeline
 from src.api.recall_session_auth import (
     SessionAuthContext,
     resolve_dataset_scope,
     verify_session_token,
 )
-from src.config import settings
 from src.core.pipeline.recall import RecallPipeline, RecallRequest
 
 router = APIRouter(prefix="/api/v1/recall", tags=["recall"])
@@ -82,12 +81,17 @@ async def recall_json(
     body = await _parse_and_validate_body(request)
     dataset_ids = resolve_dataset_scope(body.dataset_ids, ctx)
 
+    # 与 RAG 流入口一致：top_k / 分数阈值取数据集级 recall 配置（多数据集取首个，空则系统默认）。
+    recall_cfg = await aresolve_recall_config(ctx.user_id, dataset_ids)
+
     recall_req = RecallRequest(
         query=body.query,
         user_id=ctx.user_id,  # 身份以凭证 claims 为准，不信任 body
         dataset_ids=dataset_ids,
         doc_ids=None,
-        top_k=settings.RECALL_RESULT_LIMIT,
+        top_k=recall_cfg.recall_result_limit,
+        sparse_score_threshold_override=recall_cfg.sparse_score_threshold,
+        dense_score_threshold_override=recall_cfg.dense_score_threshold,
     )
 
     payload = await run_recall_json(pipeline, recall_req, ctx.request_id)
