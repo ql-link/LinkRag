@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING, Any
 
 from src.core.markdown_parser import ElementType, MarkdownElement
 
+from .stage_models import ElementView
+
 if TYPE_CHECKING:
     from src.core.llm.tokenizer import Tokenizer
 
@@ -22,6 +24,7 @@ INLINE_TABLE_MAX_TOKENS = 256
 INLINE_TABLE_MAX_ROWS = 12
 INLINE_TABLE_MAX_COLS = 5
 MAX_TRACKED_HEADING_LEVEL = 5
+MAX_VIEW_METADATA_TEXT_LENGTH = 512
 
 
 @dataclass(slots=True)
@@ -56,6 +59,7 @@ class DerivedElementBuildResult:
     """
 
     mixed_content: str
+    element_views: list[ElementView] = field(default_factory=list)
     derived_chunks: list[DerivedElementChunkDraft] = field(default_factory=list)
     derived_element_ids: list[str] = field(default_factory=list)
 
@@ -217,6 +221,58 @@ class DerivedElementChunkBuilder:
             str: 拼接后的文本。
         """
         return "\n\n".join(part for part in parts if part)
+
+    @staticmethod
+    def _metadata_element_id(metadata: dict[str, Any]) -> str | None:
+        """
+            从元素 metadata 中提取已有 element_id。
+
+        Args:
+            metadata: MarkdownElement.metadata。
+
+        Returns:
+            str | None: 已有 ID；不存在时返回 None。
+        """
+        element_id = metadata.get("element_id")
+        return str(element_id) if element_id else None
+
+    @staticmethod
+    def _compact_metadata_value(value: Any) -> Any:
+        """
+            保留适合进入 ElementView 的轻量 metadata 值。
+
+        Args:
+            value: 原始 metadata 值。
+
+        Returns:
+            Any: 可保留的轻量值；不适合保留时返回 None。
+        """
+        if isinstance(value, str):
+            stripped = value.strip()
+            if len(stripped) > MAX_VIEW_METADATA_TEXT_LENGTH:
+                return f"{stripped[:MAX_VIEW_METADATA_TEXT_LENGTH]}..."
+            return stripped
+        if isinstance(value, (int, float, bool)) or value is None:
+            return value
+        return None
+
+    @classmethod
+    def _lightweight_element_metadata(cls, element: MarkdownElement) -> dict[str, Any]:
+        """
+            复制少量结构 metadata，避免在 ElementView 中放入大块内容。
+
+        Args:
+            element: 源 Markdown 元素。
+
+        Returns:
+            dict[str, Any]: 轻量 metadata。
+        """
+        metadata: dict[str, Any] = {}
+        for key, value in element.metadata.items():
+            compact_value = cls._compact_metadata_value(value)
+            if compact_value is not None:
+                metadata[key] = compact_value
+        return metadata
 
     @staticmethod
     def _first_nonempty_line(text: str) -> str:
@@ -539,22 +595,84 @@ class DerivedElementChunkBuilder:
             DerivedElementBuildResult: mixed 内容、派生 chunk 列表与派生元素 ID 列表。
         """
         mixed_parts: list[str] = []
+        element_views: list[ElementView] = []
         derived_chunks: list[DerivedElementChunkDraft] = []
         derived_element_ids: list[str] = []
+        content_cursor = 0
+
+        def append_element_view(
+            *,
+            element: MarkdownElement,
+            source_element_index: int,
+            heading_trail: list[str],
+            rendered_content: str,
+            element_id: str | None,
+            semantic_text: str = "",
+            metadata: dict[str, Any] | None = None,
+        ) -> None:
+            """
+            追加 mixed content 片段，并记录源元素在拼接结果中的 span。
+
+            Args:
+                element: 源 Markdown 元素。
+                source_element_index: 源元素在 SplitInput.elements 中的索引。
+                heading_trail: 当前元素所在标题路径。
+                rendered_content: 该元素进入 mixed chunk 的内容表示。
+                element_id: 图片/表格等异构元素的稳定 ID。
+                semantic_text: 异构元素的预置语义代理。
+                metadata: 轻量 view metadata。
+
+            Returns:
+                None.
+            """
+            nonlocal content_cursor
+
+            if rendered_content:
+                if mixed_parts:
+                    content_cursor += len("\n\n")
+                content_start = content_cursor
+                mixed_parts.append(rendered_content)
+                content_cursor += len(rendered_content)
+                content_end = content_cursor
+            else:
+                content_start = content_cursor
+                content_end = content_cursor
+
+            element_views.append(
+                ElementView(
+                    element_index=source_element_index,
+                    element_type=element.type.value,
+                    start_line=element.start_line,
+                    end_line=element.end_line,
+                    heading_trail=list(heading_trail),
+                    content_start=content_start,
+                    content_end=content_end,
+                    element_id=element_id,
+                    semantic_text=semantic_text,
+                    metadata=dict(metadata or {}),
+                )
+            )
 
         for index, element in enumerate(elements):
-            if element.type not in {ElementType.IMAGE, ElementType.TABLE}:
-                if element.content:
-                    mixed_parts.append(element.content)
-                continue
-
-            element_id = self._next_element_id(element.type)
             source_element_index = (
                 source_element_indexes[index]
                 if source_element_indexes is not None and index < len(source_element_indexes)
                 else index
             )
             heading_trail = heading_trails[index] if index < len(heading_trails) else []
+
+            if element.type not in {ElementType.IMAGE, ElementType.TABLE}:
+                append_element_view(
+                    element=element,
+                    source_element_index=source_element_index,
+                    heading_trail=heading_trail,
+                    rendered_content=element.content,
+                    element_id=self._metadata_element_id(element.metadata),
+                    metadata=self._lightweight_element_metadata(element),
+                )
+                continue
+
+            element_id = self._next_element_id(element.type)
             previous_element, next_element = (
                 neighbor_elements[index]
                 if neighbor_elements is not None and index < len(neighbor_elements)
@@ -568,7 +686,9 @@ class DerivedElementChunkBuilder:
                 next_element,
             )
 
+            raw_table = ""
             if element.type == ElementType.IMAGE:
+                semantic_text = self._extract_image_description(element.content, element)
                 mixed_content, derived_chunk = self._build_image_chunks(
                     element=element,
                     element_id=element_id,
@@ -579,6 +699,8 @@ class DerivedElementChunkBuilder:
                     next_context_tokens=next_tokens,
                 )
             else:
+                raw_table = self._extract_raw_table(element.content)
+                semantic_text = self._extract_table_summary(element.content)
                 mixed_content, derived_chunk = self._build_table_chunks(
                     element=element,
                     element_id=element_id,
@@ -589,12 +711,37 @@ class DerivedElementChunkBuilder:
                     next_context_tokens=next_tokens,
                 )
 
-            mixed_parts.append(mixed_content)
+            view_metadata = self._lightweight_element_metadata(element)
+            for key in [
+                "image_id",
+                "table_id",
+                "table_inline_in_source",
+                "table_row_count",
+                "table_col_count",
+                "table_token_count",
+            ]:
+                if key in derived_chunk.metadata:
+                    view_metadata[key] = derived_chunk.metadata[key]
+            if element.type == ElementType.TABLE:
+                view_metadata.setdefault("table_row_count", self._table_rows(raw_table))
+                view_metadata.setdefault("table_col_count", self._table_cols(raw_table))
+                view_metadata.setdefault("table_token_count", self._count_tokens(raw_table))
+
+            append_element_view(
+                element=element,
+                source_element_index=source_element_index,
+                heading_trail=heading_trail,
+                rendered_content=mixed_content,
+                element_id=element_id,
+                semantic_text=semantic_text,
+                metadata=view_metadata,
+            )
             derived_chunks.append(derived_chunk)
             derived_element_ids.append(element_id)
 
         return DerivedElementBuildResult(
             mixed_content=self._join_blocks(mixed_parts),
+            element_views=element_views,
             derived_chunks=derived_chunks,
             derived_element_ids=derived_element_ids,
         )

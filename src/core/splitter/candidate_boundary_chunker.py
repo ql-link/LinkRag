@@ -18,6 +18,7 @@ from .overlap import ChunkOverlapConfig, ChunkOverlapper
 from .stage_models import (
     CoarseChunk,
     CoarseChunkSet,
+    ElementView,
     ProtectedRange,
     SplitInput,
     StageIdFactory,
@@ -295,7 +296,12 @@ class CandidateBoundaryChunker:
             return
 
         previous_chunk = bundles[-2].source_chunk
-        previous_chunk.content = f"{previous_chunk.content}\n\n{tail_chunk.content}".strip()
+        previous_content = previous_chunk.content
+        tail_content = tail_chunk.content
+        separator = "\n\n" if previous_content and tail_content else ""
+        content_offset = len(previous_content) + len(separator)
+
+        previous_chunk.content = f"{previous_content}{separator}{tail_content}"
         previous_chunk.end_line = tail_chunk.end_line
         previous_chunk.token_count = self._count_tokens(previous_chunk.content)
         previous_chunk.source_element_indexes.extend(tail_chunk.source_element_indexes)
@@ -303,6 +309,23 @@ class CandidateBoundaryChunker:
             {str(value) for value in previous_chunk.element_types} | {ElementType.HEADING.value}
         )
         previous_chunk.protected_ranges.extend(tail_chunk.protected_ranges)
+        previous_chunk.element_views.extend(
+            [
+                ElementView(
+                    element_index=view.element_index,
+                    element_type=view.element_type,
+                    start_line=view.start_line,
+                    end_line=view.end_line,
+                    heading_trail=list(view.heading_trail),
+                    content_start=view.content_start + content_offset,
+                    content_end=view.content_end + content_offset,
+                    element_id=view.element_id,
+                    semantic_text=view.semantic_text,
+                    metadata=dict(view.metadata),
+                )
+                for view in tail_chunk.element_views
+            ]
+        )
         previous_chunk.metadata["coarse_token_count"] = previous_chunk.token_count
         previous_chunk.metadata["element_types"] = list(previous_chunk.element_types)
 
@@ -387,6 +410,7 @@ class CandidateBoundaryChunker:
             strategy=self.name,
             source_coarse_chunk_id=source_coarse_chunk_id,
             metadata=metadata,
+            element_views=[],
         )
 
     def _build_chunk_bundle(
@@ -445,6 +469,7 @@ class CandidateBoundaryChunker:
             role="mixed",
             strategy=self.name,
             metadata=metadata,
+            element_views=derived_result.element_views,
         )
         derived_chunks = [
             self._build_derived_coarse_chunk(

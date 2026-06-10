@@ -85,17 +85,28 @@ def _run(
     return coarse_set
 
 
+def _assert_views_match_sources(chunk, elements: list[MarkdownElement]) -> None:
+    assert [view.element_index for view in chunk.element_views] == chunk.source_element_indexes
+    for view in chunk.element_views:
+        element = elements[view.element_index]
+        assert view.element_type == element.type.value
+        assert view.start_line == element.start_line
+        assert view.end_line == element.end_line
+        rendered = chunk.content[view.content_start : view.content_end]
+        if view.element_type not in {ElementType.IMAGE.value, ElementType.TABLE.value}:
+            assert rendered == element.content
+
+
 def test_candidate_boundary_should_output_coarse_chunk_set_and_merge_short_sections():
-    coarse_set = _run(
-        [
-            _heading("# Project", 0, 1, "Project"),
-            _element(ElementType.PARAGRAPH, "small intro", 2),
-            _heading("## Owner", 4, 2, "Owner"),
-            _element(ElementType.PARAGRAPH, "team platform", 6),
-            _heading("## Status", 8, 2, "Status"),
-            _element(ElementType.PARAGRAPH, "currently active", 10),
-        ]
-    )
+    elements = [
+        _heading("# Project", 0, 1, "Project"),
+        _element(ElementType.PARAGRAPH, "small intro", 2),
+        _heading("## Owner", 4, 2, "Owner"),
+        _element(ElementType.PARAGRAPH, "team platform", 6),
+        _heading("## Status", 8, 2, "Status"),
+        _element(ElementType.PARAGRAPH, "currently active", 10),
+    ]
+    coarse_set = _run(elements)
 
     assert coarse_set.strategy == "candidate_boundary"
     assert coarse_set.source_file == "source.md"
@@ -111,6 +122,15 @@ def test_candidate_boundary_should_output_coarse_chunk_set_and_merge_short_secti
     assert chunk.heading_trails == [
         ["Project"],
         ["Project", "Owner"],
+        ["Project", "Status"],
+    ]
+    _assert_views_match_sources(chunk, elements)
+    assert [view.heading_trail for view in chunk.element_views] == [
+        ["Project"],
+        ["Project"],
+        ["Project", "Owner"],
+        ["Project", "Owner"],
+        ["Project", "Status"],
         ["Project", "Status"],
     ]
     assert "split_strategy" not in chunk.metadata
@@ -165,15 +185,13 @@ def test_candidate_boundary_should_keep_deepest_sibling_headings_and_split_on_pa
 
 
 def test_candidate_boundary_should_ignore_noise_and_merge_trailing_heading():
-    coarse_set = _run(
-        [
-            _element(ElementType.FRONT_MATTER, "---\ntitle: Hidden\n---", 0),
-            _element(ElementType.HORIZONTAL_RULE, "---", 4),
-            _element(ElementType.PARAGRAPH, "one two three", 6),
-            _heading("## Tail", 8, 2, "Tail"),
-        ],
-        min_candidate_chunk_tokens=3,
-    )
+    elements = [
+        _element(ElementType.FRONT_MATTER, "---\ntitle: Hidden\n---", 0),
+        _element(ElementType.HORIZONTAL_RULE, "---", 4),
+        _element(ElementType.PARAGRAPH, "one two three", 6),
+        _heading("## Tail", 8, 2, "Tail"),
+    ]
+    coarse_set = _run(elements, min_candidate_chunk_tokens=3)
 
     assert len(coarse_set.chunks) == 1
     chunk = coarse_set.chunks[0]
@@ -181,6 +199,12 @@ def test_candidate_boundary_should_ignore_noise_and_merge_trailing_heading():
     assert chunk.source_element_indexes == [2, 3]
     assert chunk.element_types == ["heading", "paragraph"]
     assert chunk.heading_trail == ["Tail"]
+    _assert_views_match_sources(chunk, elements)
+    assert [view.element_index for view in chunk.element_views] == [2, 3]
+    assert (
+        chunk.content[chunk.element_views[1].content_start : chunk.element_views[1].content_end]
+        == "## Tail"
+    )
 
 
 def test_candidate_boundary_should_record_protected_ranges_and_derived_image_chunk():
@@ -204,6 +228,15 @@ def test_candidate_boundary_should_record_protected_ranges_and_derived_image_chu
     assert mixed_chunk.protected_ranges[0].kind == "image"
     assert mixed_chunk.protected_ranges[0].element_index == 2
     assert mixed_chunk.metadata["derived_element_ids"] == ["image_001"]
+    _assert_views_match_sources(mixed_chunk, elements)
+
+    image_view = mixed_chunk.element_views[2]
+    assert image_view.element_type == "image"
+    assert image_view.element_id == "image_001"
+    assert image_view.semantic_text == "解析任务从 pending 进入 running。"
+    assert mixed_chunk.content[image_view.content_start : image_view.content_end] == (
+        "[图片引用: image_001]\n图片说明：解析任务从 pending 进入 running。"
+    )
 
     assert derived_chunk.role == "derived_element"
     assert derived_chunk.source_coarse_chunk_id == mixed_chunk.id
@@ -243,6 +276,11 @@ def test_candidate_boundary_should_generate_table_derived_chunk_with_inline_boun
     assert "[表格引用: table_002]" in mixed_chunk.content
     assert mixed_chunk.protected_ranges[0].kind == "table"
     assert mixed_chunk.protected_ranges[1].kind == "table"
+    assert [view.element_id for view in mixed_chunk.element_views] == ["table_001", "table_002"]
+    assert mixed_chunk.element_views[0].metadata["table_inline_in_source"] is True
+    assert mixed_chunk.element_views[1].metadata["table_inline_in_source"] is False
+    assert mixed_chunk.element_views[1].semantic_text == "长表格需要引用。"
+    assert long_table not in mixed_chunk.element_views[1].metadata.values()
     assert derived_chunks[0].metadata["table_inline_in_source"] is True
     assert derived_chunks[0].metadata["table_token_count"] == 256
     assert derived_chunks[1].metadata["table_inline_in_source"] is False
@@ -274,13 +312,12 @@ def test_candidate_boundary_should_limit_derived_adjacent_context_by_overlap_tok
 
 
 def test_candidate_boundary_should_not_generate_derived_chunks_for_code_or_math_blocks():
-    coarse_set = _run(
-        [
-            _heading("# Example", 0, 1, "Example"),
-            _element(ElementType.CODE_BLOCK, "```python\nprint('ok')\n```", 2),
-            _element(ElementType.MATH_BLOCK, "$$\na^2 + b^2 = c^2\n$$", 6),
-        ]
-    )
+    elements = [
+        _heading("# Example", 0, 1, "Example"),
+        _element(ElementType.CODE_BLOCK, "```python\nprint('ok')\n```", 2),
+        _element(ElementType.MATH_BLOCK, "$$\na^2 + b^2 = c^2\n$$", 6),
+    ]
+    coarse_set = _run(elements)
 
     assert len(coarse_set.chunks) == 1
     chunk = coarse_set.chunks[0]
@@ -289,3 +326,10 @@ def test_candidate_boundary_should_not_generate_derived_chunks_for_code_or_math_
     assert [protected.kind for protected in chunk.protected_ranges] == ["code_block", "math_block"]
     assert "```python" in chunk.content
     assert "$$" in chunk.content
+    _assert_views_match_sources(chunk, elements)
+    assert [view.element_type for view in chunk.element_views] == [
+        "heading",
+        "code_block",
+        "math_block",
+    ]
+    assert [view.semantic_text for view in chunk.element_views] == ["", "", ""]

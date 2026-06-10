@@ -6,6 +6,7 @@ from src.core.splitter import (
     ChunkingEngine,
     CoarseChunk,
     CoarseChunkSet,
+    ElementView,
     NoopStageTwoAlgorithm,
     PercentileSemanticChunker,
     ProtectedRange,
@@ -97,6 +98,30 @@ def _paragraph(content: str, line: int) -> MarkdownElement:
         content=content,
         start_line=line,
         end_line=line,
+    )
+
+
+def _element_view(
+    *,
+    element_index: int,
+    element_type: str = "paragraph",
+    start_line: int = 0,
+    end_line: int = 0,
+    content_start: int = 0,
+    content_end: int = 7,
+    element_id: str | None = None,
+    metadata: dict | None = None,
+) -> ElementView:
+    return ElementView(
+        element_index=element_index,
+        element_type=element_type,
+        start_line=start_line,
+        end_line=end_line,
+        heading_trail=[],
+        content_start=content_start,
+        content_end=content_end,
+        element_id=element_id,
+        metadata=metadata or {},
     )
 
 
@@ -199,10 +224,12 @@ async def test_aprocess_should_export_noop_stage_and_drop_internal_protected_ran
     assert chunks[0].metadata["split_strategy"] == "candidate_boundary + noop"
     assert chunks[0].metadata["protected_element_types"] == ["table"]
     assert "protected_ranges" not in chunks[0].metadata
+    assert "element_views" not in chunks[0].metadata
     assert chunks[1].metadata["chunk_role"] == "derived_element"
     assert chunks[1].metadata["element_type"] == "table"
     assert chunks[1].metadata["source_chunk_index"] == 0
     assert chunks[1].metadata["split_strategy"] == "candidate_boundary + noop"
+    assert "element_views" not in chunks[1].metadata
 
 
 async def test_achunk_should_fail_fast_when_coarse_chunk_misses_element_types():
@@ -263,7 +290,7 @@ async def test_achunk_should_fail_fast_when_derived_source_coarse_id_is_missing(
         chunks=[
             CoarseChunk(
                 id="coarse_1",
-                content="source",
+                content="visible",
                 start_line=0,
                 end_line=0,
                 token_count=1,
@@ -274,6 +301,7 @@ async def test_achunk_should_fail_fast_when_derived_source_coarse_id_is_missing(
                 heading_trails=[],
                 role="mixed",
                 strategy="candidate_boundary",
+                element_views=[_element_view(element_index=0)],
             ),
             CoarseChunk(
                 id="coarse_2",
@@ -289,6 +317,7 @@ async def test_achunk_should_fail_fast_when_derived_source_coarse_id_is_missing(
                 role="derived_element",
                 strategy="candidate_boundary",
                 source_coarse_chunk_id="missing",
+                metadata={"element_id": "image_001"},
             ),
         ],
     )
@@ -304,7 +333,7 @@ async def test_achunk_should_fail_fast_when_protected_range_uses_invalid_element
         chunks=[
             CoarseChunk(
                 id="coarse_1",
-                content="source",
+                content="visible",
                 start_line=0,
                 end_line=0,
                 token_count=1,
@@ -322,10 +351,71 @@ async def test_achunk_should_fail_fast_when_protected_range_uses_invalid_element
                 heading_trails=[],
                 role="mixed",
                 strategy="candidate_boundary",
+                element_views=[_element_view(element_index=0)],
             )
         ],
     )
     chunker = _chunker_for_static_stage_one(coarse_set)
 
     with pytest.raises(SplitterOutputValidationError, match="invalid element index"):
+        await chunker.achunk([_paragraph("visible", 0)])
+
+
+async def test_achunk_should_fail_fast_when_mixed_chunk_misses_element_views():
+    coarse_set = CoarseChunkSet(
+        strategy="candidate_boundary",
+        chunks=[
+            CoarseChunk(
+                id="coarse_1",
+                content="visible",
+                start_line=0,
+                end_line=0,
+                token_count=1,
+                source_element_indexes=[0],
+                element_types=["paragraph"],
+                protected_ranges=[],
+                heading_trail=[],
+                heading_trails=[],
+                role="mixed",
+                strategy="candidate_boundary",
+            )
+        ],
+    )
+    chunker = _chunker_for_static_stage_one(coarse_set)
+
+    with pytest.raises(SplitterOutputValidationError, match="element_views"):
+        await chunker.achunk([_paragraph("visible", 0)])
+
+
+async def test_achunk_should_fail_fast_when_protected_ranges_do_not_match_views():
+    coarse_set = CoarseChunkSet(
+        strategy="candidate_boundary",
+        chunks=[
+            CoarseChunk(
+                id="coarse_1",
+                content="visible",
+                start_line=0,
+                end_line=0,
+                token_count=1,
+                source_element_indexes=[0],
+                element_types=["paragraph", "table"],
+                protected_ranges=[
+                    ProtectedRange(
+                        kind="table",
+                        start_line=0,
+                        end_line=0,
+                        element_index=0,
+                    )
+                ],
+                heading_trail=[],
+                heading_trails=[],
+                role="mixed",
+                strategy="candidate_boundary",
+                element_views=[_element_view(element_index=0)],
+            )
+        ],
+    )
+    chunker = _chunker_for_static_stage_one(coarse_set)
+
+    with pytest.raises(SplitterOutputValidationError, match="protected_ranges"):
         await chunker.achunk([_paragraph("visible", 0)])

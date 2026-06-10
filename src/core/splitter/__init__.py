@@ -30,6 +30,7 @@ from .stage_contracts import StageOneAlgorithm, StageTwoAlgorithm
 from .stage_models import (
     CoarseChunk,
     CoarseChunkSet,
+    ElementView,
     FinalChunk,
     FinalChunkSet,
     ProtectedRange,
@@ -58,6 +59,7 @@ __all__ = [
     "InputAdapter",
     "SplitInput",
     "ProtectedRange",
+    "ElementView",
     "CoarseChunk",
     "CoarseChunkSet",
     "FinalChunk",
