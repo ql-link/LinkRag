@@ -56,9 +56,9 @@
 | `MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT` | `true` | 是否启用图片 LLM 增强 |
 | `MARKDOWN_PARSER_VISION_CONCURRENCY` | `24` | 图片视觉增强最大并发数，可降为 `16` / `8` / `1` 控制限流风险 |
 | `CHUNKING_STAGE_ONE_ALGORITHM` | `candidate_boundary` | splitter 第一阶段算法名；当前支持 `candidate_boundary`，未知值启动失败 |
-| `CHUNKING_STAGE_TWO_ALGORITHM` | `semantic_oversized` | splitter 第二阶段算法名；当前支持 `semantic_oversized` / `noop`，未知值启动失败 |
+| `CHUNKING_STAGE_TWO_ALGORITHM` | `noop` | splitter 第二阶段算法名；当前仅支持 `noop`，未知值启动失败 |
 
-> splitter 不再保留 `CHUNKING_ENABLE_ADVANCED_PIPELINE` 布尔开关，也不再回退到旧规则分片器。若不需要第二阶段实际细分，显式设置 `CHUNKING_STAGE_TWO_ALGORITHM=noop`。
+> splitter 不再保留 `CHUNKING_ENABLE_ADVANCED_PIPELINE` 布尔开关，也不再回退到旧规则分片器。当前第二阶段默认使用 `noop`，新的 mixed-aware 第二阶段算法落地前不提供 oversized 语义细分路由。
 
 > 注：ES 入库失败即终态，无 ES 内部自动重试配置。原 `ES_INDEXING_MAX_RETRY` 已移除（用户侧重试由 `document_parse_pipeline.retry_count` 记录，触发路径待后续需求接线）。
 
@@ -135,13 +135,8 @@ logs/
 | 变量 | 默认 | 调整方向 |
 | --- | --- | --- |
 | `CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` | 128 | 第一阶段候选边界粗分片软下限，范围 `128..256`；调大可减少短 chunk |
-| `CHUNKING_MIN_CHUNK_TOKENS` | 150 | 短文档可减小 |
-| `CHUNKING_MAX_CHUNK_TOKENS` | 512 | 长上下文模型可加大 |
 | `CHUNKING_OVERLAP_TOKENS` | 64 | overlap token 数，范围 `0..64`；`0` 表示关闭 |
 | `CHUNKING_HEADING_BREAK_LEVEL` | 5 | heading trail 与动态标题边界保护的最大层级；最多保护到 5 级 |
-| `CHUNKING_SEMANTIC_PERCENTILE` | 95 | 调整语义边界严格度 |
-| `CHUNKING_SEMANTIC_UNIT` | `sentence` | 语义相似度计算粒度：`sentence` / `paragraph` |
-| `CHUNKING_EMBED_BATCH_SIZE` | 32 | 受向量服务并发上限约束 |
 
 详细分块策略见 [chunking.md](../internals/chunking.md)。
 

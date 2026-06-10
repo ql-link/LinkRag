@@ -20,10 +20,7 @@ from .chunk_exporter import ChunkExporter
 from .chunking_engine import ChunkingEngine
 from .embedding_pipeline import ChunkEmbeddingPipeline
 from .overlap import ChunkOverlapConfig, ChunkOverlapper
-from .oversized_chunk_refiner import SemanticOversizedStageTwoAlgorithm
 from .pipeline_chunker import StructuredSemanticChunker
-from .semantic_chunker import PercentileSemanticChunker
-from .stage_contracts import StageTwoAlgorithm
 from .stage_routers import StageOneRouter, StageTwoRouter
 from .stage_two_noop import NoopStageTwoAlgorithm
 from .validators import CoarseChunkSetValidator
@@ -123,7 +120,7 @@ def create_lazy_system_embedding_client() -> LazyEmbeddingClient:
     return LazyEmbeddingClient(create_system_embedding_client)
 
 
-def _create_structured_chunking_engine(embedder: Any | None = None) -> ChunkingEngine:
+def _create_structured_chunking_engine() -> ChunkingEngine:
     """使用当前阶段算法配置创建标准 splitter 引擎。"""
     tokenizer = Tokenizer()
     overlapper = ChunkOverlapper(
@@ -141,31 +138,11 @@ def _create_structured_chunking_engine(embedder: Any | None = None) -> ChunkingE
         algorithms=[candidate_algorithm],
     )
 
-    stage_two_algorithms: list[StageTwoAlgorithm] = [NoopStageTwoAlgorithm()]
-    semantic_chunker: PercentileSemanticChunker | None = None
-    if settings.CHUNKING_STAGE_TWO_ALGORITHM == "semantic_oversized":
-        semantic_chunker = PercentileSemanticChunker(
-            embedder=embedder or create_lazy_system_embedding_client(),
-            tokenizer=tokenizer,
-            percentile=settings.CHUNKING_SEMANTIC_PERCENTILE,
-            semantic_unit=settings.CHUNKING_SEMANTIC_UNIT,
-            min_chunk_tokens=settings.CHUNKING_MIN_CHUNK_TOKENS,
-            max_chunk_tokens=settings.CHUNKING_MAX_CHUNK_TOKENS,
-            overlapper=overlapper,
-            min_distance_gate=settings.CHUNKING_MIN_DISTANCE_GATE,
-        )
-        stage_two_algorithms.append(
-            SemanticOversizedStageTwoAlgorithm(
-                semantic_chunker=semantic_chunker,
-            )
-        )
-
     stage_two_router = StageTwoRouter(
         algorithm_name=settings.CHUNKING_STAGE_TWO_ALGORITHM,
-        algorithms=stage_two_algorithms,
+        algorithms=[NoopStageTwoAlgorithm()],
     )
     chunker = StructuredSemanticChunker(
-        semantic_chunker=semantic_chunker,
         candidate_chunker=candidate_algorithm,
         stage_one_router=stage_one_router,
         stage_two_router=stage_two_router,
@@ -181,7 +158,7 @@ def create_chunking_engine() -> ChunkingEngine:
 
     按显式阶段算法配置装配 splitter 闭环，不保留旧规则分片器 fallback。
     """
-    return _create_structured_chunking_engine(create_lazy_system_embedding_client())
+    return _create_structured_chunking_engine()
 
 
 # DashScope text-embedding-* 系列单次 /embeddings 请求的 input 条数上限。
@@ -258,7 +235,7 @@ def create_chunk_embedding_pipeline() -> ChunkEmbeddingPipeline:
         configured_batch_size=settings.CHUNK_INDEX_EMBED_BATCH_SIZE,
     )
     return ChunkEmbeddingPipeline(
-        chunking_engine=_create_structured_chunking_engine(embedder),
+        chunking_engine=_create_structured_chunking_engine(),
         embedder=embedder,
         embedding_model=settings.SYSTEM_LLM_MODEL_EMBEDDING,
         batch_size=batch_size,
@@ -347,7 +324,7 @@ async def aresolve_user_chunk_embedding_pipeline(user_id: int) -> ChunkEmbedding
         configured_batch_size=settings.CHUNK_INDEX_EMBED_BATCH_SIZE,
     )
     return ChunkEmbeddingPipeline(
-        chunking_engine=_create_structured_chunking_engine(embedder),
+        chunking_engine=_create_structured_chunking_engine(),
         embedder=embedder,
         embedding_model=model_name,
         batch_size=batch_size,

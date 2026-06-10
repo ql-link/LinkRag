@@ -23,7 +23,6 @@ from .factory import (
 from .input_adapter import InputAdapter
 from .models import Chunk, EmbeddedChunk, EmbeddingPipelineStats
 from .overlap import ChunkOverlapConfig, ChunkOverlapper
-from .oversized_chunk_refiner import OversizedChunkRefiner, SemanticOversizedStageTwoAlgorithm
 from .pipeline_chunker import SplitterOutputValidationError, StructuredSemanticChunker
 from .semantic_chunker import PercentileSemanticChunker, SemanticSplitter
 from .stage_contracts import StageOneAlgorithm, StageTwoAlgorithm
@@ -50,8 +49,6 @@ __all__ = [
     "ChunkingEngine",
     "ChunkOverlapConfig",
     "ChunkOverlapper",
-    "OversizedChunkRefiner",
-    "SemanticOversizedStageTwoAlgorithm",
     "StructuredSemanticChunker",
     "SplitterOutputValidationError",
     "PercentileSemanticChunker",

@@ -9,21 +9,6 @@ def test_should_enable_sparse_vector_by_default():
     assert settings.SPARSE_VECTOR_ENABLED is True
 
 
-def test_should_normalize_chunking_semantic_unit():
-    settings = Settings(_env_file=None, CHUNKING_SEMANTIC_UNIT=" Paragraph ")
-
-    assert settings.CHUNKING_SEMANTIC_UNIT == "paragraph"
-
-
-def test_should_reject_invalid_chunking_semantic_unit():
-    try:
-        Settings(_env_file=None, CHUNKING_SEMANTIC_UNIT="section")
-    except ValueError as exc:
-        assert "CHUNKING_SEMANTIC_UNIT must be 'sentence' or 'paragraph'" in str(exc)
-    else:
-        raise AssertionError("expected ValueError")
-
-
 def test_should_normalize_chunking_stage_algorithm_names():
     settings = Settings(
         _env_file=None,
@@ -47,7 +32,9 @@ def test_should_reject_invalid_chunking_stage_algorithm_names():
     try:
         Settings(_env_file=None, CHUNKING_STAGE_TWO_ALGORITHM="unknown")
     except ValueError as exc:
-        assert "CHUNKING_STAGE_TWO_ALGORITHM must be 'semantic_oversized' or 'noop'" in str(exc)
+        assert (
+            "CHUNKING_STAGE_TWO_ALGORITHM must be one of the registered " "Stage 2 algorithms: noop"
+        ) in str(exc)
     else:
         raise AssertionError("expected ValueError")
 

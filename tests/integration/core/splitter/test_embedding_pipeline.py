@@ -59,7 +59,7 @@ class FakeParser:
         return self.parse("", source_file=self._parse_result.source_file)
 
 
-async def test_aprocess_should_embed_final_chunks_after_semantic_split():
+async def test_aprocess_should_embed_final_chunks_after_default_noop_stage_two():
     parse_result = ParseResult(
         elements=[
             MarkdownElement(
@@ -99,27 +99,11 @@ async def test_aprocess_should_embed_final_chunks_after_semantic_split():
         source_file="source.md",
     )
 
+    final_content = (
+        "# Intro\n\nalpha one two\n\nalpha three four\n\nbeta five six\n\nbeta seven eight"
+    )
     routes = {
-        (
-            "# Intro",
-            "alpha one two",
-            "alpha three four",
-            "beta five six",
-            "beta seven eight",
-        ): [
-            [1.0, 0.0],
-            [1.0, 0.0],
-            [0.0, 1.0],
-            [0.0, 1.0],
-            [0.0, 1.0],
-        ],
-        (
-            "# Intro\n\nalpha one two",
-            "alpha three four\n\nbeta five six\n\nbeta seven eight",
-        ): [
-            [0.11, 0.22],
-            [0.33, 0.44],
-        ],
+        (final_content,): [[0.11, 0.22]],
     }
     embedder = RoutedEmbedder(routes)
     semantic_chunker = PercentileSemanticChunker(
@@ -142,24 +126,18 @@ async def test_aprocess_should_embed_final_chunks_after_semantic_split():
 
     embedded_chunks = await pipeline.aprocess("ignored", source_file="override.md")
 
-    assert len(embedded_chunks) == 2
-    assert embedded_chunks[0].content == "# Intro\n\nalpha one two"
-    assert embedded_chunks[1].content == "alpha three four\n\nbeta five six\n\nbeta seven eight"
+    assert len(embedded_chunks) == 1
+    assert embedded_chunks[0].content == final_content
     assert embedded_chunks[0].embedding == [0.11, 0.22]
-    assert embedded_chunks[1].embedding == [0.33, 0.44]
     assert embedded_chunks[0].embedding_model == "final-embed-v1"
     assert embedded_chunks[0].cached is False
     assert embedded_chunks[0].metadata["source_file"] == "override.md"
 
-    assert len(embedder.calls) == 2
-    assert embedder.calls[0]["texts"][0] == "# Intro"
-    assert embedder.calls[1]["texts"] == (
-        "# Intro\n\nalpha one two",
-        "alpha three four\n\nbeta five six\n\nbeta seven eight",
-    )
-    assert pipeline.last_stats.total_chunks == 2
+    assert len(embedder.calls) == 1
+    assert embedder.calls[0]["texts"] == (final_content,)
+    assert pipeline.last_stats.total_chunks == 1
     assert pipeline.last_stats.cache_hits == 0
-    assert pipeline.last_stats.cache_misses == 2
+    assert pipeline.last_stats.cache_misses == 1
     assert pipeline.last_stats.batch_count == 1
 
 

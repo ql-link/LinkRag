@@ -5,10 +5,10 @@
 - Fixture: `tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Source file recorded by parser: `tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element count: `30`
-- Final chunk count: `6`
+- Final chunk count: `5`
 - Vision mock calls: `1`
 - Table mock calls: `1`
-- Embedding calls: `2`
+- Embedding calls: `1`
 
 ## Element Coverage
 
@@ -80,24 +80,11 @@
 [
   {
     "texts": [
-      "## Semantic Pressure Test",
-      "Calibration review keeps retrieval evidence aligned with section intent, maintains stable context windows, protects citation anchors, and gives auditors a readable trail for incident analysis. Calibration review keeps retrieval evidence aligned with section intent, maintains stable context windows, protects citation anchors, and gives auditors a readable trail for incident analysis. Calibration review keeps retrieval evidence aligned with section intent, maintains stable context windows, protects citation anchors, and gives auditors a readable trail for incident analysis. Calibration review keeps retrieval evidence aligned with section intent, maintains stable context windows, protects citation anchors, and gives auditors a readable trail for incident analysis. Calibration review keeps retrieval evidence aligned with section intent, maintains stable context windows, protects citation anchors, and gives auditors a readable trail for incident analysis.",
-      "Query planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation. Query planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation. Query planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation. Query planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation. Query planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation.",
-      "Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context.",
-      "Incident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services. Incident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services. Incident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services. Incident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services. Incident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services.",
-      "Recovery rehearsal stays with the incident theme by focusing on postmortem ownership, backlog triage, responder rotation, service warmup timing, and communication templates for severe customer impact. Recovery rehearsal stays with the incident theme by focusing on postmortem ownership, backlog triage, responder rotation, service warmup timing, and communication templates for severe customer impact. Recovery rehearsal stays with the incident theme by focusing on postmortem ownership, backlog triage, responder rotation, service warmup timing, and communication templates for severe customer impact. Recovery rehearsal stays with the incident theme by focusing on postmortem ownership, backlog triage, responder rotation, service warmup timing, and communication templates for severe customer impact. Recovery rehearsal stays with the incident theme by focusing on postmortem ownership, backlog triage, responder rotation, service warmup timing, and communication templates for severe customer impact."
-    ],
-    "model": null,
-    "kwargs": {}
-  },
-  {
-    "texts": [
-      "# Overview\n\nThis opening paragraph mixes plain text with an inline image ![Architecture Inline](https://cdn.test.local/inline-architecture.png) so the parser keeps it inside a paragraph element and the vision mock can append a description for visual review.\n\n[视觉描述: A compact architecture sketch that highlights parser, splitter, and vector stages.]\n\n[图片引用: image_001]\n图片说明：A dashboard screenshot with cards, charts, and highlighted retrieval metrics.\n\n## Quoted Insight\n\n> Retrieval quality improves when chunk boundaries respect structure.\n> Semantic splitting should only refine the oversized narrative sections.\n\n\n## Action Checklist\n\n- Collect parser output carefully\n- Preserve metadata for headings and source files\n- Keep isolated blocks independent\n\n1. Parse markdown into structured elements\n2. Enrich tables and images with mocked network results\n3. Split oversized narrative sections semantically\n\n\n## Code Sample\n\nThe code fence below should become its own isolated chunk.\n\n```python\ndef summarize_metrics(total_requests: int, failures: int) -> float:\n    if total_requests == 0:\n        return 0.0\n    return round((total_requests - failures) / total_requests, 4)\n```",
+      "# Overview\n\nThis opening paragraph mixes plain text with an inline image ![Architecture Inline](https://cdn.test.local/inline-architecture.png) so the parser keeps it inside a paragraph element and the vision mock can append a description for visual review.\n\n[视觉描述: A compact architecture sketch that highlights parser, splitter, and vector stages.]\n\n[图片引用: image_001]\n图片说明：A dashboard screenshot with cards, charts, and highlighted retrieval metrics.\n\n## Quoted Insight\n\n> Retrieval quality improves when chunk boundaries respect structure.\n> Oversized narrative sections should wait for the next mixed-aware Stage 2 design.\n\n\n## Action Checklist\n\n- Collect parser output carefully\n- Preserve metadata for headings and source files\n- Keep isolated blocks independent\n\n1. Parse markdown into structured elements\n2. Enrich tables and images with mocked network results\n3. Preserve oversized narrative sections for the next Stage 2 design\n",
       "类型：图片\n图片ID：image_001\n标题路径：Overview\n图片说明：A dashboard screenshot with cards, charts, and highlighted retrieval metrics.\n相邻上下文：This opening paragraph mixes plain text with an inline image ![Architecture Inline](https://cdn.test.local/inline-architecture.png) so the parser keeps it inside a paragraph element and the vision mock can append a description for visual review.\n\n[视觉描述: A compact architecture sketch that highlights parser, splitter, and vector stages.]；## Quoted Insight\n原始引用：![Hero Dashboard](https://cdn.test.local/hero-dashboard.png)",
-      "## Metrics Table\n\nThe table block below should stay isolated and also receive a mocked table summary.\n\n| Metric | Value | Trend |\n| :--- | ---: | :---: |\n| Recall | 0.82 | up |\n| LatencyMs | 128 | stable |\n| Coverage | 0.97 | up |\n\n[表格总结: The metrics table shows healthy recall, stable latency, and broad coverage for the pipeline.]\n\n## Math Notes\n\nThe parser should also isolate math blocks.\n\n$$\nE = mc^2\n$$\n\n\\[\n\\int_0^1 x^2 dx = \\frac{1}{3}\n\\]\n\n## Deep Dive\n\nChunking quality depends on keeping the overview sentence near the heading for retrieval and human review in realistic systems.\n\nThe next paragraph continues the same topic with nearby wording so the semantic splitter should still keep it close during chunk construction.\n\nA different subsection discusses incident response runbooks, rollback plans, pager fatigue, and on-call escalation details for critical outages.\n\nThe closing paragraph stays in the incident response theme and should therefore remain with the previous paragraph after splitting.",
+      "## Code Sample\n\nThe code fence below should become its own isolated chunk.\n\n```python\ndef summarize_metrics(total_requests: int, failures: int) -> float:\n    if total_requests == 0:\n        return 0.0\n    return round((total_requests - failures) / total_requests, 4)\n```\n\n## Metrics Table\n\nThe table block below should stay isolated and also receive a mocked table summary.\n\n| Metric | Value | Trend |\n| :--- | ---: | :---: |\n| Recall | 0.82 | up |\n| LatencyMs | 128 | stable |\n| Coverage | 0.97 | up |\n\n[表格总结: The metrics table shows healthy recall, stable latency, and broad coverage for the pipeline.]\n\n## Math Notes\n\nThe parser should also isolate math blocks.\n\n$$\nE = mc^2\n$$\n\n\\[\n\\int_0^1 x^2 dx = \\frac{1}{3}\n\\]\n\n## Deep Dive\n\nChunking quality depends on keeping the overview sentence near the heading for retrieval and human review in realistic systems.\n\nThe next paragraph continues the same topic with nearby wording so the semantic splitter should still keep it close during chunk construction.\n\nA different subsection discusses incident response runbooks, rollback plans, pager fatigue, and on-call escalation details for critical outages.\n\nThe closing paragraph stays in the incident response theme and should therefore remain with the previous paragraph after splitting.",
       "类型：表格\n表格ID：table_001\n标题路径：Overview / Metrics Table\n表格总结：The metrics table shows healthy recall, stable latency, and broad coverage for the pipeline.\n相邻上下文：The table block below should stay isolated and also receive a mocked table summary.；## Math Notes\n原始表格：\n| Metric | Value | Trend |\n| :--- | ---: | :---: |\n| Recall | 0.82 | up |\n| LatencyMs | 128 | stable |\n| Coverage | 0.97 | up |",
-      "## Semantic Pressure Test\n\nCalibration review keeps retrieval evidence aligned with section intent, maintains stable context windows, protects citation anchors, and gives auditors a readable trail for incident analysis. Calibration review keeps retrieval evidence aligned with section intent, maintains stable context windows, protects citation anchors, and gives auditors a readable trail for incident analysis. Calibration review keeps retrieval evidence aligned with section intent, maintains stable context windows, protects citation anchors, and gives auditors a readable trail for incident analysis. Calibration review keeps retrieval evidence aligned with section intent, maintains stable context windows, protects citation anchors, and gives auditors a readable trail for incident analysis. Calibration review keeps retrieval evidence aligned with section intent, maintains stable context windows, protects citation anchors, and gives auditors a readable trail for incident analysis.\n\nQuery planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation. Query planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation. Query planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation. Query planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation. Query planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation.\n\nEvidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context.\n\ncompare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context.",
-      "compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context.\n\ncompare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context.\n\nIncident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services. Incident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services. Incident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services. Incident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services. Incident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services.\n\nRecovery rehearsal stays with the incident theme by focusing on postmortem ownership, backlog triage, responder rotation, service warmup timing, and communication templates for severe customer impact. Recovery rehearsal stays with the incident theme by focusing on postmortem ownership, backlog triage, responder rotation, service warmup timing, and communication templates for severe customer impact. Recovery rehearsal stays with the incident theme by focusing on postmortem ownership, backlog triage, responder rotation, service warmup timing, and communication templates for severe customer impact. Recovery rehearsal stays with the incident theme by focusing on postmortem ownership, backlog triage, responder rotation, service warmup timing, and communication templates for severe customer impact. Recovery rehearsal stays with the incident theme by focusing on postmortem ownership, backlog triage, responder rotation, service warmup timing, and communication templates for severe customer impact."
+      "## Semantic Pressure Test\n\nCalibration review keeps retrieval evidence aligned with section intent, maintains stable context windows, protects citation anchors, and gives auditors a readable trail for incident analysis. Calibration review keeps retrieval evidence aligned with section intent, maintains stable context windows, protects citation anchors, and gives auditors a readable trail for incident analysis. Calibration review keeps retrieval evidence aligned with section intent, maintains stable context windows, protects citation anchors, and gives auditors a readable trail for incident analysis. Calibration review keeps retrieval evidence aligned with section intent, maintains stable context windows, protects citation anchors, and gives auditors a readable trail for incident analysis. Calibration review keeps retrieval evidence aligned with section intent, maintains stable context windows, protects citation anchors, and gives auditors a readable trail for incident analysis.\n\nQuery planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation. Query planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation. Query planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation. Query planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation. Query planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation.\n\nEvidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context.\n\nIncident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services. Incident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services. Incident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services. Incident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services. Incident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services.\n\nRecovery rehearsal stays with the incident theme by focusing on postmortem ownership, backlog triage, responder rotation, service warmup timing, and communication templates for severe customer impact. Recovery rehearsal stays with the incident theme by focusing on postmortem ownership, backlog triage, responder rotation, service warmup timing, and communication templates for severe customer impact. Recovery rehearsal stays with the incident theme by focusing on postmortem ownership, backlog triage, responder rotation, service warmup timing, and communication templates for severe customer impact. Recovery rehearsal stays with the incident theme by focusing on postmortem ownership, backlog triage, responder rotation, service warmup timing, and communication templates for severe customer impact. Recovery rehearsal stays with the incident theme by focusing on postmortem ownership, backlog triage, responder rotation, service warmup timing, and communication templates for severe customer impact."
     ],
     "model": "visual-test-embedding",
     "kwargs": {}
@@ -109,24 +96,23 @@
 
 | Chunk | Strategy | Heading Trail | Lines | Cached | Prev Ctx | Next Ctx | Vector Preview |
 | ---: | --- | --- | --- | --- | --- | --- | --- |
-| 0 | `candidate_boundary + semantic_oversized` | `Overview > Code Sample` | `L6-L32` | `False` | `0` | `0` | `0.5581, 0.9270, 0.4695, 0.4437` |
-| 1 | `candidate_boundary + semantic_oversized` | `Overview` | `L9-L9` | `False` | `0` | `0` | `0.7735, 0.1396, 0.1524, 0.7168` |
-| 2 | `candidate_boundary + semantic_oversized` | `Overview > Deep Dive` | `L34-L61` | `False` | `0` | `0` | `0.8737, 0.7652, 0.9578, 0.3511` |
-| 3 | `candidate_boundary + semantic_oversized` | `Overview > Metrics Table` | `L37-L41` | `False` | `0` | `0` | `0.5885, 0.8628, 0.5686, 0.3729` |
-| 4 | `candidate_boundary + semantic_oversized` | `Overview > Semantic Pressure Test` | `L63-L72` | `False` | `0` | `64` | `0.1940, 0.7348, 0.1116, 0.0561` |
-| 5 | `candidate_boundary + semantic_oversized` | `Overview > Semantic Pressure Test` | `L63-L72` | `False` | `64` | `0` | `0.1617, 0.4241, 0.7032, 0.4251` |
+| 0 | `candidate_boundary + noop` | `Overview > Action Checklist` | `L6-L23` | `False` | `0` | `0` | `0.1956, 0.2166, 0.7550, 0.8293` |
+| 1 | `candidate_boundary + noop` | `Overview` | `L9-L9` | `False` | `0` | `0` | `0.7735, 0.1396, 0.1524, 0.7168` |
+| 2 | `candidate_boundary + noop` | `Overview > Deep Dive` | `L24-L61` | `False` | `0` | `0` | `0.3727, 0.4533, 0.6441, 0.8495` |
+| 3 | `candidate_boundary + noop` | `Overview > Metrics Table` | `L37-L41` | `False` | `0` | `0` | `0.5885, 0.8628, 0.5686, 0.3729` |
+| 4 | `candidate_boundary + noop` | `Overview > Semantic Pressure Test` | `L63-L72` | `False` | `0` | `0` | `0.2056, 0.5381, 0.2065, 0.4338` |
 
 ### Chunk 0
 
-- Strategy: `candidate_boundary + semantic_oversized`
-- Heading trail: `['Overview', 'Code Sample']`
+- Strategy: `candidate_boundary + noop`
+- Heading trail: `['Overview', 'Action Checklist']`
 - Source file: `tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
-- Element types: `['blockquote', 'code_block', 'heading', 'image', 'list', 'paragraph']`
+- Element types: `['blockquote', 'heading', 'image', 'list', 'paragraph']`
 - Context prev tokens: `0`
 - Context next tokens: `0`
 - Embedding model: `visual-test-embedding`
 - Cached: `False`
-- Vector preview: `0.558141, 0.926964, 0.469496, 0.443675`
+- Vector preview: `0.195620, 0.216589, 0.754997, 0.829343`
 
 ````markdown
 # Overview
@@ -141,7 +127,7 @@ This opening paragraph mixes plain text with an inline image ![Architecture Inli
 ## Quoted Insight
 
 > Retrieval quality improves when chunk boundaries respect structure.
-> Semantic splitting should only refine the oversized narrative sections.
+> Oversized narrative sections should wait for the next mixed-aware Stage 2 design.
 
 
 ## Action Checklist
@@ -152,24 +138,13 @@ This opening paragraph mixes plain text with an inline image ![Architecture Inli
 
 1. Parse markdown into structured elements
 2. Enrich tables and images with mocked network results
-3. Split oversized narrative sections semantically
+3. Preserve oversized narrative sections for the next Stage 2 design
 
-
-## Code Sample
-
-The code fence below should become its own isolated chunk.
-
-```python
-def summarize_metrics(total_requests: int, failures: int) -> float:
-    if total_requests == 0:
-        return 0.0
-    return round((total_requests - failures) / total_requests, 4)
-```
 ````
 
 ### Chunk 1
 
-- Strategy: `candidate_boundary + semantic_oversized`
+- Strategy: `candidate_boundary + noop`
 - Heading trail: `['Overview']`
 - Source file: `tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element types: `['image']`
@@ -192,17 +167,28 @@ def summarize_metrics(total_requests: int, failures: int) -> float:
 
 ### Chunk 2
 
-- Strategy: `candidate_boundary + semantic_oversized`
+- Strategy: `candidate_boundary + noop`
 - Heading trail: `['Overview', 'Deep Dive']`
 - Source file: `tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
-- Element types: `['heading', 'math_block', 'paragraph', 'table']`
+- Element types: `['code_block', 'heading', 'math_block', 'paragraph', 'table']`
 - Context prev tokens: `0`
 - Context next tokens: `0`
 - Embedding model: `visual-test-embedding`
 - Cached: `False`
-- Vector preview: `0.873748, 0.765217, 0.957794, 0.351075`
+- Vector preview: `0.372662, 0.453314, 0.644066, 0.849461`
 
 ````markdown
+## Code Sample
+
+The code fence below should become its own isolated chunk.
+
+```python
+def summarize_metrics(total_requests: int, failures: int) -> float:
+    if total_requests == 0:
+        return 0.0
+    return round((total_requests - failures) / total_requests, 4)
+```
+
 ## Metrics Table
 
 The table block below should stay isolated and also receive a mocked table summary.
@@ -240,7 +226,7 @@ The closing paragraph stays in the incident response theme and should therefore 
 
 ### Chunk 3
 
-- Strategy: `candidate_boundary + semantic_oversized`
+- Strategy: `candidate_boundary + noop`
 - Heading trail: `['Overview', 'Metrics Table']`
 - Source file: `tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element types: `['table']`
@@ -266,15 +252,15 @@ The closing paragraph stays in the incident response theme and should therefore 
 
 ### Chunk 4
 
-- Strategy: `candidate_boundary + semantic_oversized`
+- Strategy: `candidate_boundary + noop`
 - Heading trail: `['Overview', 'Semantic Pressure Test']`
 - Source file: `tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element types: `['heading', 'paragraph']`
 - Context prev tokens: `0`
-- Context next tokens: `64`
+- Context next tokens: `0`
 - Embedding model: `visual-test-embedding`
 - Cached: `False`
-- Vector preview: `0.193954, 0.734838, 0.111585, 0.056081`
+- Vector preview: `0.205608, 0.538132, 0.206481, 0.433750`
 
 ````markdown
 ## Semantic Pressure Test
@@ -284,26 +270,6 @@ Calibration review keeps retrieval evidence aligned with section intent, maintai
 Query planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation. Query planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation. Query planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation. Query planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation. Query planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation.
 
 Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context.
-
-compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context.
-````
-
-### Chunk 5
-
-- Strategy: `candidate_boundary + semantic_oversized`
-- Heading trail: `['Overview', 'Semantic Pressure Test']`
-- Source file: `tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
-- Element types: `['heading', 'paragraph']`
-- Context prev tokens: `64`
-- Context next tokens: `0`
-- Embedding model: `visual-test-embedding`
-- Cached: `False`
-- Vector preview: `0.161719, 0.424099, 0.703193, 0.425150`
-
-````markdown
-compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context.
-
-compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context.
 
 Incident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services. Incident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services. Incident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services. Incident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services. Incident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services.
 

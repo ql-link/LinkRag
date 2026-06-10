@@ -138,7 +138,7 @@ def _chunker_for_static_stage_one(coarse_set: CoarseChunkSet) -> StructuredSeman
     )
 
 
-async def test_aprocess_should_run_full_stage_contract_with_semantic_oversized():
+async def test_aprocess_should_run_full_stage_contract_with_default_noop_stage_two():
     elements = [
         MarkdownElement(
             type=ElementType.HEADING,
@@ -159,16 +159,7 @@ async def test_aprocess_should_run_full_stage_contract_with_semantic_oversized()
         source_file="mock-doc.md",
     )
 
-    semantic_chunker = _semantic_chunker(
-        [
-            [1.0, 0.0],
-            [1.0, 0.0],
-            [0.0, 1.0],
-            [0.0, 1.0],
-            [0.0, 1.0],
-        ],
-        max_chunk_tokens=11,
-    )
+    semantic_chunker = _semantic_chunker([], max_chunk_tokens=11)
     engine = ChunkingEngine(
         chunker=StructuredSemanticChunker(
             semantic_chunker=semantic_chunker,
@@ -180,14 +171,9 @@ async def test_aprocess_should_run_full_stage_contract_with_semantic_oversized()
     chunks = await engine.aprocess("ignored", source_file="override.md")
 
     assert [chunk.content for chunk in chunks] == [
-        "# Intro\n\nalpha one two",
-        "alpha three four\n\nbeta five six\n\nbeta seven eight",
+        "# Intro\n\nalpha one two\n\nalpha three four\n\nbeta five six\n\nbeta seven eight",
     ]
-    assert all(
-        chunk.metadata["split_strategy"] == "candidate_boundary + semantic_oversized"
-        for chunk in chunks
-    )
-    assert chunks[0].metadata["semantic_source_coarse_chunk_id"].startswith("coarse_")
+    assert chunks[0].metadata["split_strategy"] == "candidate_boundary + noop"
     assert chunks[0].metadata["heading_trail"] == ["Intro"]
     assert chunks[0].metadata["source_file"] == "override.md"
 

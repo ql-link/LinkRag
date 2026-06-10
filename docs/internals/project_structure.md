@@ -187,17 +187,13 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── candidate_boundary_chunker.py # 第一阶段 candidate_boundary 算法
 │   │   │   ├── chunk_exporter.py  # FinalChunkSet → list[Chunk] 导出
 │   │   │   ├── chunking_engine.py
-│   │   │   ├── candidate_boundary_chunker.py # 第一阶段结构候选边界粗分片
 │   │   │   ├── element_derived_chunker.py    # 标题路径跟踪 + 图片/表格 derived chunk
-│   │   │   ├── oversized_chunk_refiner.py     # 第二阶段超长 chunk 细分
 │   │   │   ├── overlap.py          # 相邻 chunk 上下文 overlap
 │   │   │   ├── semantic_chunker.py
 │   │   │   ├── pipeline_chunker.py # StructuredSemanticChunker：串联候选边界/细分/overlap
 │   │   │   ├── embedding_pipeline.py
 │   │   │   ├── input_adapter.py   # ParseResult / MarkdownElement[] → SplitInput
 │   │   │   ├── models.py
-│   │   │   ├── oversized_chunk_refiner.py # 第二阶段 semantic_oversized 算法
-│   │   │   ├── pipeline_chunker.py
 │   │   │   ├── stage_contracts.py
 │   │   │   ├── stage_models.py
 │   │   │   ├── stage_routers.py
