@@ -47,6 +47,30 @@ class ProtectedRange:
 
 
 @dataclass(slots=True)
+class ElementView:
+    """
+    mixed coarse chunk 内单个源元素在 content 中的轻量对齐视图。
+
+    Args:
+        None.
+
+    Returns:
+        None.
+    """
+
+    element_index: int
+    element_type: str
+    start_line: int
+    end_line: int
+    heading_trail: list[str]
+    content_start: int
+    content_end: int
+    element_id: str | None = None
+    semantic_text: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
 class CoarseChunk:
     """
     第一阶段算法输出的单个粗分片。
@@ -72,6 +96,7 @@ class CoarseChunk:
     strategy: str
     source_coarse_chunk_id: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    element_views: list[ElementView] = field(default_factory=list)
 
 
 @dataclass(slots=True)
