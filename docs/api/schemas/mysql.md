@@ -10,7 +10,7 @@ ORM 与 migration 不一致时，以 migration 为准并修正 ORM；scripts/db/
 
 ## 表清单
 
-按业务域共 16 张表：
+按业务域共 17 张表：
 
 | 业务域 | 表 | 主键 ID 起始 |
 | --- | --- | --- |
@@ -19,7 +19,8 @@ ORM 与 migration 不一致时，以 migration 为准并修正 ORM；scripts/db/
 | [数据集与对话](#3-数据集与对话) | `dataset`, `chat_conversation`, `chat_message` | 10000 |
 | [文档解析](#4-文档解析) | `document_original_file`, `document_parse_file`, `document_parsed_log`, `document_parse_pipeline` | 10000 |
 | [博客](#5-博客) | `blog_post`, `blog_asset` | 10000 |
-| [知识索引](#6-知识索引) | `kb_document_chunk` | 10000 |
+| [用户反馈](#6-用户反馈) | `user_feedback` | 10000 |
+| [知识索引](#7-知识索引) | `kb_document_chunk` | 10000 |
 
 所有表统一：`InnoDB` / `utf8mb4_unicode_ci`，主键自增从 `10000` 起。
 
@@ -410,7 +411,36 @@ ORM：[`BlogAssetDB`](../../src/models/db_models.py)
 
 ---
 
-## 6. 知识索引
+## 6. 用户反馈
+
+### `user_feedback` — 匿名用户反馈表
+
+ORM：[`UserFeedbackDB`](../../src/models/db_models.py)
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | BIGINT UNSIGNED PK | 反馈唯一标识 |
+| `type` | VARCHAR(32) | 反馈类型：`BUG` / `FEATURE` / `EXPERIENCE` / `OTHER`，默认 `OTHER` |
+| `title` | VARCHAR(128) | 反馈标题 |
+| `content` | TEXT | 反馈详细内容 |
+| `attachment_object_key` | VARCHAR(512) | 附件 MinIO object key，由 Java 上传后写入 |
+| `status` | VARCHAR(32) | 处理状态：`PENDING` / `PROCESSING` / `RESOLVED` / `CLOSED`，默认 `PENDING` |
+| `priority` | TINYINT | 处理优先级：1=高，2=中，3=低，默认 3 |
+| `admin_id` | BIGINT UNSIGNED | 处理该反馈的管理员用户 ID |
+| `admin_reply` | TEXT | 管理员处理回复或处理结论 |
+| `processed_at` | DATETIME | 管理员处理完成或最后一次处理该反馈的时间 |
+| `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
+
+索引：
+- `idx_feedback_created(created_at)`
+- `idx_feedback_status_priority(status, priority, created_at)`
+- `idx_feedback_type_created(type, created_at)`
+
+说明：反馈提交、附件上传和管理员处理 HTTP 工作流由 Java 侧负责；Python 侧仅通过 migration 创建共享库表。`attachment_object_key` 只保存 MinIO object key，不保存文件流、bucket 配置或派生路径。
+
+---
+
+## 7. 知识索引
 
 ### `kb_document_chunk` — 文档 Chunk 真值记录表
 

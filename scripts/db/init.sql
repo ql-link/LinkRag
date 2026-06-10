@@ -8,7 +8,7 @@
 --   - schema 演进的唯一权威源是 src/models/**.py + migrations/versions/*.py；
 --   - 修改字段必须先改 ORM 模型并新增 migration，再同步本文件。
 -- 同步时机：每条会改动表结构的 migration 落库时一并更新本文件。
--- 末次同步：migration 0015_20260609_add_blog_tables
+-- 末次同步：migration 0016_20260609_add_user_feedback_table
 -- ===============================================
 
 CREATE DATABASE IF NOT EXISTS tolink_rag_db DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -318,7 +318,27 @@ CREATE TABLE IF NOT EXISTS blog_asset (
     KEY idx_blog_asset_post_type (post_id, asset_type, is_deleted, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '博客文章资源表';
 
--- 14. 文档 Chunk 真值记录表
+-- 14. 匿名用户反馈表
+CREATE TABLE IF NOT EXISTS user_feedback (
+    id                    BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '反馈 ID',
+    type                  VARCHAR(32)     NOT NULL DEFAULT 'OTHER' COMMENT '反馈类型：BUG=问题反馈，FEATURE=功能建议，EXPERIENCE=体验反馈，OTHER=其他',
+    title                 VARCHAR(128)    NOT NULL COMMENT '反馈标题',
+    content               TEXT            NOT NULL COMMENT '反馈详细内容',
+    attachment_object_key VARCHAR(512)    DEFAULT NULL COMMENT '附件 MinIO object_key，例如 feedback/2026/06/09/a.png',
+    status                VARCHAR(32)     NOT NULL DEFAULT 'PENDING' COMMENT '处理状态：PENDING=待处理，PROCESSING=处理中，RESOLVED=已解决，CLOSED=已关闭',
+    priority              TINYINT         NOT NULL DEFAULT 3 COMMENT '处理优先级：1=高，2=中，3=低',
+    admin_id              BIGINT UNSIGNED DEFAULT NULL COMMENT '处理该反馈的管理员用户 ID',
+    admin_reply           TEXT            DEFAULT NULL COMMENT '管理员处理回复或处理结论',
+    processed_at          DATETIME        DEFAULT NULL COMMENT '管理员处理完成或最后一次处理该反馈的时间',
+    created_at            DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '反馈提交时间',
+    updated_at            DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '反馈更新时间',
+
+    KEY idx_feedback_created (created_at),
+    KEY idx_feedback_status_priority (status, priority, created_at),
+    KEY idx_feedback_type_created (type, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '匿名用户反馈表';
+
+-- 15. 文档 Chunk 真值记录表
 -- 经 migration 0004 引入稀疏向量字段；0005 把 status/error_msg/retry_count/last_retry_at/embedding_model
 --   重命名为 dense_vector_*，并删除冗余的 vector_status / vector_error_msg 与对应索引；
 -- 0006 删除 dense/sparse 的 retry_count/last_retry_at/error_msg 与 es_error_msg
@@ -372,4 +392,5 @@ ALTER TABLE document_parsed_log AUTO_INCREMENT = 10000;
 ALTER TABLE document_parse_pipeline AUTO_INCREMENT = 10000;
 ALTER TABLE blog_post AUTO_INCREMENT = 10000;
 ALTER TABLE blog_asset AUTO_INCREMENT = 10000;
+ALTER TABLE user_feedback AUTO_INCREMENT = 10000;
 ALTER TABLE kb_document_chunk AUTO_INCREMENT = 10000;
