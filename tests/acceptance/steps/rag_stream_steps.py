@@ -25,13 +25,14 @@ from fastapi.testclient import TestClient
 from pytest_bdd import given, parsers, then, when
 
 from src.api import recall_stream_runtime
-from src.api.recall_pipeline_provider import get_recall_pipeline
+from src.api.recall_pipeline_provider import get_recall_pipeline, get_reranker
 from src.api.routes import rag
 from src.cache.redis_client import redis_client
 from src.config import settings
 from src.core.llm.exceptions import UserModelConfigMissingError
 from src.core.llm.response import StreamChunk
 from src.core.pipeline.recall import RecallHit, RecallRequest, RecallResponse
+from src.core.pipeline.rerank import RerankedHit, RerankResponse
 from src.main import app
 
 URL = "/api/v1/rag/stream"
@@ -80,6 +81,41 @@ class FakePipeline:
         )
 
 
+class _FakeReranker:
+    """确定性 rerank 替身：不查 DB、不调模型，隔离 RERANK 模型解析与正文回填。
+
+    - 默认（``unavailable=False``）：把 RRF 候选**按相关性反序**后逐条编号、给出递减
+      ``rerank_score``，``rerank_applied=True``——反序是为了让最终顺序明显区别于
+      ``fused_score`` 降序，证明终态排序由 rerank 决定；
+    - ``unavailable=True``：模拟用户未配 RERANK 模型，抛 ``UserModelConfigMissingError``，
+      由 runtime 兜底降级为 RRF 顺序（``rerank_applied=False``、rerank 字段为 null）；
+    - 空候选：与真实 reranker 一致，不调模型、``rerank_applied=False``。
+    """
+
+    def __init__(self, unavailable: bool = False) -> None:
+        self._unavailable = unavailable
+
+    async def rerank(self, request):
+        if not request.hits:
+            return RerankResponse(request.query, [], False, 1)
+        if self._unavailable:
+            raise UserModelConfigMissingError(capability="RERANK", user_id=request.user_id)
+        ordered = list(reversed(request.hits))
+        hits = [
+            RerankedHit(
+                chunk_id=h.chunk_id,
+                doc_id=h.doc_id,
+                dataset_id=h.dataset_id,
+                fused_score=h.fused_score,
+                scores=h.scores,
+                rerank_score=1.0 / i,
+                rerank_rank=i,
+            )
+            for i, h in enumerate(ordered, start=1)
+        ]
+        return RerankResponse(request.query, hits, True, 1)
+
+
 class _FakeRedis:
     """内存并发计数替身：仅实现 acquire/release 用到的 incr/decr/expire/set。"""
 
@@ -120,6 +156,7 @@ class _State:
     model_available: bool = True
     generation_raises: bool = False
     no_content: bool = False
+    rerank_unavailable: bool = False
     provider_stream_called: bool = False
     _settings_snapshot: dict = field(default_factory=dict)
     _redis_snapshot: dict = field(default_factory=dict)
@@ -186,6 +223,7 @@ def rag_acc_state():
     yield state
     state.restore()
     app.dependency_overrides.pop(get_recall_pipeline, None)
+    app.dependency_overrides.pop(get_reranker, None)
 
 
 # ---------------------------------------------------------------------------
@@ -251,6 +289,9 @@ def _parse_sse(text: str) -> list[tuple[str, str]]:
 
 def _fire(state: _State, *, with_token: bool) -> None:
     app.dependency_overrides[get_recall_pipeline] = lambda: state.fake
+    app.dependency_overrides[get_reranker] = lambda: _FakeReranker(
+        unavailable=state.rerank_unavailable
+    )
     headers = {"Accept": "text/event-stream"}
     if with_token:
         headers["Authorization"] = f"Bearer {_make_token(state)}"
@@ -378,6 +419,11 @@ def _model_available(rag_acc_state):
 @given(parsers.parse("config_id 指向的 CHAT 模型对用户 123 不可用"))
 def _model_unavailable(rag_acc_state):
     rag_acc_state.model_available = False
+
+
+@given(parsers.parse("用户 123 未配置 RERANK 模型"))
+def _rerank_unavailable(rag_acc_state):
+    rag_acc_state.rerank_unavailable = True
 
 
 @given(parsers.parse("bm25 与 sparse 两路均返回命中"))
@@ -593,7 +639,7 @@ def _w_cors(rag_acc_state, origin, query, ds):
 def _w_disconnect(rag_acc_state):
     rag_acc_state.redis.store["recall:concurrent:123"] = 1
     req = RecallRequest(query="q", user_id=123, dataset_ids=[1], top_k=20)
-    gen = rag._guarded_stream(rag_acc_state.fake, req, "rid", 123, CONFIG_ID)
+    gen = rag._guarded_stream(rag_acc_state.fake, _FakeReranker(), req, "rid", 123, CONFIG_ID)
 
     async def _drive() -> None:
         task = asyncio.ensure_future(gen.__anext__())
@@ -691,6 +737,43 @@ def _hit_shape(rag_acc_state):
 def _hits_sorted(rag_acc_state):
     scores = [h["fused_score"] for h in _last_event_data(rag_acc_state)["hits"]]
     assert scores == sorted(scores, reverse=True)
+
+
+@then(
+    parsers.parse(
+        "hits 中每个 hit 含字段 chunk_id 与 doc_id 与 dataset_id 与 fused_score 与 "
+        "scores 与 rerank_score 与 rerank_rank"
+    )
+)
+def _reranked_hit_shape(rag_acc_state):
+    for h in _last_event_data(rag_acc_state)["hits"]:
+        for field_name in (
+            "chunk_id",
+            "doc_id",
+            "dataset_id",
+            "fused_score",
+            "scores",
+            "rerank_score",
+            "rerank_rank",
+        ):
+            assert field_name in h, f"hit missing {field_name}: {h}"
+
+
+@then(parsers.parse("终态事件 data 中 hits 按 rerank_rank 升序排列"))
+def _hits_sorted_by_rerank(rag_acc_state):
+    ranks = [h["rerank_rank"] for h in _last_event_data(rag_acc_state)["hits"]]
+    assert ranks == sorted(ranks)
+
+
+@then(parsers.re(r"终态事件 data 的 rerank_applied 为 (?P<flag>true|false)"))
+def _rerank_applied_flag(rag_acc_state, flag):
+    assert _last_event_data(rag_acc_state)["rerank_applied"] is (flag == "true")
+
+
+@then(parsers.parse("hits 中每个 hit 的 rerank_score 与 rerank_rank 为 null"))
+def _rerank_fields_null(rag_acc_state):
+    for h in _last_event_data(rag_acc_state)["hits"]:
+        assert h["rerank_score"] is None and h["rerank_rank"] is None
 
 
 @then(parsers.re(r'终态事件 data 的 failed_sources 含 "(?P<src>[^"]+)"'))

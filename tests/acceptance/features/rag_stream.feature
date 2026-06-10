@@ -1,9 +1,10 @@
 # 对外 RAG 问答流 SSE acceptance 契约（LINK-131）
 # 由 recall_direct_sse.feature 改名搬迁而来：端点 POST /api/v1/recall/stream → POST /api/v1/rag/stream。
 # 范围：Python 侧对外 RAG 问答流 SSE 端点。承接完整 RAG 行为：会话鉴权 → 召回 → RRF 融合 →
-#       正文回填 → 上下文组装 → CHAT 流式生成。
+#       rerank 精排（不可用即降级 RRF 顺序）→ 正文回填 → 上下文组装 → CHAT 流式生成。
 # 说明：在原对外直连 SSE 行为基础上，补回 #165 删除 recall_http_api.feature 后悬空的召回执行
-#       语义断言（RRF 融合、命中字段形状、failed_sources 降级）。
+#       语义断言（RRF 融合、命中字段形状、failed_sources 降级），并覆盖 rerank 精排终态与
+#       未配置 RERANK 模型时降级为 RRF 顺序的契约。
 # token 策略：短期可复用（仅校验 exp），不做一次性消费 / 防重放 / 撤销；
 #       资源滥用由按 user_id 的并发上限封顶。
 
@@ -40,6 +41,7 @@ Feature: 对外 RAG 问答流 SSE
     And 至少收到一个 SSE 事件 "answer_delta"
     And 最终收到 SSE 事件 "answer_done"
     And answer_done.data 含字段 answer 与 hits 与 failed_sources
+    And 终态事件 data 的 rerank_applied 为 true
     And hits 中每个 hit 不含字段 content
     And 发送 answer_done 后关闭 SSE 流
 
@@ -71,14 +73,27 @@ Feature: 对外 RAG 问答流 SSE
 
   # ==== 召回执行语义（补回 #165 随 recall_http_api.feature 删除的断言）====
 
-  Scenario: 多路命中按 RRF 融合并以最小候选形状输出
+  Scenario: 多路命中经 RRF 融合后由 rerank 精排并以最小候选形状输出
     Given session token claims sub=123 dataset_ids=[1] scope=recall:stream 未过期
     And config_id 指向的 CHAT 模型对用户 123 可用
     And bm25 与 sparse 两路均返回命中
     When 前端携带该 token 调用 POST /api/v1/rag/stream body query="任意" dataset_ids=[1]
-    Then 终态事件 data 中 hits 按 fused_score 降序排列
-    And hits 中每个 hit 含字段 chunk_id 与 doc_id 与 dataset_id 与 fused_score 与 scores
+    Then 终态事件 data 的 rerank_applied 为 true
+    And 终态事件 data 中 hits 按 rerank_rank 升序排列
+    And hits 中每个 hit 含字段 chunk_id 与 doc_id 与 dataset_id 与 fused_score 与 scores 与 rerank_score 与 rerank_rank
     And hits 中每个 hit 不含字段 content
+
+  Scenario: 用户未配置 RERANK 模型时降级为 RRF 顺序候选且不报错
+    Given session token claims sub=123 dataset_ids=[1] scope=recall:stream 未过期
+    And config_id 指向的 CHAT 模型对用户 123 可用
+    And 用户 123 未配置 RERANK 模型
+    And bm25 与 sparse 两路均返回命中
+    When 前端携带该 token 调用 POST /api/v1/rag/stream body query="任意" dataset_ids=[1]
+    Then 最终收到 SSE 事件 "answer_done"
+    And 终态事件 data 的 rerank_applied 为 false
+    And 终态事件 data 中 hits 按 fused_score 降序排列
+    And hits 中每个 hit 的 rerank_score 与 rerank_rank 为 null
+    And 终态事件 data 的 hits 非空
 
   Scenario: 一路召回失败时宽松降级用其余路融合并在 failed_sources 标记失败路
     Given session token claims sub=123 dataset_ids=[1] scope=recall:stream 未过期

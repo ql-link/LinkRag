@@ -12,6 +12,7 @@
 | --- | --- |
 | [`src/api/recall_stream_runtime.py`](../../src/api/recall_stream_runtime.py) | SSE 流式执行 runtime：模型前置校验、召回执行、生成编排、事件序列化与异常→终态事件映射 |
 | [`src/core/pipeline/recall/generation.py`](../../src/core/pipeline/recall/generation.py) | `fetch_chunk_contents`（按 chunk_id 回填正文）、`assemble_context`（按 token 预算拼装上下文） |
+| [`src/core/pipeline/rerank/reranker.py`](../../src/core/pipeline/rerank/reranker.py) | `PostRecallReranker`：对 RRF 候选回表取正文、调用用户 RERANK 模型精排；不可用即降级 RRF 顺序 |
 | [`src/core/prompts/rag_generation.py`](../../src/core/prompts/rag_generation.py) | `RAG_GENERATION_SYSTEM_PROMPT` + `build_rag_user_prompt`（编号片段注入模板） |
 | [`src/core/llm/user_model_resolver.py`](../../src/core/llm/user_model_resolver.py) | `aresolve_user_model`：按 `(user_id, capability, config_id)` 解析用户模型 |
 
@@ -28,22 +29,36 @@
    aresolve_user_model(user_id, capability="CHAT", config_id, allow_system_fallback=False)
    └─ 不可用 → error MODEL_CONFIG_MISSING，直接 return（不进入召回）
 
-2. 召回执行（带超时）
+2. 召回执行（带超时，计时起点 recall_started）
    asyncio.wait_for(pipeline.execute(recall_req), RECALL_STREAM_TIMEOUT_MS/1000)
 
-3. 生成（_generate_answer）
-   ├─ response.hits 为空 → recall_done（不生成）
-   ├─ fetch_chunk_contents(hit.chunk_id, user_id)        # 仅 ACTIVE、非空正文
-   ├─ assemble_context(hits, contents, 预算)              # 按 fused_score 顺序、token 预算
+3. 正文回填（一次性，rerank 与生成共用）
+   fetch_chunk_contents(RRF候选.chunk_id, user_id)        # 仅 ACTIVE、非空正文
+   └─ 同一份 contents 注入 rerank、并直接喂给生成阶段，避免对同批 chunk 重复查库
+
+4. rerank 精排（_rerank_hits，best-effort）
+   剩余预算 = RECALL_STREAM_TIMEOUT_MS/1000 - (now - recall_started)  # 与召回共享同一窗
+   reranker.rerank(RerankRequest(query, user_id, hits=RRF候选, contents=已回填正文))
+   ├─ 生效   → 最终候选 = rerank 顺序（≤ RERANK_DEFAULT_TOP_N），rerank_applied=True
+   └─ 不可用 → degrade_to_rrf_order(有正文候选, top_n)，rerank_applied=False
+      （未配 RERANK 模型 / 调用失败 / 返回不可用 / rerank 超时 / 预算耗尽，皆不让整条流失败；
+       未预期异常则上抛 → 顶层 INTERNAL_ERROR，不静默降级）
+
+5. 生成（_generate_answer，输入为 rerank 后的最终候选 + 已回填正文）
+   ├─ 候选为空 → recall_done（不生成）
+   ├─ assemble_context(hits, contents, 预算)              # 按 rerank 后顺序、token 预算
    │    └─ 拼装后 blocks 为空（全部缺正文）→ recall_done（不生成）
    └─ provider.stream(user_prompt, system_prompt)
         ├─ 逐 token → answer_delta
-        └─ 结束    → answer_done（answer + hits 元信息 + failed_sources）
+        └─ 结束    → answer_done（answer + hits 元信息 + rerank_applied + failed_sources）
 ```
 
 关键设计点：
 
 - **模型校验在召回之前**：CHAT 模型不可用就别浪费召回算力；且 `allow_system_fallback=False`——直连场景必须用发起用户自己选定的模型，不静默回落系统模型。
+- **正文只回填一次**：在 rerank 之前批量回填，注入 reranker 并复用到生成阶段，避免对同批 chunk 两趟查库。
+- **rerank 与召回共享同一条流超时**：只把剩余预算交给 rerank，整条流的端到端时间仍受单个 `RECALL_STREAM_TIMEOUT_MS` 约束，不会两段各占满一窗。
+- **rerank 是 best-effort 增强**：返回的是 rerank 精排后的最终候选；rerank 已知不可用情形（未配 RERANK 模型的硬失败、调用失败/返回不可用的软降级、超时、预算耗尽）都经 `degrade_to_rrf_order` 降级为 RRF 顺序候选（口径与 reranker 软降级一致：只保留有正文候选、再截断 top_n）并置 `rerank_applied=False`，**绝不**因 rerank 不可用而让整条流失败——「没有 rerank 就用 RRF」。未预期异常不被吞成降级，照常上抛由顶层收敛为 `INTERNAL_ERROR`（带堆栈）。上下文拼装与终态 `hits` 均以最终候选为准。
 - **0 命中 / 全部缺正文 → `recall_done` 而非 error**：这是正常业务终态（没召回到东西不是错误），客户端据此走"无答案"分支。
 - **生成失败 → 整请求失败**：进入流式生成后任何异常统一收敛为 `error` GENERATION_FAILED，**不**把"已召回片段"当成功终态返回，避免给用户一个没有答案的"成功"。
 
@@ -51,7 +66,7 @@
 
 ## 3. 上下文拼装规则
 
-`assemble_context`（[generation.py](../../src/core/pipeline/recall/generation.py)）把命中片段按调用方给定的融合排序（`fused_score` 降序）依次纳入，受 `RECALL_GENERATION_CONTEXT_TOKEN_BUDGET` 约束：
+`assemble_context`（[generation.py](../../src/core/pipeline/recall/generation.py)）把命中片段按调用方给定的顺序（rerank 生效时为 rerank 相关性降序，降级时为 RRF `fused_score` 降序）依次纳入，受 `RECALL_GENERATION_CONTEXT_TOKEN_BUDGET` 约束：
 
 - 查不到正文的片段**跳过**并计入 `skipped_no_content`，不打断后续纳入。
 - 累计 token 超预算则停止纳入，剩余有正文片段计入 `truncated`。

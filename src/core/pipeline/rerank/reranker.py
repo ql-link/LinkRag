@@ -31,6 +31,39 @@ ContentFetcher = Callable[[list[str], int], Awaitable[dict[str, str]]]
 ModelResolver = Callable[..., Awaitable[ResolvedModel]]
 
 
+def reranked_from_recall(
+    hit: RecallHit,
+    *,
+    rerank_score: float | None = None,
+    rerank_rank: int | None = None,
+) -> RerankedHit:
+    """在 ``RecallHit`` 元信息上补 rerank 字段，保留 fused_score 与各路 scores。
+
+    rerank 未生效（降级）或某候选未拿到分时，``rerank_score`` / ``rerank_rank`` 为 ``None``。
+    重排成功映射、软降级、上游硬失败兜底降级共用本函数，保证三处产出的 ``RerankedHit``
+    形态严格一致。
+    """
+    return RerankedHit(
+        chunk_id=hit.chunk_id,
+        doc_id=hit.doc_id,
+        dataset_id=hit.dataset_id,
+        fused_score=hit.fused_score,
+        scores=hit.scores,
+        rerank_score=rerank_score,
+        rerank_rank=rerank_rank,
+    )
+
+
+def degrade_to_rrf_order(content_present_hits: list[RecallHit], top_n: int) -> list[RerankedHit]:
+    """降级：按 RRF 顺序输出候选（rerank 字段置空），截断 ``top_n``。
+
+    入参须为**已过滤掉无正文**的命中——这是降级口径的单一来源：reranker 软降级与
+    调用方（runtime）的硬失败兜底都调用本函数，保证不同降级路径产出同一"有正文候选"
+    集合、同一长度，不因走哪条降级路而喂给下游不同数量的片段。
+    """
+    return [reranked_from_recall(h) for h in content_present_hits[:top_n]]
+
+
 class PostRecallReranker:
     """承接 RRF 后候选，回表取正文并调用用户 RERANK 模型重排。"""
 
@@ -64,8 +97,12 @@ class PostRecallReranker:
         if not request.hits:
             return _resp([], False)
 
-        # 正文回填：只取本用户 ACTIVE 非空正文；查不到的 chunk 不参与 rerank。
-        contents = await self._fetch([h.chunk_id for h in request.hits], request.user_id)
+        # 正文回填：调用方已批量回填则复用（避免对同批 chunk 重复查库），否则自查。
+        # 两条路径都只认本用户 ACTIVE 非空正文；查不到的 chunk 不参与 rerank。
+        if request.contents is not None:
+            contents = request.contents
+        else:
+            contents = await self._fetch([h.chunk_id for h in request.hits], request.user_id)
         scored_hits = [h for h in request.hits if contents.get(h.chunk_id)]
         skipped = len(request.hits) - len(scored_hits)
         if skipped:
@@ -155,19 +192,11 @@ class PostRecallReranker:
 
     def _degrade(self, scored_hits: list[RecallHit], top_n: int) -> list[RerankedHit]:
         """降级：按 RRF 顺序（scored_hits 已是 RRF 序）输出，rerank 字段置空，截断 top_n。"""
-        return [self._to_hit(hit, None, None) for hit in scored_hits[:top_n]]
+        return degrade_to_rrf_order(scored_hits, top_n)
 
     @staticmethod
     def _to_hit(
         hit: RecallHit, rerank_score: float | None, rerank_rank: int | None
     ) -> RerankedHit:
-        """在 RecallHit 元信息上补 rerank 字段，保留 fused_score 与各路 scores。"""
-        return RerankedHit(
-            chunk_id=hit.chunk_id,
-            doc_id=hit.doc_id,
-            dataset_id=hit.dataset_id,
-            fused_score=hit.fused_score,
-            scores=hit.scores,
-            rerank_score=rerank_score,
-            rerank_rank=rerank_rank,
-        )
+        """在 RecallHit 元信息上补 rerank 字段（委托 ``reranked_from_recall``，单一来源）。"""
+        return reranked_from_recall(hit, rerank_score=rerank_score, rerank_rank=rerank_rank)

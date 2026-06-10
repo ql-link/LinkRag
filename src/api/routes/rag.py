@@ -1,8 +1,8 @@
 """对外 RAG 问答流 SSE 路由（LINK-131）。
 
 端点：``POST /api/v1/rag/stream``（面向**浏览器前端**）。前端凭 Java 签发的短期
-session token 直连，绕过 Java 中转。承接完整 RAG 行为：召回 → RRF 融合 → 正文回填 →
-上下文组装 → CHAT 模型流式生成。
+session token 直连，绕过 Java 中转。承接完整 RAG 行为：召回 → RRF 融合 → rerank 精排
+（不可用即降级 RRF 顺序）→ 正文回填 → 上下文组装 → CHAT 模型流式生成。
 
 由旧端点 ``POST /api/v1/recall/stream``（``routes/recall_direct.py``）改名搬迁而来：
 「召回 = stream」的旧契约语义不再扩散，SSE 的合理性来自 LLM 生成阶段。
@@ -31,7 +31,7 @@ from src.api.internal_auth import (
     CODE_RATE_LIMITED,
     RecallApiError,
 )
-from src.api.recall_pipeline_provider import get_recall_pipeline
+from src.api.recall_pipeline_provider import get_recall_pipeline, get_reranker
 from src.api.recall_session_auth import (
     SessionAuthContext,
     acquire_stream_slot,
@@ -42,6 +42,7 @@ from src.api.recall_session_auth import (
 from src.api.recall_stream_runtime import recall_event_stream
 from src.config import settings
 from src.core.pipeline.recall import RecallPipeline, RecallRequest
+from src.core.pipeline.rerank import PostRecallReranker
 
 router = APIRouter(prefix="/api/v1/rag", tags=["rag"])
 
@@ -82,6 +83,7 @@ async def _parse_and_validate_body(request: Request) -> RagStreamRequest:
 
 async def _guarded_stream(
     pipeline: RecallPipeline,
+    reranker: PostRecallReranker,
     recall_req: RecallRequest,
     request_id: str,
     user_id: int,
@@ -94,7 +96,7 @@ async def _guarded_stream(
     """
     try:
         async for event in recall_event_stream(
-            pipeline, recall_req, request_id, config_id=config_id
+            pipeline, recall_req, request_id, config_id=config_id, reranker=reranker
         ):
             yield event
     finally:
@@ -106,6 +108,7 @@ async def rag_stream(
     request: Request,
     ctx: SessionAuthContext = Depends(verify_session_token),
     pipeline: RecallPipeline = Depends(get_recall_pipeline),
+    reranker: PostRecallReranker = Depends(get_reranker),
 ) -> StreamingResponse:
     """对外 RAG 问答流 SSE 入口。"""
     body = await _parse_and_validate_body(request)
@@ -124,7 +127,9 @@ async def rag_stream(
     )
 
     return StreamingResponse(
-        _guarded_stream(pipeline, recall_req, ctx.request_id, ctx.user_id, body.config_id),
+        _guarded_stream(
+            pipeline, reranker, recall_req, ctx.request_id, ctx.user_id, body.config_id
+        ),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
