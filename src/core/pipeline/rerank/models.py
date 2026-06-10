@@ -23,12 +23,16 @@ class RerankRequest:
         hits: RRF 融合后候选（``RecallHit``，按 fused_score 降序，不含正文）。
         top_n: 重排后返回条数上限；``None`` 时取 ``settings.RERANK_DEFAULT_TOP_N``，
             显式传入时必须为正整数（``<= 0`` 由 reranker 入口拒绝）。
+        contents: 可选的预回填正文 ``{chunk_id: 正文}``。调用方若已批量回填（如召回后
+            生成链路），传入此字段令 reranker **复用**而不再自查库，避免对同批 chunk 重复
+            回填；``None`` 时 reranker 用注入的 ``content_fetcher`` 自行回填（独立调用场景）。
     """
 
     query: str
     user_id: int
     hits: list[RecallHit]
     top_n: int | None = None
+    contents: dict[str, str] | None = None
 
 
 @dataclass(frozen=True)

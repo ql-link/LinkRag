@@ -16,6 +16,7 @@ from functools import lru_cache
 from src.config import settings
 from src.core.es_index_storage import Bm25Retriever, EsBm25Retriever
 from src.core.pipeline.recall import RecallPipeline, RecallPipelineConfig
+from src.core.pipeline.rerank import PostRecallReranker
 from src.core.pipeline.recall.protocols import (
     SOURCE_BM25,
     SOURCE_DENSE,
@@ -97,3 +98,13 @@ def get_recall_pipeline() -> RecallPipeline:
     首次调用装配（含本地 BGE-M3 加载），后续复用缓存实例。
     """
     return _build_pipeline()
+
+
+@lru_cache(maxsize=1)
+def get_reranker() -> PostRecallReranker:
+    """返回进程内单例 ``PostRecallReranker``，作为 FastAPI 依赖。
+
+    无本地模型加载（rerank 走用户配置的远程 RERANK 模型），单例化是为与
+    ``get_recall_pipeline`` 对齐；正文回填与模型解析依赖采用模块默认实现。
+    """
+    return PostRecallReranker()
