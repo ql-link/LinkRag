@@ -21,7 +21,7 @@ def _resolve_nltk_data_dir() -> Path:
     env_dir = os.environ.get("NLTK_DATA")
     if env_dir:
         return Path(env_dir).expanduser()
-    return Path(__file__).resolve().parent.parent / "nltk_data"
+    return Path(__file__).resolve().parent.parent.parent / "nltk_data"
 
 
 def configure_nltk_data_path() -> str:

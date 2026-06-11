@@ -40,7 +40,7 @@ src/core/preprocessor/
 - `tokenize(text) -> TokenizedText`：先用 `TABLE_TAG_RE` 把 `<table>/<td>/<tr>/<th>/<caption>` 等表格标签替换为空格，再 `tokenize` 得 `coarse_tokens`、`fine_grained_tokenize` 得 `fine_tokens`，二者均为空格分隔词串。
 - `TokenizedText` 是 `(coarse_tokens, fine_tokens)` 的轻量载体。
 
-> RAGFlow/infinity 分词器需要本地 NLTK 数据，路径引导见 [src/nltk_bootstrap.py](../../src/nltk_bootstrap.py)。
+> RAGFlow/infinity 分词器需要本地 NLTK 数据，路径引导见 [src/bootstrap/nltk_data.py](../../src/bootstrap/nltk_data.py)。
 
 ---
 

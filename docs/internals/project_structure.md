@@ -73,15 +73,11 @@ toLink-Rag/                         # 仓库根目录
 ├── src/                          # 应用源码
 │   ├── config.py                 # 全局配置
 │   ├── database.py               # 数据库初始化入口
-│   ├── main.py                   # FastAPI 应用入口
-│   ├── nltk_bootstrap.py         # NLTK 数据路径引导（项目内 nltk_data 优先）
+│   ├── main.py                   # FastAPI 应用入口（组合根：路由/消费者装配）
+│   ├── bootstrap/                # 进程启动期引导（须先于业务模块 import）
+│   │   └── nltk_data.py          # NLTK 数据路径引导（项目内 nltk_data 优先）
 │   ├── api/                      # HTTP API 分层
-│   │   ├── internal_auth.py       # Java 管理端内部接口鉴权
 │   │   ├── recall_session_auth.py # 召回会话鉴权
-│   │   ├── recall_pipeline_provider.py # 召回 Pipeline 装配/提供
-│   │   ├── recall_stream_runtime.py    # RAG 问答流 SSE 运行时（/api/v1/rag/stream）
-│   │   ├── recall_json_runtime.py      # 纯召回 JSON 运行时（/api/v1/recall）
-│   │   ├── recall_serialization.py     # 召回结果序列化
 │   │   ├── routes/               # 路由层
 │   │   │   ├── internal.py        # Java 管理端内部 LLM 配置/用量接口
 │   │   │   ├── llm.py
@@ -92,11 +88,17 @@ toLink-Rag/                         # 仓库根目录
 │   │   └── schemas/              # HTTP 请求/响应模型
 │   │       ├── mq.py
 │   │       └── parse.py
+│   ├── application/              # Application 层：业务用例 runtime 与装配（api → application → core）
+│   │   ├── recall_errors.py       # 召回链路共享错误类型与错误码（CODE_*）
+│   │   ├── recall_pipeline_provider.py # 召回 Pipeline 装配/提供
+│   │   ├── recall_stream_runtime.py    # RAG 问答流 SSE 运行时（/api/v1/rag/stream）
+│   │   ├── recall_json_runtime.py      # 纯召回 JSON 运行时（/api/v1/recall）
+│   │   └── recall_serialization.py     # 召回结果序列化
 │   ├── cache/                    # 缓存客户端与缓存基础设施
 │   │   ├── redis_client.py       # 异步 Redis 连接单例
 │   │   └── cache_manager.py      # CacheManager + 后端抽象（Redis / Null）
 │   ├── core/                     # 核心能力与基础设施
-│   │   ├── database.py
+│   │   ├── parse_task_service.py # 解析 + Markdown 增强编排服务（ParseTaskService）
 │   │   ├── llm/                  # LLM 抽象、工厂与厂商适配
 │   │   │   ├── factory.py
 │   │   │   ├── interfaces.py
@@ -141,7 +143,8 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── orchestrator.py
 │   │   │   ├── parser.py
 │   │   │   ├── provider_clients.py
-│   │   │   └── scanner.py
+│   │   │   ├── scanner.py
+│   │   │   └── text_formatter.py  # Markdown 文本统一清洗
 │   │   ├── mq/                   # MQ 中台核心实现
 │   │   │   ├── factory.py        # MQFactory
 │   │   │   ├── interfaces.py
@@ -244,7 +247,6 @@ toLink-Rag/                         # 仓库根目录
 │   │   └── user_llm_config.py
 │   ├── services/                 # 服务层
 │   │   ├── mq_service.py
-│   │   ├── parse_task_service.py
 │   │   ├── cache_sync_service.py
 │   │   ├── config_reader_service.py
 │   │   ├── usage_log_service.py
@@ -254,8 +256,7 @@ toLink-Rag/                         # 仓库根目录
 │   │       ├── minio_storage.py
 │   │       └── oss_storage.py
 │   └── utils/                    # 通用工具函数
-│       ├── logger.py
-│       └── text_formatter.py
+│       └── logger.py
 └── tests/                        # 测试目录
     ├── README.md                 # pytest 统一入口（marker/集成测试开关）
     ├── conftest.py               # 测试分层与运行约定
