@@ -203,10 +203,10 @@ CLEANING
 
 | 测试目标 | 推荐入口 |
 | --- | --- |
-| 解析 Pipeline 编排骨架 | `tests/unit/core/pipeline/test_parse_task_pipeline.py` |
-| 解析 Pipeline ES 阶段语义 | `tests/unit/core/pipeline/test_parse_task_pipeline_es.py` |
-| `document_parse_pipeline` 仓储 | `tests/unit/core/pipeline/test_post_process_repository.py` |
-| MQ 端到端集成 | `tests/integration/core/mq/test_kafka_parse_task_pipeline_integration.py` |
+| 解析 Pipeline 编排骨架 | `tests/unit/core/pipeline/parse_task` |
+| 阶段语义（cleaning/vectorizing 等） | `tests/unit/core/pipeline/stages` |
+| `document_parse_pipeline` 仓储与 chunk 状态 | `tests/unit/core/storage/chunks` |
+| MQ 消费失败与死信语义 | `tests/acceptance/test_mq_dlq_poison_pill.py` |
 
 测试时优先替换协作者或 `StageServices` 方法，不要在 MQ consumer 中拼接业务流程，也不要通过 patch 大量私有方法绕过阶段模板。
 

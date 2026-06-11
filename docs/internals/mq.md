@@ -154,7 +154,6 @@ Kafka Topic 初始化还会读取：
 
 ```bash
 .venv/bin/pytest tests/unit/core/mq -q
-.venv/bin/pytest tests/unit/services/test_mq_service.py -q
 .venv/bin/pytest tests/integration/core/mq -q
 ```
 

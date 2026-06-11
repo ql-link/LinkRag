@@ -164,30 +164,6 @@ logs/
 
 不再提供 `SPARSE_VECTOR_USE_FP16` 配置。推理精度只由 `SPARSE_VECTOR_DEVICE` 决定：CPU 使用 fp32，CUDA 使用 fp16。
 
-## 稀疏向量配置
-
-稀疏向量首期使用本地 `BAAI/bge-m3`，与稠密向量在同一个 chunk 向量化阶段执行。模型输入是 chunk 原文，不使用 ES 分词结果。
-
-| 变量 | 默认 | 说明 |
-| --- | --- | --- |
-| `SPARSE_VECTOR_ENABLED` | `true` | 是否启用稀疏向量；关闭后只执行旧稠密向量流程 |
-| `SPARSE_VECTOR_PROVIDER` | `bge_m3` | 稀疏向量提供方：`bge_m3` / `bge_m3_http` / `remote_bge_m3` |
-| `SPARSE_VECTOR_MODEL_NAME` | `BAAI/bge-m3` | Hugging Face 模型名或本地模型目录 |
-| `SPARSE_VECTOR_MODEL_CACHE_DIR` | 空 | 模型缓存目录，空值使用默认 Hugging Face 缓存 |
-| `SPARSE_VECTOR_LOCAL_FILES_ONLY` | `false` | 是否只使用本地已有模型文件 |
-| `SPARSE_VECTOR_DEVICE` | `auto` | 推理设备：`auto` / `cpu` / `cuda` / `cuda:n`；CPU 固定 fp32，CUDA 固定 fp16 |
-| `SPARSE_VECTOR_BATCH_SIZE` | `12` | BGE-M3 稀疏编码批大小 |
-| `SPARSE_VECTOR_MAX_LENGTH` | `8192` | 输入文本最大 token 长度 |
-| `SPARSE_VECTOR_HTTP_ENDPOINT` | 空 | 早期 `bge_m3_http` provider 的 bge-m3-server 地址 |
-| `SPARSE_VECTOR_HTTP_TIMEOUT` | `30.0` | 早期 `bge_m3_http` provider 单次 HTTP 请求超时（秒） |
-| `SPARSE_VECTOR_HTTP_BATCH_SIZE` | 空 | 早期 `bge_m3_http` provider 的外层 chunk 批大小；空值时 Python 侧按 1 条 chunk 一批请求，避免长文本批量超时 |
-| `SPARSE_VECTOR_QDRANT_VECTOR_NAME` | `sparse_text` | Qdrant named sparse vector 名称 |
-| `SPARSE_VECTOR_TOP_K` | `256` | 每条稀疏向量最多保留的非零 token 数；`0` 表示不截断 |
-| `SPARSE_VECTOR_MIN_WEIGHT` | `0.0` | 过滤低权重 token 的阈值 |
-| `TOLINK_RUN_REAL_SPARSE_VECTOR_TESTS` | `false` | 是否运行真实 BGE-M3 smoke 测试 |
-
-不再提供 `SPARSE_VECTOR_USE_FP16` 配置。推理精度只由 `SPARSE_VECTOR_DEVICE` 决定：CPU 使用 fp32，CUDA 使用 fp16。
-
 ## 召回执行配置
 
 召回融合 pipeline 的通用执行参数（RAG 问答流与纯召回 JSON 两端点共用）。详见

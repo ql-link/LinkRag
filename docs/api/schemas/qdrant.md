@@ -3,10 +3,10 @@
 Qdrant 向量库的 collection 命名、分桶规则、point 结构与 payload 索引参考。
 
 **代码权威来源**：
-- 路由：[src/core/storage/qdrant/bucket_router.py](../../src/core/storage/qdrant/bucket_router.py)
-- 常量：[src/core/storage/qdrant/constants.py](../../src/core/storage/qdrant/constants.py)
-- Collection 管理：[src/core/storage/qdrant/qdrant_store.py](../../src/core/storage/qdrant/qdrant_store.py)
-- Point 构造：[src/core/storage/qdrant/point_factory.py](../../src/core/storage/qdrant/point_factory.py)
+- 路由：[src/core/storage/qdrant/bucket_router.py](../../../src/core/storage/qdrant/bucket_router.py)
+- 常量：[src/core/storage/qdrant/constants.py](../../../src/core/storage/qdrant/constants.py)
+- Collection 管理：[src/core/storage/qdrant/qdrant_store.py](../../../src/core/storage/qdrant/qdrant_store.py)
+- Point 构造：[src/core/storage/qdrant/point_factory.py](../../../src/core/storage/qdrant/point_factory.py)
 
 启用条件：`VECTOR_STORE_TYPE=qdrant`。
 
@@ -59,7 +59,7 @@ Collection 名称示例：`kb_bucket_0`, `kb_bucket_1`, ..., `kb_bucket_127`。
 
 ## Point 结构
 
-每个 Chunk 在 Qdrant 中是一个 **Point**，结构定义见 [IndexedPoint](../../src/core/storage/qdrant/models.py)：
+每个 Chunk 在 Qdrant 中是一个 **Point**，结构定义见 [IndexedPoint](../../../src/core/storage/qdrant/models.py)：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -199,5 +199,5 @@ response = await client.query_points(
 
 - 关系数据：[mysql_schema.md](mysql.md)
 - 全文索引：[elasticsearch_schema.md](elasticsearch.md)
-- 向量化模块架构：[../internals/vectorization.md](../internals/vectorization.md)
-- 配置项详解：[../ops/configure.md](../ops/configure.md)
+- 向量化模块架构：[../internals/vectorization.md](../../internals/vectorization.md)
+- 配置项详解：[../ops/configure.md](../../ops/configure.md)

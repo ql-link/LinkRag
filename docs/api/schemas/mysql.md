@@ -2,8 +2,8 @@
 
 toLink-Rag 业务表模式参考。**权威来源**：ORM 模型 (`src/models/**.py`) + Alembic migrations (`migrations/versions/*.py`)。
 
-- 冷启动 baseline：[migrations/db.sql](../../migrations/db.sql)（0001，已冻结）
-- 当前完整结构快照（baseline + 已应用 migration）：[scripts/db/init.sql](../../scripts/db/init.sql)
+- 冷启动 baseline：[migrations/db.sql](../../../migrations/db.sql)（0001，已冻结）
+- 当前完整结构快照（baseline + 已应用 migration）：[scripts/db/init.sql](../../../scripts/db/init.sql)
 - 本文是按业务域分组的人读摘要视图
 
 ORM 与 migration 不一致时，以 migration 为准并修正 ORM；scripts/db/init.sql 需在每条 schema 演进的 migration 落库时一并同步。
@@ -54,7 +54,7 @@ ORM：（未在 `src/models/` 中映射，由业务侧管理）
 
 ### `llm_system_provider` — LLM 系统级厂商配置
 
-ORM：[`SystemProviderDB`](../../src/models/db_models.py)
+ORM：[`SystemProviderDB`](../../../src/models/db_models.py)
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -70,7 +70,7 @@ ORM：[`SystemProviderDB`](../../src/models/db_models.py)
 
 ### `llm_provider_model` — 厂商模型能力目录
 
-ORM：[`ProviderModelDB`](../../src/models/db_models.py)
+ORM：[`ProviderModelDB`](../../../src/models/db_models.py)
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -87,7 +87,7 @@ ORM：[`ProviderModelDB`](../../src/models/db_models.py)
 
 ### `llm_system_preset` — 系统预设模板
 
-ORM：[`SystemPresetDB`](../../src/models/db_models.py)
+ORM：[`SystemPresetDB`](../../../src/models/db_models.py)
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -105,7 +105,7 @@ ORM：[`SystemPresetDB`](../../src/models/db_models.py)
 
 ### `llm_user_config` — 用户级 LLM 配置
 
-ORM：[`UserLLMConfigDB`](../../src/models/db_models.py)
+ORM：[`UserLLMConfigDB`](../../../src/models/db_models.py)
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -141,7 +141,7 @@ LIMIT 1;
 
 ### `llm_usage_log` — LLM 调用用量日志
 
-ORM：[`UsageLogDB`](../../src/models/db_models.py)
+ORM：[`UsageLogDB`](../../../src/models/db_models.py)
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -258,7 +258,7 @@ document_original_file (1)──(N) document_parse_file (1)──(N) document_pa
 
 记录一个原始文件**当前**的解析任务关系。一文件一行（`document_original_file_id` 唯一）。
 
-ORM：[`DocumentParseTask`](../../src/models/parse_task.py)
+ORM：[`DocumentParseTask`](../../../src/models/parse_task.py)
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -280,7 +280,7 @@ ORM：[`DocumentParseTask`](../../src/models/parse_task.py)
 
 每次触发解析产生一条，承担解析产物（Markdown 文件位置、解析起止时间）与触发上下文的快照。**整体任务状态的权威单源是 `document_parse_pipeline`**；本表不再保存 `task_status` / `failure_reason`（migration 0007 已下线）。重试链路通过 `retry_of_task_id` 串接（migration 0009 新增）。
 
-ORM：[`DocumentParsedLog`](../../src/models/parse_task.py)
+ORM：[`DocumentParsedLog`](../../../src/models/parse_task.py)
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -313,7 +313,7 @@ ORM：[`DocumentParsedLog`](../../src/models/parse_task.py)
 
 > **术语映射**：brief / acceptance 中的 `parsing_status` 与 `parsing_duration_ms` 在代码与 schema 中实际为 `cleaning_status` 与 `cleaning_duration_ms`（migration 0007 落地时选择 cleaning 词根）。统一重命名由 issue [#48](https://github.com/ql-link/LinkRag/issues/48) 跟踪。
 
-ORM：[`DocumentParsePipeline`](../../src/models/parse_task.py)
+ORM：[`DocumentParsePipeline`](../../../src/models/parse_task.py)
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -362,7 +362,7 @@ ORM：[`DocumentParsePipeline`](../../src/models/parse_task.py)
 
 ### `blog_post` — 博客文章表
 
-ORM：[`BlogPostDB`](../../src/models/db_models.py)
+ORM：[`BlogPostDB`](../../../src/models/db_models.py)
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -386,7 +386,7 @@ ORM：[`BlogPostDB`](../../src/models/db_models.py)
 
 ### `blog_asset` — 博客文章资源表
 
-ORM：[`BlogAssetDB`](../../src/models/db_models.py)
+ORM：[`BlogAssetDB`](../../../src/models/db_models.py)
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -415,7 +415,7 @@ ORM：[`BlogAssetDB`](../../src/models/db_models.py)
 
 ### `user_feedback` — 匿名用户反馈表
 
-ORM：[`UserFeedbackDB`](../../src/models/db_models.py)
+ORM：[`UserFeedbackDB`](../../../src/models/db_models.py)
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -446,7 +446,7 @@ ORM：[`UserFeedbackDB`](../../src/models/db_models.py)
 
 向量库与 ES 的**可重建来源**。每个 Chunk 一行，`chunk_id` 与 Qdrant Point ID 一一对应。
 
-ORM：[`ChunkRecordDB`](../../src/models/chunk_record.py)
+ORM：[`ChunkRecordDB`](../../../src/models/chunk_record.py)
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -489,11 +489,11 @@ ORM：[`ChunkRecordDB`](../../src/models/chunk_record.py)
 - 加密字段：在字段注释中显式标注 "加密存储" 并说明解密 Secret 来源。
 - 外键字段：`<table>_id` 命名，注释中显式给出 "对应 X.Y" 引用。
 
-详见 [docs/internals/naming_conventions.md](../internals/naming_conventions.md)。
+详见 [docs/internals/naming_conventions.md](../../internals/naming_conventions.md)。
 
 ## 相关文档
 
 - 向量索引模式：[qdrant_schema.md](qdrant.md)
 - 全文索引模式：[elasticsearch_schema.md](elasticsearch.md)
 - API 契约：[api_contracts.md](../http_contracts.md)
-- 解析流水线架构：[../internals/parse_task_pipeline.md](../internals/parse_task_pipeline.md)
+- 解析流水线架构：[../internals/parse_task_pipeline.md](../../internals/parse_task_pipeline.md)

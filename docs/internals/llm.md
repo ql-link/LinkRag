@@ -132,7 +132,6 @@ API Key 不应写入文档、测试或提交配置。用户配置中的密钥由
 
 ```bash
 .venv/bin/pytest tests/unit/core/llm -q
-.venv/bin/pytest tests/unit/services/test_cache_sync_service.py -q
 .venv/bin/pytest tests/integration/core/llm -q
 ```
 
