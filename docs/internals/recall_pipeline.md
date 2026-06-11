@@ -42,9 +42,9 @@ src/core/pipeline/recall/
 
 | 路 | source | 适配器 |
 | --- | --- | --- |
-| sparse | `sparse` | `src/core/sparse_vector/sparse_retriever.py` |
-| BM25 | `bm25` | `src/core/es_index_storage/bm25_retriever.py` |
-| dense | `dense` | `src/core/vector_storage/dense_retriever.py` |
+| sparse | `sparse` | `src/core/storage/vector/sparse_retriever.py` |
+| BM25 | `bm25` | `src/core/storage/es/bm25_retriever.py` |
+| dense | `dense` | `src/core/storage/vector/dense_retriever.py` |
 
 `RecallPipeline` 不写死具体路数；新增 GraphRAG、wiki 或其他召回路时，只要实现 `Retriever` 协议并在构造时传入即可。
 
@@ -150,7 +150,7 @@ class Retriever(Protocol):
 
 `per_source_counts` 的键集合等于已装配的全部 source。失败路与返回空列表的路都计 0；二者通过 `failed_sources` 区分。
 
-`RecallFatalError`（`RecallError` 子类）是宽松模式的例外：当前唯一来源是发起用户无默认 EMBEDDING 配置、dense 路无法编码 query——此时即便宽松模式也不能"降级为其余路继续"，否则会静默返回不完整结果。由 `DenseRetriever` 捕获 `VectorRetrievalUserConfigMissingError` 后抛出（见 [dense_retriever](../../src/core/vector_storage/dense_retriever.py)）。
+`RecallFatalError`（`RecallError` 子类）是宽松模式的例外：当前唯一来源是发起用户无默认 EMBEDDING 配置、dense 路无法编码 query——此时即便宽松模式也不能"降级为其余路继续"，否则会静默返回不完整结果。由 `DenseRetriever` 捕获 `VectorRetrievalUserConfigMissingError` 后抛出（见 [dense_retriever](../../src/core/storage/vector/dense_retriever.py)）。
 
 ---
 
@@ -209,7 +209,7 @@ RecallPipelineConfig(
 | RRF 融合 | `tests/unit/core/pipeline/recall/test_recall_pipeline_rrf.py` |
 | 容错语义 | `tests/unit/core/pipeline/recall/test_recall_pipeline_fault.py` |
 | 入参与构造边界 | `tests/unit/core/pipeline/recall/test_recall_pipeline_validation.py`、`test_recall_pipeline_boundary.py` |
-| 单路适配器 | `tests/unit/core/sparse_vector/test_sparse_retriever.py`、`tests/unit/core/es_index_storage/test_bm25_retriever.py` |
+| 单路适配器 | `tests/unit/core/storage/vector/test_sparse_retriever.py`、`tests/unit/core/storage/es/test_bm25_retriever.py` |
 
 测试 Pipeline 编排时优先使用 fake Retriever，不要 mock Qdrant、ES 或 tokenizer；这些属于各路适配器自己的测试范围。
 

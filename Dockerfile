@@ -35,7 +35,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 COPY . .
 
 # NLTK 数据：构建时下载到镜像内固定目录，固化进镜像层。
-# 运行时由 src.nltk_bootstrap 读取 NLTK_DATA 优先命中，避免依赖用户家目录或运行时联网下载。
+# 运行时由 src.bootstrap.nltk_data 读取 NLTK_DATA 优先命中，避免依赖用户家目录或运行时联网下载。
 ENV NLTK_DATA=/app/nltk_data
 # 经 GitHub 加速代理下载 NLTK 数据，避免直连 raw.githubusercontent 国内超时；失败自动回退官方源
 ENV NLTK_GH_PROXY=https://gh-proxy.com/

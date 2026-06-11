@@ -21,7 +21,11 @@ class SendParseTaskRequest(BaseModel):
     source_bucket: str = Field(..., title="源文件Bucket", description="原始文件所在对象存储 bucket")
     source_object_key: str = Field(..., title="源文件对象Key", description="原始文件对象存储 key")
     source_filename: str = Field(..., title="原始文件名", description="用户上传时的原始文件名")
-    md_bucket: str = Field(..., title="Markdown Bucket", description="Markdown 输出 bucket")
+    md_bucket: str = Field(
+        ...,
+        title="Markdown Bucket",
+        description="历史兼容字段；Python 侧 Markdown 输出 bucket 使用 MINIO_BUCKET_NAME",
+    )
     md_object_key: str = Field(..., title="Markdown 对象Key", description="Markdown 输出对象 key")
     trigger_mode: str = Field(
         "upload_auto", title="触发方式", description="upload_auto/manual_retry"

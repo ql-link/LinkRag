@@ -3,6 +3,7 @@ from typing import Optional, Protocol
 
 from pydantic import AliasChoices, Field
 
+from src.config import settings
 from src.core.mq.exceptions import MQSerializationError
 from src.core.mq.message import AbstractMessage, MessagePayload
 
@@ -73,9 +74,11 @@ class ParseTaskPayload(MessagePayload):
         """markdown 产物所在 bucket。
 
         md/markdown 在上传阶段即以原文件形态存入 minio（``source_*``），cleaning 不再
-        重复写入 md_bucket；其余格式由 cleaning 解析转换后写入 ``md_bucket``。
+        重复写入 md_bucket；其余格式由 cleaning 解析转换后写入服务配置的
+        ``MINIO_BUCKET_NAME``。``md_bucket`` 保留为兼容历史消息字段，不作为 Python
+        侧实际写入桶名的权威来源。
         """
-        return self.source_bucket if self.is_markdown_passthrough else self.md_bucket
+        return self.source_bucket if self.is_markdown_passthrough else settings.MINIO_BUCKET_NAME
 
     @property
     def markdown_object_key(self) -> str:

@@ -24,8 +24,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 from pytest_bdd import given, parsers, then, when
 
-from src.api import recall_stream_runtime
-from src.api.recall_pipeline_provider import get_recall_pipeline, get_reranker
+from src.application import recall_stream_runtime
+from src.application.recall_pipeline_provider import get_recall_pipeline, get_reranker
 from src.api.routes import rag
 from src.cache.redis_client import redis_client
 from src.config import settings

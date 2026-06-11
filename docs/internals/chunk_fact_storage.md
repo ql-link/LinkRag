@@ -1,6 +1,6 @@
 # Chunk 事实存储（chunk_fact_storage）
 
-本文说明 `src/core/chunk_fact_storage/` —— Chunk 的 **SQL 真值源**。它是整条 RAG 链路的单一事实来源：解析流水线把分片落到这里，向量化 / 稀疏 / ES 三路在这里翻转各自的子状态，召回生成阶段按 `chunk_id` 从这里回读正文。Qdrant 与 Elasticsearch 都只是它的派生索引，最终一致而非强一致。
+本文说明 `src/core/storage/chunks/` —— Chunk 的 **SQL 真值源**。它是整条 RAG 链路的单一事实来源：解析流水线把分片落到这里，向量化 / 稀疏 / ES 三路在这里翻转各自的子状态，召回生成阶段按 `chunk_id` 从这里回读正文。Qdrant 与 Elasticsearch 都只是它的派生索引，最终一致而非强一致。
 
 底层表结构见 [docs/api/schemas/mysql.md](../api/schemas/mysql.md) 的 `kb_document_chunk`，ORM 为 [`ChunkRecordDB`](../../src/models/chunk_record.py)。
 
@@ -12,7 +12,7 @@
 - **薄仓储**：`ChunkRepository` 只做 SQL 读写与 CAS（compare-and-set）状态翻转，不含业务编排、不发通知、不调外部存储。编排归 [parse_task_pipeline](parse_task_pipeline.md) 的各 Stage，外部索引写入归 [vector_storage](vectorization.md) / [es_index_storage](es_index_storage.md) / [sparse_vector](sparse_vector.md)。
 
 ```text
-src/core/chunk_fact_storage/
+src/core/storage/chunks/
 ├── repository.py   # ChunkRepository：插入 / CAS 状态翻转 / 计数 / 候选查询 / 修复
 ├── models.py       # FactChunkDraft（插入草稿）/ ChunkPostStatus / decide_chunk_post_status
 ├── constants.py    # 三路子状态 + 生命周期常量、允许更新/删除的状态集合
@@ -32,14 +32,14 @@ src/core/chunk_fact_storage/
 | `es_status` | `PENDING` / `SUCCESS` / `FAILED` | Elasticsearch BM25 入库 |
 | `lifecycle_status` | `ACTIVE` / `REMOVED` | 软删除生命周期 |
 
-> **常量命名陷阱**（见 [constants.py](../../src/core/chunk_fact_storage/constants.py)）：代码里 `CHUNK_STATUS_INDEXING` 与 `CHUNK_STATUS_PENDING` 是**同一个 DB 值 `"PENDING"`**，`CHUNK_STATUS_INDEXED` / `SUCCESS` 同为 `"SUCCESS"`。即落库只有 `PENDING` / `SUCCESS` / `FAILED` 三态，"INDEXING" 只是语义别名、不是独立第四态。读写时不要把 `INDEXING` 当成区别于 `PENDING` 的状态。
+> **常量命名陷阱**（见 [constants.py](../../src/core/storage/chunks/constants.py)）：代码里 `CHUNK_STATUS_INDEXING` 与 `CHUNK_STATUS_PENDING` 是**同一个 DB 值 `"PENDING"`**，`CHUNK_STATUS_INDEXED` / `SUCCESS` 同为 `"SUCCESS"`。即落库只有 `PENDING` / `SUCCESS` / `FAILED` 三态，"INDEXING" 只是语义别名、不是独立第四态。读写时不要把 `INDEXING` 当成区别于 `PENDING` 的状态。
 
 允许状态集合（CAS 白名单）：
 
 - `CHUNK_UPDATE_ALLOWED_STATUSES = (SUCCESS, FAILED)`：可被重建/改写的 dense 状态。
 - `CHUNK_DELETE_ALLOWED_STATUSES = (PENDING, SUCCESS, FAILED)`：可被删除清理的 dense 状态。
 
-`decide_chunk_post_status(record, sparse_enabled)`（[models.py](../../src/core/chunk_fact_storage/models.py)）按三路子状态 + 生命周期派生文件级后处理结论：`PROCESSING` / `VECTOR_FAILED` / `ES_FAILED` / `COMPLETED`（非 `ACTIVE` 一律 `PROCESSING`）。
+`decide_chunk_post_status(record, sparse_enabled)`（[models.py](../../src/core/storage/chunks/models.py)）按三路子状态 + 生命周期派生文件级后处理结论：`PROCESSING` / `VECTOR_FAILED` / `ES_FAILED` / `COMPLETED`（非 `ACTIVE` 一律 `PROCESSING`）。
 
 ---
 
@@ -102,6 +102,6 @@ allowed_statuses（多值 IN）  >  expected_status（单值 =）  >  无状态 
 
 ## 7. 测试与修改原则
 
-- 仓储单测入口：`tests/unit/core/chunk_fact_storage/`。
+- 仓储单测入口：`tests/unit/core/storage/chunks/`。
 - 改 CAS 条件或新增状态翻转方法时，务必保留两条不变量：**`_active_predicate` 恒在**、**已 `SUCCESS` 不被多值 CAS 拉回**。二者是防数据回退与防写已删 chunk 的底线。
 - 新增/修改字段只改 ORM + 写 migration，并同步 [mysql.md](../api/schemas/mysql.md)（受 [文档同步规则](../contributing.md) 强制）。

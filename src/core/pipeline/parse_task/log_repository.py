@@ -99,7 +99,7 @@ class ParseLogRepository:
         finished_at = now()
         # markdown 产物坐标统一经 payload 解析：md/markdown 透传取上传位置（source_*），
         # 其余格式取 cleaning 写出的 md_*。让 parsed_* 始终指向 markdown 真实所在位置，
-        # 后续重试从 CHUNKING 恢复时即按此坐标读回，不会误用 md_bucket。
+        # 后续重试从 CHUNKING 恢复时即按此坐标读回，不会误用历史 md_bucket 字段。
         log_record.parsed_filename = self._build_parsed_filename(payload.source_filename)
         log_record.parsed_bucket_name = payload.markdown_bucket
         log_record.parsed_object_key = payload.markdown_object_key

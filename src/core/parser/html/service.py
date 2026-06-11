@@ -3,7 +3,7 @@ import re
 import trafilatura
 from bs4 import BeautifulSoup, Comment, Tag
 
-from src.core.exceptions import ParseBaseException
+from src.core.parser.exceptions import ParseBaseException
 
 from .models import HtmlParseOptions, HtmlParseResult
 from .renderer import HtmlMarkdownRenderer

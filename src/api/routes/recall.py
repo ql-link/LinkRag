@@ -25,14 +25,14 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from src.api.internal_auth import CODE_INVALID_REQUEST, RecallApiError
-from src.api.recall_json_runtime import run_recall_json
-from src.api.recall_pipeline_provider import get_recall_pipeline
 from src.api.recall_session_auth import (
     SessionAuthContext,
     resolve_dataset_scope,
     verify_session_token,
 )
+from src.application.recall_errors import CODE_INVALID_REQUEST, RecallApiError
+from src.application.recall_json_runtime import run_recall_json
+from src.application.recall_pipeline_provider import get_recall_pipeline
 from src.config import settings
 from src.core.pipeline.recall import RecallPipeline, RecallRequest
 

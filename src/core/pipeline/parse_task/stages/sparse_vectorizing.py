@@ -41,7 +41,7 @@ class SparseVectorizingStage(Stage):
 
     async def run(self, ctx: StageContext) -> StageOutcome:
         # 延迟导入避免在 worker 启动期触发 BGE-M3 模型加载等重依赖。
-        from src.core.sparse_vector.indexing import SparseIndexingError
+        from src.core.storage.vector.sparse_indexing import SparseIndexingError
 
         try:
             await self._services.run_sparse_vectorizing(ctx.payload, ctx.db)

@@ -73,15 +73,11 @@ toLink-Rag/                         # 仓库根目录
 ├── src/                          # 应用源码
 │   ├── config.py                 # 全局配置
 │   ├── database.py               # 数据库初始化入口
-│   ├── main.py                   # FastAPI 应用入口
-│   ├── nltk_bootstrap.py         # NLTK 数据路径引导（项目内 nltk_data 优先）
+│   ├── main.py                   # FastAPI 应用入口（组合根：路由/消费者装配）
+│   ├── bootstrap/                # 进程启动期引导（须先于业务模块 import）
+│   │   └── nltk_data.py          # NLTK 数据路径引导（项目内 nltk_data 优先）
 │   ├── api/                      # HTTP API 分层
-│   │   ├── internal_auth.py       # Java 管理端内部接口鉴权
 │   │   ├── recall_session_auth.py # 召回会话鉴权
-│   │   ├── recall_pipeline_provider.py # 召回 Pipeline 装配/提供
-│   │   ├── recall_stream_runtime.py    # RAG 问答流 SSE 运行时（/api/v1/rag/stream）
-│   │   ├── recall_json_runtime.py      # 纯召回 JSON 运行时（/api/v1/recall）
-│   │   ├── recall_serialization.py     # 召回结果序列化
 │   │   ├── routes/               # 路由层
 │   │   │   ├── internal.py        # Java 管理端内部 LLM 配置/用量接口
 │   │   │   ├── llm.py
@@ -92,11 +88,17 @@ toLink-Rag/                         # 仓库根目录
 │   │   └── schemas/              # HTTP 请求/响应模型
 │   │       ├── mq.py
 │   │       └── parse.py
+│   ├── application/              # Application 层：业务用例 runtime 与装配（api → application → core）
+│   │   ├── recall_errors.py       # 召回链路共享错误类型与错误码（CODE_*）
+│   │   ├── recall_pipeline_provider.py # 召回 Pipeline 装配/提供
+│   │   ├── recall_stream_runtime.py    # RAG 问答流 SSE 运行时（/api/v1/rag/stream）
+│   │   ├── recall_json_runtime.py      # 纯召回 JSON 运行时（/api/v1/recall）
+│   │   └── recall_serialization.py     # 召回结果序列化
 │   ├── cache/                    # 缓存客户端与缓存基础设施
 │   │   ├── redis_client.py       # 异步 Redis 连接单例
 │   │   └── cache_manager.py      # CacheManager + 后端抽象（Redis / Null）
 │   ├── core/                     # 核心能力与基础设施
-│   │   ├── database.py
+│   │   ├── parse_task_service.py # 解析 + Markdown 增强编排服务（ParseTaskService）
 │   │   ├── llm/                  # LLM 抽象、工厂与厂商适配
 │   │   │   ├── factory.py
 │   │   │   ├── interfaces.py
@@ -123,14 +125,13 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── service.py         # Preprocessor：读 chunk 构建预分词计划
 │   │   │   ├── ragflow_tokenizer.py # RagFlowTokenizer 适配
 │   │   │   └── models.py          # FileIndexMeta / ChunkWithTokens / FilePostIndexPlan
-│   │   ├── sparse_vector/        # BGE-M3 稀疏向量编码与索引
-│   │   │   ├── encoder.py / http_encoder.py / remote_encoder.py # 本地 / 远程编码器
-│   │   │   ├── factory.py         # 按 provider 装配 SparseVectorService
-│   │   │   ├── pipeline.py        # SparseVectorService 服务接口
-│   │   │   ├── indexing.py        # SparseIndexingPipeline 文件级索引阶段
-│   │   │   ├── sparse_retriever.py # 召回 Pipeline 适配器
-│   │   │   ├── deploy_bge_m3.py   # 本地模型部署/冒烟脚本
-│   │   │   └── constants.py / models.py / exceptions.py
+│   │   ├── encoding/             # 编码命名空间（文本 → 向量，无存储职责）
+│   │   │   └── sparse/           # BGE-M3 稀疏向量编码
+│   │   │       ├── encoder.py / http_encoder.py / remote_encoder.py # 本地 / HTTP / 远程编码器
+│   │   │       ├── factory.py     # 按 provider 装配 SparseVectorService
+│   │   │       ├── pipeline.py    # SparseVectorService 服务接口
+│   │   │       ├── deploy_bge_m3.py # 本地模型部署/冒烟脚本
+│   │   │       └── constants.py / models.py / exceptions.py
 │   │   ├── prompts/              # LLM 提示词模板
 │   │   │   ├── markdown_enhancement.py
 │   │   │   └── rag_generation.py   # 召回生成阶段提示词
@@ -141,7 +142,8 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── orchestrator.py
 │   │   │   ├── parser.py
 │   │   │   ├── provider_clients.py
-│   │   │   └── scanner.py
+│   │   │   ├── scanner.py
+│   │   │   └── text_formatter.py  # Markdown 文本统一清洗
 │   │   ├── mq/                   # MQ 中台核心实现
 │   │   │   ├── factory.py        # MQFactory
 │   │   │   ├── interfaces.py
@@ -163,6 +165,7 @@ toLink-Rag/                         # 仓库根目录
 │   │   │           └── topic_admin.py
 │   │   ├── parser/               # 文档解析器抽象与实现
 │   │   │   ├── base.py
+│   │   │   ├── exceptions.py     # 解析域异常（ParseBaseException 等）
 │   │   │   ├── factory.py
 │   │   │   ├── html/             # HTML DOM 解析、表格处理和图片引用重写
 │   │   │   │   ├── image_rewriter.py
@@ -200,41 +203,44 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── stage_two_noop.py
 │   │   │   ├── validators.py
 │   │   │   └── semantic_chunker.py
-│   │   ├── chunk_fact_storage/   # Chunk SQL 事实存储
-│   │   │   ├── constants.py
-│   │   │   ├── exceptions.py
-│   │   │   ├── models.py
-│   │   │   └── repository.py
-│   │   ├── es_index_storage/      # ES 入库 + BM25 检索
-│   │   │   ├── client.py          # 进程级 AsyncElasticsearch 单例
-│   │   │   ├── mapping.py         # ES index settings + mappings
-│   │   │   ├── document_factory.py / batcher.py # chunk → bulk action / 分批
-│   │   │   ├── pipeline.py        # EsIndexingPipeline 入库阶段
-│   │   │   ├── retrieval.py       # EsBm25Retriever BM25 检索
-│   │   │   ├── bm25_retriever.py  # 召回 Pipeline 适配器
-│   │   │   ├── retrieval_models.py # Bm25RecallRequest / Bm25ChunkHit
-│   │   │   ├── smoke.py           # 集成测试冒烟工具
-│   │   │   └── models.py / exceptions.py
-│   │   ├── qdrant_vector_storage/ # Qdrant 向量索引存储
-│   │   │   ├── bucket_router.py
-│   │   │   ├── constants.py
-│   │   │   ├── exceptions.py
-│   │   │   ├── models.py
-│   │   │   ├── point_factory.py
-│   │   │   └── qdrant_store.py
-│   │   └── vector_storage/       # 向量存储编排层
-│   │       ├── compensation_pipeline.py
-│   │       ├── constants.py
-│   │       ├── dense_retriever.py  # 召回 Pipeline 的 dense 路适配器（DenseRetriever）
-│   │       ├── draft_factory.py
-│   │       ├── exceptions.py
-│   │       ├── facade.py
-│   │       ├── factory.py
-│   │       ├── management_pipeline.py
-│   │       ├── models.py
-│   │       ├── pipeline.py
-│   │       ├── repair_policy.py
-│   │       └── _transaction.py
+│   │   └── storage/              # 存储命名空间（索引与持久化）
+│   │       ├── chunks/           # Chunk SQL 事实存储
+│   │       │   ├── constants.py
+│   │       │   ├── exceptions.py
+│   │       │   ├── models.py
+│   │       │   └── repository.py
+│   │       ├── es/               # ES 入库 + BM25 检索
+│   │       │   ├── client.py     # 进程级 AsyncElasticsearch 单例
+│   │       │   ├── mapping.py    # ES index settings + mappings
+│   │       │   ├── document_factory.py / batcher.py # chunk → bulk action / 分批
+│   │       │   ├── pipeline.py   # EsIndexingPipeline 入库阶段
+│   │       │   ├── retrieval.py  # EsBm25Retriever BM25 检索
+│   │       │   ├── bm25_retriever.py # 召回 Pipeline 适配器
+│   │       │   ├── retrieval_models.py # Bm25RecallRequest / Bm25ChunkHit
+│   │       │   ├── smoke.py      # 集成测试冒烟工具
+│   │       │   └── models.py / exceptions.py
+│   │       ├── qdrant/           # Qdrant 向量索引底座
+│   │       │   ├── bucket_router.py
+│   │       │   ├── constants.py
+│   │       │   ├── exceptions.py
+│   │       │   ├── models.py
+│   │       │   ├── point_factory.py
+│   │       │   └── qdrant_store.py
+│   │       └── vector/           # 向量存储编排层（dense + sparse 索引与召回）
+│   │           ├── compensation_pipeline.py
+│   │           ├── constants.py
+│   │           ├── dense_retriever.py  # 召回 Pipeline 的 dense 路适配器（DenseRetriever）
+│   │           ├── sparse_retriever.py # 召回 Pipeline 的 sparse 路适配器（SparseRetriever）
+│   │           ├── sparse_indexing.py  # SparseIndexingPipeline 文件级稀疏索引阶段
+│   │           ├── draft_factory.py
+│   │           ├── exceptions.py
+│   │           ├── facade.py
+│   │           ├── factory.py
+│   │           ├── management_pipeline.py
+│   │           ├── models.py
+│   │           ├── pipeline.py
+│   │           ├── repair_policy.py
+│   │           └── _transaction.py
 │   ├── models/                   # ORM 模型
 │   │   ├── chunk_record.py
 │   │   ├── db_models.py
@@ -244,7 +250,6 @@ toLink-Rag/                         # 仓库根目录
 │   │   └── user_llm_config.py
 │   ├── services/                 # 服务层
 │   │   ├── mq_service.py
-│   │   ├── parse_task_service.py
 │   │   ├── cache_sync_service.py
 │   │   ├── config_reader_service.py
 │   │   ├── usage_log_service.py
@@ -254,8 +259,7 @@ toLink-Rag/                         # 仓库根目录
 │   │       ├── minio_storage.py
 │   │       └── oss_storage.py
 │   └── utils/                    # 通用工具函数
-│       ├── logger.py
-│       └── text_formatter.py
+│       └── logger.py
 └── tests/                        # 测试目录
     ├── README.md                 # pytest 统一入口（marker/集成测试开关）
     ├── conftest.py               # 测试分层与运行约定
@@ -265,21 +269,18 @@ toLink-Rag/                         # 仓库根目录
     │   │   ├── llm/              # LLM 模块单元测试
     │   │   ├── mq/               # MQ 模块单元测试
     │   │   ├── parser/           # 解析器模块单元测试
-    │   │   ├── chunk_fact_storage/ # Chunk 事实存储单元测试
-    │   │   ├── es_index_storage/ # ES 入库阶段单元测试
+    │   │   ├── encoding/         # 编码模块单元测试（sparse 编码器）
     │   │   ├── pipeline/         # 解析流水线单元测试
-    │   │   ├── qdrant_vector_storage/ # Qdrant 存储单元测试
     │   │   ├── splitter/         # 切分模块单元测试
-    │   │   └── vector_storage/   # 向量存储编排单元测试
+    │   │   └── storage/          # 存储命名空间单元测试（chunks/es/qdrant/vector）
     │   └── services/             # 服务层单元测试
     └── integration/              # 集成测试
         ├── api/                  # API 层集成测试
         ├── core/                 # 核心模块集成测试
         │   ├── llm/              # LLM 模块集成测试
         │   ├── markdown_parser/  # Markdown 解析集成测试
-        │   ├── qdrant_vector_storage/ # Qdrant 存储集成测试
         │   ├── splitter/         # 切分模块集成测试
-        │   └── vector_storage/   # 向量存储编排集成测试
+        │   └── storage/          # 存储命名空间集成测试（qdrant/vector）
         ├── services/             # 服务层集成测试
         └── test_connectivity.py
 ```

@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.core.preprocessor.models import FilePostIndexPlan
-from src.core.vector_storage.models import ChunkIndexingResult
+from src.core.storage.vector.models import ChunkIndexingResult
 from src.models.chunk_record import ChunkRecordDB
 from src.models.parse_task import DocumentParsedLog
 

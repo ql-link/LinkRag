@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from src.core.exceptions import ParseBaseException
+from src.core.parser.exceptions import ParseBaseException
 from src.core.markdown_parser import MarkdownParser
 from src.core.parser.providers.html_parser import HtmlParser
 

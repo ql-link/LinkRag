@@ -4,7 +4,7 @@
 真实写入 MinIO / MySQL / Qdrant / ES。
 
 用法:
-    .venv/bin/python scripts/smoke_parse_pipeline.py [--backend docling|mineru] [--pdf-path PATH] [--keep]
+    .venv/bin/python scripts/smoke_parse_pipeline.py [--backend docling|mineru] [--pdf-path PATH] [--user-id ID] [--dataset-id ID] [--keep]
 
 默认 backend=mineru（依赖 MinerU 公网 API 拉取 MinIO URL）。
 --keep 表示保留测试产物（默认会清理）。
@@ -135,6 +135,14 @@ async def close_runtime_resources(pipeline: ParseTaskPipeline) -> None:
     await close_database()
 
 
+def ensure_bucket_exists(storage, bucket: str) -> None:
+    """Fail fast when the configured MinIO bucket is missing."""
+    s3 = getattr(storage, "_client", None)
+    if s3 is None:
+        return
+    s3.head_bucket(Bucket=bucket)
+
+
 def _fmt_ms(ms: int | float | None) -> str:
     if ms is None:
         return "    -    "
@@ -193,15 +201,19 @@ def load_pdf_bytes(pdf_path: str | None, task_id: str) -> tuple[bytes, str, int]
     return pdf_bytes, f"{task_id}.pdf", elapsed_ms
 
 
-async def main(backend: str, keep: bool, pdf_path: str | None = None) -> int:
+async def main(
+    backend: str,
+    keep: bool,
+    pdf_path: str | None = None,
+    user_id: int = 999_999,
+    dataset_id: int = 999_999,
+) -> int:
     suffix = uuid.uuid4().hex[:8]
     task_id = f"test_{suffix}"
     parse_task_id = _TEST_ID_BASE + int(suffix, 16) % 100_000
     file_id = parse_task_id + 1
-    user_id = 999_999
-    dataset_id = 999_999
-    src_bucket = "rag-raw"
-    md_bucket = "rag-md"
+    src_bucket = settings.MINIO_BUCKET_NAME
+    md_bucket = settings.MINIO_BUCKET_NAME
     file_type, content_type, pdf_suffix = detect_file_type(pdf_path)
     src_key = f"smoke-test/{task_id}{pdf_suffix}"
     md_key = f"smoke-test/{task_id}.md"
@@ -214,6 +226,8 @@ async def main(backend: str, keep: bool, pdf_path: str | None = None) -> int:
 
     # ===== 阶段 1：脚本侧准备 =====
     storage = StorageFactory.get_storage()
+    for bucket in {src_bucket, md_bucket}:
+        ensure_bucket_exists(storage, bucket)
     pdf_bytes, filename, pdf_prepare_ms = load_pdf_bytes(pdf_path, task_id)
 
     t = time.time()
@@ -349,6 +363,18 @@ if __name__ == "__main__":
         "--pdf-path",
         help="使用指定本地文件路径，按扩展名自动推断 file_type（pdf/html/docx/...）",
     )
+    parser.add_argument("--user-id", type=int, default=999_999)
+    parser.add_argument("--dataset-id", type=int, default=999_999)
     parser.add_argument("--keep", action="store_true", help="保留 DB / MinIO 测试产物")
     args = parser.parse_args()
-    sys.exit(asyncio.run(main(args.backend, args.keep, args.pdf_path)))
+    sys.exit(
+        asyncio.run(
+            main(
+                args.backend,
+                args.keep,
+                args.pdf_path,
+                user_id=args.user_id,
+                dataset_id=args.dataset_id,
+            )
+        )
+    )

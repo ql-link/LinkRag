@@ -44,7 +44,7 @@ Java 管理端                          toLink-Rag (Python)
 | `source_bucket` | string | ✅ | 源文件对象存储 bucket |
 | `source_object_key` | string | ✅ | 源文件对象存储 key |
 | `source_filename` | string | ✅ | 用户上传时的原始文件名 |
-| `md_bucket` | string | ✅ | 解析后 Markdown 输出 bucket（`md`/`markdown` 透传时不使用，见下方说明） |
+| `md_bucket` | string | ✅ | 历史兼容字段；Python 侧非 `md`/`markdown` 解析产物实际写入 `MINIO_BUCKET_NAME` 配置桶，`md`/`markdown` 透传时不使用 |
 | `md_object_key` | string | ✅ | 解析后 Markdown 输出 key（`md`/`markdown` 透传时不使用，见下方说明） |
 | `trigger_mode` | string | ⬜ | `upload_auto`（默认） / `manual_retry` |
 | `pdf_parser_backend` | string | ⬜ | `mineru`（默认） / `opendataloader` / `naive` / `auto` |
@@ -56,7 +56,7 @@ Java 管理端                          toLink-Rag (Python)
 
 > **重试链路约束**（与 [parse_task_pipeline.md §4 重试分支](../internals/parse_task_pipeline.md) 配套）：
 > - 重试请求由 Java 端在判定旧任务 `pipeline_status=FAILED` 后发起；Python 端不计数、不限次。若旧任务 `recover_from_stage=CLEANING`，允许旧 log 没有 `parsed_object_key`，Python 会重新下载源文件、解析并上传 markdown。
-> - 重试请求的 `md_bucket` / `md_object_key` 是本次 markdown 产物目标坐标。恢复点晚于 `CLEANING` 时应与上轮一致（Java 直接回填）；从 `CLEANING` 恢复时用于承接重新上传后的 markdown。
+> - 重试请求的 `md_object_key` 是本次 markdown 产物目标 key；bucket 由 Python 侧 `MINIO_BUCKET_NAME` 决定。恢复点晚于 `CLEANING` 时 key 应与上轮一致（Java 直接回填）；从 `CLEANING` 恢复时用于承接重新上传后的 markdown。
 > - Python 通过 CAS 第 2 层（`mark_superseded` UPDATE rowcount）仲裁并发重试，失败方仍会建一行 `pipeline_status=FAILED` + `failed_stage=RETRY_VALIDATION` 的审计记录，并通过 parse_result 主题通知 Java FAILED。
 
 ### 消息示例
@@ -104,7 +104,7 @@ Java 管理端                          toLink-Rag (Python)
 }
 ```
 
-> **`md` / `markdown` 透传**：源文件本身即目标 Markdown，cleaning 阶段跳过解析引擎转换，也**不再把 markdown 重复写入 `md_bucket`**——markdown 产物坐标直接取上传位置（`source_bucket` / `source_object_key`）。因此对 md/markdown 文件，业务方读取解析产物（预览/下载）须以 `document_parsed_log.parsed_bucket_name` / `parsed_object_key`（即上传位置）为准，不可硬取请求里的 `md_object_key`。其余格式（pdf/docx/html/…）仍把转换后的 markdown 写入 `md_bucket`/`md_object_key`，行为不变。
+> **`md` / `markdown` 透传**：源文件本身即目标 Markdown，cleaning 阶段跳过解析引擎转换，也**不再把 markdown 重复写入输出桶**——markdown 产物坐标直接取上传位置（`source_bucket` / `source_object_key`）。因此对 md/markdown 文件，业务方读取解析产物（预览/下载）须以 `document_parsed_log.parsed_bucket_name` / `parsed_object_key`（即上传位置）为准，不可硬取请求里的 `md_object_key`。其余格式（pdf/docx/html/…）仍把转换后的 markdown 写入 Python 侧 `MINIO_BUCKET_NAME` / `md_object_key`。
 
 ### 路由键
 

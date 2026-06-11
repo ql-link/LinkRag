@@ -21,7 +21,7 @@ import jwt
 from fastapi import Request
 from loguru import logger
 
-from src.api.internal_auth import (
+from src.application.recall_errors import (
     CODE_SCOPE_FORBIDDEN,
     CODE_SESSION_UNAUTHORIZED,
     RecallApiError,

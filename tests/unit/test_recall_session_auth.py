@@ -12,7 +12,7 @@ import jwt
 import pytest
 
 from src.api import recall_session_auth
-from src.api.internal_auth import RecallApiError
+from src.application.recall_errors import RecallApiError
 from src.api.recall_session_auth import (
     acquire_stream_slot,
     release_stream_slot,

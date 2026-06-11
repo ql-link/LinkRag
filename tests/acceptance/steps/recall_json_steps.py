@@ -20,7 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pytest_bdd import given, parsers, then, when
 
-from src.api.recall_pipeline_provider import get_recall_pipeline
+from src.application.recall_pipeline_provider import get_recall_pipeline
 from src.config import settings
 from src.core.pipeline.recall import RecallHit, RecallRequest, RecallResponse
 from src.main import app

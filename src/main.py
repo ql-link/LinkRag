@@ -4,7 +4,7 @@ toLink-RAG API 服务入口
 
 # NLTK 数据路径必须在引入任何会用到 NLTK 的依赖（deepdoc/infinity-sdk/langchain 等）之前配置，
 # 确保运行时优先命中项目内 nltk_data，而非用户家目录 ~/nltk_data。
-from src.nltk_bootstrap import configure_nltk_data_path
+from src.bootstrap import configure_nltk_data_path
 
 configure_nltk_data_path()
 
@@ -24,14 +24,15 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from src.api.internal_auth import RecallApiError
 from src.api.routes import internal, llm, mq, parse, rag, recall
+from src.application.recall_errors import RecallApiError
 from src.cache.redis_client import redis_client
 from src.config import settings
-
-# 引入文档解析模块的数据库依赖
-from src.core.database import engine
-from src.core.mq.consumers.parse_task_consumer import start_parse_consumer
+from src.core.mq.consumers.parse_task_consumer import (
+    PARSE_TASK_GROUP,
+    PARSE_TASK_TOPIC,
+    handle_parse_task,
+)
 
 # MQ 工厂（生命周期管理）
 from src.core.mq.factory import MQFactory
@@ -40,7 +41,25 @@ from src.core.mq.topic_admin import ensure_topics
 # 解析任务临时落盘目录治理：启动时清空 PARSE_TEMP_DIR，回收上次异常退出残留的临时文件。
 from src.core.pipeline.parse_task import temp_workspace
 from src.database import close_database, init_database
-from src.models.parse_task import Base
+from src.services.mq_service import MQService
+
+
+async def _start_parse_consumer() -> None:
+    """组合根装配：用 MQService 订阅解析任务 handler 并启动消费。
+
+    core 层消费者模块只暴露 handler 与 topic/group 常量，订阅装配在此完成，
+    避免 core 反向依赖 services。
+    """
+    mq_service = MQService()
+    await mq_service.subscribe(
+        topic=PARSE_TASK_TOPIC,
+        group_id=PARSE_TASK_GROUP,
+        callback=handle_parse_task,
+    )
+    await mq_service.start_consuming()
+    logger.info(
+        f"[ParseTaskConsumer] 消费者已启动: " f"topic={PARSE_TASK_TOPIC}, group={PARSE_TASK_GROUP}"
+    )
 
 
 @asynccontextmanager
@@ -64,7 +83,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     temp_workspace.ensure_clean_on_startup(Path(settings.PARSE_TEMP_DIR))
     if settings.MQ_VENDOR.lower() == "kafka" and settings.INIT_KAFKA_TOPICS_ON_STARTUP:
         ensure_topics()
-    await start_parse_consumer()
+    await _start_parse_consumer()
     yield
     # 关闭时清理（MQ 连接优先关闭，避免消息丢失）
     try:

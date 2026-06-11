@@ -11,7 +11,7 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from loguru import logger
 
 from src.config import settings
-from src.services.parse_task_service import ParseTaskService
+from src.core.parse_task_service import ParseTaskService
 from src.services.mq_service import MQService
 from src.services.storage.factory import StorageFactory
 from src.core.mq.messages import ParseTaskMessage
@@ -119,7 +119,7 @@ async def submit_async_task(request: TaskSubmitRequest):
             trigger_mode=request.trigger_mode,
             pdf_parser_backend=request.pdf_parser_backend,
             docling_force_ocr=request.docling_force_ocr,
-            image_bucket=request.image_bucket or request.md_bucket,
+            image_bucket=request.image_bucket or settings.MINIO_BUCKET_NAME,
             image_prefix=request.image_prefix or request.md_object_key,
         )
         await mq_service.send(msg)

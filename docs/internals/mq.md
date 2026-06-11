@@ -13,7 +13,7 @@ src/core/mq/
 ├── exceptions.py              # MQ 异常类型（含 RetriableError 可重试基类）
 ├── retry.py                   # 厂商中立失败兜底编排：有限退避重试 + 死信投递
 ├── consumers/
-│   └── parse_task_consumer.py # 解析任务消费者启动入口
+│   └── parse_task_consumer.py # 解析任务消费 handler（订阅装配在组合根 src/main.py）
 ├── messages/
 │   ├── parse_task.py          # Java -> Python 解析任务消息
 │   ├── parse_result.py        # Python -> Java 解析终态通知
@@ -38,11 +38,10 @@ BusinessCode
 消费链路：
 
 ```text
-FastAPI lifespan
-  -> start_parse_consumer()
-    -> MQService.subscribe()
-      -> ParseTaskMessage.parse_msg()
-      -> ParseTaskPipeline.execute()
+FastAPI lifespan（src/main.py 组合根装配）
+  -> MQService.subscribe(topic, group, handle_parse_task)
+    -> ParseTaskMessage.parse_msg()
+    -> ParseTaskPipeline.execute()
 ```
 
 ## 2. 核心角色
@@ -66,6 +65,8 @@ FastAPI lifespan
 | `ParseResultMessage` | `tolink.rag.parse_result` | Python -> Java | 回传解析整体终态（重试任务的通知体 **不** 回带 `previous_task_id` / `retry_of_task_id`，Java 自有映射） |
 | `CacheSyncMessage` | `tolink.rag.cache_sync` | Java -> Python | 失效或刷新用户 LLM 配置缓存 |
 | `UsageReportMessage` | `tolink.rag.usage_report` | Python -> Java/统计侧 | 上报 LLM 调用用量 |
+
+`ParseTaskMessage` 中的 `md_bucket` 为历史兼容字段；Python 侧非 `md`/`markdown` 解析产物实际写入 `MINIO_BUCKET_NAME` 配置桶，`md_object_key` 仍来自消息。`md`/`markdown` 透传文件的产物坐标沿用源文件上传位置。
 
 > 当前 `consumers/` 下只有 `parse_task_consumer.py` 一个消费入口。`CacheSyncMessage` / `UsageReportMessage` 仅定义了消息类与 topic，本服务侧暂未注册对应消费者（生产/订阅由各自业务链路按需接入），不要据此假定本服务会自动消费这两类消息。
 >

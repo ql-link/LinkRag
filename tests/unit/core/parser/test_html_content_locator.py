@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 from bs4 import BeautifulSoup
 
-from src.core.exceptions import ParseBaseException
+from src.core.parser.exceptions import ParseBaseException
 from src.core.parser.html import service as svc_mod
 from src.core.parser.html.service import HtmlParseService
 from src.core.parser.providers.html_parser import HtmlParser
