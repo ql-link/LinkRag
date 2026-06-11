@@ -22,14 +22,14 @@ import pytest
 from pytest_bdd import given, parsers, then, when
 
 from src.config import settings
-from src.core.qdrant_vector_storage import BucketRoute
-from src.core.qdrant_vector_storage.exceptions import QdrantStoreError
-from src.core.sparse_vector import (
+from src.core.storage.qdrant import BucketRoute
+from src.core.storage.qdrant.exceptions import QdrantStoreError
+from src.core.encoding.sparse import (
     SparseVector,
     SparseVectorEncodingError,
     SparseVectorService,
 )
-from src.core.vector_storage import (
+from src.core.storage.vector import (
     VectorRetrievalBackendError,
     VectorRetrievalConfigurationError,
     VectorRetrievalEncodingError,
@@ -601,17 +601,17 @@ def _then_no_qdrant_write(recall_state: _RecallState):
 
 @then("从 vector_storage 包可以导入 VectorStorageFacade")
 def _then_can_import_facade():
-    from src.core.vector_storage import VectorStorageFacade as F  # noqa: F401
+    from src.core.storage.vector import VectorStorageFacade as F  # noqa: F401
 
 
 @then("从 vector_storage 包可以导入 VectorSearchHit, VectorSearchResult")
 def _then_can_import_dataclasses():
-    from src.core.vector_storage import VectorSearchHit as H, VectorSearchResult as R  # noqa: F401
+    from src.core.storage.vector import VectorSearchHit as H, VectorSearchResult as R  # noqa: F401
 
 
 @then("从 vector_storage 包可以导入召回侧异常族")
 def _then_can_import_exceptions():
-    from src.core.vector_storage import (  # noqa: F401
+    from src.core.storage.vector import (  # noqa: F401
         VectorRetrievalBackendError as B,
         VectorRetrievalConfigurationError as C,
         VectorRetrievalEncodingError as E,
@@ -621,13 +621,13 @@ def _then_can_import_exceptions():
 
 @then("SparseVectorSearchRequest 不在 vector_storage 包的 __all__ 中")
 def _then_request_not_in_all():
-    import src.core.vector_storage as vs
+    import src.core.storage.vector as vs
     assert "SparseVectorSearchRequest" not in vs.__all__
 
 
 @then("SparseQueryVectorSpec 不在 vector_storage 包的 __all__ 中")
 def _then_spec_not_in_all():
-    import src.core.vector_storage as vs
+    import src.core.storage.vector as vs
     assert "SparseQueryVectorSpec" not in vs.__all__
     assert "QueryVectorSpec" not in vs.__all__
 

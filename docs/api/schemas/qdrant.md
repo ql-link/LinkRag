@@ -3,10 +3,10 @@
 Qdrant 向量库的 collection 命名、分桶规则、point 结构与 payload 索引参考。
 
 **代码权威来源**：
-- 路由：[src/core/qdrant_vector_storage/bucket_router.py](../../src/core/qdrant_vector_storage/bucket_router.py)
-- 常量：[src/core/qdrant_vector_storage/constants.py](../../src/core/qdrant_vector_storage/constants.py)
-- Collection 管理：[src/core/qdrant_vector_storage/qdrant_store.py](../../src/core/qdrant_vector_storage/qdrant_store.py)
-- Point 构造：[src/core/qdrant_vector_storage/point_factory.py](../../src/core/qdrant_vector_storage/point_factory.py)
+- 路由：[src/core/storage/qdrant/bucket_router.py](../../src/core/storage/qdrant/bucket_router.py)
+- 常量：[src/core/storage/qdrant/constants.py](../../src/core/storage/qdrant/constants.py)
+- Collection 管理：[src/core/storage/qdrant/qdrant_store.py](../../src/core/storage/qdrant/qdrant_store.py)
+- Point 构造：[src/core/storage/qdrant/point_factory.py](../../src/core/storage/qdrant/point_factory.py)
 
 启用条件：`VECTOR_STORE_TYPE=qdrant`。
 
@@ -59,7 +59,7 @@ Collection 名称示例：`kb_bucket_0`, `kb_bucket_1`, ..., `kb_bucket_127`。
 
 ## Point 结构
 
-每个 Chunk 在 Qdrant 中是一个 **Point**，结构定义见 [IndexedPoint](../../src/core/qdrant_vector_storage/models.py)：
+每个 Chunk 在 Qdrant 中是一个 **Point**，结构定义见 [IndexedPoint](../../src/core/storage/qdrant/models.py)：
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |

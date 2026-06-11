@@ -50,7 +50,7 @@ src/core/pipeline/
 | --- | --- |
 | `create_chunking_engine()` | `src/core/splitter/factory.py` |
 | `create_system_embedding_client()` / `LazyEmbeddingClient` | `src/core/splitter/factory.py` |
-| `compose_vector_storage_facade()` | `src/core/vector_storage/factory.py` |
+| `compose_vector_storage_facade()` | `src/core/storage/vector/factory.py` |
 
 上游入口：
 

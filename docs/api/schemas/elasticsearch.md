@@ -3,13 +3,13 @@
 ES 索引命名、mapping、文档结构与入库结果模型参考。
 
 **代码权威来源**：
-- 入库流水线：[src/core/es_index_storage/pipeline.py](../../../src/core/es_index_storage/pipeline.py)
-- 文档构造：[src/core/es_index_storage/document_factory.py](../../../src/core/es_index_storage/document_factory.py)
-- Mapping 定义：[src/core/es_index_storage/mapping.py](../../../src/core/es_index_storage/mapping.py)
-- 批次构造：[src/core/es_index_storage/batcher.py](../../../src/core/es_index_storage/batcher.py)
-- 结果模型：[src/core/es_index_storage/models.py](../../../src/core/es_index_storage/models.py)
-- BM25 召回：[src/core/es_index_storage/retrieval.py](../../../src/core/es_index_storage/retrieval.py)
-- 召回模型：[src/core/es_index_storage/retrieval_models.py](../../../src/core/es_index_storage/retrieval_models.py)
+- 入库流水线：[src/core/storage/es/pipeline.py](../../../src/core/storage/es/pipeline.py)
+- 文档构造：[src/core/storage/es/document_factory.py](../../../src/core/storage/es/document_factory.py)
+- Mapping 定义：[src/core/storage/es/mapping.py](../../../src/core/storage/es/mapping.py)
+- 批次构造：[src/core/storage/es/batcher.py](../../../src/core/storage/es/batcher.py)
+- 结果模型：[src/core/storage/es/models.py](../../../src/core/storage/es/models.py)
+- BM25 召回：[src/core/storage/es/retrieval.py](../../../src/core/storage/es/retrieval.py)
+- 召回模型：[src/core/storage/es/retrieval_models.py](../../../src/core/storage/es/retrieval_models.py)
 
 ES 负责存储预分词后的 Chunk token 索引副本，用于后续 BM25 / lexical 召回。原文内容、分块元数据与索引状态真值仍以 MySQL `kb_document_chunk` 为准。
 
@@ -112,7 +112,7 @@ ES 入库不直接消费 splitter 输出，而是消费预分词阶段产出的 
 
 ### `EsIndexingResult`
 
-定义见 [src/core/es_index_storage/models.py](../../../src/core/es_index_storage/models.py)。
+定义见 [src/core/storage/es/models.py](../../../src/core/storage/es/models.py)。
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |

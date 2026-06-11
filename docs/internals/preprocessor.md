@@ -61,15 +61,15 @@ src/core/preprocessor/
 ## 5. 与相邻模块的关系
 
 ```text
-chunk_fact_storage (ChunkRecordDB)        ← 数据来源（dense 已 INDEXED 的 active chunk）
+storage.chunks (ChunkRecordDB)        ← 数据来源（dense 已 INDEXED 的 active chunk）
         │
         ▼
 preprocessor.Preprocessor                  ← 本模块：读 chunk → 预分词
         │  FilePostIndexPlan
         ▼
-es_index_storage.EsIndexingPipeline        ← 下游：批量写 ES
+storage.es.EsIndexingPipeline        ← 下游：批量写 ES
         ⋮
-es_index_storage.Bm25Retriever             ← 召回侧复用 RagFlowTokenizer 分词 query
+storage.es.Bm25Retriever             ← 召回侧复用 RagFlowTokenizer 分词 query
 ```
 
 在解析主流水线里，预分词对应 parse_task 的 `pretokenize` 阶段，紧接其后是 `es_indexing` 阶段（见 [parse_task_pipeline.md](parse_task_pipeline.md)）。

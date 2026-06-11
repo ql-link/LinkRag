@@ -173,7 +173,7 @@ CLEANING
 | --- | --- | --- |
 | `create_chunking_engine()` | `src/core/splitter/factory.py` | 按 `CHUNKING_*` 配置组装 `ChunkingEngine` |
 | `create_system_embedding_client()` / `LazyEmbeddingClient` | `src/core/splitter/factory.py` | 按 `SYSTEM_LLM_*` 配置构造或延迟构造 embedding 客户端 |
-| `compose_vector_storage_facade()` | `src/core/vector_storage/factory.py` | 装配 `VectorStorageFacade` |
+| `compose_vector_storage_facade()` | `src/core/storage/vector/factory.py` | 装配 `VectorStorageFacade` |
 | `StorageFactory.get_storage()` | `src/services/storage/factory.py` | 按配置返回对象存储实现 |
 
 ---

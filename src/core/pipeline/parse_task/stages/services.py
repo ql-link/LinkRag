@@ -18,27 +18,27 @@ from typing import Any, Protocol
 from loguru import logger
 
 from src.config import settings
-from src.core.chunk_fact_storage.constants import (
+from src.core.storage.chunks.constants import (
     CHUNK_LIFECYCLE_ACTIVE,
     CHUNK_STATUS_INDEXED,
     SPARSE_VECTOR_STATUS_INDEXED,
 )
-from src.core.chunk_fact_storage.repository import ChunkRepository
-from src.core.es_index_storage import EsIndexingPipeline, EsIndexingResult
+from src.core.storage.chunks.repository import ChunkRepository
+from src.core.storage.es import EsIndexingPipeline, EsIndexingResult
 from src.core.markdown_parser import ParseResult
 from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.core.preprocessor.models import FilePostIndexPlan
-from src.core.qdrant_vector_storage import BucketRouter
-from src.core.qdrant_vector_storage.constants import DEFAULT_BUCKET_COUNT, DEFAULT_COLLECTION_PREFIX
+from src.core.storage.qdrant import BucketRouter
+from src.core.storage.qdrant.constants import DEFAULT_BUCKET_COUNT, DEFAULT_COLLECTION_PREFIX
 from src.core.splitter import create_chunking_engine
 from src.core.splitter.factory import (
     DenseEmbeddingConfigMissingError,
     DenseEmbeddingDimensionError,
 )
 from src.core.splitter.models import Chunk
-from src.core.vector_storage import compose_vector_storage_facade
-from src.core.vector_storage.draft_factory import ChunkDraftFactory
-from src.core.vector_storage.models import ChunkIndexingResult
+from src.core.storage.vector import compose_vector_storage_facade
+from src.core.storage.vector.draft_factory import ChunkDraftFactory
+from src.core.storage.vector.models import ChunkIndexingResult
 from src.core.parse_task_service import ParseTaskService
 from src.models.chunk_record import ChunkRecordDB
 from src.services.storage.base import BaseObjectStorage
@@ -489,7 +489,7 @@ class StageServices:
         sparse 入口。sparse 模块不再自查 SQL，``bucket_id`` 由 chunks 自带字段决定
         （不再误传 ``payload.dataset_id``）。
         """
-        from src.core.sparse_vector.indexing import SparseIndexingPipeline
+        from src.core.storage.vector.sparse_indexing import SparseIndexingPipeline
 
         sparse_pipeline = self._sparse_indexing_pipeline or SparseIndexingPipeline()
 

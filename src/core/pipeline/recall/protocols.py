@@ -18,8 +18,8 @@ SOURCE_BM25 = "bm25"
 class Retriever(Protocol):
     """召回方法契约。
 
-    实现方在自己的存储模块（qdrant_vector_storage / sparse_vector /
-    es_index_storage）内自包含完成 query 预处理（embedding / 稀疏化 / 分词）、
+    实现方在自己的存储模块（storage.qdrant / storage.vector /
+    storage.es）内自包含完成 query 预处理（embedding / 稀疏化 / 分词）、
     存储查询、打分排序，最终返回一份按自己打分降序排好的候选列表。
 
     实现要求：

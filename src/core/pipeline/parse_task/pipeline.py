@@ -11,10 +11,10 @@ from typing import Any, Callable
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from src.core.chunk_fact_storage.repository import ChunkRepository
+from src.core.storage.chunks.repository import ChunkRepository
 from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.core.pipeline.parse_task.post_process.repository import ParsePipelineRepository
-from src.core.vector_storage.draft_factory import ChunkDraftFactory
+from src.core.storage.vector.draft_factory import ChunkDraftFactory
 from src.database import get_async_session_factory
 from src.models.parse_task import DocumentParsedLog
 from src.services.mq_service import MQService

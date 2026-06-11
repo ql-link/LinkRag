@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from src.core.chunk_fact_storage.constants import CHUNK_LIFECYCLE_ACTIVE
+from src.core.storage.chunks.constants import CHUNK_LIFECYCLE_ACTIVE
 from src.database import get_async_session_factory
 from src.models.chunk_record import ChunkRecordDB
 

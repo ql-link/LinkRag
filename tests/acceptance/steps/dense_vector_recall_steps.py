@@ -30,10 +30,10 @@ from pytest_bdd import given, parsers, then, when
 
 from src.config import settings
 from src.core.pipeline.recall.protocols import SOURCE_DENSE
-from src.core.qdrant_vector_storage import BucketRoute
-from src.core.qdrant_vector_storage.exceptions import QdrantStoreError
-from src.core.qdrant_vector_storage.models import DenseQueryVectorSpec
-from src.core.vector_storage import (
+from src.core.storage.qdrant import BucketRoute
+from src.core.storage.qdrant.exceptions import QdrantStoreError
+from src.core.storage.qdrant.models import DenseQueryVectorSpec
+from src.core.storage.vector import (
     VectorRetrievalBackendError,
     VectorRetrievalConfigurationError,
     VectorRetrievalEncodingError,
@@ -42,7 +42,7 @@ from src.core.vector_storage import (
     VectorSearchResult,
     VectorStorageFacade,
 )
-from src.core.vector_storage.dense_retriever import DenseRetriever
+from src.core.storage.vector.dense_retriever import DenseRetriever
 
 # ---------------------------------------------------------------------------
 # 共享 state + 桩件
@@ -1077,33 +1077,33 @@ def _then_no_qdrant_write(dense_recall_state: _DenseRecallState):
 
 @then("从 vector_storage 包可以导入 VectorStorageFacade")
 def _then_can_import_facade():
-    from src.core.vector_storage import VectorStorageFacade as F  # noqa: F401
+    from src.core.storage.vector import VectorStorageFacade as F  # noqa: F401
 
 
 @then("从 vector_storage 包可以导入 VectorSearchHit, VectorSearchResult")
 def _then_can_import_dataclasses():
-    from src.core.vector_storage import VectorSearchHit as H  # noqa: F401
-    from src.core.vector_storage import VectorSearchResult as R
+    from src.core.storage.vector import VectorSearchHit as H  # noqa: F401
+    from src.core.storage.vector import VectorSearchResult as R
 
 
 @then("从 vector_storage 包可以导入召回侧异常族")
 def _then_can_import_exceptions():
-    from src.core.vector_storage import VectorRetrievalBackendError as B  # noqa: F401
-    from src.core.vector_storage import VectorRetrievalConfigurationError as C
-    from src.core.vector_storage import VectorRetrievalEncodingError as E
-    from src.core.vector_storage import VectorRetrievalError as Base
+    from src.core.storage.vector import VectorRetrievalBackendError as B  # noqa: F401
+    from src.core.storage.vector import VectorRetrievalConfigurationError as C
+    from src.core.storage.vector import VectorRetrievalEncodingError as E
+    from src.core.storage.vector import VectorRetrievalError as Base
 
 
 @then("DenseVectorSearchRequest 不在 vector_storage 包的 __all__ 中")
 def _then_request_not_in_all():
-    import src.core.vector_storage as vs
+    import src.core.storage.vector as vs
 
     assert "DenseVectorSearchRequest" not in vs.__all__
 
 
 @then("DenseQueryVectorSpec 不在 vector_storage 包的 __all__ 中")
 def _then_spec_not_in_all():
-    import src.core.vector_storage as vs
+    import src.core.storage.vector as vs
 
     assert "DenseQueryVectorSpec" not in vs.__all__
 

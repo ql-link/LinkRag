@@ -125,14 +125,13 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── service.py         # Preprocessor：读 chunk 构建预分词计划
 │   │   │   ├── ragflow_tokenizer.py # RagFlowTokenizer 适配
 │   │   │   └── models.py          # FileIndexMeta / ChunkWithTokens / FilePostIndexPlan
-│   │   ├── sparse_vector/        # BGE-M3 稀疏向量编码与索引
-│   │   │   ├── encoder.py / http_encoder.py / remote_encoder.py # 本地 / 远程编码器
-│   │   │   ├── factory.py         # 按 provider 装配 SparseVectorService
-│   │   │   ├── pipeline.py        # SparseVectorService 服务接口
-│   │   │   ├── indexing.py        # SparseIndexingPipeline 文件级索引阶段
-│   │   │   ├── sparse_retriever.py # 召回 Pipeline 适配器
-│   │   │   ├── deploy_bge_m3.py   # 本地模型部署/冒烟脚本
-│   │   │   └── constants.py / models.py / exceptions.py
+│   │   ├── encoding/             # 编码命名空间（文本 → 向量，无存储职责）
+│   │   │   └── sparse/           # BGE-M3 稀疏向量编码
+│   │   │       ├── encoder.py / http_encoder.py / remote_encoder.py # 本地 / HTTP / 远程编码器
+│   │   │       ├── factory.py     # 按 provider 装配 SparseVectorService
+│   │   │       ├── pipeline.py    # SparseVectorService 服务接口
+│   │   │       ├── deploy_bge_m3.py # 本地模型部署/冒烟脚本
+│   │   │       └── constants.py / models.py / exceptions.py
 │   │   ├── prompts/              # LLM 提示词模板
 │   │   │   ├── markdown_enhancement.py
 │   │   │   └── rag_generation.py   # 召回生成阶段提示词
@@ -204,41 +203,44 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── stage_two_noop.py
 │   │   │   ├── validators.py
 │   │   │   └── semantic_chunker.py
-│   │   ├── chunk_fact_storage/   # Chunk SQL 事实存储
-│   │   │   ├── constants.py
-│   │   │   ├── exceptions.py
-│   │   │   ├── models.py
-│   │   │   └── repository.py
-│   │   ├── es_index_storage/      # ES 入库 + BM25 检索
-│   │   │   ├── client.py          # 进程级 AsyncElasticsearch 单例
-│   │   │   ├── mapping.py         # ES index settings + mappings
-│   │   │   ├── document_factory.py / batcher.py # chunk → bulk action / 分批
-│   │   │   ├── pipeline.py        # EsIndexingPipeline 入库阶段
-│   │   │   ├── retrieval.py       # EsBm25Retriever BM25 检索
-│   │   │   ├── bm25_retriever.py  # 召回 Pipeline 适配器
-│   │   │   ├── retrieval_models.py # Bm25RecallRequest / Bm25ChunkHit
-│   │   │   ├── smoke.py           # 集成测试冒烟工具
-│   │   │   └── models.py / exceptions.py
-│   │   ├── qdrant_vector_storage/ # Qdrant 向量索引存储
-│   │   │   ├── bucket_router.py
-│   │   │   ├── constants.py
-│   │   │   ├── exceptions.py
-│   │   │   ├── models.py
-│   │   │   ├── point_factory.py
-│   │   │   └── qdrant_store.py
-│   │   └── vector_storage/       # 向量存储编排层
-│   │       ├── compensation_pipeline.py
-│   │       ├── constants.py
-│   │       ├── dense_retriever.py  # 召回 Pipeline 的 dense 路适配器（DenseRetriever）
-│   │       ├── draft_factory.py
-│   │       ├── exceptions.py
-│   │       ├── facade.py
-│   │       ├── factory.py
-│   │       ├── management_pipeline.py
-│   │       ├── models.py
-│   │       ├── pipeline.py
-│   │       ├── repair_policy.py
-│   │       └── _transaction.py
+│   │   └── storage/              # 存储命名空间（索引与持久化）
+│   │       ├── chunks/           # Chunk SQL 事实存储
+│   │       │   ├── constants.py
+│   │       │   ├── exceptions.py
+│   │       │   ├── models.py
+│   │       │   └── repository.py
+│   │       ├── es/               # ES 入库 + BM25 检索
+│   │       │   ├── client.py     # 进程级 AsyncElasticsearch 单例
+│   │       │   ├── mapping.py    # ES index settings + mappings
+│   │       │   ├── document_factory.py / batcher.py # chunk → bulk action / 分批
+│   │       │   ├── pipeline.py   # EsIndexingPipeline 入库阶段
+│   │       │   ├── retrieval.py  # EsBm25Retriever BM25 检索
+│   │       │   ├── bm25_retriever.py # 召回 Pipeline 适配器
+│   │       │   ├── retrieval_models.py # Bm25RecallRequest / Bm25ChunkHit
+│   │       │   ├── smoke.py      # 集成测试冒烟工具
+│   │       │   └── models.py / exceptions.py
+│   │       ├── qdrant/           # Qdrant 向量索引底座
+│   │       │   ├── bucket_router.py
+│   │       │   ├── constants.py
+│   │       │   ├── exceptions.py
+│   │       │   ├── models.py
+│   │       │   ├── point_factory.py
+│   │       │   └── qdrant_store.py
+│   │       └── vector/           # 向量存储编排层（dense + sparse 索引与召回）
+│   │           ├── compensation_pipeline.py
+│   │           ├── constants.py
+│   │           ├── dense_retriever.py  # 召回 Pipeline 的 dense 路适配器（DenseRetriever）
+│   │           ├── sparse_retriever.py # 召回 Pipeline 的 sparse 路适配器（SparseRetriever）
+│   │           ├── sparse_indexing.py  # SparseIndexingPipeline 文件级稀疏索引阶段
+│   │           ├── draft_factory.py
+│   │           ├── exceptions.py
+│   │           ├── facade.py
+│   │           ├── factory.py
+│   │           ├── management_pipeline.py
+│   │           ├── models.py
+│   │           ├── pipeline.py
+│   │           ├── repair_policy.py
+│   │           └── _transaction.py
 │   ├── models/                   # ORM 模型
 │   │   ├── chunk_record.py
 │   │   ├── db_models.py
@@ -267,21 +269,18 @@ toLink-Rag/                         # 仓库根目录
     │   │   ├── llm/              # LLM 模块单元测试
     │   │   ├── mq/               # MQ 模块单元测试
     │   │   ├── parser/           # 解析器模块单元测试
-    │   │   ├── chunk_fact_storage/ # Chunk 事实存储单元测试
-    │   │   ├── es_index_storage/ # ES 入库阶段单元测试
+    │   │   ├── encoding/         # 编码模块单元测试（sparse 编码器）
     │   │   ├── pipeline/         # 解析流水线单元测试
-    │   │   ├── qdrant_vector_storage/ # Qdrant 存储单元测试
     │   │   ├── splitter/         # 切分模块单元测试
-    │   │   └── vector_storage/   # 向量存储编排单元测试
+    │   │   └── storage/          # 存储命名空间单元测试（chunks/es/qdrant/vector）
     │   └── services/             # 服务层单元测试
     └── integration/              # 集成测试
         ├── api/                  # API 层集成测试
         ├── core/                 # 核心模块集成测试
         │   ├── llm/              # LLM 模块集成测试
         │   ├── markdown_parser/  # Markdown 解析集成测试
-        │   ├── qdrant_vector_storage/ # Qdrant 存储集成测试
         │   ├── splitter/         # 切分模块集成测试
-        │   └── vector_storage/   # 向量存储编排集成测试
+        │   └── storage/          # 存储命名空间集成测试（qdrant/vector）
         ├── services/             # 服务层集成测试
         └── test_connectivity.py
 ```
