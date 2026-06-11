@@ -188,6 +188,7 @@ async def test_happy_path_extracts_bucket_id_and_uses_multivalue_cas(monkeypatch
         chunk_repository=repo,
         sparse_vector_service=service,
         qdrant_store=store,
+        batch_size=32,
     )
 
     rows = [
@@ -205,3 +206,29 @@ async def test_happy_path_extracts_bucket_id_and_uses_multivalue_cas(monkeypatch
     assert tuple(allowed) == (SPARSE_VECTOR_STATUS_PENDING, SPARSE_VECTOR_STATUS_FAILED)
     assert repo.sparse_indexed_calls == [["c1"], ["c2"]]
     assert service.texts == ["alpha", "beta"]
+
+
+def test_http_provider_defaults_outer_batch_size_to_one(monkeypatch):
+    monkeypatch.setattr(indexing_mod.settings, "SPARSE_VECTOR_PROVIDER", "bge_m3_http")
+    monkeypatch.setattr(indexing_mod.settings, "SPARSE_VECTOR_HTTP_BATCH_SIZE", None)
+
+    pipeline = SparseIndexingPipeline(
+        chunk_repository=_RecordingRepo(),
+        sparse_vector_service=_RecordingService(),
+        qdrant_store=_RecordingStore(),
+    )
+
+    assert pipeline.batch_size == 1
+
+
+def test_http_provider_uses_http_batch_size_when_configured(monkeypatch):
+    monkeypatch.setattr(indexing_mod.settings, "SPARSE_VECTOR_PROVIDER", "bge_m3_http")
+    monkeypatch.setattr(indexing_mod.settings, "SPARSE_VECTOR_HTTP_BATCH_SIZE", 2)
+
+    pipeline = SparseIndexingPipeline(
+        chunk_repository=_RecordingRepo(),
+        sparse_vector_service=_RecordingService(),
+        qdrant_store=_RecordingStore(),
+    )
+
+    assert pipeline.batch_size == 2

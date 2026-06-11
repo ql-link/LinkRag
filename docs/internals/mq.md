@@ -66,6 +66,8 @@ FastAPI lifespan（src/main.py 组合根装配）
 | `CacheSyncMessage` | `tolink.rag.cache_sync` | Java -> Python | 失效或刷新用户 LLM 配置缓存 |
 | `UsageReportMessage` | `tolink.rag.usage_report` | Python -> Java/统计侧 | 上报 LLM 调用用量 |
 
+`ParseTaskMessage` 中的 `md_bucket` 为历史兼容字段；Python 侧非 `md`/`markdown` 解析产物实际写入 `MINIO_BUCKET_NAME` 配置桶，`md_object_key` 仍来自消息。`md`/`markdown` 透传文件的产物坐标沿用源文件上传位置。
+
 > 当前 `consumers/` 下只有 `parse_task_consumer.py` 一个消费入口。`CacheSyncMessage` / `UsageReportMessage` 仅定义了消息类与 topic，本服务侧暂未注册对应消费者（生产/订阅由各自业务链路按需接入），不要据此假定本服务会自动消费这两类消息。
 >
 > 收发 topic 名由各消息类的 `MQ_NAME` 常量固定，`PARSE_TASK_TOPIC` 等环境变量仅用于 §4.1 的 Kafka topic 自动创建，不改变实际收发 topic。

@@ -10,6 +10,7 @@ import time
 
 import pytest
 
+from src.config import settings
 from src.core.mq.message import AbstractMessage, MessagePayload
 from src.core.mq.exceptions import MQSerializationError
 from src.core.mq.messages import (
@@ -69,8 +70,28 @@ class TestParseTaskMessage:
         assert payload.file_type == "pdf"
         assert payload.source_bucket == "source-bucket"
         assert payload.source_object_key == "uploads/test.pdf"
+        assert payload.md_bucket == "markdown-bucket"
+        assert payload.markdown_bucket == settings.MINIO_BUCKET_NAME
         assert payload.md_object_key == "parsed/t-001.md"
         assert payload.pdf_parser_backend == "mineru"
+
+    def test_markdown_passthrough_uses_source_location(self):
+        payload = ParseTaskMessage.build(
+            task_id="t-md",
+            original_file_id=1,
+            document_parse_task_id=10,
+            user_id=20,
+            dataset_id=30,
+            file_type="md",
+            source_bucket="source-bucket",
+            source_object_key="uploads/test.md",
+            source_filename="test.md",
+            md_bucket="markdown-bucket",
+            md_object_key="parsed/t-md.md",
+        ).get_payload()
+
+        assert payload.markdown_bucket == "source-bucket"
+        assert payload.markdown_object_key == "uploads/test.md"
 
     def test_serialize_deserialize_roundtrip(self):
         """序列化 → 反序列化闭环"""

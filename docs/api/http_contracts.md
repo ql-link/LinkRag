@@ -58,7 +58,7 @@
 | `source_bucket` | string | 必填 | 原始文件 bucket |
 | `source_object_key` | string | 必填 | 原始文件对象 key |
 | `source_filename` | string | 必填 | 原始文件名 |
-| `md_bucket` | string | 必填 | Markdown 输出 bucket |
+| `md_bucket` | string | 必填 | 历史兼容字段；Python 侧 Markdown 输出 bucket 使用 `MINIO_BUCKET_NAME` |
 | `md_object_key` | string | 必填 | Markdown 输出对象 key |
 | `trigger_mode` | string | `upload_auto` | 触发方式 |
 | `pdf_parser_backend` | string | `mineru` | PDF 解析器 |

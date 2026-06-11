@@ -335,7 +335,7 @@ class ParseTaskPipeline:
             # 3) 抢占成功后再建新 log + 继承式新 pipeline；三步同事务提交。
             retry_from_cleaning = old_pipeline.recover_from_stage == POST_PROCESS_STAGE_CLEANING
             # 非 cleaning 恢复时预写 markdown 坐标：经 payload 解析（md→source 上传位置，
-            # 其余→md_bucket），使 md 重试从 CHUNKING 恢复时按上传位置读回，不误用 md_bucket。
+            # 其余→MINIO_BUCKET_NAME），使重试从 CHUNKING 恢复时按真实产物位置读回。
             new_log = await self._log_repository.create_for_retry(
                 payload,
                 db,

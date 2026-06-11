@@ -111,6 +111,16 @@ async def test_should_wrap_http_error():
 
 
 @pytest.mark.asyncio
+async def test_should_include_exception_type_when_http_error_has_empty_message():
+    async def handler(request):
+        raise httpx.ReadTimeout("")
+
+    encoder = _make_encoder(handler)
+    with pytest.raises(SparseVectorEncodingError, match="ReadTimeout"):
+        await encoder.aencode(["a"])
+
+
+@pytest.mark.asyncio
 async def test_should_raise_output_error_on_empty_sparse_after_filter():
     # 权重全为 0，normalize 过滤后为空 → SparseVectorOutputError
     def handler(request):

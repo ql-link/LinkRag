@@ -150,4 +150,7 @@ class BGEM3HttpSparseVectorEncoder:
             response.raise_for_status()
             return response.json()
         except httpx.HTTPError as exc:
-            raise SparseVectorEncodingError(f"bge-m3-server request failed: {exc}") from exc
+            detail = str(exc) or type(exc).__name__
+            raise SparseVectorEncodingError(
+                f"bge-m3-server request failed: {type(exc).__name__}: {detail}"
+            ) from exc

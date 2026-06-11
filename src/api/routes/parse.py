@@ -119,7 +119,7 @@ async def submit_async_task(request: TaskSubmitRequest):
             trigger_mode=request.trigger_mode,
             pdf_parser_backend=request.pdf_parser_backend,
             docling_force_ocr=request.docling_force_ocr,
-            image_bucket=request.image_bucket or request.md_bucket,
+            image_bucket=request.image_bucket or settings.MINIO_BUCKET_NAME,
             image_prefix=request.image_prefix or request.md_object_key,
         )
         await mq_service.send(msg)

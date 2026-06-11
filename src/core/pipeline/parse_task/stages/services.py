@@ -99,7 +99,7 @@ class StageServices:
             parser_kwargs = {
                 "backend": pdf_backend,
                 "docling_force_ocr": bool(payload.docling_force_ocr),
-                "image_bucket": payload.image_bucket or payload.md_bucket,
+                "image_bucket": payload.image_bucket or payload.markdown_bucket,
                 "image_prefix": payload.image_prefix or payload.md_object_key,
                 "storage": self._storage,
             }
@@ -128,7 +128,7 @@ class StageServices:
         path = temp_workspace.create_temp_file(payload.task_id, Path(settings.PARSE_TEMP_DIR))
         try:
             # markdown 真实位置经 payload 解析：md/markdown 取上传位置（source_*），
-            # 其余格式取 cleaning 写出的 md_*；不可硬编码 md_bucket，否则 md 重试读不到。
+            # 其余格式取 cleaning 写出的配置桶 + md_object_key；不可硬编码历史 md_bucket 字段。
             await asyncio.to_thread(
                 self._storage.download_to_path,
                 payload.markdown_bucket,

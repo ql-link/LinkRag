@@ -38,6 +38,7 @@ from src.core.storage.qdrant import QdrantIndexStore
 from src.core.storage.qdrant.point_factory import sparse_indexed_point_from_record
 from src.models.chunk_record import ChunkRecordDB
 
+from src.core.encoding.sparse.constants import SPARSE_VECTOR_PROVIDER_HTTP
 from src.core.encoding.sparse.exceptions import SparseVectorError
 from src.core.encoding.sparse.factory import create_sparse_vector_service_from_settings
 from src.core.encoding.sparse.pipeline import SparseVectorService
@@ -83,10 +84,11 @@ class SparseIndexingPipeline:
         # 避免在 worker 启动期就触发本地 BGE-M3 模型加载。
         self._sparse_vector_service = sparse_vector_service
         self._qdrant_store = qdrant_store
-        # batch_size 优先级：显式注入 > settings > 默认 32。
-        # BGE-M3 内部本身还有 batch 上限（encoder.batch_size 默认 12），这里的
-        # batch 是"切多少个 chunk 一组喂 encoder"的外层批；与 encoder 批独立。
-        self.batch_size = batch_size or int(getattr(settings, "SPARSE_VECTOR_BATCH_SIZE", 32))
+        # batch_size 优先级：显式注入 > provider 专用 settings > 默认。
+        # 这里的 batch 是"切多少个 chunk 一组喂 encoder"的外层批；远程早期
+        # bge-m3-server 对长文本批量请求容易超过 HTTP 超时，因此 provider=bge_m3_http
+        # 时使用独立的 SPARSE_VECTOR_HTTP_BATCH_SIZE，未配置则保守按 1 条发送。
+        self.batch_size = batch_size or _resolve_sparse_index_batch_size()
 
     async def run(
         self,
@@ -270,3 +272,26 @@ class SparseIndexingPipeline:
         if self._qdrant_store is None:
             self._qdrant_store = QdrantIndexStore()
         return self._qdrant_store
+
+
+def _resolve_sparse_index_batch_size() -> int:
+    """Resolve outer sparse indexing batch size from runtime settings."""
+    provider = getattr(settings, "SPARSE_VECTOR_PROVIDER", "")
+    if provider == SPARSE_VECTOR_PROVIDER_HTTP:
+        raw_value = getattr(settings, "SPARSE_VECTOR_HTTP_BATCH_SIZE", None)
+        return _positive_int(raw_value, default=1, name="SPARSE_VECTOR_HTTP_BATCH_SIZE")
+    return _positive_int(
+        getattr(settings, "SPARSE_VECTOR_BATCH_SIZE", None),
+        default=32,
+        name="SPARSE_VECTOR_BATCH_SIZE",
+    )
+
+
+def _positive_int(value, *, default: int, name: str) -> int:
+    """Return a positive integer setting, falling back to default for empty values."""
+    if value is None or value == "":
+        return default
+    resolved = int(value)
+    if resolved <= 0:
+        raise ValueError(f"{name} must be greater than 0.")
+    return resolved

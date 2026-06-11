@@ -8,6 +8,7 @@ MQ 消息中台 API 路由
 from fastapi import APIRouter, HTTPException
 from loguru import logger
 
+from src.config import settings
 from src.services.mq_service import MQService
 from src.core.mq.factory import MQFactory
 from src.core.mq.messages import (
@@ -60,7 +61,7 @@ async def send_parse_task(request: SendParseTaskRequest):
             trigger_mode=request.trigger_mode,
             pdf_parser_backend=request.pdf_parser_backend,
             docling_force_ocr=request.docling_force_ocr,
-            image_bucket=request.image_bucket or request.md_bucket,
+            image_bucket=request.image_bucket or settings.MINIO_BUCKET_NAME,
             image_prefix=request.image_prefix or request.md_object_key,
         )
         await mq_service.send(msg)

@@ -120,9 +120,9 @@ class CleaningStage(Stage):
             temp_workspace.safe_unlink(source_path)
             source_path = None
 
-            # md/markdown 在上传阶段已存入 minio（source 位置），cleaning 不重复写 md_bucket；
-            # 其余格式需把解析转换得到的 markdown 写入 md_bucket。markdown 产物坐标由
-            # payload.markdown_bucket/markdown_object_key 统一解析（md→source，其余→md）。
+            # md/markdown 在上传阶段已存入 minio（source 位置），cleaning 不重复写输出桶；
+            # 其余格式需把解析转换得到的 markdown 写入 Python 配置的 RAG 文档桶。
+            # markdown 产物坐标由 payload.markdown_bucket/markdown_object_key 统一解析。
             if not payload.is_markdown_passthrough:
                 try:
                     await asyncio.to_thread(

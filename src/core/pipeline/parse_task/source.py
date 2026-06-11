@@ -51,8 +51,8 @@ class ParseSourceIO:
             Exception: 对象存储上传失败时由底层实现抛出。
         """
         self._storage.upload_bytes(
-            bucket=payload.md_bucket,
-            object_key=payload.md_object_key,
+            bucket=payload.markdown_bucket,
+            object_key=payload.markdown_object_key,
             content=markdown.encode("utf-8"),
             content_type="text/markdown; charset=utf-8",
         )

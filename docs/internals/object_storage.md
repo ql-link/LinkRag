@@ -69,8 +69,8 @@ build_object_url(bucket: str, object_key: str) -> str
 - `LOCAL_DOCS_PATH`
 
 MinIO endpoint 可带 `http://` 或 `https://`；不带 scheme 时由 `MINIO_USE_SSL` 决定。
-`MINIO_BUCKET_NAME` 是 RAG 文档默认桶；`MINIO_BLOG_BUCKET` 对齐 Java 博客模块的公开读桶
-（默认 `tolink-blog`），Python 解析链路仍以 MQ 消息中的 bucket 字段为实际读写坐标。
+`MINIO_BUCKET_NAME` 是 RAG 文档默认桶，也是 Python 侧非 `md`/`markdown` 解析产物的实际写入桶；
+`MINIO_BLOG_BUCKET` 对齐 Java 博客模块的公开读桶（默认 `tolink-blog`）。
 
 ## 5. 在解析链路中的使用
 
@@ -96,7 +96,7 @@ Markdown 输出：
 
 ```text
 ParseTaskPipeline._upload_markdown()
-  -> storage.upload_bytes(md_bucket, md_object_key, markdown, "text/markdown")
+  -> storage.upload_bytes(MINIO_BUCKET_NAME, md_object_key, markdown, "text/markdown")
 ```
 
 PDF 图片资产：
