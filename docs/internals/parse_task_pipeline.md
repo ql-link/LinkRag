@@ -267,17 +267,16 @@ pdf_parser_backend == "mineru"
 ## 7. 修改原则
 
 - 不要在 MQ consumer 中直接拼接业务流程，业务编排应留在 `ParseTaskPipeline`。
-- 解析成功通知必须晚于 Markdown、分片、向量化、预分词和 ES 入库全部完成。
+- 解析成功通知必须晚于 Markdown、分片、dense 向量化、预分词、ES 入库和 sparse 向量化全部完成。
 - 新增阶段时应同步更新 `document_parse_pipeline` 表结构、`docs/api/schemas/mysql.md` 和 `docs/api/error_codes.md`。
 - 重投场景必须保持幂等，不应重复解析同一 `task_id`。
 
 ## 8. 测试建议
 
 ```bash
-.venv/bin/pytest tests/unit/core/pipeline/test_parse_task_pipeline.py -q
-.venv/bin/pytest tests/unit/core/pipeline/test_parse_task_pipeline_es.py -q
-.venv/bin/pytest tests/unit/core/pipeline/test_post_process_repository.py -q
-.venv/bin/pytest tests/integration/core/mq/test_kafka_parse_task_pipeline_integration.py -q
+.venv/bin/pytest tests/unit/core/pipeline/parse_task tests/unit/core/pipeline/stages -q
+.venv/bin/pytest tests/unit/core/storage/vector tests/unit/core/storage/chunks -q
+.venv/bin/pytest tests/acceptance/test_mq_dlq_poison_pill.py -q
 ```
 
 建议覆盖：

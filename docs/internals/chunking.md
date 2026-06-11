@@ -369,7 +369,7 @@ chunks = await services.run_chunking(
 
 ```bash
 .venv/bin/pytest tests/unit/core/splitter -q
-.venv/bin/pytest tests/unit/core/pipeline/test_parse_task_pipeline.py -q
+.venv/bin/pytest tests/unit/core/pipeline/stages -q
 ```
 
 建议覆盖：

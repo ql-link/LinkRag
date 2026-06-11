@@ -108,4 +108,4 @@ alembic upgrade head
 
 - 配置项详解：[configuration.md](configure.md)
 - MQ 接入对接：[mq_integration.md](../api/mq_contracts.md)
-- 项目架构：[../architecture](../architecture)
+- 项目架构：[docs/internals/project_structure.md](../internals/project_structure.md)

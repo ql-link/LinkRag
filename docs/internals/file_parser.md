@@ -343,6 +343,5 @@ HTML 解析约束：
 
 ```bash
 .venv/bin/pytest tests/unit/core/parser -q
-.venv/bin/pytest tests/unit/services/test_parse_task_service.py -q
 .venv/bin/pytest tests/unit/core/pipeline tests/unit/core/mq -q
 ```

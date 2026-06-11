@@ -201,8 +201,7 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── stage_models.py
 │   │   │   ├── stage_routers.py
 │   │   │   ├── stage_two_noop.py
-│   │   │   ├── validators.py
-│   │   │   └── semantic_chunker.py
+│   │   │   └── validators.py
 │   │   └── storage/              # 存储命名空间（索引与持久化）
 │   │       ├── chunks/           # Chunk SQL 事实存储
 │   │       │   ├── constants.py
