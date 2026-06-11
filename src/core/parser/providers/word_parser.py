@@ -7,7 +7,7 @@ import mammoth
 import mammoth.images
 from bs4 import BeautifulSoup
 
-from src.core.exceptions import ParseBaseException
+from src.core.parser.exceptions import ParseBaseException
 
 from ..base import BaseParser
 from ..html.image_rewriter import HtmlImageRewriter

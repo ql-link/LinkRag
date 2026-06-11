@@ -7,7 +7,7 @@ import pathlib
 
 import pytest
 
-from src.core.exceptions import ParseBaseException
+from src.core.parser.exceptions import ParseBaseException
 from src.core.parser.providers.html_parser import HtmlParser
 
 BLOG_HTML = pathlib.Path(__file__).resolve().parents[4] / "blog" / "html"

@@ -166,6 +166,7 @@ toLink-Rag/                         # 仓库根目录
 │   │   │           └── topic_admin.py
 │   │   ├── parser/               # 文档解析器抽象与实现
 │   │   │   ├── base.py
+│   │   │   ├── exceptions.py     # 解析域异常（ParseBaseException 等）
 │   │   │   ├── factory.py
 │   │   │   ├── html/             # HTML DOM 解析、表格处理和图片引用重写
 │   │   │   │   ├── image_rewriter.py
