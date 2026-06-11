@@ -13,7 +13,7 @@ src/core/mq/
 ├── exceptions.py              # MQ 异常类型（含 RetriableError 可重试基类）
 ├── retry.py                   # 厂商中立失败兜底编排：有限退避重试 + 死信投递
 ├── consumers/
-│   └── parse_task_consumer.py # 解析任务消费者启动入口
+│   └── parse_task_consumer.py # 解析任务消费 handler（订阅装配在组合根 src/main.py）
 ├── messages/
 │   ├── parse_task.py          # Java -> Python 解析任务消息
 │   ├── parse_result.py        # Python -> Java 解析终态通知
@@ -38,11 +38,10 @@ BusinessCode
 消费链路：
 
 ```text
-FastAPI lifespan
-  -> start_parse_consumer()
-    -> MQService.subscribe()
-      -> ParseTaskMessage.parse_msg()
-      -> ParseTaskPipeline.execute()
+FastAPI lifespan（src/main.py 组合根装配）
+  -> MQService.subscribe(topic, group, handle_parse_task)
+    -> ParseTaskMessage.parse_msg()
+    -> ParseTaskPipeline.execute()
 ```
 
 ## 2. 核心角色
