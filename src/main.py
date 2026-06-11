@@ -24,8 +24,8 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from src.api.internal_auth import RecallApiError
 from src.api.routes import internal, llm, mq, parse, rag, recall
+from src.application.recall_errors import RecallApiError
 from src.cache.redis_client import redis_client
 from src.config import settings
 from src.core.mq.consumers.parse_task_consumer import (

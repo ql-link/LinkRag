@@ -12,7 +12,7 @@ import asyncio
 
 from loguru import logger
 
-from src.api.internal_auth import (
+from src.application.recall_errors import (
     CODE_ALL_SOURCES_FAILED,
     CODE_EMBEDDING_CONFIG_MISSING,
     CODE_INTERNAL_ERROR,
@@ -20,7 +20,7 @@ from src.api.internal_auth import (
     CODE_TIMEOUT,
     RecallApiError,
 )
-from src.api.recall_serialization import serialize_hits
+from src.application.recall_serialization import serialize_hits
 from src.config import settings
 from src.core.pipeline.recall import (
     RecallError,

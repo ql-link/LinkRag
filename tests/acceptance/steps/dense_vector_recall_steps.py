@@ -832,7 +832,7 @@ def _when_construct_retriever_with_negative(
 
 @when(parsers.parse("调用 provider 内部 lookup 入参 {source}"))
 def _when_provider_lookup(dense_recall_state: _DenseRecallState, source: str):
-    from src.api.recall_pipeline_provider import _BUILDERS
+    from src.application.recall_pipeline_provider import _BUILDERS
 
     dense_recall_state.provider_lookup_result = _BUILDERS.get(source)
 
@@ -1280,14 +1280,14 @@ def _then_facade_not_called(dense_recall_state: _DenseRecallState):
 
 @then(parsers.parse('provider 的 _BUILDERS 含键 "{key}"'))
 def _then_builders_has_key(key: str):
-    from src.api.recall_pipeline_provider import _BUILDERS
+    from src.application.recall_pipeline_provider import _BUILDERS
 
     assert key in _BUILDERS
 
 
 @then(parsers.parse('provider 的 _BUILDERS 键集合等于 "{keys}"'))
 def _then_builders_keys_eq(keys: str):
-    from src.api.recall_pipeline_provider import _BUILDERS
+    from src.application.recall_pipeline_provider import _BUILDERS
 
     expected = {k.strip() for k in keys.split(",") if k.strip()}
     assert set(_BUILDERS.keys()) == expected

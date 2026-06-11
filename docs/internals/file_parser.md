@@ -71,7 +71,7 @@ HtmlParser
 | --- | --- | --- |
 | `BaseParser` | `base.py` | 通用文件解析器基类，提供空文件校验和 metadata |
 | `ParserFactory` | `factory.py` | 根据 `file_type` 返回具体解析器 |
-| `ParseTaskService` | `src/services/parse_task_service.py` | 业务推荐入口，解析后执行 Markdown 清洗和增强 |
+| `ParseTaskService` | `src/core/parse_task_service.py` | 业务推荐入口，解析后执行 Markdown 清洗和增强 |
 | `HtmlParser` | `providers/html_parser.py` | HTML 格式入口，解码文件流并适配 HTML 专用服务 |
 | `HtmlParseService` | `html/service.py` | 构建并清理 DOM（含删全部 HTML 注释）、trafilatura 定位正文/去样板、文本重合度映射回 soup 容器（低置信分级回退）、空内容判定、编排 Markdown 渲染 |
 | `HtmlMarkdownRenderer` | `html/renderer.py` | 按 DOM 顺序渲染标题、段落、列表、代码块、图片和表格 |
@@ -141,7 +141,7 @@ MINERU_MODEL_VERSION=vlm
 业务层优先使用 `ParseTaskService.aprocess`：
 
 ```python
-from src.services.parse_task_service import ParseTaskService
+from src.core.parse_task_service import ParseTaskService
 
 result = await ParseTaskService.aprocess(
     file_stream=file_bytes,

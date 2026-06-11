@@ -10,7 +10,7 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| [`src/api/recall_stream_runtime.py`](../../src/api/recall_stream_runtime.py) | SSE 流式执行 runtime：模型前置校验、召回执行、生成编排、事件序列化与异常→终态事件映射 |
+| [`src/application/recall_stream_runtime.py`](../../src/application/recall_stream_runtime.py) | SSE 流式执行 runtime：模型前置校验、召回执行、生成编排、事件序列化与异常→终态事件映射 |
 | [`src/core/pipeline/recall/generation.py`](../../src/core/pipeline/recall/generation.py) | `fetch_chunk_contents`（按 chunk_id 回填正文）、`assemble_context`（按 token 预算拼装上下文） |
 | [`src/core/pipeline/rerank/reranker.py`](../../src/core/pipeline/rerank/reranker.py) | `PostRecallReranker`：对 RRF 候选回表取正文、调用用户 RERANK 模型精排；不可用即降级 RRF 顺序 |
 | [`src/core/prompts/rag_generation.py`](../../src/core/prompts/rag_generation.py) | `RAG_GENERATION_SYSTEM_PROMPT` + `build_rag_user_prompt`（编号片段注入模板） |
@@ -79,7 +79,7 @@
 
 ## 4. SSE 终态事件与错误码
 
-`recall_event_stream` 把每类结果/异常映射为一帧终态 SSE 事件后关闭流（错误码常量定义在 [`src/api/internal_auth.py`](../../src/api/internal_auth.py)，语义见 [error_codes.md §5](../api/error_codes.md)）：
+`recall_event_stream` 把每类结果/异常映射为一帧终态 SSE 事件后关闭流（错误码常量定义在 [`src/application/recall_errors.py`](../../src/application/recall_errors.py)，语义见 [error_codes.md §5](../api/error_codes.md)）：
 
 | 情况 | 事件 | code |
 | --- | --- | --- |

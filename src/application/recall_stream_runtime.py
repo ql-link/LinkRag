@@ -19,7 +19,7 @@ from collections.abc import AsyncGenerator
 
 from loguru import logger
 
-from src.api.internal_auth import (
+from src.application.recall_errors import (
     CODE_ALL_SOURCES_FAILED,
     CODE_EMBEDDING_CONFIG_MISSING,
     CODE_GENERATION_FAILED,
@@ -28,7 +28,7 @@ from src.api.internal_auth import (
     CODE_MODEL_CONFIG_MISSING,
     CODE_TIMEOUT,
 )
-from src.api.recall_serialization import serialize_reranked_hits
+from src.application.recall_serialization import serialize_reranked_hits
 from src.config import settings
 from src.core.llm.exceptions import UserModelConfigMissingError
 from src.core.llm.user_model_resolver import aresolve_user_model

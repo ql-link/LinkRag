@@ -26,12 +26,6 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from src.api.internal_auth import (
-    CODE_INVALID_REQUEST,
-    CODE_RATE_LIMITED,
-    RecallApiError,
-)
-from src.api.recall_pipeline_provider import get_recall_pipeline, get_reranker
 from src.api.recall_session_auth import (
     SessionAuthContext,
     acquire_stream_slot,
@@ -39,7 +33,13 @@ from src.api.recall_session_auth import (
     resolve_dataset_scope,
     verify_session_token,
 )
-from src.api.recall_stream_runtime import recall_event_stream
+from src.application.recall_errors import (
+    CODE_INVALID_REQUEST,
+    CODE_RATE_LIMITED,
+    RecallApiError,
+)
+from src.application.recall_pipeline_provider import get_recall_pipeline, get_reranker
+from src.application.recall_stream_runtime import recall_event_stream
 from src.config import settings
 from src.core.pipeline.recall import RecallPipeline, RecallRequest
 from src.core.pipeline.rerank import PostRecallReranker

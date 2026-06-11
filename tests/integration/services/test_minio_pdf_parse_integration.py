@@ -11,7 +11,7 @@ import pytest
 
 from src.config import settings
 from src.core.pipeline.parse_task import temp_workspace
-from src.services.parse_task_service import ParseTaskService
+from src.core.parse_task_service import ParseTaskService
 from src.services.storage.factory import StorageFactory
 
 SOURCE_BUCKET = "rag-raw"

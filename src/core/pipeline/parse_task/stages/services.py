@@ -39,8 +39,8 @@ from src.core.splitter.models import Chunk
 from src.core.vector_storage import compose_vector_storage_facade
 from src.core.vector_storage.draft_factory import ChunkDraftFactory
 from src.core.vector_storage.models import ChunkIndexingResult
+from src.core.parse_task_service import ParseTaskService
 from src.models.chunk_record import ChunkRecordDB
-from src.services.parse_task_service import ParseTaskService
 from src.services.storage.base import BaseObjectStorage
 from sqlalchemy.ext.asyncio import AsyncSession
 

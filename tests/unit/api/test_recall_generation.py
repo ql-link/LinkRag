@@ -12,7 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.api import recall_stream_runtime as rt
+from src.application import recall_stream_runtime as rt
 from src.config import settings
 from src.core.llm.exceptions import UserModelConfigMissingError
 from src.core.llm.response import StreamChunk

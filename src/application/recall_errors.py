@@ -2,7 +2,7 @@
 
 外部用户态 Recall API 归属 Java（复用 Sa-Token + dataset/doc 归属校验）；Python 暴露
 对外 RAG 问答流 ``/api/v1/rag/stream`` 与纯召回 JSON ``/api/v1/recall``（鉴权见
-``recall_session_auth``）。本模块提供两条召回链路共用的：
+``src/api/recall_session_auth``）。本模块提供两条召回链路共用的：
 
 - ``RecallApiError``：握手前错误的统一类型，由 ``src/main.py`` 注册的异常处理器
   序列化为 ``{code, message, data}`` JSON + 对应 HTTP 状态。

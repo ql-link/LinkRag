@@ -11,7 +11,7 @@ from fastapi import APIRouter, UploadFile, File, Form, HTTPException
 from loguru import logger
 
 from src.config import settings
-from src.services.parse_task_service import ParseTaskService
+from src.core.parse_task_service import ParseTaskService
 from src.services.mq_service import MQService
 from src.services.storage.factory import StorageFactory
 from src.core.mq.messages import ParseTaskMessage

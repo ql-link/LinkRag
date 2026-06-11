@@ -5,8 +5,8 @@ from pathlib import Path
 from loguru import logger
 
 from src.core.markdown_parser import MarkdownEnhancementOrchestrator, MarkdownParser
+from src.core.markdown_parser.text_formatter import TextFormatter
 from src.core.parser.factory import ParserFactory
-from src.utils.text_formatter import TextFormatter
 
 
 class ParseTaskService:
