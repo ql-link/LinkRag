@@ -28,9 +28,6 @@ from src.api.internal_auth import RecallApiError
 from src.api.routes import internal, llm, mq, parse, rag, recall
 from src.cache.redis_client import redis_client
 from src.config import settings
-
-# 引入文档解析模块的数据库依赖
-from src.core.database import engine
 from src.core.mq.consumers.parse_task_consumer import start_parse_consumer
 
 # MQ 工厂（生命周期管理）
