@@ -41,7 +41,6 @@ from src.core.mq.topic_admin import ensure_topics
 # 解析任务临时落盘目录治理：启动时清空 PARSE_TEMP_DIR，回收上次异常退出残留的临时文件。
 from src.core.pipeline.parse_task import temp_workspace
 from src.database import close_database, init_database
-from src.models.parse_task import Base
 from src.services.mq_service import MQService
 
 
