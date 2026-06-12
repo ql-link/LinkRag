@@ -1,11 +1,14 @@
 # -*- coding: utf-8 -*-
-"""LINK-75：解析增强按发起用户的 LLM 配置解析 provider 的单元测试。
+"""解析增强按数据集配置的增强模型解析 provider 的单元测试（LINK-148 修正后契约）。
 
-覆盖四条路径：
-- CHAT 用户配置命中 → 用用户的 provider/api_key/base_url/model 构造 client；
-- CHAT 用户无默认配置 → 抛 LLMConfigMissingError（→ 任务失败）；
-- VISION 用户无默认配置 → orchestrator 跳过图片增强，不报错；
-- 配置读取异常 → 原样传播，不被误判为「无配置」。
+新契约（替代 LINK-75 的系统兜底 fallback）：
+
+- 增强模型名来自数据集 ``enhancement_config.table_model`` / ``vision_model``；
+- 模型名为空且增强开启 → 抛 :class:`EnhancementModelMissingError`，**不做任何兜底**
+  （既不回退系统模型，也不回退用户默认模型）；
+- 模型名有值 → 按发起用户该能力的默认 LLM 配置（provider 凭证）构造，模型名覆盖具体模型；
+  用户无该能力默认配置仍抛 :class:`LLMConfigMissingError`；配置读取异常原样传播；
+- 表格与图片增强对称：模型未配均使任务失败（图片不再"静默跳过"）。
 """
 
 from __future__ import annotations
@@ -15,13 +18,15 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.core.dataset_config import EnhancementConfig
 from src.core.llm.interfaces import CapabilityType
-from src.core.markdown_parser import provider_clients
 from src.core.markdown_parser.orchestrator import MarkdownEnhancementOrchestrator
 from src.core.markdown_parser.provider_clients import (
+    EnhancementModelMissingError,
     LLMConfigMissingError,
     ProviderTableClient,
     abuild_table_client,
+    abuild_vision_client,
 )
 
 
@@ -46,15 +51,13 @@ def _patch_config_service(monkeypatch, *, config=None, raises=None):
         service.get_user_default_config_by_capability = AsyncMock(side_effect=raises)
     else:
         service.get_user_default_config_by_capability = AsyncMock(return_value=config)
-    # 解密：原样返回明文，验证「非系统兜底走解密」分支
     service.decrypt_api_key = AsyncMock(side_effect=lambda key: f"decrypted::{key}")
     monkeypatch.setattr(crs, "ConfigReaderService", lambda db: service)
     return service
 
 
 def _patch_model_factory(monkeypatch):
-    """替换统一解析模块的 ModelFactory 与 decrypt（解析逻辑已收敛到 user_model_resolver），
-    捕获 create_client 入参并返回支持任意能力的假 provider。"""
+    """替换统一解析模块的 ModelFactory 与 decrypt，捕获 create_client 入参并返回假 provider。"""
     import src.core.llm.user_model_resolver as umr
 
     captured = {}
@@ -70,14 +73,13 @@ def _patch_model_factory(monkeypatch):
 
     factory.create_client.side_effect = _create_client
     monkeypatch.setattr(umr, "ModelFactory", lambda: factory)
-    # 非系统兜底走解密：用可识别前缀替换真实 AES 解密，验证「解密分支」。
     monkeypatch.setattr(umr, "decrypt_api_key", lambda key: f"decrypted::{key}")
     return captured, provider
 
 
 @pytest.mark.asyncio
-async def test_table_client_uses_user_chat_config(monkeypatch):
-    """用户配置了默认 CHAT → 用用户的 provider/api_key/base_url/model 构造 client。"""
+async def test_table_client_uses_dataset_model_with_user_config(monkeypatch):
+    """数据集配了 table_model + 用户有默认 CHAT → 用用户 provider 凭证 + 该模型构造 client。"""
     _patch_session(monkeypatch)
     _patch_config_service(
         monkeypatch,
@@ -90,7 +92,7 @@ async def test_table_client_uses_user_chat_config(monkeypatch):
     )
     captured, provider = _patch_model_factory(monkeypatch)
 
-    client = await abuild_table_client(user_id=7)
+    client = await abuild_table_client(user_id=7, model_name="qwen-max")
 
     assert isinstance(client, ProviderTableClient)
     assert captured["provider_type"] == "qwen"
@@ -101,35 +103,38 @@ async def test_table_client_uses_user_chat_config(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_system_fallback_config_skips_decrypt(monkeypatch):
-    """命中系统兜底配置（is_system_fallback）时 api_key 免解密，直接使用。"""
-    _patch_session(monkeypatch)
-    _patch_config_service(
-        monkeypatch,
-        config={
-            "provider_type": "openai",
-            "api_key": "plain-key",
-            "api_base_url": None,
-            "model_name": "gpt-x",
-            "is_system_fallback": True,
-        },
-    )
-    captured, _ = _patch_model_factory(monkeypatch)
+async def test_table_client_missing_model_raises_enhancement_error(monkeypatch):
+    """数据集未配 table_model → 抛 EnhancementModelMissingError，不触发任何 provider 解析。"""
+    service = _patch_config_service(monkeypatch, config=None)
 
-    await abuild_table_client(user_id=7)
+    with pytest.raises(EnhancementModelMissingError) as exc_info:
+        await abuild_table_client(user_id=7, model_name=None)
 
-    assert captured["api_key"] == "plain-key"  # 未经解密
+    assert exc_info.value.kind == "table"
+    # 模型未配应在解析 provider 之前就失败，不读用户配置。
+    service.get_user_default_config_by_capability.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_table_client_missing_chat_config_raises(monkeypatch):
-    """用户无默认 CHAT 配置 → 抛 LLMConfigMissingError（解析任务将失败）。"""
+async def test_vision_client_missing_model_raises_enhancement_error(monkeypatch):
+    """数据集未配 vision_model → 抛 EnhancementModelMissingError（图片增强不再静默跳过）。"""
+    _patch_config_service(monkeypatch, config=None)
+
+    with pytest.raises(EnhancementModelMissingError) as exc_info:
+        await abuild_vision_client(user_id=7, model_name=None)
+
+    assert exc_info.value.kind == "vision"
+
+
+@pytest.mark.asyncio
+async def test_table_client_user_chat_missing_raises(monkeypatch):
+    """配了 table_model 但用户无默认 CHAT 配置 → 抛 LLMConfigMissingError。"""
     _patch_session(monkeypatch)
     _patch_config_service(monkeypatch, config=None)
     _patch_model_factory(monkeypatch)
 
     with pytest.raises(LLMConfigMissingError) as exc_info:
-        await abuild_table_client(user_id=7)
+        await abuild_table_client(user_id=7, model_name="qwen-max")
 
     assert exc_info.value.capability == "CHAT"
     assert exc_info.value.user_id == 7
@@ -143,11 +148,11 @@ async def test_config_read_failure_propagates_not_missing(monkeypatch):
     _patch_model_factory(monkeypatch)
 
     with pytest.raises(RuntimeError, match="db down"):
-        await abuild_table_client(user_id=7)
+        await abuild_table_client(user_id=7, model_name="qwen-max")
 
 
 # --------------------------------------------------------------------------
-# orchestrator 层：CHAT 缺失传播为失败、VISION 缺失跳过
+# orchestrator 层：表格/图片增强模型缺失对称失败；无 user_id 走系统默认
 # --------------------------------------------------------------------------
 
 
@@ -168,60 +173,69 @@ class _FakeParser:
         return self._parse_result
 
 
-def _patch_orchestrator_settings(monkeypatch, *, table=True, image=True):
-    settings = MagicMock()
-    settings.MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT = table
-    settings.MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT = image
-    import src.core.markdown_parser.orchestrator as orch
-
-    monkeypatch.setattr(orch, "_get_settings", lambda: settings)
-
-
 @pytest.mark.asyncio
-async def test_orchestrator_chat_missing_propagates(monkeypatch):
-    """有表格 + 用户缺 CHAT → LLMConfigMissingError 向上传播（不被增强容错吞掉）。"""
+async def test_orchestrator_table_model_missing_propagates(monkeypatch):
+    """有表格 + 增强开启但 table_model 未配 → EnhancementModelMissingError 向上传播。"""
     import src.core.markdown_parser.orchestrator as orch
 
-    _patch_orchestrator_settings(monkeypatch, table=True, image=False)
     monkeypatch.setattr(
         orch,
         "abuild_table_client",
-        AsyncMock(side_effect=LLMConfigMissingError("CHAT", 7)),
+        AsyncMock(side_effect=EnhancementModelMissingError("table")),
     )
 
     parse_result = _FakeParseResult(tables=["| a | b |"], images=[])
     orchestrator = MarkdownEnhancementOrchestrator(parser=_FakeParser(parse_result))
+    cfg = EnhancementConfig(enable_table_enhancement=True, table_model=None)
 
-    with pytest.raises(LLMConfigMissingError):
-        await orchestrator.aenhance_parse_result("md", user_id=7)
+    with pytest.raises(EnhancementModelMissingError):
+        await orchestrator.aenhance_parse_result("md", user_id=7, enhancement_config=cfg)
 
 
 @pytest.mark.asyncio
-async def test_orchestrator_vision_missing_skips(monkeypatch):
-    """有图片 + 用户缺 VISION → 跳过图片增强，不报错，正常返回。"""
+async def test_orchestrator_vision_model_missing_propagates(monkeypatch):
+    """有图片 + 增强开启但 vision_model 未配 → EnhancementModelMissingError 向上传播（不再跳过）。"""
     import src.core.markdown_parser.orchestrator as orch
 
-    _patch_orchestrator_settings(monkeypatch, table=False, image=True)
     monkeypatch.setattr(
         orch,
         "abuild_vision_client",
-        AsyncMock(side_effect=LLMConfigMissingError("VISION", 7)),
+        AsyncMock(side_effect=EnhancementModelMissingError("vision")),
     )
 
     parse_result = _FakeParseResult(tables=[], images=["img.png"])
     orchestrator = MarkdownEnhancementOrchestrator(parser=_FakeParser(parse_result))
+    cfg = EnhancementConfig(
+        enable_table_enhancement=False, enable_image_enhancement=True, vision_model=None
+    )
 
-    result = await orchestrator.aenhance_parse_result("md", user_id=7)
+    with pytest.raises(EnhancementModelMissingError):
+        await orchestrator.aenhance_parse_result("md", user_id=7, enhancement_config=cfg)
 
-    assert result is parse_result  # 未被替换，图片增强已跳过
+
+@pytest.mark.asyncio
+async def test_orchestrator_table_disabled_skips(monkeypatch):
+    """增强关闭 → 跳过表格增强，不读模型名、不报错，原样返回。"""
+    import src.core.markdown_parser.orchestrator as orch
+
+    abuild = AsyncMock(side_effect=AssertionError("should not build client when disabled"))
+    monkeypatch.setattr(orch, "abuild_table_client", abuild)
+
+    parse_result = _FakeParseResult(tables=["| a |"], images=[])
+    orchestrator = MarkdownEnhancementOrchestrator(parser=_FakeParser(parse_result))
+    cfg = EnhancementConfig(enable_table_enhancement=False, enable_image_enhancement=False)
+
+    result = await orchestrator.aenhance_parse_result("md", user_id=7, enhancement_config=cfg)
+
+    assert result is parse_result
+    abuild.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_orchestrator_no_user_id_uses_system_default(monkeypatch):
-    """无 user_id（调试入口）→ 走系统默认 client，不触发按用户解析。"""
+    """无 user_id（调试入口）→ 走系统默认 client，不触发按用户/数据集模型解析。"""
     import src.core.markdown_parser.orchestrator as orch
 
-    _patch_orchestrator_settings(monkeypatch, table=True, image=False)
     sentinel = MagicMock(name="system_default_table_client")
     monkeypatch.setattr(orch, "build_default_table_client", lambda: sentinel)
     abuild = AsyncMock()
@@ -240,8 +254,9 @@ async def test_orchestrator_no_user_id_uses_system_default(monkeypatch):
 
     parse_result = _FakeParseResult(tables=["| a |"], images=[])
     orchestrator = MarkdownEnhancementOrchestrator(parser=_FakeParser(parse_result))
+    cfg = EnhancementConfig(enable_table_enhancement=True, enable_image_enhancement=False)
 
-    await orchestrator.aenhance_parse_result("md", user_id=None)
+    await orchestrator.aenhance_parse_result("md", user_id=None, enhancement_config=cfg)
 
     assert captured["client"] is sentinel
     abuild.assert_not_called()

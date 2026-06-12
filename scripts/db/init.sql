@@ -378,6 +378,25 @@ CREATE TABLE IF NOT EXISTS kb_document_chunk (
     KEY idx_lifecycle_update_time (lifecycle_status, update_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '文档Chunk真值记录表';
 
+-- 16. 数据集级解析/检索参数配置表（migration 0017 引入，LINK-148）
+-- 四个 JSON 列承载分块 / Markdown 增强 / PDF / 召回四类配置；行数据增删改由 Java 侧负责，
+-- Python 侧只读（无行/读取失败降级系统默认）。
+CREATE TABLE IF NOT EXISTS dataset_parse_config (
+    id                  BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '配置唯一标识',
+    user_id             BIGINT UNSIGNED NOT NULL COMMENT '所属用户 ID',
+    dataset_id          BIGINT UNSIGNED NOT NULL COMMENT '所属数据集 ID，对应 dataset.id',
+    chunking_config     JSON NOT NULL COMMENT '分块配置（3 项：heading_break_level / min_candidate_chunk_tokens / overlap_tokens）',
+    enhancement_config  JSON NOT NULL COMMENT 'Markdown 增强配置（4 项：enable_table_enhancement / enable_image_enhancement / table_model / vision_model）',
+    pdf_config          JSON NOT NULL COMMENT 'PDF 解析配置（1 项：pdf_parser_backend）',
+    recall_config       JSON NOT NULL COMMENT '召回检索配置（6 项：recall_result_limit / recall_context_token_budget / sparse_top_k / sparse_score_threshold / dense_top_k / dense_score_threshold）',
+    is_active           TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用',
+    created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
+    updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
+
+    UNIQUE KEY uk_user_dataset (user_id, dataset_id),
+    KEY idx_dataset_parse_config_dataset (dataset_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '数据集解析/检索参数配置';
+
 -- 自增起始值统一为 10000
 ALTER TABLE sys_user AUTO_INCREMENT = 10000;
 ALTER TABLE llm_system_provider AUTO_INCREMENT = 10000;
@@ -394,3 +413,4 @@ ALTER TABLE blog_post AUTO_INCREMENT = 10000;
 ALTER TABLE blog_asset AUTO_INCREMENT = 10000;
 ALTER TABLE user_feedback AUTO_INCREMENT = 10000;
 ALTER TABLE kb_document_chunk AUTO_INCREMENT = 10000;
+ALTER TABLE dataset_parse_config AUTO_INCREMENT = 10000;

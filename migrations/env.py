@@ -40,10 +40,12 @@ try:
     from src.models import db_models  # noqa: F401
     from src.models import chunk_record  # noqa: F401
     from src.models import parse_task  # noqa: F401
+    from src.models import dataset_parse_config  # noqa: F401
     from src.models.db_models import Base as CoreBase
     from src.models.parse_task import Base as ParseTaskBase
+    from src.models.dataset_parse_config import Base as DatasetParseConfigBase
 
-    for base in (CoreBase, ParseTaskBase):
+    for base in (CoreBase, ParseTaskBase, DatasetParseConfigBase):
         for table in base.metadata.tables.values():
             table.to_metadata(combined_metadata)
 except Exception:  # noqa: BLE001

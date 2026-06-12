@@ -37,6 +37,45 @@ async def test_fused_hits_truncated_to_request_top_k():
 
 
 @pytest.mark.asyncio
+async def test_score_threshold_override_dispatched_per_source():
+    """数据集级分数阈值 override 按 source 透传：sparse/dense 各取对应字段，bm25 得 None（LINK-148）。"""
+    bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("c1", SOURCE_BM25)])
+    sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[_hit("c2", SOURCE_SPARSE)])
+    dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("c3", SOURCE_DENSE)])
+    pipeline = RecallPipeline([bm25, sparse, dense])
+
+    await pipeline.execute(
+        RecallRequest(
+            user_id=7,
+            query="q",
+            dataset_ids=[10],
+            top_k=5,
+            sparse_score_threshold_override=0.3,
+            dense_score_threshold_override=0.7,
+        )
+    )
+
+    assert sparse.score_threshold_overrides == [0.3]
+    assert dense.score_threshold_overrides == [0.7]
+    assert bm25.score_threshold_overrides == [None]  # bm25 无分数阈值概念
+
+
+@pytest.mark.asyncio
+async def test_score_threshold_override_absent_passes_none():
+    """未带 override（无数据集配置 / 全库召回）时各路收到 None，沿用装配期默认阈值。"""
+    sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[_hit("c1", SOURCE_SPARSE)])
+    dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("c2", SOURCE_DENSE)])
+    pipeline = RecallPipeline([sparse, dense])
+
+    await pipeline.execute(
+        RecallRequest(user_id=7, query="q", dataset_ids=[10], top_k=5)
+    )
+
+    assert sparse.score_threshold_overrides == [None]
+    assert dense.score_threshold_overrides == [None]
+
+
+@pytest.mark.asyncio
 async def test_all_empty_returns_empty():
     """三路均返回空列表时结果为空但不抛错。"""
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[])

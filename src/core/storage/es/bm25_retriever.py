@@ -59,10 +59,12 @@ class Bm25Retriever:
         *,
         user_id: int,
         top_k: int,
+        score_threshold_override: float | None = None,
     ) -> list[RetrieverHit]:
         """按 BM25 召回一组候选 chunk。
 
-        ``user_id`` / ``top_k`` 由 pipeline 执行期透传。策略：
+        ``user_id`` / ``top_k`` 由 pipeline 执行期透传。``score_threshold_override`` 接受但
+        忽略——BM25 路无分数阈值概念（ES 原始分无统一量纲），仅为满足 ``Retriever`` 协议。策略：
         - ``dataset_ids`` 为空 → 直接返空。BM25 路依赖 dataset routing，
           没有数据集范围时不下发 ES（pipeline 协议允许"全库"，但本路放弃）。
         - 多个 ``dataset_ids`` → 按 dataset 逐次下发，每次取 ``top_k``；

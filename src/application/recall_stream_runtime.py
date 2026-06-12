@@ -61,8 +61,12 @@ async def recall_event_stream(
     request_id: str,
     config_id: int,
     reranker: PostRecallReranker,
+    token_budget: int,
 ) -> AsyncGenerator[str, None]:
     """流内执行召回 + 重排 + 生成，把结果/异常映射为 SSE 终态事件。
+
+    ``token_budget`` 为生成阶段上下文拼装的 token 预算，来自数据集级
+    ``recall_config.recall_context_token_budget``（无数据集配置时为系统默认）。
 
     先按 ``(user_id, CHAT, config_id)`` 前置校验用户模型——不可用即 ``error``
     MODEL_CONFIG_MISSING、**不进入召回**；通过后执行召回融合，一次性回填片段正文（供
@@ -120,6 +124,7 @@ async def recall_event_stream(
         )
 
         # 空命中 / 上下文拼装 / 流式生成（用 rerank 后的最终候选与已回填正文）。
+        # token_budget 来自数据集级 recall 配置（LINK-148），透传给生成阶段上下文拼装。
         async for event in _generate_answer(
             resolved,
             reranked_hits,
@@ -128,6 +133,7 @@ async def recall_event_stream(
             response.failed_sources,
             recall_req,
             request_id,
+            token_budget,
         ):
             yield event
     except RecallValidationError as exc:
@@ -228,6 +234,7 @@ async def _generate_answer(
     failed_sources: list[str],
     recall_req: RecallRequest,
     request_id: str,
+    token_budget: int,
 ) -> AsyncGenerator[str, None]:
     """生成模式后续：空命中判定 → 上下文拼装 → 流式生成。
 
@@ -250,9 +257,8 @@ async def _generate_answer(
         return
 
     # 上下文拼装（正文已在上游一次性回填，按 rerank 后顺序纳入）。
-    assembled = assemble_context(
-        hits, contents, settings.RECALL_GENERATION_CONTEXT_TOKEN_BUDGET
-    )
+    # token_budget 为数据集级 recall 配置（LINK-148），无数据集配置时由上游填入系统默认。
+    assembled = assemble_context(hits, contents, token_budget)
     logger.info(
         "[recall] generation context request_id={} rerank_applied={} hits={} blocks={} skipped_no_content={} truncated={}",
         request_id,
