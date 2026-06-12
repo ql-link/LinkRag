@@ -28,7 +28,7 @@ when_to_use: 当用户明确要求"生成技术方案 / 生成技术实现文档
 
 **新版工作流的输入源**：
 
-1. `.specs/<feature-name>/brief.md`（业务理解 + 模块实现思路）
+1. `.specs/<feature-name>/brief.md`（业务理解 + **模块影响面判断 + 概念数据模型**）
 2. `.specs/<feature-name>/acceptance.feature`（Gherkin 验收契约，机器可读的业务规则）
 3. 仓库真实代码、组件文档、公共契约
 
@@ -37,6 +37,12 @@ when_to_use: 当用户明确要求"生成技术方案 / 生成技术实现文档
 - ~~`requirement.md`（旧版散文 PRD）~~ ：已废弃，新流程不再生成此文件。若发现历史目录仍存在 `requirement.md`，应在 `technical_design.md` 开头注明"基于历史 requirement.md 而非 acceptance.feature 生成"，并尽量补齐 Gherkin。
 
 `acceptance.feature` 是技术方案最权威的"做对了"标准——TD 中的每个方法级实现都应该能对应到一条或多条 Scenario。
+
+**brief 是"假设"，不是方案**：brief 第 3 章给出的是模块影响面判断与**概念数据模型**（关键实体 / 字段 / 关系），作为 TD 的输入假设。TD 的职责是**逐条确认或修正该假设**、而非从零重推：
+
+- 对每条模块判断标注**沿用 / 修正**，修正的写明哪里改了、为什么。
+- brief 的概念数据模型由 TD 落成**物理 schema**（类型、长度、索引、约束、迁移），对照 `docs/api/schemas/mysql.md` 与机器强制同步规则。
+- 这条"与 brief 判断的差异"既避免重复设计，也是设计偏离最初理解的审计线（与 implementation-execution 的"回流规则"同一 philosophy）。
 
 ## 3. 使用前提
 
@@ -177,14 +183,17 @@ python scripts/flow-guard.py check <feature-name> technical_design
 
 任一缺失，停止并说明，不允许凭记忆生成。
 
-### 步骤 2：吸收 brief 与 acceptance
+### 步骤 2：吸收 brief 与 acceptance（确认假设，不重推）
 
-从 `brief.md` 提取：
+从 `brief.md` 提取，并对每条**模块影响面判断标注沿用 / 修正**（不从零重写）：
 
 - 业务流程主链路 + 异常分支
-- 涉及的模块、各自承担的职责、实现思路
-- 关键决策（如"用 MQ 而非定时轮询"）
+- 涉及的模块、各自承担的职责、复用还是新增（作为**假设**，逐条确认或修正）
+- 概念数据模型（关键实体 / 字段 / 关系）→ 由本步及步骤 4 落成物理 schema
+- 范围决策（改变范围 / 用户拿到什么的决策）；纯实现取舍由 TD 在此定夺
 - 风险表
+
+修正过的假设记一行"与 brief 判断的差异"（哪里改了、为什么），写入文档修订记录或输入依据映射表。
 
 从 `acceptance.feature` 提取：
 

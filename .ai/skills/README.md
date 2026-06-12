@@ -20,9 +20,9 @@
 | skill | 职责 | 边界 / 转交 |
 | --- | --- | --- |
 | `flow-router` | 入口分诊，按改动性质判 L1/L2/L3 车道，不产文档 | L1 直转 implementation-execution；L2/L3 转 brief-generator |
-| `brief-generator` | 把新需求/想法收敛成开发者向 brief.md（L2 轻量、跳 TD；L3 完整） | 上游经 flow-router 判级；冻结后转 acceptance-generator |
+| `brief-generator` | 把新需求/想法收敛成开发者向 brief.md：做什么/边界/影响哪些模块（影响面+概念数据模型，非 how）/风险/待确认（L2 轻量含最小实现思路、跳 TD；L3 完整） | 上游经 flow-router 判级；冻结后转 acceptance-generator |
 | `acceptance-generator` | 基于冻结 brief.md 生成 Gherkin acceptance.feature | 需先有冻结 brief；要技术方案转 technical-design |
-| `technical-design` | 基于 brief+acceptance 产出 technical_design.md | 上游缺失先回退对应 skill |
+| `technical-design` | 基于 brief+acceptance 产出 technical_design.md，承接并确认/修正 brief 的模块与数据假设，给出代码层方案与物理 schema | 上游缺失先回退对应 skill |
 | `implementation-execution` | 需求/方案确认后执行编码，必要时产出 implementation_report.md；spec 缺口强制回写 + 留痕 | 无冻结 spec → 回 brief-generator；编码完成 → run-all-tests + code-review-and-quality |
 | `run-all-tests` | 跑 `tests` 全量回归，回报结论 | 收口前的测试关口；详见「测试与质量」 |
 | `code-review-and-quality` | 提交/合并前五维质量门禁 | 过关后 → branch-pr-workflow |
@@ -44,11 +44,10 @@
 | `mysql-ddl-conventions` | 建表/字段/索引规范 | 写迁移本身转 alembic-migration |
 | `alembic-migration` | 写/校验 Alembic 迁移，守 ORM+迁移链权威 | DDL 规范转 mysql-ddl-conventions；同步文档转 doc-maintenance-sync |
 
-### 消息 / 向量 / 召回
+### 消息 / 向量
 | skill | 职责 | 边界 / 转交 |
 | --- | --- | --- |
 | `mq-middleware` | MQ 中台收发、定义新消息类型、多厂商适配 | 跨端 topic/字段取值一致性转 config-contract-sync |
-| `rag-recall-eval` | dense/sparse/bm25 召回质量量化评估与回归 | 召回报错故障转 incident-triage；只写单测转 auto-test |
 
 ### 契约 / 配置 / 文档治理
 | skill | 职责 | 边界 / 转交 |
