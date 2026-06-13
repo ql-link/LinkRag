@@ -48,7 +48,10 @@ async def test_no_row_returns_system_defaults_without_write():
 
     assert bundle.chunking.overlap_tokens == 64
     assert bundle.recall.recall_result_limit == 20
-    assert bundle.enhancement.table_model is None
+    # 增强配置只剩开关（不再有 table_model / vision_model），默认取系统开关。
+    assert bundle.enhancement.enable_table_enhancement is True
+    assert bundle.enhancement.enable_image_enhancement is True
+    assert not hasattr(bundle.enhancement, "table_model")
     # 只读：绝不写库。
     db.add.assert_not_called()
     db.commit.assert_not_called()
@@ -77,6 +80,27 @@ async def test_partial_override_fills_unset_from_defaults():
     assert bundle.chunking.heading_break_level == 2  # 覆盖字段
     assert bundle.chunking.overlap_tokens == 64  # 未覆盖 → 系统默认
     assert bundle.chunking.min_candidate_chunk_tokens == 128
+
+
+@pytest.mark.asyncio
+async def test_enhancement_legacy_model_keys_ignored():
+    """历史 JSON 仍含 table_model / vision_model → 被忽略，开关照常生效（向后兼容）。"""
+    db = _fake_db(
+        row=_row(
+            enhancement={
+                "enable_table_enhancement": False,
+                "enable_image_enhancement": True,
+                "table_model": "qwen-max",
+                "vision_model": "qwen-vl",
+            }
+        )
+    )
+    bundle = await DatasetConfigService().get_config(user_id=1, dataset_id=2, db=db)
+
+    assert bundle.enhancement.enable_table_enhancement is False  # 覆盖字段生效
+    assert bundle.enhancement.enable_image_enhancement is True
+    assert not hasattr(bundle.enhancement, "table_model")  # 旧模型字段被忽略
+    assert not hasattr(bundle.enhancement, "vision_model")
 
 
 @pytest.mark.asyncio

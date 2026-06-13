@@ -42,16 +42,20 @@ class LLMConfigMissingError(RuntimeError):
 
 
 class EnhancementModelMissingError(RuntimeError):
-    """数据集开启了表格/图片增强，但未配置对应的增强模型名。
+    """数据集开启了表格/图片增强，但发起用户未配置对应能力的默认模型。
 
-    与 :class:`LLMConfigMissingError`（用户缺少能力默认配置）区分：本异常专指数据集
-    ``enhancement_config`` 中 ``table_model`` / ``vision_model`` 为空。按需求约定，增强开启
-    但模型未配时**不做任何兜底**，直接失败——解析链路据此把任务收敛为 FAILED。
+    数据集层已不再选择增强模型——增强统一使用发起用户该能力（表格→CHAT，图片→VISION）的
+    默认 LLM 配置。本异常专指「增强开启但用户缺该能力默认配置」：按需求约定**不做任何兜底**
+    （既不回退系统模型，也不静默跳过），直接失败——解析链路据此把任务收敛为 FAILED，并通过
+    ``kind`` 区分是表格还是图片增强，便于提示用户去补对应能力的默认模型配置。
     """
 
     def __init__(self, kind: str) -> None:
         self.kind = kind  # "table" | "vision"
-        super().__init__(f"{kind}_model not configured for dataset")
+        capability = "CHAT" if kind == "table" else "VISION"
+        super().__init__(
+            f"{kind} enhancement enabled but user has no default {capability} model"
+        )
 
 
 def _clean_llm_text(text: str) -> str:
@@ -135,26 +139,22 @@ def _get_capability_type():
     return CapabilityType
 
 
-async def _resolve_user_provider(
-    capability_str: str,
-    *,
-    user_id: int,
-    model_name: str | None,
-) -> BaseProvider:
-    """按发起用户解析增强用 LLM Provider。
+async def _resolve_user_model(capability_str: str, *, user_id: int):
+    """按发起用户解析增强用 LLM 模型（provider + 模型名）。
 
     经统一的 :func:`src.core.llm.user_model_resolver.aresolve_user_model` 按
-    ``user_id + capability`` 取默认配置并构造 Provider。用户无该能力默认配置时统一解析抛
-    ``UserModelConfigMissingError``，本函数在边界重抛 :class:`LLMConfigMissingError` 以保留
-    解析链路既有的失败语义；配置读取异常按原样向上传播（不转成「无配置」）。
+    ``user_id + capability`` 取该能力的**默认配置**并构造 Provider（含用户自己配置的模型名）。
+    增强不在数据集层选择模型，故不传 ``fallback_model``——一律使用用户默认配置里的模型名。
+    用户无该能力默认配置时统一解析抛 ``UserModelConfigMissingError``，本函数在边界重抛
+    :class:`LLMConfigMissingError`（再由 ``abuild_*`` 转为 :class:`EnhancementModelMissingError`）；
+    配置读取异常按原样向上传播（不转成「无配置」）。
 
     Args:
         capability_str: 配置表能力字符串（CHAT / VISION），用于按能力查配置与能力校验。
         user_id: 发起解析任务的用户 ID。
-        model_name: 用户配置未指定模型时的回退模型名。
 
     Returns:
-        按用户配置构造的 Provider 实例。
+        ``ResolvedModel``：含 provider 与用户默认配置的模型名。
 
     Raises:
         LLMConfigMissingError: 用户无该能力的默认 LLM 配置。
@@ -164,39 +164,38 @@ async def _resolve_user_provider(
     from src.core.llm.user_model_resolver import aresolve_user_model
 
     try:
-        resolved = await aresolve_user_model(
-            user_id=user_id, capability=capability_str, fallback_model=model_name
-        )
+        resolved = await aresolve_user_model(user_id=user_id, capability=capability_str)
     except UserModelConfigMissingError as exc:
         raise LLMConfigMissingError(capability_str, user_id) from exc
-    return resolved.provider
+    return resolved
 
 
-async def abuild_table_client(user_id: int, model_name: str | None) -> "ProviderTableClient":
-    """用数据集配置的表格增强模型构造 client。
+async def abuild_table_client(user_id: int) -> "ProviderTableClient":
+    """按发起用户 CHAT 默认配置构造表格增强 client（增强开启时校验默认模型已配）。
 
-    ``model_name`` 来自数据集 ``enhancement_config.table_model``。为空时直接抛
-    :class:`EnhancementModelMissingError`，**不回退**系统兜底模型（按需求约定，增强开启但
-    未配模型即失败）。模型名有值时按发起用户的 CHAT 默认配置（provider 凭证）构造，模型名
-    覆盖具体模型；用户无 CHAT 默认配置时仍抛 :class:`LLMConfigMissingError`。
+    表格增强不在数据集层选择模型，统一用发起用户 CHAT 能力的默认 LLM 配置（含其模型名）。
+    用户未配置 CHAT 默认模型时抛 :class:`EnhancementModelMissingError`，**不回退**系统兜底
+    模型（按需求约定：开启增强即要求用户已配对应默认模型，否则任务失败）。
     """
-    if not model_name:
-        raise EnhancementModelMissingError("table")
-    provider = await _resolve_user_provider("CHAT", user_id=user_id, model_name=model_name)
-    return ProviderTableClient(provider=provider)
+    try:
+        resolved = await _resolve_user_model("CHAT", user_id=user_id)
+    except LLMConfigMissingError as exc:
+        raise EnhancementModelMissingError("table") from exc
+    return ProviderTableClient(provider=resolved.provider)
 
 
-async def abuild_vision_client(user_id: int, model_name: str | None) -> "ProviderVisionClient":
-    """用数据集配置的图片增强模型构造 client。
+async def abuild_vision_client(user_id: int) -> "ProviderVisionClient":
+    """按发起用户 VISION 默认配置构造图片增强 client（增强开启时校验默认模型已配）。
 
-    ``model_name`` 来自数据集 ``enhancement_config.vision_model``。为空时直接抛
-    :class:`EnhancementModelMissingError`，**不回退**系统兜底模型。模型名有值时按发起用户的
-    VISION 默认配置（provider 凭证）构造，模型名覆盖具体模型。
+    图片增强不在数据集层选择模型，统一用发起用户 VISION 能力的默认 LLM 配置（含其模型名）。
+    用户未配置 VISION 默认模型时抛 :class:`EnhancementModelMissingError`，**不回退**系统兜底
+    模型，也不再静默跳过（与表格增强对称）。
     """
-    if not model_name:
-        raise EnhancementModelMissingError("vision")
-    provider = await _resolve_user_provider("VISION", user_id=user_id, model_name=model_name)
-    return ProviderVisionClient(provider=provider, model_name=model_name)
+    try:
+        resolved = await _resolve_user_model("VISION", user_id=user_id)
+    except LLMConfigMissingError as exc:
+        raise EnhancementModelMissingError("vision") from exc
+    return ProviderVisionClient(provider=resolved.provider, model_name=resolved.model_name)
 
 
 class ProviderTableClient(TableClient):
