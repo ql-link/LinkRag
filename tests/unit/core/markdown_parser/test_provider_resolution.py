@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
-"""解析增强按数据集配置的增强模型解析 provider 的单元测试（LINK-148 修正后契约）。
+"""解析增强按发起用户默认模型解析 provider 的单元测试（移除数据集增强模型选择后契约）。
 
-新契约（替代 LINK-75 的系统兜底 fallback）：
+新契约：
 
-- 增强模型名来自数据集 ``enhancement_config.table_model`` / ``vision_model``；
-- 模型名为空且增强开启 → 抛 :class:`EnhancementModelMissingError`，**不做任何兜底**
-  （既不回退系统模型，也不回退用户默认模型）；
-- 模型名有值 → 按发起用户该能力的默认 LLM 配置（provider 凭证）构造，模型名覆盖具体模型；
-  用户无该能力默认配置仍抛 :class:`LLMConfigMissingError`；配置读取异常原样传播；
-- 表格与图片增强对称：模型未配均使任务失败（图片不再"静默跳过"）。
+- 数据集层只配「是否开启」表格/图片增强，**不再选择增强模型**；
+- 增强模型统一取发起用户该能力的默认 LLM 配置（表格→CHAT，图片→VISION），含用户自己配置
+  的模型名；
+- 开启增强但用户无该能力默认配置 → 抛 :class:`EnhancementModelMissingError`（按 ``kind`` 区分
+  table / vision），**不做任何兜底**（既不回退系统模型，图片也不再静默跳过）；
+- 配置读取异常（DB/Redis）原样传播，不被误判为「无配置」。
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ from src.core.llm.interfaces import CapabilityType
 from src.core.markdown_parser.orchestrator import MarkdownEnhancementOrchestrator
 from src.core.markdown_parser.provider_clients import (
     EnhancementModelMissingError,
-    LLMConfigMissingError,
     ProviderTableClient,
     abuild_table_client,
     abuild_vision_client,
@@ -36,14 +35,14 @@ async def _fake_session():
 
 
 def _patch_session(monkeypatch):
-    """让 _resolve_user_provider 内 `from src.database import get_async_session_factory` 拿到假会话。"""
+    """让 _resolve_user_model 内 `from src.database import get_async_session_factory` 拿到假会话。"""
     import src.database as database
 
     monkeypatch.setattr(database, "get_async_session_factory", lambda: _fake_session)
 
 
 def _patch_config_service(monkeypatch, *, config=None, raises=None):
-    """替换 _resolve_user_provider 内引用的 ConfigReaderService。"""
+    """替换 _resolve_user_model 内引用的 ConfigReaderService。"""
     import src.services.config_reader_service as crs
 
     service = MagicMock(name="ConfigReaderService")
@@ -78,8 +77,8 @@ def _patch_model_factory(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_table_client_uses_dataset_model_with_user_config(monkeypatch):
-    """数据集配了 table_model + 用户有默认 CHAT → 用用户 provider 凭证 + 该模型构造 client。"""
+async def test_table_client_uses_user_default_model(monkeypatch):
+    """用户有默认 CHAT 配置 → 用其 provider 凭证 + 自己配置的模型名构造 client。"""
     _patch_session(monkeypatch)
     _patch_config_service(
         monkeypatch,
@@ -92,63 +91,51 @@ async def test_table_client_uses_dataset_model_with_user_config(monkeypatch):
     )
     captured, provider = _patch_model_factory(monkeypatch)
 
-    client = await abuild_table_client(user_id=7, model_name="qwen-max")
+    client = await abuild_table_client(user_id=7)
 
     assert isinstance(client, ProviderTableClient)
     assert captured["provider_type"] == "qwen"
     assert captured["api_key"] == "decrypted::enc-key"  # 非系统兜底，走解密
     assert captured["api_base_url"] == "https://user.example.com/v1"
-    assert captured["model_name"] == "qwen-max"
+    assert captured["model_name"] == "qwen-max"  # 取用户默认配置自身模型名，不依赖数据集
     provider.has_capability.assert_called_with(CapabilityType.TEXT)
 
 
 @pytest.mark.asyncio
-async def test_table_client_missing_model_raises_enhancement_error(monkeypatch):
-    """数据集未配 table_model → 抛 EnhancementModelMissingError，不触发任何 provider 解析。"""
-    service = _patch_config_service(monkeypatch, config=None)
+async def test_table_client_no_user_chat_raises_enhancement_error(monkeypatch):
+    """用户无默认 CHAT 配置 → 抛 EnhancementModelMissingError(kind=table)，不回退系统模型。"""
+    _patch_session(monkeypatch)
+    _patch_config_service(monkeypatch, config=None)
+    _patch_model_factory(monkeypatch)
 
     with pytest.raises(EnhancementModelMissingError) as exc_info:
-        await abuild_table_client(user_id=7, model_name=None)
+        await abuild_table_client(user_id=7)
 
     assert exc_info.value.kind == "table"
-    # 模型未配应在解析 provider 之前就失败，不读用户配置。
-    service.get_user_default_config_by_capability.assert_not_called()
 
 
 @pytest.mark.asyncio
-async def test_vision_client_missing_model_raises_enhancement_error(monkeypatch):
-    """数据集未配 vision_model → 抛 EnhancementModelMissingError（图片增强不再静默跳过）。"""
+async def test_vision_client_no_user_vision_raises_enhancement_error(monkeypatch):
+    """用户无默认 VISION 配置 → 抛 EnhancementModelMissingError(kind=vision)（图片增强不再静默跳过）。"""
+    _patch_session(monkeypatch)
     _patch_config_service(monkeypatch, config=None)
+    _patch_model_factory(monkeypatch)
 
     with pytest.raises(EnhancementModelMissingError) as exc_info:
-        await abuild_vision_client(user_id=7, model_name=None)
+        await abuild_vision_client(user_id=7)
 
     assert exc_info.value.kind == "vision"
 
 
 @pytest.mark.asyncio
-async def test_table_client_user_chat_missing_raises(monkeypatch):
-    """配了 table_model 但用户无默认 CHAT 配置 → 抛 LLMConfigMissingError。"""
-    _patch_session(monkeypatch)
-    _patch_config_service(monkeypatch, config=None)
-    _patch_model_factory(monkeypatch)
-
-    with pytest.raises(LLMConfigMissingError) as exc_info:
-        await abuild_table_client(user_id=7, model_name="qwen-max")
-
-    assert exc_info.value.capability == "CHAT"
-    assert exc_info.value.user_id == 7
-
-
-@pytest.mark.asyncio
 async def test_config_read_failure_propagates_not_missing(monkeypatch):
-    """配置读取异常（DB/Redis）→ 原样传播，不被误判为 LLMConfigMissingError。"""
+    """配置读取异常（DB/Redis）→ 原样传播，不被误判为 EnhancementModelMissingError。"""
     _patch_session(monkeypatch)
     _patch_config_service(monkeypatch, raises=RuntimeError("db down"))
     _patch_model_factory(monkeypatch)
 
     with pytest.raises(RuntimeError, match="db down"):
-        await abuild_table_client(user_id=7, model_name="qwen-max")
+        await abuild_table_client(user_id=7)
 
 
 # --------------------------------------------------------------------------
@@ -175,7 +162,7 @@ class _FakeParser:
 
 @pytest.mark.asyncio
 async def test_orchestrator_table_model_missing_propagates(monkeypatch):
-    """有表格 + 增强开启但 table_model 未配 → EnhancementModelMissingError 向上传播。"""
+    """有表格 + 增强开启但用户无 CHAT 默认 → EnhancementModelMissingError 向上传播。"""
     import src.core.markdown_parser.orchestrator as orch
 
     monkeypatch.setattr(
@@ -186,7 +173,7 @@ async def test_orchestrator_table_model_missing_propagates(monkeypatch):
 
     parse_result = _FakeParseResult(tables=["| a | b |"], images=[])
     orchestrator = MarkdownEnhancementOrchestrator(parser=_FakeParser(parse_result))
-    cfg = EnhancementConfig(enable_table_enhancement=True, table_model=None)
+    cfg = EnhancementConfig(enable_table_enhancement=True)
 
     with pytest.raises(EnhancementModelMissingError):
         await orchestrator.aenhance_parse_result("md", user_id=7, enhancement_config=cfg)
@@ -194,7 +181,7 @@ async def test_orchestrator_table_model_missing_propagates(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_orchestrator_vision_model_missing_propagates(monkeypatch):
-    """有图片 + 增强开启但 vision_model 未配 → EnhancementModelMissingError 向上传播（不再跳过）。"""
+    """有图片 + 增强开启但用户无 VISION 默认 → EnhancementModelMissingError 向上传播（不再跳过）。"""
     import src.core.markdown_parser.orchestrator as orch
 
     monkeypatch.setattr(
@@ -206,7 +193,7 @@ async def test_orchestrator_vision_model_missing_propagates(monkeypatch):
     parse_result = _FakeParseResult(tables=[], images=["img.png"])
     orchestrator = MarkdownEnhancementOrchestrator(parser=_FakeParser(parse_result))
     cfg = EnhancementConfig(
-        enable_table_enhancement=False, enable_image_enhancement=True, vision_model=None
+        enable_table_enhancement=False, enable_image_enhancement=True
     )
 
     with pytest.raises(EnhancementModelMissingError):
@@ -215,7 +202,7 @@ async def test_orchestrator_vision_model_missing_propagates(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_orchestrator_table_disabled_skips(monkeypatch):
-    """增强关闭 → 跳过表格增强，不读模型名、不报错，原样返回。"""
+    """增强关闭 → 跳过表格增强，不解析模型、不报错，原样返回。"""
     import src.core.markdown_parser.orchestrator as orch
 
     abuild = AsyncMock(side_effect=AssertionError("should not build client when disabled"))
@@ -233,7 +220,7 @@ async def test_orchestrator_table_disabled_skips(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_orchestrator_no_user_id_uses_system_default(monkeypatch):
-    """无 user_id（调试入口）→ 走系统默认 client，不触发按用户/数据集模型解析。"""
+    """无 user_id（调试入口）→ 走系统默认 client，不触发按用户模型解析。"""
     import src.core.markdown_parser.orchestrator as orch
 
     sentinel = MagicMock(name="system_default_table_client")

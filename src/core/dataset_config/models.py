@@ -61,30 +61,27 @@ class ChunkingConfig(BaseModel):
 
 
 class EnhancementConfig(BaseModel):
-    """Markdown 增强配置（4 项），消费点见 ``markdown_parser/orchestrator.py``。
+    """Markdown 增强配置（2 项：表格 / 图片增强开关），消费点见 ``markdown_parser/orchestrator.py``。
 
-    ``table_model`` / ``vision_model`` 是数据集为增强配置的模型名；为空且对应增强开启时
-    解析任务直接失败（不回退系统兜底模型）。
+    数据集层只配置「是否开启」，**不再选择增强模型**：增强使用的模型统一取发起用户该能力
+    （表格→CHAT，图片→VISION）的默认 LLM 配置。开启对应增强但用户未配置该能力默认模型时，
+    解析任务直接失败（:class:`EnhancementModelMissingError` → ``ENHANCEMENT_MODEL_MISSING``），
+    不回退系统兜底模型。
+
+    历史数据 / 旧 JSON 中可能残留 ``table_model`` / ``vision_model`` 字段，Pydantic 默认忽略
+    多余键，反序列化不受影响。
     """
 
     enable_table_enhancement: bool = True
     enable_image_enhancement: bool = True
-    table_model: str | None = None
-    vision_model: str | None = None
 
     @classmethod
     def from_settings(cls) -> "EnhancementConfig":
-        """L1 基线：开关取系统 ``MARKDOWN_PARSER_ENABLE_*``；模型名一律 ``None``。
-
-        模型名不从系统配置 seed——按需求约定增强模型不走系统兜底，未在数据集显式配置即视为
-        未配置（增强开启时直接失败）。
-        """
+        """L1 基线：开关取系统 ``MARKDOWN_PARSER_ENABLE_*``。"""
         s = _settings()
         return cls(
             enable_table_enhancement=s.MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT,
             enable_image_enhancement=s.MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT,
-            table_model=None,
-            vision_model=None,
         )
 
 
