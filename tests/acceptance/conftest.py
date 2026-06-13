@@ -197,22 +197,45 @@ def post_process_repository_stub():
     pipeline_row = SimpleNamespace(
         id=1,
         pipeline_status="PENDING",
+        cleaning_status="PENDING",
         chunking_status="PENDING",
         vectorizing_status="PENDING",
         es_indexing_status="PENDING",
         pretokenize_status="PENDING",
+        sparse_vectorizing_status="PENDING",
         started_at=None,
+        finished_at=None,
+        failed_stage=None,
+        recover_from_stage=None,
+        failure_reason=None,
+        cleaning_duration_ms=None,
+        chunking_duration_ms=None,
+        vectorizing_duration_ms=None,
+        es_indexing_duration_ms=None,
+        pretokenize_duration_ms=None,
+        sparse_vectorizing_duration_ms=None,
     )
     repo.get_by_log_id = AsyncMock(return_value=pipeline_row)
+    repo.mark_cleaning_started = AsyncMock()
+    repo.mark_cleaning_success = AsyncMock()
+    repo.mark_cleaning_failed = AsyncMock()
+    repo.mark_post_cleaning = AsyncMock()
+    repo.mark_chunking_started = AsyncMock()
     repo.mark_processing = AsyncMock()
     repo.mark_chunking_success = AsyncMock()
     repo.mark_chunking_failed = AsyncMock()
+    repo.mark_vectorizing_started = AsyncMock()
     repo.mark_vectorizing_success = AsyncMock()
     repo.mark_vectorizing_failed = AsyncMock()
+    repo.mark_pretokenize_started = AsyncMock()
     repo.mark_pretokenize_success = AsyncMock()
     repo.mark_pretokenize_failed = AsyncMock()
+    repo.mark_es_indexing_started = AsyncMock()
     repo.mark_es_success = AsyncMock()
     repo.mark_es_failed = AsyncMock()
+    repo.mark_sparse_vectorizing_started = AsyncMock()
+    repo.mark_sparse_vectorizing_success = AsyncMock()
+    repo.mark_sparse_vectorizing_failed = AsyncMock()
     return repo
 
 
@@ -295,6 +318,7 @@ def pipeline_factory(
             id=1,
             parse_started_at=None,
             parse_finished_at=None,
+            parse_duration_ms=None,
             task_status="CREATED",
         )
         log_repo = MagicMock()
@@ -316,8 +340,19 @@ def pipeline_factory(
         async def _mark_success(payload, log_record, db):
             log_record.task_status = "SUCCESS"
 
+        async def _mark_parse_finished(log_record, db):
+            log_record.parse_finished_at = "2026-05-19T00:00:00"
+            log_record.parse_duration_ms = log_record.parse_duration_ms or 1
+
+        async def _mark_parsed(payload, log_record, db):
+            log_record.task_status = "SUCCESS"
+            log_record.parse_finished_at = "2026-05-19T00:00:00"
+            log_record.parse_duration_ms = log_record.parse_duration_ms or 1
+
         log_repo.mark_failed = AsyncMock(side_effect=_mark_failed)
         log_repo.mark_success = AsyncMock(side_effect=_mark_success)
+        log_repo.mark_parse_finished = AsyncMock(side_effect=_mark_parse_finished)
+        log_repo.mark_parsed = AsyncMock(side_effect=_mark_parsed)
         pipeline._log_repository = log_repo
 
         # guard 桩：放行所有任务（acceptance 仅治理下载/解析路径，不复审 guard 行为）。
