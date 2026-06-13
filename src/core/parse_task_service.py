@@ -1,12 +1,16 @@
 import asyncio
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from loguru import logger
 
 from src.core.markdown_parser import MarkdownEnhancementOrchestrator, MarkdownParser
 from src.core.markdown_parser.text_formatter import TextFormatter
 from src.core.parser.factory import ParserFactory
+
+if TYPE_CHECKING:
+    from src.core.dataset_config import EnhancementConfig
 
 
 class ParseTaskService:
@@ -22,6 +26,7 @@ class ParseTaskService:
         file_type: str,
         source_file: str | None = None,
         user_id: int | None = None,
+        enhancement_config: "EnhancementConfig | None" = None,
         **parser_kwargs,
     ) -> dict:
         start_time = time.time()
@@ -52,6 +57,7 @@ class ParseTaskService:
             or not metadata.get("image_upload_async", False),
             image_bytes_by_url=image_bytes_by_url,
             user_id=user_id,
+            enhancement_config=enhancement_config,
         )
         enhance_elapsed = time.monotonic() - enhance_started_at
         logger.info(

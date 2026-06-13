@@ -41,6 +41,19 @@ class LLMConfigMissingError(RuntimeError):
         )
 
 
+class EnhancementModelMissingError(RuntimeError):
+    """数据集开启了表格/图片增强，但未配置对应的增强模型名。
+
+    与 :class:`LLMConfigMissingError`（用户缺少能力默认配置）区分：本异常专指数据集
+    ``enhancement_config`` 中 ``table_model`` / ``vision_model`` 为空。按需求约定，增强开启
+    但模型未配时**不做任何兜底**，直接失败——解析链路据此把任务收敛为 FAILED。
+    """
+
+    def __init__(self, kind: str) -> None:
+        self.kind = kind  # "table" | "vision"
+        super().__init__(f"{kind}_model not configured for dataset")
+
+
 def _clean_llm_text(text: str) -> str:
     cleaned = (text or "").strip()
     if cleaned.startswith("```") and cleaned.endswith("```"):
@@ -159,18 +172,29 @@ async def _resolve_user_provider(
     return resolved.provider
 
 
-async def abuild_table_client(user_id: int) -> "ProviderTableClient":
-    """按发起用户的 CHAT 默认配置构造表格增强 client（缺失则抛 LLMConfigMissingError）。"""
-    settings = _get_settings()
-    model_name = settings.MARKDOWN_PARSER_TABLE_MODEL or settings.SYSTEM_LLM_MODEL_CHAT
+async def abuild_table_client(user_id: int, model_name: str | None) -> "ProviderTableClient":
+    """用数据集配置的表格增强模型构造 client。
+
+    ``model_name`` 来自数据集 ``enhancement_config.table_model``。为空时直接抛
+    :class:`EnhancementModelMissingError`，**不回退**系统兜底模型（按需求约定，增强开启但
+    未配模型即失败）。模型名有值时按发起用户的 CHAT 默认配置（provider 凭证）构造，模型名
+    覆盖具体模型；用户无 CHAT 默认配置时仍抛 :class:`LLMConfigMissingError`。
+    """
+    if not model_name:
+        raise EnhancementModelMissingError("table")
     provider = await _resolve_user_provider("CHAT", user_id=user_id, model_name=model_name)
     return ProviderTableClient(provider=provider)
 
 
-async def abuild_vision_client(user_id: int) -> "ProviderVisionClient":
-    """按发起用户的 VISION 默认配置构造图片增强 client（缺失则抛 LLMConfigMissingError）。"""
-    settings = _get_settings()
-    model_name = settings.MARKDOWN_PARSER_VISION_MODEL or settings.SYSTEM_LLM_MODEL_VISION
+async def abuild_vision_client(user_id: int, model_name: str | None) -> "ProviderVisionClient":
+    """用数据集配置的图片增强模型构造 client。
+
+    ``model_name`` 来自数据集 ``enhancement_config.vision_model``。为空时直接抛
+    :class:`EnhancementModelMissingError`，**不回退**系统兜底模型。模型名有值时按发起用户的
+    VISION 默认配置（provider 凭证）构造，模型名覆盖具体模型。
+    """
+    if not model_name:
+        raise EnhancementModelMissingError("vision")
     provider = await _resolve_user_provider("VISION", user_id=user_id, model_name=model_name)
     return ProviderVisionClient(provider=provider, model_name=model_name)
 

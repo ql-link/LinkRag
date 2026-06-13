@@ -71,10 +71,12 @@ class SparseRetriever:
         *,
         user_id: int,
         top_k: int,
+        score_threshold_override: float | None = None,
     ) -> list[RetrieverHit]:
         """按稀疏向量召回一组候选 chunk。
 
-        ``user_id`` / ``top_k`` 由 pipeline 执行期透传。
+        ``user_id`` / ``top_k`` 由 pipeline 执行期透传。``score_threshold_override`` 非 ``None``
+        时替代装配期注入的默认阈值（来自数据集级 ``recall_config.sparse_score_threshold``）。
         ``dataset_ids`` 为空 → 直接返空。底层 facade 的 ``set_id`` 是单值，
         协议层的"全库"语义在这一路放弃（与 ``Bm25Retriever`` 行为一致）。
         多个 ``dataset_ids`` → 逐个下发，合并后按 score 降序截断。
@@ -88,6 +90,11 @@ class SparseRetriever:
         if not dataset_ids:
             return []
 
+        effective_threshold = (
+            score_threshold_override
+            if score_threshold_override is not None
+            else self._score_threshold
+        )
         accumulated: list[RetrieverHit] = []
         for dataset_id in dataset_ids:
             result = await self._backend.search_sparse_chunks(
@@ -96,7 +103,7 @@ class SparseRetriever:
                 set_id=dataset_id,
                 doc_id=list(doc_ids) if doc_ids else None,
                 top_k=top_k,
-                score_threshold=self._score_threshold,
+                score_threshold=effective_threshold,
             )
             for hit in result.hits:
                 accumulated.append(

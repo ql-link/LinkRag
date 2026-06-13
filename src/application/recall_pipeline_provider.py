@@ -14,6 +14,7 @@ from __future__ import annotations
 from functools import lru_cache
 
 from src.config import settings
+from src.core.dataset_config import DatasetConfigService, RecallConfig
 from src.core.storage.es import Bm25Retriever, EsBm25Retriever
 from src.core.pipeline.recall import RecallPipeline, RecallPipelineConfig
 from src.core.pipeline.rerank import PostRecallReranker
@@ -89,6 +90,24 @@ def _build_pipeline() -> RecallPipeline:
         retrievers,
         RecallPipelineConfig(strict=settings.RECALL_STRICT_DEFAULT),
     )
+
+
+async def aresolve_recall_config(user_id: int, dataset_ids: list[int]) -> RecallConfig:
+    """取本次召回生效的数据集级 recall 配置（RAG 流 / 纯召回 JSON 两入口共用）。
+
+    多数据集混合召回时取 **第一个** dataset_id 的配置（各数据集 top_k/阈值无法同时生效，
+    取首个是确定性且可解释的选择）；``dataset_ids`` 为空（全库召回）时返回全默认 RecallConfig。
+    配置读取经独立短生命周期 session 完成——召回入口可能在请求处理函数返回后才执行（SSE 流），
+    不依赖请求级 session。
+    """
+    if not dataset_ids:
+        return RecallConfig()
+    # 延迟导入避免与 database 模块的潜在循环依赖。
+    from src.database import get_db_context
+
+    async with get_db_context() as db:
+        bundle = await DatasetConfigService().get_config(user_id, dataset_ids[0], db)
+    return bundle.recall
 
 
 @lru_cache(maxsize=1)

@@ -93,12 +93,14 @@ class DenseRetriever:
         *,
         user_id: int,
         top_k: int,
+        score_threshold_override: float | None = None,
     ) -> list[RetrieverHit]:
         """按稠密向量召回一组候选 chunk。
 
         与 ``SparseRetriever`` / ``Bm25Retriever`` 严格对仗的策略：
         - ``user_id`` / ``top_k`` 由 pipeline 执行期透传（来自 ``RecallRequest``）；
-          retriever 装配期不持有它们。
+          retriever 装配期不持有它们。``score_threshold_override`` 非 ``None`` 时替代装配期
+          注入的默认阈值（来自数据集级 ``recall_config.dense_score_threshold``）。
         - ``dataset_ids`` 为空 → 直接返空。底层 facade 的 ``set_id`` 是单值，
           协议层的"全库"语义在这一路放弃（与 sparse / bm25 行为一致）。
         - 多个 ``dataset_ids`` → 按构造顺序**串行**下发，合并后按 score 降序、
@@ -132,6 +134,12 @@ class DenseRetriever:
         if not dataset_ids:
             return []
 
+        effective_threshold = (
+            score_threshold_override
+            if score_threshold_override is not None
+            else self._score_threshold
+        )
+
         # 发起用户缺默认 EMBEDDING 配置 → dense 路无法编码 query：翻成 recall 层
         # RecallFatalError，让 pipeline 绕过宽松降级、整请求硬失败（区别于普通单路失败）。
         from src.core.pipeline.recall.exceptions import RecallFatalError
@@ -148,7 +156,7 @@ class DenseRetriever:
                     set_id=dataset_id,
                     doc_id=list(doc_ids) if doc_ids else None,
                     top_k=top_k,
-                    score_threshold=self._score_threshold,
+                    score_threshold=effective_threshold,
                 )
             except VectorRetrievalUserConfigMissingError as exc:
                 raise RecallFatalError(str(exc)) from exc
