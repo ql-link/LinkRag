@@ -1,16 +1,16 @@
 """
-LLM Providers
+LLM Providers（按 protocol 组织的 adapter）
 """
-from src.core.llm.providers.openai import OpenAIProvider
 from src.core.llm.providers.anthropic import AnthropicProvider
-from src.core.llm.providers.glm import GLMProvider
-from src.core.llm.providers.deepseek import DeepSeekProvider
-from src.core.llm.providers.qwen import QwenProvider
+from src.core.llm.providers.dashscope import DashScopeProvider
+from src.core.llm.providers.google import GoogleProvider
+from src.core.llm.providers.jina import JinaProvider
+from src.core.llm.providers.openai import OpenAICompatibleProvider
 
 __all__ = [
-    "OpenAIProvider",
+    "OpenAICompatibleProvider",
     "AnthropicProvider",
-    "GLMProvider",
-    "DeepSeekProvider",
-    "QwenProvider",
+    "GoogleProvider",
+    "JinaProvider",
+    "DashScopeProvider",
 ]

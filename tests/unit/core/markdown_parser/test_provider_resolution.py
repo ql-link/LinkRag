@@ -85,6 +85,7 @@ async def test_table_client_uses_dataset_model_with_user_config(monkeypatch):
         monkeypatch,
         config={
             "provider_type": "qwen",
+            "protocol": "openai",
             "api_key": "enc-key",
             "api_base_url": "https://user.example.com/v1",
             "model_name": "qwen-max",

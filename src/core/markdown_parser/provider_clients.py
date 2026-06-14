@@ -103,10 +103,15 @@ def _load_image_bytes(image_url: str, source_file: str | None) -> tuple[bytes, s
 
 def _build_system_provider(capability: CapabilityType, model_name: str | None = None) -> BaseProvider:
     settings = _get_settings()
+    # 系统级 LLM 固定 openai 兼容；env 配的是 base，按能力补 openai 后缀成完整端点 URL。
+    _cap = _get_capability_type()
+    _base = (settings.SYSTEM_LLM_API_BASE or "").rstrip("/")
+    _suffix = "/embeddings" if capability == _cap.EMBEDDING else "/chat/completions"
     provider = _get_model_factory().create_client(
+        protocol="openai",
         provider_type=settings.SYSTEM_LLM_PROVIDER,
         api_key=settings.SYSTEM_LLM_API_KEY or "",
-        api_base_url=settings.SYSTEM_LLM_API_BASE,
+        api_base_url=f"{_base}{_suffix}" if _base else settings.SYSTEM_LLM_API_BASE,
         model_name=model_name,
         timeout_ms=settings.MARKDOWN_PARSER_LLM_TIMEOUT_MS,
     )
@@ -160,14 +165,19 @@ async def _resolve_user_provider(
         LLMConfigMissingError: 用户无该能力的默认 LLM 配置。
         ValueError: 配置的 provider 不支持该能力。
     """
-    from src.core.llm.exceptions import UserModelConfigMissingError
+    from src.core.llm.exceptions import (
+        UnsupportedProtocolCapabilityError,
+        UserModelConfigMissingError,
+    )
     from src.core.llm.user_model_resolver import aresolve_user_model
 
     try:
         resolved = await aresolve_user_model(
             user_id=user_id, capability=capability_str, fallback_model=model_name
         )
-    except UserModelConfigMissingError as exc:
+    except (UserModelConfigMissingError, UnsupportedProtocolCapabilityError) as exc:
+        # 用户无该能力配置，或该能力本期未实现（如多模态停做的 VISION）→ 统一按"缺配置"语义，
+        # 让上层跳过图片增强，不中断 markdown 解析。
         raise LLMConfigMissingError(capability_str, user_id) from exc
     return resolved.provider
 

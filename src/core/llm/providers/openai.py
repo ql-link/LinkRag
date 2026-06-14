@@ -10,12 +10,10 @@ import httpx
 from src.core.llm.base_provider import BaseProvider
 from src.core.llm.interfaces import CapabilityType
 from src.core.llm.providers._sse import iter_sse_json
-from src.core.llm.providers._rerank import standard_rerank
 from src.core.llm.response import (
     GenerateResult,
     StreamChunk,
     EmbeddingResult,
-    RerankResult,
     UsageInfo,
 )
 from src.core.llm.exceptions import (
@@ -153,7 +151,8 @@ class OpenAIClient:
             payload["max_tokens"] = max_tokens
         payload.update(kwargs)
 
-        return await self._post("/chat/completions", payload)
+        # api_base_url 即完整端点 URL（Java 下发），不再拼 capability 后缀。
+        return await self._post("", payload)
 
     async def stream_chat_completions(
         self,
@@ -174,7 +173,7 @@ class OpenAIClient:
             payload["max_tokens"] = max_tokens
         payload.update(kwargs)
 
-        url = f"{self.api_base_url}/chat/completions"
+        url = self.api_base_url  # 完整端点 URL，不拼后缀
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -221,7 +220,8 @@ class OpenAIClient:
         }
         payload.update(kwargs)
 
-        return await self._post("/embeddings", payload)
+        # api_base_url 即完整端点 URL（Java 下发），不再拼 capability 后缀。
+        return await self._post("", payload)
 
     async def close(self) -> None:
         """关闭 HTTP 客户端"""
@@ -229,12 +229,13 @@ class OpenAIClient:
             await self._http_client.aclose()
 
 
-class OpenAIProvider(BaseProvider):
-    """OpenAI Provider 实现
+class OpenAICompatibleProvider(BaseProvider):
+    """OpenAI 兼容协议 adapter（protocol = "openai"）。
 
-    支持：
-    - 文本生成 (gpt-4, gpt-3.5-turbo 等)
-    - 向量化 (text-embedding-3-small, text-embedding-3-large)
+    承载全部 OpenAI 兼容厂商（openai / 千问 chat / glm / deepseek / 硅基流动 等）的
+    CHAT + EMBEDDING；坍缩原 openai/qwen/glm/deepseek 四类为一，厂商差异仅 base_url，
+    由配置注入。请求直打 ``api_base_url``（已是完整端点 URL），不拼 capability 后缀。
+    RERANK 不再由本 adapter 承载（改由 jina 平铺 / dashscope 原生）。
     """
 
     DEFAULT_API_BASE = "https://api.openai.com/v1"
@@ -243,7 +244,7 @@ class OpenAIProvider(BaseProvider):
     def __init__(
         self,
         provider_type: str = "openai",
-        provider_name: str = "OpenAI",
+        provider_name: str = "openai",
         api_key: str = "",
         api_base_url: Optional[str] = None,
         model_name: Optional[str] = None,
@@ -264,7 +265,6 @@ class OpenAIProvider(BaseProvider):
         self._capabilities = {
             CapabilityType.TEXT,
             CapabilityType.EMBEDDING,
-            CapabilityType.RERANK,
         }
         self._client = OpenAIClient(
             api_key=api_key,
@@ -387,24 +387,3 @@ class OpenAIProvider(BaseProvider):
             ),
         )
 
-    async def rerank(
-        self,
-        query: str,
-        documents: List[str],
-        model: Optional[str] = None,
-        top_n: Optional[int] = None,
-        **kwargs,
-    ) -> RerankResult:
-        """语义重排（标准 ``/rerank`` 契约，见 providers/_rerank.py）。
-
-        rerank 模型由 ``model`` 显式指定，缺省回退到构造时的 ``model_name``（用户 RERANK 配置的模型名）。
-        ``top_n=None`` 时不在 provider 侧截断，对全部 ``documents`` 打分。
-        """
-        return await standard_rerank(
-            self._client._post,
-            query=query,
-            documents=documents,
-            model=model or self.model_name,
-            top_n=top_n,
-            **kwargs,
-        )

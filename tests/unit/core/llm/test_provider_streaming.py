@@ -13,7 +13,7 @@ import pytest
 from src.core.llm.exceptions import AuthenticationError
 from src.core.llm.providers._sse import iter_sse_json
 from src.core.llm.providers.anthropic import AnthropicProvider
-from src.core.llm.providers.qwen import QwenProvider
+from src.core.llm.providers.openai import OpenAICompatibleProvider
 
 
 class _FakeStreamResponse:
@@ -117,16 +117,20 @@ async def test_qwen_stream_yields_deltas_then_end():
             "data: [DONE]",
         ]
     )
-    provider = QwenProvider(api_key="k", model_name="qwen3.5-flash")
+    provider = OpenAICompatibleProvider(
+        api_key="k",
+        model_name="qwen3.5-flash",
+        api_base_url="https://example.test/v1/chat/completions",
+    )
     fake = _inject(provider, resp)
 
     chunks = [c async for c in provider.stream(prompt="hi", system_prompt="sys")]
 
     assert "".join(c.delta for c in chunks) == "你好"
     assert chunks[-1].is_end is True
-    # 请求体确实带了 stream=True 且打到 /chat/completions
+    # 请求体带 stream=True，且直打 api_base_url（完整端点 URL，不再拼后缀）
     _, url, body, _ = fake.calls[0]
-    assert url.endswith("/chat/completions")
+    assert url == "https://example.test/v1/chat/completions"
     assert body["stream"] is True
     assert body["messages"][0] == {"role": "system", "content": "sys"}
 
@@ -142,7 +146,11 @@ async def test_qwen_stream_tolerates_null_content_delta():
             "data: [DONE]",
         ]
     )
-    provider = QwenProvider(api_key="k", model_name="qwen3.5-flash")
+    provider = OpenAICompatibleProvider(
+        api_key="k",
+        model_name="qwen3.5-flash",
+        api_base_url="https://example.test/v1/chat/completions",
+    )
     _inject(provider, resp)
 
     chunks = [c async for c in provider.stream(prompt="hi")]
@@ -162,7 +170,11 @@ async def test_qwen_stream_tolerates_null_delta_choice_usage():
             "data: [DONE]",
         ]
     )
-    provider = QwenProvider(api_key="k", model_name="qwen3.5-flash")
+    provider = OpenAICompatibleProvider(
+        api_key="k",
+        model_name="qwen3.5-flash",
+        api_base_url="https://example.test/v1/chat/completions",
+    )
     _inject(provider, resp)
 
     chunks = [c async for c in provider.stream(prompt="hi")]
@@ -174,7 +186,11 @@ async def test_qwen_stream_tolerates_null_delta_choice_usage():
 @pytest.mark.asyncio
 async def test_qwen_stream_raises_on_auth_error():
     resp = _FakeStreamResponse(["data: ignored"], status_code=401)
-    provider = QwenProvider(api_key="bad", model_name="qwen3.5-flash")
+    provider = OpenAICompatibleProvider(
+        api_key="bad",
+        model_name="qwen3.5-flash",
+        api_base_url="https://example.test/v1/chat/completions",
+    )
     _inject(provider, resp)
 
     with pytest.raises(AuthenticationError):
