@@ -9,6 +9,7 @@ EMBEDDING。复用 OpenAI 兼容 HTTP 客户端（Bearer 鉴权 + ``_post``）�
 
 本 adapter 不做文本生成（generate/stream 为满足抽象签名的占位，调用即报错）。
 """
+
 from typing import AsyncIterator, List, Optional, Union
 
 from src.core.llm.base_provider import BaseProvider
@@ -62,10 +63,14 @@ class JinaProvider(BaseProvider):
             **kwargs,
         )
 
-    async def embed(self, texts: Union[str, List[str]], model: Optional[str] = None, **kwargs) -> EmbeddingResult:
+    async def embed(
+        self, texts: Union[str, List[str]], model: Optional[str] = None, **kwargs
+    ) -> EmbeddingResult:
         if isinstance(texts, str):
             texts = [texts]
-        response = await self._client.embeddings(model=model or self.model_name, input=texts, **kwargs)
+        response = await self._client.embeddings(
+            model=model or self.model_name, input=texts, **kwargs
+        )
         embeddings = [item["embedding"] for item in response["data"]]
         usage = response.get("usage", {})
         return EmbeddingResult(
@@ -78,10 +83,14 @@ class JinaProvider(BaseProvider):
             ),
         )
 
-    async def generate(self, prompt, system_prompt=None, temperature=0.7, max_tokens=None, **kwargs):
+    async def generate(
+        self, prompt, system_prompt=None, temperature=0.7, max_tokens=None, **kwargs
+    ):
         raise NotImplementedError(f"{self.provider_type} does not support text generation")
 
-    async def stream(self, prompt, system_prompt=None, temperature=0.7, max_tokens=None, **kwargs) -> AsyncIterator[StreamChunk]:
+    async def stream(
+        self, prompt, system_prompt=None, temperature=0.7, max_tokens=None, **kwargs
+    ) -> AsyncIterator[StreamChunk]:
         raise NotImplementedError(f"{self.provider_type} does not support text generation")
         if False:  # pragma: no cover - 使本方法成为 async generator 以满足抽象签名
             yield

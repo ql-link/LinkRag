@@ -9,6 +9,7 @@
 注：原生 rerank 响应字段以官方文档/实测为准，``_parse`` 兼容 ``output.results`` 与
 顶层 ``results`` 两种回包形态（见 TD §12 风险）。
 """
+
 from typing import AsyncIterator, List, Optional
 
 import httpx
@@ -124,10 +125,14 @@ class DashScopeProvider(BaseProvider):
         )
         return RerankResult(model=model or "", results=items, usage=usage)
 
-    async def generate(self, prompt, system_prompt=None, temperature=0.7, max_tokens=None, **kwargs):
+    async def generate(
+        self, prompt, system_prompt=None, temperature=0.7, max_tokens=None, **kwargs
+    ):
         raise NotImplementedError(f"{self.provider_type} does not support text generation")
 
-    async def stream(self, prompt, system_prompt=None, temperature=0.7, max_tokens=None, **kwargs) -> AsyncIterator[StreamChunk]:
+    async def stream(
+        self, prompt, system_prompt=None, temperature=0.7, max_tokens=None, **kwargs
+    ) -> AsyncIterator[StreamChunk]:
         raise NotImplementedError(f"{self.provider_type} does not support text generation")
         if False:  # pragma: no cover - 使本方法成为 async generator 以满足抽象签名
             yield

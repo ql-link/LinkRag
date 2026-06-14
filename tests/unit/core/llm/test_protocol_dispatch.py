@@ -90,13 +90,17 @@ def test_unknown_protocol_raises():
 
 # ── google URL 特例 ──
 
+
 def _gc(base: str = "https://generativelanguage.googleapis.com/v1beta") -> GoogleClient:
     return GoogleClient(api_key="k", api_base_url=base)
 
 
 def test_google_non_stream_url():
     url = _gc()._url("gemini-2.5-pro", stream=False)
-    assert url == "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
+    assert (
+        url
+        == "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-pro:generateContent"
+    )
 
 
 def test_google_stream_url_has_alt_sse():

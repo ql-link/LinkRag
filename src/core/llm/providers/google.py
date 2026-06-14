@@ -10,6 +10,7 @@
 ``api_base_url`` 由配置下发到 ``/v1beta`` 为止（google 例外：base 而非完整 URL），
 其余路径与流式后缀由本 adapter 补全。
 """
+
 import time
 from typing import AsyncIterator, Optional
 
@@ -72,7 +73,9 @@ class GoogleClient:
             )
 
     @staticmethod
-    def _payload(contents: list, generation_config: Optional[dict], system_instruction: Optional[str]) -> dict:
+    def _payload(
+        contents: list, generation_config: Optional[dict], system_instruction: Optional[str]
+    ) -> dict:
         payload: dict = {"contents": contents}
         if system_instruction:
             payload["systemInstruction"] = {"parts": [{"text": system_instruction}]}
@@ -80,7 +83,9 @@ class GoogleClient:
             payload["generationConfig"] = generation_config
         return payload
 
-    async def generate_content(self, model, contents, generation_config=None, system_instruction=None) -> dict:
+    async def generate_content(
+        self, model, contents, generation_config=None, system_instruction=None
+    ) -> dict:
         url = self._url(model, stream=False)
         client = await self._get_client()
         try:
@@ -97,7 +102,9 @@ class GoogleClient:
         except httpx.ConnectError:
             raise ProviderConnectionError(message="Connection failed", provider_type="google")
 
-    async def stream_generate_content(self, model, contents, generation_config=None, system_instruction=None) -> AsyncIterator[dict]:
+    async def stream_generate_content(
+        self, model, contents, generation_config=None, system_instruction=None
+    ) -> AsyncIterator[dict]:
         url = self._url(model, stream=True)
         client = await self._get_client()
         try:
@@ -177,7 +184,9 @@ class GoogleProvider(BaseProvider):
             cfg["maxOutputTokens"] = max_tokens
         return cfg
 
-    async def generate(self, prompt, system_prompt=None, temperature=0.7, max_tokens=None, **kwargs) -> GenerateResult:
+    async def generate(
+        self, prompt, system_prompt=None, temperature=0.7, max_tokens=None, **kwargs
+    ) -> GenerateResult:
         start = time.time()
         data = await self._client.generate_content(
             model=self.model_name,
@@ -194,7 +203,9 @@ class GoogleProvider(BaseProvider):
             latency_ms=latency_ms,
         )
 
-    async def stream(self, prompt, system_prompt=None, temperature=0.7, max_tokens=None, **kwargs) -> AsyncIterator[StreamChunk]:
+    async def stream(
+        self, prompt, system_prompt=None, temperature=0.7, max_tokens=None, **kwargs
+    ) -> AsyncIterator[StreamChunk]:
         content_so_far = ""
         async for chunk in self._client.stream_generate_content(
             model=self.model_name,
