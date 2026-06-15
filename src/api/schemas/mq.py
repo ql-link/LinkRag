@@ -24,7 +24,7 @@ class SendParseTaskRequest(BaseModel):
     md_bucket: str = Field(
         ...,
         title="Markdown Bucket",
-        description="历史兼容字段；Python 侧 Markdown 输出 bucket 使用 MINIO_BUCKET_NAME",
+        description="历史兼容字段；Python 侧 Markdown 输出 bucket 使用 MINIO_PRIVATE_BUCKET",
     )
     md_object_key: str = Field(..., title="Markdown 对象Key", description="Markdown 输出对象 key")
     trigger_mode: str = Field(

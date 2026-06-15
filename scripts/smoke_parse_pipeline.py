@@ -212,8 +212,8 @@ async def main(
     task_id = f"test_{suffix}"
     parse_task_id = _TEST_ID_BASE + int(suffix, 16) % 100_000
     file_id = parse_task_id + 1
-    src_bucket = settings.MINIO_BUCKET_NAME
-    md_bucket = settings.MINIO_BUCKET_NAME
+    src_bucket = settings.MINIO_PRIVATE_BUCKET
+    md_bucket = settings.MINIO_PRIVATE_BUCKET
     file_type, content_type, pdf_suffix = detect_file_type(pdf_path)
     src_key = f"smoke-test/{task_id}{pdf_suffix}"
     md_key = f"smoke-test/{task_id}.md"
