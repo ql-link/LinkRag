@@ -1,9 +1,8 @@
 """MQ poison pill 死信兜底验收 step 实现。
 
 把 acceptance.feature 中的中文 Gherkin 句子绑定到对真实 dispatch_with_retry /
-KafkaReceiver / RabbitMQReceiver 的行为断言。所有外部 I/O 用 mock 隔离：
+KafkaReceiver 的行为断言。所有外部 I/O 用 mock 隔离：
 - aiokafka.AIOKafkaConsumer / Producer → MagicMock
-- aio_pika 连接 / channel / queue / message → MagicMock
 - asyncio.sleep → 注入计数 spy，不真睡
 
 state 通过 ``mq_dlq_state`` fixture（在本模块顶层注册）跨 step 共享。
@@ -15,7 +14,7 @@ import asyncio
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from pytest_bdd import given, when, then, parsers
@@ -25,8 +24,6 @@ from src.core.mq.retry import (
     RetryPolicy,
     dispatch_with_retry,
 )
-from src.core.mq.vendors.kafka.kafka_adapter import KafkaReceiver
-from src.core.mq.vendors.rabbitmq_adapter import RabbitMQReceiver
 from src.core.pipeline.parse_task.notifier import ParseResultNotificationError
 
 
@@ -60,9 +57,6 @@ class _MQState:
 
     # 启动声明记录（用于 Outline: 启动幂等创建）
     declared_topics: List[str] = field(default_factory=list)
-    declared_dlx: List[str] = field(default_factory=list)
-    rmq_ack_calls: int = 0
-    rmq_nack_calls: int = 0
 
     def policy(self) -> RetryPolicy:
         return RetryPolicy(
@@ -201,13 +195,6 @@ def _given_vendor(mq_dlq_state: _MQState, vendor: str, name: str) -> None:
     mq_dlq_state.messages[name] = _make_msg(name=name)
 
 
-@given(parsers.parse('当前 MQ 厂商为 rabbitmq，队列 "{q}" 的消息 {name}'))
-def _given_rmq_msg(mq_dlq_state: _MQState, q: str, name: str) -> None:
-    mq_dlq_state.vendor = "rabbitmq"
-    mq_dlq_state.topic = q
-    mq_dlq_state.messages[name] = _make_msg(name=name, topic=q)
-
-
 @given(parsers.parse('死信目标 "{target}" 在 "{vendor}" 上不存在'))
 def _given_dlt_missing(mq_dlq_state: _MQState, target: str, vendor: str) -> None:
     mq_dlq_state.vendor = vendor
@@ -266,21 +253,26 @@ async def _run_dispatch(state: _MQState, msg_name: str) -> DispatchOutcome:
     return outcome
 
 
+def _run_async(coro):
+    """Run one async step body without relying on a pre-existing default event loop."""
+    return asyncio.run(coro)
+
+
 @when(parsers.parse("消费回调对 {name} 执行成功"))
 def _when_callback_success(mq_dlq_state: _MQState, name: str) -> None:
-    asyncio.get_event_loop().run_until_complete(_run_dispatch(mq_dlq_state, name))
+    _run_async(_run_dispatch(mq_dlq_state, name))
 
 
 @when(parsers.parse("消费回调对 {name} 第 {n:d} 次执行成功"))
 def _when_callback_success_after_n(mq_dlq_state: _MQState, name: str, n: int) -> None:
     # 让前 n-1 次抛可重试异常，第 n 次成功
     mq_dlq_state.fail_plan[name] = ("retriable", n - 1)
-    asyncio.get_event_loop().run_until_complete(_run_dispatch(mq_dlq_state, name))
+    _run_async(_run_dispatch(mq_dlq_state, name))
 
 
 @when("消费回调执行 Pipeline，Pipeline 标记任务终态并正常返回（未抛异常）")
 def _when_pipeline_returns_normally(mq_dlq_state: _MQState) -> None:
-    asyncio.get_event_loop().run_until_complete(_run_dispatch(mq_dlq_state, next(iter(mq_dlq_state.messages))))
+    _run_async(_run_dispatch(mq_dlq_state, next(iter(mq_dlq_state.messages))))
 
 
 @when("消费回调抛出 ParseResultNotificationError")
@@ -290,14 +282,14 @@ def _when_retriable_once(mq_dlq_state: _MQState) -> None:
     # 不进死信。其他需要持续失败的场景由专用 When step（_when_full_retry_cycle 等）
     # 在执行前覆盖 fail_plan。
     mq_dlq_state.fail_plan.setdefault(name, ("retriable", 1))
-    asyncio.get_event_loop().run_until_complete(_run_dispatch(mq_dlq_state, name))
+    _run_async(_run_dispatch(mq_dlq_state, name))
 
 
 @when(parsers.parse("{name} 因终态异常被投递到死信"))
 def _when_msg_goes_to_dlq_terminal(mq_dlq_state: _MQState, name: str) -> None:
     """元数据契约场景：直接触发终态异常 → 死信。"""
     mq_dlq_state.fail_plan[name] = ("terminal", 10**9)
-    asyncio.get_event_loop().run_until_complete(_run_dispatch(mq_dlq_state, name))
+    _run_async(_run_dispatch(mq_dlq_state, name))
 
 
 @when(parsers.re(r"^消费回调抛出 \"(?P<exc>[^\"]+)\"$"))
@@ -311,27 +303,27 @@ def _when_callback_raises_outline(mq_dlq_state: _MQState, exc: str) -> None:
         mq_dlq_state.fail_plan[name] = ("retriable", 10**9)
     else:
         mq_dlq_state.fail_plan[name] = ("terminal", 10**9)
-    asyncio.get_event_loop().run_until_complete(_run_dispatch(mq_dlq_state, name))
+    _run_async(_run_dispatch(mq_dlq_state, name))
 
 
 @when("消费回调抛出非 RetriableError 异常（从 Pipeline 兜底之外逃出）")
 def _when_terminal_exception(mq_dlq_state: _MQState) -> None:
     name = next(iter(mq_dlq_state.messages))
     mq_dlq_state.fail_plan[name] = ("terminal", 10**9)
-    asyncio.get_event_loop().run_until_complete(_run_dispatch(mq_dlq_state, name))
+    _run_async(_run_dispatch(mq_dlq_state, name))
 
 
 @when("消费回调再次抛出 ParseResultNotificationError")
 def _when_retriable_again(mq_dlq_state: _MQState) -> None:
     name = next(iter(mq_dlq_state.messages))
     mq_dlq_state.fail_plan[name] = ("retriable", 10**9)
-    asyncio.get_event_loop().run_until_complete(_run_dispatch(mq_dlq_state, name))
+    _run_async(_run_dispatch(mq_dlq_state, name))
 
 
 @when(parsers.parse("{name} 从首次失败到进入死信完成整个重试过程"))
 def _when_full_retry_cycle(mq_dlq_state: _MQState, name: str) -> None:
     mq_dlq_state.fail_plan[name] = ("retriable", 10**9)
-    asyncio.get_event_loop().run_until_complete(_run_dispatch(mq_dlq_state, name))
+    _run_async(_run_dispatch(mq_dlq_state, name))
 
 
 @when(parsers.parse("消费回调对 {name} 连续抛出 ParseResultNotificationError {n:d} 次"))
@@ -339,63 +331,28 @@ def _when_retriable_n_times(mq_dlq_state: _MQState, name: str, n: int) -> None:
     # 让所有重试都失败到上限
     mq_dlq_state.max_retries = max(mq_dlq_state.max_retries, n)
     mq_dlq_state.fail_plan[name] = ("retriable", 10**9)
-    asyncio.get_event_loop().run_until_complete(_run_dispatch(mq_dlq_state, name))
+    _run_async(_run_dispatch(mq_dlq_state, name))
 
 
 @when(parsers.parse("向死信目标投递 {name} 失败"))
 def _when_dlq_publish_fails(mq_dlq_state: _MQState, name: str) -> None:
     mq_dlq_state.dlq_publisher_should_raise = RuntimeError("DLT broker down")
     mq_dlq_state.fail_plan.setdefault(name, ("terminal", 10**9))
-    asyncio.get_event_loop().run_until_complete(_run_dispatch(mq_dlq_state, name))
+    _run_async(_run_dispatch(mq_dlq_state, name))
 
 
 @when("应用启动完成 MQ 装配")
 def _when_app_starts(mq_dlq_state: _MQState) -> None:
-    if mq_dlq_state.vendor == "kafka":
-        from src.core.mq.topic_admin import build_default_topic_specs
-        specs = build_default_topic_specs()
-        mq_dlq_state.declared_topics = [s.name for s in specs]
-    else:
-        # 模拟 RabbitMQ start() 装配：用真实的业务 queue 名（tolink.rag.parse_task），
-        # 与 Kafka topic 命名空间对齐，便于 Outline Examples 同一目标行复用。
-        receiver = RabbitMQReceiver(
-            url="amqp://", retry_policy=mq_dlq_state.policy(),
-            dlq_publisher=AsyncMock(),
-        )
-        fake_conn = AsyncMock()
-        fake_channel = AsyncMock()
-        fake_channel.set_qos = AsyncMock()
-        declared_exchanges: List[str] = []
-        declared_queues: List[str] = []
+    from src.core.mq.topic_admin import build_default_topic_specs
 
-        async def _decl_exchange(name, **kw):
-            declared_exchanges.append(name)
-            return MagicMock()
-
-        async def _decl_queue(name, **kw):
-            declared_queues.append(name)
-            q = MagicMock()
-            q.bind = AsyncMock()
-            q.consume = AsyncMock()
-            return q
-
-        fake_channel.declare_exchange = AsyncMock(side_effect=_decl_exchange)
-        fake_channel.declare_queue = AsyncMock(side_effect=_decl_queue)
-        fake_conn.channel = AsyncMock(return_value=fake_channel)
-
-        async def _runner():
-            await receiver.subscribe("tolink.rag.parse_task", "g", AsyncMock())
-            with patch("aio_pika.connect_robust", AsyncMock(return_value=fake_conn)):
-                await receiver.start()
-        asyncio.get_event_loop().run_until_complete(_runner())
-        mq_dlq_state.declared_topics = declared_queues
-        mq_dlq_state.declared_dlx = declared_exchanges
+    specs = build_default_topic_specs()
+    mq_dlq_state.declared_topics = [s.name for s in specs]
 
 
 @when("系统处理 partition P0")
 def _when_process_p0(mq_dlq_state: _MQState) -> None:
     name = next(n for n, m in mq_dlq_state.messages.items() if m.partition == 0)
-    asyncio.get_event_loop().run_until_complete(_run_dispatch(mq_dlq_state, name))
+    _run_async(_run_dispatch(mq_dlq_state, name))
 
 
 @when("系统并行消费 P0 与 P1")
@@ -403,7 +360,7 @@ def _when_parallel_consume(mq_dlq_state: _MQState) -> None:
     # 直接对 P1 成功消息精确提交；P0 当前还在重试不应提交
     p0 = next(n for n, m in mq_dlq_state.messages.items() if m.partition == 0)
     p1 = next(n for n, m in mq_dlq_state.messages.items() if m.partition == 1)
-    asyncio.get_event_loop().run_until_complete(_run_dispatch(mq_dlq_state, p1))
+    _run_async(_run_dispatch(mq_dlq_state, p1))
     # P0 处于"重试中"状态，不在本步推进，模拟正在 dispatch_with_retry 内 sleep 等待
     mq_dlq_state.commits.append({"partition": 1, "offset_committed": mq_dlq_state.messages[p1].offset + 1})
 
@@ -413,16 +370,7 @@ def _when_restart_replay(mq_dlq_state: _MQState) -> None:
     # 重启 → 重新 dispatch，计数从 0 开始；本轮在上限内重试若干次后又达到上限
     mq_dlq_state.fail_plan["M1"] = ("retriable", 10**9)
     mq_dlq_state.call_count.pop("M1", None)
-    asyncio.get_event_loop().run_until_complete(_run_dispatch(mq_dlq_state, "M1"))
-
-
-@when("消费回调抛出 ParseResultNotificationError 且已达最大重试次数")
-def _when_rmq_retriable_exhaust(mq_dlq_state: _MQState) -> None:
-    name = next(iter(mq_dlq_state.messages))
-    mq_dlq_state.fail_plan[name] = ("retriable", 10**9)
-    asyncio.get_event_loop().run_until_complete(_run_dispatch(mq_dlq_state, name))
-    # 同步推进 RabbitMQ 行为断言：达上限 → ack（即业务流转结束）
-    mq_dlq_state.rmq_ack_calls += 1 if mq_dlq_state.outcomes[name] == DispatchOutcome.DLQ_PUBLISHED else 0
+    _run_async(_run_dispatch(mq_dlq_state, "M1"))
 
 
 # --- Then 断言 ---
@@ -599,9 +547,7 @@ def _then_redeliverable(mq_dlq_state: _MQState, name: str) -> None:
 
 
 def _target_declared(state: _MQState, target: str) -> bool:
-    """target 名约定为 "<原 topic>.DLT"；声明列表中可能是带 namespace 的完整名
-    （Kafka 走 build_default_topic_specs 返回 "tolink.rag.parse_task.DLT"，
-    RabbitMQ 走 receiver.start() 声明的是 "parse-task.DLT"）。按后缀匹配以承接两种。"""
+    """target 名约定为 "<原 topic>.DLT"；Kafka topic spec 使用完整 namespace。"""
     suffix = target  # e.g. "parse-task.DLT"
     return any(name.endswith(suffix) or name == target for name in state.declared_topics)
 
@@ -615,7 +561,7 @@ def _then_target_created(mq_dlq_state: _MQState, target: str) -> None:
 
 @then(parsers.parse('重复启动不因 "{target}" 已存在而报错'))
 def _then_idempotent_create(mq_dlq_state: _MQState, target: str) -> None:
-    # build_default_topic_specs / aio_pika declare 都是幂等接口；这里只断言曾被声明
+    # build_default_topic_specs 返回稳定 topic specs；这里只断言曾被声明
     assert _target_declared(mq_dlq_state, target)
 
 
@@ -671,25 +617,4 @@ def _then_no_cross_restart_loop(mq_dlq_state: _MQState, name: str) -> None:
 
 @then(parsers.re(r"^(?P<name>\w+) 的最终去向为 \"(?P<dest>[^\"]+)\"$"))
 def _then_final_destination(mq_dlq_state: _MQState, name: str, dest: str) -> None:
-    assert mq_dlq_state.outcomes.get(name) == DispatchOutcome.DLQ_PUBLISHED
-
-
-@then("厂商间该规则的可重试判定与最大重试次数语义一致")
-def _then_vendor_alignment(mq_dlq_state: _MQState) -> None:
-    return None  # 由 dispatch_with_retry 被两厂商共享保证
-
-
-@then(parsers.parse("{name} 不被无条件 nack-requeue 回原队列"))
-def _then_rmq_no_unconditional_nack(mq_dlq_state: _MQState, name: str) -> None:
-    # acceptance 抽象层：outcome == DLQ_PUBLISHED → adapter 应 ack 而非 nack
-    assert mq_dlq_state.outcomes.get(name) == DispatchOutcome.DLQ_PUBLISHED
-
-
-@then(parsers.parse("{name} 被 reject 到死信交换器对应的死信目标"))
-def _then_rmq_to_dlx(mq_dlq_state: _MQState, name: str) -> None:
-    assert any(c["msg"] == name for c in mq_dlq_state.dlq_calls)
-
-
-@then(parsers.parse("原队列不再无限重新投递 {name}"))
-def _then_rmq_no_infinite_redeliver(mq_dlq_state: _MQState, name: str) -> None:
     assert mq_dlq_state.outcomes.get(name) == DispatchOutcome.DLQ_PUBLISHED
