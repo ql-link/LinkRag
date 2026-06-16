@@ -10,9 +10,14 @@ shared contract.
 New columns (all nullable except ``default_protocol`` which is a template default):
 
 - ``llm_system_provider.default_protocol``  — 厂商默认协议模板（不参与运行决策）
-- ``llm_provider_model.protocol`` / ``api_base_url`` — 事实来源（base 不含 capability 后缀）
+- ``llm_provider_model.protocol`` / ``api_base_url`` — 事实来源（完整端点 URL；google 例外存 base）
 - ``llm_system_preset.provider_type`` / ``protocol`` / ``api_base_url`` — 复制自模型能力层
 - ``llm_user_config.protocol`` — 运行快照，下游按 protocol+capability 选 adapter
+
+Model-capability and user-config ``api_base_url`` values are full endpoint URLs
+that Python adapters call directly; ``google`` is the only exception and keeps
+the base URL to ``/v1beta`` because Gemini encodes the model and stream mode in
+the path.
 
 Fact columns stay nullable for now; non-null is guaranteed by the Java service
 layer (``validateProtocol`` + ``requireModelFact``) and will be tightened to
@@ -56,7 +61,7 @@ def upgrade() -> None:
         comment="默认 API 地址（模板值，不参与运行决策）",
     )
 
-    # 模型能力层：协议与入口事实来源（base 不含 capability 后缀）
+    # 模型能力层：协议与入口事实来源（完整端点 URL；google 例外存 base）
     op.add_column(
         "llm_provider_model",
         sa.Column(
@@ -72,7 +77,7 @@ def upgrade() -> None:
             "api_base_url",
             sa.String(length=512),
             nullable=True,
-            comment="调用入口基地址（事实来源，不含 capability 后缀）",
+            comment="调用入口完整端点 URL（事实来源，Python 直打不拼后缀；google 例外存 base）",
         ),
     )
 
@@ -101,7 +106,7 @@ def upgrade() -> None:
             "api_base_url",
             sa.String(length=512),
             nullable=True,
-            comment="调用入口基地址（复制自模型能力层）",
+            comment="调用入口完整端点 URL（复制自模型能力层）",
         ),
     )
 
@@ -120,7 +125,7 @@ def upgrade() -> None:
         "api_base_url",
         existing_type=sa.String(length=512),
         existing_nullable=True,
-        comment="实际生效地址：复制自模型能力层事实（不 fallback 厂商默认）",
+        comment="实际生效地址：完整端点 URL，复制自模型能力层事实（不 fallback 厂商默认），Python 直打",
     )
 
 

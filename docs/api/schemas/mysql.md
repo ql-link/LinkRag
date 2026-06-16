@@ -54,7 +54,7 @@ ORM：（未在 `src/models/` 中映射，由业务侧管理）
 
 > **协议（protocol）与入口（api_base_url）三层语义**（LINK-123）：LLM 调用拆成两个正交维度——`protocol`（API 家族，决定 HTTP 怎么拼）× `capability`（用途，决定调哪个端点）。`protocol` 枚举：`openai` / `anthropic` / `google` / `jina` / `dashscope`（小写、大小写敏感）。同一厂商不同能力可走不同协议（如千问 chat 走 `openai`、rerank 走 `dashscope`），故 `protocol` ≠ `provider_type`。
 >
-> 三层定位：**厂商层**（`llm_system_provider`）= 默认模板，不参与运行决策；**模型能力层**（`llm_provider_model`）= 协议与入口的事实来源；**用户配置层**（`llm_user_config`）= 运行快照，从模型能力层复制，Python 下游按 `(protocol, capability)` 选 adapter，绝不 fallback 厂商默认。`api_base_url` 只存协议基地址（到 `/v1`、`/compatible-mode/v1`、`/v1beta`、`/api/v1` 为止），**不含 capability 后缀**；后缀由下游 adapter 按 `(protocol, capability)` 追加。
+> 三层定位：**厂商层**（`llm_system_provider`）= 默认模板，不参与运行决策；**模型能力层**（`llm_provider_model`）= 协议与入口的事实来源；**用户配置层**（`llm_user_config`）= 运行快照，从模型能力层复制，Python 下游按 `(protocol, capability)` 选 adapter，绝不 fallback 厂商默认。`api_base_url` 在厂商层保存协议基地址，仅用于管理端预填；在模型能力层和用户配置层保存**完整端点 URL**，Python adapter 直接请求该 URL，不再拼 capability 后缀。`google` 协议例外，保存到 `/v1beta` 为止，由 Python 按模型和流式模式补全 Gemini 原生路径。
 
 ### `llm_system_provider` — LLM 系统级厂商配置
 
@@ -84,7 +84,7 @@ ORM：[`ProviderModelDB`](../../../src/models/db_models.py)
 | `model_name` | VARCHAR(128) | 模型名 |
 | `capability` | VARCHAR(32) | 单能力；一模型多能力拆成多行 |
 | `protocol` | VARCHAR(32) | 调用协议（**事实来源**）；当前 nullable，由 Java 服务层保证非空，待回填后收紧 |
-| `api_base_url` | VARCHAR(512) | 调用入口基地址（**事实来源**，不含 capability 后缀） |
+| `api_base_url` | VARCHAR(512) | 调用入口完整端点 URL（**事实来源**；`google` 例外保存 `/v1beta` base） |
 | `is_active` | BOOLEAN | 该模型能力是否上架 |
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
 
@@ -104,7 +104,7 @@ ORM：[`SystemPresetDB`](../../../src/models/db_models.py)
 | `capability` | VARCHAR(32) | 能力标识 |
 | `provider_type` | VARCHAR(32) | 厂商类型（与用户配置对齐，镜像免 join） |
 | `protocol` | VARCHAR(32) | 调用协议（创建预设时复制自模型能力层） |
-| `api_base_url` | VARCHAR(512) | 调用入口基地址（复制自模型能力层） |
+| `api_base_url` | VARCHAR(512) | 调用入口完整端点 URL（复制自模型能力层） |
 | `api_key` | VARCHAR(512) | 平台 Key，**加密存储** |
 | `is_active` | BOOLEAN | 是否对新用户下发 |
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
@@ -124,7 +124,7 @@ ORM：[`UserLLMConfigDB`](../../../src/models/db_models.py)
 | `provider_id` | BIGINT UNSIGNED | 关联 `llm_system_provider.id` |
 | `provider_type` | VARCHAR(32) | 厂商类型快照，用于下游路由到对应 SDK |
 | `api_key` | VARCHAR(512) | **加密存储**，由 `API_KEY_ENCRYPTION_SECRET` 解密 |
-| `api_base_url` | VARCHAR(512) | 实际生效地址：复制自模型能力层事实（不 fallback 厂商默认） |
+| `api_base_url` | VARCHAR(512) | 实际生效地址：完整端点 URL，复制自模型能力层事实（不 fallback 厂商默认） |
 | `protocol` | VARCHAR(32) | 调用协议快照：复制自模型能力层，下游按 `protocol`+`capability` 选 adapter |
 | `model_name` | VARCHAR(128) | 具体模型名 |
 | `capability` | VARCHAR(32) | `CHAT` / `EMBEDDING` / `RERANK` / `OCR` / `VISION` 等，默认 `CHAT` |
