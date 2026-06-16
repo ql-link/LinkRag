@@ -39,15 +39,16 @@ class MarkdownEnhancementOrchestrator:
         """Parse markdown and enrich the structured result before materializing markdown again.
 
         ``enhancement_config`` 来自数据集级配置（``None`` 时取全默认）：``enable_*`` 决定是否
-        执行对应增强，``table_model`` / ``vision_model`` 指定增强模型名。增强开启但模型名未配时
-        :class:`EnhancementModelMissingError` 向上传播使任务失败——不做任何兜底（含系统模型与
-        用户默认模型）。
+        执行对应增强。数据集层**不再选择增强模型**——表格增强用发起用户 CHAT 默认模型、图片
+        增强用 VISION 默认模型。开启对应增强但用户未配该能力默认模型时，
+        :class:`EnhancementModelMissingError` 向上传播使任务失败——不做任何兜底（既不回退系统
+        模型，图片增强也不再静默跳过）。
 
         ``enable_image_enhancement`` 参数语义是「图片是否实际可用」（由 ``aprocess`` 按是否已
         取到图片字节 / 是否异步上传传入），与 ``enhancement_config.enable_image_enhancement``
         这一**用户开关**是两件事，二者 **AND** 组合：图片增强执行 = 用户开启 且 图片可用。
 
-        ``user_id`` 为 ``None``（无用户上下文的调试入口）时回退系统默认 client，不走数据集模型。
+        ``user_id`` 为 ``None``（无用户上下文的调试入口）时回退系统默认 client，不走用户模型。
         """
         cfg = enhancement_config or EnhancementConfig()
         parse_result = self._parser.parse(markdown, source_file=source_file)
@@ -56,7 +57,7 @@ class MarkdownEnhancementOrchestrator:
             # client 构造在 try 之外：模型未配（EnhancementModelMissingError）需向上传播使任务
             # 失败，不能被下方"运行期增强失败可跳过"的 except 吞掉。
             table_client = (
-                await abuild_table_client(user_id, model_name=cfg.table_model)
+                await abuild_table_client(user_id)
                 if user_id is not None
                 else build_default_table_client()
             )
@@ -70,7 +71,7 @@ class MarkdownEnhancementOrchestrator:
         if cfg.enable_image_enhancement and image_available and parse_result.images:
             # 同表格路径：client 构造在 try 之外，模型未配直接失败。
             vision_client = (
-                await abuild_vision_client(user_id, model_name=cfg.vision_model)
+                await abuild_vision_client(user_id)
                 if user_id is not None
                 else build_default_vision_client()
             )

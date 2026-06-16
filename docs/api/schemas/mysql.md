@@ -193,7 +193,7 @@ ORM：[`UsageLogDB`](../../../src/models/db_models.py)
 | `user_id` | BIGINT UNSIGNED | 所属用户 ID |
 | `dataset_id` | BIGINT UNSIGNED | 所属数据集 ID，对应 `dataset.id` |
 | `chunking_config` | JSON | 分块配置（3 项：heading_break_level / min_candidate_chunk_tokens / overlap_tokens；旧 percentile 语义切片参数已随 splitter 重写移除） |
-| `enhancement_config` | JSON | Markdown 增强配置（4 项：enable_table_enhancement / enable_image_enhancement / table_model / vision_model） |
+| `enhancement_config` | JSON | Markdown 增强配置（2 项：enable_table_enhancement / enable_image_enhancement）。仅控制是否开启表格/图片增强；增强模型不在此选择，统一用发起用户对应能力（CHAT/VISION）的默认模型。历史数据残留的 table_model / vision_model 键被忽略 |
 | `pdf_config` | JSON | PDF 解析配置（1 项：pdf_parser_backend，null 表示用系统默认） |
 | `recall_config` | JSON | 召回检索配置（6 项：recall_result_limit / recall_context_token_budget / sparse_top_k / sparse_score_threshold / dense_top_k / dense_score_threshold） |
 | `is_active` | BOOLEAN | 是否启用，默认 `TRUE` |
