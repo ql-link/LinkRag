@@ -192,7 +192,6 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── chunking_engine.py
 │   │   │   ├── element_derived_chunker.py    # 标题路径跟踪 + 图片/表格 derived chunk
 │   │   │   ├── overlap.py          # 相邻 chunk 上下文 overlap
-│   │   │   ├── semantic_chunker.py
 │   │   │   ├── pipeline_chunker.py # StructuredSemanticChunker：串联候选边界/细分/overlap
 │   │   │   ├── embedding_pipeline.py
 │   │   │   ├── input_adapter.py   # ParseResult / MarkdownElement[] → SplitInput

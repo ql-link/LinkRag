@@ -24,11 +24,9 @@ def _settings():
 class ChunkingConfig(BaseModel):
     """分块策略配置（3 项），消费点见 ``splitter/factory.py``。
 
-    dev 的 splitter 重写（candidate_boundary 阶段算法 + StageRouter）已移除旧 percentile
-    语义切片及其 ``CHUNKING_SEMANTIC_*`` / ``CHUNKING_MIN|MAX_CHUNK_TOKENS`` /
-    ``CHUNKING_MIN_DISTANCE_GATE`` 系统配置，故数据集级分块配置只保留当前架构仍生效的三项：
-    标题断层级、候选分块 token 软下限、相邻 chunk overlap。后续分块算法再扩展可配项时，在此
-    追加字段 + 对应 ``CHUNKING_*`` 系统默认即可。
+    当前数据集级分块配置只保留 splitter 主链路仍生效的三项：标题断层级、候选分块 token
+    软下限、相邻 chunk overlap。后续分块算法再扩展可配项时，在此追加字段 + 对应
+    ``CHUNKING_*`` 系统默认即可。
     """
 
     heading_break_level: int = 5
@@ -61,30 +59,27 @@ class ChunkingConfig(BaseModel):
 
 
 class EnhancementConfig(BaseModel):
-    """Markdown 增强配置（4 项），消费点见 ``markdown_parser/orchestrator.py``。
+    """Markdown 增强配置（2 项：表格 / 图片增强开关），消费点见 ``markdown_parser/orchestrator.py``。
 
-    ``table_model`` / ``vision_model`` 是数据集为增强配置的模型名；为空且对应增强开启时
-    解析任务直接失败（不回退系统兜底模型）。
+    数据集层只配置「是否开启」，**不再选择增强模型**：增强使用的模型统一取发起用户该能力
+    （表格→CHAT，图片→VISION）的默认 LLM 配置。开启对应增强但用户未配置该能力默认模型时，
+    解析任务直接失败（:class:`EnhancementModelMissingError` → ``ENHANCEMENT_MODEL_MISSING``），
+    不回退系统兜底模型。
+
+    历史数据 / 旧 JSON 中可能残留 ``table_model`` / ``vision_model`` 字段，Pydantic 默认忽略
+    多余键，反序列化不受影响。
     """
 
     enable_table_enhancement: bool = True
     enable_image_enhancement: bool = True
-    table_model: str | None = None
-    vision_model: str | None = None
 
     @classmethod
     def from_settings(cls) -> "EnhancementConfig":
-        """L1 基线：开关取系统 ``MARKDOWN_PARSER_ENABLE_*``；模型名一律 ``None``。
-
-        模型名不从系统配置 seed——按需求约定增强模型不走系统兜底，未在数据集显式配置即视为
-        未配置（增强开启时直接失败）。
-        """
+        """L1 基线：开关取系统 ``MARKDOWN_PARSER_ENABLE_*``。"""
         s = _settings()
         return cls(
             enable_table_enhancement=s.MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT,
             enable_image_enhancement=s.MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT,
-            table_model=None,
-            vision_model=None,
         )
 
 

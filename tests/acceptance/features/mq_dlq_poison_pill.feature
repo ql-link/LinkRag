@@ -7,7 +7,7 @@
 #   （固定退避间隔）、MQ_DLQ_SUFFIX（死信后缀 .DLT）；死信兜底恒启用，无开关
 # - 异常分类：RetriableError 为可重试异常基类；ParseResultNotificationError 归入可重试；
 #   其它从 Pipeline 逃出的异常归为终态（不可重试）
-# - 死信目标：原 topic + 后缀 .DLT（Kafka 为死信 topic，RabbitMQ 为死信交换器/队列）
+# - 死信目标：原 topic + 后缀 .DLT
 # - 死信消息须携带：原 topic、异常摘要、累计重试次数、原消息 key
 # - 重试计数键为 (topic, partition, offset)，仅存进程内存（已确认接受）
 # - "Pipeline 正常失败"指 Pipeline 已标记终态并正常返回、未抛异常的解析失败
@@ -120,9 +120,8 @@ Feature: MQ 消费 poison pill 死信与重试兜底
     And 重复启动不因 "<目标>" 已存在而报错
 
     Examples:
-      | 厂商     | 目标                         |
-      | kafka    | tolink.rag.parse_task.DLT    |
-      | rabbitmq | tolink.rag.parse_task.DLT    |
+      | 厂商  | 目标                      |
+      | kafka | tolink.rag.parse_task.DLT |
 
   # ==== Kafka 精确位点提交：消除静默跳过丢数据 ====
 
@@ -156,24 +155,14 @@ Feature: MQ 消费 poison pill 死信与重试兜底
     And M1 在本轮内最多再重试 MQ_MAX_RETRIES 次后进入死信
     And 系统不因跨重启而无限重试 M1
 
-  # ==== 厂商行为对齐 ====
+  # ==== Kafka 失败兜底 ====
 
-  Scenario Outline: Kafka 与 RabbitMQ 失败兜底行为一致
+  Scenario Outline: Kafka 失败兜底行为
     Given 当前 MQ 厂商为 "<厂商>"，消息 M1 待消费
     When 消费回调抛出 "<异常>"
     Then M1 的最终去向为 "<去向>"
-    And 厂商间该规则的可重试判定与最大重试次数语义一致
 
     Examples:
-      | 厂商     | 异常                          | 去向                       |
-      | kafka    | ParseResultNotificationError  | 重试 MQ_MAX_RETRIES 次后进死信 |
-      | rabbitmq | ParseResultNotificationError  | 重试 MQ_MAX_RETRIES 次后进死信 |
-      | kafka    | 非 RetriableError 普通异常    | 不重试直接进死信           |
-      | rabbitmq | 非 RetriableError 普通异常    | 不重试直接进死信           |
-
-  Scenario: RabbitMQ 失败不再无条件 nack 重入队
-    Given 当前 MQ 厂商为 rabbitmq，队列 "parse-task" 的消息 M1
-    When 消费回调抛出 ParseResultNotificationError 且已达最大重试次数
-    Then M1 不被无条件 nack-requeue 回原队列
-    And M1 被 reject 到死信交换器对应的死信目标
-    And 原队列不再无限重新投递 M1
+      | 厂商  | 异常                         | 去向                          |
+      | kafka | ParseResultNotificationError | 重试 MQ_MAX_RETRIES 次后进死信 |
+      | kafka | 非 RetriableError 普通异常   | 不重试直接进死信              |

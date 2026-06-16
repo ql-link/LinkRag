@@ -2,13 +2,15 @@ import pytest
 
 from src.core.markdown_parser import ElementType, MarkdownElement, ParseResult
 from src.core.splitter import (
+    CandidateBoundaryChunker,
     Chunk,
     ChunkingEngine,
+    ChunkOverlapConfig,
+    ChunkOverlapper,
     CoarseChunk,
     CoarseChunkSet,
     ElementView,
     NoopStageTwoAlgorithm,
-    PercentileSemanticChunker,
     ProtectedRange,
     SplitterOutputValidationError,
     StageOneRouter,
@@ -26,22 +28,6 @@ class MockWordTokenizer:
         if len(words) <= max_tokens:
             return " ".join(words), 0
         return " ".join(words[:max_tokens]), len(words) - max_tokens
-
-
-class MockEmbeddingResult:
-    def __init__(self, embeddings):
-        self.embeddings = embeddings
-
-
-class StaticEmbedder:
-    def __init__(self, embeddings):
-        self._embeddings = embeddings
-
-    async def embed(self, texts, model=None, **kwargs):
-        del model, kwargs
-        if len(texts) != len(self._embeddings):
-            raise AssertionError(f"expected {len(self._embeddings)} texts, got {len(texts)}")
-        return MockEmbeddingResult(self._embeddings)
 
 
 class FakeParser:
@@ -74,21 +60,52 @@ class StaticStageOneAlgorithm:
         return self.coarse_set
 
 
-def _semantic_chunker(
-    embeddings,
+def _structured_chunker(
     *,
-    min_chunk_tokens: int = 1,
-    max_chunk_tokens: int = 100,
+    heading_break_level: int = 5,
+    min_candidate_chunk_tokens: int = 128,
     overlap_tokens: int = 0,
-) -> PercentileSemanticChunker:
-    return PercentileSemanticChunker(
-        embedder=StaticEmbedder(embeddings),
-        tokenizer=MockWordTokenizer(),
-        percentile=95,
-        min_chunk_tokens=min_chunk_tokens,
-        max_chunk_tokens=max_chunk_tokens,
-        overlap_tokens=overlap_tokens,
-        min_distance_gate=0.25,
+) -> StructuredSemanticChunker:
+    tokenizer = MockWordTokenizer()
+    overlapper = ChunkOverlapper(
+        tokenizer=tokenizer,
+        config=ChunkOverlapConfig(tokens=overlap_tokens),
+    )
+    candidate_chunker = CandidateBoundaryChunker(
+        tokenizer=tokenizer,
+        min_candidate_chunk_tokens=min_candidate_chunk_tokens,
+        heading_break_level=heading_break_level,
+        overlapper=overlapper,
+    )
+    return StructuredSemanticChunker(
+        candidate_chunker=candidate_chunker,
+        stage_one_router=StageOneRouter(
+            algorithm_name="candidate_boundary",
+            algorithms=[candidate_chunker],
+        ),
+        stage_two_router=StageTwoRouter(
+            algorithm_name="noop",
+            algorithms=[NoopStageTwoAlgorithm()],
+        ),
+        overlapper=overlapper,
+    )
+
+
+def _candidate_boundary_chunker(
+    *,
+    heading_break_level: int = 5,
+    min_candidate_chunk_tokens: int = 128,
+    overlap_tokens: int = 0,
+) -> CandidateBoundaryChunker:
+    tokenizer = MockWordTokenizer()
+    return CandidateBoundaryChunker(
+        tokenizer=tokenizer,
+        min_candidate_chunk_tokens=min_candidate_chunk_tokens,
+        heading_break_level=heading_break_level,
+        overlapper=ChunkOverlapper(
+            tokenizer=tokenizer,
+            config=ChunkOverlapConfig(tokens=overlap_tokens),
+        ),
     )
 
 
@@ -159,12 +176,8 @@ async def test_aprocess_should_run_full_stage_contract_with_default_noop_stage_t
         source_file="mock-doc.md",
     )
 
-    semantic_chunker = _semantic_chunker([], max_chunk_tokens=11)
     engine = ChunkingEngine(
-        chunker=StructuredSemanticChunker(
-            semantic_chunker=semantic_chunker,
-            min_candidate_chunk_tokens=128,
-        ),
+        chunker=_structured_chunker(min_candidate_chunk_tokens=128),
         parser=FakeParser(parse_result),
     )
 
@@ -196,9 +209,11 @@ async def test_aprocess_should_export_noop_stage_and_drop_internal_protected_ran
         ),
         _paragraph("after table", 8),
     ]
-    semantic_chunker = _semantic_chunker([], max_chunk_tokens=20, overlap_tokens=0)
     chunker = StructuredSemanticChunker(
-        semantic_chunker=semantic_chunker,
+        candidate_chunker=_candidate_boundary_chunker(
+            min_candidate_chunk_tokens=128,
+            overlap_tokens=0,
+        ),
         stage_two_algorithm=NoopStageTwoAlgorithm(),
         stage_two_algorithm_name="noop",
         min_candidate_chunk_tokens=128,

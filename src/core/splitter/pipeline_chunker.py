@@ -12,7 +12,6 @@ from .chunk_exporter import ChunkExporter
 from .input_adapter import InputAdapter
 from .models import Chunk
 from .overlap import ChunkOverlapper
-from .semantic_chunker import PercentileSemanticChunker
 from .stage_contracts import StageOneAlgorithm, StageTwoAlgorithm
 from .stage_models import SplitInput
 from .stage_routers import StageOneRouter, StageTwoRouter
@@ -33,7 +32,6 @@ class StructuredSemanticChunker:
 
     def __init__(
         self,
-        semantic_chunker: PercentileSemanticChunker | None = None,
         heading_break_level: int = 5,
         min_candidate_chunk_tokens: int = 128,
         candidate_chunker: CandidateBoundaryChunker | None = None,
@@ -50,8 +48,6 @@ class StructuredSemanticChunker:
         初始化 splitter 顶层编排器。
 
         Args:
-            semantic_chunker: 可选语义切片器；兼容旧测试入口，默认第一阶段用其 tokenizer
-                和 overlapper 构造 candidate_boundary，不再注册第二阶段算法。
             heading_break_level: 纳入 heading trail 的标题最大层级。
             min_candidate_chunk_tokens: 接受第一阶段候选边界前的 token 软下限。
             candidate_chunker: 可选第一阶段算法实例。
@@ -70,21 +66,13 @@ class StructuredSemanticChunker:
         Raises:
             ValueError: 无法构造默认第一阶段算法或自定义第二阶段算法。
         """
-        self.semantic_chunker = semantic_chunker
         self.heading_break_level = heading_break_level
         self.min_candidate_chunk_tokens = min_candidate_chunk_tokens
         self.validator = validator or CoarseChunkSetValidator()
         self.exporter = exporter or ChunkExporter()
 
         if candidate_chunker is None and stage_one_router is None:
-            if semantic_chunker is None:
-                raise ValueError("semantic_chunker is required when stage_one_router is omitted.")
-            candidate_chunker = CandidateBoundaryChunker(
-                tokenizer=semantic_chunker.tokenizer,
-                min_candidate_chunk_tokens=min_candidate_chunk_tokens,
-                heading_break_level=heading_break_level,
-                overlapper=semantic_chunker.overlapper,
-            )
+            raise ValueError("candidate_chunker is required when stage_one_router is omitted.")
         self.candidate_chunker = candidate_chunker
 
         if stage_one_router is None:
@@ -109,11 +97,7 @@ class StructuredSemanticChunker:
             )
         self.stage_two_router = stage_two_router
         self.stage_two_algorithm = stage_two_algorithm or stage_two_router.algorithm
-        self.overlapper = (
-            overlapper
-            or getattr(semantic_chunker, "overlapper", None)
-            or getattr(candidate_chunker, "overlapper", None)
-        )
+        self.overlapper = overlapper or getattr(candidate_chunker, "overlapper", None)
 
     @staticmethod
     def _run_sync(coro):
