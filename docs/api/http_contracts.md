@@ -106,11 +106,11 @@
 | CacheSync | `tolink.rag.cache_sync` | 缓存同步 |
 | UsageReport | `tolink.rag.usage_report` | 用量上报 |
 
-> `tolink.rag.parse_result`（Python→Java 解析终态通知）已下线（LINK-166）：终态只写 DB，前端轮询 Java 查询读取，见下方「解析终态读取」。
+> parse_result 终态回传 topic（Python→Java 解析终态通知）已下线（LINK-166）：终态只写 DB，前端轮询 Java 查询读取，见下方「解析终态读取」。
 
 ### 解析终态读取
 
-`tolink.rag.parse_result` 终态回传 MQ 已下线（LINK-166）。整体任务状态的权威单源是 `document_parse_pipeline.pipeline_status`，前端改由轮询 Java `parse-results` 接口读 DB 获取（LINK-98）。
+parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权威单源是 `document_parse_pipeline.pipeline_status`，前端改由轮询 Java `parse-results` 接口读 DB 获取（LINK-98）。
 
 `SUCCESS` 表示解析+上传、分片、向量化、预分词与 ES 入库均完成；任一阶段失败写 `FAILED`，并在 `failure_reason` 中携带业务化原因。
 

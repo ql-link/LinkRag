@@ -70,7 +70,7 @@ FastAPI lifespan（src/main.py 组合根装配）
 >
 > 收发 topic 名由各消息类的 `MQ_NAME` 常量固定，`PARSE_TASK_TOPIC` 等环境变量仅用于 §4.1 的 Kafka topic 自动创建，不改变实际收发 topic。
 
-> **`tolink.rag.parse_result` 终态回传已下线（LINK-166）**：Python 端解析完成后**只写 DB 终态**（`document_parse_pipeline`），不再向 Java 发送 `ParseResultMessage`。`messages/parse_result.py` 与生产侧 `ParseResultNotifier`、`PARSE_RESULT_TOPIC` 配置项均已删除。前端改由轮询 Java `parse-results` 接口读 DB 获取终态（LINK-98）；Java 端停止消费见 LINK-165。
+> **parse_result 终态回传 MQ 已下线（LINK-166）**：Python 端解析完成后**只写 DB 终态**（`document_parse_pipeline`），不再向 Java 发送 `ParseResultMessage`。`messages/parse_result.py` 与生产侧 `ParseResultNotifier`、`PARSE_RESULT_TOPIC` 配置项均已删除。前端改由轮询 Java `parse-results` 接口读 DB 获取终态（LINK-98）；Java 端停止消费见 LINK-165。
 
 ### 消费者层异常兜底
 

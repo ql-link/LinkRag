@@ -129,7 +129,7 @@ logs/
 | --- | --- | --- |
 | `PARSE_TASK_TOPIC` | `tolink.rag.parse_task` | 解析任务入队 |
 
-> `PARSE_RESULT_TOPIC` 已随终态回传 MQ 下线删除（LINK-166）：解析终态只写 DB（`document_parse_pipeline`），前端轮询 Java 查询读取，不再有 `tolink.rag.parse_result`。
+> `PARSE_RESULT_TOPIC` 已随终态回传 MQ 下线删除（LINK-166）：解析终态只写 DB（`document_parse_pipeline`），前端轮询 Java 查询读取，不再有 parse_result 回传 topic。
 >
 > 这些变量只决定启动时**自动创建**哪些 Kafka topic。实际收发的 topic 名由消息类的 `MQ_NAME` 常量固定（`tolink.rag.parse_task`），改它不会改变 Python 端实际订阅/投递的 topic。
 

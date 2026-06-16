@@ -21,7 +21,7 @@ Java 管理端                          toLink-Rag (Python)
     │      （不再有 Python→Java 的 MQ 回传，见下方「终态读取」）
 ```
 
-> **终态回传 MQ 已下线（LINK-166）**：Python 端不再向 `tolink.rag.parse_result` 发送终态通知。解析终态的权威源是 MySQL `document_parse_pipeline`，前端改由轮询 Java `parse-results` 接口读 DB 获取（LINK-98）。Java 端停止消费见 LINK-165。
+> **parse_result 终态回传 MQ 已下线（LINK-166）**：Python 端不再发送解析终态通知消息。解析终态的权威源是 MySQL `document_parse_pipeline`，前端改由轮询 Java `parse-results` 接口读 DB 获取（LINK-98）。Java 端停止消费见 LINK-165。
 
 收发 topic 名由消息类的 `MQ_NAME` 常量固定（见 [src/core/mq/messages](../../src/core/mq/messages)），不随 `.env` 改变；环境变量 `PARSE_TASK_TOPIC` 仅用于 Kafka topic 的自动创建（`topic_admin`），不影响实际投递/订阅的 topic。业务方按下方固定值对接即可。
 
@@ -113,7 +113,7 @@ Java 管理端                          toLink-Rag (Python)
 
 ## 终态读取（Python → DB → 前端轮询）
 
-> **`tolink.rag.parse_result` 终态回传 MQ 已下线（LINK-166）**。Python 端解析完成后**只写 DB 终态**，不再向 Java 发送 MQ 通知；`ParseResultMessage` 消息体与生产侧代码、`PARSE_RESULT_TOPIC` 配置项均已删除。Java 端停止消费见 LINK-165。
+> **parse_result 终态回传 MQ 已下线（LINK-166）**。Python 端解析完成后**只写 DB 终态**，不再向 Java 发送 MQ 通知；`ParseResultMessage` 消息体与生产侧代码、`PARSE_RESULT_TOPIC` 配置项均已删除。Java 端停止消费见 LINK-165。
 
 ### 终态权威源
 
