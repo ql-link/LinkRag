@@ -12,8 +12,10 @@
 
 | 分支 | 角色 | 推送方式 |
 | --- | --- | --- |
-| `main` | 稳定发布分支 | 只能 PR 合入 |
+| `master` | 稳定发布分支，只保存已发布或待发布状态 | 只能 PR 合入 |
 | `dev` | 当前迭代集成分支 | 只能 PR 合入 |
+| `release/<version>` | 发布准备分支，用于冻结本周发布内容 | 开发者推，最终 PR 到 `master` |
+| `hotfix/<topic>` | 线上紧急修复 | 从 `master` 拉出，最终 PR 到 `master` 并回合 `dev` |
 | `feature/<topic>` | 新功能 | 开发者推 |
 | `refactor/<topic>` | 重构（不改变行为） | 开发者推 |
 | `chore/<topic>` | 依赖、工具、CI | 开发者推 |
@@ -44,7 +46,7 @@
 - 中文 / 英文皆可，单仓库内保持一致。
 - 一次提交一个原子改动。
 
-### 1.3 PR 流程
+### 1.3 功能 PR 流程
 
 ```bash
 # 1. 起分支
@@ -56,13 +58,38 @@ git checkout -b feature/<topic>
 # 3. 同步上游
 git fetch && git rebase dev
 
-# 4. 自检（见 1.4）
+# 4. 自检（见 1.5）
 # 5. gh pr create → base = dev
 ```
 
 合并方式由仓库设置决定，不绕过设置。合并后删除本地与远程分支。
 
-### 1.4 PR 自检清单
+### 1.4 发布到 master
+
+`dev` 是日常集成线，`master` 是稳定发布线。每周发布时，从当前 `dev` 发起
+`release/<version>` 或直接 `dev -> master` 的 release PR，CI 和发布检查通过后合入
+`master`，再在 `master` 合入提交上打 tag。
+
+发布合并规则：
+
+- `dev -> master` 必须使用普通 merge commit，保留 PR 父子关系；不要 squash。
+- release PR 描述必须列出本次包含的业务 PR、数据库迁移、配置变更、文档同步项、测试结果和已知风险。
+- `master` 不接受日常 feature/refactor/chore 直接合入；这些改动先进入 `dev`。
+- hotfix 从 `master` 拉 `hotfix/<topic>`，修复后 PR 到 `master`；发布后必须再把 hotfix merge 或 cherry-pick 回 `dev`，避免修复只存在于发布线。
+- 发布 tag 使用语义化版本格式，例如 `v0.2.0`、`v0.2.1`。
+
+推荐命令：
+
+```bash
+# 从 dev 准备发布分支
+git fetch
+git checkout -b release/v0.2.0 origin/dev
+
+# 创建 release PR：base = master, compare = release/v0.2.0
+# 合入方式：Create a merge commit
+```
+
+### 1.5 PR 自检清单
 
 - [ ] `black src tests` / `isort src tests` 通过
 - [ ] `mypy src` 无新增报错
@@ -72,13 +99,14 @@ git fetch && git rebase dev
 - [ ] 触发同步规则的改动已同步对应文档（见 §六）
 - [ ] 无未使用依赖
 
-### 1.5 禁忌
+### 1.6 禁忌
 
-- ❌ 直推 `main` / `dev`
+- ❌ 直推 `master` / `dev`
 - ❌ PR 中夹带不相关改动
 - ❌ `--force` 推已被他人 review 的分支
 - ❌ `--no-verify` 跳过 pre-commit hook
 - ❌ 提交未通过单测的代码
+- ❌ `dev -> master` 发布 PR 使用 squash 合并
 
 ---
 
@@ -289,8 +317,8 @@ NNNN_YYYYMMDD_slug.py
 
 | Workflow | 触发 | 内容 |
 | --- | --- | --- |
-| [migrations-check.yml](../.github/workflows/migrations-check.yml) | PR/push dev,main | ephemeral MySQL → migrations/db.sql → stamp 0001 → upgrade head → 再 upgrade（验幂等） |
-| [docs-sync.yml](../.github/workflows/docs-sync.yml) | PR/push dev,main | 见 §六 |
+| [migrations-check.yml](../.github/workflows/migrations-check.yml) | PR/push dev,master | ephemeral MySQL → migrations/db.sql → stamp 0001 → upgrade head → 再 upgrade（验幂等） |
+| [docs-sync.yml](../.github/workflows/docs-sync.yml) | PR/push dev,master | 见 §六 |
 
 ---
 
