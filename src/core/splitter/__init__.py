@@ -24,7 +24,6 @@ from .input_adapter import InputAdapter
 from .models import Chunk, EmbeddedChunk, EmbeddingPipelineStats
 from .overlap import ChunkOverlapConfig, ChunkOverlapper
 from .pipeline_chunker import SplitterOutputValidationError, StructuredSemanticChunker
-from .semantic_chunker import PercentileSemanticChunker, SemanticSplitter
 from .stage_contracts import StageOneAlgorithm, StageTwoAlgorithm
 from .stage_models import (
     CoarseChunk,
@@ -51,8 +50,6 @@ __all__ = [
     "ChunkOverlapper",
     "StructuredSemanticChunker",
     "SplitterOutputValidationError",
-    "PercentileSemanticChunker",
-    "SemanticSplitter",
     "InputAdapter",
     "SplitInput",
     "ProtectedRange",

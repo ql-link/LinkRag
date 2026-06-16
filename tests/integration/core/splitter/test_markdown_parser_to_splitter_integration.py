@@ -11,9 +11,14 @@ from src.core.markdown_parser import (
     VisionClient,
 )
 from src.core.splitter import (
+    CandidateBoundaryChunker,
     ChunkEmbeddingPipeline,
     ChunkingEngine,
-    PercentileSemanticChunker,
+    ChunkOverlapConfig,
+    ChunkOverlapper,
+    NoopStageTwoAlgorithm,
+    StageOneRouter,
+    StageTwoRouter,
     StructuredSemanticChunker,
 )
 
@@ -105,7 +110,7 @@ class MockTableClient(TableClient):
 
 
 class HybridMockEmbedder:
-    """Use special vectors for semantic splitting and stable hash vectors for final embedding."""
+    """Return stable hash vectors for final chunk embedding."""
 
     def __init__(self):
         self.calls = []
@@ -120,18 +125,7 @@ class HybridMockEmbedder:
             }
         )
 
-        if normalized and normalized[0] == "## Semantic Pressure Test":
-            embeddings = [
-                [1.0, 0.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0, 0.0],
-            ]
-        else:
-            embeddings = [self._default_embedding(text) for text in normalized]
-
+        embeddings = [self._default_embedding(text) for text in normalized]
         return MockEmbeddingResult(embeddings=embeddings, model=model or "mock-embedding-model")
 
     def _default_embedding(self, text: str) -> list[float]:
@@ -142,6 +136,37 @@ class HybridMockEmbedder:
             round(int.from_bytes(digest[8:12], "big") / 2**32, 6),
             round(int.from_bytes(digest[12:16], "big") / 2**32, 6),
         ]
+
+
+def _structured_chunker(
+    *,
+    heading_break_level: int = 5,
+    min_candidate_chunk_tokens: int = 128,
+    overlap_tokens: int = 0,
+) -> StructuredSemanticChunker:
+    tokenizer = MockWordTokenizer()
+    overlapper = ChunkOverlapper(
+        tokenizer=tokenizer,
+        config=ChunkOverlapConfig(tokens=overlap_tokens),
+    )
+    candidate_chunker = CandidateBoundaryChunker(
+        tokenizer=tokenizer,
+        min_candidate_chunk_tokens=min_candidate_chunk_tokens,
+        heading_break_level=heading_break_level,
+        overlapper=overlapper,
+    )
+    return StructuredSemanticChunker(
+        candidate_chunker=candidate_chunker,
+        stage_one_router=StageOneRouter(
+            algorithm_name="candidate_boundary",
+            algorithms=[candidate_chunker],
+        ),
+        stage_two_router=StageTwoRouter(
+            algorithm_name="noop",
+            algorithms=[NoopStageTwoAlgorithm()],
+        ),
+        overlapper=overlapper,
+    )
 
 
 async def test_markdown_parser_to_splitter_should_cover_all_markdown_types_and_generate_visualization():
@@ -181,30 +206,7 @@ async def test_markdown_parser_to_splitter_should_cover_all_markdown_types_and_g
         if element.type == ElementType.TABLE
     )
 
-    tokenizer = MockWordTokenizer()
-    semantic_heading_index = next(
-        idx
-        for idx, element in enumerate(parse_result.elements)
-        if element.type == ElementType.HEADING and element.content == "## Semantic Pressure Test"
-    )
-    semantic_section_elements = []
-    for element in parse_result.elements[semantic_heading_index:]:
-        if element.type == ElementType.HORIZONTAL_RULE:
-            break
-        semantic_section_elements.append(element)
-    semantic_section_text = "\n\n".join(element.content for element in semantic_section_elements)
-    assert tokenizer.count_tokens(semantic_section_text) > 512
-
-    semantic_chunker = PercentileSemanticChunker(
-        embedder=embedder,
-        tokenizer=tokenizer,
-        percentile=95,
-        min_chunk_tokens=1,
-        max_chunk_tokens=512,
-        overlap_tokens=64,
-        min_distance_gate=0.25,
-    )
-    chunker = StructuredSemanticChunker(semantic_chunker=semantic_chunker)
+    chunker = _structured_chunker(min_candidate_chunk_tokens=128, overlap_tokens=64)
     engine = ChunkingEngine(chunker=chunker, parser=parser)
     pipeline = ChunkEmbeddingPipeline(
         chunking_engine=engine,
@@ -326,18 +328,10 @@ Next branch body.
 """
     parser = MarkdownParser()
     parse_result = parser.parse(markdown, source_file="heading-depth.md")
-    tokenizer = MockWordTokenizer()
-    semantic_chunker = PercentileSemanticChunker(
-        embedder=HybridMockEmbedder(),
-        tokenizer=tokenizer,
-        min_chunk_tokens=1,
-        max_chunk_tokens=512,
-        overlap_tokens=0,
-    )
-    chunker = StructuredSemanticChunker(
-        semantic_chunker=semantic_chunker,
+    chunker = _structured_chunker(
         heading_break_level=5,
         min_candidate_chunk_tokens=128,
+        overlap_tokens=0,
     )
 
     chunks = await chunker.achunk(parse_result.elements)

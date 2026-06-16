@@ -1,8 +1,13 @@
 from src.core.markdown_parser import ElementType, MarkdownElement, ParseResult
 from src.core.splitter import (
+    CandidateBoundaryChunker,
     ChunkEmbeddingPipeline,
     ChunkingEngine,
-    PercentileSemanticChunker,
+    ChunkOverlapConfig,
+    ChunkOverlapper,
+    NoopStageTwoAlgorithm,
+    StageOneRouter,
+    StageTwoRouter,
     StructuredSemanticChunker,
 )
 
@@ -38,6 +43,37 @@ class RoutedEmbedder:
             raise AssertionError(f"unexpected embed request: {normalized}")
         payload = self._routes[normalized]
         return MockEmbeddingResult(payload, model=model or "mock-embed-model")
+
+
+def _structured_chunker(
+    *,
+    heading_break_level: int = 5,
+    min_candidate_chunk_tokens: int = 128,
+    overlap_tokens: int = 0,
+) -> StructuredSemanticChunker:
+    tokenizer = MockWordTokenizer()
+    overlapper = ChunkOverlapper(
+        tokenizer=tokenizer,
+        config=ChunkOverlapConfig(tokens=overlap_tokens),
+    )
+    candidate_chunker = CandidateBoundaryChunker(
+        tokenizer=tokenizer,
+        min_candidate_chunk_tokens=min_candidate_chunk_tokens,
+        heading_break_level=heading_break_level,
+        overlapper=overlapper,
+    )
+    return StructuredSemanticChunker(
+        candidate_chunker=candidate_chunker,
+        stage_one_router=StageOneRouter(
+            algorithm_name="candidate_boundary",
+            algorithms=[candidate_chunker],
+        ),
+        stage_two_router=StageTwoRouter(
+            algorithm_name="noop",
+            algorithms=[NoopStageTwoAlgorithm()],
+        ),
+        overlapper=overlapper,
+    )
 
 
 class FakeParser:
@@ -106,16 +142,7 @@ async def test_aprocess_should_embed_final_chunks_after_default_noop_stage_two()
         (final_content,): [[0.11, 0.22]],
     }
     embedder = RoutedEmbedder(routes)
-    semantic_chunker = PercentileSemanticChunker(
-        embedder=embedder,
-        tokenizer=MockWordTokenizer(),
-        percentile=95,
-        min_chunk_tokens=1,
-        max_chunk_tokens=11,
-        overlap_tokens=0,
-        min_distance_gate=0.25,
-    )
-    chunker = StructuredSemanticChunker(semantic_chunker=semantic_chunker)
+    chunker = _structured_chunker(min_candidate_chunk_tokens=128, overlap_tokens=0)
     engine = ChunkingEngine(chunker=chunker, parser=FakeParser(parse_result))
     pipeline = ChunkEmbeddingPipeline(
         chunking_engine=engine,
@@ -168,16 +195,7 @@ async def test_aprocess_should_reuse_cached_final_embeddings():
             ("# Cache\n\nstable content",): [[0.9, 0.1]],
         }
     )
-    semantic_chunker = PercentileSemanticChunker(
-        embedder=embedder,
-        tokenizer=MockWordTokenizer(),
-        percentile=95,
-        min_chunk_tokens=1,
-        max_chunk_tokens=50,
-        overlap_tokens=0,
-        min_distance_gate=0.25,
-    )
-    chunker = StructuredSemanticChunker(semantic_chunker=semantic_chunker)
+    chunker = _structured_chunker(min_candidate_chunk_tokens=128, overlap_tokens=0)
     engine = ChunkingEngine(chunker=chunker, parser=FakeParser(parse_result))
     pipeline = ChunkEmbeddingPipeline(
         chunking_engine=engine,

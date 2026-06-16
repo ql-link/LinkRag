@@ -24,7 +24,7 @@ def test_create_chunking_engine_should_pass_stage_algorithm_settings(monkeypatch
     assert isinstance(engine.chunker, StructuredSemanticChunker)
     assert engine.chunker.stage_one_router.algorithm_name == "candidate_boundary"
     assert engine.chunker.stage_two_router.algorithm_name == "noop"
-    assert engine.chunker.semantic_chunker is None
+    assert engine.chunker.stage_one_router.algorithm is engine.chunker.candidate_chunker
     assert engine.chunker.overlapper.effective_tokens == 7
     assert engine.chunker.overlapper.config.tokens == 7
     assert engine.chunker.candidate_chunker.min_candidate_chunk_tokens == 192
@@ -32,7 +32,7 @@ def test_create_chunking_engine_should_pass_stage_algorithm_settings(monkeypatch
     assert INLINE_TABLE_MAX_TOKENS == 256
 
 
-def test_create_chunking_engine_should_route_noop_without_semantic_chunker(monkeypatch):
+def test_create_chunking_engine_should_route_noop_stage_two(monkeypatch):
     monkeypatch.setattr(factory.settings, "CHUNKING_STAGE_ONE_ALGORITHM", "candidate_boundary")
     monkeypatch.setattr(factory.settings, "CHUNKING_STAGE_TWO_ALGORITHM", "noop")
     monkeypatch.setattr(factory.settings, "CHUNKING_OVERLAP_TOKENS", 0)
@@ -41,6 +41,6 @@ def test_create_chunking_engine_should_route_noop_without_semantic_chunker(monke
 
     assert isinstance(engine.chunker, StructuredSemanticChunker)
     assert engine.chunker.stage_two_router.algorithm_name == "noop"
-    assert engine.chunker.semantic_chunker is None
+    assert engine.chunker.stage_one_router.algorithm is engine.chunker.candidate_chunker
     assert engine.chunker.overlapper.effective_tokens == 0
     assert isinstance(engine.chunker.stage_two_algorithm, NoopStageTwoAlgorithm)

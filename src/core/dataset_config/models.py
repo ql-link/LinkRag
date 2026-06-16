@@ -24,11 +24,9 @@ def _settings():
 class ChunkingConfig(BaseModel):
     """分块策略配置（3 项），消费点见 ``splitter/factory.py``。
 
-    dev 的 splitter 重写（candidate_boundary 阶段算法 + StageRouter）已移除旧 percentile
-    语义切片及其 ``CHUNKING_SEMANTIC_*`` / ``CHUNKING_MIN|MAX_CHUNK_TOKENS`` /
-    ``CHUNKING_MIN_DISTANCE_GATE`` 系统配置，故数据集级分块配置只保留当前架构仍生效的三项：
-    标题断层级、候选分块 token 软下限、相邻 chunk overlap。后续分块算法再扩展可配项时，在此
-    追加字段 + 对应 ``CHUNKING_*`` 系统默认即可。
+    当前数据集级分块配置只保留 splitter 主链路仍生效的三项：标题断层级、候选分块 token
+    软下限、相邻 chunk overlap。后续分块算法再扩展可配项时，在此追加字段 + 对应
+    ``CHUNKING_*`` 系统默认即可。
     """
 
     heading_break_level: int = 5
