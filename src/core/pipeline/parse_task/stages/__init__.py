@@ -36,7 +36,6 @@ def build_stage_pipeline(
     *,
     services: StageServices,
     repository,
-    notifier,
     log_repository,
 ) -> StagePipeline:
     """按 6 阶段固定顺序装配 StagePipeline。
@@ -45,11 +44,11 @@ def build_stage_pipeline(
     sparse_vectorizing（见 ``post_process.constants.POST_PROCESS_STAGE_ORDER``）。
     """
     stages: list[Stage] = [
-        CleaningStage(services, repository, notifier, log_repository=log_repository),
-        ChunkingStage(services, repository, notifier),
-        VectorizingStage(services, repository, notifier),
-        PretokenizeStage(services, repository, notifier),
-        EsIndexingStage(services, repository, notifier),
-        SparseVectorizingStage(services, repository, notifier),
+        CleaningStage(services, repository, log_repository=log_repository),
+        ChunkingStage(services, repository),
+        VectorizingStage(services, repository),
+        PretokenizeStage(services, repository),
+        EsIndexingStage(services, repository),
+        SparseVectorizingStage(services, repository),
     ]
-    return StagePipeline(stages, notifier)
+    return StagePipeline(stages)

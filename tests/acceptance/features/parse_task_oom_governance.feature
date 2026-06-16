@@ -61,7 +61,6 @@ Feature: 解析任务源文件流式下载与临时文件治理
     Then task 终态 status == FAILED
     And failure_reason 以 "SOURCE_FILE_NOT_FOUND" 开头
     And PARSE_TEMP_DIR 中不残留任何半成品临时文件
-    And parse_result MQ 通知已发送 status=FAILED
 
   Scenario: 临时盘写满触发新错误码 TEMP_DISK_FULL
     Given payload.file_type == "docx" size=300MB
@@ -71,7 +70,6 @@ Feature: 解析任务源文件流式下载与临时文件治理
     And failure_reason 以 "TEMP_DISK_FULL" 开头
     And failure_reason 不等于 SOURCE_FILE_NOT_FOUND
     And PARSE_TEMP_DIR 中不残留半成品临时文件
-    And parse_result MQ 通知已发送 status=FAILED
 
   Scenario: 解析阶段抛异常时临时文件仍被清理
     Given payload.file_type == "docx" size=100MB

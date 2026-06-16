@@ -18,7 +18,8 @@ when_to_use: "当用户贴日志/报错、反映文件卡在解析中、Py 收�
   → Py MQ consumer(handle_parse_task) → ParseTaskPipeline.execute
     → 6 stage: cleaning → chunking → vectorizing(dense/Qdrant)
        → pretokenize → es_indexing(ES) → sparse_vectorizing(Qdrant named sparse)
-  → 回发 PARSE_RESULT_TOPIC 给 Java
+  → 终态只写 DB(document_parse_pipeline)，前端轮询 Java 查询读取
+    （parse_result 回传 MQ 已下线，LINK-166）
 ```
 
 ## 必读 / 必查

@@ -5,8 +5,8 @@ MQ 消费失败兜底编排层（厂商中立）
 adapter 只负责 vendor 特定的 I/O（拉取消息、ack/commit），失败分流交给本模块。
 
 设计要点：
-- 业务回调通过抛出 ``RetriableError`` 子类（如 ``ParseResultNotificationError``）
-  来声明"暂时性失败、值得有限次重试"；其余异常一律视为终态，直接进入死信兜底。
+- 业务回调通过抛出 ``RetriableError`` 子类来声明"暂时性失败、值得有限次重试"；
+  其余异常一律视为终态，直接进入死信兜底。
 - 重试计数为单次 ``dispatch_with_retry`` 调用内的局部变量，不持久化——进程重启
   后 message 重新被拉取时即从 0 重新开始，已与 brief.md 决策一致。
 - 死信投递成功后函数返回 ``DispatchOutcome.DLQ_PUBLISHED``，adapter 可放心 ack；

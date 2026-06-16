@@ -20,7 +20,6 @@ class ParseFailureCode(str, Enum):
     UNSUPPORTED_FILE_TYPE = "UNSUPPORTED_FILE_TYPE"
     PARSE_ENGINE_FAILED = "PARSE_ENGINE_FAILED"
     PARSED_FILE_UPLOAD_FAILED = "PARSED_FILE_UPLOAD_FAILED"
-    RESULT_NOTIFY_FAILED = "RESULT_NOTIFY_FAILED"
     INTERNAL_UNKNOWN_ERROR = "INTERNAL_UNKNOWN_ERROR"
     # 解析+上传整段（"文档清洗"阶段）失败的统一前缀；与 failed_stage=CLEANING(PARSING) 对应。
     PARSING_FAILED = "PARSING_FAILED"
@@ -49,7 +48,6 @@ FAILURE_REASON_TEXT: dict[ParseFailureCode, str] = {
     ParseFailureCode.UNSUPPORTED_FILE_TYPE: "当前文件类型暂不支持解析",
     ParseFailureCode.PARSE_ENGINE_FAILED: "文件解析失败，请检查文件内容",
     ParseFailureCode.PARSED_FILE_UPLOAD_FAILED: "解析结果保存失败，请重新解析",
-    ParseFailureCode.RESULT_NOTIFY_FAILED: "解析结果通知失败，请重新解析",
     ParseFailureCode.INTERNAL_UNKNOWN_ERROR: "系统异常，请稍后重试",
     ParseFailureCode.PARSING_FAILED: "文件解析阶段失败，请检查文件内容或重新解析",
     ParseFailureCode.SPARSE_VECTORIZING_FAILED: "稀疏向量化失败，请稍后重试",

@@ -52,7 +52,7 @@ def build_test_pdf(title: str) -> bytes:
     lines = [
         "This is an end-to-end smoke test for ParseTaskPipeline.",
         "We are validating: storage download/upload, parser, chunking,",
-        "vector indexing, ES indexing, and parse_result notification.",
+        "vector indexing, ES indexing, and the DB terminal state.",
         "",
         "Section 1: Background",
         "RAG pipelines benefit from semantic chunking and retrieval over",
@@ -60,8 +60,7 @@ def build_test_pdf(title: str) -> bytes:
         "",
         "Section 2: Verification points",
         "- document_parsed_log row reaches success terminal state.",
-        "- document_parse_pipeline row reaches SUCCESS.",
-        "- ParseResultMessage emitted with task_status=success.",
+        "- document_parse_pipeline row reaches SUCCESS (DB terminal state, polled by frontend).",
     ]
     y = 690
     for line in lines:

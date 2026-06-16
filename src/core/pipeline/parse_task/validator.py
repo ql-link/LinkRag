@@ -24,18 +24,10 @@ from src.core.pipeline.parse_task.post_process.repository import ParsePipelineRe
 from src.models.parse_task import DocumentParsedLog, DocumentParsePipeline, DocumentParseTask
 
 from ._utils import duration_ms, now
-from .constants import (
-    DUPLICATE_FAILED_USER_MESSAGE,
-    DUPLICATE_SUCCESS_USER_MESSAGE,
-    DUPLICATE_TASK_LOG_NOT_FOUND_DETAIL,
-    INTERRUPTED_TASK_USER_MESSAGE,
-    PARSE_TASK_STATUS_FAILED,
-    PARSE_TASK_STATUS_SUCCESS,
-)
+from .constants import DUPLICATE_TASK_LOG_NOT_FOUND_DETAIL
 from .error_codes import ParseFailureCode, build_failure_reason
 from .log_repository import ParseLogRepository
 from .models import ParsePipelineResult, PipelineStatus
-from .notifier import ParseResultNotifier
 
 # 重试校验失败的统一前缀；具体校验项追加在冒号后，便于 Java 端 / 运维侧排查。
 RETRY_VALIDATION_REASON_PREFIX = ParseFailureCode.RETRY_VALIDATION_FAILED.value
@@ -66,11 +58,9 @@ class ParseTaskGuard:
         self,
         log_repository: ParseLogRepository,
         pipeline_repository: ParsePipelineRepository,
-        notifier: ParseResultNotifier,
     ) -> None:
         self._log_repository = log_repository
         self._pipeline_repository = pipeline_repository
-        self._notifier = notifier
 
     @staticmethod
     def validate(
@@ -108,7 +98,9 @@ class ParseTaskGuard:
     ) -> ParsePipelineResult:
         """处理 MQ 重投导致的重复 task_id。
 
-        根据 pipeline 终态补发 parse_result，或将非终态 pipeline 收敛为中断失败。
+        终态权威源是 DB（``document_parse_pipeline``）：已终态的重投直接按现状返回，
+        非终态 pipeline（上次执行被中断）则在 DB 中收敛为可恢复失败。前端通过轮询
+        Java 查询读取终态，不再依赖回传消息。
         """
         existing = await self._log_repository.get_by_task_id(payload.task_id, db)
         if existing is None:
@@ -125,56 +117,19 @@ class ParseTaskGuard:
         pipeline_record = await self._pipeline_repository.get_by_log_id(db, existing.id)
 
         if pipeline_record is None:
-            # 老数据缺失 pipeline 行：按解析产物是否落库补发 success/failed。
+            # 老数据缺失 pipeline 行：按解析产物是否落库判定 success/failed。
             if existing.parsed_object_key:
-                await self._notifier.send_or_raise(
-                    payload,
-                    PARSE_TASK_STATUS_SUCCESS,
-                    existing.parse_finished_at,
-                    None,
-                    document_parsed_log_id=existing.id,
-                    user_message=DUPLICATE_SUCCESS_USER_MESSAGE,
-                )
                 return ParsePipelineResult(status=PipelineStatus.SUCCESS, task_id=payload.task_id)
-
-            failure_reason = build_failure_reason(ParseFailureCode.DUPLICATE_TASK)
-            await self._notifier.send_or_raise(
-                payload,
-                PARSE_TASK_STATUS_FAILED,
-                existing.parse_finished_at,
-                failure_reason,
-                document_parsed_log_id=existing.id,
-                user_message=DUPLICATE_FAILED_USER_MESSAGE,
-            )
             return ParsePipelineResult(status=PipelineStatus.FAILED, task_id=payload.task_id)
 
         pipeline_status = pipeline_record.pipeline_status
         if pipeline_status == PIPELINE_STATUS_SUCCESS:
-            await self._notifier.send_or_raise(
-                payload,
-                PARSE_TASK_STATUS_SUCCESS,
-                existing.parse_finished_at,
-                None,
-                document_parsed_log_id=existing.id,
-                user_message=DUPLICATE_SUCCESS_USER_MESSAGE,
-            )
             return ParsePipelineResult(status=PipelineStatus.SUCCESS, task_id=payload.task_id)
 
         if pipeline_status == PIPELINE_STATUS_FAILED:
-            failure_reason = pipeline_record.failure_reason or build_failure_reason(
-                ParseFailureCode.DUPLICATE_TASK
-            )
-            await self._notifier.send_or_raise(
-                payload,
-                PARSE_TASK_STATUS_FAILED,
-                pipeline_record.finished_at or existing.parse_finished_at,
-                failure_reason,
-                document_parsed_log_id=existing.id,
-                user_message=DUPLICATE_FAILED_USER_MESSAGE,
-            )
             return ParsePipelineResult(status=PipelineStatus.FAILED, task_id=payload.task_id)
 
-        # 非终态 pipeline：上次任务执行被中断，收敛为 FAILED 并补发通知。
+        # 非终态 pipeline：上次任务执行被中断，在 DB 中收敛为可恢复失败。
         failure_reason = build_failure_reason(ParseFailureCode.INTERRUPTED_TASK)
         finished_at = now()
         await self._mark_incomplete_pipeline_failed(
@@ -182,14 +137,6 @@ class ParseTaskGuard:
             pipeline_record,
             failure_reason,
             finished_at,
-        )
-        await self._notifier.send_or_raise(
-            payload,
-            PARSE_TASK_STATUS_FAILED,
-            finished_at,
-            failure_reason,
-            document_parsed_log_id=existing.id,
-            user_message=INTERRUPTED_TASK_USER_MESSAGE,
         )
         return ParsePipelineResult(status=PipelineStatus.FAILED, task_id=payload.task_id)
 

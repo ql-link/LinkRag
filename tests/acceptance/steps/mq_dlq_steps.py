@@ -19,12 +19,20 @@ from unittest.mock import MagicMock
 import pytest
 from pytest_bdd import given, when, then, parsers
 
+from src.core.mq.exceptions import RetriableError
 from src.core.mq.retry import (
     DispatchOutcome,
     RetryPolicy,
     dispatch_with_retry,
 )
-from src.core.pipeline.parse_task.notifier import ParseResultNotificationError
+
+
+class SampleRetriableError(RetriableError):
+    """测试用可重试异常样例。
+
+    重试 / 死信框架厂商中立，不依赖任何具体业务异常；用一个本地样例子类驱动
+    “可重试分支”的场景，避免耦合到某个业务回调异常。
+    """
 
 
 # --- 共享 state ---
@@ -141,13 +149,13 @@ def _given_existing_msg_counter(mq_dlq_state: _MQState, name: str, c: str) -> No
     mq_dlq_state.call_count[name] = int(c)
 
 
-@given(parsers.re(r"^partition P\d+ 的消息 (?P<name>\w+) 持续抛出 ParseResultNotificationError$"))
+@given(parsers.re(r"^partition P\d+ 的消息 (?P<name>\w+) 持续抛出 SampleRetriableError$"))
 def _given_msg_keeps_retriable(mq_dlq_state: _MQState, name: str) -> None:
     mq_dlq_state.messages.setdefault(name, _make_msg(name=name))
     mq_dlq_state.fail_plan[name] = ("retriable", 10**9)
 
 
-@given(parsers.re(r"^partition P\d+ 的消息 (?P<name>\w+) 持续抛出 ParseResultNotificationError 正在重试$"))
+@given(parsers.re(r"^partition P\d+ 的消息 (?P<name>\w+) 持续抛出 SampleRetriableError 正在重试$"))
 def _given_msg_currently_retrying(mq_dlq_state: _MQState, name: str) -> None:
     _given_msg_keeps_retriable(mq_dlq_state, name)
 
@@ -217,7 +225,7 @@ def _make_callback(state: _MQState):
         if state.call_count[name] > budget:
             return
         if kind == "retriable":
-            raise ParseResultNotificationError(f"retriable on {name}")
+            raise SampleRetriableError(f"retriable on {name}")
         if kind == "terminal":
             raise ValueError(f"terminal on {name}")
         return
@@ -275,7 +283,7 @@ def _when_pipeline_returns_normally(mq_dlq_state: _MQState) -> None:
     _run_async(_run_dispatch(mq_dlq_state, next(iter(mq_dlq_state.messages))))
 
 
-@when("消费回调抛出 ParseResultNotificationError")
+@when("消费回调抛出 SampleRetriableError")
 def _when_retriable_once(mq_dlq_state: _MQState) -> None:
     name = next(iter(mq_dlq_state.messages))
     # "未达上限重试"场景：让首次失败、后续成功 → callback 被调用两次，sleep 一次，
@@ -299,7 +307,7 @@ def _when_callback_raises_outline(mq_dlq_state: _MQState, exc: str) -> None:
         mq_dlq_state.fail_plan[name] = ("retriable", 10**9)
     elif "Retriable" in exc and "非" in exc or "普通异常" in exc:
         mq_dlq_state.fail_plan[name] = ("terminal", 10**9)
-    elif "ParseResultNotificationError" in exc:
+    elif "SampleRetriableError" in exc:
         mq_dlq_state.fail_plan[name] = ("retriable", 10**9)
     else:
         mq_dlq_state.fail_plan[name] = ("terminal", 10**9)
@@ -313,7 +321,7 @@ def _when_terminal_exception(mq_dlq_state: _MQState) -> None:
     _run_async(_run_dispatch(mq_dlq_state, name))
 
 
-@when("消费回调再次抛出 ParseResultNotificationError")
+@when("消费回调再次抛出 SampleRetriableError")
 def _when_retriable_again(mq_dlq_state: _MQState) -> None:
     name = next(iter(mq_dlq_state.messages))
     mq_dlq_state.fail_plan[name] = ("retriable", 10**9)
@@ -326,7 +334,7 @@ def _when_full_retry_cycle(mq_dlq_state: _MQState, name: str) -> None:
     _run_async(_run_dispatch(mq_dlq_state, name))
 
 
-@when(parsers.parse("消费回调对 {name} 连续抛出 ParseResultNotificationError {n:d} 次"))
+@when(parsers.parse("消费回调对 {name} 连续抛出 SampleRetriableError {n:d} 次"))
 def _when_retriable_n_times(mq_dlq_state: _MQState, name: str, n: int) -> None:
     # 让所有重试都失败到上限
     mq_dlq_state.max_retries = max(mq_dlq_state.max_retries, n)

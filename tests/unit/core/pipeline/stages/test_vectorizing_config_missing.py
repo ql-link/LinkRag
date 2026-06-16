@@ -21,7 +21,7 @@ from src.core.splitter.factory import (
 
 def _stage(store_exc: Exception) -> VectorizingStage:
     services = SimpleNamespace(store_chunk_vectors=AsyncMock(side_effect=store_exc))
-    return VectorizingStage(services, MagicMock(), MagicMock())
+    return VectorizingStage(services, MagicMock())
 
 
 def _ctx() -> SimpleNamespace:

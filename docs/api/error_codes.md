@@ -31,7 +31,6 @@ CODE: 中文业务原因；底层详情
 | `UNSUPPORTED_FILE_TYPE` | 当前文件类型暂不支持解析 | `ParserFactory` 不支持文件类型 |
 | `PARSE_ENGINE_FAILED` | 文件解析失败，请检查文件内容 | 文件解析、Markdown 增强、分片失败（含增强环节读取 LLM 配置失败等可重试异常） |
 | `PARSED_FILE_UPLOAD_FAILED` | 解析结果保存失败，请重新解析 | Markdown 上传对象存储失败 |
-| `RESULT_NOTIFY_FAILED` | 解析结果通知失败，请重新解析 | parse_result 终态通知 MQ 发送失败 |
 | `INTERNAL_UNKNOWN_ERROR` | 系统异常，请稍后重试 | 未归类内部异常 |
 | `PARSING_FAILED` | 文件解析阶段失败，请检查文件内容或重新解析 | 文档清洗（解析+上传）阶段统一失败前缀，对应 `failed_stage=CLEANING`（brief 称 `PARSING`） |
 | `SPARSE_VECTORIZING_FAILED` | 稀疏向量化失败，请稍后重试 | 稀疏向量阶段任一 chunk 失败、health-check 总数为 0、Qdrant 写入失败等 |

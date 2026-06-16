@@ -25,7 +25,6 @@ def _build_stage(parse_file_side_effect):
     return CleaningStage(
         services,
         repository=MagicMock(),
-        notifier=MagicMock(),
         log_repository=MagicMock(),
     )
 

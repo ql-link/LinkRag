@@ -23,7 +23,7 @@ when_to_use: "当改动或排查一个跨服务物理值（topic/group、bucket�
 ## 必查清单
 
 - **MQ topic / group**：
-  - `src/config.py`（PARSE_TASK_TOPIC / PARSE_RESULT_TOPIC 等）
+  - `src/config.py`（PARSE_TASK_TOPIC / CACHE_SYNC_TOPIC 等；PARSE_RESULT_TOPIC 已随 LINK-166 删除）
   - `src/core/mq/messages/*.py`（`MQ_NAME` 写死值）
   - `src/core/mq/consumers/*.py`（实际 `subscribe(topic=..., group_id=...)`）
   - `.env` 与 `.env.example` 对应行
