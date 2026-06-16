@@ -135,7 +135,8 @@ class AnthropicClient:
             payload["system"] = system
         payload.update(kwargs)
 
-        return await self._request("/messages", payload)
+        # api_base_url 即完整端点 URL（Java 下发），不再拼后缀。
+        return await self._request("", payload)
 
     async def stream_messages(
         self,
@@ -159,7 +160,7 @@ class AnthropicClient:
             payload["system"] = system
         payload.update(kwargs)
 
-        url = f"{self.api_base_url}/messages"
+        url = self.api_base_url  # 完整端点 URL，不拼后缀
         headers = {
             "x-api-key": self.api_key,
             "anthropic-version": auth_version,
@@ -218,7 +219,8 @@ class AnthropicProvider(BaseProvider):
             **kwargs
         )
         self.model_name = model_name or self.DEFAULT_MODEL
-        self._capabilities = {CapabilityType.TEXT, CapabilityType.VISION}
+        # 本期多模态停做：仅声明 TEXT；VISION 请求经中台门禁报 UnsupportedProtocolCapabilityError。
+        self._capabilities = {CapabilityType.TEXT}
         self._client = AnthropicClient(
             api_key=api_key,
             api_base_url=self.api_base_url,

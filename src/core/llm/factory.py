@@ -1,28 +1,28 @@
 """
-ModelFactory 注册式工厂
-按 Capability 分发 Provider，支持动态注册新 Provider
+ModelFactory —— 协议分发中台。
+
+按 ``protocol`` 注册 / 查找 / 创建 Provider（adapter）。所有要用 LLM 的路径
+（用户配置链 / 系统 env 链）最终都经 ``create_client`` 这一个口子拿 adapter。
+
+分发依据为 ``protocol``（openai/anthropic/google/jina/dashscope），**不依据
+``provider_type``**——后者仅作厂商身份 / 展示 / 日志透传。按用户配置解析 Provider
+的逻辑在 ``src.core.llm.user_model_resolver``，本工厂只负责「注册表 + 由参数造 adapter」。
 """
 
-from typing import Dict, Type, Optional, Any
+from typing import Any, Dict, Optional, Type
 
 from src.core.llm.base_provider import BaseProvider
 
 
 class ModelFactory:
-    """LLM Provider 注册式工厂
-
-    支持：
-    - 注册新 Provider（openai, anthropic, glm 等）
-    - 由显式参数创建 Provider 实例（``create_client``）
-
-    注：按用户配置解析 Provider 的逻辑已收敛到
-    ``src.core.llm.user_model_resolver``，本工厂只负责「注册表 + 由参数造 client」。
-    """
+    """LLM 协议分发中台（注册式工厂，单例）。"""
 
     _instance: Optional["ModelFactory"] = None
     _providers: Dict[str, Type[BaseProvider]] = {}
+    # provider_type 别名（仅用于展示归一，不参与分发）
     _provider_aliases = {"claude": "anthropic", "aliyun": "qwen"}
-    _default_provider_types = {"openai", "anthropic", "glm", "deepseek", "qwen"}
+    # 本期支持的协议；被测试清空注册表后据此自动恢复默认注册
+    _default_protocols = {"openai", "anthropic", "google", "jina", "dashscope"}
 
     def __new__(cls) -> "ModelFactory":
         if cls._instance is None:
@@ -32,92 +32,81 @@ class ModelFactory:
         return cls._instance
 
     def _register_default_providers(self) -> None:
-        """注册默认的 Providers（幂等）"""
-        from src.core.llm.providers.openai import OpenAIProvider
+        """按 protocol 注册默认 adapter（幂等）。"""
         from src.core.llm.providers.anthropic import AnthropicProvider
-        from src.core.llm.providers.glm import GLMProvider
-        from src.core.llm.providers.deepseek import DeepSeekProvider
-        from src.core.llm.providers.qwen import QwenProvider
+        from src.core.llm.providers.dashscope import DashScopeProvider
+        from src.core.llm.providers.google import GoogleProvider
+        from src.core.llm.providers.jina import JinaProvider
+        from src.core.llm.providers.openai import OpenAICompatibleProvider
 
-        if "openai" not in self._providers:
-            self._providers["openai"] = OpenAIProvider
-        if "anthropic" not in self._providers:
-            self._providers["anthropic"] = AnthropicProvider
-        if "glm" not in self._providers:
-            self._providers["glm"] = GLMProvider
-        if "deepseek" not in self._providers:
-            self._providers["deepseek"] = DeepSeekProvider
-        if "qwen" not in self._providers:
-            self._providers["qwen"] = QwenProvider
+        defaults: Dict[str, Type[BaseProvider]] = {
+            "openai": OpenAICompatibleProvider,
+            "anthropic": AnthropicProvider,
+            "google": GoogleProvider,
+            "jina": JinaProvider,
+            "dashscope": DashScopeProvider,
+        }
+        for protocol, provider_cls in defaults.items():
+            self._providers.setdefault(protocol, provider_cls)
 
-    def _ensure_default_provider_available(self, provider_type: str) -> None:
-        """确保默认 provider 在被测试清空后可自动恢复注册。"""
-        if provider_type in self._default_provider_types and provider_type not in self._providers:
+    def _ensure_default_provider_available(self, protocol: str) -> None:
+        """默认 protocol adapter 被测试清空后自动恢复注册。"""
+        if protocol in self._default_protocols and protocol not in self._providers:
             self._register_default_providers()
 
     @classmethod
     def normalize_provider_type(cls, provider_type: str | None) -> str:
-        """归一化 Java/DB provider_type 到 Python provider 注册键。"""
-        raw = (provider_type or "openai").lower()
+        """归一化 provider_type 别名（仅展示用，不参与分发）。"""
+        raw = (provider_type or "").lower()
         return cls._provider_aliases.get(raw, raw)
 
-    def register_provider(self, provider_type: str, provider_cls: Type[BaseProvider]) -> None:
-        """注册 Provider
-
-        Args:
-            provider_type: Provider 类型标识 (openai, anthropic, glm 等)
-            provider_cls: Provider 类
+    def register_provider(self, protocol: str, provider_cls: Type[BaseProvider]) -> None:
+        """按 protocol 注册 adapter。
 
         Raises:
-            ValueError: 如果该类型已被注册
+            ValueError: 该 protocol 已注册。
         """
-        if provider_type in self._providers:
-            raise ValueError(f"Provider type '{provider_type}' is already registered")
-        self._providers[provider_type] = provider_cls
+        if protocol in self._providers:
+            raise ValueError(f"Protocol '{protocol}' is already registered")
+        self._providers[protocol] = provider_cls
 
-    def get_provider_class(self, provider_type: str) -> Type[BaseProvider]:
-        """获取 Provider 类
-
-        Args:
-            provider_type: Provider 类型标识
-
-        Returns:
-            Provider 类
+    def get_provider_class(self, protocol: str) -> Type[BaseProvider]:
+        """按 protocol 获取 adapter 类。
 
         Raises:
-            KeyError: 如果该类型未注册
+            KeyError: 该 protocol 未注册。
         """
-        normalized = self.normalize_provider_type(provider_type)
-        self._ensure_default_provider_available(normalized)
-        if normalized not in self._providers:
-            raise KeyError(f"Provider type '{provider_type}' is not registered")
-        return self._providers[normalized]
+        key = (protocol or "").lower()
+        self._ensure_default_provider_available(key)
+        if key not in self._providers:
+            raise KeyError(f"Protocol '{protocol}' is not registered")
+        return self._providers[key]
 
     def create_client(
         self,
-        provider_type: str,
+        protocol: str,
         api_key: str,
         api_base_url: Optional[str] = None,
         model_name: Optional[str] = None,
+        provider_type: Optional[str] = None,
         **kwargs,
     ) -> BaseProvider:
-        """创建 Provider 实例
+        """按 protocol 创建 adapter 实例。
 
         Args:
-            provider_type: Provider 类型
-            api_key: API Key
-            api_base_url: API 基础 URL
-            model_name: 模型名称
-            **kwargs: 其他配置参数
+            protocol: 协议族（分发依据，必填）。
+            api_key / api_base_url / model_name: 透传给 adapter。
+            provider_type: 厂商身份，仅作展示 / 日志，不参与分发。
 
         Returns:
-            Provider 实例
+            BaseProvider 实例。
         """
-        normalized = self.normalize_provider_type(provider_type)
-        provider_cls = self.get_provider_class(normalized)
+        key = (protocol or "").lower()
+        provider_cls = self.get_provider_class(key)
+        identity = provider_type or key
         return provider_cls(
-            provider_type=normalized,
-            provider_name=normalized,
+            provider_type=identity,
+            provider_name=identity,
             api_key=api_key,
             api_base_url=api_base_url,
             model_name=model_name,
@@ -125,29 +114,18 @@ class ModelFactory:
         )
 
     def list_registered_providers(self) -> list[str]:
-        """列出所有已注册的 Provider 类型"""
+        """列出所有已注册的 protocol。"""
         return list(self._providers.keys())
 
-    def get_provider_info(self, provider_type: str) -> Dict[str, Any]:
-        """获取 Provider 信息
-
-        Args:
-            provider_type: Provider 类型
-
-        Returns:
-            Provider 信息字典
-        """
-        normalized = self.normalize_provider_type(provider_type)
-        provider_cls = self.get_provider_class(normalized)
-
-        # 创建临时实例获取能力信息
+    def get_provider_info(self, protocol: str) -> Dict[str, Any]:
+        """按 protocol 获取 adapter 能力信息。"""
+        provider_cls = self.get_provider_class(protocol)
         temp_instance = provider_cls(
-            provider_type=normalized,
-            provider_name=normalized,
+            provider_type=protocol,
+            provider_name=protocol,
             api_key="",
         )
-
         return {
-            "type": normalized,
+            "protocol": (protocol or "").lower(),
             "capabilities": [c.value for c in temp_instance.get_capabilities()],
         }

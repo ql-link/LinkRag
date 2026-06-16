@@ -105,7 +105,7 @@ async def standard_rerank(
     documents: List[str],
     model: str,
     top_n: Optional[int] = None,
-    endpoint: str = "/rerank",
+    endpoint: str = "",
     **kwargs,
 ) -> RerankResult:
     """对 OpenAI 兼容 provider 发起标准 ``/rerank`` 调用并解析。

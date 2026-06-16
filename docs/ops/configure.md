@@ -34,7 +34,7 @@
 | `SYSTEM_LLM_PROVIDER` / `SYSTEM_LLM_API_KEY` / `SYSTEM_LLM_API_BASE` | 系统级兜底 LLM |
 | `KAFKA_BOOTSTRAP_SERVERS` 等（若 `MQ_VENDOR=kafka`） | Kafka 接入信息 |
 | `MINIO_*`（若 `STORAGE_TYPE=minio`） | 对象存储凭据 |
-| `MINIO_BLOG_BUCKET`（若启用 Java 博客模块） | 博客图片与 Markdown 正文公开桶，默认 `tolink-blog`，需配置匿名读 |
+| `MINIO_PUBLIC_BUCKET`（若 `STORAGE_TYPE=minio`） | 公开桶：博客与反馈附件等不敏感资源，默认 `tolink-public`，需配置匿名读 |
 | `QDRANT_HOST` 或 `ES_HOST`（取决于 `VECTOR_STORE_TYPE`） | 向量存储 |
 
 ## 关键开关
@@ -45,7 +45,7 @@
 | `VECTOR_STORE_TYPE` | `qdrant` | 切换 Qdrant / Elasticsearch |
 | `SPARSE_VECTOR_ENABLED` | `true` | 是否在向量化阶段同步生成 BGE-M3 稀疏向量；关闭后保持旧 dense-only 语义 |
 | `STORAGE_TYPE` | `minio` | 切换 MinIO / 本地存储 |
-| `MINIO_BLOG_BUCKET` | `tolink-blog` | Java 博客模块使用的 MinIO 公开读桶；Python 解析产物桶使用 `MINIO_BUCKET_NAME` |
+| `MINIO_PUBLIC_BUCKET` | `tolink-public` | Java 端公开读桶（博客 + 反馈附件）；Python 解析产物桶使用 `MINIO_PRIVATE_BUCKET`。原博客专用桶 `tolink-blog` 已并入 |
 | `PARSE_TEMP_DIR` | `/tmp/tolink-rag-parse` | 解析任务源文件临时落盘目录。流式下载在此创建临时文件；解析为 markdown 后立即清理；worker 启动时清空兜底。不预设最小容量，沿用部署机系统盘大小；写满会归类为 `TEMP_DISK_FULL` 错误码。扩消费者时容量需要 ≥ 单文件上限 × 并发数 |
 | `PDF_PARSER_BACKEND` | `mineru` | PDF 解析后端：`auto` / `mineru` / `opendataloader` / `naive` |
 | `PDF_PARSER_FALLBACKS` | 空 | 逗号分隔回退链，空表示不回退 |

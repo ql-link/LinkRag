@@ -71,7 +71,7 @@ class TestParseTaskMessage:
         assert payload.source_bucket == "source-bucket"
         assert payload.source_object_key == "uploads/test.pdf"
         assert payload.md_bucket == "markdown-bucket"
-        assert payload.markdown_bucket == settings.MINIO_BUCKET_NAME
+        assert payload.markdown_bucket == settings.MINIO_PRIVATE_BUCKET
         assert payload.md_object_key == "parsed/t-001.md"
         assert payload.pdf_parser_backend == "mineru"
 

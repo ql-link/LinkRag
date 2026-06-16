@@ -107,10 +107,15 @@ def _load_image_bytes(image_url: str, source_file: str | None) -> tuple[bytes, s
 
 def _build_system_provider(capability: CapabilityType, model_name: str | None = None) -> BaseProvider:
     settings = _get_settings()
+    # 系统级 LLM 固定 openai 兼容；env 配的是 base，按能力补 openai 后缀成完整端点 URL。
+    _cap = _get_capability_type()
+    _base = (settings.SYSTEM_LLM_API_BASE or "").rstrip("/")
+    _suffix = "/embeddings" if capability == _cap.EMBEDDING else "/chat/completions"
     provider = _get_model_factory().create_client(
+        protocol="openai",
         provider_type=settings.SYSTEM_LLM_PROVIDER,
         api_key=settings.SYSTEM_LLM_API_KEY or "",
-        api_base_url=settings.SYSTEM_LLM_API_BASE,
+        api_base_url=f"{_base}{_suffix}" if _base else settings.SYSTEM_LLM_API_BASE,
         model_name=model_name,
         timeout_ms=settings.MARKDOWN_PARSER_LLM_TIMEOUT_MS,
     )
