@@ -62,11 +62,13 @@ async def recall_event_stream(
     config_id: int,
     reranker: PostRecallReranker,
     token_budget: int,
+    rerank_top_n: int,
 ) -> AsyncGenerator[str, None]:
     """流内执行召回 + 重排 + 生成，把结果/异常映射为 SSE 终态事件。
 
-    ``token_budget`` 为生成阶段上下文拼装的 token 预算，来自数据集级
-    ``recall_config.recall_context_token_budget``（无数据集配置时为系统默认）。
+    ``token_budget`` 为生成阶段上下文拼装的 token 预算，``rerank_top_n`` 为重排后候选条数
+    上限，二者均来自数据集级 ``recall_config``（分别为 ``recall_context_token_budget`` /
+    ``rerank_top_n``，无数据集配置时为系统默认）。
 
     先按 ``(user_id, CHAT, config_id)`` 前置校验用户模型——不可用即 ``error``
     MODEL_CONFIG_MISSING、**不进入召回**；通过后执行召回融合，一次性回填片段正文（供
@@ -120,7 +122,7 @@ async def recall_event_stream(
         # rerank 与召回共享同一条流超时预算：只把剩余预算交给 rerank，不让两段各占满整窗。
         rerank_budget = timeout_seconds - (time.monotonic() - recall_started)
         reranked_hits, rerank_applied = await _rerank_hits(
-            reranker, recall_req, response.hits, contents, rerank_budget, request_id
+            reranker, recall_req, response.hits, contents, rerank_budget, request_id, rerank_top_n
         )
 
         # 空命中 / 上下文拼装 / 流式生成（用 rerank 后的最终候选与已回填正文）。
@@ -172,12 +174,16 @@ async def _rerank_hits(
     contents: dict[str, str],
     timeout_s: float,
     request_id: str,
+    top_n: int,
 ) -> tuple[list[RerankedHit], bool]:
     """对 RRF 候选执行 rerank 精排，返回 ``(最终候选, rerank_applied)``。
 
+    ``top_n`` 为重排后返回条数上限，来自数据集级 ``recall_config.rerank_top_n``
+    （无数据集配置时为系统默认 ``RERANK_DEFAULT_TOP_N``）。
+
     rerank 是 best-effort 增强：**已知不可用情形降级为 RRF 顺序**，保证 ``rag/stream``
     不因 rerank 不可用而整条失败——「没有 rerank 就用 RRF」。降级口径与 reranker 软降级
-    一致：复用 ``degrade_to_rrf_order`` 对**有正文候选**截断到 ``RERANK_DEFAULT_TOP_N``，
+    一致：复用 ``degrade_to_rrf_order`` 对**有正文候选**截断到 ``top_n``，
     确保无论走哪条降级路，喂给下游的片段集合与数量一致。
 
     降级覆盖：
@@ -189,7 +195,6 @@ async def _rerank_hits(
     只 catch 已知运维失败；其它未预期异常**向上抛**，由顶层收敛为 ``INTERNAL_ERROR``
     （带堆栈），不被静默吞成"降级"而掩盖真实缺陷。``CancelledError``（客户端断连）向上传播。
     """
-    top_n = settings.RERANK_DEFAULT_TOP_N
 
     def _degrade() -> tuple[list[RerankedHit], bool]:
         scored = [h for h in rrf_hits if contents.get(h.chunk_id)]
@@ -209,6 +214,7 @@ async def _rerank_hits(
                     query=recall_req.query,
                     user_id=recall_req.user_id,
                     hits=rrf_hits,
+                    top_n=top_n,
                     contents=contents,
                 )
             ),

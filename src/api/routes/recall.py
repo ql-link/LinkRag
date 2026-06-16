@@ -95,6 +95,8 @@ async def recall_json(
         top_k=recall_cfg.recall_result_limit,
         sparse_score_threshold_override=recall_cfg.sparse_score_threshold,
         dense_score_threshold_override=recall_cfg.dense_score_threshold,
+        enabled_sources=recall_cfg.recall_enabled_sources,
+        strict_override=recall_cfg.recall_strict,
     )
 
     payload = await run_recall_json(pipeline, recall_req, ctx.request_id)

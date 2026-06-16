@@ -92,6 +92,7 @@ async def _guarded_stream(
     user_id: int,
     config_id: int,
     token_budget: int,
+    rerank_top_n: int,
 ) -> AsyncGenerator[str, None]:
     """包裹召回事件流，确保并发名额在任何收尾路径都被释放。
 
@@ -106,6 +107,7 @@ async def _guarded_stream(
             config_id=config_id,
             reranker=reranker,
             token_budget=token_budget,
+            rerank_top_n=rerank_top_n,
         ):
             yield event
     finally:
@@ -139,6 +141,8 @@ async def rag_stream(
         top_k=recall_cfg.recall_result_limit,
         sparse_score_threshold_override=recall_cfg.sparse_score_threshold,
         dense_score_threshold_override=recall_cfg.dense_score_threshold,
+        enabled_sources=recall_cfg.recall_enabled_sources,
+        strict_override=recall_cfg.recall_strict,
     )
 
     return StreamingResponse(
@@ -150,6 +154,7 @@ async def rag_stream(
             ctx.user_id,
             body.config_id,
             recall_cfg.recall_context_token_budget,
+            recall_cfg.rerank_top_n,
         ),
         media_type="text/event-stream",
         headers={
