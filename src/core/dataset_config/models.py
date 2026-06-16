@@ -103,7 +103,17 @@ class PDFConfig(BaseModel):
 
 
 class RecallConfig(BaseModel):
-    """召回检索配置（6 项），消费点见 ``routes/rag.py`` 与各 retriever。"""
+    """召回检索配置（9 项），消费点见 ``routes/rag.py`` / ``routes/recall.py`` 与各 retriever。
+
+    其中三项为 pipeline / rerank 级旋钮：
+
+    - ``recall_enabled_sources``：启用哪几条召回路并参与融合（``bm25`` / ``sparse`` / ``dense``）。
+      **只能在系统已装配的召回路（``RECALL_ENABLED_SOURCES``）子集内收窄**：列出的路里凡未被
+      系统装配的会被忽略；若交集为空则回退到系统全部已装配路（见 ``RecallPipeline`` 执行期处理）。
+    - ``rerank_top_n``：重排后返回候选条数上限（透传给 ``RerankRequest.top_n``）。
+    - ``recall_strict``：召回容错模式（透传给 ``RecallRequest.strict_override``）。``True`` 时任一路
+      失败即整体抛错，``False`` 时允许单路失败降级。
+    """
 
     recall_result_limit: int = 20
     recall_context_token_budget: int = 4000
@@ -111,6 +121,23 @@ class RecallConfig(BaseModel):
     sparse_score_threshold: float = 0.0
     dense_top_k: int = 10
     dense_score_threshold: float = 0.0
+    recall_enabled_sources: list[str] = ["bm25", "sparse", "dense"]
+    rerank_top_n: int = 8
+    recall_strict: bool = False
+
+    @field_validator("rerank_top_n")
+    @classmethod
+    def _validate_rerank_top_n(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("rerank_top_n must be a positive int")
+        return v
+
+    @field_validator("recall_enabled_sources")
+    @classmethod
+    def _validate_recall_enabled_sources(cls, v: list[str]) -> list[str]:
+        # 去空白 / 去空项；允许空列表（执行期回退系统全部已装配路），但不允许出现空白源名。
+        cleaned = [s.strip() for s in v if s and s.strip()]
+        return cleaned
 
     @classmethod
     def from_settings(cls) -> "RecallConfig":
@@ -123,6 +150,13 @@ class RecallConfig(BaseModel):
             sparse_score_threshold=s.SPARSE_RETRIEVAL_SCORE_THRESHOLD,
             dense_top_k=s.DENSE_RETRIEVAL_TOP_K,
             dense_score_threshold=s.DENSE_RETRIEVAL_SCORE_THRESHOLD,
+            recall_enabled_sources=[
+                src.strip()
+                for src in (s.RECALL_ENABLED_SOURCES or "").split(",")
+                if src.strip()
+            ],
+            rerank_top_n=s.RERANK_DEFAULT_TOP_N,
+            recall_strict=s.RECALL_STRICT_DEFAULT,
         )
 
 

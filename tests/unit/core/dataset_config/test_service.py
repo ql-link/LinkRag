@@ -135,3 +135,67 @@ async def test_system_settings_are_l1_fallback(monkeypatch):
 
     assert bundle.chunking.overlap_tokens == 16
     assert bundle.recall.recall_result_limit == 33
+
+
+@pytest.mark.asyncio
+async def test_recall_new_fields_default_from_settings(monkeypatch):
+    """无配置行 → 三项新字段取运行期系统默认（enabled_sources 由逗号串解析为 list）。"""
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "RECALL_ENABLED_SOURCES", "bm25,sparse,dense")
+    monkeypatch.setattr(settings, "RERANK_DEFAULT_TOP_N", 8)
+    monkeypatch.setattr(settings, "RECALL_STRICT_DEFAULT", False)
+
+    db = _fake_db(row=None)
+    bundle = await DatasetConfigService().get_config(user_id=1, dataset_id=2, db=db)
+
+    assert bundle.recall.recall_enabled_sources == ["bm25", "sparse", "dense"]
+    assert bundle.recall.rerank_top_n == 8
+    assert bundle.recall.recall_strict is False
+
+
+@pytest.mark.asyncio
+async def test_recall_new_fields_dataset_override():
+    """数据集 JSON 覆盖三项新字段。"""
+    db = _fake_db(
+        row=_row(
+            recall={
+                "recall_enabled_sources": ["bm25", "sparse"],
+                "rerank_top_n": 3,
+                "recall_strict": True,
+            }
+        )
+    )
+    bundle = await DatasetConfigService().get_config(user_id=1, dataset_id=2, db=db)
+
+    assert bundle.recall.recall_enabled_sources == ["bm25", "sparse"]
+    assert bundle.recall.rerank_top_n == 3
+    assert bundle.recall.recall_strict is True
+
+
+@pytest.mark.asyncio
+async def test_recall_new_fields_l1_fallback(monkeypatch):
+    """运维改系统级 RECALL_ENABLED_SOURCES / RERANK_DEFAULT_TOP_N / RECALL_STRICT_DEFAULT
+    → 无配置数据集跟随。"""
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "RECALL_ENABLED_SOURCES", "bm25,sparse")
+    monkeypatch.setattr(settings, "RERANK_DEFAULT_TOP_N", 5)
+    monkeypatch.setattr(settings, "RECALL_STRICT_DEFAULT", True)
+
+    db = _fake_db(row=None)
+    bundle = await DatasetConfigService().get_config(user_id=1, dataset_id=2, db=db)
+
+    assert bundle.recall.recall_enabled_sources == ["bm25", "sparse"]
+    assert bundle.recall.rerank_top_n == 5
+    assert bundle.recall.recall_strict is True
+
+
+@pytest.mark.asyncio
+async def test_recall_rerank_top_n_non_positive_propagates():
+    """JSON 里 rerank_top_n <= 0 → ValidationError 向上传播（不静默降级）。"""
+    db = _fake_db(row=_row(recall={"rerank_top_n": 0}))
+    with pytest.raises(ValidationError) as exc_info:
+        await DatasetConfigService().get_config(user_id=1, dataset_id=2, db=db)
+
+    assert "rerank_top_n" in str(exc_info.value)
