@@ -36,9 +36,9 @@ class DatasetParseConfig(Base):
         BIGINT(unsigned=True), nullable=False, comment="所属数据集 ID，对应 dataset.id"
     )
     chunking_config = Column(JSON, nullable=False, comment="分块配置（3 项）")
-    enhancement_config = Column(JSON, nullable=False, comment="Markdown 增强配置（4 项）")
+    enhancement_config = Column(JSON, nullable=False, comment="Markdown 增强配置（2 项）")
     pdf_config = Column(JSON, nullable=False, comment="PDF 解析配置（1 项）")
-    recall_config = Column(JSON, nullable=False, comment="召回检索配置（6 项）")
+    recall_config = Column(JSON, nullable=False, comment="召回检索配置（9 项）")
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=utc_now, nullable=False)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)

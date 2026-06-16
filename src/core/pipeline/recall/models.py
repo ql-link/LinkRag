@@ -68,6 +68,11 @@ class RecallRequest:
             装配期注入的默认阈值。来自数据集级 ``recall_config.sparse_score_threshold``。
         dense_score_threshold_override: 可选稠密路分数阈值覆盖；``None`` 时 dense 路沿用
             装配期注入的默认阈值。来自数据集级 ``recall_config.dense_score_threshold``。
+        enabled_sources: 可选「本次启用哪几条召回路」。``None`` / 空列表表示用全部已装配路；
+            非空时**只在已装配路集合内收窄**——列出的未装配路被忽略，交集为空则回退全部已装配路。
+            来自数据集级 ``recall_config.recall_enabled_sources``。
+        strict_override: 可选容错模式覆盖；``None`` 时沿用 pipeline 装配期 ``RecallPipelineConfig.strict``。
+            来自数据集级 ``recall_config.recall_strict``。
     """
 
     query: str
@@ -77,6 +82,8 @@ class RecallRequest:
     top_k: int = 20
     sparse_score_threshold_override: float | None = None
     dense_score_threshold_override: float | None = None
+    enabled_sources: list[str] | None = None
+    strict_override: bool | None = None
 
 
 @dataclass

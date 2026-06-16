@@ -96,12 +96,14 @@ async def aresolve_recall_config(user_id: int, dataset_ids: list[int]) -> Recall
     """取本次召回生效的数据集级 recall 配置（RAG 流 / 纯召回 JSON 两入口共用）。
 
     多数据集混合召回时取 **第一个** dataset_id 的配置（各数据集 top_k/阈值无法同时生效，
-    取首个是确定性且可解释的选择）；``dataset_ids`` 为空（全库召回）时返回全默认 RecallConfig。
+    取首个是确定性且可解释的选择）；``dataset_ids`` 为空（全库召回）时返回系统默认
+    ``RecallConfig.from_settings()``——使 enabled_sources / strict / top_k 等跟随运行期
+    系统配置，而非被静态默认锁死。
     配置读取经独立短生命周期 session 完成——召回入口可能在请求处理函数返回后才执行（SSE 流），
     不依赖请求级 session。
     """
     if not dataset_ids:
-        return RecallConfig()
+        return RecallConfig.from_settings()
     # 延迟导入避免与 database 模块的潜在循环依赖。
     from src.database import get_db_context
 

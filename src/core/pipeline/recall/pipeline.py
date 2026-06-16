@@ -68,25 +68,38 @@ class RecallPipeline:
         started_at = time.monotonic()
         self._validate(request)
 
+        # 本次生效的召回路：按数据集级 enabled_sources 在已装配路集合内收窄（见 _effective_sources）。
+        effective_sources = self._effective_sources(request)
+        # 容错模式：请求级覆盖优先，未指定时沿用装配期默认。
+        strict = (
+            request.strict_override
+            if request.strict_override is not None
+            else self._config.strict
+        )
+
         # 入口日志：不记 query 原文（可能含用户敏感内容），只记可观测的元信息。
         logger.info(
-            "[RecallPipeline] start user={} datasets={} docs={} top_k={} mode={}",
+            "[RecallPipeline] start user={} datasets={} docs={} top_k={} sources={} strict={} mode={}",
             request.user_id,
             len(request.dataset_ids or []),
             len(request.doc_ids or []),
             request.top_k,
+            effective_sources,
+            strict,
             "parallel" if self._config.parallel else "serial",
         )
 
         if self._config.parallel:
-            per_source_results = await self._run_parallel(request)
+            per_source_results = await self._run_parallel(request, effective_sources)
         else:
-            per_source_results = await self._run_serial(request)
+            per_source_results = await self._run_serial(request, effective_sources)
 
-        success_hits, failed_sources = self._check_failures(per_source_results)
+        success_hits, failed_sources = self._check_failures(
+            per_source_results, effective_sources, strict
+        )
         fused_hits = fuse_with_rrf(
             per_source_hits=success_hits,
-            all_sources=self._sources,
+            all_sources=effective_sources,
             k=self._config.rrf_k,
         )
         # 服务端固定返回候选上限：融合后按 top_k 截断（fuse 已按 fused_score 降序）。
@@ -99,7 +112,7 @@ class RecallPipeline:
             request.user_id,
             elapsed_ms,
             len(fused_hits),
-            {s: len(success_hits.get(s, [])) for s in self._sources},
+            {s: len(success_hits.get(s, [])) for s in effective_sources},
             failed_sources,
         )
         return self._build_response(
@@ -108,7 +121,31 @@ class RecallPipeline:
             success_hits=success_hits,
             failed_sources=failed_sources,
             elapsed_ms=elapsed_ms,
+            sources=effective_sources,
         )
+
+    def _effective_sources(self, request: RecallRequest) -> list[str]:
+        """求本次实际触发的召回路：在已装配路集合内按 ``request.enabled_sources`` 收窄。
+
+        - ``enabled_sources`` 为 ``None`` / 空 → 用全部已装配路；
+        - 非空 → 取与已装配路的交集（保持装配顺序），列出的未装配路被忽略；
+        - 交集为空（如数据集只点了系统未装配的路）→ 回退全部已装配路并记 warning，
+          避免因一条过时的数据集配置把整次召回打空。
+        """
+        requested = request.enabled_sources
+        if not requested:
+            return self._sources
+        requested_set = set(requested)
+        effective = [s for s in self._sources if s in requested_set]
+        if not effective:
+            logger.warning(
+                "[RecallPipeline] enabled_sources={} matched none of assembled sources={}; "
+                "falling back to all assembled sources",
+                requested,
+                self._sources,
+            )
+            return self._sources
+        return effective
 
     def _validate(self, request: RecallRequest) -> None:
         """入参校验：query 非空非空白；user_id 为正；top_k 为正。
@@ -139,8 +176,13 @@ class RecallPipeline:
     async def _run_parallel(
         self,
         request: RecallRequest,
+        sources: list[str],
     ) -> dict[str, list[RetrieverHit] | BaseException]:
-        """并行触发：``asyncio.gather(return_exceptions=True)`` 收异常成对象返回。"""
+        """并行触发：``asyncio.gather(return_exceptions=True)`` 收异常成对象返回。
+
+        只触发 ``sources`` 列出的（本次生效的）召回路。
+        """
+        retrievers = [r for r in self._retrievers if r.source in set(sources)]
         tasks = [
             r.recall(
                 request.query,
@@ -150,21 +192,26 @@ class RecallPipeline:
                 top_k=request.top_k,
                 score_threshold_override=self._score_threshold_override_for(r.source, request),
             )
-            for r in self._retrievers
+            for r in retrievers
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        return {source: result for source, result in zip(self._sources, results)}
+        return {r.source: result for r, result in zip(retrievers, results)}
 
     async def _run_serial(
         self,
         request: RecallRequest,
+        sources: list[str],
     ) -> dict[str, list[RetrieverHit] | BaseException]:
         """串行触发：按 retrievers 构造顺序依次 await；前一路完成才触发下一路。
 
-        单路异常不阻断后续路（与并行模式语义对齐——区别仅在触发模式）。
+        只触发 ``sources`` 列出的（本次生效的）召回路；单路异常不阻断后续路
+        （与并行模式语义对齐——区别仅在触发模式）。
         """
+        active = set(sources)
         results: dict[str, list[RetrieverHit] | BaseException] = {}
         for retriever in self._retrievers:
+            if retriever.source not in active:
+                continue
             try:
                 hits = await retriever.recall(
                     request.query,
@@ -184,6 +231,8 @@ class RecallPipeline:
     def _check_failures(
         self,
         per_source_results: dict[str, list[RetrieverHit] | BaseException],
+        sources: list[str],
+        strict: bool,
     ) -> tuple[dict[str, list[RetrieverHit]], list[str]]:
         """分流：成功路收进 dict，失败路收成 list[source]。
 
@@ -194,8 +243,8 @@ class RecallPipeline:
         """
         success_hits: dict[str, list[RetrieverHit]] = {}
         failed: list[tuple[str, BaseException]] = []
-        # 按 self._sources 顺序遍历，保持失败列表的稳定顺序。
-        for source in self._sources:
+        # 按本次生效的 sources 顺序遍历，保持失败列表的稳定顺序。
+        for source in sources:
             result = per_source_results[source]
             if isinstance(result, BaseException):
                 failed.append((source, result))
@@ -212,13 +261,13 @@ class RecallPipeline:
             if isinstance(exc, RecallFatalError):
                 raise exc
 
-        if self._config.strict and failed:
+        if strict and failed:
             first_source, first_exc = failed[0]
             raise RecallError(
                 f"strict mode: retriever source={first_source} failed: {first_exc!r}"
             )
 
-        if len(failed) == len(self._sources):
+        if len(failed) == len(sources):
             summary = "; ".join(f"{s}={exc!r}" for s, exc in failed)
             raise RecallError(f"all retrievers failed: {summary}")
 
@@ -232,10 +281,11 @@ class RecallPipeline:
         success_hits: dict[str, list[RetrieverHit]],
         failed_sources: list[str],
         elapsed_ms: int,
+        sources: list[str],
     ) -> RecallResponse:
-        """组装响应：per_source_counts 基于已装配 source 全集；空列表 / 失败路都计 0。"""
+        """组装响应：per_source_counts 基于本次生效的 source 集；空列表 / 失败路都计 0。"""
         per_source_counts = {
-            source: len(success_hits.get(source, [])) for source in self._sources
+            source: len(success_hits.get(source, [])) for source in sources
         }
         return RecallResponse(
             query=query,

@@ -215,12 +215,14 @@ session token 由 Java 签发、Python 用**独立专用密钥**验签；claims�
 | `config_id` | int | 是 | 本次生成所用 CHAT 模型配置 id（前端选中、用户已配置）。缺失 `422`；不属本用户 / 非 CHAT / 已停用 / 不存在 → 召回前置失败 `RECALL_MODEL_CONFIG_MISSING` |
 | `dataset_ids` | list[int] | 否 | 本次查询的数据集**子集选择**，必须 ⊆ token 授权范围（超出 `403`）；省略/空 = 用 token 全量授权范围 |
 
-**身份只取 token claims**——body 不含 `user_id`，前端自报一律不信任。`top_k` / 召回分数阈值
-由服务端**按数据集配置**控制（LINK-148：`dataset_parse_config.recall_config` 的
-`recall_result_limit` / `sparse_score_threshold` / `dense_score_threshold`；多数据集混合取首个
-dataset，无数据集配置回退 `RECALL_RESULT_LIMIT` 等系统默认），`sources` / `strict` 仍由
-`RECALL_ENABLED_SOURCES` / `RECALL_STRICT_DEFAULT` 控制；均不接受请求覆盖。模型按
-`(user_id, config_id)` 解析、不回退系统配置。
+**身份只取 token claims**——body 不含 `user_id`，前端自报一律不信任。`top_k` / 召回分数阈值 /
+召回路 / 容错模式 / rerank 条数均由服务端**按数据集配置**控制（`dataset_parse_config.recall_config`：
+`recall_result_limit` / `sparse_score_threshold` / `dense_score_threshold` / `recall_enabled_sources` /
+`recall_strict` / `rerank_top_n`；多数据集混合取首个 dataset，无数据集配置回退
+`RECALL_RESULT_LIMIT` / `SPARSE_RETRIEVAL_SCORE_THRESHOLD` / `DENSE_RETRIEVAL_SCORE_THRESHOLD` /
+`RECALL_ENABLED_SOURCES` / `RECALL_STRICT_DEFAULT` / `RERANK_DEFAULT_TOP_N` 等系统默认）；均不接受
+请求覆盖。其中 `recall_enabled_sources` **只能在系统已装配的召回路集合内收窄**（不能启用系统未
+装配的路）。模型按 `(user_id, config_id)` 解析、不回退系统配置。
 
 并发：按 `user_id` 限并发流数（`RECALL_SESSION_MAX_CONCURRENT`），超限返回 `429`。
 
@@ -253,11 +255,12 @@ data: {"answer": "<完整答案>", "hits": [...], "rerank_applied": true, "faile
   一律降级**为 RRF 顺序候选（best-effort：rag/stream 不因 rerank 不可用而整条失败），此时该字段为
   `false`，每个 hit 的 `rerank_score` / `rerank_rank` 为 `null`；
 - rerank **生效**时（`rerank_applied=true`）：`hits` 按 `rerank_rank` 升序（即 rerank 相关性降序），
-  长度 ≤ `RERANK_DEFAULT_TOP_N`；个别未被模型打分的候选 `rerank_score` / `rerank_rank` 可为 `null`，
-  排在已打分候选之后；
+  长度 ≤ `rerank_top_n`（数据集 `recall_config.rerank_top_n`，无数据集配置回退 `RERANK_DEFAULT_TOP_N`）；
+  个别未被模型打分的候选 `rerank_score` / `rerank_rank` 可为 `null`，排在已打分候选之后；
 - rerank **降级**时（`rerank_applied=false`）：`hits` 为 RRF 顺序（按 `fused_score` 降序），
-  截断到 `RERANK_DEFAULT_TOP_N`；
-- `fused_score` / `scores` 为 RRF 解释信息，原样保留；`scores` 键集合等于已装配召回路。
+  截断到 `rerank_top_n`；
+- `fused_score` / `scores` 为 RRF 解释信息，原样保留；`scores` 键集合等于本次生效的召回路
+  （即数据集 `recall_enabled_sources` 在已装配路集合内收窄后的结果）。
 
 `failed_sources` 表达「降级成功」（如 bm25 成功、sparse 失败），空列表表示无失败路。失败终态
 `error` 发送后关闭流，`message` 不含内部堆栈。错误码见

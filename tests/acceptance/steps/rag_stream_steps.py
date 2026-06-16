@@ -639,7 +639,9 @@ def _w_cors(rag_acc_state, origin, query, ds):
 def _w_disconnect(rag_acc_state):
     rag_acc_state.redis.store["recall:concurrent:123"] = 1
     req = RecallRequest(query="q", user_id=123, dataset_ids=[1], top_k=20)
-    gen = rag._guarded_stream(rag_acc_state.fake, _FakeReranker(), req, "rid", 123, CONFIG_ID)
+    gen = rag._guarded_stream(
+        rag_acc_state.fake, _FakeReranker(), req, "rid", 123, CONFIG_ID, 4000, 8
+    )
 
     async def _drive() -> None:
         task = asyncio.ensure_future(gen.__anext__())
