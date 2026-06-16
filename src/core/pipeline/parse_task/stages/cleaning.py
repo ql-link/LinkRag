@@ -32,8 +32,8 @@ class CleaningStage(Stage):
     name = POST_PROCESS_STAGE_CLEANING
     status_field = "cleaning_status"
 
-    def __init__(self, services, repository, notifier, *, log_repository) -> None:
-        super().__init__(services, repository, notifier)
+    def __init__(self, services, repository, *, log_repository) -> None:
+        super().__init__(services, repository)
         self._log_repo = log_repository
 
     async def mark_started(self, ctx: StageContext, started_at) -> None:

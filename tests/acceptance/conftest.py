@@ -274,7 +274,7 @@ def pipeline_factory(
 ):
     """组合一个可执行的 ParseTaskPipeline。
 
-    刻意避开真实 DB / MQ / 向量库：log_repository / guard / notifier 用桩件直通。
+    刻意避开真实 DB / MQ / 向量库：log_repository / guard 用桩件直通。
     具体业务 Scenario 通常只关心"是否调了 download_to_path / 是否清理临时文件 / 是否
     设置正确的 failure_reason"，不需要走完整后处理链路；因此把成功路径在 markdown 上传
     完成后立即短路掉。
@@ -363,12 +363,6 @@ def pipeline_factory(
         ))
         pipeline._guard = guard
 
-        # notifier 桩：吞掉对外 MQ 通知。
-        notifier = MagicMock()
-        notifier.send_or_raise = AsyncMock()
-        notifier.send = AsyncMock()
-        pipeline._notifier = notifier
-
         # 关停 post-process 与 chunk 后续阶段：成功路径触达 markdown 上传后直接返回。
         # 用一个轻量补丁让 _run 在 mark_success 后早返，避免触达 chunk / 向量 / ES。
         from src.core.pipeline.parse_task import pipeline as pipeline_module
@@ -378,8 +372,8 @@ def pipeline_factory(
         async def _run_short_circuit(self, payload, db):
             return await original_run(self, payload, db)
 
-        # 不打补丁——_run 会自然走到 post_process_repository 桩件（已 AsyncMock no-op）
-        # 与 notifier 桩件（已 AsyncMock no-op），最后返回 SUCCESS / FAILED。
+        # 不打补丁——_run 会自然走到 post_process_repository 桩件（已 AsyncMock no-op），
+        # 最后返回 SUCCESS / FAILED。
         return pipeline, session
 
     return _factory

@@ -16,7 +16,6 @@ from loguru import logger
 from src.core.dataset_config import DatasetConfigService
 
 from .._utils import coerce_optional_int, duration_ms, now
-from ..constants import PARSE_TASK_STATUS_FAILED
 from ..error_codes import ParseFailureCode, build_failure_reason
 from ..post_process.constants import POST_PROCESS_STAGE_CHUNKING
 from .base import Stage
@@ -37,7 +36,7 @@ class ChunkingStage(Stage):
     async def on_skip(self, ctx: StageContext) -> StageOutcome:
         """继承 SUCCESS：从 DB 反查完整 chunk truth set 喂给下游。
 
-        反查为空视为状态不一致——按历史语义落 ``vectorizing_failed`` + 通知 Java，
+        反查为空视为状态不一致——按历史语义落 ``vectorizing_failed`` 终态，
         返回 ``finalized`` 失败，编排器据此终止后续阶段。
         """
         chunks = await self._services.load_all_chunks_from_db(ctx.payload, ctx.db)
@@ -49,13 +48,6 @@ class ChunkingStage(Stage):
                 reason=_CHUNK_STATE_INCONSISTENT,
                 duration_ms=None,
                 finished_at=finished_at,
-            )
-            await self._notifier.send_or_raise(
-                ctx.payload,
-                PARSE_TASK_STATUS_FAILED,
-                finished_at,
-                _CHUNK_STATE_INCONSISTENT,
-                document_parsed_log_id=ctx.log_record.id,
             )
             return StageOutcome.failure(
                 _CHUNK_STATE_INCONSISTENT,

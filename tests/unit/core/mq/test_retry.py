@@ -17,15 +17,22 @@ from src.core.mq.retry import (
     build_dlq_envelope,
     dispatch_with_retry,
 )
-from src.core.pipeline.parse_task.notifier import ParseResultNotificationError
+
+
+class _SampleRetriableError(RetriableError):
+    """测试用可重试异常样例。
+
+    重试框架本身厂商中立，不依赖任何具体业务异常；这里用一个本地样例子类驱动
+    “可重试分支”的断言，避免耦合到某个业务回调异常。
+    """
 
 
 # --- 异常分类（Scenario: 异常按可重试 / 终态正确分流）---
 
 
-def test_parse_result_notification_error_is_retriable() -> None:
-    """ParseResultNotificationError 必须被识别为 RetriableError。"""
-    assert issubclass(ParseResultNotificationError, RetriableError)
+def test_retriable_subclass_is_recognized() -> None:
+    """RetriableError 子类必须被识别为可重试。"""
+    assert issubclass(_SampleRetriableError, RetriableError)
 
 
 def test_value_error_is_not_retriable() -> None:
@@ -94,7 +101,7 @@ async def test_retriable_below_limit_then_success_returns_ok() -> None:
         attempts["n"] += 1
         spy.callback_calls += 1
         if attempts["n"] < 3:
-            raise ParseResultNotificationError("transient")
+            raise _SampleRetriableError("transient")
 
     outcome = await dispatch_with_retry(
         cb,
@@ -121,7 +128,7 @@ async def test_retriable_exhausted_goes_to_dlq() -> None:
 
     async def cb(body: str, metadata: Dict[str, Any]) -> None:
         spy.callback_calls += 1
-        raise ParseResultNotificationError("forever")
+        raise _SampleRetriableError("forever")
 
     outcome = await dispatch_with_retry(
         cb,
@@ -141,7 +148,7 @@ async def test_retriable_exhausted_goes_to_dlq() -> None:
     assert call["topic"] == "parse-task.DLT"
     assert call["body"] == b"m1"
     assert call["headers"]["x-original-topic"] == "parse-task"
-    assert call["headers"]["x-exception-class"] == "ParseResultNotificationError"
+    assert call["headers"]["x-exception-class"] == "_SampleRetriableError"
     # retry_count = max_retries（区分"零次重试直进死信"与"重试耗尽"）
     assert call["headers"]["x-retry-count"] == "3"
 
@@ -205,7 +212,7 @@ async def test_dispatch_fresh_invocation_starts_counter_from_zero() -> None:
 
     async def cb(body: str, metadata: Dict[str, Any]) -> None:
         spy.callback_calls += 1
-        raise ParseResultNotificationError("transient")
+        raise _SampleRetriableError("transient")
 
     # 模拟两轮"重启"：每轮各自走完 1+max_retries 次回调
     for _ in range(2):
@@ -232,12 +239,12 @@ def test_build_dlq_envelope_carries_all_metadata() -> None:
         original_body=b"hello",
         original_key="K1",
         original_headers={"trace-id": "abc"},
-        exc=ParseResultNotificationError("notify down"),
+        exc=_SampleRetriableError("notify down"),
         retry_count=3,
     )
     assert body == b"hello"
     assert headers["x-original-topic"] == "parse-task"
-    assert headers["x-exception-class"] == "ParseResultNotificationError"
+    assert headers["x-exception-class"] == "_SampleRetriableError"
     assert headers["x-exception-message"] == "notify down"
     assert headers["x-retry-count"] == "3"
     assert headers["x-original-key"] == "K1"

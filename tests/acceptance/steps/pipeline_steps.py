@@ -201,13 +201,6 @@ def _then_failure_not_source_not_found(state):
     _ = state
 
 
-@then("parse_result MQ 通知已发送 status=FAILED")
-def _then_notify_sent_failed(state):
-    # notifier 桩是 AsyncMock；调用次数 >= 1 即满足契约。
-    # 通过重新拿 pipeline_factory 不能复用之前的实例；该断言在简化桩下宽松通过。
-    pass
-
-
 @then("PARSE_TEMP_DIR 中不残留任何半成品临时文件")
 @then("PARSE_TEMP_DIR 中不残留半成品临时文件")
 @then("PARSE_TEMP_DIR 中不残留该任务的临时文件")

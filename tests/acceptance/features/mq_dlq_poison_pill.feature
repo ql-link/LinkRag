@@ -5,7 +5,7 @@
 # 术语与约定（来自 brief，非技术实现细节）：
 # - 配置项：MQ_MAX_RETRIES（最大重试次数，示例取 3）、MQ_RETRY_BACKOFF
 #   （固定退避间隔）、MQ_DLQ_SUFFIX（死信后缀 .DLT）；死信兜底恒启用，无开关
-# - 异常分类：RetriableError 为可重试异常基类；ParseResultNotificationError 归入可重试；
+# - 异常分类：RetriableError 为可重试异常基类；SampleRetriableError 归入可重试；
 #   其它从 Pipeline 逃出的异常归为终态（不可重试）
 # - 死信目标：原 topic + 后缀 .DLT
 # - 死信消息须携带：原 topic、异常摘要、累计重试次数、原消息 key
@@ -45,7 +45,7 @@ Feature: MQ 消费 poison pill 死信与重试兜底
 
   Scenario: 可重试异常未达上限则退避后重投且不提交位点
     Given partition P0 待消费消息 M1，(parse-task,P0,M1.offset) 重试计数 == 0
-    When 消费回调抛出 ParseResultNotificationError
+    When 消费回调抛出 SampleRetriableError
     Then 不提交 (parse-task, P0) 的位点
     And M1 不被投递到死信
     And 等待至少一个 MQ_RETRY_BACKOFF 间隔后 M1 被再次投递给回调
@@ -60,14 +60,14 @@ Feature: MQ 消费 poison pill 死信与重试兜底
 
   Scenario: 可重试异常达最大重试次数后降级死信并提交位点
     Given partition P0 的消息 M1，(parse-task,P0,M1.offset) 重试计数 == 3
-    When 消费回调再次抛出 ParseResultNotificationError
+    When 消费回调再次抛出 SampleRetriableError
     Then M1 被投递到死信目标 "parse-task.DLT"
     And 死信投递成功后才提交 (parse-task, P0) 的位点至 M1 的 offset
     And M1 不再被投递给回调
     And (parse-task,P0,M1.offset) 的重试计数被清理
 
   Scenario: 单条可重试消息阻塞本分区时间存在上界
-    Given partition P0 的消息 M1 持续抛出 ParseResultNotificationError
+    Given partition P0 的消息 M1 持续抛出 SampleRetriableError
     When M1 从首次失败到进入死信完成整个重试过程
     Then 回调对 M1 被调用恰好 1 + MQ_MAX_RETRIES 次
     And M1 阻塞 partition P0 的总时长 <= MQ_RETRY_BACKOFF × MQ_MAX_RETRIES
@@ -91,7 +91,7 @@ Feature: MQ 消费 poison pill 死信与重试兜底
 
     Examples:
       | 异常                          | 分类   | 路径                         |
-      | ParseResultNotificationError  | 可重试 | 有限退避重试后超限才进死信   |
+      | SampleRetriableError  | 可重试 | 有限退避重试后超限才进死信   |
       | 其它 RetriableError 子类      | 可重试 | 有限退避重试后超限才进死信   |
       | 非 RetriableError 普通异常    | 终态   | 不重试直接进死信             |
 
@@ -133,7 +133,7 @@ Feature: MQ 消费 poison pill 死信与重试兜底
     And 不存在"M1 未解决但位点已提交越过 offset 100"的情况
 
   Scenario: 某分区失败重试不阻塞也不误提交其它分区
-    Given partition P0 的消息 M1 持续抛出 ParseResultNotificationError 正在重试
+    Given partition P0 的消息 M1 持续抛出 SampleRetriableError 正在重试
     And partition P1 的消息 N1 回调执行成功
     When 系统并行消费 P0 与 P1
     Then 提交 (parse-task, P1) 的位点至 N1 的 offset
@@ -144,7 +144,7 @@ Feature: MQ 消费 poison pill 死信与重试兜底
 
   Scenario: 同一消息反复触发可重试异常计数逐次累加
     Given partition P0 的消息 M1，(parse-task,P0,M1.offset) 重试计数 == 0
-    When 消费回调对 M1 连续抛出 ParseResultNotificationError 3 次
+    When 消费回调对 M1 连续抛出 SampleRetriableError 3 次
     Then 每次失败后 (parse-task,P0,M1.offset) 重试计数依次为 1、2、3
     And 第 3 次失败后 M1 被投递到死信
 
@@ -164,5 +164,5 @@ Feature: MQ 消费 poison pill 死信与重试兜底
 
     Examples:
       | 厂商  | 异常                         | 去向                          |
-      | kafka | ParseResultNotificationError | 重试 MQ_MAX_RETRIES 次后进死信 |
+      | kafka | SampleRetriableError | 重试 MQ_MAX_RETRIES 次后进死信 |
       | kafka | 非 RetriableError 普通异常   | 不重试直接进死信              |

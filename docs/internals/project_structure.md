@@ -116,7 +116,7 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   │   ├── constants.py    # 解析任务状态、通知文案等流水线常量
 │   │   │   │   ├── error_codes.py
 │   │   │   │   ├── models.py
-│   │   │   │   ├── log_repository.py / source.py / notifier.py / validator.py / temp_workspace.py / _utils.py
+│   │   │   │   ├── log_repository.py / source.py / validator.py / temp_workspace.py / _utils.py
 │   │   │   │   ├── stages/         # 类化阶段编排（base/context/services + cleaning/chunking/
 │   │   │   │   │                   #   vectorizing/sparse_vectorizing/pretokenize/es_indexing）
 │   │   │   │   └── post_process/   # 文件级后处理状态机（constants/models/repository）
@@ -155,9 +155,8 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   │   └── parse_task_consumer.py
 │   │   │   ├── messages/         # MQ 业务消息
 │   │   │   │   ├── parse_task.py
-│   │   │   │   ├── parse_result.py
 │   │   │   │   ├── cache_sync.py
-│   │   │   │   └── usage_report.py
+│   │   │   │   └── usage_report.py   # parse_result.py 已删除（LINK-166）
 │   │   │   └── vendors/          # MQ 厂商适配
 │   │   │       ├── rabbitmq_adapter.py
 │   │   │       └── kafka/        # Kafka 适配与 Topic 管理

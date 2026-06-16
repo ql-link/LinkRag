@@ -16,8 +16,6 @@ from src.core.mq.exceptions import MQSerializationError
 from src.core.mq.messages import (
     ParseTaskMessage,
     ParseTaskPayload,
-    ParseResultMessage,
-    ParseResultPayload,
     CacheSyncMessage,
     CacheSyncPayload,
     UsageReportMessage,
@@ -175,88 +173,6 @@ class TestParseTaskMessage:
 
         assert parsed.task_id == "t-legacy"
         assert parsed.pdf_parser_backend == "naive"
-
-
-class TestParseResultMessage:
-    """文档解析结果消息测试"""
-
-    def test_build_and_parse(self):
-        msg = ParseResultMessage.build(
-            task_id="t-001",
-            original_file_id=1,
-            document_parsed_log_id=10,
-            dataset_id=30,
-            user_id=20,
-            task_status="success",
-            parse_finished_at="2026-04-29T10:00:00+00:00",
-        )
-
-        assert msg.get_mq_name() == "tolink.rag.parse_result"
-        assert msg.get_mq_type() == "PARSE_RESULT"
-        assert msg.get_routing_key() == "t-001"
-
-        parsed = ParseResultMessage.parse_msg(msg.serialize())
-        assert isinstance(parsed, ParseResultPayload)
-        assert parsed.task_id == "t-001"
-        assert parsed.task_status == "success"
-        assert parsed.failure_reason is None
-
-    def test_build_should_only_include_java_contract_fields(self):
-        msg = ParseResultMessage.build(
-            task_id="9f6b7d7e-4e7b-4a3f-9f4d-8d2a1b6c7e90",
-            original_file_id=10001,
-            document_parsed_log_id=10002,
-            dataset_id=10003,
-            user_id=10002,
-            task_status="success",
-            failure_reason=None,
-            parse_finished_at="2026-04-28T10:00:08",
-        )
-
-        serialized = msg.serialize()
-        data = json.loads(serialized)
-
-        assert data == {
-            "task_id": "9f6b7d7e-4e7b-4a3f-9f4d-8d2a1b6c7e90",
-            "original_file_id": 10001,
-            "document_parsed_log_id": 10002,
-            "dataset_id": 10003,
-            "user_id": 10002,
-            "task_status": "success",
-            "failure_reason": None,
-            "parse_finished_at": "2026-04-28T10:00:08",
-            "user_message": None,
-        }
-        assert "mq_type" not in data
-        assert "mq_name" not in data
-        assert "payload" not in data
-        parsed = ParseResultMessage.parse_msg(serialized)
-        assert parsed.failure_reason is None
-        assert parsed.user_message is None
-        assert msg.get_routing_key() == "9f6b7d7e-4e7b-4a3f-9f4d-8d2a1b6c7e90"
-
-    def test_parse_msg_supports_payload_without_user_message(self):
-        raw = json.dumps(
-            {
-                "mq_type": "PARSE_RESULT",
-                "mq_name": "tolink.rag.parse_result",
-                "payload": {
-                    "task_id": "t-legacy-result",
-                    "original_file_id": 1,
-                    "document_parsed_log_id": 10,
-                    "dataset_id": 30,
-                    "user_id": 20,
-                    "task_status": "failed",
-                    "failure_reason": "parse failed",
-                    "parse_finished_at": "2026-04-29T10:00:00+00:00",
-                },
-            }
-        )
-
-        parsed = ParseResultMessage.parse_msg(raw)
-
-        assert parsed.task_id == "t-legacy-result"
-        assert parsed.user_message is None
 
 
 class TestCacheSyncMessage:
