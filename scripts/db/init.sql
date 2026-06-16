@@ -8,7 +8,7 @@
 --   - schema 演进的唯一权威源是 src/models/**.py + migrations/versions/*.py；
 --   - 修改字段必须先改 ORM 模型并新增 migration，再同步本文件。
 -- 同步时机：每条会改动表结构的 migration 落库时一并更新本文件。
--- 末次同步：migration 0016_20260609_add_user_feedback_table
+-- 末次同步：migration 0018_20260614_add_llm_protocol_columns
 -- ===============================================
 
 CREATE DATABASE IF NOT EXISTS tolink_rag_db DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS llm_provider_model (
     model_name      VARCHAR(128)    NOT NULL COMMENT '模型名',
     capability      VARCHAR(32)     NOT NULL COMMENT '单能力；一模型多能力=多行',
     protocol        VARCHAR(32)     COMMENT '调用协议（事实来源；服务层保证非空，待回填后收紧 NOT NULL）',
-    api_base_url    VARCHAR(512)    COMMENT '调用入口基地址（事实来源，不含 capability 后缀）',
+    api_base_url    VARCHAR(512)    COMMENT '调用入口完整端点 URL（事实来源，Python 直打不拼后缀；google 例外存 base 到 /v1beta）',
     is_active       BOOLEAN         NOT NULL DEFAULT TRUE COMMENT '该模型能力是否上架',
     created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -73,7 +73,7 @@ CREATE TABLE IF NOT EXISTS llm_system_preset (
     capability      VARCHAR(32)     NOT NULL COMMENT '能力标识',
     provider_type   VARCHAR(32)     COMMENT '厂商类型（与用户配置对齐，镜像免 join）',
     protocol        VARCHAR(32)     COMMENT '调用协议（创建预设时复制自模型能力层）',
-    api_base_url    VARCHAR(512)    COMMENT '调用入口基地址（复制自模型能力层）',
+    api_base_url    VARCHAR(512)    COMMENT '调用入口完整端点 URL（复制自模型能力层）',
     api_key         VARCHAR(512)    NOT NULL COMMENT '平台 Key（加密）',
     is_active       BOOLEAN         NOT NULL DEFAULT TRUE COMMENT '是否对新用户下发',
     created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS llm_user_config (
     provider_id         BIGINT UNSIGNED NOT NULL COMMENT '关联 SystemProvider ID',
     provider_type       VARCHAR(32)     NOT NULL COMMENT '厂商类型快照，下游路由 SDK',
     api_key             VARCHAR(512)    NOT NULL COMMENT '厂商级 API Key（加密存储）',
-    api_base_url        VARCHAR(512)    COMMENT '实际生效地址：复制自模型能力层事实（不 fallback 厂商默认）',
+    api_base_url        VARCHAR(512)    COMMENT '实际生效地址：完整端点 URL，复制自模型能力层事实（不 fallback 厂商默认），Python 直打',
     protocol            VARCHAR(32)     COMMENT '调用协议快照：复制自模型能力层，下游按 protocol+capability 选 adapter',
     model_name          VARCHAR(128)    NOT NULL COMMENT '具体模型名',
     capability          VARCHAR(32)     NOT NULL DEFAULT 'CHAT' COMMENT '专用能力标识：CHAT/EMBEDDING/RERANK/OCR 等',

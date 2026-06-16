@@ -48,9 +48,7 @@ LLM 调用拆成两个正交维度：
 
 ### 2.2 URL 接缝：完整 URL 直打
 
-`api_base_url` 由配置下发**完整端点 URL**（含 capability 后缀），adapter 直接 POST，**不在代码里维护 `(protocol,capability)→后缀` 映射**。端点知识全部数据化，改端点只动配置不动代码。
-
-> ⚠️ 跨端对齐 pending：[mysql.md](../api/schemas/mysql.md) 当前记录的是 PR #92 初版契约——`api_base_url` 存基地址、由下游 adapter 按 `(protocol,capability)` 补后缀。本期 Python 已改为"完整 URL 直打"，该接缝调整待 Java PR #92 对齐下发完整 URL（已在 PR 留评论）。**合入前以本节"完整 URL"为 Python 侧约定；Java 仍下发基地址时该路径会拼错，需运维 / Java 同步到位后再上线。**
+`api_base_url` 由配置下发**完整端点 URL**（含 capability 后缀），adapter 直接 POST，**不在代码里维护 `(protocol,capability)→后缀` 映射**。端点知识全部数据化，改端点只动配置不动代码。`google` 协议是唯一例外，配置保存到 `/v1beta` 为止，由 Python 按模型和流式模式补全 Gemini 原生路径。
 
 ### 2.3 Google 流式特例（唯一例外）
 

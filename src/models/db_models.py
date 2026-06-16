@@ -78,7 +78,7 @@ class ProviderModelDB(Base):
     capability: Mapped[str] = mapped_column(String(32), nullable=False)
     # 调用协议（事实来源；Java 服务层保证非空，待历史数据回填后收紧 NOT NULL）
     protocol: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
-    # 调用入口基地址（事实来源，不含 capability 后缀；下游 adapter 按协议追加后缀）
+    # 调用入口完整端点 URL（事实来源；Python adapter 直打；google 例外存 base）
     api_base_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
@@ -119,7 +119,7 @@ class SystemPresetDB(Base):
     provider_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     # 调用协议（创建预设时复制自模型能力层）
     protocol: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
-    # 调用入口基地址（复制自模型能力层）
+    # 调用入口完整端点 URL（复制自模型能力层）
     api_base_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     api_key: Mapped[str] = mapped_column(String(512), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
