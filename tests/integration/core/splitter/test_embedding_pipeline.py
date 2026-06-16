@@ -1,8 +1,13 @@
 from src.core.markdown_parser import ElementType, MarkdownElement, ParseResult
 from src.core.splitter import (
+    CandidateBoundaryChunker,
     ChunkEmbeddingPipeline,
     ChunkingEngine,
-    PercentileSemanticChunker,
+    ChunkOverlapConfig,
+    ChunkOverlapper,
+    NoopStageTwoAlgorithm,
+    StageOneRouter,
+    StageTwoRouter,
     StructuredSemanticChunker,
 )
 
@@ -40,6 +45,37 @@ class RoutedEmbedder:
         return MockEmbeddingResult(payload, model=model or "mock-embed-model")
 
 
+def _structured_chunker(
+    *,
+    heading_break_level: int = 5,
+    min_candidate_chunk_tokens: int = 128,
+    overlap_tokens: int = 0,
+) -> StructuredSemanticChunker:
+    tokenizer = MockWordTokenizer()
+    overlapper = ChunkOverlapper(
+        tokenizer=tokenizer,
+        config=ChunkOverlapConfig(tokens=overlap_tokens),
+    )
+    candidate_chunker = CandidateBoundaryChunker(
+        tokenizer=tokenizer,
+        min_candidate_chunk_tokens=min_candidate_chunk_tokens,
+        heading_break_level=heading_break_level,
+        overlapper=overlapper,
+    )
+    return StructuredSemanticChunker(
+        candidate_chunker=candidate_chunker,
+        stage_one_router=StageOneRouter(
+            algorithm_name="candidate_boundary",
+            algorithms=[candidate_chunker],
+        ),
+        stage_two_router=StageTwoRouter(
+            algorithm_name="noop",
+            algorithms=[NoopStageTwoAlgorithm()],
+        ),
+        overlapper=overlapper,
+    )
+
+
 class FakeParser:
     def __init__(self, parse_result: ParseResult):
         self._parse_result = parse_result
@@ -59,7 +95,7 @@ class FakeParser:
         return self.parse("", source_file=self._parse_result.source_file)
 
 
-async def test_aprocess_should_embed_final_chunks_after_semantic_split():
+async def test_aprocess_should_embed_final_chunks_after_default_noop_stage_two():
     parse_result = ParseResult(
         elements=[
             MarkdownElement(
@@ -99,39 +135,14 @@ async def test_aprocess_should_embed_final_chunks_after_semantic_split():
         source_file="source.md",
     )
 
+    final_content = (
+        "# Intro\n\nalpha one two\n\nalpha three four\n\nbeta five six\n\nbeta seven eight"
+    )
     routes = {
-        (
-            "# Intro",
-            "alpha one two",
-            "alpha three four",
-            "beta five six",
-            "beta seven eight",
-        ): [
-            [1.0, 0.0],
-            [1.0, 0.0],
-            [0.0, 1.0],
-            [0.0, 1.0],
-            [0.0, 1.0],
-        ],
-        (
-            "# Intro\n\nalpha one two",
-            "alpha three four\n\nbeta five six\n\nbeta seven eight",
-        ): [
-            [0.11, 0.22],
-            [0.33, 0.44],
-        ],
+        (final_content,): [[0.11, 0.22]],
     }
     embedder = RoutedEmbedder(routes)
-    semantic_chunker = PercentileSemanticChunker(
-        embedder=embedder,
-        tokenizer=MockWordTokenizer(),
-        percentile=95,
-        min_chunk_tokens=1,
-        max_chunk_tokens=11,
-        overlap_tokens=0,
-        min_distance_gate=0.25,
-    )
-    chunker = StructuredSemanticChunker(semantic_chunker=semantic_chunker)
+    chunker = _structured_chunker(min_candidate_chunk_tokens=128, overlap_tokens=0)
     engine = ChunkingEngine(chunker=chunker, parser=FakeParser(parse_result))
     pipeline = ChunkEmbeddingPipeline(
         chunking_engine=engine,
@@ -142,24 +153,18 @@ async def test_aprocess_should_embed_final_chunks_after_semantic_split():
 
     embedded_chunks = await pipeline.aprocess("ignored", source_file="override.md")
 
-    assert len(embedded_chunks) == 2
-    assert embedded_chunks[0].content == "# Intro\n\nalpha one two"
-    assert embedded_chunks[1].content == "alpha three four\n\nbeta five six\n\nbeta seven eight"
+    assert len(embedded_chunks) == 1
+    assert embedded_chunks[0].content == final_content
     assert embedded_chunks[0].embedding == [0.11, 0.22]
-    assert embedded_chunks[1].embedding == [0.33, 0.44]
     assert embedded_chunks[0].embedding_model == "final-embed-v1"
     assert embedded_chunks[0].cached is False
     assert embedded_chunks[0].metadata["source_file"] == "override.md"
 
-    assert len(embedder.calls) == 2
-    assert embedder.calls[0]["texts"][0] == "# Intro"
-    assert embedder.calls[1]["texts"] == (
-        "# Intro\n\nalpha one two",
-        "alpha three four\n\nbeta five six\n\nbeta seven eight",
-    )
-    assert pipeline.last_stats.total_chunks == 2
+    assert len(embedder.calls) == 1
+    assert embedder.calls[0]["texts"] == (final_content,)
+    assert pipeline.last_stats.total_chunks == 1
     assert pipeline.last_stats.cache_hits == 0
-    assert pipeline.last_stats.cache_misses == 2
+    assert pipeline.last_stats.cache_misses == 1
     assert pipeline.last_stats.batch_count == 1
 
 
@@ -190,16 +195,7 @@ async def test_aprocess_should_reuse_cached_final_embeddings():
             ("# Cache\n\nstable content",): [[0.9, 0.1]],
         }
     )
-    semantic_chunker = PercentileSemanticChunker(
-        embedder=embedder,
-        tokenizer=MockWordTokenizer(),
-        percentile=95,
-        min_chunk_tokens=1,
-        max_chunk_tokens=50,
-        overlap_tokens=0,
-        min_distance_gate=0.25,
-    )
-    chunker = StructuredSemanticChunker(semantic_chunker=semantic_chunker)
+    chunker = _structured_chunker(min_candidate_chunk_tokens=128, overlap_tokens=0)
     engine = ChunkingEngine(chunker=chunker, parser=FakeParser(parse_result))
     pipeline = ChunkEmbeddingPipeline(
         chunking_engine=engine,

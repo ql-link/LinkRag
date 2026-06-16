@@ -22,6 +22,7 @@ def _user_config_to_dict(cfg: UserLLMConfigDB) -> Dict[str, Any]:
         "user_id": cfg.user_id,
         "provider_id": cfg.provider_id,
         "provider_type": cfg.provider_type,
+        "protocol": cfg.protocol,
         "api_key": cfg.api_key,
         "api_base_url": cfg.api_base_url,
         "model_name": cfg.model_name,
@@ -380,13 +381,19 @@ class ConfigReaderService:
         if not model_name:
             return None
 
+        # 系统级 LLM 固定走 openai 兼容协议；env 配的是 base，按能力补 openai 后缀成完整 URL。
+        base = (settings.SYSTEM_LLM_API_BASE or "").rstrip("/")
+        suffix = "/embeddings" if cap_upper == "EMBEDDING" else "/chat/completions"
+        full_url = f"{base}{suffix}" if base else settings.SYSTEM_LLM_API_BASE
+
         return {
             "id": "system-default",
             "user_id": "system",
             "provider_id": "system",
             "provider_type": settings.SYSTEM_LLM_PROVIDER,
+            "protocol": "openai",
             "api_key": settings.SYSTEM_LLM_API_KEY,
-            "api_base_url": settings.SYSTEM_LLM_API_BASE,
+            "api_base_url": full_url,
             "model_name": model_name,
             "is_active": True,
             "is_default": True,

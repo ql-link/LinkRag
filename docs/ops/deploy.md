@@ -58,7 +58,7 @@ uvicorn src.main:app --host 0.0.0.0 --port 8000
 
 - **应用启动卡在 Kafka**：通常是 `KAFKA_BOOTSTRAP_SERVERS` 配置错或 broker 未起来。本地用 docker-compose 时此地址应为 `127.0.0.1:9092`（容器内部连接用 `tolink-kafka:29092`）。
 - **API 调用 LLM 报解密失败**：`API_KEY_ENCRYPTION_SECRET` 必须与 Java 管理端的加密 Secret 一致，格式为 64 位 hex（解码后 32 字节），否则 `llm_user_config` 表中的密文无法解密。
-- **解析任务消费不到**：检查 `INIT_KAFKA_TOPICS_ON_STARTUP` 是否被关闭，且 topic（`PARSE_TASK_TOPIC` 默认 `tolink-document-pares`）是否已存在。
+- **解析任务消费不到**：检查 `INIT_KAFKA_TOPICS_ON_STARTUP` 是否被关闭，且 topic（`tolink.rag.parse_task`）是否已存在。
 
 ## 生产部署注意事项
 
@@ -108,4 +108,4 @@ alembic upgrade head
 
 - 配置项详解：[configuration.md](configure.md)
 - MQ 接入对接：[mq_integration.md](../api/mq_contracts.md)
-- 项目架构：[../architecture](../architecture)
+- 项目架构：[docs/internals/project_structure.md](../internals/project_structure.md)

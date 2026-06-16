@@ -8,7 +8,7 @@ from typing import Any, Protocol
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.chunk_fact_storage.constants import (
+from src.core.storage.chunks.constants import (
     CHUNK_LIFECYCLE_ACTIVE,
     CHUNK_STATUS_INDEXED,
 )

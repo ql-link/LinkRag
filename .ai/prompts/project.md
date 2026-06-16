@@ -25,51 +25,11 @@
 
 ---
 
-## 二、快速启动
-
-```bash
-# 1. 启动外部依赖
-docker compose up -d
-
-# 2. 安装项目
-python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev]"
-
-# 3. 准备配置
-cp .env.example .env
-
-# 4. 初始化数据库（建表 + 后续迁移一步完成）
-alembic upgrade head
-
-# 5. 启动服务
-uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-启动后：Swagger UI `http://localhost:8000/docs`，健康检查 `http://localhost:8000/health`。
-
-完整步骤、依赖清单与可选项见 [README.md](README.md#快速开始)。
+> 本地运行与启动命令见 [README.md](README.md#快速开始)；常用测试与自检命令见 [docs/contributing.md](docs/contributing.md)。
 
 ---
 
-## 三、常用命令
-
-```bash
-# 单元测试
-.venv/bin/pytest tests/unit -q
-
-# 全部测试
-.venv/bin/pytest tests -q
-
-# 启动开发服务
-uvicorn src.main:app --reload
-
-# 文档同步自检
-python scripts/check_docs_sync.py --staged
-```
-
----
-
-## 四、配置约定
+## 二、配置约定
 
 - 所有运行时配置统一通过 [src/config.py](src/config.py) 的 `Settings` 加载。
 - 环境变量样例放在 [.env.example](.env.example)，不要硬编码密钥。
@@ -77,7 +37,7 @@ python scripts/check_docs_sync.py --staged
 
 ---
 
-## 五、文档体系
+## 三、文档体系
 
 ```
 docs/
@@ -103,7 +63,7 @@ docs/
 
 ---
 
-## 六、文档同步规则（机器强制）
+## 四、文档同步规则（机器强制）
 
 只有这些规则会**阻止 commit / merge**。其他文档同步靠 PR 评审。
 
@@ -119,9 +79,9 @@ docs/
 
 ---
 
-## 七、工作规则（Agent / 开发者）
+## 五、工作规则（Agent / 开发者）
 
-- **改动前**：按角色看 [docs/README.md](docs/README.md) 找到最小必要文档；查第六节确认本次会触发的同步规则。
+- **改动前**：按角色看 [docs/README.md](docs/README.md) 找到最小必要文档；查第四节确认本次会触发的同步规则。
 - **实现中**：优先复用现有模块边界、配置入口、错误处理；不为业务需求轻易改动 framework 层。
 - **改动后**：同步更新受影响的对外契约文档；内部模块文档按需更新。
 - **提交前**：运行 `python scripts/check_docs_sync.py --staged` 自检；pre-commit hook 会自动执行。
@@ -130,7 +90,7 @@ docs/
 
 ---
 
-## 八、回答风格（面向开发者沟通）
+## 六、回答风格（面向开发者沟通）
 
 - 语言清晰、专业、得体，保持一定分寸；不要过度口语化或大白话。
 - 少用生僻术语和生造的比喻（例如"强冻结的线性瀑布"这类说法要避免）；常见技术词可以直接用。

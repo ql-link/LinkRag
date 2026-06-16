@@ -20,7 +20,6 @@ class ParseFailureCode(str, Enum):
     UNSUPPORTED_FILE_TYPE = "UNSUPPORTED_FILE_TYPE"
     PARSE_ENGINE_FAILED = "PARSE_ENGINE_FAILED"
     PARSED_FILE_UPLOAD_FAILED = "PARSED_FILE_UPLOAD_FAILED"
-    RESULT_NOTIFY_FAILED = "RESULT_NOTIFY_FAILED"
     INTERNAL_UNKNOWN_ERROR = "INTERNAL_UNKNOWN_ERROR"
     # 解析+上传整段（"文档清洗"阶段）失败的统一前缀；与 failed_stage=CLEANING(PARSING) 对应。
     PARSING_FAILED = "PARSING_FAILED"
@@ -29,6 +28,10 @@ class ParseFailureCode(str, Enum):
     # 发起用户缺少必配能力的默认 LLM 配置，无法执行解析增强（CHAT）或稠密向量化（EMBEDDING）。
     # 区别于配置读取失败（按引擎/INTERNAL 异常处理），仅在「确实未配置」时使用。
     LLM_CONFIG_MISSING = "LLM_CONFIG_MISSING"
+    # 数据集开启了表格/图片增强，但发起用户未配置对应能力（表格→CHAT，图片→VISION）的默认
+    # 模型。数据集层已不再选择增强模型，统一用用户默认模型；开启增强即要求用户已配该能力默认
+    # 模型，否则不做兜底直接失败。便于 Java 端提示用户去补对应能力的默认模型配置。
+    ENHANCEMENT_MODEL_MISSING = "ENHANCEMENT_MODEL_MISSING"
     # 用户 EMBEDDING 模型输出维度与系统统一维度（DENSE_VECTOR_DIMENSION）不一致，
     # 无法写入按 bucket 共享、维度固定的稠密 collection（方案 A 维度约束）。
     EMBEDDING_DIMENSION_UNSUPPORTED = "EMBEDDING_DIMENSION_UNSUPPORTED"
@@ -45,11 +48,11 @@ FAILURE_REASON_TEXT: dict[ParseFailureCode, str] = {
     ParseFailureCode.UNSUPPORTED_FILE_TYPE: "当前文件类型暂不支持解析",
     ParseFailureCode.PARSE_ENGINE_FAILED: "文件解析失败，请检查文件内容",
     ParseFailureCode.PARSED_FILE_UPLOAD_FAILED: "解析结果保存失败，请重新解析",
-    ParseFailureCode.RESULT_NOTIFY_FAILED: "解析结果通知失败，请重新解析",
     ParseFailureCode.INTERNAL_UNKNOWN_ERROR: "系统异常，请稍后重试",
     ParseFailureCode.PARSING_FAILED: "文件解析阶段失败，请检查文件内容或重新解析",
     ParseFailureCode.SPARSE_VECTORIZING_FAILED: "稀疏向量化失败，请稍后重试",
     ParseFailureCode.LLM_CONFIG_MISSING: "未配置默认大模型，请先在系统中配置后重试",
+    ParseFailureCode.ENHANCEMENT_MODEL_MISSING: "已开启表格/图片增强，但未配置对应的默认模型，请先配置默认模型后重试",
     ParseFailureCode.EMBEDDING_DIMENSION_UNSUPPORTED: "所选向量模型维度不受支持，请改用系统支持的向量模型",
     ParseFailureCode.RETRY_VALIDATION_FAILED: "重试前置校验失败，请确认上次任务状态",
 }

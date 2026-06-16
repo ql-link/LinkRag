@@ -4,7 +4,8 @@
 FROM python:3.11-slim AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    TZ=Asia/Shanghai
 # 不设 PIP_NO_CACHE_DIR：配合下方 BuildKit 缓存挂载，让 pip 复用已下载的 wheel
 
 WORKDIR /app
@@ -18,6 +19,7 @@ RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.li
         curl \
         libgl1 \
         libglib2.0-0 \
+        tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # 先只装依赖：用占位 src 满足 setuptools 构建后端，使「依赖层」独立缓存。
@@ -33,7 +35,7 @@ RUN --mount=type=cache,target=/root/.cache/pip \
 COPY . .
 
 # NLTK 数据：构建时下载到镜像内固定目录，固化进镜像层。
-# 运行时由 src.nltk_bootstrap 读取 NLTK_DATA 优先命中，避免依赖用户家目录或运行时联网下载。
+# 运行时由 src.bootstrap.nltk_data 读取 NLTK_DATA 优先命中，避免依赖用户家目录或运行时联网下载。
 ENV NLTK_DATA=/app/nltk_data
 # 经 GitHub 加速代理下载 NLTK 数据，避免直连 raw.githubusercontent 国内超时；失败自动回退官方源
 ENV NLTK_GH_PROXY=https://gh-proxy.com/

@@ -16,7 +16,7 @@
 3. 仍失败则最后用 ``nltk.download`` 兜底。
 已存在的资源会跳过，re-run 幂等。
 
-运行时由 :mod:`src.nltk_bootstrap` 把该目录注入 ``nltk.data.path``，保证优先命中项目内资源。
+运行时由 :mod:`src.bootstrap.nltk_data` 把该目录注入 ``nltk.data.path``，保证优先命中项目内资源。
 """
 
 from __future__ import annotations

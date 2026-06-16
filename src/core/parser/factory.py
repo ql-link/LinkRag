@@ -1,7 +1,7 @@
 from .providers.word_parser import WordParser
 from .providers.pdf_parser import PdfParser
 from .providers.html_parser import HtmlParser
-from src.core.exceptions import UnsupportedFormatError
+from src.core.parser.exceptions import UnsupportedFormatError
 
 
 class ParserFactory:

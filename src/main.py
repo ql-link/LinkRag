@@ -1,9 +1,10 @@
 """
 toLink-RAG API 服务入口
 """
+
 # NLTK 数据路径必须在引入任何会用到 NLTK 的依赖（deepdoc/infinity-sdk/langchain 等）之前配置，
 # 确保运行时优先命中项目内 nltk_data，而非用户家目录 ~/nltk_data。
-from src.nltk_bootstrap import configure_nltk_data_path
+from src.bootstrap import configure_nltk_data_path
 
 configure_nltk_data_path()
 
@@ -18,27 +19,47 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
 
+import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-import uvicorn
 
-from src.config import settings
-from src.api.routes import llm, internal, parse, mq, recall, recall_direct
-from src.api.internal_auth import RecallApiError
+from src.api.routes import internal, llm, mq, parse, rag, recall
+from src.application.recall_errors import RecallApiError
 from src.cache.redis_client import redis_client
-from src.database import init_database, close_database
-
-# 引入文档解析模块的数据库依赖
-from src.core.database import engine
-from src.models.parse_task import Base
+from src.config import settings
+from src.core.mq.consumers.parse_task_consumer import (
+    PARSE_TASK_GROUP,
+    PARSE_TASK_TOPIC,
+    handle_parse_task,
+)
 
 # MQ 工厂（生命周期管理）
 from src.core.mq.factory import MQFactory
 from src.core.mq.topic_admin import ensure_topics
-from src.core.mq.consumers.parse_task_consumer import start_parse_consumer
+
 # 解析任务临时落盘目录治理：启动时清空 PARSE_TEMP_DIR，回收上次异常退出残留的临时文件。
 from src.core.pipeline.parse_task import temp_workspace
+from src.database import close_database, init_database
+from src.services.mq_service import MQService
+
+
+async def _start_parse_consumer() -> None:
+    """组合根装配：用 MQService 订阅解析任务 handler 并启动消费。
+
+    core 层消费者模块只暴露 handler 与 topic/group 常量，订阅装配在此完成，
+    避免 core 反向依赖 services。
+    """
+    mq_service = MQService()
+    await mq_service.subscribe(
+        topic=PARSE_TASK_TOPIC,
+        group_id=PARSE_TASK_GROUP,
+        callback=handle_parse_task,
+    )
+    await mq_service.start_consuming()
+    logger.info(
+        f"[ParseTaskConsumer] 消费者已启动: " f"topic={PARSE_TASK_TOPIC}, group={PARSE_TASK_GROUP}"
+    )
 
 
 @asynccontextmanager
@@ -62,7 +83,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     temp_workspace.ensure_clean_on_startup(Path(settings.PARSE_TEMP_DIR))
     if settings.MQ_VENDOR.lower() == "kafka" and settings.INIT_KAFKA_TOPICS_ON_STARTUP:
         ensure_topics()
-    await start_parse_consumer()
+    await _start_parse_consumer()
     yield
     # 关闭时清理（MQ 连接优先关闭，避免消息丢失）
     try:
@@ -84,7 +105,7 @@ app = FastAPI(
 )
 
 # CORS 配置
-# 注意：CORS 是全局中间件，对所有路由生效。对外直连召回端点（/api/v1/recall/stream）
+# 注意：CORS 是全局中间件，对所有路由生效。对外端点（/api/v1/rag/stream、/api/v1/recall）
 # 暴露给浏览器后，生产环境必须把 CORS_ORIGINS 由默认 ["*"] 收敛为前端可信域名清单
 # （携带 Authorization 头的跨域请求需要显式 origin，"*" + allow_credentials 本就非法）。
 # 内部路由是服务端调用，不依赖 CORS，收敛无副作用。
@@ -100,14 +121,14 @@ app.add_middleware(
 app.include_router(llm.router)
 app.include_router(internal.router)
 app.include_router(parse.router)  # 挂载文档解析路由
-app.include_router(mq.router)    # 挂载 MQ 消息中台路由
-app.include_router(recall.router)  # 挂载内部多路召回 SSE 路由
-app.include_router(recall_direct.router)  # 挂载对外直连召回 SSE 路由（LINK-40）
+app.include_router(mq.router)  # 挂载 MQ 消息中台路由
+app.include_router(rag.router)  # 挂载对外 RAG 问答流 SSE 路由（LINK-131）
+app.include_router(recall.router)  # 挂载对外纯召回 JSON 路由（LINK-131）
 
 
 @app.exception_handler(RecallApiError)
 async def recall_api_error_handler(request: Request, exc: RecallApiError) -> JSONResponse:
-    """内部召回握手前错误统一响应：{code, message, data} + 对应 HTTP 状态。"""
+    """召回握手前错误统一响应：{code, message, data} + 对应 HTTP 状态。"""
     # 握手失败（鉴权 / 入参 / 限流等）记 warning：便于排查对接问题与发现异常调用。
     logger.warning(
         f"召回握手失败 {request.method} {request.url.path}: "
@@ -126,24 +147,17 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     框架层异常虽已由 InterceptHandler 桥接的 uvicorn logger 记录，但缺业务上下文；
     此处补记请求方法 / 路径，便于排障，并保证对外错误体格式统一。
     """
-    logger.opt(exception=exc).error(
-        f"未捕获异常 {request.method} {request.url.path}: {exc!r}"
-    )
+    logger.opt(exception=exc).error(f"未捕获异常 {request.method} {request.url.path}: {exc!r}")
     return JSONResponse(
         status_code=500,
         content={"code": "INTERNAL_ERROR", "message": "服务内部错误", "data": None},
     )
 
 
-
 @app.get("/health")
 async def health_check():
     """健康检查"""
-    return {
-        "status": "ok", 
-        "app": settings.APP_NAME,
-        "services": ["llm", "document_parser"]
-    }
+    return {"status": "ok", "app": settings.APP_NAME, "services": ["llm", "document_parser"]}
 
 
 if __name__ == "__main__":

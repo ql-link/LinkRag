@@ -1,6 +1,6 @@
 # Elasticsearch 索引与 BM25 检索
 
-本文说明 `src/core/es_index_storage/`。该模块承担**两个职责**：
+本文说明 `src/core/storage/es/`。该模块承担**两个职责**：
 
 1. **写入侧（入库）**：把预分词后的 chunk token 文档批量写进 Elasticsearch。
 2. **召回侧（检索）**：对预分词字段做 BM25 检索，返回 topK chunk。
@@ -12,7 +12,7 @@
 ## 1. 包结构
 
 ```text
-src/core/es_index_storage/
+src/core/storage/es/
 ├── __init__.py          # 公共入口：入库 Pipeline + 召回 Retriever + 模型 + 异常
 ├── client.py            # 进程级 AsyncElasticsearch 客户端单例
 ├── mapping.py           # ES index settings + mappings（analyzer / 字段）
@@ -152,6 +152,6 @@ list[RetrieverHit]
 
 | 测试目标 | 入口 |
 | --- | --- |
-| 入库阶段、分批、文档工厂 | `tests/unit/core/es_index_storage/` |
-| BM25 召回适配器 | `tests/unit/core/es_index_storage/test_bm25_retriever.py` |
+| 入库阶段、分批、文档工厂 | `tests/unit/core/storage/es/` |
+| BM25 召回适配器 | `tests/unit/core/storage/es/test_bm25_retriever.py` |
 | 真实 ES（需开关） | `ES_SMOKE_ENABLED=True` + 集成测试 |

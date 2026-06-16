@@ -80,6 +80,19 @@ rules:
       契约文档（api/mq_contracts.md）与内部实现文档（internals/mq.md）同时更新，
       避免内部文档与对外契约不一致。
 
+  - id: http-routes-contract
+    description: HTTP 路由（对外接口面）增删改
+    when_changed:
+      - src/api/routes/**/*.py
+    must_update:
+      - docs/api/http_contracts.md
+    severity: error
+    rationale: |
+      src/api/routes 是对外 HTTP 接口面，端点的新增/删除/路径或请求响应变化是对接方契约。
+      LINK-122 删除内部召回路由 recall.py 时文档未同步（旧路由在 http_contracts/project_structure
+      残留），即因为路由层当时不在耦合规则内。把它纳入 error 级，删改端点必须同步对外契约文档。
+      纯内部重构（不改端点面）若被误触发，可在 PR 描述说明并用 `[skip docs-sync]` 放行。
+
   # ---- 流水线终态语义 ----
   - id: parse-task-pipeline-orchestration
     description: 解析任务流水线编排或状态机变更

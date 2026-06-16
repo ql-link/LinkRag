@@ -33,6 +33,7 @@
 | [pipeline_architecture.md](internals/pipeline_architecture.md) | 解析 Pipeline 架构 |
 | [parse_task_pipeline.md](internals/parse_task_pipeline.md) | 解析任务流水线状态机 |
 | [recall_pipeline.md](internals/recall_pipeline.md) | 召回 Pipeline 架构 |
+| [recall_generation.md](internals/recall_generation.md) | 召回后 RAG 答案生成（正文回填/上下文拼装/流式生成） |
 | [recall_http_api.md](internals/recall_http_api.md) | 召回 HTTP 入口与会话/鉴权 |
 | [file_parser.md](internals/file_parser.md) | 文件解析器（含回退链） |
 | [markdown_parser.md](internals/markdown_parser.md) | Markdown 解析与 LLM 增强 |
@@ -41,6 +42,7 @@
 | [sparse_vector.md](internals/sparse_vector.md) | 稀疏向量（BGE-M3）编码与索引 |
 | [preprocessor.md](internals/preprocessor.md) | ES 预分词（RAGFlow） |
 | [es_index_storage.md](internals/es_index_storage.md) | ES 索引与 BM25 检索 |
+| [chunk_fact_storage.md](internals/chunk_fact_storage.md) | Chunk SQL 事实存储（真值源/状态机） |
 | [mq.md](internals/mq.md) | MQ 中间件实现 |
 | [llm.md](internals/llm.md) | LLM 调用模块 |
 | [cache.md](internals/cache.md) | 缓存基础设施（Redis） |

@@ -29,6 +29,7 @@ _FILE_FORMAT = (
 # 需要显式接管的标准库 logger 前缀：这些库自带 handler 且默认 propagate=False，
 # 不接管则它们的日志（含 uvicorn 访问日志、500 堆栈）不会进入 Loguru sink。
 _INTERCEPT_LOGGER_PREFIXES = ("uvicorn", "gunicorn", "fastapi")
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 class InterceptHandler(logging.Handler):
@@ -60,7 +61,16 @@ class InterceptHandler(logging.Handler):
         )
 
 
-def _cleanup_old_log_dirs(base: str, retention_days: int) -> None:
+def _resolve_log_dir(raw_dir: str) -> Path:
+    """Resolve LOG_DIR so relative values are stable across launch cwd."""
+    normalized = (raw_dir.strip() or "logs").rstrip("/")
+    path = Path(normalized).expanduser()
+    if path.is_absolute():
+        return path
+    return _PROJECT_ROOT / path
+
+
+def _cleanup_old_log_dirs(base: Path, retention_days: int) -> None:
     """按日期目录整体清理早于 retention_days 的旧日志（PID 无关、重启安全）。
 
     日志文件名带 PID，loguru 自带 retention 的清理 glob 会带上字面 PID，
@@ -68,11 +78,10 @@ def _cleanup_old_log_dirs(base: str, retention_days: int) -> None:
     无人清理、会无限堆积，使 LOG_RETENTION_DAYS 形同虚设。这里改为按
     `<base>/<YYYY-MM-DD>/` 目录的日期整体清理，覆盖重启 / 多 worker / 崩溃残留。
     """
-    base_path = Path(base)
-    if not base_path.is_dir():
+    if not base.is_dir():
         return
     cutoff = (datetime.now() - timedelta(days=retention_days)).date()
-    for child in base_path.iterdir():
+    for child in base.iterdir():
         if not child.is_dir():
             continue
         try:
@@ -128,9 +137,9 @@ def setup_logger():
     )
 
     if settings.LOG_FILE_ENABLED:
-        # 空值回退默认，避免误配（如 .env 里 `LOG_DIR=` 留空）解析成绝对路径 `/`，
-        # 把日志写到文件系统根目录或导致启动期权限错误。
-        base = (settings.LOG_DIR.strip() or "logs").rstrip("/")
+        # 空值回退默认；相对路径统一锚定项目根目录，避免从 src/ 等目录启动时
+        # 生成第二份 src/logs。
+        base = _resolve_log_dir(settings.LOG_DIR)
         service = settings.LOG_SERVICE_NAME.strip() or "tolink-service"
         # 文件名带 PID 隔离：多 worker（gunicorn）部署时各进程写各自文件，
         # 避免多进程共写同一文件导致的写入交错与 0 点切分/清理竞争。
@@ -160,14 +169,14 @@ def setup_logger():
 
         # 当天全量日志
         logger.add(
-            base + "/{time:YYYY-MM-DD}/" + f"{service}-{pid}.log",
+            str(base / "{time:YYYY-MM-DD}" / f"{service}-{pid}.log"),
             level=settings.LOG_LEVEL,
             **common,
         )
 
         # 当天 ERROR 日志（独立文件）
         logger.add(
-            base + "/{time:YYYY-MM-DD}/" + f"{service}-error-{pid}.log",
+            str(base / "{time:YYYY-MM-DD}" / f"{service}-error-{pid}.log"),
             level="ERROR",
             **common,
         )

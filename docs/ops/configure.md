@@ -34,6 +34,7 @@
 | `SYSTEM_LLM_PROVIDER` / `SYSTEM_LLM_API_KEY` / `SYSTEM_LLM_API_BASE` | 系统级兜底 LLM |
 | `KAFKA_BOOTSTRAP_SERVERS` 等（若 `MQ_VENDOR=kafka`） | Kafka 接入信息 |
 | `MINIO_*`（若 `STORAGE_TYPE=minio`） | 对象存储凭据 |
+| `MINIO_PUBLIC_BUCKET`（若 `STORAGE_TYPE=minio`） | 公开桶：博客与反馈附件等不敏感资源，默认 `tolink-public`，需配置匿名读 |
 | `QDRANT_HOST` 或 `ES_HOST`（取决于 `VECTOR_STORE_TYPE`） | 向量存储 |
 
 ## 关键开关
@@ -44,6 +45,7 @@
 | `VECTOR_STORE_TYPE` | `qdrant` | 切换 Qdrant / Elasticsearch |
 | `SPARSE_VECTOR_ENABLED` | `true` | 是否在向量化阶段同步生成 BGE-M3 稀疏向量；关闭后保持旧 dense-only 语义 |
 | `STORAGE_TYPE` | `minio` | 切换 MinIO / 本地存储 |
+| `MINIO_PUBLIC_BUCKET` | `tolink-public` | Java 端公开读桶（博客 + 反馈附件）；Python 解析产物桶使用 `MINIO_PRIVATE_BUCKET`。原博客专用桶 `tolink-blog` 已并入 |
 | `PARSE_TEMP_DIR` | `/tmp/tolink-rag-parse` | 解析任务源文件临时落盘目录。流式下载在此创建临时文件；解析为 markdown 后立即清理；worker 启动时清空兜底。不预设最小容量，沿用部署机系统盘大小；写满会归类为 `TEMP_DISK_FULL` 错误码。扩消费者时容量需要 ≥ 单文件上限 × 并发数 |
 | `PDF_PARSER_BACKEND` | `mineru` | PDF 解析后端：`auto` / `mineru` / `opendataloader` / `naive` |
 | `PDF_PARSER_FALLBACKS` | 空 | 逗号分隔回退链，空表示不回退 |
@@ -53,7 +55,10 @@
 | `MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT` | `true` | 是否启用表格 LLM 增强 |
 | `MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT` | `true` | 是否启用图片 LLM 增强 |
 | `MARKDOWN_PARSER_VISION_CONCURRENCY` | `24` | 图片视觉增强最大并发数，可降为 `16` / `8` / `1` 控制限流风险 |
-| `CHUNKING_ENABLE_ADVANCED_PIPELINE` | `true` | 是否启用进阶分块流水线 |
+| `CHUNKING_STAGE_ONE_ALGORITHM` | `candidate_boundary` | splitter 第一阶段算法名；当前支持 `candidate_boundary`，未知值启动失败 |
+| `CHUNKING_STAGE_TWO_ALGORITHM` | `noop` | splitter 第二阶段算法名；当前仅支持 `noop`，未知值启动失败 |
+
+> splitter 不再保留 `CHUNKING_ENABLE_ADVANCED_PIPELINE` 布尔开关，也不再回退到旧规则分片器。当前第二阶段默认使用 `noop`，新的 mixed-aware 第二阶段算法落地前不提供 oversized 语义细分路由。
 
 > 注：ES 入库失败即终态，无 ES 内部自动重试配置。原 `ES_INDEXING_MAX_RETRY` 已移除（用户侧重试由 `document_parse_pipeline.retry_count` 记录，触发路径待后续需求接线）。
 
@@ -65,7 +70,7 @@
 | --- | --- | --- |
 | `LOG_LEVEL` | `INFO` | 控制台与全量日志文件的级别下限；ERROR 文件固定只收 ERROR 及以上，不受此项影响 |
 | `LOG_FILE_ENABLED` | `true` | 是否写本地文件。纯容器环境若靠 `docker logs` 采集，可设 `false` 只保留 stdout |
-| `LOG_DIR` | `logs` | 日志根目录 |
+| `LOG_DIR` | `logs` | 日志根目录；相对路径会解析到项目根目录下，避免从 `src/` 等不同目录启动时生成多份日志 |
 | `LOG_SERVICE_NAME` | `tolink-service` | 日志文件名前缀 |
 | `LOG_RETENTION_DAYS` | `7` | 日志保留天数，超过自动清理旧日期目录 |
 
@@ -83,6 +88,8 @@ logs/
 ```
 
 实现要点：文件名中的日期由 Loguru 在创建新文件时求值，配合 `rotation="00:00"` 每天 0 点切分，自然落入新的日期目录；写入开启 `enqueue` 队列，异步刷盘不阻塞业务。
+
+`LOG_DIR` 支持绝对路径和相对路径。相对路径统一以项目根目录为基准，例如默认 `LOG_DIR=logs` 始终写入项目根目录的 `logs/`，不会因为进程从 `src` 目录启动而改写到该目录下的 `logs/`。
 
 保留清理按 **日期目录整体删除**：删除 `<LOG_DIR>/<YYYY-MM-DD>/` 中日期早于 `LOG_RETENTION_DAYS`（当前 **7 天**）的目录，在进程启动时与每天 0 点切分时各执行一次。之所以不用 Loguru 自带 `retention`：日志文件名带 PID，Loguru 的清理 glob 会带上字面 PID，只能清掉当前进程写的文件，进程重启（部署 / 崩溃 / 扩缩容）后旧 PID 的日期目录无人回收、会无限堆积。按日期目录清理与 PID 无关，重启与多 worker 场景都能正确回收（非 `YYYY-MM-DD` 命名的目录不受影响）。
 
@@ -120,23 +127,19 @@ logs/
 
 | 变量 | 默认值 | 用途 |
 | --- | --- | --- |
-| `PARSE_TASK_TOPIC` | `tolink-document-pares` | 解析任务入队 |
-| `PARSE_RESULT_TOPIC` | `tolink.rag.parse_result` | 解析终态通知 |
+| `PARSE_TASK_TOPIC` | `tolink.rag.parse_task` | 解析任务入队 |
 
-> 注意默认值中的 `pares`（非 `parse`）是历史遗留，业务方对接时以实际配置为准。
+> `PARSE_RESULT_TOPIC` 已随终态回传 MQ 下线删除（LINK-166）：解析终态只写 DB（`document_parse_pipeline`），前端轮询 Java 查询读取，不再有 parse_result 回传 topic。
+>
+> 这些变量只决定启动时**自动创建**哪些 Kafka topic。实际收发的 topic 名由消息类的 `MQ_NAME` 常量固定（`tolink.rag.parse_task`），改它不会改变 Python 端实际订阅/投递的 topic。
 
 ## 分块参数建议
 
 | 变量 | 默认 | 调整方向 |
 | --- | --- | --- |
-| `CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` | 128 | 第一阶段候选边界粗分片软下限，调大可减少短 chunk |
-| `CHUNKING_MIN_CHUNK_TOKENS` | 150 | 短文档可减小 |
-| `CHUNKING_MAX_CHUNK_TOKENS` | 512 | 长上下文模型可加大 |
+| `CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` | 128 | 第一阶段候选边界粗分片软下限，范围 `128..256`；调大可减少短 chunk |
 | `CHUNKING_OVERLAP_TOKENS` | 64 | overlap token 数，范围 `0..64`；`0` 表示关闭 |
-| `CHUNKING_HEADING_BREAK_LEVEL` | 3 | 提升结构敏感性时减小 |
-| `CHUNKING_SEMANTIC_PERCENTILE` | 95 | 调整语义边界严格度 |
-| `CHUNKING_SEMANTIC_UNIT` | `sentence` | 语义相似度计算粒度：`sentence` / `paragraph` |
-| `CHUNKING_EMBED_BATCH_SIZE` | 32 | 受向量服务并发上限约束 |
+| `CHUNKING_HEADING_BREAK_LEVEL` | 5 | heading trail 与动态标题边界保护的最大层级；最多保护到 5 级 |
 
 详细分块策略见 [chunking.md](../internals/chunking.md)。
 
@@ -147,13 +150,16 @@ logs/
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `SPARSE_VECTOR_ENABLED` | `true` | 是否启用稀疏向量；关闭后只执行旧稠密向量流程 |
-| `SPARSE_VECTOR_PROVIDER` | `bge_m3` | 稀疏向量提供方；首期仅支持 `bge_m3` |
+| `SPARSE_VECTOR_PROVIDER` | `bge_m3` | 稀疏向量提供方：`bge_m3` / `bge_m3_http` / `remote_bge_m3` |
 | `SPARSE_VECTOR_MODEL_NAME` | `BAAI/bge-m3` | Hugging Face 模型名或本地模型目录 |
 | `SPARSE_VECTOR_MODEL_CACHE_DIR` | 空 | 模型缓存目录，空值使用默认 Hugging Face 缓存 |
 | `SPARSE_VECTOR_LOCAL_FILES_ONLY` | `false` | 是否只使用本地已有模型文件 |
 | `SPARSE_VECTOR_DEVICE` | `auto` | 推理设备：`auto` / `cpu` / `cuda` / `cuda:n`；CPU 固定 fp32，CUDA 固定 fp16 |
 | `SPARSE_VECTOR_BATCH_SIZE` | `12` | BGE-M3 稀疏编码批大小 |
 | `SPARSE_VECTOR_MAX_LENGTH` | `8192` | 输入文本最大 token 长度 |
+| `SPARSE_VECTOR_HTTP_ENDPOINT` | 空 | 早期 `bge_m3_http` provider 的 bge-m3-server 地址 |
+| `SPARSE_VECTOR_HTTP_TIMEOUT` | `30.0` | 早期 `bge_m3_http` provider 单次 HTTP 请求超时（秒） |
+| `SPARSE_VECTOR_HTTP_BATCH_SIZE` | 空 | 早期 `bge_m3_http` provider 的外层 chunk 批大小；空值时 Python 侧按 1 条 chunk 一批请求，避免长文本批量超时 |
 | `SPARSE_VECTOR_QDRANT_VECTOR_NAME` | `sparse_text` | Qdrant named sparse vector 名称 |
 | `SPARSE_VECTOR_TOP_K` | `256` | 每条稀疏向量最多保留的非零 token 数；`0` 表示不截断 |
 | `SPARSE_VECTOR_MIN_WEIGHT` | `0.0` | 过滤低权重 token 的阈值 |
@@ -161,40 +167,14 @@ logs/
 
 不再提供 `SPARSE_VECTOR_USE_FP16` 配置。推理精度只由 `SPARSE_VECTOR_DEVICE` 决定：CPU 使用 fp32，CUDA 使用 fp16。
 
-## 稀疏向量配置
+## 召回执行配置
 
-稀疏向量首期使用本地 `BAAI/bge-m3`，与稠密向量在同一个 chunk 向量化阶段执行。模型输入是 chunk 原文，不使用 ES 分词结果。
-
-| 变量 | 默认 | 说明 |
-| --- | --- | --- |
-| `SPARSE_VECTOR_ENABLED` | `true` | 是否启用稀疏向量；关闭后只执行旧稠密向量流程 |
-| `SPARSE_VECTOR_PROVIDER` | `bge_m3` | 稀疏向量提供方；首期仅支持 `bge_m3` |
-| `SPARSE_VECTOR_MODEL_NAME` | `BAAI/bge-m3` | Hugging Face 模型名或本地模型目录 |
-| `SPARSE_VECTOR_MODEL_CACHE_DIR` | 空 | 模型缓存目录，空值使用默认 Hugging Face 缓存 |
-| `SPARSE_VECTOR_LOCAL_FILES_ONLY` | `false` | 是否只使用本地已有模型文件 |
-| `SPARSE_VECTOR_DEVICE` | `auto` | 推理设备：`auto` / `cpu` / `cuda` / `cuda:n`；CPU 固定 fp32，CUDA 固定 fp16 |
-| `SPARSE_VECTOR_BATCH_SIZE` | `12` | BGE-M3 稀疏编码批大小 |
-| `SPARSE_VECTOR_MAX_LENGTH` | `8192` | 输入文本最大 token 长度 |
-| `SPARSE_VECTOR_QDRANT_VECTOR_NAME` | `sparse_text` | Qdrant named sparse vector 名称 |
-| `SPARSE_VECTOR_TOP_K` | `256` | 每条稀疏向量最多保留的非零 token 数；`0` 表示不截断 |
-| `SPARSE_VECTOR_MIN_WEIGHT` | `0.0` | 过滤低权重 token 的阈值 |
-| `TOLINK_RUN_REAL_SPARSE_VECTOR_TESTS` | `false` | 是否运行真实 BGE-M3 smoke 测试 |
-
-不再提供 `SPARSE_VECTOR_USE_FP16` 配置。推理精度只由 `SPARSE_VECTOR_DEVICE` 决定：CPU 使用 fp32，CUDA 使用 fp16。
-
-## 内部召回 API 配置
-
-内部多路召回 SSE 接口 `POST /api/v1/internal/recall/stream` 的配置。详见
+召回融合 pipeline 的通用执行参数（RAG 问答流与纯召回 JSON 两端点共用）。详见
 [docs/internals/recall_http_api.md](../internals/recall_http_api.md)。
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `RECALL_INTERNAL_AUTH_ENABLED` | `true` | 是否启用内部 JWT 校验；**生产必须为 true** |
-| `RECALL_INTERNAL_JWT_ISSUER` | `tolink-java` | 期望的 JWT `iss` |
-| `RECALL_INTERNAL_JWT_AUDIENCE` | `tolink-rag` | 期望的 JWT `aud` |
-| `RECALL_INTERNAL_JWT_SCOPE` | `recall:execute` | 期望的 JWT `scope` |
-| `RECALL_INTERNAL_JWT_SECRET` | 本地联调占位值 | HS256 共享密钥；Java 签发端与 Python 验签端必须一致，**生产务必用环境变量覆盖为强随机值** |
-| `RECALL_STREAM_TIMEOUT_MS` | `60000` | 单次召回最大执行时间（毫秒）；超时以 SSE `error` RECALL_TIMEOUT 终止 |
+| `RECALL_STREAM_TIMEOUT_MS` | `60000` | 单次召回最大执行时间（毫秒）；超时 RAG 流以 SSE `error` RECALL_TIMEOUT 终止，纯召回 JSON 返回 `504` RECALL_TIMEOUT |
 | `RECALL_STRICT_DEFAULT` | `false` | pipeline 严格模式默认；false=宽松，允许单路失败降级 |
 | `RECALL_RESULT_LIMIT` | `20` | 服务端固定返回候选上限（同时作为各路执行期 `top_k`）|
 | `RECALL_ENABLED_SOURCES` | `bm25,sparse,dense` | 启用的召回路（逗号分隔）。本期默认开启三路；运维侧可显式 set `bm25,sparse` 暂时回退到 dev 旧行为；未登记的 source 出现在配置中装配期 `ValueError` |
@@ -202,21 +182,23 @@ logs/
 | `SPARSE_RETRIEVAL_SCORE_THRESHOLD` | `0.0` | sparse 召回默认 score 阈值（0.0 = 不过滤；详见 [vectorization.md §9.4](../internals/vectorization.md)） |
 | `DENSE_RETRIEVAL_TOP_K` | `10` | dense 召回 facade 直调时的兜底 top_k；pipeline 路径下被 `RECALL_RESULT_LIMIT` 覆盖 |
 | `DENSE_RETRIEVAL_SCORE_THRESHOLD` | `0.0` | dense 召回默认 score 阈值（cosine 上界 [0, 1]，0.0 = 不过滤；facade 入口校验 `> 1.0` 早死） |
-| `RECALL_GENERATION_CONTEXT_TOKEN_BUDGET` | `4000` | 召回后 LLM 生成拼装上下文的 token 预算上限；命中片段按融合分数从高到低纳入，累计超预算即截断尾部低分片段（仅对外直连端点的生成阶段生效） |
+| `RECALL_GENERATION_CONTEXT_TOKEN_BUDGET` | `4000` | 召回后 LLM 生成拼装上下文的 token 预算上限；命中片段按融合分数从高到低纳入，累计超预算即截断尾部低分片段（仅 RAG 问答流的生成阶段生效） |
+| `RERANK_DEFAULT_TOP_N` | `8` | 召回后重排模块（LINK-130）输出候选条数兜底默认值；调用方未显式传 `top_n` 时生效。参考 RAGFlow rerank `top_n`（默认 6，本项目放宽到 8） |
 
-### 对外直连召回 SSE 配置（LINK-40）
+### 对外会话鉴权配置（RAG 流 / 纯召回 JSON）
 
-对外直连召回 SSE 接口 `POST /api/v1/recall/stream` 的配置。前端凭 Java 签发的短期
-session token 直连，**独立密钥**与内部端点隔离。详见
+对外端点 `POST /api/v1/rag/stream`（RAG 问答流）与 `POST /api/v1/recall`（纯召回 JSON）的
+会话鉴权配置。前端凭 Java 签发的短期 session token 直连，使用**独立专用密钥**验签。并发限流
+（`RECALL_SESSION_MAX_CONCURRENT`）**仅 RAG 流生效**，纯召回不限流。详见
 [recall_http_api.md](../internals/recall_http_api.md)。
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `RECALL_SESSION_AUTH_ENABLED` | `true` | 是否启用 session token 验签；**生产必须为 true** |
 | `RECALL_SESSION_JWT_ISSUER` | `tolink-java` | 期望的 session JWT `iss` |
-| `RECALL_SESSION_JWT_AUDIENCE` | `tolink-rag-frontend` | 期望的 session JWT `aud`（与内部端点 `tolink-rag` 区分）|
+| `RECALL_SESSION_JWT_AUDIENCE` | `tolink-rag-frontend` | 期望的 session JWT `aud` |
 | `RECALL_SESSION_JWT_SCOPE` | `recall:stream` | 期望的 session JWT `scope` |
-| `RECALL_SESSION_JWT_SECRET` | 本地联调占位值 | **独立** HS256 密钥，与 `RECALL_INTERNAL_JWT_SECRET` 物理隔离、可单独轮转；**生产务必覆盖** |
+| `RECALL_SESSION_JWT_SECRET` | 本地联调占位值 | **独立专用** HS256 密钥，可单独轮转；**生产务必覆盖** |
 | `RECALL_SESSION_MAX_CONCURRENT` | `3` | 单用户最大并发召回流数；token 短期可复用，此为资源滥用主闸门，超限返回 `429` |
 | `CORS_ORIGINS` | `["*"]` | **生产对外环境必须收敛为前端可信域名清单**（不可用 `*`，否则带 `Authorization` 头的跨域预检失败）|
 

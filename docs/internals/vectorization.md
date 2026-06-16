@@ -8,7 +8,7 @@
 src/core/splitter/
 └── embedding_pipeline.py          # Chunk 批量 embedding 与缓存
 
-src/core/vector_storage/
+src/core/storage/vector/
 ├── factory.py                     # 装配向量存储 Facade
 ├── facade.py                      # 对外统一入口
 ├── pipeline.py                    # 已落库 chunk 的向量索引闭环
@@ -16,18 +16,20 @@ src/core/vector_storage/
 ├── compensation_pipeline.py       # 失败和卡住状态补偿
 ├── draft_factory.py               # Chunk -> StoredChunkDraft
 ├── models.py                      # 请求和结果模型
-└── repair_policy.py               # 补偿决策
+├── repair_policy.py               # 补偿决策
+├── sparse_indexing.py             # 稀疏索引流水线
+└── sparse_retriever.py            # sparse 召回适配器
 
-src/core/es_index_storage/
+src/core/storage/es/
 ├── models.py                      # ES 入库结果模型
 └── pipeline.py                    # 文件级 Elasticsearch 入库阶段
 
-src/core/chunk_fact_storage/
+src/core/storage/chunks/
 ├── constants.py                   # Chunk 状态常量
 ├── models.py                      # Chunk 真值草稿模型
 └── repository.py                  # MySQL 真值表仓储
 
-src/core/qdrant_vector_storage/
+src/core/storage/qdrant/
 ├── bucket_router.py               # user_id 分桶和 collection 命名
 ├── point_factory.py               # draft/record -> Qdrant point
 ├── qdrant_store.py                # Qdrant 访问层（含召回底座 _search_chunks）
@@ -122,7 +124,7 @@ chunking 阶段复用 `ChunkDraftFactory`，把每个 `Chunk` 转成 `StoredChun
 
 ### 3.2 MySQL 状态
 
-主要状态来自 `src/core/chunk_fact_storage/constants.py`：
+主要状态来自 `src/core/storage/chunks/constants.py`：
 
 | 状态 | 含义 |
 | --- | --- |
@@ -260,7 +262,7 @@ es_result = await EsIndexingPipeline().index_for_parse_task(
 
 ```python
 from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
-from src.core.vector_storage.factory import create_vector_storage_facade
+from src.core.storage.vector.factory import create_vector_storage_facade
 
 facade = create_vector_storage_facade(embedding_pipeline=embedding_pipeline)
 result = await facade.index_chunks(
@@ -323,7 +325,7 @@ await facade.reindex_failed_chunks(chunk_ids)
 两路是**唯一对外召回入口**，调用方只需 import `vector_storage` 包。详细链路 / 失败模式 / 默认值依据 / 鬼影 hit 边界 / 模型升级 SOP 见 [§9 召回链路](#9-召回链路)。
 
 ```python
-from src.core.vector_storage import (
+from src.core.storage.vector import (
     VectorStorageFacade,
     VectorSearchHit, VectorSearchResult,
     VectorRetrievalError,
@@ -331,8 +333,8 @@ from src.core.vector_storage import (
     VectorRetrievalBackendError,
     VectorRetrievalEncodingError,
 )
-from src.core.chunk_fact_storage import ChunkRepository
-from src.core.chunk_fact_storage.constants import CHUNK_LIFECYCLE_ACTIVE
+from src.core.storage.chunks import ChunkRepository
+from src.core.storage.chunks.constants import CHUNK_LIFECYCLE_ACTIVE
 
 # === sparse 召回 ===
 sparse_result: VectorSearchResult = await facade.search_sparse_chunks(
@@ -542,14 +544,13 @@ dense 召回侧需要复用同一次推理时，可调 `aencode_with_dense()` �
 常用测试范围：
 
 ```bash
-.venv/bin/pytest tests/unit/core/vector_storage -q
-.venv/bin/pytest tests/unit/core/qdrant_vector_storage -q
-.venv/bin/pytest tests/unit/core/chunk_fact_storage -q
-.venv/bin/pytest tests/unit/core/es_index_storage -q
-.venv/bin/pytest tests/unit/core/sparse_vector -q
-.venv/bin/pytest tests/unit/core/pipeline/test_post_process_repository.py -q
+.venv/bin/pytest tests/unit/core/storage/vector -q
+.venv/bin/pytest tests/unit/core/storage/qdrant -q
+.venv/bin/pytest tests/unit/core/storage/chunks -q
+.venv/bin/pytest tests/unit/core/storage/es -q
+.venv/bin/pytest tests/unit/core/encoding/sparse -q
 .venv/bin/pytest tests/acceptance/test_sparse_vector_recall.py -v
-.venv/bin/pytest tests/integration/core/vector_storage -q
+.venv/bin/pytest tests/integration/core/storage/vector -q
 ```
 
 建议覆盖：
@@ -643,10 +644,10 @@ dense 召回侧需要复用同一次推理时，可调 `aencode_with_dense()` �
 
 ### 9.5 对外暴露面
 
-召回相关的所有类型 / 异常都从 `src.core.vector_storage` 单点 import，调用方不需要感知 `qdrant_vector_storage` / `sparse_vector` / `splitter` 子包：
+召回相关的所有类型 / 异常都从 `src.core.storage.vector` 单点 import，调用方不需要感知 `storage.qdrant` / `encoding.sparse` / `splitter` 子包：
 
 ```python
-from src.core.vector_storage import (
+from src.core.storage.vector import (
     VectorStorageFacade,
     VectorSearchHit, VectorSearchResult,
     VectorRetrievalError,                  # 基类
@@ -665,7 +666,7 @@ from src.core.vector_storage import (
 
 chunk 删除链路：MySQL `lifecycle_status=REMOVED` 即时翻转 → Qdrant `delete_points` 经 MQ + 删除补偿异步清理（窗口数十秒至分钟级）。窗口内 sparse / dense 召回**会**返回这些已 REMOVED 但 Qdrant 尚未清理的 chunk_id（"鬼影 hit"）。
 
-> 状态值参照 [src/core/chunk_fact_storage/constants.py](../../src/core/chunk_fact_storage/constants.py)：`CHUNK_LIFECYCLE_ACTIVE = "ACTIVE"` / `CHUNK_LIFECYCLE_REMOVED = "REMOVED"`。**注意**：写入路径已天然过滤 REMOVED（`_reload_chunks_from_db` 只反查 `ACTIVE`），所以鬼影 hit 来源**不是"写入了 REMOVED chunk"**，而是"已 INDEXED 的 chunk 被翻转为 REMOVED 但 Qdrant 异步删除尚未到达"。
+> 状态值参照 [src/core/storage/chunks/constants.py](../../src/core/storage/chunks/constants.py)：`CHUNK_LIFECYCLE_ACTIVE = "ACTIVE"` / `CHUNK_LIFECYCLE_REMOVED = "REMOVED"`。**注意**：写入路径已天然过滤 REMOVED（`_reload_chunks_from_db` 只反查 `ACTIVE`），所以鬼影 hit 来源**不是"写入了 REMOVED chunk"**，而是"已 INDEXED 的 chunk 被翻转为 REMOVED 但 Qdrant 异步删除尚未到达"。
 
 **facade 边界声明**：
 
@@ -675,9 +676,9 @@ chunk 删除链路：MySQL `lifecycle_status=REMOVED` 即时翻转 → Qdrant `d
 **调用方使用模式（强制）**：
 
 ```python
-from src.core.vector_storage import VectorStorageFacade
-from src.core.chunk_fact_storage import ChunkRepository
-from src.core.chunk_fact_storage.constants import CHUNK_LIFECYCLE_ACTIVE
+from src.core.storage.vector import VectorStorageFacade
+from src.core.storage.chunks import ChunkRepository
+from src.core.storage.chunks.constants import CHUNK_LIFECYCLE_ACTIVE
 
 # === 1. 召回（facade 返回 Qdrant 当下视图）===
 result = await facade.search_dense_chunks(query="...", user_id=..., set_id=...)
@@ -702,7 +703,7 @@ ordered = [
 
 | 调用方 | 鬼影 hit 责任归属 |
 | --- | --- |
-| SSE API → Java Recall Gateway → chunk-content-fetch | **Java 侧**按 lifecycle_status 过滤；本期 Python 不实现 |
+| 对外 RAG 问答流（`routes/rag.py` → 召回 Pipeline → `generation.fetch_chunk_contents`） | **Python 侧**：`fetch_chunk_contents` 反查 MySQL 时已强制 `lifecycle_status == ACTIVE`，鬼影 hit 在正文回填阶段被剔除（见 [generation.py](../../src/core/pipeline/recall/generation.py)）。〔历史：LINK-122 前曾走 Java Recall Gateway 由 Java 侧过滤，该内部网关链路已删除〕 |
 | 内部 Python 直调（调试脚本 / 内部 service / 评测 harness） | **caller 侧**按上面模式自行处理 |
 | 未来 hybrid 融合 reranker | hybrid issue 中实现，在 RRF 融合后一次性反查 MySQL + lifecycle 过滤 |
 

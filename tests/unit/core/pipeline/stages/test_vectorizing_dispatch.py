@@ -16,16 +16,16 @@ from types import SimpleNamespace
 
 import pytest
 
-from src.core.chunk_fact_storage.constants import (
+from src.core.storage.chunks.constants import (
     CHUNK_STATUS_FAILED,
     CHUNK_STATUS_INDEXED,
     CHUNK_STATUS_PENDING,
     SPARSE_VECTOR_STATUS_INDEXED,
     SPARSE_VECTOR_STATUS_PENDING,
 )
-from src.core.chunk_fact_storage.repository import ChunkRepository
+from src.core.storage.chunks.repository import ChunkRepository
 from src.core.pipeline.parse_task.stages.services import StageServices
-from src.core.vector_storage.models import ChunkIndexingResult
+from src.core.storage.vector.models import ChunkIndexingResult
 
 
 def _row(chunk_id, *, dense, sparse=SPARSE_VECTOR_STATUS_PENDING):

@@ -13,34 +13,37 @@ from __future__ import annotations
 
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from loguru import logger
 
+if TYPE_CHECKING:
+    from src.core.dataset_config import ChunkingConfig, DatasetParseConfigBundle
+
 from src.config import settings
-from src.core.chunk_fact_storage.constants import (
+from src.core.storage.chunks.constants import (
     CHUNK_LIFECYCLE_ACTIVE,
     CHUNK_STATUS_INDEXED,
     SPARSE_VECTOR_STATUS_INDEXED,
 )
-from src.core.chunk_fact_storage.repository import ChunkRepository
-from src.core.es_index_storage import EsIndexingPipeline, EsIndexingResult
+from src.core.storage.chunks.repository import ChunkRepository
+from src.core.storage.es import EsIndexingPipeline, EsIndexingResult
 from src.core.markdown_parser import ParseResult
 from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.core.preprocessor.models import FilePostIndexPlan
-from src.core.qdrant_vector_storage import BucketRouter
-from src.core.qdrant_vector_storage.constants import DEFAULT_BUCKET_COUNT, DEFAULT_COLLECTION_PREFIX
+from src.core.storage.qdrant import BucketRouter
+from src.core.storage.qdrant.constants import DEFAULT_BUCKET_COUNT, DEFAULT_COLLECTION_PREFIX
 from src.core.splitter import create_chunking_engine
 from src.core.splitter.factory import (
     DenseEmbeddingConfigMissingError,
     DenseEmbeddingDimensionError,
 )
 from src.core.splitter.models import Chunk
-from src.core.vector_storage import compose_vector_storage_facade
-from src.core.vector_storage.draft_factory import ChunkDraftFactory
-from src.core.vector_storage.models import ChunkIndexingResult
+from src.core.storage.vector import compose_vector_storage_facade
+from src.core.storage.vector.draft_factory import ChunkDraftFactory
+from src.core.storage.vector.models import ChunkIndexingResult
+from src.core.parse_task_service import ParseTaskService
 from src.models.chunk_record import ChunkRecordDB
-from src.services.parse_task_service import ParseTaskService
 from src.services.storage.base import BaseObjectStorage
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -87,19 +90,37 @@ class StageServices:
     # cleaning
     # ------------------------------------------------------------------
 
-    async def parse_file(self, source_path: Path | None, payload: ParseTaskPayload) -> dict:
+    async def parse_file(
+        self,
+        source_path: Path | None,
+        payload: ParseTaskPayload,
+        dataset_cfg: "DatasetParseConfigBundle | None" = None,
+    ) -> dict:
         """调用解析服务生成 Markdown 与结构化解析结果。
 
         ``source_path`` 为 ``None`` 仅出现在 MinerU URL 旁路场景；其余路径下必须是
         已经流式下载完成的本地临时文件路径。
+
+        ``dataset_cfg`` 为数据集级配置（由 CleaningStage 从 DB 读取注入）：PDF 后端按
+        ``payload 显式 > 数据集配置 > settings.PDF_PARSER_BACKEND`` 三层优先级选取；
+        Markdown 增强配置（含 table/vision 模型名与开关）透传给增强编排。``None`` 时全部回退
+        系统默认，行为与拆分前一致。
         """
+        enhancement_config = dataset_cfg.enhancement if dataset_cfg is not None else None
+
         parser_kwargs: dict[str, Any] = {}
         if payload.file_type.lower() == "pdf":
-            pdf_backend = payload.pdf_parser_backend or "mineru"
+            dataset_backend = (
+                dataset_cfg.pdf.pdf_parser_backend if dataset_cfg is not None else None
+            )
+            # 三层优先级：payload 显式指定 > 数据集级配置 > 系统默认（默认 mineru，与原硬编码一致）。
+            pdf_backend = (
+                payload.pdf_parser_backend or dataset_backend or settings.PDF_PARSER_BACKEND
+            )
             parser_kwargs = {
                 "backend": pdf_backend,
                 "docling_force_ocr": bool(payload.docling_force_ocr),
-                "image_bucket": payload.image_bucket or payload.md_bucket,
+                "image_bucket": payload.image_bucket or payload.markdown_bucket,
                 "image_prefix": payload.image_prefix or payload.md_object_key,
                 "storage": self._storage,
             }
@@ -111,6 +132,7 @@ class StageServices:
             payload.file_type,
             source_file=payload.source_filename or payload.md_object_key,
             user_id=coerce_optional_int(payload.user_id),
+            enhancement_config=enhancement_config,
             **parser_kwargs,
         )
 
@@ -128,7 +150,7 @@ class StageServices:
         path = temp_workspace.create_temp_file(payload.task_id, Path(settings.PARSE_TEMP_DIR))
         try:
             # markdown 真实位置经 payload 解析：md/markdown 取上传位置（source_*），
-            # 其余格式取 cleaning 写出的 md_*；不可硬编码 md_bucket，否则 md 重试读不到。
+            # 其余格式取 cleaning 写出的配置桶 + md_object_key；不可硬编码历史 md_bucket 字段。
             await asyncio.to_thread(
                 self._storage.download_to_path,
                 payload.markdown_bucket,
@@ -149,8 +171,12 @@ class StageServices:
         parse_result: ParseResult | None,
         payload: ParseTaskPayload,
         db: AsyncSession,
+        chunking_config: "ChunkingConfig | None" = None,
     ) -> list[ChunkRecordDB]:
         """分片并在单事务内写入 chunk 真值记录；返回当前文档完整 chunk truth set（ORM 行）。
+
+        ``chunking_config`` 为数据集级分块配置（由 ChunkingStage 从 DB 读取注入）；``None`` 时
+        分片引擎取全默认配置，行为与拆分前一致。
 
         ``_persist_chunk_facts`` commit 后追加一次按 ``doc_id`` 的反查，让首次链路的
         ``chunks`` 形态与 retry 链路（``load_all_chunks_from_db``）完全一致——都是
@@ -164,6 +190,7 @@ class StageServices:
             markdown,
             payload.md_object_key,
             parse_result,
+            chunking_config,
         )
         await self._persist_chunk_facts(chunks, payload, db)
 
@@ -238,8 +265,9 @@ class StageServices:
         markdown: str,
         source_file: str | None,
         parse_result: ParseResult | None = None,
+        chunking_config: "ChunkingConfig | None" = None,
     ) -> list[Chunk]:
-        processor = create_chunking_engine()
+        processor = create_chunking_engine(config=chunking_config)
         if parse_result is None:
             return processor.process(markdown, source_file=source_file)
         parse_result_for_chunking = replace(parse_result, source_file=source_file)
@@ -489,7 +517,7 @@ class StageServices:
         sparse 入口。sparse 模块不再自查 SQL，``bucket_id`` 由 chunks 自带字段决定
         （不再误传 ``payload.dataset_id``）。
         """
-        from src.core.sparse_vector.indexing import SparseIndexingPipeline
+        from src.core.storage.vector.sparse_indexing import SparseIndexingPipeline
 
         sparse_pipeline = self._sparse_indexing_pipeline or SparseIndexingPipeline()
 

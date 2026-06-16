@@ -31,6 +31,8 @@ class FakeRetriever:
     # 执行期透传的用户上下文记录，供断言。
     user_ids: list[int] = field(default_factory=list)
     top_ks: list[int] = field(default_factory=list)
+    # 执行期透传的分数阈值覆盖记录（LINK-148：pipeline 按 source 透传数据集级阈值）。
+    score_threshold_overrides: list[float | None] = field(default_factory=list)
     # 注入一个共享的"全局调用序号"生成器以观察跨实例的触发顺序。
     sequence_recorder: list[str] | None = None
 
@@ -42,12 +44,14 @@ class FakeRetriever:
         *,
         user_id: int,
         top_k: int,
+        score_threshold_override: float | None = None,
     ) -> list[RetrieverHit]:
         import time as _time
         self.calls.append((query, list(dataset_ids), list(doc_ids) if doc_ids else None))
         self.call_order.append(_time.monotonic())
         self.user_ids.append(user_id)
         self.top_ks.append(top_k)
+        self.score_threshold_overrides.append(score_threshold_override)
         if self.sequence_recorder is not None:
             self.sequence_recorder.append(self.source)
         if self.delay_seconds > 0:

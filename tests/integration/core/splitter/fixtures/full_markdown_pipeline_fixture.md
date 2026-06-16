@@ -11,7 +11,7 @@ This opening paragraph mixes plain text with an inline image ![Architecture Inli
 
 ## Quoted Insight
 > Retrieval quality improves when chunk boundaries respect structure.
-> Semantic splitting should only refine the oversized narrative sections.
+> Oversized narrative sections should wait for the next mixed-aware Stage 2 design.
 
 ## Action Checklist
 - Collect parser output carefully
@@ -20,7 +20,7 @@ This opening paragraph mixes plain text with an inline image ![Architecture Inli
 
 1. Parse markdown into structured elements
 2. Enrich tables and images with mocked network results
-3. Split oversized narrative sections semantically
+3. Preserve oversized narrative sections for the next Stage 2 design
 
 ## Code Sample
 The code fence below should become its own isolated chunk.

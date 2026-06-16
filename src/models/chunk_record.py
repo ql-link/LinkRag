@@ -7,7 +7,7 @@ from datetime import datetime
 from sqlalchemy import BigInteger, DateTime, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
 
-from src.core.chunk_fact_storage.constants import (
+from src.core.storage.chunks.constants import (
     CHUNK_LIFECYCLE_ACTIVE,
     CHUNK_STATUS_PENDING,
     ES_STATUS_PENDING,

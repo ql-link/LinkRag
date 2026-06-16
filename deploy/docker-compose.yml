@@ -8,6 +8,8 @@ services:
     restart: always
     env_file:
       - ../.env
+    environment:
+      TZ: Asia/Shanghai
     ports:
       - "8000:8000"
     volumes:

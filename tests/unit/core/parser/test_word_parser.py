@@ -13,7 +13,7 @@ import pytest
 from docx.oxml.ns import qn
 from docx.shared import Inches
 
-from src.core.exceptions import ParseBaseException
+from src.core.parser.exceptions import ParseBaseException
 from src.core.parser.factory import ParserFactory
 from src.core.parser.html import image_rewriter as image_rewriter_mod
 from src.core.parser.providers.html_parser import HtmlParser

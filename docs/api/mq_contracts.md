@@ -1,6 +1,6 @@
 # MQ Integration
 
-本文面向**业务方**（通常是 Java 管理端）介绍如何通过 MQ 与 toLink-Rag 协作：投递解析任务、接收终态通知。
+本文面向**业务方**（通常是 Java 管理端）介绍如何通过 MQ 与 toLink-Rag 协作：投递解析任务、读取解析终态。
 
 权威消息定义见 [src/core/mq/messages](../../src/core/mq/messages)，本文是面向接入方的精简版。
 
@@ -11,26 +11,26 @@ Java 管理端                          toLink-Rag (Python)
     │                                      │
     │  ① 投递解析任务 (ParseTaskMessage)   │
     ├─────────────────────────────────────►│
-    │      topic: PARSE_TASK_TOPIC         │
-    │      默认 tolink-document-pares      │
+    │      topic: tolink.rag.parse_task    │
     │                                      │
     │                                      │  ② 异步处理：
     │                                      │     解析 → 分片 → 向量化 → 索引
+    │                                      │     终态写入 document_parse_pipeline (DB)
     │                                      │
-    │  ③ 终态回调 (ParseResultMessage)     │
-    │◄─────────────────────────────────────┤
-    │      topic: PARSE_RESULT_TOPIC       │
-    │      默认 tolink.rag.parse_result    │
+    │  ③ 前端轮询 Java parse-results 接口读 DB 取终态
+    │      （不再有 Python→Java 的 MQ 回传，见下方「终态读取」）
 ```
 
-Topic 名称由 toLink-Rag 的 `.env` 配置决定，业务方对接前需要从 toLink-Rag 部署侧获取实际值。
+> **parse_result 终态回传 MQ 已下线（LINK-166）**：Python 端不再发送解析终态通知消息。解析终态的权威源是 MySQL `document_parse_pipeline`，前端改由轮询 Java `parse-results` 接口读 DB 获取（LINK-98）。Java 端停止消费见 LINK-165。
+
+收发 topic 名由消息类的 `MQ_NAME` 常量固定（见 [src/core/mq/messages](../../src/core/mq/messages)），不随 `.env` 改变；环境变量 `PARSE_TASK_TOPIC` 仅用于 Kafka topic 的自动创建（`topic_admin`），不影响实际投递/订阅的 topic。业务方按下方固定值对接即可。
 
 ## 解析任务投递（Java → Python）
 
 ### Topic
 
-- 配置项：`PARSE_TASK_TOPIC`
-- 默认值：`tolink-document-pares`（注意是 `pares`，历史遗留拼写）
+- 实际收发 topic：`tolink.rag.parse_task`（由 `ParseTaskMessage.MQ_NAME` 固定）
+- 环境变量 `PARSE_TASK_TOPIC` 仅用于 Kafka topic 自动创建，默认值同样是 `tolink.rag.parse_task`；改它不会改变 Python 端实际订阅的 topic
 
 ### 消息体（ParseTaskPayload）
 
@@ -38,14 +38,14 @@ Topic 名称由 toLink-Rag 的 `.env` 配置决定，业务方对接前需要从
 | --- | --- | --- | --- |
 | `task_id` | string | ✅ | 任务唯一 ID（业务方生成的幂等键） |
 | `original_file_id` | int | ✅ | 业务方原始文件表主键 |
-| `document_parse_task_id` | int | ✅ | 业务方文件解析表主键（`document_parse_file.id`） |
+| `document_parse_file_id` | int | ✅ | 业务方文件解析表主键（`document_parse_file.id`）。这是序列化输出的规范字段名；为兼容历史也接受别名 `document_parse_task_id`（任投递其一即可） |
 | `user_id` | int | ✅ | 文件所属用户 |
 | `dataset_id` | int | ✅ | 文件所属数据集 |
 | `file_type` | string | ✅ | 文件格式：`pdf` / `docx` / `html` / ... |
 | `source_bucket` | string | ✅ | 源文件对象存储 bucket |
 | `source_object_key` | string | ✅ | 源文件对象存储 key |
 | `source_filename` | string | ✅ | 用户上传时的原始文件名 |
-| `md_bucket` | string | ✅ | 解析后 Markdown 输出 bucket（`md`/`markdown` 透传时不使用，见下方说明） |
+| `md_bucket` | string | ✅ | 历史兼容字段；Python 侧非 `md`/`markdown` 解析产物实际写入 `MINIO_PRIVATE_BUCKET` 配置桶，`md`/`markdown` 透传时不使用 |
 | `md_object_key` | string | ✅ | 解析后 Markdown 输出 key（`md`/`markdown` 透传时不使用，见下方说明） |
 | `trigger_mode` | string | ⬜ | `upload_auto`（默认） / `manual_retry` |
 | `pdf_parser_backend` | string | ⬜ | `mineru`（默认） / `opendataloader` / `naive` / `auto` |
@@ -57,8 +57,8 @@ Topic 名称由 toLink-Rag 的 `.env` 配置决定，业务方对接前需要从
 
 > **重试链路约束**（与 [parse_task_pipeline.md §4 重试分支](../internals/parse_task_pipeline.md) 配套）：
 > - 重试请求由 Java 端在判定旧任务 `pipeline_status=FAILED` 后发起；Python 端不计数、不限次。若旧任务 `recover_from_stage=CLEANING`，允许旧 log 没有 `parsed_object_key`，Python 会重新下载源文件、解析并上传 markdown。
-> - 重试请求的 `md_bucket` / `md_object_key` 是本次 markdown 产物目标坐标。恢复点晚于 `CLEANING` 时应与上轮一致（Java 直接回填）；从 `CLEANING` 恢复时用于承接重新上传后的 markdown。
-> - Python 通过 CAS 第 2 层（`mark_superseded` UPDATE rowcount）仲裁并发重试，失败方仍会建一行 `pipeline_status=FAILED` + `failed_stage=RETRY_VALIDATION` 的审计记录，并通过 parse_result 主题通知 Java FAILED。
+> - 重试请求的 `md_object_key` 是本次 markdown 产物目标 key；bucket 由 Python 侧 `MINIO_PRIVATE_BUCKET` 决定。恢复点晚于 `CLEANING` 时 key 应与上轮一致（Java 直接回填）；从 `CLEANING` 恢复时用于承接重新上传后的 markdown。
+> - Python 通过 CAS 第 2 层（`mark_superseded` UPDATE rowcount）仲裁并发重试，失败方仍会建一行 `pipeline_status=FAILED` + `failed_stage=RETRY_VALIDATION` 的审计记录（终态写 DB，前端轮询读取）。
 
 ### 消息示例
 
@@ -68,7 +68,7 @@ Topic 名称由 toLink-Rag 的 `.env` 配置决定，业务方对接前需要从
 {
   "task_id": "task-20260516-001",
   "original_file_id": 12345,
-  "document_parse_task_id": 67890,
+  "document_parse_file_id": 67890,
   "user_id": 1001,
   "dataset_id": 2001,
   "file_type": "pdf",
@@ -90,7 +90,7 @@ Topic 名称由 toLink-Rag 的 `.env` 配置决定，业务方对接前需要从
 {
   "task_id": "task-20260527-002",
   "original_file_id": 12345,
-  "document_parse_task_id": 67890,
+  "document_parse_file_id": 67890,
   "user_id": 1001,
   "dataset_id": 2001,
   "file_type": "pdf",
@@ -105,43 +105,26 @@ Topic 名称由 toLink-Rag 的 `.env` 配置决定，业务方对接前需要从
 }
 ```
 
-> **`md` / `markdown` 透传**：源文件本身即目标 Markdown，cleaning 阶段跳过解析引擎转换，也**不再把 markdown 重复写入 `md_bucket`**——markdown 产物坐标直接取上传位置（`source_bucket` / `source_object_key`）。因此对 md/markdown 文件，业务方读取解析产物（预览/下载）须以 `document_parsed_log.parsed_bucket_name` / `parsed_object_key`（即上传位置）为准，不可硬取请求里的 `md_object_key`。其余格式（pdf/docx/html/…）仍把转换后的 markdown 写入 `md_bucket`/`md_object_key`，行为不变。
+> **`md` / `markdown` 透传**：源文件本身即目标 Markdown，cleaning 阶段跳过解析引擎转换，也**不再把 markdown 重复写入输出桶**——markdown 产物坐标直接取上传位置（`source_bucket` / `source_object_key`）。因此对 md/markdown 文件，业务方读取解析产物（预览/下载）须以 `document_parsed_log.parsed_bucket_name` / `parsed_object_key`（即上传位置）为准，不可硬取请求里的 `md_object_key`。其余格式（pdf/docx/html/…）仍把转换后的 markdown 写入 Python 侧 `MINIO_PRIVATE_BUCKET` / `md_object_key`。
 
 ### 路由键
 
 消息以 `file_type` 作为 routing key，便于按文件类型做消费侧分流。
 
-## 终态通知（Python → Java）
+## 终态读取（Python → DB → 前端轮询）
 
-### Topic
+> **parse_result 终态回传 MQ 已下线（LINK-166）**。Python 端解析完成后**只写 DB 终态**，不再向 Java 发送 MQ 通知；`ParseResultMessage` 消息体与生产侧代码、`PARSE_RESULT_TOPIC` 配置项均已删除。Java 端停止消费见 LINK-165。
 
-- 配置项：`PARSE_RESULT_TOPIC`
-- 默认值：`tolink.rag.parse_result`
+### 终态权威源
 
-### 消息体（ParseResultPayload）
-
-| 字段 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `task_id` | string | ✅ | 与请求中的 `task_id` 一致，用于关联 |
-| `original_file_id` | int | ✅ | 来自请求 |
-| `document_parsed_log_id` | int | ✅ | `document_parsed_log.id`，Java 据此回查解析日志与流水线终态 |
-| `dataset_id` | int | ✅ | 来自请求 |
-| `user_id` | int | ✅ | 来自请求 |
-| `task_status` | string | ✅ | `success` / `failed` |
-| `parse_finished_at` | string | ✅ | ISO 8601 格式时间 |
-| `failure_reason` | string | ⬜ | `failed` 时的失败原因摘要 |
-| `user_message` | string | ⬜ | 可直接展示给用户的提示文案 |
+解析终态的权威源是 MySQL `document_parse_pipeline`（`pipeline_status` = `SUCCESS` / `FAILED`，附 `failed_stage` / `recover_from_stage` / `failure_reason` / 各阶段耗时）。前端改由轮询 Java 的 `parse-results` 接口读 DB 获取状态（LINK-98），不再依赖 Python 的回传消息。
 
 ### 终态语义
 
-- `success`：Markdown 转换 + 分片 + 向量化 + 索引入库**全部完成**。
-- `failed`：上述任一环节失败，具体原因见 `failure_reason`。
+- `SUCCESS`：Markdown 转换 + 分片 + 向量化 + 索引入库**全部完成**。
+- `FAILED`：上述任一环节失败，具体原因见 `failure_reason`。
 
-不存在 "部分成功" 状态。中间步骤的细节状态请查询 toLink-Rag 内部的解析任务表，不在 MQ 通知里下发。
-
-### 路由键
-
-消息以 `task_id` 作为 routing key，便于业务方按任务维度关联请求与结果。
+不存在 "部分成功" 状态。中间步骤的细节状态由 toLink-Rag 写入 `document_parse_pipeline`，前端通过 Java 查询接口读取。
 
 ## 协议要点
 

@@ -1,7 +1,7 @@
 ---
 name: doc-maintenance-sync
-description: 当修改 AGENTS.md/CLAUDE.md、docs/api、docs/internals、docs/ops、docs/contributing.md，或代码变更影响这些文档记录的架构、API、错误码、数据模型、解析器、分片、向量化、命名、数据库结构时，检查并同步更新对应文档，保证项目文档自动维护。
-when_to_use: "当用户要求修改项目文档，或代码/配置/数据库/MQ/API/解析器/分片/向量化改动会导致 docs 下的架构、约定、参考资料、计划说明不准确时激活。触发示例：'改了 API 记得更新文档'、'新增错误码'、'调整数据模型'、'修改解析器结构'、'更新 AGENTS'、'同步文档'、'维护项目说明'"
+description: 契约治理三件套的「文档层」——真正动手改写文档的那一个。当 AGENTS.md/CLAUDE.md、docs/api、docs/internals、docs/ops、docs/contributing.md 落后于代码现状时，按文档映射读取最小必要文档并执行同步更新，保证项目文档自动维护。本 skill 负责「改写文档内容」；它不判断某个改动是否破坏公共契约（那是结构层，转 contract-guard），也不核对同一物理值在多处是否一致（那是值层，转 config-contract-sync）。
+when_to_use: "当用户要求更新/维护项目文档，或代码/配置/数据库/MQ/API/解析器/分片/向量化已经改了、需要让 docs 下的架构、约定、参考资料、计划说明追上现状时激活——本 skill 是真正执行文档改写的环节。触发示例：'改了 API 记得更新文档'、'新增错误码同步下文档'、'调整数据模型更新 schema 文档'、'修改解析器结构'、'更新 AGENTS'、'同步文档'、'维护项目说明'。三件套切分：只是想先判定『这个改动会不会破坏公共契约、要同步哪些文档』而尚未动笔 → 先走 contract-guard 拿清单，再回本 skill 执行；只是核对某个 topic/字段在 .env/Java 多处取值是否一致 → config-contract-sync；只同步 AGENTS.md 的项目结构树（非 docs 内容）→ agents-tree-sync。"
 ---
 
 # Documentation Maintenance Sync
@@ -63,6 +63,20 @@ when_to_use: "当用户要求修改项目文档，或代码/配置/数据库/MQ/
 - 不要为了文档同步引入与用户请求无关的架构重写。
 - 不要把测试报告、一次性排障记录写入稳定架构文档；这类内容应放在 PR 描述或 `.specs/<feature-name>/implementation_report.md`（合并后清理）。
 - 以真实代码、`migrations/db.sql`（0001 baseline）、`scripts/db/init.sql`（当前完整结构快照）、`src/config.py`、`.env.example` 和当前文档为准。
+
+## 边界（契约治理三件套的分工）
+
+三者按「同一改动的不同层面」分工，本 skill 是落到文档纸面、真正改写的一层：
+
+| 层面 | skill | 回答的问题 | 产物 |
+| --- | --- | --- | --- |
+| **文档层（本 skill）** | `doc-maintenance-sync` | 文档内容是否已落后于代码现状？ | 实际改写后的文档 |
+| **结构层** | `contract-guard` | 结构/语义变了没有？破坏对端没有？该同步哪些契约文档？ | 判定 + 同步清单（不改文档） |
+| **值层** | `config-contract-sync` | 同一个值在 `.env`/代码/Java 多处取值是否逐字相等？ | 取值对照表 + 统一方案 |
+
+- 典型协作：`contract-guard` 判定并产出「必须同步的契约文档清单」→ 本 skill 据清单逐篇改写。
+- 只动 `AGENTS.md` 的「当前项目结构」树（目录增删移名），不涉及 docs 内容 → 转 `agents-tree-sync`。
+- 机器强制同步规则（改 `src/models/**` → `schemas/mysql.md` + migration 等）见 CLAUDE.md §6，本 skill 执行其中的文档侧改写。
 
 ## 最终回复
 

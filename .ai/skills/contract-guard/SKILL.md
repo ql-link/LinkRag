@@ -1,7 +1,7 @@
 ---
 name: contract-guard
-description: 在技术设计与代码实现阶段校验改动是否破坏跨模块/跨服务的公共契约（MySQL schema、Qdrant/ES 索引、MQ topic 与消息、OSS 路径、HTTP 接口、错误码），并对照本项目按域拆分的契约文档与机器强制同步规则给出同步清单。
-when_to_use: "当技术设计或代码实现涉及 MySQL 表、Qdrant/Elasticsearch 索引、MQ topic/消息结构、OSS 路径规则、对外 HTTP 接口或错误码等公共约定，或需要确认改动是否违反跨模块契约并触发文档同步时激活。触发示例：'这个改动会破坏公共约定吗'、'新增表字段要同步什么'、'改了消息结构对端受影响吗'、'加了错误码要更新哪些文档'。若是核对 topic/bucket/字段在 .env 与 Java 两端的具体取值一致性，转 config-contract-sync；若只是泛化的文档跟随同步，转 doc-maintenance-sync。"
+description: 契约治理三件套的「结构层」。判定一处改动是否破坏跨模块/跨服务公共契约的结构与语义（MySQL schema、Qdrant/ES 索引、MQ topic 与消息结构、OSS 路径、HTTP 接口、错误码），并据此列出必须同步的契约文档 + migration 清单。本 skill 只做「判定 + 列清单」，不核对同一物理值在多处是否逐字一致（那是值层，转 config-contract-sync），也不亲自改写文档内容（那是文档层，转 doc-maintenance-sync）。
+when_to_use: "当技术设计或代码实现改到 MySQL 表/字段、Qdrant/Elasticsearch 索引结构、MQ topic 或消息字段结构、OSS 路径规则、对外 HTTP 接口、错误码等公共约定，需要回答『这个改动会不会破坏对端、要同步哪些契约文档』时激活。触发示例：'这个改动会破坏公共约定吗'、'新增表字段要同步什么'、'改了消息结构对端受影响吗'、'加了错误码要更新哪些文档'。三件套切分：只是核对同一个 topic/bucket/字段名在 .env/代码/Java 多处取值是否逐字一致（值层）→ config-contract-sync；判定完拿到清单后要真正改写 docs/AGENTS 内容（文档层）→ doc-maintenance-sync；写/校验迁移本身 → alembic-migration。"
 ---
 
 # Contract Guard
@@ -61,9 +61,16 @@ when_to_use: "当技术设计或代码实现涉及 MySQL 表、Qdrant/Elasticsea
 - 若新增/破坏：列出必须同步的文档与（如涉及 model）必须新增的 migration；标注对端是否需配合。
 - 提示运行 `check_docs_sync.py --staged`。
 
-## 边界（避免与相邻 skill 重复）
+## 边界（契约治理三件套的分工）
 
-- 本 skill 关注「契约是否被破坏 + 该同步哪些文档」。
-- 要核对 topic/bucket/字段在 `.env`/代码/Java 三处的**具体取值是否一致** → `config-contract-sync`。
-- 要做泛化的「文档跟随代码同步」 → `doc-maintenance-sync`。
+三者按「同一改动的不同层面」分工，不重叠：
+
+| 层面 | skill | 回答的问题 | 产物 |
+| --- | --- | --- | --- |
+| **结构层（本 skill）** | `contract-guard` | 结构/语义/必填性变了没有？破坏对端兼容没有？该同步哪些契约文档？ | 判定 + 同步清单（不改文档） |
+| **值层** | `config-contract-sync` | 同一个 topic/bucket/字段名/路径在 `.env`/代码/Java 多处取值是否**逐字相等**？ | 取值对照表 + 统一方案 |
+| **文档层** | `doc-maintenance-sync` | 文档内容是否已落后于代码现状？ | 实际改写后的文档 |
+
+- 本 skill 给出清单后，若要真正动手改写 `docs/**`、`AGENTS.md` 内容 → 转 `doc-maintenance-sync` 执行。
+- 判定中若怀疑某个值两端对不上（而非结构变化）→ 转 `config-contract-sync` 核值。
 - 要写/校验迁移本身 → `alembic-migration`。

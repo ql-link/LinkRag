@@ -1,0 +1,33 @@
+name: Acceptance Step Bindings
+
+# 守 LINK-110 的耐久不变量:tests/acceptance 下每个 Scenario 的 step 都已绑定。
+# 与 run-all-tests 解耦——只拦 undefined step(StepDefinitionNotFoundError),
+# 普通断言失败不影响本门禁。对全部 acceptance feature(含未经 .specs 提升的存量)生效。
+
+on:
+  pull_request:
+    branches: [main, dev]
+  push:
+    branches: [dev, main]
+
+jobs:
+  check:
+    name: No undefined pytest-bdd steps
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+
+      - name: Install project (acceptance suite needs runtime deps to collect)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Check acceptance step bindings
+        run: python scripts/check_acceptance_steps.py

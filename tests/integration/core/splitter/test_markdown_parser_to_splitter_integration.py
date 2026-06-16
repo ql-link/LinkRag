@@ -11,9 +11,14 @@ from src.core.markdown_parser import (
     VisionClient,
 )
 from src.core.splitter import (
+    CandidateBoundaryChunker,
     ChunkEmbeddingPipeline,
     ChunkingEngine,
-    PercentileSemanticChunker,
+    ChunkOverlapConfig,
+    ChunkOverlapper,
+    NoopStageTwoAlgorithm,
+    StageOneRouter,
+    StageTwoRouter,
     StructuredSemanticChunker,
 )
 
@@ -105,7 +110,7 @@ class MockTableClient(TableClient):
 
 
 class HybridMockEmbedder:
-    """Use special vectors for semantic splitting and stable hash vectors for final embedding."""
+    """Return stable hash vectors for final chunk embedding."""
 
     def __init__(self):
         self.calls = []
@@ -120,18 +125,7 @@ class HybridMockEmbedder:
             }
         )
 
-        if normalized and normalized[0] == "## Semantic Pressure Test":
-            embeddings = [
-                [1.0, 0.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0, 0.0],
-                [1.0, 0.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0, 0.0],
-                [0.0, 1.0, 0.0, 0.0],
-            ]
-        else:
-            embeddings = [self._default_embedding(text) for text in normalized]
-
+        embeddings = [self._default_embedding(text) for text in normalized]
         return MockEmbeddingResult(embeddings=embeddings, model=model or "mock-embedding-model")
 
     def _default_embedding(self, text: str) -> list[float]:
@@ -142,6 +136,37 @@ class HybridMockEmbedder:
             round(int.from_bytes(digest[8:12], "big") / 2**32, 6),
             round(int.from_bytes(digest[12:16], "big") / 2**32, 6),
         ]
+
+
+def _structured_chunker(
+    *,
+    heading_break_level: int = 5,
+    min_candidate_chunk_tokens: int = 128,
+    overlap_tokens: int = 0,
+) -> StructuredSemanticChunker:
+    tokenizer = MockWordTokenizer()
+    overlapper = ChunkOverlapper(
+        tokenizer=tokenizer,
+        config=ChunkOverlapConfig(tokens=overlap_tokens),
+    )
+    candidate_chunker = CandidateBoundaryChunker(
+        tokenizer=tokenizer,
+        min_candidate_chunk_tokens=min_candidate_chunk_tokens,
+        heading_break_level=heading_break_level,
+        overlapper=overlapper,
+    )
+    return StructuredSemanticChunker(
+        candidate_chunker=candidate_chunker,
+        stage_one_router=StageOneRouter(
+            algorithm_name="candidate_boundary",
+            algorithms=[candidate_chunker],
+        ),
+        stage_two_router=StageTwoRouter(
+            algorithm_name="noop",
+            algorithms=[NoopStageTwoAlgorithm()],
+        ),
+        overlapper=overlapper,
+    )
 
 
 async def test_markdown_parser_to_splitter_should_cover_all_markdown_types_and_generate_visualization():
@@ -181,30 +206,7 @@ async def test_markdown_parser_to_splitter_should_cover_all_markdown_types_and_g
         if element.type == ElementType.TABLE
     )
 
-    tokenizer = MockWordTokenizer()
-    semantic_heading_index = next(
-        idx
-        for idx, element in enumerate(parse_result.elements)
-        if element.type == ElementType.HEADING and element.content == "## Semantic Pressure Test"
-    )
-    semantic_section_elements = []
-    for element in parse_result.elements[semantic_heading_index:]:
-        if element.type == ElementType.HORIZONTAL_RULE:
-            break
-        semantic_section_elements.append(element)
-    semantic_section_text = "\n\n".join(element.content for element in semantic_section_elements)
-    assert tokenizer.count_tokens(semantic_section_text) > 512
-
-    semantic_chunker = PercentileSemanticChunker(
-        embedder=embedder,
-        tokenizer=tokenizer,
-        percentile=95,
-        min_chunk_tokens=1,
-        max_chunk_tokens=512,
-        overlap_tokens=64,
-        min_distance_gate=0.25,
-    )
-    chunker = StructuredSemanticChunker(semantic_chunker=semantic_chunker)
+    chunker = _structured_chunker(min_candidate_chunk_tokens=128, overlap_tokens=64)
     engine = ChunkingEngine(chunker=chunker, parser=parser)
     pipeline = ChunkEmbeddingPipeline(
         chunking_engine=engine,
@@ -215,14 +217,11 @@ async def test_markdown_parser_to_splitter_should_cover_all_markdown_types_and_g
 
     embedded_chunks = await pipeline.aprocess_parse_result(parse_result)
 
-    assert len(embedded_chunks) == 6
+    assert len(embedded_chunks) == 5
     assert all(
-        chunk.metadata["split_strategy"] in {"candidate_boundary", "semantic"}
-        for chunk in embedded_chunks
-        if chunk.metadata.get("chunk_role") != "derived_element"
+        chunk.metadata["split_strategy"] == "candidate_boundary + noop" for chunk in embedded_chunks
     )
-    assert any(chunk.metadata["split_strategy"] == "semantic" for chunk in embedded_chunks)
-    assert any(chunk.metadata["split_strategy"] == "derived_element" for chunk in embedded_chunks)
+    assert any(chunk.metadata.get("chunk_role") == "derived_element" for chunk in embedded_chunks)
     assert not any(chunk.metadata["split_strategy"] == "isolated" for chunk in embedded_chunks)
     assert any(
         "The metrics table shows healthy recall, stable latency, and broad coverage for the pipeline."
@@ -235,7 +234,7 @@ async def test_markdown_parser_to_splitter_should_cover_all_markdown_types_and_g
         in chunk.content
         for chunk in embedded_chunks
     )
-    assert any(
+    assert not any(
         chunk.metadata.get("context_overlap_mode") == "neighbor" for chunk in embedded_chunks
     )
     assert not any(
@@ -292,7 +291,7 @@ async def test_markdown_parser_to_splitter_should_cover_all_markdown_types_and_g
         in table_derived_chunk.content
     )
 
-    assert len(embedder.calls) == 2
+    assert len(embedder.calls) == 1
     assert embedder.calls[-1]["model"] == "visual-test-embedding"
     assert len(embedder.calls[-1]["texts"]) == len(embedded_chunks)
 
@@ -303,6 +302,84 @@ async def test_markdown_parser_to_splitter_should_cover_all_markdown_types_and_g
     assert "# Markdown Parser -> Splitter Visualization" in artifact_text
     assert "## Final Chunks" in artifact_text
     assert "### Chunk 0" in artifact_text
+
+
+async def test_markdown_parser_to_splitter_should_keep_level_4_and_5_heading_trails():
+    markdown = """# Root
+
+## Parent
+
+### Group
+
+#### Branch
+
+##### Leaf A
+Leaf A body.
+
+##### Leaf B
+Leaf B body.
+
+| Metric | Value |
+| --- | --- |
+| Recall | Good |
+
+#### Next Branch
+Next branch body.
+"""
+    parser = MarkdownParser()
+    parse_result = parser.parse(markdown, source_file="heading-depth.md")
+    chunker = _structured_chunker(
+        heading_break_level=5,
+        min_candidate_chunk_tokens=128,
+        overlap_tokens=0,
+    )
+
+    chunks = await chunker.achunk(parse_result.elements)
+
+    mixed_chunks = [
+        chunk for chunk in chunks if chunk.metadata.get("chunk_role") != "derived_element"
+    ]
+    assert len(mixed_chunks) == 2
+
+    first_mixed = mixed_chunks[0]
+    second_mixed = mixed_chunks[1]
+    assert "##### Leaf A" in first_mixed.content
+    assert "##### Leaf B" in first_mixed.content
+    assert "#### Next Branch" not in first_mixed.content
+    assert "Leaf B body." not in second_mixed.content
+    assert second_mixed.content.startswith("#### Next Branch")
+
+    assert first_mixed.metadata["heading_trail"] == [
+        "Root",
+        "Parent",
+        "Group",
+        "Branch",
+        "Leaf B",
+    ]
+    assert ["Root", "Parent", "Group", "Branch", "Leaf A"] in first_mixed.metadata["heading_trails"]
+    assert ["Root", "Parent", "Group", "Branch", "Leaf B"] in first_mixed.metadata["heading_trails"]
+    assert second_mixed.metadata["heading_trail"] == [
+        "Root",
+        "Parent",
+        "Group",
+        "Next Branch",
+    ]
+
+    table_derived_chunk = next(
+        chunk
+        for chunk in chunks
+        if chunk.metadata.get("chunk_role") == "derived_element"
+        and chunk.metadata.get("element_type") == "table"
+    )
+    assert table_derived_chunk.metadata["source_chunk_index"] == first_mixed.metadata["chunk_index"]
+    assert table_derived_chunk.metadata["heading_trail"] == [
+        "Root",
+        "Parent",
+        "Group",
+        "Branch",
+        "Leaf B",
+    ]
+    assert "标题路径：Root / Parent / Group / Branch / Leaf B" in table_derived_chunk.content
 
 
 def _write_visualization(parse_result, embedded_chunks, vision_client, table_client, embedder):

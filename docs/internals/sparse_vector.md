@@ -1,6 +1,6 @@
 # 稀疏向量模块（BGE-M3）
 
-本文说明 `src/core/sparse_vector/`：基于 BGE-M3 的稀疏向量编码与索引模块。它在**写入侧**把 chunk 原文编码成稀疏向量写进 Qdrant，在**召回侧**把用户 query 编码后做稀疏检索。dense 向量编排见 [vectorization.md](vectorization.md)，Qdrant 存储结构见 [schemas/qdrant.md](../api/schemas/qdrant.md)，召回编排见 [recall_pipeline.md](recall_pipeline.md)。
+本文说明 `src/core/encoding/sparse/`：基于 BGE-M3 的稀疏向量编码与索引模块。它在**写入侧**把 chunk 原文编码成稀疏向量写进 Qdrant，在**召回侧**把用户 query 编码后做稀疏检索。dense 向量编排见 [vectorization.md](vectorization.md)，Qdrant 存储结构见 [schemas/qdrant.md](../api/schemas/qdrant.md)，召回编排见 [recall_pipeline.md](recall_pipeline.md)。
 
 ---
 
@@ -20,7 +20,7 @@
 ## 2. 包结构
 
 ```text
-src/core/sparse_vector/
+src/core/encoding/sparse/
 ├── __init__.py          # 公共入口（见 §7 关于循环导入的取舍）
 ├── constants.py         # 默认模型名、provider 取值、向量名、状态常量
 ├── models.py            # SparseVector / SparseChunkVectorizationRequest / *Result
@@ -30,10 +30,10 @@ src/core/sparse_vector/
 ├── remote_encoder.py    # 独立 bge-m3-service 远程编码器（dense + sparse，带重试）
 ├── factory.py           # 按 settings 选 provider 装配 SparseVectorService
 ├── pipeline.py          # SparseVectorService：对编排层暴露的稳定服务接口
-├── indexing.py          # SparseIndexingPipeline：文件级稀疏索引阶段
-├── sparse_retriever.py  # 召回 Pipeline 适配器（SparseRetriever）
 └── deploy_bge_m3.py     # 本地模型部署与冒烟脚本
 ```
+
+> 索引侧 `sparse_indexing.py`（SparseIndexingPipeline）与召回适配器 `sparse_retriever.py` 位于 `src/core/storage/vector/`。
 
 ---
 
@@ -93,7 +93,7 @@ class SparseVectorEncoderProtocol(Protocol):
 - 任一 chunk 失败 → 失败 chunk 标 `FAILED`，整体抛 `SparseIndexingError`，由上层转为 `sparse_vectorizing_status=FAILED` + `pipeline_status=FAILED` + 通知 Java。
 - 空集短路：传入 chunks 为空 → 幂等 no-op SUCCESS。
 
-> `SparseIndexingPipeline` / `SparseIndexingError` / `SparseRetriever` **不在 `__init__.py` 导出**，需直接 `from src.core.sparse_vector.indexing import ...` / `from src.core.sparse_vector.sparse_retriever import ...`，原因见 §7。
+> `SparseIndexingPipeline` / `SparseIndexingError` / `SparseRetriever` **不在 `__init__.py` 导出**，需直接 `from src.core.storage.vector.sparse_indexing import ...` / `from src.core.storage.vector.sparse_retriever import ...`，原因见 §7。
 
 ---
 
@@ -154,6 +154,6 @@ backend.search_sparse_chunks(query, user_id, set_id, doc_id, top_k, score_thresh
 
 | 测试目标 | 入口 |
 | --- | --- |
-| 编码器输出规整、协议 | `tests/unit/core/sparse_vector/` |
-| 召回适配器 | `tests/unit/core/sparse_vector/test_sparse_retriever.py` |
+| 编码器输出规整、协议 | `tests/unit/core/encoding/sparse/` |
+| 召回适配器 | `tests/unit/core/storage/vector/test_sparse_retriever.py` |
 | 真实模型推理（需显式开关） | `TOLINK_RUN_REAL_SPARSE_VECTOR_TESTS=True` |

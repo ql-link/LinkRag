@@ -96,8 +96,9 @@ class OpenAIClient:
                 )
             elif response.status_code >= 500:
                 if retry_count < self.max_retries:
-                    # 服务器错误，重试
-                    await self._post(endpoint, json, retry_count + 1)
+                    # 服务器错误，重试。必须 return：否则重试结果被丢弃，控制流落到下方
+                    # response.raise_for_status() 对原始 5xx 抛错，把可恢复的 5xx 变成硬失败。
+                    return await self._post(endpoint, json, retry_count + 1)
                 else:
                     raise ProviderConnectionError(
                         message=f"OpenAI API error: {response.status_code}",
@@ -150,7 +151,8 @@ class OpenAIClient:
             payload["max_tokens"] = max_tokens
         payload.update(kwargs)
 
-        return await self._post("/chat/completions", payload)
+        # api_base_url 即完整端点 URL（Java 下发），不再拼 capability 后缀。
+        return await self._post("", payload)
 
     async def stream_chat_completions(
         self,
@@ -171,7 +173,7 @@ class OpenAIClient:
             payload["max_tokens"] = max_tokens
         payload.update(kwargs)
 
-        url = f"{self.api_base_url}/chat/completions"
+        url = self.api_base_url  # 完整端点 URL，不拼后缀
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -218,7 +220,8 @@ class OpenAIClient:
         }
         payload.update(kwargs)
 
-        return await self._post("/embeddings", payload)
+        # api_base_url 即完整端点 URL（Java 下发），不再拼 capability 后缀。
+        return await self._post("", payload)
 
     async def close(self) -> None:
         """关闭 HTTP 客户端"""
@@ -226,12 +229,13 @@ class OpenAIClient:
             await self._http_client.aclose()
 
 
-class OpenAIProvider(BaseProvider):
-    """OpenAI Provider 实现
+class OpenAICompatibleProvider(BaseProvider):
+    """OpenAI 兼容协议 adapter（protocol = "openai"）。
 
-    支持：
-    - 文本生成 (gpt-4, gpt-3.5-turbo 等)
-    - 向量化 (text-embedding-3-small, text-embedding-3-large)
+    承载全部 OpenAI 兼容厂商（openai / 千问 chat / glm / deepseek / 硅基流动 等）的
+    CHAT + EMBEDDING；坍缩原 openai/qwen/glm/deepseek 四类为一，厂商差异仅 base_url，
+    由配置注入。请求直打 ``api_base_url``（已是完整端点 URL），不拼 capability 后缀。
+    RERANK 不再由本 adapter 承载（改由 jina 平铺 / dashscope 原生）。
     """
 
     DEFAULT_API_BASE = "https://api.openai.com/v1"
@@ -240,7 +244,7 @@ class OpenAIProvider(BaseProvider):
     def __init__(
         self,
         provider_type: str = "openai",
-        provider_name: str = "OpenAI",
+        provider_name: str = "openai",
         api_key: str = "",
         api_base_url: Optional[str] = None,
         model_name: Optional[str] = None,
@@ -258,7 +262,10 @@ class OpenAIProvider(BaseProvider):
             **kwargs
         )
         self.model_name = model_name or self.DEFAULT_MODEL
-        self._capabilities = {CapabilityType.TEXT, CapabilityType.EMBEDDING}
+        self._capabilities = {
+            CapabilityType.TEXT,
+            CapabilityType.EMBEDDING,
+        }
         self._client = OpenAIClient(
             api_key=api_key,
             api_base_url=self.api_base_url,
@@ -379,3 +386,4 @@ class OpenAIProvider(BaseProvider):
                 total_tokens=usage.get("total_tokens", 0),
             ),
         )
+

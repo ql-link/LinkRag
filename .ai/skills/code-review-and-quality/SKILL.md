@@ -29,7 +29,7 @@ when_to_use: "当代码实现完成、测试交付后、准备提交代码或合
 ## 3. 必读输入
 
 1. `CLAUDE.md` / `AGENTS.md`
-2. `.specs/<feature-name>/feature_info.md`（若存在）
+2. `.specs/<feature-name>/state.yaml`（机器拥有的阶段状态，取代旧 `feature_info.md`）
 3. `.specs/<feature-name>/brief.md`
 4. `.specs/<feature-name>/acceptance.feature`
 5. `.specs/<feature-name>/technical_design.md`（若存在）

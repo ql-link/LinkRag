@@ -19,6 +19,15 @@ repos:
         stages: [pre-commit]
         description: Block commits that change code without updating required docs.
 
+      - id: check-docs-facts
+        name: Documentation facts check
+        entry: python scripts/check_docs_facts.py
+        language: system
+        pass_filenames: false
+        always_run: true
+        stages: [pre-commit]
+        description: Content-level reconciliation of docs vs code (dead paths / MQ topics / anchors).
+
       - id: check-ai-links
         name: AI asset symlinks check
         entry: python scripts/check_ai_links.py

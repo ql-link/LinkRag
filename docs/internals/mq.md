@@ -13,12 +13,12 @@ src/core/mq/
 ├── exceptions.py              # MQ 异常类型（含 RetriableError 可重试基类）
 ├── retry.py                   # 厂商中立失败兜底编排：有限退避重试 + 死信投递
 ├── consumers/
-│   └── parse_task_consumer.py # 解析任务消费者启动入口
+│   └── parse_task_consumer.py # 解析任务消费 handler（订阅装配在组合根 src/main.py）
 ├── messages/
 │   ├── parse_task.py          # Java -> Python 解析任务消息
-│   ├── parse_result.py        # Python -> Java 解析终态通知
 │   ├── cache_sync.py          # 用户 LLM 配置缓存同步
 │   └── usage_report.py        # LLM 用量上报
+│   # parse_result.py 已删除（LINK-166：终态回传 MQ 下线，终态只写 DB）
 └── vendors/
     ├── rabbitmq_adapter.py    # 启动声明 DLX/DLT；手动 ack/reject 走 retry 编排
     └── kafka/
@@ -38,11 +38,10 @@ BusinessCode
 消费链路：
 
 ```text
-FastAPI lifespan
-  -> start_parse_consumer()
-    -> MQService.subscribe()
-      -> ParseTaskMessage.parse_msg()
-      -> ParseTaskPipeline.execute()
+FastAPI lifespan（src/main.py 组合根装配）
+  -> MQService.subscribe(topic, group, handle_parse_task)
+    -> ParseTaskMessage.parse_msg()
+    -> ParseTaskPipeline.execute()
 ```
 
 ## 2. 核心角色
@@ -54,7 +53,6 @@ FastAPI lifespan
 | `MQService` | `src/services/mq_service.py` | 业务侧统一发送、订阅和关闭入口 |
 | `AbstractMessage` | `message.py` | 业务消息基类，定义序列化、MQ 名称和路由键 |
 | `ParseTaskMessage` | `messages/parse_task.py` | Java 投递的解析任务消息 |
-| `ParseResultMessage` | `messages/parse_result.py` | Python 回传 Java 的整体终态通知 |
 | `KafkaSender` / `KafkaReceiver` | `vendors/kafka/kafka_adapter.py` | Kafka 厂商适配 |
 | `RabbitMQSender` / `RabbitMQReceiver` | `vendors/rabbitmq_adapter.py` | RabbitMQ 厂商适配 |
 
@@ -62,19 +60,24 @@ FastAPI lifespan
 
 | 消息 | 默认 Topic/Queue | 方向 | 说明 |
 | --- | --- | --- | --- |
-| `ParseTaskMessage` | `tolink-document-pares` | Java -> Python | 触发文档解析任务（含首次解析与重试，由 `is_retry` + `previous_task_id` 区分；详见 [mq_integration.md §ParseTaskPayload](../api/mq_contracts.md)） |
-| `ParseResultMessage` | `tolink.rag.parse_result` | Python -> Java | 回传解析整体终态（重试任务的通知体 **不** 回带 `previous_task_id` / `retry_of_task_id`，Java 自有映射） |
+| `ParseTaskMessage` | `tolink.rag.parse_task` | Java -> Python | 触发文档解析任务（含首次解析与重试，由 `is_retry` + `previous_task_id` 区分；详见 [mq_integration.md §ParseTaskPayload](../api/mq_contracts.md)） |
 | `CacheSyncMessage` | `tolink.rag.cache_sync` | Java -> Python | 失效或刷新用户 LLM 配置缓存 |
 | `UsageReportMessage` | `tolink.rag.usage_report` | Python -> Java/统计侧 | 上报 LLM 调用用量 |
 
-`ParseResultMessage.serialize()` 输出的是 Java 约定的业务 payload，不包含 `mq_type`、`mq_name`、`payload` 信封。终态通知以 `document_parsed_log_id`（`document_parsed_log.id`）作为 Java 回查解析日志与流水线的关键字段（字段契约见 [mq_contracts.md §ParseResultPayload](../api/mq_contracts.md)）。
+`ParseTaskMessage` 中的 `md_bucket` 为历史兼容字段；Python 侧非 `md`/`markdown` 解析产物实际写入 `MINIO_PRIVATE_BUCKET` 配置桶，`md_object_key` 仍来自消息。`md`/`markdown` 透传文件的产物坐标沿用源文件上传位置。
+
+> 当前 `consumers/` 下只有 `parse_task_consumer.py` 一个消费入口。`CacheSyncMessage` / `UsageReportMessage` 仅定义了消息类与 topic，本服务侧暂未注册对应消费者（生产/订阅由各自业务链路按需接入），不要据此假定本服务会自动消费这两类消息。
+>
+> 收发 topic 名由各消息类的 `MQ_NAME` 常量固定，`PARSE_TASK_TOPIC` 等环境变量仅用于 §4.1 的 Kafka topic 自动创建，不改变实际收发 topic。
+
+> **parse_result 终态回传 MQ 已下线（LINK-166）**：Python 端解析完成后**只写 DB 终态**（`document_parse_pipeline`），不再向 Java 发送 `ParseResultMessage`。`messages/parse_result.py` 与生产侧 `ParseResultNotifier`、`PARSE_RESULT_TOPIC` 配置项均已删除。前端改由轮询 Java `parse-results` 接口读 DB 获取终态（LINK-98）；Java 端停止消费见 LINK-165。
 
 ### 消费者层异常兜底
 
 `consumers/parse_task_consumer.py::handle_parse_task` 在 `ParseTaskPipeline.execute()` 之外再包一层 catch-all：
 
-- **反序列化失败**（`ParseTaskMessage.parse_msg` 抛错）：无 payload / 无解析日志行，无法回发合规 parse_result，直接抛出交由 §4.1 死信兜底（Java 端 stuck scanner 最终收敛文件状态）。
-- **`execute` 逃逸异常**（pipeline 内部兜底之外的未预期错误，如 DB/会话故障）：调用 `ParseTaskPipeline.notify_unexpected_failure(payload, exc)` 按 task_id 反查已建 log 行、尽力回发 `task_status=failed` 的 parse_result，**避免 Java 端文件永久卡「解析中」**；随后仍 `raise` 以保留死信记账。若 log 行尚不存在则放弃通知，交由 stuck scanner 兜底。
+- **反序列化失败**（`ParseTaskMessage.parse_msg` 抛错）：无 payload / 无解析日志行，直接抛出交由 §4.1 死信兜底（Java 端 stuck scanner 最终收敛文件状态）。
+- **`execute` 逃逸异常**（pipeline 内部兜底之外的未预期错误，如 DB/会话故障）：记录日志后直接 `raise`，交由 §4.1 死信兜底。终态权威源是 DB，前端轮询读取，无需 Python 回发任何通知。
 
 ## 4. 配置
 
@@ -96,7 +99,6 @@ MQ 配置统一来自 `src/config.py::Settings` 和 `.env`：
 Kafka Topic 初始化还会读取：
 
 - `PARSE_TASK_TOPIC`
-- `PARSE_RESULT_TOPIC`
 - `CACHE_SYNC_TOPIC`
 - `USAGE_REPORT_TOPIC`
 - `REPLICATION_FACTOR`
@@ -107,9 +109,8 @@ Kafka Topic 初始化还会读取：
 
 消费框架对业务回调异常做有限退避重试 + 死信兜底，业务消费者无需感知。设计与配置：
 
-- 异常分类：抛出 `src.core.mq.exceptions.RetriableError` 的子类（如
-  `ParseResultNotificationError`）表示"暂时性、值得重试"；其它从 Pipeline 兜底之外
-  逃出的异常视为终态，不重试直接进死信。
+- 异常分类：抛出 `src.core.mq.exceptions.RetriableError` 的子类表示"暂时性、值得重试"；
+  其它从 Pipeline 兜底之外逃出的异常视为终态，不重试直接进死信。
 - 编排：`src.core.mq.retry.dispatch_with_retry` 是厂商中立的核心；Kafka / RabbitMQ
   receiver 失败路径都走它。
 - 死信目标命名：`<原 topic / queue> + MQ_DLQ_SUFFIX`（默认 `.DLT`）。
@@ -149,7 +150,6 @@ Kafka Topic 初始化还会读取：
 
 ```bash
 .venv/bin/pytest tests/unit/core/mq -q
-.venv/bin/pytest tests/unit/services/test_mq_service.py -q
 .venv/bin/pytest tests/integration/core/mq -q
 ```
 

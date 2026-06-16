@@ -2,7 +2,7 @@
 
 本文说明 `src/core/preprocessor/`。它是 ES/BM25 链路的**上游**：把已落库的 chunk 正文用 RAGFlow 分词器预先切成 token，产出文件级"ES 后置索引计划"（`FilePostIndexPlan`），交给 [es_index_storage](es_index_storage.md) 写入 Elasticsearch。
 
-"预分词"指**写入侧提前完成分词**：ES 索引文档里直接存空格分隔的 token 串，ES 端只做 `whitespace` 切分不再二次分词，从而索引侧与 BM25 召回侧共用同一份分词产物，避免 token 分布漂移（召回侧分词见 [es_index_storage.md §4.2](es_index_storage.md#42-bm25retrieverbm25_retrieverpy--召回-pipeline-适配器)）。
+"预分词"指**写入侧提前完成分词**：ES 索引文档里直接存空格分隔的 token 串，ES 端只做 `whitespace` 切分不再二次分词，从而索引侧与 BM25 召回侧共用同一份分词产物，避免 token 分布漂移（召回侧分词见 [es_index_storage.md §4.2](es_index_storage.md#42-bm25retrieverbm25_retrieverpy-召回-pipeline-适配器)）。
 
 ---
 
@@ -40,7 +40,7 @@ src/core/preprocessor/
 - `tokenize(text) -> TokenizedText`：先用 `TABLE_TAG_RE` 把 `<table>/<td>/<tr>/<th>/<caption>` 等表格标签替换为空格，再 `tokenize` 得 `coarse_tokens`、`fine_grained_tokenize` 得 `fine_tokens`，二者均为空格分隔词串。
 - `TokenizedText` 是 `(coarse_tokens, fine_tokens)` 的轻量载体。
 
-> RAGFlow/infinity 分词器需要本地 NLTK 数据，路径引导见 [src/nltk_bootstrap.py](../../src/nltk_bootstrap.py)。
+> RAGFlow/infinity 分词器需要本地 NLTK 数据，路径引导见 [src/bootstrap/nltk_data.py](../../src/bootstrap/nltk_data.py)。
 
 ---
 
@@ -61,15 +61,15 @@ src/core/preprocessor/
 ## 5. 与相邻模块的关系
 
 ```text
-chunk_fact_storage (ChunkRecordDB)        ← 数据来源（dense 已 INDEXED 的 active chunk）
+storage.chunks (ChunkRecordDB)        ← 数据来源（dense 已 INDEXED 的 active chunk）
         │
         ▼
 preprocessor.Preprocessor                  ← 本模块：读 chunk → 预分词
         │  FilePostIndexPlan
         ▼
-es_index_storage.EsIndexingPipeline        ← 下游：批量写 ES
+storage.es.EsIndexingPipeline        ← 下游：批量写 ES
         ⋮
-es_index_storage.Bm25Retriever             ← 召回侧复用 RagFlowTokenizer 分词 query
+storage.es.Bm25Retriever             ← 召回侧复用 RagFlowTokenizer 分词 query
 ```
 
 在解析主流水线里，预分词对应 parse_task 的 `pretokenize` 阶段，紧接其后是 `es_indexing` 阶段（见 [parse_task_pipeline.md](parse_task_pipeline.md)）。

@@ -1,15 +1,16 @@
 # -*- coding: utf-8 -*-
 """Orchestration layer that connects markdown parsing and chunking."""
 
+from typing import Any
+
 from src.core.markdown_parser import MarkdownParser, ParseResult
 
-from .base import BaseChunker
 from .models import Chunk
 
 
 class ChunkingEngine:
     """
-        编排 `MarkdownParser -> BaseChunker` 的完整流程，作为 splitter 模块的主入口。
+        编排 `MarkdownParser -> splitter 编排器` 的完整流程，作为 splitter 模块主入口。
 
     Args:
         None.
@@ -20,14 +21,14 @@ class ChunkingEngine:
 
     def __init__(
         self,
-        chunker: BaseChunker,
+        chunker: Any,
         parser: MarkdownParser | None = None,
     ):
         """
             初始化 chunking 引擎，并注入分片策略与可选的解析器实现。
 
         Args:
-            chunker: 负责具体分片逻辑的 chunker 实例。
+            chunker: 负责 splitter 阶段闭环的编排对象。
             parser: 可选的 Markdown 解析器；未传入时使用默认 `MarkdownParser`。
 
         Returns:
@@ -50,7 +51,7 @@ class ChunkingEngine:
         return self._parser
 
     @property
-    def chunker(self) -> BaseChunker:
+    def chunker(self) -> Any:
         """
             暴露当前引擎持有的分片策略实例。
 
@@ -58,7 +59,7 @@ class ChunkingEngine:
             None.
 
         Returns:
-            BaseChunker: 当前使用的 chunker 对象。
+            object: 当前使用的 splitter 编排对象。
         """
         return self._chunker
 

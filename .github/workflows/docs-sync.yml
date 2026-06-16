@@ -38,3 +38,7 @@ jobs:
       - name: Run doc-sync check
         run: |
           python scripts/check_docs_sync.py --base "${{ steps.base.outputs.ref }}"
+
+      - name: Run doc-facts check (content-level reconciliation)
+        run: |
+          python scripts/check_docs_facts.py

@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
-"""统一用户模型解析模块单测。
+"""统一用户模型解析模块单测（协议化后）。
 
 覆盖：
-- 命中用户默认配置 → 解密 + create_client + 来源 user；
+- 命中用户默认配置 → 解密 + create_client（按 protocol 分发）+ 来源 user；
 - 系统兜底配置（is_system_fallback）→ 免解密 + 来源 system；
 - config_id 指定路径；
-- 缺配置且不兜底 → UserModelConfigMissingError；
-- allow_system_fallback 命中兜底；
-- 能力不支持 → ValueError；能力字符串未知 → ValueError；
-- override_model 优先级最高。
+- 缺配置且不兜底 → UserModelConfigMissingError；allow_system_fallback 命中兜底；
+- protocol 缺失 → ProtocolRequiredError（fail fast，不回退 provider_type）；
+- 能力不支持 → UnsupportedProtocolCapabilityError；能力字符串未知 → ValueError；
+- override_model 优先级最高；provider_type 仅作身份透传、不参与分发。
 """
 
 from __future__ import annotations
@@ -18,7 +18,11 @@ from unittest.mock import MagicMock
 import pytest
 
 import src.core.llm.user_model_resolver as umr
-from src.core.llm.exceptions import UserModelConfigMissingError
+from src.core.llm.exceptions import (
+    ProtocolRequiredError,
+    UnsupportedProtocolCapabilityError,
+    UserModelConfigMissingError,
+)
 from src.core.llm.factory import ModelFactory
 from src.core.llm.interfaces import CapabilityType
 from src.core.llm.user_model_resolver import (
@@ -66,42 +70,48 @@ def test_build_provider_from_config_user_decrypts(monkeypatch):
     rm = build_provider_from_config(
         {
             "provider_type": "qwen",
+            "protocol": "openai",
             "api_key": "ENC",
-            "api_base_url": "https://u/v1",
+            "api_base_url": "https://u/v1/chat/completions",
             "model_name": "m-user",
         },
         capability="CHAT",
     )
     assert rm.source == "user"
     assert rm.model_name == "m-user"
+    assert rm.protocol == "openai"
+    assert captured["protocol"] == "openai"  # 按 protocol 分发
     assert captured["api_key"] == "dec::ENC"
-    assert captured["api_base_url"] == "https://u/v1"
+    assert captured["api_base_url"] == "https://u/v1/chat/completions"
     provider.has_capability.assert_called_with(CapabilityType.TEXT)
 
 
-def test_build_provider_normalizes_java_provider_type_alias(monkeypatch):
+def test_build_provider_keeps_provider_type_identity_alias(monkeypatch):
+    # provider_type 仍归一化作身份（aliyun→qwen），但不参与分发（分发看 protocol）。
     captured, _ = _patch_factory(monkeypatch)
     rm = build_provider_from_config(
         {
             "provider_type": "aliyun",
+            "protocol": "openai",
             "api_key": "ENC",
-            "api_base_url": "https://dashscope.example/v1",
+            "api_base_url": "https://dashscope.example/compatible-mode/v1/chat/completions",
             "model_name": "qwen-plus",
         },
         capability="CHAT",
     )
     assert rm.provider_type == "qwen"
     assert captured["provider_type"] == "qwen"
+    assert captured["protocol"] == "openai"
 
 
-def test_model_factory_normalizes_provider_type_aliases():
+def test_create_client_dispatches_by_protocol_not_provider_type():
+    # 分发依据 protocol；provider_type 仅作身份透传。
+    from src.core.llm.providers.anthropic import AnthropicProvider
+
     factory = ModelFactory()
-
-    qwen_client = factory.create_client(provider_type="aliyun", api_key="k")
-    anthropic_client = factory.create_client(provider_type="claude", api_key="k")
-
-    assert qwen_client.provider_type == "qwen"
-    assert anthropic_client.provider_type == "anthropic"
+    client = factory.create_client(protocol="anthropic", api_key="k", provider_type="claude")
+    assert isinstance(client, AnthropicProvider)
+    assert client.provider_type == "claude"
 
 
 def test_build_provider_from_config_system_fallback_skips_decrypt(monkeypatch):
@@ -109,6 +119,7 @@ def test_build_provider_from_config_system_fallback_skips_decrypt(monkeypatch):
     rm = build_provider_from_config(
         {
             "provider_type": "openai",
+            "protocol": "openai",
             "api_key": "plain",
             "model_name": "gpt",
             "is_system_fallback": True,
@@ -122,7 +133,7 @@ def test_build_provider_from_config_system_fallback_skips_decrypt(monkeypatch):
 def test_build_provider_override_model_wins(monkeypatch):
     captured, _ = _patch_factory(monkeypatch)
     build_provider_from_config(
-        {"provider_type": "qwen", "api_key": "ENC", "model_name": "cfg-model"},
+        {"provider_type": "qwen", "protocol": "openai", "api_key": "ENC", "model_name": "cfg-model"},
         capability="CHAT",
         fallback_model="fb",
         override_model="override",
@@ -133,14 +144,27 @@ def test_build_provider_override_model_wins(monkeypatch):
 def test_build_provider_unknown_capability(monkeypatch):
     _patch_factory(monkeypatch)
     with pytest.raises(ValueError, match="Unknown capability"):
-        build_provider_from_config({"provider_type": "qwen", "api_key": "x"}, capability="NOPE")
+        build_provider_from_config(
+            {"provider_type": "qwen", "protocol": "openai", "api_key": "x"}, capability="NOPE"
+        )
+
+
+def test_build_provider_missing_protocol_raises(monkeypatch):
+    # protocol 缺失即 fail fast，不读 provider_type 兜底，不造任何 client。
+    captured, _ = _patch_factory(monkeypatch)
+    with pytest.raises(ProtocolRequiredError):
+        build_provider_from_config(
+            {"provider_type": "openai", "api_key": "x", "model_name": "m"}, capability="CHAT"
+        )
+    assert captured == {}  # 未触达 create_client
 
 
 def test_build_provider_capability_unsupported(monkeypatch):
     _patch_factory(monkeypatch, supports=False)
-    with pytest.raises(ValueError, match="does not support"):
+    with pytest.raises(UnsupportedProtocolCapabilityError):
         build_provider_from_config(
-            {"provider_type": "qwen", "api_key": "x", "model_name": "m"}, capability="EMBEDDING"
+            {"provider_type": "qwen", "protocol": "openai", "api_key": "x", "model_name": "m"},
+            capability="EMBEDDING",
         )
 
 
@@ -148,7 +172,7 @@ def test_build_provider_capability_unsupported(monkeypatch):
 async def test_resolve_user_default_hit(monkeypatch):
     captured, _ = _patch_factory(monkeypatch)
     svc = _FakeConfigService(
-        default={"provider_type": "qwen", "api_key": "ENC", "model_name": "m-user"}
+        default={"provider_type": "qwen", "protocol": "openai", "api_key": "ENC", "model_name": "m-user"}
     )
     rm = await aresolve_user_model(user_id=7, capability="EMBEDDING", config_service=svc)
     assert rm.source == "user"
@@ -160,7 +184,7 @@ async def test_resolve_user_default_hit(monkeypatch):
 async def test_resolve_by_config_id(monkeypatch):
     _patch_factory(monkeypatch)
     svc = _FakeConfigService(
-        by_id={"provider_type": "qwen", "api_key": "ENC", "model_name": "by-id"}
+        by_id={"provider_type": "qwen", "protocol": "openai", "api_key": "ENC", "model_name": "by-id"}
     )
     rm = await aresolve_user_model(
         user_id=7, capability="CHAT", config_id="cfg-1", config_service=svc
@@ -185,6 +209,7 @@ async def test_resolve_system_fallback_used(monkeypatch):
         default=None,
         fallback={
             "provider_type": "qwen",
+            "protocol": "openai",
             "api_key": "plain",
             "model_name": "sys",
             "is_system_fallback": True,

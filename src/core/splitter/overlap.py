@@ -14,47 +14,116 @@ else:
 
 @dataclass(slots=True)
 class ChunkOverlapConfig:
-    """描述 chunk overlap 的独立配置。"""
+    """
+        描述 chunk overlap 的独立配置。
+
+    Args:
+        None.
+
+    Returns:
+        None.
+    """
 
     enabled: bool = True
     tokens: int = 64
 
     def __post_init__(self) -> None:
+        """
+            校验 overlap token 配置范围。
+
+        Args:
+            None.
+
+        Returns:
+            None.
+        """
         if self.tokens < 0 or self.tokens > 64:
             raise ValueError("overlap tokens must be between 0 and 64.")
 
 
 class ChunkOverlapper:
-    """集中处理 chunk overlap 的 token 截取与上下文拼接。"""
+    """
+        集中处理 chunk overlap 的 token 截取与上下文拼接。
+
+    Args:
+        None.
+
+    Returns:
+        None.
+    """
 
     def __init__(
         self,
         tokenizer: Tokenizer,
         config: ChunkOverlapConfig | None = None,
     ) -> None:
+        """
+            初始化 chunk overlap 工具。
+
+        Args:
+            tokenizer: 用于统计与截断 token 的分词器。
+            config: overlap 开关与 token 数配置；为空时使用默认配置。
+
+        Returns:
+            None.
+        """
         self.tokenizer = tokenizer
         self.config = config or ChunkOverlapConfig()
 
     @property
     def effective_tokens(self) -> int:
-        """返回当前实际启用的 overlap token 数。"""
+        """
+            返回当前实际启用的 overlap token 数。
+
+        Args:
+            None.
+
+        Returns:
+            int: overlap 关闭时返回 0，否则返回配置 token 数。
+        """
         if not self.config.enabled:
             return 0
         return self.config.tokens
 
     def count_tokens(self, text: str) -> int:
-        """统计文本 token 数。"""
+        """
+            统计文本 token 数。
+
+        Args:
+            text: 待统计文本。
+
+        Returns:
+            int: token 数。
+        """
         return self.tokenizer.count_tokens(text.strip()) if text else 0
 
     def take_first_tokens(self, text: str, token_limit: int) -> str:
-        """取出文本开头的指定数量 token。"""
+        """
+            取出文本开头的指定数量 token。
+
+        Args:
+            text: 待截取文本。
+            token_limit: 最大 token 数。
+
+        Returns:
+            str: 从文本开头截取的内容。
+        """
         if not text or token_limit <= 0:
             return ""
         truncated, _ = self.tokenizer.truncate_text(text, token_limit)
         return truncated.strip()
 
     def take_last_tokens(self, text: str, token_limit: int) -> str:
-        """取出文本末尾的指定数量 token。"""
+        """
+            取出文本末尾的指定数量 token。
+
+        Args:
+            text: 待截取文本。
+            token_limit: 最大 token 数。
+
+        Returns:
+            str: 从文本末尾截取的内容。
+        """
         cleaned = text.strip()
         if not cleaned or token_limit <= 0:
             return ""
@@ -84,7 +153,17 @@ class ChunkOverlapper:
         *,
         max_chunk_tokens: int,
     ) -> str:
-        """在切分发生时，为下一块追加上一块尾部 overlap。"""
+        """
+            在切分发生时，为下一块追加上一块尾部 overlap。
+
+        Args:
+            previous_chunk: 刚完成的上一块文本。
+            next_atom: 下一块起始文本。
+            max_chunk_tokens: 下一块允许的最大 token 数。
+
+        Returns:
+            str: 带可用 overlap 前缀的下一块文本。
+        """
         overlap_budget = self.effective_tokens
         if overlap_budget <= 0:
             return next_atom
@@ -110,7 +189,17 @@ class ChunkOverlapper:
         current_content: str,
         next_content: str | None,
     ) -> tuple[str, int, int]:
-        """为最终 chunk 构造相邻上下文，并返回实际追加的前后 token 数。"""
+        """
+            为最终 chunk 构造相邻上下文，并返回实际追加的前后 token 数。
+
+        Args:
+            previous_content: 当前 chunk 的前一个 chunk 内容。
+            current_content: 当前 chunk 原始内容。
+            next_content: 当前 chunk 的后一个 chunk 内容。
+
+        Returns:
+            tuple[str, int, int]: 带上下文的内容、前置 token 数、后置 token 数。
+        """
         overlap_budget = self.effective_tokens
         if overlap_budget <= 0:
             return current_content, 0, 0

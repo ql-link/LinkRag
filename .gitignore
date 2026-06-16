@@ -20,6 +20,9 @@ wheels/
 .installed.cfg
 *.egg
 
+# uv 依赖锁文件（本地生成，不入 Git）
+uv.lock
+
 # Virtual Environment
 venv/
 ENV/
@@ -76,6 +79,7 @@ logs/
 .claude/worktrees/
 # Claude Code per-user permission allowlist
 .claude/settings.local.json
+/.agents/skills
 
 /requirements
 

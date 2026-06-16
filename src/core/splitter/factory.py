@@ -6,7 +6,10 @@ ChunkEmbeddingPipeline。调用方只需注入返回的对象，不需要了解�
 
 from __future__ import annotations
 
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
+
+if TYPE_CHECKING:
+    from src.core.dataset_config import ChunkingConfig
 
 from loguru import logger
 
@@ -15,11 +18,15 @@ from src.core.llm.factory import ModelFactory
 from src.core.llm.interfaces import CapabilityType, IEmbedder
 from src.core.llm.tokenizer import Tokenizer
 
+from .candidate_boundary_chunker import CandidateBoundaryChunker
+from .chunk_exporter import ChunkExporter
 from .chunking_engine import ChunkingEngine
 from .embedding_pipeline import ChunkEmbeddingPipeline
+from .overlap import ChunkOverlapConfig, ChunkOverlapper
 from .pipeline_chunker import StructuredSemanticChunker
-from .rule_chunker import ASTAwareChunker
-from .semantic_chunker import PercentileSemanticChunker
+from .stage_routers import StageOneRouter, StageTwoRouter
+from .stage_two_noop import NoopStageTwoAlgorithm
+from .validators import CoarseChunkSetValidator
 
 
 class DenseEmbeddingConfigMissingError(RuntimeError):
@@ -97,10 +104,13 @@ def create_system_embedding_client() -> Any:
     if not settings.SYSTEM_LLM_API_KEY:
         raise ValueError("SYSTEM_LLM_API_KEY is not configured")
 
+    # 系统级 LLM 固定 openai 兼容；env 配的是 base，补 /embeddings 成完整端点 URL。
+    _base = (settings.SYSTEM_LLM_API_BASE or "").rstrip("/")
     embedder = ModelFactory().create_client(
+        protocol="openai",
         provider_type=settings.SYSTEM_LLM_PROVIDER,
         api_key=settings.SYSTEM_LLM_API_KEY,
-        api_base_url=settings.SYSTEM_LLM_API_BASE,
+        api_base_url=f"{_base}/embeddings" if _base else settings.SYSTEM_LLM_API_BASE,
         model_name=settings.SYSTEM_LLM_MODEL_EMBEDDING,
         timeout_ms=settings.MARKDOWN_PARSER_LLM_TIMEOUT_MS,
     )
@@ -116,38 +126,70 @@ def create_lazy_system_embedding_client() -> LazyEmbeddingClient:
     return LazyEmbeddingClient(create_system_embedding_client)
 
 
-def create_chunking_engine() -> ChunkingEngine:
+def _create_structured_chunking_engine(
+    config: "ChunkingConfig | None" = None,
+) -> ChunkingEngine:
+    """创建标准两阶段 splitter 引擎。
+
+    ``config`` 为数据集级分块配置（LINK-148），``None`` 时全部取系统 ``Settings``。
+    dev 的 splitter 重写已移除 percentile 语义切片，分片算法由 ``CHUNKING_STAGE_*``
+    阶段算法决定；数据集级覆盖作用于本架构仍有效的参数——``overlap_tokens`` /
+    ``min_candidate_chunk_tokens`` / ``heading_break_level``。
+    """
+    overlap_tokens = (
+        config.overlap_tokens if config is not None else settings.CHUNKING_OVERLAP_TOKENS
+    )
+    min_candidate_chunk_tokens = (
+        config.min_candidate_chunk_tokens
+        if config is not None
+        else settings.CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS
+    )
+    heading_break_level = (
+        config.heading_break_level
+        if config is not None
+        else settings.CHUNKING_HEADING_BREAK_LEVEL
+    )
+
+    tokenizer = Tokenizer()
+    overlapper = ChunkOverlapper(
+        tokenizer=tokenizer,
+        config=ChunkOverlapConfig(tokens=overlap_tokens),
+    )
+    candidate_algorithm = CandidateBoundaryChunker(
+        tokenizer=tokenizer,
+        min_candidate_chunk_tokens=min_candidate_chunk_tokens,
+        heading_break_level=heading_break_level,
+        overlapper=overlapper,
+    )
+    stage_one_router = StageOneRouter(
+        algorithm_name=settings.CHUNKING_STAGE_ONE_ALGORITHM,
+        algorithms=[candidate_algorithm],
+    )
+
+    stage_two_router = StageTwoRouter(
+        algorithm_name=settings.CHUNKING_STAGE_TWO_ALGORITHM,
+        algorithms=[NoopStageTwoAlgorithm()],
+    )
+    chunker = StructuredSemanticChunker(
+        candidate_chunker=candidate_algorithm,
+        stage_one_router=stage_one_router,
+        stage_two_router=stage_two_router,
+        validator=CoarseChunkSetValidator(),
+        exporter=ChunkExporter(),
+        overlapper=overlapper,
+    )
+    return ChunkingEngine(chunker=chunker)
+
+
+def create_chunking_engine(config: "ChunkingConfig | None" = None) -> ChunkingEngine:
     """按配置构建 Markdown 分块引擎。
 
-    高级语义分块初始化失败时降级为规则分块，保持解析主链路可用。
-    """
-    if not settings.CHUNKING_ENABLE_ADVANCED_PIPELINE:
-        return ChunkingEngine(chunker=ASTAwareChunker())
+    ``config`` 为数据集级分块配置（LINK-148）；``None`` 时取运行期系统 ``Settings``，
+    保持未配置数据集行为与拆分前一致——含运维通过环境变量覆盖 ``CHUNKING_*`` 的场景。
 
-    try:
-        embedder = create_system_embedding_client()
-        semantic_chunker = PercentileSemanticChunker(
-            embedder=embedder,
-            tokenizer=Tokenizer(),
-            percentile=settings.CHUNKING_SEMANTIC_PERCENTILE,
-            semantic_unit=settings.CHUNKING_SEMANTIC_UNIT,
-            min_chunk_tokens=settings.CHUNKING_MIN_CHUNK_TOKENS,
-            max_chunk_tokens=settings.CHUNKING_MAX_CHUNK_TOKENS,
-            overlap_tokens=settings.CHUNKING_OVERLAP_TOKENS,
-            min_distance_gate=settings.CHUNKING_MIN_DISTANCE_GATE,
-        )
-        chunker = StructuredSemanticChunker(
-            semantic_chunker=semantic_chunker,
-            heading_break_level=settings.CHUNKING_HEADING_BREAK_LEVEL,
-            min_candidate_chunk_tokens=settings.CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS,
-        )
-        return ChunkingEngine(chunker=chunker)
-    except Exception as exc:
-        logger.warning(
-            "[splitter.factory] advanced chunking init failed, fallback to rule chunking: {}",
-            exc,
-        )
-        return ChunkingEngine(chunker=ASTAwareChunker())
+    按显式阶段算法配置装配 splitter 闭环，不保留旧规则分片器 fallback。
+    """
+    return _create_structured_chunking_engine(config)
 
 
 # DashScope text-embedding-* 系列单次 /embeddings 请求的 input 条数上限。
@@ -211,20 +253,21 @@ def _resolve_embed_batch_size(
 def create_chunk_embedding_pipeline() -> ChunkEmbeddingPipeline:
     """按配置构建 chunk embedding pipeline。
 
-    内部固定使用 ASTAwareChunker，因为 embedding pipeline 仅承担向量化阶段，
-    更精细的分块策略由独立的 ``create_chunking_engine`` 负责。
+    分片阶段与向量化阶段复用同一个系统级 embedding 客户端包装器，确保最终写入路径
+    与主分片策略一致。
 
     batch_size 会根据 provider / model 的已知单次请求上限自动 cap，
     避免因配置值超限导致 DashScope 等 provider 返回 400。
     """
+    embedder = create_lazy_system_embedding_client()
     batch_size = _resolve_embed_batch_size(
         provider_type=settings.SYSTEM_LLM_PROVIDER,
         model_name=settings.SYSTEM_LLM_MODEL_EMBEDDING,
         configured_batch_size=settings.CHUNK_INDEX_EMBED_BATCH_SIZE,
     )
     return ChunkEmbeddingPipeline(
-        chunking_engine=ChunkingEngine(chunker=ASTAwareChunker()),
-        embedder=create_lazy_system_embedding_client(),
+        chunking_engine=_create_structured_chunking_engine(),
+        embedder=embedder,
         embedding_model=settings.SYSTEM_LLM_MODEL_EMBEDDING,
         batch_size=batch_size,
     )
@@ -312,7 +355,7 @@ async def aresolve_user_chunk_embedding_pipeline(user_id: int) -> ChunkEmbedding
         configured_batch_size=settings.CHUNK_INDEX_EMBED_BATCH_SIZE,
     )
     return ChunkEmbeddingPipeline(
-        chunking_engine=ChunkingEngine(chunker=ASTAwareChunker()),
+        chunking_engine=_create_structured_chunking_engine(),
         embedder=embedder,
         embedding_model=model_name,
         batch_size=batch_size,

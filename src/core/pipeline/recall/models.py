@@ -62,7 +62,12 @@ class RecallRequest:
             调用方自行保证身份合法）。
         doc_ids: 可选文档过滤；不传或 ``None`` 表示不限。
         top_k: 各路执行期召回规模上限，同时作为融合后结果的截断上限；必须为正整数。
-            由服务端配置（``RECALL_RESULT_LIMIT``）决定，不作为外部请求字段。
+            由服务端配置决定（数据集级 ``recall_result_limit``，无数据集配置时回退
+            ``RECALL_RESULT_LIMIT``），不作为外部请求字段。
+        sparse_score_threshold_override: 可选稀疏路分数阈值覆盖；``None`` 时 sparse 路沿用
+            装配期注入的默认阈值。来自数据集级 ``recall_config.sparse_score_threshold``。
+        dense_score_threshold_override: 可选稠密路分数阈值覆盖；``None`` 时 dense 路沿用
+            装配期注入的默认阈值。来自数据集级 ``recall_config.dense_score_threshold``。
     """
 
     query: str
@@ -70,6 +75,8 @@ class RecallRequest:
     dataset_ids: list[int]
     doc_ids: list[int] | None = None
     top_k: int = 20
+    sparse_score_threshold_override: float | None = None
+    dense_score_threshold_override: float | None = None
 
 
 @dataclass

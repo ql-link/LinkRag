@@ -4,7 +4,7 @@
 
 ## 1. 通用约定
 
-- API 前缀按模块划分：`/api/v1/parser`、`/api/v1/mq`、`/api/v1/llm`、`/api/v1/internal/llm`、`/api/v1/internal/recall`。
+- API 前缀按模块划分：`/api/v1/parser`、`/api/v1/mq`、`/api/v1/llm`、`/api/v1/internal/llm`、`/api/v1/rag`、`/api/v1/recall`。
 - 普通 JSON 响应通常使用 `{code, message, data}` 或模块自定义响应模型。
 - 解析和 MQ 路由异常通常返回 HTTP `500`，`detail` 为异常文本。
 - LLM 路由在业务异常中多返回 `APIResponse(code=500, message=..., data=null)`。
@@ -58,7 +58,7 @@
 | `source_bucket` | string | 必填 | 原始文件 bucket |
 | `source_object_key` | string | 必填 | 原始文件对象 key |
 | `source_filename` | string | 必填 | 原始文件名 |
-| `md_bucket` | string | 必填 | Markdown 输出 bucket |
+| `md_bucket` | string | 必填 | 历史兼容字段；Python 侧 Markdown 输出 bucket 使用 `MINIO_PRIVATE_BUCKET` |
 | `md_object_key` | string | 必填 | Markdown 输出对象 key |
 | `trigger_mode` | string | `upload_auto` | 触发方式 |
 | `pdf_parser_backend` | string | `mineru` | PDF 解析器 |
@@ -102,30 +102,19 @@
 
 | 消息 | Topic/Name | 说明 |
 | --- | --- | --- |
-| ParseTask | `tolink-document-pares` | Java/Python 解析任务输入 |
-| ParseResult | `tolink.rag.parse_result` | Python 解析终态通知 Java |
+| ParseTask | `tolink.rag.parse_task` | Java/Python 解析任务输入 |
 | CacheSync | `tolink.rag.cache_sync` | 缓存同步 |
 | UsageReport | `tolink.rag.usage_report` | 用量上报 |
 
-### ParseResult 通知语义
+> parse_result 终态回传 topic（Python→Java 解析终态通知）已下线（LINK-166）：终态只写 DB，前端轮询 Java 查询读取，见下方「解析终态读取」。
 
-Python 发往 Java 的 `tolink.rag.parse_result` 消息不带 MQ 信封，消息体就是业务 payload。
+### 解析终态读取
 
-| 字段 | 类型 | 说明 |
-| --- | --- | --- |
-| `task_id` | string | 解析任务 ID |
-| `original_file_id` | int | 原始文件 ID |
-| `document_parse_task_id` | int | 历史兼容字段名，对应 `document_parse_file.id` |
-| `dataset_id` | int | 数据集 ID |
-| `user_id` | int | 用户 ID |
-| `task_status` | string | `success/failed` |
-| `failure_reason` | string/null | 失败原因；成功时为空 |
-| `parse_finished_at` | string | 整体终态时间，ISO 8601 |
-| `user_message` | string/null | 可选用户提示 |
+parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权威单源是 `document_parse_pipeline.pipeline_status`，前端改由轮询 Java `parse-results` 接口读 DB 获取（LINK-98）。
 
-`success` 表示解析+上传、分片、向量化、预分词与 ES 入库均完成。任一阶段失败都会发送 `failed`，并在 `failure_reason` 中携带业务化原因。
+`SUCCESS` 表示解析+上传、分片、向量化、预分词与 ES 入库均完成；任一阶段失败写 `FAILED`，并在 `failure_reason` 中携带业务化原因。
 
-> **数据库权威单源**：整体任务状态以 `document_parse_pipeline.pipeline_status` 为准；`document_parsed_log.task_status` / `failure_reason` 已下线（migration 0007）。Java 侧若需直接查表，应读取：
+> **数据库权威单源**：整体任务状态以 `document_parse_pipeline.pipeline_status` 为准；`document_parsed_log.task_status` / `failure_reason` 已下线（migration 0007）。Java 侧直接查表读取：
 > - 整体任务是否成功 → `document_parse_pipeline.pipeline_status == SUCCESS`
 > - markdown 是否已上传 → `document_parsed_log.parsed_object_key IS NOT NULL`
 > - 失败原因 → `document_parse_pipeline.failure_reason`
@@ -190,73 +179,30 @@ Python 发往 Java 的 `tolink.rag.parse_result` 消息不带 MQ 信封，消息
 
 日期参数格式：`YYYY-MM-DD`。
 
-## 6. Internal Recall API
+## 6. RAG / Recall API（对外）
 
-路由前缀：`/api/v1/internal/recall`。**仅供 Java Recall Gateway 内部调用**——外部用户态
-Recall API 归属 Java（复用 Sa-Token + dataset/doc 归属校验），Python 只暴露内部 recall
-runtime，校验 Java 签发的短期内部 JWT(HS256)。内部鉴权与运行时细节见
+**面向浏览器前端**：前端凭 Java 签发的**短期 session token** 直连，绕过 Java 中转。
+两个端点拆分语义（LINK-131）——`/api/v1/rag/stream` 承接「召回 + LLM 流式生成」的完整 RAG
+问答（SSE），`/api/v1/recall` 是纯召回 JSON（一次性返回 hits，不生成）。运行时与会话鉴权细节见
 [docs/internals/recall_http_api.md](../internals/recall_http_api.md)。
 
-| Method | Path | 用途 | 鉴权 |
-| --- | --- | --- | --- |
-| `POST` | `/stream` | 多路召回，SSE 流式返回融合候选 | Header `Authorization: Bearer <internal-jwt>` |
+> 历史背景：早期 `/api/v1/recall/stream` 曾以 `recall` 之名承载完整 RAG 问答（SSE），语义已超出
+> 召回；LINK-131 拆为 `/api/v1/rag/stream`（RAG 问答流）与 `/api/v1/recall`（纯召回 JSON），旧
+> `/api/v1/recall/stream` 删除、不留兼容。更早还存在一条 Java Recall Gateway → Python 内部端点
+> `/api/v1/internal/recall/stream` 的网关链路（纯召回、无生成），已随直连方案废弃清理（LINK-122）。
 
-### POST /api/v1/internal/recall/stream
+| Method | Path | 用途 | 返回 | 鉴权 |
+| --- | --- | --- | --- | --- |
+| `POST` | `/api/v1/rag/stream` | 召回 + LLM 流式生成的完整 RAG 问答 | `text/event-stream` | Header `Authorization: Bearer <session-token>` |
+| `POST` | `/api/v1/recall` | 纯召回，一次性返回融合候选（预留实现） | `application/json` | Header `Authorization: Bearer <session-token>` |
 
-请求头：`Authorization: Bearer <internal-jwt>`、`Accept: text/event-stream`、
-`Content-Type: application/json`、可选 `X-Request-Id`（缺省时由 Python 生成并回写响应头）。
-
-请求体（仅以下三字段；出现 `top_k/sources/strict/include_content/doc_ids` 等非首版字段
-返回 `422`）：
-
-| 字段 | 类型 | 必填 | 说明 |
-| --- | --- | --- | --- |
-| `query` | string | 是 | 用户问题，不能为空或纯空白 |
-| `user_id` | int | 是 | 必须等于内部 JWT `sub`，否则 `403` |
-| `dataset_ids` | list[int] | 是 | 必须是 JWT `dataset_ids` 授权范围子集；JWT 授权范围为空表示全库授权 |
-
-`top_k` / `sources` / `strict` 由服务端配置控制（`RECALL_RESULT_LIMIT` /
-`RECALL_ENABLED_SOURCES` / `RECALL_STRICT_DEFAULT`），不接受请求覆盖。
-
-响应为 `text/event-stream`。握手前错误（鉴权 / 参数 / scope）返回非 2xx 的
-`{code, message, data}` JSON；握手后（pipeline 执行期）的成功与失败统一走 SSE 终态事件。
-
-成功终态事件 `recall_done`（一次性携带 RRF 融合后的最终候选，不含正文）：
-
-```text
-event: recall_done
-data: {"hits":[{"chunk_id":"1001","doc_id":10,"dataset_id":1,"fused_score":0.92,"scores":{"bm25":8.7,"sparse":0.76}}],"failed_sources":[]}
-```
-
-- `hits` 按 `fused_score` 降序，长度 ≤ `RECALL_RESULT_LIMIT`；`scores` 键集合等于已装配召回路。
-- `failed_sources` 表达「降级成功」（如 bm25 成功、sparse 失败）；空列表表示无失败路。
-
-失败终态事件 `error`（发送后关闭流，`message` 不含内部堆栈）：
-
-```text
-event: error
-data: {"code":"RECALL_ALL_SOURCES_FAILED","message":"all retrievers failed"}
-```
-
-错误码与 HTTP 状态见 [error_codes.md](error_codes.md#5-internal-recall-错误码)。
-
-## 7. 对外直连 Recall SSE API（LINK-40）
-
-路由前缀：`/api/v1/recall`。**面向浏览器前端**：前端凭 Java 签发的**短期 session token**
-直连，绕过 Java 中转。与 §6 内部端点是**两条并存**链路（本端点是新增可选路径）。运行时
-与会话鉴权细节见 [docs/internals/recall_http_api.md](../internals/recall_http_api.md)。
-
-| Method | Path | 用途 | 鉴权 |
-| --- | --- | --- | --- |
-| `POST` | `/stream` | 前端直连多路召回，SSE 流式返回融合候选 | Header `Authorization: Bearer <session-token>` |
-
-### POST /api/v1/recall/stream
+### POST /api/v1/rag/stream
 
 前端以 fetch 流式（`ReadableStream`）建连，**不使用** `EventSource`（无法设鉴权头）。
 请求头：`Authorization: Bearer <session-token>`、`Content-Type: application/json`、可选
 `Origin`（CORS）、`X-Request-Id`。
 
-session token 由 Java 签发、Python 用**独立密钥**验签（与内部端点密钥隔离）；claims：
+session token 由 Java 签发、Python 用**独立专用密钥**验签；claims：
 `iss=tolink-java`、`aud=tolink-rag-frontend`、`scope=recall:stream`、`sub`、`dataset_ids`、
 `exp`。**token 短期可复用**（只校验 `exp`，不做一次性 / 防重放 / 撤销）。
 
@@ -269,13 +215,18 @@ session token 由 Java 签发、Python 用**独立密钥**验签（与内部端�
 | `config_id` | int | 是 | 本次生成所用 CHAT 模型配置 id（前端选中、用户已配置）。缺失 `422`；不属本用户 / 非 CHAT / 已停用 / 不存在 → 召回前置失败 `RECALL_MODEL_CONFIG_MISSING` |
 | `dataset_ids` | list[int] | 否 | 本次查询的数据集**子集选择**，必须 ⊆ token 授权范围（超出 `403`）；省略/空 = 用 token 全量授权范围 |
 
-**身份只取 token claims**——body 不含 `user_id`，前端自报一律不信任。`top_k` / `sources` /
-`strict` 同内部端点，由服务端配置控制。模型按 `(user_id, config_id)` 解析、不回退系统配置。
+**身份只取 token claims**——body 不含 `user_id`，前端自报一律不信任。`top_k` / 召回分数阈值
+由服务端**按数据集配置**控制（LINK-148：`dataset_parse_config.recall_config` 的
+`recall_result_limit` / `sparse_score_threshold` / `dense_score_threshold`；多数据集混合取首个
+dataset，无数据集配置回退 `RECALL_RESULT_LIMIT` 等系统默认），`sources` / `strict` 仍由
+`RECALL_ENABLED_SOURCES` / `RECALL_STRICT_DEFAULT` 控制；均不接受请求覆盖。模型按
+`(user_id, config_id)` 解析、不回退系统配置。
 
 并发：按 `user_id` 限并发流数（`RECALL_SESSION_MAX_CONCURRENT`），超限返回 `429`。
 
-**召回即包含 LLM 答案生成**（与内部 Java 端点的纯召回不同）：召回前置先校验模型，融合命中后
-回填片段正文、按 token 预算（`RECALL_GENERATION_CONTEXT_TOKEN_BUDGET`）拼装上下文，用所选模型
+**召回即包含 rerank 精排 + LLM 答案生成**：召回前置先校验模型，RRF 融合命中后做
+**rerank 精排**，再回填片段正文、按 token 预算（数据集 `recall_config.recall_context_token_budget`，
+无数据集配置回退 `RECALL_GENERATION_CONTEXT_TOKEN_BUDGET`）拼装上下文，用所选模型
 流式生成答案。SSE 事件：
 
 ```
@@ -283,16 +234,63 @@ event: answer_delta
 data: {"text": "<增量 token>"}
 
 event: answer_done
-data: {"answer": "<完整答案>", "hits": [...], "failed_sources": []}
+data: {"answer": "<完整答案>", "hits": [...], "rerank_applied": true, "failed_sources": []}
 ```
 
 - `answer_delta`：流式增量 token，可 0 到多帧；
-- `answer_done`：生成结束终态，`hits` 为 RRF 融合候选（不含正文），发送后关闭流；
-- **空命中 / 全部片段缺正文**：不生成，发 `recall_done`（`hits` 可空），与 §6 一致；
+- `answer_done`：生成结束终态，`hits` 为 **rerank 精排后**的最终候选（不含正文），发送后关闭流；
+- **空命中 / 全部片段缺正文**：不生成，发 `recall_done`（`hits` 可空，不含正文，同带 `rerank_applied`）；
 - **生成阶段失败**：整请求失败，发 `error` `RECALL_GENERATION_FAILED`，不返回部分召回片段。
 
-握手鉴权 / scope / 限流 / 断连及失败终态（`RECALL_*`）与 §6 内部端点共享同一 runtime。
-错误码见 [error_codes.md](error_codes.md#6-对外直连-recall-错误码)。
+终态 `hits` 单项在 RRF 字段基础上补 rerank 字段：
+
+```json
+{"chunk_id": "...", "doc_id": 10, "dataset_id": 1, "fused_score": 0.033,
+ "scores": {"bm25": 10.16, "sparse": 0.05}, "rerank_score": 0.87, "rerank_rank": 1}
+```
+
+- `rerank_applied`（顶层 bool）：rerank 是否实际生效。**未配置 RERANK 模型 / 调用失败 / 返回不可用
+  一律降级**为 RRF 顺序候选（best-effort：rag/stream 不因 rerank 不可用而整条失败），此时该字段为
+  `false`，每个 hit 的 `rerank_score` / `rerank_rank` 为 `null`；
+- rerank **生效**时（`rerank_applied=true`）：`hits` 按 `rerank_rank` 升序（即 rerank 相关性降序），
+  长度 ≤ `RERANK_DEFAULT_TOP_N`；个别未被模型打分的候选 `rerank_score` / `rerank_rank` 可为 `null`，
+  排在已打分候选之后；
+- rerank **降级**时（`rerank_applied=false`）：`hits` 为 RRF 顺序（按 `fused_score` 降序），
+  截断到 `RERANK_DEFAULT_TOP_N`；
+- `fused_score` / `scores` 为 RRF 解释信息，原样保留；`scores` 键集合等于已装配召回路。
+
+`failed_sources` 表达「降级成功」（如 bm25 成功、sparse 失败），空列表表示无失败路。失败终态
+`error` 发送后关闭流，`message` 不含内部堆栈。错误码见
+[error_codes.md §5](error_codes.md#5-recall-错误码对外-rag-流--纯召回-json)。
 
 > CORS：本端点暴露给浏览器，生产环境必须把 `CORS_ORIGINS` 收敛为前端可信域名清单
 > （不可用 `*`）。
+
+### POST /api/v1/recall
+
+纯召回 JSON：一次性返回融合候选，**不调 CHAT 模型、不回填正文、不建立 SSE、不做并发限流**。
+当前阶段为接口预留实现，前端暂不真正接入。请求头：`Authorization: Bearer <session-token>`、
+`Content-Type: application/json`、可选 `Origin`（CORS）、`X-Request-Id`。
+
+会话鉴权与 `dataset_ids` scope 校验同 `/api/v1/rag/stream`。请求体（仅以下字段；出现 `config_id` /
+`user_id` / `top_k` / `sources` / `strict` / `doc_ids` 等任何未知字段返回 `422`）：
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `query` | string | 是 | 检索词，不能为空或纯空白 |
+| `dataset_ids` | list[int] | 否 | 数据集**子集选择**，必须 ⊆ token 授权范围（超出 `403`）；省略/空 = 用 token 全量授权范围 |
+
+**不要求 `config_id`**（纯召回不生成）。成功返回 `200`。**纯召回不经 rerank**，`hits` 为 RRF
+融合候选、**不含** `rerank_score` / `rerank_rank` 字段，也无顶层 `rerank_applied`（与 RAG 流的
+终态 `hits` 区别在此）：
+
+```json
+{ "hits": [ {"chunk_id": "...", "doc_id": 10, "dataset_id": 1, "fused_score": 0.92, "scores": {"bm25": 8.7, "sparse": 0.76}} ], "failed_sources": [] }
+```
+
+`hits` 按 `fused_score` 降序、不含正文，长度 ≤ 数据集 `recall_config.recall_result_limit`（无数据集
+配置回退 `RECALL_RESULT_LIMIT`）；`failed_sources` 表达降级。召回 `top_k` / 分数阈值的数据集级
+解析与 `/api/v1/rag/stream` 完全一致（LINK-148）。
+执行期错误走 **HTTP 状态码**（区别于 SSE error 帧）：无默认 EMBEDDING 配置 `422`、全路失败 `500`、
+召回超时 `504`、未预期异常 `500`，错误体为 `{code, message, data}`，`message` 不含内部堆栈。错误码见
+[error_codes.md §5](error_codes.md#5-recall-错误码对外-rag-流--纯召回-json)。

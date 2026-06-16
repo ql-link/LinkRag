@@ -13,8 +13,8 @@ def test_build_default_topic_specs_emits_dlt_siblings() -> None:
     dlt = [s for s in specs if s.name.endswith(".DLT")]
 
     # 业务 topic 与 DLT 同长度（每个业务 topic 对应一个 DLT）
-    assert len(business) == 4
-    assert len(dlt) == 4
+    assert len(business) == 3
+    assert len(dlt) == 3
 
     biz_by_name = {s.name: s for s in business}
     for d in dlt:

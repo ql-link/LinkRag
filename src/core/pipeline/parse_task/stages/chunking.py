@@ -13,8 +13,9 @@ from __future__ import annotations
 
 from loguru import logger
 
-from .._utils import duration_ms, now
-from ..constants import PARSE_TASK_STATUS_FAILED
+from src.core.dataset_config import DatasetConfigService
+
+from .._utils import coerce_optional_int, duration_ms, now
 from ..error_codes import ParseFailureCode, build_failure_reason
 from ..post_process.constants import POST_PROCESS_STAGE_CHUNKING
 from .base import Stage
@@ -35,7 +36,7 @@ class ChunkingStage(Stage):
     async def on_skip(self, ctx: StageContext) -> StageOutcome:
         """继承 SUCCESS：从 DB 反查完整 chunk truth set 喂给下游。
 
-        反查为空视为状态不一致——按历史语义落 ``vectorizing_failed`` + 通知 Java，
+        反查为空视为状态不一致——按历史语义落 ``vectorizing_failed`` 终态，
         返回 ``finalized`` 失败，编排器据此终止后续阶段。
         """
         chunks = await self._services.load_all_chunks_from_db(ctx.payload, ctx.db)
@@ -47,13 +48,6 @@ class ChunkingStage(Stage):
                 reason=_CHUNK_STATE_INCONSISTENT,
                 duration_ms=None,
                 finished_at=finished_at,
-            )
-            await self._notifier.send_or_raise(
-                ctx.payload,
-                PARSE_TASK_STATUS_FAILED,
-                finished_at,
-                _CHUNK_STATE_INCONSISTENT,
-                document_parsed_log_id=ctx.log_record.id,
             )
             return StageOutcome.failure(
                 _CHUNK_STATE_INCONSISTENT,
@@ -98,11 +92,15 @@ class ChunkingStage(Stage):
             }
 
         try:
+            # 数据集级分块配置：JSON 内容非法时 get_config 抛 ValidationError，由下方 except
+            # 归类为 PARSE_ENGINE_FAILED（reason 含字段名）；DB 故障已在 service 内降级为默认。
+            chunking_config = await self._load_chunking_config(ctx)
             chunks = await self._services.run_chunking(
                 ctx.parse_result["markdown"],
                 ctx.parse_result.get("parse_result"),
                 ctx.payload,
                 ctx.db,
+                chunking_config,
             )
         except Exception as exc:
             return StageOutcome.failure(
@@ -111,6 +109,16 @@ class ChunkingStage(Stage):
             )
         ctx.chunks = chunks
         return StageOutcome.success()
+
+    async def _load_chunking_config(self, ctx: StageContext):
+        """读取数据集级分块配置；``user_id`` / ``dataset_id`` 缺失时返回 ``None`` 走全默认。"""
+        payload = ctx.payload
+        user_id = coerce_optional_int(payload.user_id)
+        dataset_id = coerce_optional_int(payload.dataset_id)
+        if user_id is None or dataset_id is None:
+            return None
+        bundle = await DatasetConfigService().get_config(user_id, dataset_id, ctx.db)
+        return bundle.chunking
 
     async def _load_retry_markdown(self, ctx: StageContext) -> str | None:
         """重试从 CHUNKING 恢复时读回旧 markdown；坐标缺失或读取失败返回 None。

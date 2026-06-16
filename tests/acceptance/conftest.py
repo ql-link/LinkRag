@@ -197,22 +197,45 @@ def post_process_repository_stub():
     pipeline_row = SimpleNamespace(
         id=1,
         pipeline_status="PENDING",
+        cleaning_status="PENDING",
         chunking_status="PENDING",
         vectorizing_status="PENDING",
         es_indexing_status="PENDING",
         pretokenize_status="PENDING",
+        sparse_vectorizing_status="PENDING",
         started_at=None,
+        finished_at=None,
+        failed_stage=None,
+        recover_from_stage=None,
+        failure_reason=None,
+        cleaning_duration_ms=None,
+        chunking_duration_ms=None,
+        vectorizing_duration_ms=None,
+        es_indexing_duration_ms=None,
+        pretokenize_duration_ms=None,
+        sparse_vectorizing_duration_ms=None,
     )
     repo.get_by_log_id = AsyncMock(return_value=pipeline_row)
+    repo.mark_cleaning_started = AsyncMock()
+    repo.mark_cleaning_success = AsyncMock()
+    repo.mark_cleaning_failed = AsyncMock()
+    repo.mark_post_cleaning = AsyncMock()
+    repo.mark_chunking_started = AsyncMock()
     repo.mark_processing = AsyncMock()
     repo.mark_chunking_success = AsyncMock()
     repo.mark_chunking_failed = AsyncMock()
+    repo.mark_vectorizing_started = AsyncMock()
     repo.mark_vectorizing_success = AsyncMock()
     repo.mark_vectorizing_failed = AsyncMock()
+    repo.mark_pretokenize_started = AsyncMock()
     repo.mark_pretokenize_success = AsyncMock()
     repo.mark_pretokenize_failed = AsyncMock()
+    repo.mark_es_indexing_started = AsyncMock()
     repo.mark_es_success = AsyncMock()
     repo.mark_es_failed = AsyncMock()
+    repo.mark_sparse_vectorizing_started = AsyncMock()
+    repo.mark_sparse_vectorizing_success = AsyncMock()
+    repo.mark_sparse_vectorizing_failed = AsyncMock()
     return repo
 
 
@@ -251,7 +274,7 @@ def pipeline_factory(
 ):
     """组合一个可执行的 ParseTaskPipeline。
 
-    刻意避开真实 DB / MQ / 向量库：log_repository / guard / notifier 用桩件直通。
+    刻意避开真实 DB / MQ / 向量库：log_repository / guard 用桩件直通。
     具体业务 Scenario 通常只关心"是否调了 download_to_path / 是否清理临时文件 / 是否
     设置正确的 failure_reason"，不需要走完整后处理链路；因此把成功路径在 markdown 上传
     完成后立即短路掉。
@@ -295,6 +318,7 @@ def pipeline_factory(
             id=1,
             parse_started_at=None,
             parse_finished_at=None,
+            parse_duration_ms=None,
             task_status="CREATED",
         )
         log_repo = MagicMock()
@@ -316,8 +340,19 @@ def pipeline_factory(
         async def _mark_success(payload, log_record, db):
             log_record.task_status = "SUCCESS"
 
+        async def _mark_parse_finished(log_record, db):
+            log_record.parse_finished_at = "2026-05-19T00:00:00"
+            log_record.parse_duration_ms = log_record.parse_duration_ms or 1
+
+        async def _mark_parsed(payload, log_record, db):
+            log_record.task_status = "SUCCESS"
+            log_record.parse_finished_at = "2026-05-19T00:00:00"
+            log_record.parse_duration_ms = log_record.parse_duration_ms or 1
+
         log_repo.mark_failed = AsyncMock(side_effect=_mark_failed)
         log_repo.mark_success = AsyncMock(side_effect=_mark_success)
+        log_repo.mark_parse_finished = AsyncMock(side_effect=_mark_parse_finished)
+        log_repo.mark_parsed = AsyncMock(side_effect=_mark_parsed)
         pipeline._log_repository = log_repo
 
         # guard 桩：放行所有任务（acceptance 仅治理下载/解析路径，不复审 guard 行为）。
@@ -328,12 +363,6 @@ def pipeline_factory(
         ))
         pipeline._guard = guard
 
-        # notifier 桩：吞掉对外 MQ 通知。
-        notifier = MagicMock()
-        notifier.send_or_raise = AsyncMock()
-        notifier.send = AsyncMock()
-        pipeline._notifier = notifier
-
         # 关停 post-process 与 chunk 后续阶段：成功路径触达 markdown 上传后直接返回。
         # 用一个轻量补丁让 _run 在 mark_success 后早返，避免触达 chunk / 向量 / ES。
         from src.core.pipeline.parse_task import pipeline as pipeline_module
@@ -343,8 +372,8 @@ def pipeline_factory(
         async def _run_short_circuit(self, payload, db):
             return await original_run(self, payload, db)
 
-        # 不打补丁——_run 会自然走到 post_process_repository 桩件（已 AsyncMock no-op）
-        # 与 notifier 桩件（已 AsyncMock no-op），最后返回 SUCCESS / FAILED。
+        # 不打补丁——_run 会自然走到 post_process_repository 桩件（已 AsyncMock no-op），
+        # 最后返回 SUCCESS / FAILED。
         return pipeline, session
 
     return _factory

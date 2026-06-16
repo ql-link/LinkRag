@@ -26,7 +26,7 @@ from src.core.pipeline.recall.models import (
     RecallResponse,
     RetrieverHit,
 )
-from src.core.pipeline.recall.protocols import Retriever
+from src.core.pipeline.recall.protocols import SOURCE_DENSE, SOURCE_SPARSE, Retriever
 
 
 class RecallPipeline:
@@ -123,6 +123,19 @@ class RecallPipeline:
         if request.top_k is None or request.top_k <= 0:
             raise RecallValidationError("top_k must be a positive int")
 
+    @staticmethod
+    def _score_threshold_override_for(source: str, request: RecallRequest) -> float | None:
+        """按 source 取该路的数据集级分数阈值覆盖。
+
+        sparse / dense 各取对应字段；bm25 等其余路无分数阈值概念，返回 ``None``（retriever
+        侧也会忽略该参数）。
+        """
+        if source == SOURCE_SPARSE:
+            return request.sparse_score_threshold_override
+        if source == SOURCE_DENSE:
+            return request.dense_score_threshold_override
+        return None
+
     async def _run_parallel(
         self,
         request: RecallRequest,
@@ -135,6 +148,7 @@ class RecallPipeline:
                 request.doc_ids,
                 user_id=request.user_id,
                 top_k=request.top_k,
+                score_threshold_override=self._score_threshold_override_for(r.source, request),
             )
             for r in self._retrievers
         ]
@@ -158,6 +172,9 @@ class RecallPipeline:
                     request.doc_ids,
                     user_id=request.user_id,
                     top_k=request.top_k,
+                    score_threshold_override=self._score_threshold_override_for(
+                        retriever.source, request
+                    ),
                 )
                 results[retriever.source] = hits
             except Exception as exc:
