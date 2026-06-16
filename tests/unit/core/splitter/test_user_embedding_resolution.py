@@ -92,6 +92,7 @@ async def test_resolve_user_embedding_client_uses_user_config(monkeypatch):
         monkeypatch,
         config={
             "provider_type": "qwen",
+            "protocol": "openai",
             "api_key": "ENC",
             "api_base_url": "https://user.example/v1",
             "model_name": "user-embed-model",
@@ -119,6 +120,7 @@ async def test_resolve_user_chunk_embedding_pipeline_uses_user_model_and_batch_c
         monkeypatch,
         config={
             "provider_type": "qwen",
+            "protocol": "openai",
             "api_key": "ENC",
             "api_base_url": None,
             # DashScope text-embedding-v4 已知单次上限 10

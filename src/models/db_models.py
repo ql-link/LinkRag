@@ -39,7 +39,10 @@ class SystemProviderDB(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     provider_type: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
     provider_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    # 默认 API 地址（模板值，不参与运行决策；运行入口以模型能力层事实为准）
     api_base_url: Mapped[str] = mapped_column(String(512), nullable=False)
+    # 默认协议（模板值，新增模型能力时预填用，不参与运行决策）
+    default_protocol: Mapped[str] = mapped_column(String(32), default="openai", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     priority: Mapped[int] = mapped_column(Integer, default=50, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
@@ -73,6 +76,10 @@ class ProviderModelDB(Base):
     )
     model_name: Mapped[str] = mapped_column(String(128), nullable=False)
     capability: Mapped[str] = mapped_column(String(32), nullable=False)
+    # 调用协议（事实来源；Java 服务层保证非空，待历史数据回填后收紧 NOT NULL）
+    protocol: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # 调用入口完整端点 URL（事实来源；Python adapter 直打；google 例外存 base）
+    api_base_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
@@ -108,6 +115,12 @@ class SystemPresetDB(Base):
     )
     model_name: Mapped[str] = mapped_column(String(128), nullable=False)
     capability: Mapped[str] = mapped_column(String(32), nullable=False)
+    # 厂商类型（与用户配置对齐，镜像免 join）
+    provider_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # 调用协议（创建预设时复制自模型能力层）
+    protocol: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    # 调用入口完整端点 URL（复制自模型能力层）
+    api_base_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     api_key: Mapped[str] = mapped_column(String(512), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
@@ -147,7 +160,10 @@ class UserLLMConfigDB(Base):
     )
     provider_type: Mapped[str] = mapped_column(String(32), nullable=False)
     api_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    # 实际生效地址：复制自模型能力层事实（不 fallback 厂商默认）
     api_base_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
+    # 调用协议快照：复制自模型能力层，下游按 protocol+capability 选 adapter
+    protocol: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     model_name: Mapped[str] = mapped_column(String(128), nullable=False)
     capability: Mapped[str] = mapped_column(String(32), default="CHAT", nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)

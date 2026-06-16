@@ -12,12 +12,10 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from src.core.llm.providers.deepseek import DeepSeekProvider
-from src.core.llm.providers.glm import GLMProvider
-from src.core.llm.providers.openai import OpenAIProvider
-from src.core.llm.providers.qwen import QwenProvider
+from src.core.llm.providers.openai import OpenAICompatibleProvider
 
-POST_PROVIDERS = [OpenAIProvider, QwenProvider, GLMProvider, DeepSeekProvider]
+# 坍缩后 openai 兼容厂商共用一个 adapter，``_post`` 5xx 重试逻辑只需覆盖它一处。
+POST_PROVIDERS = [OpenAICompatibleProvider]
 
 
 class _FakeResponse:

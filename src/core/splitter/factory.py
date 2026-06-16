@@ -104,10 +104,13 @@ def create_system_embedding_client() -> Any:
     if not settings.SYSTEM_LLM_API_KEY:
         raise ValueError("SYSTEM_LLM_API_KEY is not configured")
 
+    # 系统级 LLM 固定 openai 兼容；env 配的是 base，补 /embeddings 成完整端点 URL。
+    _base = (settings.SYSTEM_LLM_API_BASE or "").rstrip("/")
     embedder = ModelFactory().create_client(
+        protocol="openai",
         provider_type=settings.SYSTEM_LLM_PROVIDER,
         api_key=settings.SYSTEM_LLM_API_KEY,
-        api_base_url=settings.SYSTEM_LLM_API_BASE,
+        api_base_url=f"{_base}/embeddings" if _base else settings.SYSTEM_LLM_API_BASE,
         model_name=settings.SYSTEM_LLM_MODEL_EMBEDDING,
         timeout_ms=settings.MARKDOWN_PARSER_LLM_TIMEOUT_MS,
     )

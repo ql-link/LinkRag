@@ -71,6 +71,36 @@ class UserModelConfigMissingError(ConfigurationException):
         )
 
 
+class ProtocolRequiredError(ConfigurationException):
+    """用户配置缺少必填的 protocol 字段。
+
+    协议化分发以 ``protocol`` 为必填事实列：运行期读到空 / NULL 直接 fail fast，
+    **不按 provider_type 兜底推导**（与三层语义"绝不 fallback"一致）。存量缺
+    protocol 的行应由运维上线前清理 / 回填。对应 acceptance 的 ``PROTOCOL_REQUIRED``。
+    """
+
+    def __init__(self, capability: str | None = None, user_id: int | None = None) -> None:
+        self.capability = capability
+        self.user_id = user_id
+        super().__init__("LLM config missing required 'protocol'")
+
+
+class UnsupportedProtocolCapabilityError(ConfigurationException):
+    """(protocol, capability) 组合本期未实现。
+
+    执行端按 ``protocol`` 选 adapter、按 ``capability`` 选能力分支；请求的 capability
+    不在该 protocol 的能力集合内时抛出，不静默降级、不回退猜测。对应 acceptance 的
+    ``UNSUPPORTED_PROTOCOL_CAPABILITY``。
+    """
+
+    def __init__(self, protocol: str, capability: str) -> None:
+        self.protocol = protocol
+        self.capability = capability
+        super().__init__(
+            f"protocol '{protocol}' does not support capability '{capability}'"
+        )
+
+
 class InvalidConfigError(ConfigurationException):
     """无效配置"""
     pass

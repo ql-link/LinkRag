@@ -21,7 +21,11 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from src.config import settings
 from src.core.llm.encryption import decrypt_api_key
-from src.core.llm.exceptions import UserModelConfigMissingError
+from src.core.llm.exceptions import (
+    ProtocolRequiredError,
+    UnsupportedProtocolCapabilityError,
+    UserModelConfigMissingError,
+)
 from src.core.llm.factory import ModelFactory
 from src.core.llm.interfaces import CapabilityType
 
@@ -56,6 +60,7 @@ class ResolvedModel:
     model_name: Optional[str]
     provider_type: str
     source: str  # "user" | "system"
+    protocol: Optional[str] = None  # 实际分发用的协议（可追溯）
 
 
 def build_provider_from_config(
@@ -93,27 +98,33 @@ def build_provider_from_config(
         raw_key = config.get("api_key", "")
         api_key = decrypt_api_key(raw_key) if raw_key else ""
 
+    # protocol 必填：缺失即 fail fast，不按 provider_type 兜底推导（三层语义"绝不 fallback"）。
+    protocol = (config.get("protocol") or "").strip()
+    if not protocol:
+        raise ProtocolRequiredError(capability=capability)
+
     provider_type = normalize_provider_type(config.get("provider_type"))
     model_name = override_model or config.get("model_name") or fallback_model
 
+    # 按 protocol 经分发中台造 adapter；provider_type 仅作身份透传，不参与分发。
     provider = ModelFactory().create_client(
-        provider_type=provider_type,
+        protocol=protocol,
+        provider_type=provider_type or None,
         api_key=api_key or "",
         api_base_url=config.get("api_base_url"),
         model_name=model_name,
         timeout_ms=settings.MARKDOWN_PARSER_LLM_TIMEOUT_MS,
     )
+    # (protocol, capability) 门禁：该协议不支持此能力即报错，不静默降级、不猜测。
     if not provider.has_capability(capability_type):
-        raise ValueError(
-            f"Configured provider '{provider_type}' does not support "
-            f"capability '{capability_type.value}'"
-        )
+        raise UnsupportedProtocolCapabilityError(protocol, capability)
     source = "system" if config.get("is_system_fallback") else "user"
     return ResolvedModel(
         provider=provider,
         model_name=model_name,
         provider_type=provider_type,
         source=source,
+        protocol=protocol,
     )
 
 

@@ -14,8 +14,8 @@ from src.core.pipeline.parse_task import temp_workspace
 from src.core.parse_task_service import ParseTaskService
 from src.services.storage.factory import StorageFactory
 
-SOURCE_BUCKET = settings.MINIO_BUCKET_NAME
-TARGET_BUCKET = settings.MINIO_BUCKET_NAME
+SOURCE_BUCKET = settings.MINIO_PRIVATE_BUCKET
+TARGET_BUCKET = settings.MINIO_PRIVATE_BUCKET
 
 PDF_PARSE_CASES = [
     pytest.param(
