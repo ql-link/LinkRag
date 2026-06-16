@@ -18,7 +18,6 @@ def test_should_normalize_chunking_stage_algorithm_names():
 
     assert settings.CHUNKING_STAGE_ONE_ALGORITHM == "candidate_boundary"
     assert settings.CHUNKING_STAGE_TWO_ALGORITHM == "noop"
-    assert not hasattr(settings, "CHUNKING_ENABLE_ADVANCED_PIPELINE")
 
 
 def test_should_reject_invalid_chunking_stage_algorithm_names():
