@@ -134,7 +134,7 @@ backend.search_sparse_chunks(query, user_id, set_id, doc_id, top_k, score_thresh
 | `SPARSE_VECTOR_MODEL_CACHE_DIR` / `SPARSE_VECTOR_LOCAL_FILES_ONLY` | — | 本地模型缓存与离线开关 |
 | `SPARSE_VECTOR_DEVICE` | `auto` | 推理设备（auto/cpu/cuda…） |
 | `SPARSE_VECTOR_BATCH_SIZE` / `SPARSE_VECTOR_MAX_LENGTH` | `12` / `8192` | 本地推理批大小与最大 token 长度 |
-| `SPARSE_VECTOR_HTTP_ENDPOINT` / `SPARSE_VECTOR_HTTP_TIMEOUT` / `SPARSE_VECTOR_HTTP_BATCH_SIZE` | — | `bge_m3_http` provider 专用 |
+| `SPARSE_VECTOR_HTTP_ENDPOINT` / `SPARSE_VECTOR_HTTP_TIMEOUT` / `SPARSE_VECTOR_HTTP_BATCH_SIZE` | — | `bge_m3_http` provider 专用；`SPARSE_VECTOR_HTTP_TIMEOUT` 是单次 `/encode` 的小请求基线，长文本会按本次请求总字符数动态放宽 |
 | `BGE_M3_SERVICE_URL` / `BGE_M3_TIMEOUT_SECONDS` / `BGE_M3_MAX_RETRIES` | — / `30` / `3` | `remote_bge_m3` provider 专用 |
 | `SPARSE_VECTOR_QDRANT_VECTOR_NAME` | `sparse_text` | Qdrant named sparse vector 名 |
 | `SPARSE_VECTOR_TOP_K` / `SPARSE_VECTOR_MIN_WEIGHT` | `256` / `0.0` | 输出清洗：保留非零 token 数上限、低权重阈值 |
