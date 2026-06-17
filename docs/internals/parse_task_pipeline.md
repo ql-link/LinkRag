@@ -197,6 +197,8 @@ StagePipeline.run（唯一的 6 阶段编排）
 
 任一阶段失败即终态：只把结果写入 `document_parse_pipeline`（阶段状态 FAILED、`failed_stage`、`recover_from_stage`、`failure_reason`、`finished_at`、耗时）。终态写 DB 即为权威，前端轮询读取。系统**不计数、不设上限、不写 retry_exhausted、不自动重试**。
 
+> **耗时计算的时区归一化（issue #164）**：`_utils.duration_ms()` 对 `started_at` / `finished_at` 统一做 UTC 归一化（naive 视为 UTC、aware 换算到 UTC）后再相减。`now()` 返回 tz-aware UTC，而 MySQL `DATETIME` 经 SQLAlchemy 读出为 naive；中断任务收敛（`handle_duplicate` → `_mark_incomplete_pipeline_failed`，`started_at` 来自 DB）若直接相减会抛 `TypeError: can't subtract offset-naive and offset-aware datetimes`，导致非终态 `PROCESSING` 无法收敛为 `FAILED` 而被投递到 `tolink.rag.parse_task.DLT`。归一化后该路径稳定收敛。注意：parse_task 相关时间字段均由应用层 UTC 写入（`now()` / `utc_now`），故 naive 语义即 UTC；**勿**将 DB 端 `func.now()`（服务器本地时区）写入的字段交给 `duration_ms`。
+
 - **文档清洗失败**：`mark_cleaning_failed` 落 `cleaning_status=FAILED` + `failed_stage=CLEANING` + `recover_from_stage=CLEANING`。`failure_reason` 含前缀 `INVALID_TASK_CONTEXT:` / `SOURCE_FILE_NOT_FOUND:` / `PARSE_ENGINE_FAILED:` / `PARSED_FILE_UPLOAD_FAILED:` / `INTERRUPTED_TASK:` / `INTERNAL_UNKNOWN_ERROR:` / `PARSING_FAILED:` 等。
 - **预分词失败**（`StageServices.build_pretokenize_plan` 捕获 `PreprocessorError`，或空 plan 但仍有未完成 chunk）：`PretokenizeStage` 落 `mark_pretokenize_failed`（`pretokenize_status=FAILED` + `recover_from_stage=PRETOKENIZE`）；**绝不写任何 chunk es_status**（文件级 all-or-nothing）。
 - **chunking 写入失败**：`_persist_chunk_facts` 回滚整批 chunk 真值，`mark_chunking_failed` 落 `chunking_status=FAILED` + `recover_from_stage=CHUNKING`，不进入 vectorizing。该终态可由「重试从 CHUNKING 恢复」链路（读回旧 markdown 重新分片，见 §重试分支）链式恢复，无需重新上传源文件。
