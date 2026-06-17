@@ -3,11 +3,14 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from src.core.markdown_parser import ElementType, MarkdownElement
+from src.core.markdown_parser.models import (
+    META_TABLE_SUMMARY,
+    META_VISUAL_DESCRIPTION,
+)
 
 from .stage_models import ElementView
 
@@ -147,9 +150,6 @@ class DerivedElementChunkBuilder:
     Returns:
         None.
     """
-
-    IMAGE_DESCRIPTION_RE = re.compile(r"\[视觉描述:\s*(.*?)\s*\]", re.DOTALL)
-    TABLE_SUMMARY_RE = re.compile(r"\[表格总结:\s*(.*?)\s*\]", re.DOTALL)
 
     def __init__(
         self,
@@ -291,53 +291,57 @@ class DerivedElementChunkBuilder:
         return ""
 
     @classmethod
-    def _extract_image_description(cls, content: str, element: MarkdownElement) -> str:
+    def _extract_image_description(cls, element: MarkdownElement) -> str:
         """
-            从图片元素内容或 metadata 中提取图片描述。
+            读取图片元素的视觉描述（结构化字段）。
+
+            描述由 markdown_parser 解码归位写入 ``metadata.visual_description``；
+            字段缺失（增强未开启等）时回退 alt，再缺则回退默认说明。
 
         Args:
-            content: 图片元素原始内容。
             element: 图片 Markdown 元素。
 
         Returns:
-            str: 图片描述；缺失时返回默认说明。
+            str: 图片描述；缺失时返回 alt 或默认说明。
         """
-        match = cls.IMAGE_DESCRIPTION_RE.search(content)
-        if match:
-            return match.group(1).strip()
+        desc = element.metadata.get(META_VISUAL_DESCRIPTION)
+        if desc:
+            return str(desc).strip()
         return str(element.metadata.get("alt") or "").strip() or "未提供图片说明。"
 
     @classmethod
-    def _extract_table_summary(cls, content: str) -> str:
+    def _extract_table_summary(cls, element: MarkdownElement) -> str:
         """
-            从表格元素内容中提取表格总结。
+            读取表格元素的总结（结构化字段）。
+
+            总结由 markdown_parser 解码归位写入 ``metadata.table_summary``；
+            字段缺失时回退默认说明。
 
         Args:
-            content: 表格元素原始内容。
+            element: 表格 Markdown 元素。
 
         Returns:
             str: 表格总结；缺失时返回默认说明。
         """
-        match = cls.TABLE_SUMMARY_RE.search(content)
-        if match:
-            return match.group(1).strip()
+        summary = element.metadata.get(META_TABLE_SUMMARY)
+        if summary:
+            return str(summary).strip()
         return "未提供表格总结。"
 
     @classmethod
     def _extract_raw_table(cls, content: str) -> str:
         """
-            去除表格总结块，保留原始表格文本。
+            返回原始表格文本。
+
+            描述已解码为字段、不再内联在 content 中，故 content 即原始表格。
 
         Args:
-            content: 表格元素原始内容。
+            content: 表格元素内容。
 
         Returns:
             str: 原始表格文本。
         """
-        match = cls.TABLE_SUMMARY_RE.search(content)
-        if not match:
-            return content.strip()
-        return content[: match.start()].strip()
+        return content.strip()
 
     @staticmethod
     def _table_rows(raw_table: str) -> int:
@@ -472,7 +476,7 @@ class DerivedElementChunkBuilder:
             tuple[str, DerivedElementChunkDraft]: mixed chunk 引用文本与图片派生草稿。
         """
         original_ref = self._first_nonempty_line(element.content)
-        description = self._extract_image_description(element.content, element)
+        description = self._extract_image_description(element)
 
         mixed_content = f"[图片引用: {element_id}]\n图片说明：{description}"
         content_parts = [
@@ -532,7 +536,7 @@ class DerivedElementChunkBuilder:
             以及表格派生草稿。
         """
         raw_table = self._extract_raw_table(element.content)
-        summary = self._extract_table_summary(element.content)
+        summary = self._extract_table_summary(element)
         inline_in_mixed = self._is_inline_table(raw_table)
 
         if inline_in_mixed:
@@ -688,7 +692,7 @@ class DerivedElementChunkBuilder:
 
             raw_table = ""
             if element.type == ElementType.IMAGE:
-                semantic_text = self._extract_image_description(element.content, element)
+                semantic_text = self._extract_image_description(element)
                 mixed_content, derived_chunk = self._build_image_chunks(
                     element=element,
                     element_id=element_id,
@@ -700,7 +704,7 @@ class DerivedElementChunkBuilder:
                 )
             else:
                 raw_table = self._extract_raw_table(element.content)
-                semantic_text = self._extract_table_summary(element.content)
+                semantic_text = self._extract_table_summary(element)
                 mixed_content, derived_chunk = self._build_table_chunks(
                     element=element,
                     element_id=element_id,

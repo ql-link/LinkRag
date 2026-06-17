@@ -10,6 +10,11 @@ from src.core.markdown_parser import (
     TableDescriber,
     VisionClient,
 )
+from src.core.markdown_parser.models import (
+    INLINE_IMAGE_DESCRIPTION_PREFIX,
+    META_TABLE_SUMMARY,
+    META_VISUAL_DESCRIPTION,
+)
 from src.core.splitter import (
     ChunkEmbeddingPipeline,
     ChunkingEngine,
@@ -163,22 +168,35 @@ async def test_markdown_parser_to_splitter_should_cover_all_markdown_types_and_g
     assert len(table_client.calls) == 1
     assert len(vision_client.calls) == 1
 
+    # 复刻 ParseTaskService.aprocess 的真实链路：增强(编码) -> to_markdown -> 重新 parse(解码)。
+    # 这一步是本测试与生产对齐的关键——旧版直接把编码后的 parse_result 喂给 splitter，
+    # 绕过了重解析，掩盖了"描述与图片/表格失联"的缺陷。
+    final_markdown = parse_result.to_markdown()
+    parse_result = parser.parse(final_markdown, source_file=str(FIXTURE_PATH))
+
+    # 解码后：独立图/表描述归位为结构化字段，内联图描述改写为干净段落，content 不再含标记。
     assert any(
-        "A compact architecture sketch" in element.content
+        element.type == ElementType.PARAGRAPH
+        and element.content
+        == f"{INLINE_IMAGE_DESCRIPTION_PREFIX}A compact architecture sketch that highlights parser, splitter, and vector stages."
         for element in parse_result.elements
-        if element.type == ElementType.PARAGRAPH
     )
     assert any(
-        "A dashboard screenshot with cards, charts, and highlighted retrieval metrics."
-        in element.content
+        element.metadata.get(META_VISUAL_DESCRIPTION)
+        == "A dashboard screenshot with cards, charts, and highlighted retrieval metrics."
         for element in parse_result.elements
         if element.type == ElementType.IMAGE
     )
     assert any(
-        "The metrics table shows healthy recall, stable latency, and broad coverage for the pipeline."
-        in element.content
+        element.metadata.get(META_TABLE_SUMMARY)
+        == "The metrics table shows healthy recall, stable latency, and broad coverage for the pipeline."
         for element in parse_result.elements
         if element.type == ElementType.TABLE
+    )
+    # 无残留标记：解码后任何元素 content 都不含编码标记。
+    assert all(
+        "[视觉描述" not in element.content and "[表格总结" not in element.content
+        for element in parse_result.elements
     )
 
     tokenizer = MockWordTokenizer()

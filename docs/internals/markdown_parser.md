@@ -37,14 +37,16 @@ ParseResult
 
 | 组件 | 文件 | 职责 |
 | --- | --- | --- |
-| `MarkdownParser` | `parser.py` | 将 Markdown 文本解析为 `ParseResult` |
+| `MarkdownParser` | `parser.py` | 将 Markdown 文本解析为 `ParseResult`；解码增强描述标记归位为结构化字段 |
 | `MarkdownScanner` | `scanner.py` | 逐行识别标题、段落、表格、图片、代码块等元素 |
 | `ImageExtractor` | `image_extractor.py` | 提取图片 URL、行号和 alt 文本 |
-| `ParseResult` | `models.py` | 结构化解析结果，包含 `elements/tables/images/source_file` |
+| `ParseResult` | `models.py` | 结构化解析结果，包含 `elements/tables/images/source_file`；`to_markdown()` 把描述字段重新编码为标记（与解码对称） |
 | `MarkdownEnhancementOrchestrator` | `orchestrator.py` | 按配置触发表格和图片增强 |
-| `TableDescriber` | `llm_integration.py` | 将表格摘要合并回 `ParseResult` |
-| `ImageDescriber` | `llm_integration.py` | 将图片视觉描述合并回 `ParseResult` |
+| `TableDescriber` | `llm_integration.py` | 把表格总结**编码**为标记 `[表格总结: …]` 写入对应元素 content |
+| `ImageDescriber` | `llm_integration.py` | 把图片视觉描述**编码**为标记 `[视觉描述\|src=<url>: …]` 写入 content |
 | `ProviderTableClient` / `ProviderVisionClient` | `provider_clients.py` | 调用系统 LLM Provider 完成增强 |
+
+> **增强描述的编解码（对称）**：增强阶段把图片/表格描述以文本标记写入 `content`（编码），使其能随 markdown 持久化并扛过 `to_markdown() → 重新 parse()` 的字符串往返；`MarkdownParser.parse()` 解析时再把标记**解码**为结构化字段——独立图写 `metadata.visual_description`、表格写 `metadata.table_summary`，并从 `content` 剥离标记；内联图（无独立元素）的描述改写为干净的可读段落 `图片说明：…`。下游（splitter）只读结构化字段，不再从文本正则提取。`src` 必须匹配文档内真实图片 URL，正文巧合的同形文本不会被误解码。
 
 ## 3. 元素模型
 
@@ -147,6 +149,7 @@ chunks = ChunkingEngine().process_parse_result(result)
 
 - 标题、段落、列表、代码块、表格、图片和公式块识别。
 - 行号和 `heading_trail` 传递。
-- 表格摘要和图片视觉描述合并。
+- 表格总结/图片视觉描述的编码与解码归位（独立图/表写结构化字段、内联图改写为可读段落）。
+- 解码的防误判（`src` 必须匹配真实图片 URL）与幂等（重复解析不重复/丢失字段）。
 - 图片视觉增强的并发上限、失败隔离和内存图片优先级。
 - 增强失败时的降级行为。
