@@ -144,7 +144,7 @@ class TestConfigReaderServiceIntegration:
                         1,
                         test_ids["provider_id"],
                         "gpt-4",
-                        "OCR",
+                        "SPARSE_EMBEDDING",
                         1,
                     ),
                 )
@@ -389,7 +389,7 @@ class TestConfigReaderServiceIntegration:
         assert isinstance(models, dict)
         assert "gpt-4" in models
         assert "CHAT" in models["gpt-4"]
-        assert "OCR" in models["gpt-4"]
+        assert "SPARSE_EMBEDDING" in models["gpt-4"]
 
     @pytest.mark.asyncio
     async def test_GetSystemProviderByType_Should_Return_Single_Provider(

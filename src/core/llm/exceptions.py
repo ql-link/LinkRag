@@ -60,7 +60,7 @@ class UserModelConfigMissingError(ConfigurationException):
     统一用户模型解析（``user_model_resolver``）在「未启用系统兜底且用户无该能力默认配置」时
     抛出。各领域调用点可在边界捕获后重抛自己的领域异常（如 ``DenseEmbeddingConfigMissingError`` /
     ``LLMConfigMissingError``）以保留既有失败码映射。``capability`` 为配置表能力字符串
-    （CHAT / EMBEDDING / RERANK / VISION / OCR）。
+    （CHAT / EMBEDDING / SPARSE_EMBEDDING / RERANK / VISION）。
     """
 
     def __init__(self, capability: str, user_id: int) -> None:
@@ -93,12 +93,32 @@ class UnsupportedProtocolCapabilityError(ConfigurationException):
     ``UNSUPPORTED_PROTOCOL_CAPABILITY``。
     """
 
-    def __init__(self, protocol: str, capability: str) -> None:
+    def __init__(
+        self,
+        protocol: str,
+        capability: str,
+        *,
+        model_name: str | None = None,
+        config_id: int | str | None = None,
+        supported_combinations: list[str] | None = None,
+    ) -> None:
         self.protocol = protocol
         self.capability = capability
-        super().__init__(
-            f"protocol '{protocol}' does not support capability '{capability}'"
-        )
+        self.model_name = model_name
+        self.config_id = config_id
+        self.supported_combinations = supported_combinations or []
+
+        details = [
+            f"protocol='{protocol}'",
+            f"capability='{capability}'",
+        ]
+        if model_name is not None:
+            details.append(f"model_name='{model_name}'")
+        if config_id is not None:
+            details.append(f"config_id='{config_id}'")
+        if self.supported_combinations:
+            details.append("supported=" + ",".join(self.supported_combinations))
+        super().__init__("Unsupported LLM protocol/capability combination: " + "; ".join(details))
 
 
 class InvalidConfigError(ConfigurationException):

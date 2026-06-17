@@ -135,7 +135,7 @@ parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权�
 | `POST` | `/generate/stream` | SSE 流式文本生成 | `GenerateRequest` |
 | `POST` | `/embed` | 文本向量化 | `EmbedRequest` |
 | `POST` | `/rerank` | 文档重排 | `RerankRequest` |
-| `POST` | `/ocr` | 图片 OCR | `OcrRequest` |
+| `POST` | `/ocr` | 图片文字提取（兼容旧 endpoint，运行时读取 `VISION` 配置，不读取 `OCR` capability） | `OcrRequest` |
 
 `GenerateRequest`：
 

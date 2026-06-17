@@ -15,6 +15,8 @@
 
 它明确不做：dense 编码、Qdrant collection/point 结构定义（结构见 [schemas/qdrant.md](../api/schemas/qdrant.md)）、query 改写/清洗、跨路融合（属于召回 Pipeline）。
 
+与 LLM 配置能力的关系：Java/Web 新契约中已有 `SPARSE_EMBEDDING` capability，Python 端可通过 `ConfigReaderService` / `user_model_resolver` 读取并按 `(protocol, capability)` 做 adapter 门禁。但本模块当前仍只接受 BGE-M3 lexical weights 形态（`token_id -> weight`），写入和查询必须共用同一权重空间。因此本期没有把厂商 `SPARSE_EMBEDDING` 默认模型直接接入写入侧 `SparseVectorService` 或查询侧 `vectorize_query`；接入前需要先确认 provider 响应 schema 能稳定转换为 `SparseVector(indices, values)`。
+
 ---
 
 ## 2. 包结构
