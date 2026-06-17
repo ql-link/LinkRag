@@ -127,7 +127,7 @@ ORM：[`UserLLMConfigDB`](../../../src/models/db_models.py)
 | `api_base_url` | VARCHAR(512) | 实际生效地址：复制自模型能力层事实（不 fallback 厂商默认） |
 | `protocol` | VARCHAR(32) | 调用协议快照：复制自模型能力层，下游按 `protocol`+`capability` 选 adapter |
 | `model_name` | VARCHAR(128) | 具体模型名 |
-| `capability` | VARCHAR(32) | `CHAT` / `EMBEDDING` / `RERANK` / `OCR` / `VISION` 等，默认 `CHAT` |
+| `capability` | VARCHAR(32) | `CHAT` / `EMBEDDING` / `SPARSE_EMBEDDING` / `RERANK` / `VISION` 等，默认 `CHAT`；`OCR` 不再作为独立 LLM capability |
 | `is_active` | BOOLEAN | 模型启停 + 生效过滤 |
 | `is_default` | BOOLEAN | 该能力是否生效 |
 | `is_system_preset` | BOOLEAN | 是否系统预设行 |

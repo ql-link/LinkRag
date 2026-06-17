@@ -36,13 +36,16 @@ if TYPE_CHECKING:
     from src.services.config_reader_service import ConfigReaderService
 
 # 配置表能力字符串 → CapabilityType（用于 has_capability 校验）。
-# CHAT 对应文本生成 TEXT；OCR 复用 VISION 能力。
+# CHAT 对应文本生成 TEXT；OCR 已不再是独立 LLM capability。
 _CAPABILITY_TO_TYPE: dict[str, CapabilityType] = {
     "CHAT": CapabilityType.TEXT,
     "EMBEDDING": CapabilityType.EMBEDDING,
+    "SPARSE_EMBEDDING": CapabilityType.SPARSE_EMBEDDING,
     "RERANK": CapabilityType.RERANK,
     "VISION": CapabilityType.VISION,
-    "OCR": CapabilityType.VISION,
+}
+_TYPE_TO_CAPABILITY: dict[CapabilityType, str] = {
+    value: key for key, value in _CAPABILITY_TO_TYPE.items()
 }
 
 
@@ -77,7 +80,8 @@ def build_provider_from_config(
     Args:
         config: 配置字典，形如 ``ConfigReaderService`` 返回结构（含 provider_type /
             api_key / api_base_url / model_name；系统兜底配置带 ``is_system_fallback``）。
-        capability: 能力字符串（CHAT/EMBEDDING/RERANK/VISION/OCR），用于 ``has_capability`` 校验。
+        capability: 能力字符串（CHAT/EMBEDDING/SPARSE_EMBEDDING/RERANK/VISION），
+            用于 ``has_capability`` 校验。
         fallback_model: 配置未指定 ``model_name`` 时的回退模型名。
         override_model: 调用方显式指定、优先级最高的模型名（如 ``/llm`` 路由的 ``request.model``）。
 
@@ -85,7 +89,8 @@ def build_provider_from_config(
         ResolvedModel: 含可用 Provider、实际模型名、provider_type 与来源。
 
     Raises:
-        ValueError: 能力字符串未知，或所选 provider 不支持该能力。
+        ValueError: 能力字符串未知。
+        UnsupportedProtocolCapabilityError: 所选 protocol 不支持该能力。
     """
     capability_type = _CAPABILITY_TO_TYPE.get(capability.upper())
     if capability_type is None:
@@ -117,7 +122,17 @@ def build_provider_from_config(
     )
     # (protocol, capability) 门禁：该协议不支持此能力即报错，不静默降级、不猜测。
     if not provider.has_capability(capability_type):
-        raise UnsupportedProtocolCapabilityError(protocol, capability)
+        supported = [
+            f"{protocol}:{_TYPE_TO_CAPABILITY.get(capability, capability.value)}"
+            for capability in provider.get_capabilities()
+        ]
+        raise UnsupportedProtocolCapabilityError(
+            protocol,
+            capability,
+            model_name=model_name,
+            config_id=config.get("id"),
+            supported_combinations=sorted(supported),
+        )
     source = "system" if config.get("is_system_fallback") else "user"
     return ResolvedModel(
         provider=provider,
@@ -148,7 +163,7 @@ async def aresolve_user_model(
 
     Args:
         user_id: 发起用户 ID。
-        capability: 能力字符串（CHAT/EMBEDDING/RERANK/VISION/OCR）。
+        capability: 能力字符串（CHAT/EMBEDDING/SPARSE_EMBEDDING/RERANK/VISION）。
         config_id: 可选，指定具体配置 ID（``/llm`` 路由按 ID 调用场景）。
         allow_system_fallback: 用户无配置时是否回退系统环境兜底（``/llm`` 路由为真；
             解析写入 / 召回链路为假——必配不兜底）。

@@ -11,8 +11,8 @@ class CapabilityType(Enum):
     """LLM 能力类型枚举"""
     TEXT = "text"                      # 文本生成
     EMBEDDING = "embedding"            # 向量化
+    SPARSE_EMBEDDING = "sparse_embedding"  # 稀疏向量化
     RERANK = "rerank"                  # 重排
-    OCR = "ocr"                        # 图像文本提取
     VISION = "vision"                  # 视觉理解
     TOOL_CALLING = "tool_calling"      # 工具调用
 

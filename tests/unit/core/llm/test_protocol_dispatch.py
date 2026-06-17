@@ -40,10 +40,10 @@ def test_create_client_dispatches_by_protocol(protocol, cls):
 @pytest.mark.parametrize(
     "protocol,expected",
     [
-        ("openai", {T.TEXT, T.EMBEDDING}),
+        ("openai", {T.TEXT, T.EMBEDDING, T.SPARSE_EMBEDDING}),
         ("anthropic", {T.TEXT}),
         ("google", {T.TEXT}),
-        ("jina", {T.RERANK, T.EMBEDDING}),
+        ("jina", {T.RERANK, T.EMBEDDING, T.SPARSE_EMBEDDING}),
         ("dashscope", {T.RERANK}),
     ],
 )
@@ -57,13 +57,15 @@ def test_capability_matrix(protocol, expected):
     [
         ("openai", T.RERANK),
         ("anthropic", T.EMBEDDING),
+        ("anthropic", T.SPARSE_EMBEDDING),
         ("anthropic", T.RERANK),
         ("google", T.EMBEDDING),
+        ("google", T.SPARSE_EMBEDDING),
         ("google", T.RERANK),
         ("dashscope", T.TEXT),
+        ("dashscope", T.SPARSE_EMBEDDING),
         # 多模态停做
         ("openai", T.VISION),
-        ("openai", T.OCR),
         ("anthropic", T.VISION),
     ],
 )

@@ -270,8 +270,10 @@ async def extract_text_from_image(
         APIResponse[dict]
     """
     try:
+        # OCR is no longer an independent LLM capability. Keep the legacy endpoint
+        # but resolve image-text extraction through VISION configuration.
         client = await _resolve_provider(
-            db, x_user_id, "OCR", config_id=request.config_id,
+            db, x_user_id, "VISION", config_id=request.config_id,
         )
 
         result = await client.extract_text(

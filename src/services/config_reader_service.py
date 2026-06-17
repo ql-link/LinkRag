@@ -115,7 +115,7 @@ class ConfigReaderService:
 
         Args:
             user_id: 用户 ID
-            capability: 能力类型（CHAT/EMBEDDING/RERANK/OCR/VISION）
+            capability: 能力类型（CHAT/EMBEDDING/SPARSE_EMBEDDING/RERANK/VISION）
             provider_type: 可选，指定 provider 类型
             use_cache: 是否使用缓存
 
@@ -217,7 +217,7 @@ class ConfigReaderService:
 
         Args:
             user_id: 用户 ID
-            capability: 能力类型（CHAT/EMBEDDING/RERANK/OCR/VISION）
+            capability: 能力类型（CHAT/EMBEDDING/SPARSE_EMBEDDING/RERANK/VISION）
             use_cache: 是否使用缓存
 
         Returns:
@@ -375,7 +375,7 @@ class ConfigReaderService:
             model_name = settings.SYSTEM_LLM_MODEL_EMBEDDING
         elif cap_upper == "RERANK":
             model_name = settings.SYSTEM_LLM_MODEL_RERANK
-        elif cap_upper in ["VISION", "OCR"]:
+        elif cap_upper == "VISION":
             model_name = settings.SYSTEM_LLM_MODEL_VISION
 
         if not model_name:
