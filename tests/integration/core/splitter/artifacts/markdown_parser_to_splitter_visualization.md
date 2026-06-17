@@ -4,7 +4,7 @@
 
 - Fixture: `tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Source file recorded by parser: `tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
-- Element count: `30`
+- Element count: `31`
 - Final chunk count: `5`
 - Vision mock calls: `1`
 - Table mock calls: `1`
@@ -16,34 +16,35 @@
 | ---: | --- | --- | --- |
 | 0 | `front_matter` | `L0-L4` | `{}` |
 | 1 | `heading` | `L6-L6` | `{"heading_level": 1, "heading_text": "Overview"}` |
-| 2 | `paragraph` | `L7-L7` | `{}` |
-| 3 | `image` | `L9-L9` | `{"alt": "Hero Dashboard", "url": "https://cdn.test.local/hero-dashboard.png"}` |
-| 4 | `heading` | `L11-L11` | `{"heading_level": 2, "heading_text": "Quoted Insight"}` |
-| 5 | `blockquote` | `L12-L14` | `{}` |
-| 6 | `heading` | `L15-L15` | `{"heading_level": 2, "heading_text": "Action Checklist"}` |
-| 7 | `list` | `L16-L23` | `{}` |
-| 8 | `heading` | `L24-L24` | `{"heading_level": 2, "heading_text": "Code Sample"}` |
-| 9 | `paragraph` | `L25-L25` | `{}` |
-| 10 | `code_block` | `L27-L32` | `{"language": "python"}` |
-| 11 | `heading` | `L34-L34` | `{"heading_level": 2, "heading_text": "Metrics Table"}` |
-| 12 | `paragraph` | `L35-L35` | `{}` |
-| 13 | `table` | `L37-L41` | `{}` |
-| 14 | `heading` | `L43-L43` | `{"heading_level": 2, "heading_text": "Math Notes"}` |
-| 15 | `paragraph` | `L44-L44` | `{}` |
-| 16 | `math_block` | `L46-L48` | `{}` |
-| 17 | `math_block` | `L50-L52` | `{}` |
-| 18 | `heading` | `L54-L54` | `{"heading_level": 2, "heading_text": "Deep Dive"}` |
-| 19 | `paragraph` | `L55-L55` | `{}` |
-| 20 | `paragraph` | `L57-L57` | `{}` |
-| 21 | `paragraph` | `L59-L59` | `{}` |
-| 22 | `paragraph` | `L61-L61` | `{}` |
-| 23 | `heading` | `L63-L63` | `{"heading_level": 2, "heading_text": "Semantic Pressure Test"}` |
-| 24 | `paragraph` | `L64-L64` | `{}` |
-| 25 | `paragraph` | `L66-L66` | `{}` |
-| 26 | `paragraph` | `L68-L68` | `{}` |
-| 27 | `paragraph` | `L70-L70` | `{}` |
-| 28 | `paragraph` | `L72-L72` | `{}` |
-| 29 | `hr` | `L74-L74` | `{}` |
+| 2 | `paragraph` | `L8-L8` | `{}` |
+| 3 | `paragraph` | `L10-L10` | `{}` |
+| 4 | `image` | `L12-L12` | `{"alt": "Hero Dashboard", "url": "https://cdn.test.local/hero-dashboard.png", "visual_description": "A dashboard screenshot with cards, charts, and highlighted retrieval metrics."}` |
+| 5 | `heading` | `L16-L16` | `{"heading_level": 2, "heading_text": "Quoted Insight"}` |
+| 6 | `blockquote` | `L18-L21` | `{}` |
+| 7 | `heading` | `L22-L22` | `{"heading_level": 2, "heading_text": "Action Checklist"}` |
+| 8 | `list` | `L24-L32` | `{}` |
+| 9 | `heading` | `L33-L33` | `{"heading_level": 2, "heading_text": "Code Sample"}` |
+| 10 | `paragraph` | `L35-L35` | `{}` |
+| 11 | `code_block` | `L37-L42` | `{"language": "python"}` |
+| 12 | `heading` | `L44-L44` | `{"heading_level": 2, "heading_text": "Metrics Table"}` |
+| 13 | `paragraph` | `L46-L46` | `{}` |
+| 14 | `table` | `L48-L52` | `{"table_summary": "The metrics table shows healthy recall, stable latency, and broad coverage for the pipeline."}` |
+| 15 | `heading` | `L56-L56` | `{"heading_level": 2, "heading_text": "Math Notes"}` |
+| 16 | `paragraph` | `L58-L58` | `{}` |
+| 17 | `math_block` | `L60-L62` | `{}` |
+| 18 | `math_block` | `L64-L66` | `{}` |
+| 19 | `heading` | `L68-L68` | `{"heading_level": 2, "heading_text": "Deep Dive"}` |
+| 20 | `paragraph` | `L70-L70` | `{}` |
+| 21 | `paragraph` | `L72-L72` | `{}` |
+| 22 | `paragraph` | `L74-L74` | `{}` |
+| 23 | `paragraph` | `L76-L76` | `{}` |
+| 24 | `heading` | `L78-L78` | `{"heading_level": 2, "heading_text": "Semantic Pressure Test"}` |
+| 25 | `paragraph` | `L80-L80` | `{}` |
+| 26 | `paragraph` | `L82-L82` | `{}` |
+| 27 | `paragraph` | `L84-L84` | `{}` |
+| 28 | `paragraph` | `L86-L86` | `{}` |
+| 29 | `paragraph` | `L88-L88` | `{}` |
+| 30 | `hr` | `L90-L90` | `{}` |
 
 ## Mock Call Summary
 
@@ -80,9 +81,9 @@
 [
   {
     "texts": [
-      "# Overview\n\nThis opening paragraph mixes plain text with an inline image ![Architecture Inline](https://cdn.test.local/inline-architecture.png) so the parser keeps it inside a paragraph element and the vision mock can append a description for visual review.\n\n[视觉描述: A compact architecture sketch that highlights parser, splitter, and vector stages.]\n\n[图片引用: image_001]\n图片说明：A dashboard screenshot with cards, charts, and highlighted retrieval metrics.\n\n## Quoted Insight\n\n> Retrieval quality improves when chunk boundaries respect structure.\n> Oversized narrative sections should wait for the next mixed-aware Stage 2 design.\n\n\n## Action Checklist\n\n- Collect parser output carefully\n- Preserve metadata for headings and source files\n- Keep isolated blocks independent\n\n1. Parse markdown into structured elements\n2. Enrich tables and images with mocked network results\n3. Preserve oversized narrative sections for the next Stage 2 design\n",
-      "类型：图片\n图片ID：image_001\n标题路径：Overview\n图片说明：A dashboard screenshot with cards, charts, and highlighted retrieval metrics.\n相邻上下文：This opening paragraph mixes plain text with an inline image ![Architecture Inline](https://cdn.test.local/inline-architecture.png) so the parser keeps it inside a paragraph element and the vision mock can append a description for visual review.\n\n[视觉描述: A compact architecture sketch that highlights parser, splitter, and vector stages.]；## Quoted Insight\n原始引用：![Hero Dashboard](https://cdn.test.local/hero-dashboard.png)",
-      "## Code Sample\n\nThe code fence below should become its own isolated chunk.\n\n```python\ndef summarize_metrics(total_requests: int, failures: int) -> float:\n    if total_requests == 0:\n        return 0.0\n    return round((total_requests - failures) / total_requests, 4)\n```\n\n## Metrics Table\n\nThe table block below should stay isolated and also receive a mocked table summary.\n\n| Metric | Value | Trend |\n| :--- | ---: | :---: |\n| Recall | 0.82 | up |\n| LatencyMs | 128 | stable |\n| Coverage | 0.97 | up |\n\n[表格总结: The metrics table shows healthy recall, stable latency, and broad coverage for the pipeline.]\n\n## Math Notes\n\nThe parser should also isolate math blocks.\n\n$$\nE = mc^2\n$$\n\n\\[\n\\int_0^1 x^2 dx = \\frac{1}{3}\n\\]\n\n## Deep Dive\n\nChunking quality depends on keeping the overview sentence near the heading for retrieval and human review in realistic systems.\n\nThe next paragraph continues the same topic with nearby wording so the semantic splitter should still keep it close during chunk construction.\n\nA different subsection discusses incident response runbooks, rollback plans, pager fatigue, and on-call escalation details for critical outages.\n\nThe closing paragraph stays in the incident response theme and should therefore remain with the previous paragraph after splitting.",
+      "# Overview\n\nThis opening paragraph mixes plain text with an inline image ![Architecture Inline](https://cdn.test.local/inline-architecture.png) so the parser keeps it inside a paragraph element and the vision mock can append a description for visual review.\n\n图片说明：A compact architecture sketch that highlights parser, splitter, and vector stages.\n\n[图片引用: image_001]\n图片说明：A dashboard screenshot with cards, charts, and highlighted retrieval metrics.\n\n## Quoted Insight\n\n> Retrieval quality improves when chunk boundaries respect structure.\n> Oversized narrative sections should wait for the next mixed-aware Stage 2 design.\n\n\n\n## Action Checklist\n\n- Collect parser output carefully\n- Preserve metadata for headings and source files\n- Keep isolated blocks independent\n\n1. Parse markdown into structured elements\n2. Enrich tables and images with mocked network results\n3. Preserve oversized narrative sections for the next Stage 2 design\n\n\n\n## Code Sample\n\nThe code fence below should become its own isolated chunk.\n\n```python\ndef summarize_metrics(total_requests: int, failures: int) -> float:\n    if total_requests == 0:\n        return 0.0\n    return round((total_requests - failures) / total_requests, 4)\n```",
+      "类型：图片\n图片ID：image_001\n标题路径：Overview\n图片说明：A dashboard screenshot with cards, charts, and highlighted retrieval metrics.\n相邻上下文：图片说明：A compact architecture sketch that highlights parser, splitter, and vector stages.；## Quoted Insight\n原始引用：![Hero Dashboard](https://cdn.test.local/hero-dashboard.png)",
+      "## Metrics Table\n\nThe table block below should stay isolated and also receive a mocked table summary.\n\n| Metric | Value | Trend |\n| :--- | ---: | :---: |\n| Recall | 0.82 | up |\n| LatencyMs | 128 | stable |\n| Coverage | 0.97 | up |\n\n## Math Notes\n\nThe parser should also isolate math blocks.\n\n$$\nE = mc^2\n$$\n\n\\[\n\\int_0^1 x^2 dx = \\frac{1}{3}\n\\]\n\n## Deep Dive\n\nChunking quality depends on keeping the overview sentence near the heading for retrieval and human review in realistic systems.\n\nThe next paragraph continues the same topic with nearby wording so the semantic splitter should still keep it close during chunk construction.\n\nA different subsection discusses incident response runbooks, rollback plans, pager fatigue, and on-call escalation details for critical outages.\n\nThe closing paragraph stays in the incident response theme and should therefore remain with the previous paragraph after splitting.",
       "类型：表格\n表格ID：table_001\n标题路径：Overview / Metrics Table\n表格总结：The metrics table shows healthy recall, stable latency, and broad coverage for the pipeline.\n相邻上下文：The table block below should stay isolated and also receive a mocked table summary.；## Math Notes\n原始表格：\n| Metric | Value | Trend |\n| :--- | ---: | :---: |\n| Recall | 0.82 | up |\n| LatencyMs | 128 | stable |\n| Coverage | 0.97 | up |",
       "## Semantic Pressure Test\n\nCalibration review keeps retrieval evidence aligned with section intent, maintains stable context windows, protects citation anchors, and gives auditors a readable trail for incident analysis. Calibration review keeps retrieval evidence aligned with section intent, maintains stable context windows, protects citation anchors, and gives auditors a readable trail for incident analysis. Calibration review keeps retrieval evidence aligned with section intent, maintains stable context windows, protects citation anchors, and gives auditors a readable trail for incident analysis. Calibration review keeps retrieval evidence aligned with section intent, maintains stable context windows, protects citation anchors, and gives auditors a readable trail for incident analysis. Calibration review keeps retrieval evidence aligned with section intent, maintains stable context windows, protects citation anchors, and gives auditors a readable trail for incident analysis.\n\nQuery planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation. Query planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation. Query planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation. Query planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation. Query planning keeps entity mentions attached to nearby evidence, preserves heading cues for retrieval scoring, reduces accidental topic drift, and leaves operators with a stable document narrative during evaluation.\n\nEvidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context. Evidence packaging keeps benchmark summaries close to the surrounding claims, ensures evaluators can inspect assumptions quickly, limits brittle fragment boundaries, and helps reviewers compare nearby reasoning without losing context.\n\nIncident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services. Incident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services. Incident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services. Incident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services. Incident coordination shifts the topic toward paging policy, rollback sequencing, legal communication checklists, stakeholder updates, and night shift fatigue when production failures cascade across services.\n\nRecovery rehearsal stays with the incident theme by focusing on postmortem ownership, backlog triage, responder rotation, service warmup timing, and communication templates for severe customer impact. Recovery rehearsal stays with the incident theme by focusing on postmortem ownership, backlog triage, responder rotation, service warmup timing, and communication templates for severe customer impact. Recovery rehearsal stays with the incident theme by focusing on postmortem ownership, backlog triage, responder rotation, service warmup timing, and communication templates for severe customer impact. Recovery rehearsal stays with the incident theme by focusing on postmortem ownership, backlog triage, responder rotation, service warmup timing, and communication templates for severe customer impact. Recovery rehearsal stays with the incident theme by focusing on postmortem ownership, backlog triage, responder rotation, service warmup timing, and communication templates for severe customer impact."
     ],
@@ -96,30 +97,30 @@
 
 | Chunk | Strategy | Heading Trail | Lines | Cached | Prev Ctx | Next Ctx | Vector Preview |
 | ---: | --- | --- | --- | --- | --- | --- | --- |
-| 0 | `candidate_boundary + noop` | `Overview > Action Checklist` | `L6-L23` | `False` | `0` | `0` | `0.1956, 0.2166, 0.7550, 0.8293` |
-| 1 | `candidate_boundary + noop` | `Overview` | `L9-L9` | `False` | `0` | `0` | `0.7735, 0.1396, 0.1524, 0.7168` |
-| 2 | `candidate_boundary + noop` | `Overview > Deep Dive` | `L24-L61` | `False` | `0` | `0` | `0.3727, 0.4533, 0.6441, 0.8495` |
-| 3 | `candidate_boundary + noop` | `Overview > Metrics Table` | `L37-L41` | `False` | `0` | `0` | `0.5885, 0.8628, 0.5686, 0.3729` |
-| 4 | `candidate_boundary + noop` | `Overview > Semantic Pressure Test` | `L63-L72` | `False` | `0` | `0` | `0.2056, 0.5381, 0.2065, 0.4338` |
+| 0 | `candidate_boundary + noop` | `Overview > Code Sample` | `L6-L42` | `False` | `0` | `0` | `0.6308, 0.6906, 0.1134, 0.3281` |
+| 1 | `candidate_boundary + noop` | `Overview` | `L12-L12` | `False` | `0` | `0` | `0.1324, 0.6357, 0.6819, 0.4573` |
+| 2 | `candidate_boundary + noop` | `Overview > Deep Dive` | `L44-L76` | `False` | `0` | `0` | `0.5868, 0.6158, 0.6304, 0.2145` |
+| 3 | `candidate_boundary + noop` | `Overview > Metrics Table` | `L48-L52` | `False` | `0` | `0` | `0.5885, 0.8628, 0.5686, 0.3729` |
+| 4 | `candidate_boundary + noop` | `Overview > Semantic Pressure Test` | `L78-L88` | `False` | `0` | `0` | `0.2056, 0.5381, 0.2065, 0.4338` |
 
 ### Chunk 0
 
 - Strategy: `candidate_boundary + noop`
-- Heading trail: `['Overview', 'Action Checklist']`
+- Heading trail: `['Overview', 'Code Sample']`
 - Source file: `tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
-- Element types: `['blockquote', 'heading', 'image', 'list', 'paragraph']`
+- Element types: `['blockquote', 'code_block', 'heading', 'image', 'list', 'paragraph']`
 - Context prev tokens: `0`
 - Context next tokens: `0`
 - Embedding model: `visual-test-embedding`
 - Cached: `False`
-- Vector preview: `0.195620, 0.216589, 0.754997, 0.829343`
+- Vector preview: `0.630816, 0.690592, 0.113392, 0.328143`
 
 ````markdown
 # Overview
 
 This opening paragraph mixes plain text with an inline image ![Architecture Inline](https://cdn.test.local/inline-architecture.png) so the parser keeps it inside a paragraph element and the vision mock can append a description for visual review.
 
-[视觉描述: A compact architecture sketch that highlights parser, splitter, and vector stages.]
+图片说明：A compact architecture sketch that highlights parser, splitter, and vector stages.
 
 [图片引用: image_001]
 图片说明：A dashboard screenshot with cards, charts, and highlighted retrieval metrics.
@@ -128,6 +129,7 @@ This opening paragraph mixes plain text with an inline image ![Architecture Inli
 
 > Retrieval quality improves when chunk boundaries respect structure.
 > Oversized narrative sections should wait for the next mixed-aware Stage 2 design.
+
 
 
 ## Action Checklist
@@ -140,6 +142,18 @@ This opening paragraph mixes plain text with an inline image ![Architecture Inli
 2. Enrich tables and images with mocked network results
 3. Preserve oversized narrative sections for the next Stage 2 design
 
+
+
+## Code Sample
+
+The code fence below should become its own isolated chunk.
+
+```python
+def summarize_metrics(total_requests: int, failures: int) -> float:
+    if total_requests == 0:
+        return 0.0
+    return round((total_requests - failures) / total_requests, 4)
+```
 ````
 
 ### Chunk 1
@@ -152,16 +166,14 @@ This opening paragraph mixes plain text with an inline image ![Architecture Inli
 - Context next tokens: `0`
 - Embedding model: `visual-test-embedding`
 - Cached: `False`
-- Vector preview: `0.773539, 0.139572, 0.152422, 0.716753`
+- Vector preview: `0.132443, 0.635690, 0.681917, 0.457328`
 
 ````markdown
 类型：图片
 图片ID：image_001
 标题路径：Overview
 图片说明：A dashboard screenshot with cards, charts, and highlighted retrieval metrics.
-相邻上下文：This opening paragraph mixes plain text with an inline image ![Architecture Inline](https://cdn.test.local/inline-architecture.png) so the parser keeps it inside a paragraph element and the vision mock can append a description for visual review.
-
-[视觉描述: A compact architecture sketch that highlights parser, splitter, and vector stages.]；## Quoted Insight
+相邻上下文：图片说明：A compact architecture sketch that highlights parser, splitter, and vector stages.；## Quoted Insight
 原始引用：![Hero Dashboard](https://cdn.test.local/hero-dashboard.png)
 ````
 
@@ -170,25 +182,14 @@ This opening paragraph mixes plain text with an inline image ![Architecture Inli
 - Strategy: `candidate_boundary + noop`
 - Heading trail: `['Overview', 'Deep Dive']`
 - Source file: `tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
-- Element types: `['code_block', 'heading', 'math_block', 'paragraph', 'table']`
+- Element types: `['heading', 'math_block', 'paragraph', 'table']`
 - Context prev tokens: `0`
 - Context next tokens: `0`
 - Embedding model: `visual-test-embedding`
 - Cached: `False`
-- Vector preview: `0.372662, 0.453314, 0.644066, 0.849461`
+- Vector preview: `0.586828, 0.615781, 0.630428, 0.214471`
 
 ````markdown
-## Code Sample
-
-The code fence below should become its own isolated chunk.
-
-```python
-def summarize_metrics(total_requests: int, failures: int) -> float:
-    if total_requests == 0:
-        return 0.0
-    return round((total_requests - failures) / total_requests, 4)
-```
-
 ## Metrics Table
 
 The table block below should stay isolated and also receive a mocked table summary.
@@ -198,8 +199,6 @@ The table block below should stay isolated and also receive a mocked table summa
 | Recall | 0.82 | up |
 | LatencyMs | 128 | stable |
 | Coverage | 0.97 | up |
-
-[表格总结: The metrics table shows healthy recall, stable latency, and broad coverage for the pipeline.]
 
 ## Math Notes
 

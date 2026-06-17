@@ -1,4 +1,5 @@
 from src.core.markdown_parser import ElementType, MarkdownElement
+from src.core.markdown_parser.models import META_TABLE_SUMMARY, META_VISUAL_DESCRIPTION
 from src.core.splitter import (
     CandidateBoundaryChunker,
     ChunkOverlapConfig,
@@ -213,9 +214,12 @@ def test_candidate_boundary_should_record_protected_ranges_and_derived_image_chu
         _element(ElementType.PARAGRAPH, "本节说明 parse task 的状态流转和错误处理。", 2),
         _element(
             ElementType.IMAGE,
-            "![](./state.png)\n\n[视觉描述: 解析任务从 pending 进入 running。]",
+            "![](./state.png)",
             4,
-            metadata={"url": "./state.png"},
+            metadata={
+                "url": "./state.png",
+                META_VISUAL_DESCRIPTION: "解析任务从 pending 进入 running。",
+            },
         ),
         _element(ElementType.PARAGRAPH, "后续段落说明失败重试策略。", 6),
     ]
@@ -258,13 +262,15 @@ def test_candidate_boundary_should_generate_table_derived_chunk_with_inline_boun
         [
             _element(
                 ElementType.TABLE,
-                f"{inline_table}\n\n[表格总结: 边界表格仍可内联。]",
+                inline_table,
                 0,
+                metadata={META_TABLE_SUMMARY: "边界表格仍可内联。"},
             ),
             _element(
                 ElementType.TABLE,
-                f"{long_table}\n\n[表格总结: 长表格需要引用。]",
+                long_table,
                 20,
+                metadata={META_TABLE_SUMMARY: "长表格需要引用。"},
             ),
         ]
     )
@@ -294,8 +300,9 @@ def test_candidate_boundary_should_limit_derived_adjacent_context_by_overlap_tok
             _element(ElementType.PARAGRAPH, "prev0 prev1 prev2 prev3 prev4", 0),
             _element(
                 ElementType.IMAGE,
-                "![diagram](./diagram.png)\n\n[视觉描述: A diagram.]",
+                "![diagram](./diagram.png)",
                 2,
+                metadata={"url": "./diagram.png", META_VISUAL_DESCRIPTION: "A diagram."},
             ),
             _element(ElementType.PARAGRAPH, "next0 next1 next2 next3 next4", 4),
         ],
