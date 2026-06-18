@@ -145,6 +145,11 @@ class Settings(BaseSettings):
     MARKDOWN_PARSER_VISION_MODEL: Optional[str] = None
     MARKDOWN_PARSER_LLM_TIMEOUT_MS: int = 60000
     MARKDOWN_PARSER_VISION_CONCURRENCY: int = 24
+    MARKDOWN_PARSER_ENABLE_HEADING_HIERARCHY: bool = False
+    MARKDOWN_PARSER_HEADING_NO_HEADING_MIN_TOKENS: int = 512
+    MARKDOWN_PARSER_HEADING_FLAT_MIN_HEADINGS: int = 5
+    MARKDOWN_PARSER_HEADING_SPARSE_TOKENS_PER_HEADING: int = 1536
+    MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET: int = 8192
     CHUNKING_STAGE_ONE_ALGORITHM: str = "candidate_boundary"
     CHUNKING_STAGE_TWO_ALGORITHM: str = "noop"
     CHUNKING_HEADING_BREAK_LEVEL: int = 5
@@ -176,6 +181,34 @@ class Settings(BaseSettings):
                 f"Stage 2 algorithms: {supported}"
             )
         return normalized
+
+    @field_validator("MARKDOWN_PARSER_HEADING_NO_HEADING_MIN_TOKENS")
+    @classmethod
+    def validate_markdown_heading_no_heading_min_tokens(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("MARKDOWN_PARSER_HEADING_NO_HEADING_MIN_TOKENS must be positive")
+        return v
+
+    @field_validator("MARKDOWN_PARSER_HEADING_FLAT_MIN_HEADINGS")
+    @classmethod
+    def validate_markdown_heading_flat_min_headings(cls, v: int) -> int:
+        if v < 5:
+            raise ValueError("MARKDOWN_PARSER_HEADING_FLAT_MIN_HEADINGS must be >= 5")
+        return v
+
+    @field_validator("MARKDOWN_PARSER_HEADING_SPARSE_TOKENS_PER_HEADING")
+    @classmethod
+    def validate_markdown_heading_sparse_tokens_per_heading(cls, v: int) -> int:
+        if v < 1024:
+            raise ValueError("MARKDOWN_PARSER_HEADING_SPARSE_TOKENS_PER_HEADING must be >= 1024")
+        return v
+
+    @field_validator("MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET")
+    @classmethod
+    def validate_markdown_heading_llm_context_token_budget(cls, v: int) -> int:
+        if v < 2048:
+            raise ValueError("MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET must be >= 2048")
+        return v
 
     @field_validator("CHUNKING_OVERLAP_TOKENS")
     @classmethod

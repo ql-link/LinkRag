@@ -20,11 +20,25 @@ md_parser — Markdown 解析独立模块
     TableDescriber  — 表格概括描述集成器
 """
 
-from .models import ElementType, ImageRef, MarkdownElement, ParseResult
-from .parser import MarkdownParser
-from .scanner import MarkdownScanner
+from .heading_hierarchy import (
+    GateDecision,
+    HeadingGateReason,
+    HeadingHierarchyConfig,
+    HeadingHierarchyProcessor,
+    HeadingHierarchyResult,
+    HeadingInsertion,
+    HeadingPlan,
+    HeadingPlanGenerator,
+    HeadingPlanValidationError,
+    NoopHeadingPlanGenerator,
+    apply_heading_plan,
+    validate_heading_plan,
+)
 from .image_extractor import ImageExtractor
-from .llm_integration import VisionClient, ImageDescriber, TableClient, TableDescriber
+from .llm_integration import ImageDescriber, TableClient, TableDescriber, VisionClient
+from .models import ElementType, ImageRef, MarkdownElement, ParseResult
+from .orchestrator import MarkdownEnhancementOrchestrator
+from .parser import MarkdownParser
 from .provider_clients import (
     EnhancementModelMissingError,
     LLMConfigMissingError,
@@ -35,7 +49,7 @@ from .provider_clients import (
     build_default_table_client,
     build_default_vision_client,
 )
-from .orchestrator import MarkdownEnhancementOrchestrator
+from .scanner import MarkdownScanner
 
 __all__ = [
     "MarkdownParser",
@@ -58,4 +72,16 @@ __all__ = [
     "build_default_table_client",
     "build_default_vision_client",
     "MarkdownEnhancementOrchestrator",
+    "GateDecision",
+    "HeadingGateReason",
+    "HeadingHierarchyConfig",
+    "HeadingHierarchyProcessor",
+    "HeadingHierarchyResult",
+    "HeadingInsertion",
+    "HeadingPlan",
+    "HeadingPlanGenerator",
+    "HeadingPlanValidationError",
+    "NoopHeadingPlanGenerator",
+    "apply_heading_plan",
+    "validate_heading_plan",
 ]
