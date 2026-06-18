@@ -158,7 +158,7 @@ logs/
 | `SPARSE_VECTOR_BATCH_SIZE` | `12` | BGE-M3 稀疏编码批大小 |
 | `SPARSE_VECTOR_MAX_LENGTH` | `8192` | 输入文本最大 token 长度 |
 | `SPARSE_VECTOR_HTTP_ENDPOINT` | 空 | 早期 `bge_m3_http` provider 的 bge-m3-server 地址 |
-| `SPARSE_VECTOR_HTTP_TIMEOUT` | `30.0` | 早期 `bge_m3_http` provider 单次 HTTP 请求超时（秒） |
+| `SPARSE_VECTOR_HTTP_TIMEOUT` | `30.0` | 早期 `bge_m3_http` provider 单次 `/encode` HTTP 请求超时基线（秒）；实际 timeout 会按本次 texts 总字符数动态放宽，默认最高 900 秒，若本值高于 900 则以本值为上限 |
 | `SPARSE_VECTOR_HTTP_BATCH_SIZE` | 空 | 早期 `bge_m3_http` provider 的外层 chunk 批大小；空值时 Python 侧按 1 条 chunk 一批请求，避免长文本批量超时 |
 | `SPARSE_VECTOR_QDRANT_VECTOR_NAME` | `sparse_text` | Qdrant named sparse vector 名称 |
 | `SPARSE_VECTOR_TOP_K` | `256` | 每条稀疏向量最多保留的非零 token 数；`0` 表示不截断 |

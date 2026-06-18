@@ -403,7 +403,7 @@ chunk_id_to_content = {
   - `bge_m3_http`：调用早期 `bge-m3-server` 的 `/encode` 接口（仅 sparse）。
   - `remote_bge_m3`：调用独立部署的 `bge-m3-service`（dense + sparse 同出，带重试）。
 - `SPARSE_VECTOR_MODEL_NAME` / `SPARSE_VECTOR_MODEL_CACHE_DIR` / `SPARSE_VECTOR_LOCAL_FILES_ONLY` / `SPARSE_VECTOR_DEVICE` / `SPARSE_VECTOR_BATCH_SIZE`（仅 `bge_m3` 本地推理生效）。
-- `SPARSE_VECTOR_HTTP_ENDPOINT` / `SPARSE_VECTOR_HTTP_TIMEOUT` / `SPARSE_VECTOR_HTTP_BATCH_SIZE`（仅 `bge_m3_http` 远程推理生效）。
+- `SPARSE_VECTOR_HTTP_ENDPOINT` / `SPARSE_VECTOR_HTTP_TIMEOUT` / `SPARSE_VECTOR_HTTP_BATCH_SIZE`（仅 `bge_m3_http` 远程推理生效；`SPARSE_VECTOR_HTTP_TIMEOUT` 是单次 `/encode` 的小请求基线，长文本会按本次请求总字符数动态放宽）。
 - `BGE_M3_SERVICE_URL` / `BGE_M3_TIMEOUT_SECONDS` / `BGE_M3_MAX_RETRIES`（仅 `remote_bge_m3` 远程推理生效）。
 - `SPARSE_VECTOR_MAX_LENGTH` / `SPARSE_VECTOR_TOP_K` / `SPARSE_VECTOR_MIN_WEIGHT`：三种 provider 共用，保证产出经过同一套清洗规则。
 

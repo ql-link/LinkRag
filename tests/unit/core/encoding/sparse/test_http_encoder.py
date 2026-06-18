@@ -11,6 +11,15 @@ from src.core.encoding.sparse.exceptions import (
 from src.core.encoding.sparse.http_encoder import BGEM3HttpSparseVectorEncoder
 
 
+def _read_timeout(request: httpx.Request) -> float:
+    """从 MockTransport 收到的 request 中取 httpx 实际读超时。"""
+
+    timeout = request.extensions["timeout"]
+    if isinstance(timeout, dict):
+        return float(timeout["read"])
+    return float(timeout)
+
+
 def _make_encoder(handler, **kwargs) -> BGEM3HttpSparseVectorEncoder:
     """用 httpx MockTransport 注入一个受控的 AsyncClient。"""
 
@@ -80,6 +89,37 @@ async def test_should_pass_optional_batch_and_max_length():
     assert captured["body"]["max_length"] == 512
 
 
+def test_should_resolve_dynamic_timeout_from_text_size():
+    encoder = BGEM3HttpSparseVectorEncoder(endpoint="http://bge:37997", timeout=30.0)
+
+    assert encoder._resolve_timeout(10_000) == 30.0
+    assert encoder._resolve_timeout(10_001) == 33.0
+    assert encoder._resolve_timeout(200_000) == 87.0
+    assert encoder._resolve_timeout(1_000_000) == 327.0
+    assert encoder._resolve_timeout(4_000_000) == 900.0
+
+
+def test_should_not_lower_explicit_timeout_above_default_dynamic_cap():
+    encoder = BGEM3HttpSparseVectorEncoder(endpoint="http://bge:37997", timeout=1200.0)
+
+    assert encoder._resolve_timeout(1) == 1200.0
+    assert encoder._resolve_timeout(4_000_000) == 1200.0
+
+
+@pytest.mark.asyncio
+async def test_should_pass_dynamic_timeout_to_http_request():
+    captured: dict = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["timeout"] = _read_timeout(request)
+        return httpx.Response(200, json={"sparse": [{"1": 0.5}]})
+
+    encoder = _make_encoder(handler, timeout=30.0)
+    await encoder.aencode(["x" * 200_000])
+
+    assert captured["timeout"] == 87.0
+
+
 @pytest.mark.asyncio
 async def test_should_raise_when_count_mismatch():
     def handler(request):
@@ -116,8 +156,14 @@ async def test_should_include_exception_type_when_http_error_has_empty_message()
         raise httpx.ReadTimeout("")
 
     encoder = _make_encoder(handler)
-    with pytest.raises(SparseVectorEncodingError, match="ReadTimeout"):
+    with pytest.raises(SparseVectorEncodingError) as exc_info:
         await encoder.aencode(["a"])
+    message = str(exc_info.value)
+    assert "ReadTimeout" in message
+    assert "timeout=30.0s" in message
+    assert "texts=1" in message
+    assert "total_chars=1" in message
+    assert "url=http://bge:37997/encode" in message
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import math
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -24,6 +25,11 @@ import httpx
 from .encoder import normalize_lexical_weights
 from .exceptions import SparseVectorConfigurationError, SparseVectorEncodingError
 from .models import SparseVector
+
+_DYNAMIC_TIMEOUT_FREE_CHARS = 10_000
+_DYNAMIC_TIMEOUT_CHARS_PER_STEP = 10_000
+_DYNAMIC_TIMEOUT_SECONDS_PER_STEP = 3.0
+_DYNAMIC_TIMEOUT_DEFAULT_MAX_SECONDS = 900.0
 
 
 class BGEM3HttpSparseVectorEncoder:
@@ -46,7 +52,7 @@ class BGEM3HttpSparseVectorEncoder:
         Args:
             endpoint: bge-m3-server 根地址（如 ``http://host:37997``），尾部 ``/`` 会被忽略。
             model_name: 对外暴露的模型标识，仅用于落库/日志，不影响远程推理。
-            timeout: 单次 HTTP 请求超时（秒）。
+            timeout: 小请求 HTTP 超时基线（秒）；长文本请求会按文本规模动态放宽。
             batch_size: 透传给远程服务的批大小；``None`` 时由服务端决定。
             max_length: 透传给远程服务的最大 token 长度；``None`` 时由服务端决定。
             top_k: 每条稀疏向量保留的最大非零 token 数；0 表示不截断。
@@ -100,8 +106,9 @@ class BGEM3HttpSparseVectorEncoder:
         if not texts:
             return []
 
+        text_list = list(texts)
         payload: dict[str, Any] = {
-            "texts": list(texts),
+            "texts": text_list,
             "return_dense": False,
             "return_sparse": True,
             "return_colbert": False,
@@ -111,7 +118,15 @@ class BGEM3HttpSparseVectorEncoder:
         if self._max_length:
             payload["max_length"] = self._max_length
 
-        data = await self._post_encode(payload)
+        total_chars = sum(len(text) for text in text_list)
+        timeout = self._resolve_timeout(total_chars)
+
+        data = await self._post_encode(
+            payload,
+            timeout=timeout,
+            text_count=len(text_list),
+            total_chars=total_chars,
+        )
 
         sparse = data.get("sparse") if isinstance(data, Mapping) else None
         if not isinstance(sparse, list):
@@ -131,7 +146,23 @@ class BGEM3HttpSparseVectorEncoder:
             for weights in sparse
         ]
 
-    async def _post_encode(self, payload: Mapping[str, Any]) -> Any:
+    def _resolve_timeout(self, total_chars: int) -> float:
+        """根据本次请求文本规模计算实际 HTTP 超时。"""
+
+        extra_chars = max(total_chars - _DYNAMIC_TIMEOUT_FREE_CHARS, 0)
+        extra_steps = math.ceil(extra_chars / _DYNAMIC_TIMEOUT_CHARS_PER_STEP)
+        computed_timeout = self._timeout + extra_steps * _DYNAMIC_TIMEOUT_SECONDS_PER_STEP
+        max_timeout = max(self._timeout, _DYNAMIC_TIMEOUT_DEFAULT_MAX_SECONDS)
+        return min(max_timeout, computed_timeout)
+
+    async def _post_encode(
+        self,
+        payload: Mapping[str, Any],
+        *,
+        timeout: float,
+        text_count: int,
+        total_chars: int,
+    ) -> Any:
         """向远程 /encode 发送请求并返回解析后的 JSON。
 
         优先复用注入的 ``client``（便于连接复用与测试），否则每次创建临时客户端。
@@ -143,14 +174,16 @@ class BGEM3HttpSparseVectorEncoder:
         url = f"{self._endpoint}/encode"
         try:
             if self._client is not None:
-                response = await self._client.post(url, json=payload, timeout=self._timeout)
+                response = await self._client.post(url, json=payload, timeout=timeout)
             else:
-                async with httpx.AsyncClient(timeout=self._timeout) as client:
-                    response = await client.post(url, json=payload)
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    response = await client.post(url, json=payload, timeout=timeout)
             response.raise_for_status()
             return response.json()
         except httpx.HTTPError as exc:
             detail = str(exc) or type(exc).__name__
             raise SparseVectorEncodingError(
-                f"bge-m3-server request failed: {type(exc).__name__}: {detail}"
+                "bge-m3-server request failed: "
+                f"{type(exc).__name__}: {detail}; "
+                f"timeout={timeout}s texts={text_count} total_chars={total_chars} url={url}"
             ) from exc
