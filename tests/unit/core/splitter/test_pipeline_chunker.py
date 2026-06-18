@@ -1,5 +1,6 @@
 import pytest
 
+from src.config import settings
 from src.core.markdown_parser import ElementType, MarkdownElement, ParseResult
 from src.core.splitter import (
     CandidateBoundaryChunker,
@@ -420,3 +421,57 @@ async def test_achunk_should_fail_fast_when_protected_ranges_do_not_match_views(
 
     with pytest.raises(SplitterOutputValidationError, match="protected_ranges"):
         await chunker.achunk([_paragraph("visible", 0)])
+
+
+def test_neighbor_context_should_skip_protected_chunk_when_switch_is_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "CHUNKING_PROTECTED_NEIGHBOR_OVERLAP", False)
+    chunker = _structured_chunker(overlap_tokens=1)
+    chunks = [
+        Chunk("before alpha", 0, 0, {"chunk_role": "mixed"}),
+        Chunk(
+            "table body",
+            1,
+            1,
+            {
+                "chunk_role": "mixed",
+                "protected_element_types": ["table"],
+            },
+        ),
+        Chunk("after beta", 2, 2, {"chunk_role": "mixed"}),
+    ]
+
+    result = chunker._apply_neighbor_context(chunks)
+
+    assert result[1].content == "table body"
+    assert "context_overlap_mode" not in result[1].metadata
+    assert result[0].metadata["context_next_tokens_applied"] == 1
+    assert result[2].metadata["context_prev_tokens_applied"] == 1
+
+
+def test_neighbor_context_should_allow_protected_chunk_when_switch_is_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "CHUNKING_PROTECTED_NEIGHBOR_OVERLAP", True)
+    chunker = _structured_chunker(overlap_tokens=1)
+    chunks = [
+        Chunk("before alpha", 0, 0, {"chunk_role": "mixed"}),
+        Chunk(
+            "table body",
+            1,
+            1,
+            {
+                "chunk_role": "mixed",
+                "protected_element_types": ["table"],
+            },
+        ),
+        Chunk("after beta", 2, 2, {"chunk_role": "mixed"}),
+    ]
+
+    result = chunker._apply_neighbor_context(chunks)
+
+    assert result[1].content.startswith("alpha\n\n")
+    assert result[1].content.endswith("\n\nafter")
+    assert result[1].metadata["context_prev_tokens_applied"] == 1
+    assert result[1].metadata["context_next_tokens_applied"] == 1

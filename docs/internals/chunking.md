@@ -54,8 +54,9 @@ flowchart LR
 | `StageOneRouter` | 按配置在文档级选择第一阶段算法；当前仅支持 `candidate_boundary` |
 | `StageOneAlgorithm` | 第一阶段算法契约：`SplitInput -> CoarseChunkSet` |
 | `CoarseChunkSetValidator` | 在第一阶段后立即校验必填字段、顺序、行号、来源关系和 protected ranges |
-| `StageTwoRouter` | 按配置在文档级选择第二阶段算法；当前仅支持 `noop` |
+| `StageTwoRouter` | 按配置在文档级选择第二阶段算法；当前支持 `noop` / `semantic_depth_window` |
 | `StageTwoAlgorithm` | 第二阶段算法契约：`CoarseChunkSet -> FinalChunkSet` |
+| `FinalChunkSetValidator` | 在第二阶段后校验无损切片、derived 锚点与 hard_max 绝对上限 |
 | `ChunkExporter` | 将 `FinalChunkSet` 导出为后续流程稳定消费的 `list[Chunk]` |
 | `Chunk` | splitter 对外最终输出模型，包含 `content`、`start_line`、`end_line`、`metadata` |
 
@@ -68,14 +69,17 @@ splitter 算法选择使用显式算法名，不再使用布尔开关：
 | 配置 | 默认 | 说明 |
 | --- | --- | --- |
 | `CHUNKING_STAGE_ONE_ALGORITHM` | `candidate_boundary` | 第一阶段算法名；当前仅支持 `candidate_boundary` |
-| `CHUNKING_STAGE_TWO_ALGORITHM` | `noop` | 第二阶段算法名；当前仅支持 `noop` |
+| `CHUNKING_STAGE_TWO_ALGORITHM` | `noop` | 第二阶段算法名；支持 `noop` / `semantic_depth_window` |
+| `CHUNKING_MAX_CHUNK_TOKENS` | 512 | `semantic_depth_window` 普通 chunk 软目标，范围 `256..2048`，且必须 `>= CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` |
+| `CHUNKING_HARD_MAX_TOKENS` | 1024 | `semantic_depth_window` 绝对硬上限，范围 `512..8192`，且必须 `>= CHUNKING_MAX_CHUNK_TOKENS` |
+| `CHUNKING_PROTECTED_NEIGHBOR_OVERLAP` | false | 含 protected 元素的 final chunk 是否参与 pipeline 后置 neighbor overlap |
 
 约定：
 
 - router 只做纯配置路由，不根据 token 数、文档类型、protected element 或初始化状态自动选择算法。
 - 未知算法名直接失败，不做隐式 fallback。
 - `CHUNKING_ENABLE_ADVANCED_PIPELINE` 已废弃并移除。
-- 当前第二阶段默认使用 `noop`。新的 mixed-aware 第二阶段算法落地前，不提供 oversized 语义细分路由。
+- 当前第二阶段默认使用 `noop`；`semantic_depth_window` 只在显式配置时启用。
 - 第二阶段算法初始化失败或运行失败时的处理策略属于具体算法内部设计，本模块不提供旧规则分片 fallback。
 
 ## 4. 阶段模型
@@ -243,6 +247,8 @@ SplitInput -> CoarseChunkSet
 
 ```env
 CHUNKING_STAGE_TWO_ALGORITHM=noop
+# 或
+CHUNKING_STAGE_TWO_ALGORITHM=semantic_depth_window
 ```
 
 未知算法名直接失败。router 不根据 token 数或 protected element 自动选择算法。
@@ -256,6 +262,40 @@ CoarseChunkSet -> NoopStageTwoAlgorithm -> FinalChunkSet
 ```
 
 这样所有链路统一经过第二阶段，不存在“绕过第二阶段直接导出”的分支。
+
+### 6.3 semantic_depth_window
+
+`semantic_depth_window` 是 Stage 2 语义细分算法，目标是对超过软上限的 `mixed` coarse chunk 做结构感知切分：
+
+```text
+CoarseChunkSet -> SemanticDepthWindowStageTwo -> FinalChunkSet
+```
+
+阶段契约：
+
+- `run(coarse_set)` 签名与 `StageTwoAlgorithm` 保持一致；tokenizer、embedder、阈值在构造期注入。
+- `derived_element` 与 token 数 `<= CHUNKING_MAX_CHUNK_TOKENS` 的 `mixed` chunk 等价透传，不触发 atomization 或 embedding。
+- 仅对 token 数超过软上限的 `mixed` chunk 构造 atom timeline；普通文本可按段落、行、句、token-safe 前缀降级，table / image / code block / math block 作为 protected atom，不在元素内部切分。
+- cohesion 评分只使用可评分文本：普通文本用自身文本，image / table 用非空 `semantic_text`，code block / math block 不参与评分但计入 token 预算。
+- TextTiling depth valley 只决定候选 atom gap 的切点；heading trail 只用于标注和避免标题孤儿，不作为高于语义的切分优先级。
+- Stage 2 输出不包含 neighbor overlap。overlap 只在 pipeline 导出后执行，且含 protected 元素的 chunk 默认不参与，除非 `CHUNKING_PROTECTED_NEIGHBOR_OVERLAP=true`。
+
+三层 token 阈值：
+
+- `CHUNKING_MAX_CHUNK_TOKENS` 是普通打包软目标。普通文本 final 应尽量不超过该值。
+- `CHUNKING_MAX_CHUNK_TOKENS < tokens <= CHUNKING_HARD_MAX_TOKENS` 是 protected 容忍带。不可拆 protected 或 protected 加引导文本可整块保留，并在 metadata 写入 `oversized=true` 与原因。
+- `tokens > CHUNKING_HARD_MAX_TOKENS` 是绝对硬上限。超过 hard_max 的单个不可拆 atom 按 hard_max 内最后完整行截断，并写入 `truncated=true`、`truncated_reason`、`original_token_count`；FinalChunkSetValidator 会校验所有 mixed final 不超过 hard_max。
+
+embedding 失败语义：
+
+- 瞬时错误（超时、连接错误、429、5xx）在失败 batch 内做 part 级重试；重试用尽后抛 `RetriableError`，交由 parse task 任务级重试。
+- 永久 4xx 或 embedding 响应契约错误不重试，直接上抛。
+- 可评分 atom 过少、无 depth 曲线或窗口内无合法 gap 属于非错误退化，算法退回结构边界或 oversized / truncated 处理，不把 embedding 错误静默降级成结构切分。
+
+derived 锚点：
+
+- mixed final 的 metadata 可写入 `contained_element_ids`，表示该 final 含有哪些 image / table 等 derived anchor。
+- `ChunkExporter` 导出 derived chunk 时优先按 `element_id -> contained_element_ids` 映射 `source_chunk_index`；没有锚点时才回退到 `source_coarse_chunk_id` 的首个 final，以兼容 `noop` 输出。
 
 ## 7. ChunkExporter
 

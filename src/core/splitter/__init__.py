@@ -37,7 +37,8 @@ from .stage_models import (
 )
 from .stage_routers import StageOneRouter, StageTwoRouter, UnknownStageAlgorithmError
 from .stage_two_noop import NoopStageTwoAlgorithm
-from .validators import CoarseChunkSetValidator
+from .stage_two_semantic_depth import SemanticDepthWindowStageTwo
+from .validators import CoarseChunkSetValidator, FinalChunkSetValidator
 
 __all__ = [
     "Chunk",
@@ -65,7 +66,9 @@ __all__ = [
     "StageTwoRouter",
     "UnknownStageAlgorithmError",
     "NoopStageTwoAlgorithm",
+    "SemanticDepthWindowStageTwo",
     "CoarseChunkSetValidator",
+    "FinalChunkSetValidator",
     "ChunkEmbeddingPipeline",
     "LazyEmbeddingClient",
     "create_chunk_embedding_pipeline",

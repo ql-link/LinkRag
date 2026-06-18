@@ -3,9 +3,22 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from src.core.markdown_parser import ElementType
 
-from .stage_models import CoarseChunk, CoarseChunkSet, ElementView, ProtectedRange, SplitInput
+from .stage_models import (
+    CoarseChunk,
+    CoarseChunkSet,
+    ElementView,
+    FinalChunkSet,
+    ProtectedRange,
+    SplitInput,
+)
+from .stage_two_semantic_depth import MD_CONTAINED_ELEMENT_IDS, MD_TRUNCATED
+
+if TYPE_CHECKING:
+    from src.core.llm.tokenizer import Tokenizer
 
 
 class SplitterOutputValidationError(ValueError):
@@ -408,3 +421,129 @@ class CoarseChunkSetValidator:
                 f"protected range in coarse chunk {chunk.id} has invalid element index "
                 f"{protected_range.element_index}."
             )
+
+
+class FinalChunkSetValidator:
+    """校验第二阶段输出 FinalChunkSet 的通用契约（跨算法复用，与 CoarseChunkSetValidator 对称）。
+
+    校验项：
+    1) 无损还原：每个 mixed final 的 content 是其来源 coarse content 的精确切片，同源非
+       truncated final 顺序拼接无损覆盖、不重叠（行号近似除外）；含 truncated 的来源组豁免
+       完整覆盖，仅要求各 final content 为来源 content 的有序子串。
+    2) derived 锚点可解析：每个 derived final 的 element_id 能在某 mixed final 的
+       ``contained_element_ids`` 命中（仅当存在 contained 声明时强制，兼容 noop 路径）。
+    3) token 绝对上限：每个 mixed final 的 token 数 ≤ hard_max_tokens（提供 tokenizer 时启用）。
+
+    Args:
+        None.
+
+    Returns:
+        None.
+    """
+
+    def __init__(
+        self, tokenizer: "Tokenizer | None" = None, hard_max_tokens: int | None = None
+    ) -> None:
+        """
+        初始化 FinalChunkSet 校验器。
+
+        Args:
+            tokenizer: 可选分词器；提供时启用 token ≤ hard_max 校验。
+            hard_max_tokens: 单个 final 的硬上限；与 tokenizer 同时提供时生效。
+
+        Returns:
+            None.
+        """
+        self.tokenizer = tokenizer
+        self.hard_max_tokens = hard_max_tokens
+
+    def validate(self, final_set: FinalChunkSet, coarse_set: CoarseChunkSet) -> None:
+        """
+        校验 FinalChunkSet。
+
+        Args:
+            final_set: 第二阶段输出集合。
+            coarse_set: 第一阶段输出集合，用于无损切片对账。
+
+        Returns:
+            None.
+
+        Raises:
+            SplitterOutputValidationError: 输出不满足契约。
+        """
+        coarse_by_id = {chunk.id: chunk for chunk in coarse_set.chunks}
+
+        groups: dict[str | None, list] = {}
+        for final_chunk in final_set.chunks:
+            if final_chunk.role == "derived_element":
+                continue
+            groups.setdefault(final_chunk.source_coarse_chunk_id, []).append(final_chunk)
+
+        for source_id, finals in groups.items():
+            coarse = coarse_by_id.get(str(source_id))
+            if coarse is None:
+                raise SplitterOutputValidationError(
+                    f"final chunk references missing source coarse chunk id {source_id!r}."
+                )
+            self._validate_lossless(coarse, finals)
+
+        self._validate_anchors(final_set)
+        self._validate_hard_max(final_set)
+
+    @staticmethod
+    def _validate_lossless(coarse: CoarseChunk, finals: list) -> None:
+        """同源 mixed final 的 content 必须是来源 coarse content 的有序非重叠切片。"""
+        has_truncated = any(final_chunk.metadata.get(MD_TRUNCATED) for final_chunk in finals)
+        cursor = 0
+        for final_chunk in finals:
+            content = final_chunk.content
+            index = coarse.content.find(content, cursor)
+            if index < 0:
+                raise SplitterOutputValidationError(
+                    f"final chunk content is not an in-order slice of source coarse "
+                    f"{coarse.id}."
+                )
+            if not has_truncated and index != cursor:
+                raise SplitterOutputValidationError(
+                    f"final chunks of source coarse {coarse.id} are not contiguous "
+                    "(gap or overlap)."
+                )
+            cursor = index + len(content)
+        if not has_truncated and cursor != len(coarse.content):
+            raise SplitterOutputValidationError(
+                f"final chunks of source coarse {coarse.id} do not fully cover its content."
+            )
+
+    @staticmethod
+    def _validate_anchors(final_set: FinalChunkSet) -> None:
+        """derived final 的 element_id 必须能在某 mixed final 的 contained_element_ids 命中。"""
+        contained: set[str] = set()
+        for final_chunk in final_set.chunks:
+            if final_chunk.role == "derived_element":
+                continue
+            for element_id in final_chunk.metadata.get(MD_CONTAINED_ELEMENT_IDS) or []:
+                contained.add(str(element_id))
+        if not contained:
+            return  # noop 路径不写 contained，跳过以兼容
+        for final_chunk in final_set.chunks:
+            if final_chunk.role != "derived_element":
+                continue
+            element_id = final_chunk.metadata.get("element_id")
+            if element_id is not None and str(element_id) not in contained:
+                raise SplitterOutputValidationError(
+                    f"derived final chunk element_id {element_id!r} is not anchored to any "
+                    "source final chunk."
+                )
+
+    def _validate_hard_max(self, final_set: FinalChunkSet) -> None:
+        """每个 mixed final 的 token 数 ≤ hard_max_tokens（提供 tokenizer 时启用）。"""
+        if self.tokenizer is None or self.hard_max_tokens is None:
+            return
+        for final_chunk in final_set.chunks:
+            if final_chunk.role == "derived_element":
+                continue
+            tokens = self.tokenizer.count_tokens(final_chunk.content.strip())
+            if tokens > self.hard_max_tokens:
+                raise SplitterOutputValidationError(
+                    f"final chunk exceeds hard_max_tokens ({tokens} > {self.hard_max_tokens})."
+                )
