@@ -12,7 +12,7 @@
 
 from __future__ import annotations
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, field_validator, model_validator
 
 
 def _settings():
@@ -32,6 +32,8 @@ class ChunkingConfig(BaseModel):
     heading_break_level: int = 5
     min_candidate_chunk_tokens: int = 128
     overlap_tokens: int = 64
+    max_chunk_tokens: int = 512
+    hard_max_tokens: int = 1024
 
     @field_validator("overlap_tokens")
     @classmethod
@@ -47,6 +49,51 @@ class ChunkingConfig(BaseModel):
             raise ValueError("min_candidate_chunk_tokens must be between 128 and 256")
         return v
 
+    @field_validator("max_chunk_tokens")
+    @classmethod
+    def _validate_max_chunk_tokens(cls, v: int) -> int:
+        if v < 256 or v > 2048:
+            raise ValueError("max_chunk_tokens must be between 256 and 2048")
+        return v
+
+    @field_validator("hard_max_tokens")
+    @classmethod
+    def _validate_hard_max_tokens(cls, v: int) -> int:
+        if v < 512 or v > 8192:
+            raise ValueError("hard_max_tokens must be between 512 and 8192")
+        return v
+
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_token_bounds_before(cls, data):
+        if not isinstance(data, dict):
+            return data
+
+        def resolve_int(name: str) -> int | None:
+            if name not in data:
+                return None
+            try:
+                return int(data[name])
+            except (TypeError, ValueError):
+                return None
+
+        min_candidate = resolve_int("min_candidate_chunk_tokens")
+        max_chunk = resolve_int("max_chunk_tokens")
+        hard_max = resolve_int("hard_max_tokens")
+        if min_candidate is not None and max_chunk is not None and max_chunk < min_candidate:
+            raise ValueError("max_chunk_tokens must be >= min_candidate_chunk_tokens")
+        if hard_max is not None and max_chunk is not None and hard_max < max_chunk:
+            raise ValueError("hard_max_tokens must be >= max_chunk_tokens")
+        return data
+
+    @model_validator(mode="after")
+    def _validate_token_bounds(self) -> "ChunkingConfig":
+        if self.max_chunk_tokens < self.min_candidate_chunk_tokens:
+            raise ValueError("max_chunk_tokens must be >= min_candidate_chunk_tokens")
+        if self.hard_max_tokens < self.max_chunk_tokens:
+            raise ValueError("hard_max_tokens must be >= max_chunk_tokens")
+        return self
+
     @classmethod
     def from_settings(cls) -> "ChunkingConfig":
         """以运行期系统 ``Settings`` 为 L1 基线构造（未配置数据集时的实际默认）。"""
@@ -55,6 +102,8 @@ class ChunkingConfig(BaseModel):
             heading_break_level=s.CHUNKING_HEADING_BREAK_LEVEL,
             min_candidate_chunk_tokens=s.CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS,
             overlap_tokens=s.CHUNKING_OVERLAP_TOKENS,
+            max_chunk_tokens=s.CHUNKING_MAX_CHUNK_TOKENS,
+            hard_max_tokens=s.CHUNKING_HARD_MAX_TOKENS,
         )
 
 
@@ -151,9 +200,7 @@ class RecallConfig(BaseModel):
             dense_top_k=s.DENSE_RETRIEVAL_TOP_K,
             dense_score_threshold=s.DENSE_RETRIEVAL_SCORE_THRESHOLD,
             recall_enabled_sources=[
-                src.strip()
-                for src in (s.RECALL_ENABLED_SOURCES or "").split(",")
-                if src.strip()
+                src.strip() for src in (s.RECALL_ENABLED_SOURCES or "").split(",") if src.strip()
             ],
             rerank_top_n=s.RERANK_DEFAULT_TOP_N,
             recall_strict=s.RECALL_STRICT_DEFAULT,

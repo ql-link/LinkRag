@@ -1,8 +1,7 @@
 # -*- coding: utf-8 -*-
 """splitter 派生元素读结构化字段（R2）单元测试。
 
-覆盖：图片/表格描述取自 metadata 字段、字段缺失走兜底、原始表格取自 content、
-内联图描述回注到段落渲染内容。
+覆盖：图片/表格描述取自 metadata 字段、字段缺失走兜底、原始表格取自 content。
 """
 
 from src.core.markdown_parser import ElementType, MarkdownElement

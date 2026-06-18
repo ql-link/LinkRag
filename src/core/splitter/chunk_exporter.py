@@ -7,6 +7,7 @@ from src.core.markdown_parser import ElementType
 
 from .models import Chunk
 from .stage_models import FinalChunk, FinalChunkSet
+from .stage_two_semantic_depth import MD_CONTAINED_ELEMENT_IDS
 from .validators import SplitterOutputValidationError
 
 
@@ -44,11 +45,14 @@ class ChunkExporter:
             SplitterOutputValidationError: derived chunk 无法映射 source chunk。
         """
         source_index_by_coarse_id: dict[str, int] = {}
+        element_id_to_index: dict[str, int] = {}
         chunks: list[Chunk] = []
 
         for index, final_chunk in enumerate(final_set.chunks):
             if final_chunk.role != "derived_element" and final_chunk.source_coarse_chunk_id:
                 source_index_by_coarse_id.setdefault(final_chunk.source_coarse_chunk_id, index)
+                for element_id in final_chunk.metadata.get(MD_CONTAINED_ELEMENT_IDS) or []:
+                    element_id_to_index.setdefault(str(element_id), index)
             chunks.append(
                 Chunk(
                     content=final_chunk.content,
@@ -61,12 +65,19 @@ class ChunkExporter:
         for final_chunk, chunk in zip(final_set.chunks, chunks):
             if final_chunk.role != "derived_element":
                 continue
-            source_coarse_chunk_id = final_chunk.source_coarse_chunk_id
-            source_index = source_index_by_coarse_id.get(str(source_coarse_chunk_id))
+            source_index: int | None = None
+            element_id = final_chunk.metadata.get("element_id")
+            if element_id is not None:
+                source_index = element_id_to_index.get(str(element_id))
+            if source_index is None:
+                source_index = source_index_by_coarse_id.get(
+                    str(final_chunk.source_coarse_chunk_id)
+                )
             if source_index is None:
                 raise SplitterOutputValidationError(
-                    "derived final chunk references missing source coarse chunk id: "
-                    f"{source_coarse_chunk_id!r}."
+                    "derived final chunk cannot be mapped to a source coarse chunk: "
+                    f"element_id={element_id!r}, "
+                    f"source_coarse_chunk_id={final_chunk.source_coarse_chunk_id!r}."
                 )
             chunk.metadata["source_chunk_index"] = source_index
 

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from src.config import Settings
+import pytest
+
+from src.config import SUPPORTED_CHUNKING_STAGE_TWO_ALGORITHMS, Settings
+from src.core.dataset_config.models import ChunkingConfig
 
 
 def test_should_enable_sparse_vector_by_default():
@@ -32,10 +35,24 @@ def test_should_reject_invalid_chunking_stage_algorithm_names():
         Settings(_env_file=None, CHUNKING_STAGE_TWO_ALGORITHM="unknown")
     except ValueError as exc:
         assert (
-            "CHUNKING_STAGE_TWO_ALGORITHM must be one of the registered " "Stage 2 algorithms: noop"
+            "CHUNKING_STAGE_TWO_ALGORITHM must be one of the registered Stage 2 algorithms"
         ) in str(exc)
+        assert "semantic_depth_window" in str(exc)
     else:
         raise AssertionError("expected ValueError")
+
+
+def test_should_register_semantic_depth_stage_two_but_keep_noop_default():
+    settings = Settings(_env_file=None)
+
+    assert settings.CHUNKING_STAGE_TWO_ALGORITHM == "noop"
+    assert "semantic_depth_window" in SUPPORTED_CHUNKING_STAGE_TWO_ALGORITHMS
+    assert (
+        Settings(
+            _env_file=None, CHUNKING_STAGE_TWO_ALGORITHM=" semantic_depth_window "
+        ).CHUNKING_STAGE_TWO_ALGORITHM
+        == "semantic_depth_window"
+    )
 
 
 def test_should_allow_chunking_overlap_token_bounds():
@@ -72,3 +89,96 @@ def test_should_reject_invalid_min_candidate_chunk_tokens():
             assert "CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS must be between 128 and 256" in str(exc)
         else:
             raise AssertionError("expected ValueError")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("CHUNKING_MAX_CHUNK_TOKENS", 256),
+        ("CHUNKING_MAX_CHUNK_TOKENS", 512),
+        ("CHUNKING_MAX_CHUNK_TOKENS", 2048),
+        ("CHUNKING_HARD_MAX_TOKENS", 512),
+        ("CHUNKING_HARD_MAX_TOKENS", 1024),
+        ("CHUNKING_HARD_MAX_TOKENS", 8192),
+    ],
+)
+def test_should_allow_chunking_stage_two_token_bounds(field: str, value: int):
+    values = {
+        "CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS": 256,
+        "CHUNKING_MAX_CHUNK_TOKENS": 512,
+        "CHUNKING_HARD_MAX_TOKENS": 1024,
+        field: value,
+    }
+    if field == "CHUNKING_MAX_CHUNK_TOKENS":
+        values["CHUNKING_HARD_MAX_TOKENS"] = max(1024, value)
+    settings = Settings(_env_file=None, **values)
+
+    assert getattr(settings, field) == value
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("CHUNKING_MAX_CHUNK_TOKENS", 255, "between 256 and 2048"),
+        ("CHUNKING_MAX_CHUNK_TOKENS", 2049, "between 256 and 2048"),
+        ("CHUNKING_HARD_MAX_TOKENS", 511, "between 512 and 8192"),
+        ("CHUNKING_HARD_MAX_TOKENS", 8193, "between 512 and 8192"),
+    ],
+)
+def test_should_reject_invalid_chunking_stage_two_token_bounds(
+    field: str,
+    value: int,
+    message: str,
+):
+    with pytest.raises(ValueError, match=message):
+        Settings(_env_file=None, **{field: value})
+
+
+def test_should_reject_cross_field_chunking_token_bounds():
+    with pytest.raises(ValueError, match="CHUNKING_MAX_CHUNK_TOKENS must be >="):
+        Settings(
+            _env_file=None,
+            CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS=256,
+            CHUNKING_MAX_CHUNK_TOKENS=255,
+        )
+
+    with pytest.raises(ValueError, match="CHUNKING_HARD_MAX_TOKENS must be >="):
+        Settings(
+            _env_file=None,
+            CHUNKING_MAX_CHUNK_TOKENS=1024,
+            CHUNKING_HARD_MAX_TOKENS=512,
+        )
+
+
+def test_should_parse_env_string_chunking_token_bounds_and_prioritize_cross_field_errors():
+    settings = Settings(
+        _env_file=None,
+        CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS="256",
+        CHUNKING_MAX_CHUNK_TOKENS="512",
+        CHUNKING_HARD_MAX_TOKENS="1024",
+    )
+
+    assert settings.CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS == 256
+    assert settings.CHUNKING_MAX_CHUNK_TOKENS == 512
+    assert settings.CHUNKING_HARD_MAX_TOKENS == 1024
+
+    with pytest.raises(ValueError, match="CHUNKING_MAX_CHUNK_TOKENS must be >="):
+        Settings(
+            _env_file=None,
+            CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS="256",
+            CHUNKING_MAX_CHUNK_TOKENS="255",
+        )
+
+
+def test_chunking_config_should_validate_stage_two_token_bounds():
+    config = ChunkingConfig(
+        min_candidate_chunk_tokens=256,
+        max_chunk_tokens=512,
+        hard_max_tokens=1024,
+    )
+
+    assert config.max_chunk_tokens == 512
+    assert config.hard_max_tokens == 1024
+
+    with pytest.raises(ValueError, match="hard_max_tokens must be >= max_chunk_tokens"):
+        ChunkingConfig(max_chunk_tokens=1024, hard_max_tokens=512)
