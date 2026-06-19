@@ -726,10 +726,10 @@ def _answer_done_fields(rag_acc_state):
     assert "answer" in data and "hits" in data and "failed_sources" in data
 
 
-@then(parsers.parse("hits 中每个 hit 不含字段 content"))
-def _no_content(rag_acc_state):
+@then(parsers.parse("hits 中每个 hit 含字段 content"))
+def _has_content(rag_acc_state):
     for h in _last_event_data(rag_acc_state)["hits"]:
-        assert "content" not in h
+        assert h["content"] == f"片段正文 {h['chunk_id']}"
 
 
 @then(
