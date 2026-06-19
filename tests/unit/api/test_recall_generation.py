@@ -161,7 +161,8 @@ async def test_happy_streams_answer_delta_then_done(stub_generation):
     done = events[-1][1]
     assert done["answer"] == "答案"
     assert len(done["hits"]) == 2
-    assert all("content" not in h for h in done["hits"])
+    # 终态 hits 回填 chunk 正文（供前端展示召回片段），与回填映射一致。
+    assert all(h["content"] == f"正文-{h['chunk_id']}" for h in done["hits"])
 
 
 @pytest.mark.asyncio

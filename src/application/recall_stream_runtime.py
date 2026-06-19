@@ -7,7 +7,8 @@ LLM 流式生成执行与事件序列化的**单一来源**。
 - ``recall_event_stream``：流内执行 pipeline，把结果/异常映射为 SSE 终态事件。
 
 hits 序列化抽至 ``recall_serialization``：本 runtime 用 ``serialize_reranked_hits``
-（含 rerank 字段），纯召回 JSON 端点用 ``serialize_hits``（仅 RRF 字段）。
+（含 rerank 字段与 chunk 正文，供前端展示召回片段），纯召回 JSON 端点用
+``serialize_hits``（仅 RRF 字段、不回填正文）。
 """
 
 from __future__ import annotations
@@ -290,7 +291,7 @@ async def _generate_answer(
         yield recall_event(
             "recall_done",
             {
-                "hits": serialize_reranked_hits(hits),
+                "hits": serialize_reranked_hits(hits, contents),
                 "rerank_applied": rerank_applied,
                 "failed_sources": failed_sources,
             },
@@ -359,7 +360,7 @@ async def _generate_answer(
         {
             "answer": "".join(answer_parts),
             "usage": usage.model_dump(),
-            "hits": serialize_reranked_hits(hits),
+            "hits": serialize_reranked_hits(hits, contents),
             "rerank_applied": rerank_applied,
             "failed_sources": failed_sources,
         },

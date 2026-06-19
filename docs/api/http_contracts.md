@@ -243,15 +243,16 @@ data: {"answer": "<完整答案>", "hits": [...], "rerank_applied": true, "faile
 ```
 
 - `answer_delta`：流式增量 token，可 0 到多帧；
-- `answer_done`：生成结束终态，`hits` 为 **rerank 精排后**的最终候选（不含正文），发送后关闭流；
-- **空命中 / 全部片段缺正文**：不生成，发 `recall_done`（`hits` 可空，不含正文，同带 `rerank_applied`）；
+- `answer_done`：生成结束终态，`hits` 为 **rerank 精排后**的最终候选（含正文 `content`），发送后关闭流；
+- **空命中 / 全部片段缺正文**：不生成，发 `recall_done`（`hits` 可空，同带 `rerank_applied`；全部缺正文时各 hit `content` 为空串）；
 - **生成阶段失败**：整请求失败，发 `error` `RECALL_GENERATION_FAILED`，不返回部分召回片段。
 
-终态 `hits` 单项在 RRF 字段基础上补 rerank 字段：
+终态 `hits` 单项在 RRF 字段基础上补 rerank 字段与 chunk 正文 `content`：
 
 ```json
 {"chunk_id": "...", "doc_id": 10, "dataset_id": 1, "fused_score": 0.033,
- "scores": {"bm25": 10.16, "sparse": 0.05}, "rerank_score": 0.87, "rerank_rank": 1}
+ "scores": {"bm25": 10.16, "sparse": 0.05}, "rerank_score": 0.87, "rerank_rank": 1,
+ "content": "<chunk 正文，供前端展示召回片段>"}
 ```
 
 - `rerank_applied`（顶层 bool）：rerank 是否实际生效。**未配置 RERANK 模型 / 调用失败 / 返回不可用
@@ -264,6 +265,8 @@ data: {"answer": "<完整答案>", "hits": [...], "rerank_applied": true, "faile
   截断到 `rerank_top_n`；
 - `fused_score` / `scores` 为 RRF 解释信息，原样保留；`scores` 键集合等于本次生效的召回路
   （即数据集 `recall_enabled_sources` 在已装配路集合内收窄后的结果）。
+- `content` 为该 chunk 的正文（与生成阶段上下文同源、一次性回填，无需另起反查）；某候选正文缺失
+  时为空串。仅 rag/stream 终态 `hits` 含此字段，纯召回 JSON 端点（下文 `/api/v1/recall`）不含。
 
 `failed_sources` 表达「降级成功」（如 bm25 成功、sparse 失败），空列表表示无失败路。失败终态
 `error` 发送后关闭流，`message` 不含内部堆栈。错误码见
