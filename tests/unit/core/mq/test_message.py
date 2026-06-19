@@ -20,6 +20,8 @@ from src.core.mq.messages import (
     CacheSyncPayload,
     UsageReportMessage,
     UsageReportPayload,
+    ChatTurnMessage,
+    ChatTurnPayload,
 )
 
 
@@ -231,6 +233,76 @@ class TestUsageReportMessage:
         assert parsed.provider_type == "openai"
         assert parsed.model_name == "gpt-4"
         assert parsed.total_tokens == 200
+
+
+class TestChatTurnMessage:
+    """对话轮次完成消息测试（chat-message-persistence）"""
+
+    def _build(self, **overrides):
+        kwargs = dict(
+            conversation_id=10086,
+            request_id="req-1",
+            user_id=42,
+            query="什么是RAG",
+            answer="RAG 是检索增强生成",
+            config_id=7,
+            provider_type="openai",
+            model_name="gpt-x",
+            status="success",
+            prompt_tokens=120,
+            completion_tokens=80,
+            total_tokens=200,
+            references=["1001", "1002"],
+            latency_ms=350,
+        )
+        kwargs.update(overrides)
+        return ChatTurnMessage.build(**kwargs)
+
+    def test_build_fields_and_constants(self):
+        # Scenario: 问答正常结束后上报一轮对话数据
+        msg = self._build()
+        assert msg.get_mq_name() == "tolink.rag.chat_turn"
+        assert msg.get_mq_type() == "CHAT_TURN"
+        payload = msg.get_payload()
+        assert payload.query == "什么是RAG"
+        assert payload.answer == "RAG 是检索增强生成"
+        assert payload.status == "success"
+        assert payload.prompt_tokens == 120
+        assert payload.completion_tokens == 80
+        assert payload.total_tokens == 200
+        assert payload.references == ["1001", "1002"]
+
+    def test_routing_key_is_conversation_id(self):
+        # Scenario: 消息以 conversation_id 作为路由键
+        msg = self._build(conversation_id=12345)
+        assert msg.get_routing_key() == "12345"
+
+    def test_roundtrip(self):
+        msg = self._build(status="partial", answer="半截")
+        parsed = ChatTurnMessage.parse_msg(msg.serialize())
+        assert isinstance(parsed, ChatTurnPayload)
+        assert parsed.status == "partial"
+        assert parsed.answer == "半截"
+        assert parsed.conversation_id == 10086
+
+    def test_usage_defaults_to_zero(self):
+        # Scenario: 用量字段缺省时按 0 上报
+        msg = ChatTurnMessage.build(
+            conversation_id=1,
+            request_id="r",
+            user_id=1,
+            query="q",
+            answer="a",
+            config_id=1,
+            provider_type="openai",
+            model_name="m",
+            status="success",
+        )
+        payload = msg.get_payload()
+        assert payload.prompt_tokens == 0
+        assert payload.completion_tokens == 0
+        assert payload.total_tokens == 0
+        assert payload.references == []
 
 
 class TestDeserialization:

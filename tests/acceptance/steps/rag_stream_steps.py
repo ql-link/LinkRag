@@ -40,6 +40,8 @@ URL = "/api/v1/rag/stream"
 # 本特性聚焦握手/鉴权/并发/传输/召回执行语义；config_id 必填（CHAT 模型由前端传入），
 # 未显式提供则注入确定性替身 id。
 CONFIG_ID = 77
+# conversation_id 必填（对话落库锚点，chat-message-persistence）；同样注入确定性替身 id。
+CONVERSATION_ID = 9001
 
 
 class _FakeProvider:
@@ -303,10 +305,16 @@ def _fire(state: _State, *, with_token: bool) -> None:
         resp = client.post(URL, json=state.body, headers=headers)
     elif state.omit_dataset:
         resp = client.post(
-            URL, json={"query": state.body["query"], "config_id": CONFIG_ID}, headers=headers
+            URL,
+            json={
+                "query": state.body["query"],
+                "config_id": CONFIG_ID,
+                "conversation_id": CONVERSATION_ID,
+            },
+            headers=headers,
         )
     else:
-        body = {"config_id": CONFIG_ID, **state.body}
+        body = {"config_id": CONFIG_ID, "conversation_id": CONVERSATION_ID, **state.body}
         resp = client.post(URL, json=body, headers=headers)
     state.response = resp
     if resp.headers.get("content-type", "").startswith("text/event-stream"):
@@ -640,7 +648,7 @@ def _w_disconnect(rag_acc_state):
     rag_acc_state.redis.store["recall:concurrent:123"] = 1
     req = RecallRequest(query="q", user_id=123, dataset_ids=[1], top_k=20)
     gen = rag._guarded_stream(
-        rag_acc_state.fake, _FakeReranker(), req, "rid", 123, CONFIG_ID, 4000, 8
+        rag_acc_state.fake, _FakeReranker(), req, "rid", 123, CONFIG_ID, CONVERSATION_ID, 4000, 8
     )
 
     async def _drive() -> None:

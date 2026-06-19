@@ -168,10 +168,12 @@ ORM：[`UsageLogDB`](../../../src/models/db_models.py)
 | `status` | VARCHAR(16) | `success` / `failed` / `partial` |
 | `error_message` | VARCHAR(512) | 错误信息 |
 | `fallback_config_id` | BIGINT UNSIGNED | 触发 Fallback 时记录原配置 ID |
-| `conversation_id` | BIGINT UNSIGNED | 关联对话 ID |
+| `conversation_id` | BIGINT UNSIGNED | 关联对话 ID（由 Java 消费 `chat_turn` 消息时写入） |
+| `message_id` | BIGINT UNSIGNED | 关联产生该用量的 `chat_message` 行 |
+| `request_id` | VARCHAR(64) | 与 `chat_message` 同一把 key，串联一轮问答 |
 | `created_at` | DATETIME | 创建时间 |
 
-索引：`idx_user_date`, `idx_config_date`, `idx_conversation_id`。
+索引：`idx_user_date`, `idx_config_date`, `idx_conversation_id`, `idx_usage_message_id`。
 
 ---
 
@@ -233,7 +235,11 @@ ORM：[`UsageLogDB`](../../../src/models/db_models.py)
 - `idx_chat_conversation_user_pinned_updated(user_id, is_pinned, updated_at)`
 - `idx_chat_conversation_dataset_updated(dataset_id, updated_at)`
 
-### `chat_message` — 对话消息表
+### `chat_message` — 对话消息表（一行一轮）
+
+一行同时承载用户提问与 LLM 回答（RAG 单轮严格一问一答），不再用 role 区分的逐消息两行模型。
+
+ORM：[`ChatMessageDB`](../../../src/models/db_models.py)
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -241,12 +247,16 @@ ORM：[`UsageLogDB`](../../../src/models/db_models.py)
 | `conversation_id` | BIGINT UNSIGNED | 所属对话 |
 | `config_id` | BIGINT UNSIGNED | 产生该消息所使用的 LLM 配置 |
 | `model_name` | VARCHAR(128) | 模型名快照 |
-| `role` | VARCHAR(16) | `user` / `assistant` / `system` |
-| `content` | MEDIUMTEXT | 消息内容 |
-| `token_count` | INT | 该条消息消耗的 Token 数 |
+| `query` | MEDIUMTEXT | 用户提问 |
+| `answer` | MEDIUMTEXT | LLM 回答（partial 为半截，failed 可空） |
+| `references` | JSON | 召回片段 `chunk_id` 列表（仅标识，不含正文） |
+| `request_id` | VARCHAR(64) | 请求追踪 ID / 幂等键，与 `llm_usage_log` 对应 |
+| `status` | VARCHAR(16) | `success` / `partial` / `failed` |
 | `created_at` | DATETIME | 创建时间 |
 
 索引：`idx_conversation_created(conversation_id, created_at)`。
+
+> 所有权：表结构由 Python 侧 Alembic 迁移管理（含 `chat_conversation`）；**行数据的增删改由 Java 侧负责**——Java 消费 Python 发出的 `tolink.rag.chat_turn` 消息后，单事务写入 `chat_message` 行、`llm_usage_log` 行并更新 `chat_conversation`。Python 侧不写这三张表的行数据。详见 [mq_contracts.md](../mq_contracts.md#对话轮次上报javapython)。
 
 ---
 

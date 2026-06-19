@@ -31,7 +31,9 @@ from src.application.recall_errors import (
 from src.application.recall_serialization import serialize_reranked_hits
 from src.config import settings
 from src.core.llm.exceptions import UserModelConfigMissingError
+from src.core.llm.response import UsageInfo
 from src.core.llm.user_model_resolver import aresolve_user_model
+from src.core.mq.messages import ChatTurnMessage
 from src.core.pipeline.recall import (
     RecallError,
     RecallFatalError,
@@ -48,6 +50,7 @@ from src.core.pipeline.rerank import (
     degrade_to_rrf_order,
 )
 from src.core.prompts import RAG_GENERATION_SYSTEM_PROMPT, build_rag_user_prompt
+from src.services.mq_service import MQService
 
 
 def recall_event(name: str, payload: dict) -> str:
@@ -60,6 +63,7 @@ async def recall_event_stream(
     recall_req: RecallRequest,
     request_id: str,
     config_id: int,
+    conversation_id: int,
     reranker: PostRecallReranker,
     token_budget: int,
     rerank_top_n: int,
@@ -136,6 +140,8 @@ async def recall_event_stream(
             recall_req,
             request_id,
             token_budget,
+            conversation_id,
+            config_id,
         ):
             yield event
     except RecallValidationError as exc:
@@ -241,18 +247,22 @@ async def _generate_answer(
     recall_req: RecallRequest,
     request_id: str,
     token_budget: int,
+    conversation_id: int,
+    config_id: int,
 ) -> AsyncGenerator[str, None]:
-    """生成模式后续：空命中判定 → 上下文拼装 → 流式生成。
+    """生成模式后续：空命中判定 → 上下文拼装 → 流式生成 → 对话轮次落库通知。
 
     入参 ``hits`` 是 rerank 后的最终候选（降级时为 RRF 顺序），``contents`` 是上游一次性
     回填的正文（rerank 与生成共用，不在此重复查库）。上下文拼装与 ``answer_done`` /
     ``recall_done`` 回报均以 ``hits`` 为准；``rerank_applied`` 原样透出。
 
-    - 0 命中 / 全部片段缺正文 → ``recall_done``（不发起生成）；
-    - 否则用已解析的用户模型流式生成：逐 token ``answer_delta``、结束 ``answer_done``；
+    - 0 命中 / 全部片段缺正文 → ``recall_done``（不发起生成、**不发对话轮次消息**）；
+    - 否则用已解析的用户模型流式生成：逐 token ``answer_delta``、结束 ``answer_done``（附 usage）；
     - 生成阶段任何异常 → ``error`` GENERATION_FAILED（整请求失败，不返回部分召回片段为成功终态）。
 
-    客户端断连的 ``CancelledError`` 向上传播，由顶层处理。
+    三种生成终态各发一条 ``ChatTurnMessage`` 供 Java 落库（chat-message-persistence）：
+    正常结束 ``success``、生成异常 ``failed``、客户端断连（``CancelledError``）``partial``
+    （保留半截答案后向上传播取消）。发送均置于 SSE 终态之后、且失败仅告警，不阻塞用户流。
     """
     # 空命中：不进入生成。
     if not hits:
@@ -288,9 +298,17 @@ async def _generate_answer(
         return
 
     # 流式生成：生成阶段失败即整请求失败。
+    # references 取 rerank 后最终候选的 chunk_id（仅标识，不含正文），随各终态一起上报。
+    user_prompt = build_rag_user_prompt(recall_req.query, assembled.context_text)
+    answer_parts: list[str] = []
+    usage = UsageInfo()  # 流式 usage 通常挂在末帧；断连未收到时维持 0
+    references = [h.chunk_id for h in hits]
+    gen_started = time.perf_counter()
+
+    def _elapsed_ms() -> int:
+        return int((time.perf_counter() - gen_started) * 1000)
+
     try:
-        user_prompt = build_rag_user_prompt(recall_req.query, assembled.context_text)
-        answer_parts: list[str] = []
         async for chunk in resolved.provider.stream(
             prompt=user_prompt,
             system_prompt=RAG_GENERATION_SYSTEM_PROMPT,
@@ -298,20 +316,108 @@ async def _generate_answer(
             if chunk.delta:
                 answer_parts.append(chunk.delta)
                 yield recall_event("answer_delta", {"text": chunk.delta})
-        yield recall_event(
-            "answer_done",
-            {
-                "answer": "".join(answer_parts),
-                "hits": serialize_reranked_hits(hits),
-                "rerank_applied": rerank_applied,
-                "failed_sources": failed_sources,
-            },
-        )
+            if chunk.usage is not None:
+                usage = chunk.usage
     except asyncio.CancelledError:
+        # 客户端断连：保留半截答案按 partial 上报，再向上传播取消。
+        await _emit_chat_turn(
+            recall_req=recall_req,
+            request_id=request_id,
+            conversation_id=conversation_id,
+            config_id=config_id,
+            resolved=resolved,
+            answer="".join(answer_parts),
+            usage=usage,
+            references=references,
+            latency_ms=_elapsed_ms(),
+            status="partial",
+        )
         raise
     except Exception as exc:  # noqa: BLE001 - 生成失败统一收敛为 GENERATION_FAILED
         logger.warning("[recall] generation failed request_id={}: {}", request_id, exc)
         yield recall_event(
             "error",
             {"code": CODE_GENERATION_FAILED, "message": "answer generation failed"},
+        )
+        await _emit_chat_turn(
+            recall_req=recall_req,
+            request_id=request_id,
+            conversation_id=conversation_id,
+            config_id=config_id,
+            resolved=resolved,
+            answer="".join(answer_parts),
+            usage=usage,
+            references=references,
+            latency_ms=_elapsed_ms(),
+            status="failed",
+        )
+        return
+
+    # 正常结束：answer_done 附 usage，随后发 success 轮次消息（在 SSE 终态之后）。
+    yield recall_event(
+        "answer_done",
+        {
+            "answer": "".join(answer_parts),
+            "usage": usage.model_dump(),
+            "hits": serialize_reranked_hits(hits),
+            "rerank_applied": rerank_applied,
+            "failed_sources": failed_sources,
+        },
+    )
+    await _emit_chat_turn(
+        recall_req=recall_req,
+        request_id=request_id,
+        conversation_id=conversation_id,
+        config_id=config_id,
+        resolved=resolved,
+        answer="".join(answer_parts),
+        usage=usage,
+        references=references,
+        latency_ms=_elapsed_ms(),
+        status="success",
+    )
+
+
+async def _emit_chat_turn(
+    *,
+    recall_req: RecallRequest,
+    request_id: str,
+    conversation_id: int,
+    config_id: int,
+    resolved,
+    answer: str,
+    usage: UsageInfo,
+    references: list[str],
+    latency_ms: int,
+    status: str,
+) -> None:
+    """构造并发送对话轮次完成消息（chat-message-persistence）。
+
+    置于 SSE 终态之后调用：携带 query/answer/usage/references/status 供 Java 落库。
+    发送失败仅告警，绝不影响已返回答案或异常传播——对话落库是最终一致，不进用户关键路径。
+    """
+    try:
+        msg = ChatTurnMessage.build(
+            conversation_id=conversation_id,
+            request_id=request_id,
+            user_id=recall_req.user_id,
+            query=recall_req.query,
+            answer=answer,
+            config_id=config_id,
+            provider_type=resolved.provider_type,
+            model_name=resolved.model_name or "",
+            status=status,
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            total_tokens=usage.total_tokens,
+            references=references,
+            latency_ms=latency_ms,
+        )
+        await MQService().send(msg)
+    except Exception as exc:  # noqa: BLE001 - 落库通知失败不影响问答主流程
+        logger.warning(
+            "[recall] chat_turn emit failed request_id={} status={}: {}",
+            request_id,
+            status,
+            exc,
         )
