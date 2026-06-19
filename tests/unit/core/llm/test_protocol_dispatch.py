@@ -42,9 +42,9 @@ def test_create_client_dispatches_by_protocol(protocol, cls):
 @pytest.mark.parametrize(
     "protocol,expected",
     [
-        ("openai", {T.TEXT, T.EMBEDDING}),
-        ("anthropic", {T.TEXT}),
-        ("google", {T.TEXT}),
+        ("openai", {T.TEXT, T.EMBEDDING, T.VISION}),
+        ("anthropic", {T.TEXT, T.VISION}),
+        ("google", {T.TEXT, T.VISION}),
         ("jina", {T.RERANK, T.EMBEDDING}),
         ("dashscope", {T.RERANK}),
         ("bge_m3", {T.SPARSE_EMBEDDING}),
@@ -53,6 +53,13 @@ def test_create_client_dispatches_by_protocol(protocol, cls):
 def test_capability_matrix(protocol, expected):
     client = ModelFactory().create_client(protocol=protocol, api_key="k")
     assert client.get_capabilities() == expected
+
+
+@pytest.mark.parametrize("protocol", ["openai", "anthropic", "google"])
+def test_vision_now_supported_passes_gate(protocol):
+    # VISION 已接入：openai/anthropic/google 三协议门禁放行（曾因「本期停做」恒拦死）。
+    client = ModelFactory().create_client(protocol=protocol, api_key="k")
+    assert client.has_capability(T.VISION)
 
 
 @pytest.mark.parametrize(
@@ -69,9 +76,10 @@ def test_capability_matrix(protocol, expected):
         ("google", T.RERANK),
         ("dashscope", T.TEXT),
         ("dashscope", T.SPARSE_EMBEDDING),
-        # 多模态停做
-        ("openai", T.VISION),
-        ("anthropic", T.VISION),
+        # VISION 仅 openai/anthropic/google 承载，其余协议仍明确不支持
+        ("jina", T.VISION),
+        ("dashscope", T.VISION),
+        ("bge_m3", T.VISION),
     ],
 )
 def test_unsupported_or_stopped_combos_not_capable(protocol, capability):

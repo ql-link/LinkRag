@@ -219,8 +219,8 @@ class AnthropicProvider(BaseProvider):
             **kwargs
         )
         self.model_name = model_name or self.DEFAULT_MODEL
-        # 本期多模态停做：仅声明 TEXT；VISION 请求经中台门禁报 UnsupportedProtocolCapabilityError。
-        self._capabilities = {CapabilityType.TEXT}
+        # CHAT 走 messages，VISION 复用同一 messages 通路（仅多一个 image content block）。
+        self._capabilities = {CapabilityType.TEXT, CapabilityType.VISION}
         self._client = AnthropicClient(
             api_key=api_key,
             api_base_url=self.api_base_url,
@@ -317,8 +317,12 @@ class AnthropicProvider(BaseProvider):
         """Anthropic 不支持 rerank"""
         raise NotImplementedError("Anthropic does not support rerank")
 
-    async def extract_text(self, image_base64, prompt=None, **kwargs):
-        """OCR - Anthropic Vision 支持图像理解"""
+    async def extract_text(self, image_base64, prompt=None, model=None, **kwargs):
+        """OCR - Anthropic Vision 支持图像理解。
+
+        ``model`` 显式接住调用方（如图片增强 ImageDescriber）透传的模型名，避免与下方
+        ``model=`` 同名 kwarg 撞车（``TypeError: multiple values for 'model'``）。
+        """
         from src.core.llm.response import OcrResult
 
         messages = [{
@@ -339,7 +343,7 @@ class AnthropicProvider(BaseProvider):
         })
 
         response = await self._client.messages(
-            model=self.model_name,
+            model=model or self.model_name,
             messages=messages,
             max_tokens=1024,
             **kwargs
@@ -358,8 +362,8 @@ class AnthropicProvider(BaseProvider):
             ),
         )
 
-    async def analyze_image(self, image_base64, prompt, **kwargs):
-        """视觉分析"""
+    async def analyze_image(self, image_base64, prompt, model=None, **kwargs):
+        """视觉分析。``model`` 显式接住透传的模型名，避免与下方 ``model=`` 撞车。"""
         from src.core.llm.response import VisionResult
 
         messages = [{
@@ -378,7 +382,7 @@ class AnthropicProvider(BaseProvider):
         }]
 
         response = await self._client.messages(
-            model=self.model_name,
+            model=model or self.model_name,
             messages=messages,
             max_tokens=1024,
             **kwargs
