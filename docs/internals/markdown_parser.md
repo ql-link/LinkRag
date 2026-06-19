@@ -11,6 +11,7 @@ src/core/markdown_parser/
 ├── scanner.py            # 行扫描器，识别块级元素
 ├── image_extractor.py    # Markdown/HTML 图片引用提取
 ├── orchestrator.py       # MarkdownEnhancementOrchestrator
+├── heading_hierarchy.py  # 标题层级生成门禁、标题计划校验与写回
 ├── llm_integration.py    # TableDescriber / ImageDescriber 合并逻辑
 └── provider_clients.py   # 基于项目 LLM Provider 的表格/图片客户端
 ```
@@ -42,6 +43,7 @@ ParseResult
 | `ImageExtractor` | `image_extractor.py` | 提取图片 URL、行号和 alt 文本 |
 | `ParseResult` | `models.py` | 结构化解析结果，包含 `elements/tables/images/source_file`；`to_markdown()` 把描述字段重新编码为标记（与解码对称） |
 | `MarkdownEnhancementOrchestrator` | `orchestrator.py` | 按配置触发表格和图片增强 |
+| `HeadingHierarchyProcessor` | `heading_hierarchy.py` | 可选标题层级后处理：门禁命中后应用标题插入计划，并返回同构更新后的 Markdown + `ParseResult` |
 | `TableDescriber` | `llm_integration.py` | 把表格总结**编码**为标记 `[表格总结: …]` 写入对应元素 content |
 | `ImageDescriber` | `llm_integration.py` | 把图片视觉描述**编码**为标记 `[视觉描述\|src=<url>: …]` 写入 content |
 | `ProviderTableClient` / `ProviderVisionClient` | `provider_clients.py` | 调用系统 LLM Provider 完成增强 |
@@ -83,6 +85,11 @@ ParseResult
 - `MARKDOWN_PARSER_VISION_MODEL`
 - `MARKDOWN_PARSER_LLM_TIMEOUT_MS`
 - `MARKDOWN_PARSER_VISION_CONCURRENCY`
+- `MARKDOWN_PARSER_ENABLE_HEADING_HIERARCHY`
+- `MARKDOWN_PARSER_HEADING_NO_HEADING_MIN_TOKENS`
+- `MARKDOWN_PARSER_HEADING_FLAT_MIN_HEADINGS`
+- `MARKDOWN_PARSER_HEADING_SPARSE_TOKENS_PER_HEADING`
+- `MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET`
 
 表格增强使用文本能力；图片增强使用视觉能力。Provider 默认来自系统级 LLM 配置：
 
@@ -96,6 +103,18 @@ PDF 解析阶段如果提供了 `image_bytes_by_url`，图片增强会优先使�
 
 图片增强通过 `ProviderVisionClient` 对同一批图片执行受控并发调用，最大并发数由
 `MARKDOWN_PARSER_VISION_CONCURRENCY` 控制，默认值为 `24`。单张图片加载或视觉模型调用失败时只跳过该图片描述，不阻断基础 Markdown 解析。非内存图片读取会通过线程执行，避免同步文件/URL 读取阻塞事件循环。
+
+标题层级后处理是可选增强，默认关闭。配置关闭时行为与普通 `MarkdownParser.parse()` 等价，不执行门禁，也不调用标题计划生成器。当前实现只提供门禁、标题插入计划校验与写回框架，默认生成器为 no-op，不调用真实 LLM；后续接入 LLM 时必须显式配置可用模型，并继续只返回标题插入计划而不是整篇 Markdown。
+
+门禁命中场景：
+
+- 全文无 heading 且 token 数达到 `MARKDOWN_PARSER_HEADING_NO_HEADING_MIN_TOKENS`（默认 `512`）。
+- 全篇只有同级 heading，heading 数达到 `MARKDOWN_PARSER_HEADING_FLAT_MIN_HEADINGS`（默认/下限 `5`），且存在章节编号或常见章节短语等层级线索。
+- 已有多级 heading，但 `total_tokens / heading_count` 达到 `MARKDOWN_PARSER_HEADING_SPARSE_TOKENS_PER_HEADING`（默认 `1536`，下限 `1024`）。
+
+标题写回只支持插入新 heading，等级限制为 `#` 到 `#####`。插入计划的 `line` 始终是原始 Markdown 行号，写回时先按原始行号分组，再一次性重建 Markdown，避免前序插入导致后续行号漂移。写回后必须重新走 `MarkdownParser.parse()`，因此对外最终 Markdown 与 `ParseResult` 来自同一份处理后的文本；splitter 不需要感知标题来源，仍按 `heading_level` / `heading_text` / `heading_trail` 消费。
+
+未来真实 LLM 生成器的单次输入受 `MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET` 控制（默认 `8192`，下限 `2048`）：预算内优先发送全文 Markdown；超预算时应构造压缩结构摘要，再要求 LLM 输出标题插入计划。当前阶段仅保留该配置和接口约束。
 
 ## 5. 使用方式
 

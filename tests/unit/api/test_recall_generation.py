@@ -20,6 +20,18 @@ from src.core.pipeline.recall import RecallHit, RecallRequest, RecallResponse
 from src.core.pipeline.rerank import RerankedHit, RerankResponse
 
 
+@pytest.fixture(autouse=True)
+def _stub_chat_turn_mq(monkeypatch):
+    """隔离对话轮次落库通知：生成终态会发 ChatTurnMessage，这里用无操作 MQ 替身，
+    避免单测触达真实 MQ（chat-message-persistence）。"""
+
+    class _NoopMQ:
+        async def send(self, msg):
+            return None
+
+    monkeypatch.setattr(rt, "MQService", _NoopMQ)
+
+
 class _FakePipeline:
     def __init__(self, response=None, exc=None):
         self.response = response
@@ -140,7 +152,7 @@ async def test_happy_streams_answer_delta_then_done(stub_generation):
     pipe = _FakePipeline(_response(_hits("c1", "c2")))
     events = await _collect(
         rt.recall_event_stream(
-            pipe, _req(), "rid", config_id=77, reranker=_FakeReranker(), token_budget=4000, rerank_top_n=8
+            pipe, _req(), "rid", config_id=77, conversation_id=1, reranker=_FakeReranker(), token_budget=4000, rerank_top_n=8
         )
     )
     names = [e for e, _ in events]
@@ -158,7 +170,7 @@ async def test_rerank_applied_carries_rerank_fields(stub_generation):
     pipe = _FakePipeline(_response(_hits("c1", "c2")))
     events = await _collect(
         rt.recall_event_stream(
-            pipe, _req(), "rid", config_id=77, reranker=_FakeReranker(applied=True), token_budget=4000, rerank_top_n=8
+            pipe, _req(), "rid", config_id=77, conversation_id=1, reranker=_FakeReranker(applied=True), token_budget=4000, rerank_top_n=8
         )
     )
     done = events[-1][1]
@@ -175,7 +187,7 @@ async def test_rerank_soft_degrade_passes_through(stub_generation):
     pipe = _FakePipeline(_response(_hits("c1", "c2")))
     events = await _collect(
         rt.recall_event_stream(
-            pipe, _req(), "rid", config_id=77, reranker=_FakeReranker(applied=False), token_budget=4000, rerank_top_n=8
+            pipe, _req(), "rid", config_id=77, conversation_id=1, reranker=_FakeReranker(applied=False), token_budget=4000, rerank_top_n=8
         )
     )
     done = events[-1][1]
@@ -191,7 +203,7 @@ async def test_rerank_hard_fail_falls_back_to_rrf_truncated(stub_generation):
     reranker = _FakeReranker(exc=UserModelConfigMissingError("RERANK", 123))
     events = await _collect(
         rt.recall_event_stream(
-            pipe, _req(), "rid", config_id=77, reranker=reranker, token_budget=4000, rerank_top_n=8
+            pipe, _req(), "rid", config_id=77, conversation_id=1, reranker=reranker, token_budget=4000, rerank_top_n=8
         )
     )
     names = [e for e, _ in events]
@@ -222,7 +234,7 @@ async def test_content_fetched_once_and_injected_into_reranker(monkeypatch):
     pipe = _FakePipeline(_response(_hits("c1", "c2")))
     await _collect(
         rt.recall_event_stream(
-            pipe, _req(), "rid", config_id=77, reranker=reranker, token_budget=4000, rerank_top_n=8
+            pipe, _req(), "rid", config_id=77, conversation_id=1, reranker=reranker, token_budget=4000, rerank_top_n=8
         )
     )
 
@@ -249,7 +261,7 @@ async def test_hard_fail_degrade_drops_no_content_hits(monkeypatch):
     pipe = _FakePipeline(_response(_hits("c0", "c1", "c2")))
     events = await _collect(
         rt.recall_event_stream(
-            pipe, _req(), "rid", config_id=77, reranker=reranker, token_budget=4000, rerank_top_n=8
+            pipe, _req(), "rid", config_id=77, conversation_id=1, reranker=reranker, token_budget=4000, rerank_top_n=8
         )
     )
     done = events[-1][1]
@@ -267,7 +279,7 @@ async def test_model_config_missing_blocks_recall(monkeypatch):
     pipe = _FakePipeline(_response(_hits("c1")))
     events = await _collect(
         rt.recall_event_stream(
-            pipe, _req(), "rid", config_id=77, reranker=_FakeReranker(), token_budget=4000, rerank_top_n=8
+            pipe, _req(), "rid", config_id=77, conversation_id=1, reranker=_FakeReranker(), token_budget=4000, rerank_top_n=8
         )
     )
     assert events == [("error", events[0][1])]
@@ -280,7 +292,7 @@ async def test_empty_hits_returns_recall_done_no_generation(stub_generation):
     pipe = _FakePipeline(_response([]))
     events = await _collect(
         rt.recall_event_stream(
-            pipe, _req(), "rid", config_id=77, reranker=_FakeReranker(), token_budget=4000, rerank_top_n=8
+            pipe, _req(), "rid", config_id=77, conversation_id=1, reranker=_FakeReranker(), token_budget=4000, rerank_top_n=8
         )
     )
     assert [e for e, _ in events] == ["recall_done"]
@@ -297,7 +309,7 @@ async def test_all_chunks_missing_content_returns_recall_done(monkeypatch, stub_
     pipe = _FakePipeline(_response(_hits("c1", "c2")))
     events = await _collect(
         rt.recall_event_stream(
-            pipe, _req(), "rid", config_id=77, reranker=_FakeReranker(), token_budget=4000, rerank_top_n=8
+            pipe, _req(), "rid", config_id=77, conversation_id=1, reranker=_FakeReranker(), token_budget=4000, rerank_top_n=8
         )
     )
     assert [e for e, _ in events] == ["recall_done"]
@@ -319,7 +331,7 @@ async def test_generation_failure_fails_whole_request(monkeypatch):
     pipe = _FakePipeline(_response(_hits("c1")))
     events = await _collect(
         rt.recall_event_stream(
-            pipe, _req(), "rid", config_id=77, reranker=_FakeReranker(), token_budget=4000, rerank_top_n=8
+            pipe, _req(), "rid", config_id=77, conversation_id=1, reranker=_FakeReranker(), token_budget=4000, rerank_top_n=8
         )
     )
     names = [e for e, _ in events]

@@ -2,17 +2,17 @@
 """Check that documentation is updated alongside code changes.
 
 Usage:
-    python scripts/check_docs_sync.py --staged              # pre-commit usage
-    python scripts/check_docs_sync.py --base origin/dev     # CI usage
-    python scripts/check_docs_sync.py --working             # check working tree
-    python scripts/check_docs_sync.py --self-check          # validate rules file only
+    python scripts/quality/check_docs_sync.py --staged              # pre-commit usage
+    python scripts/quality/check_docs_sync.py --base origin/dev     # CI usage
+    python scripts/quality/check_docs_sync.py --working             # check working tree
+    python scripts/quality/check_docs_sync.py --self-check          # validate rules file only
 
 Exit codes:
     0  - No error-level violations (warnings may still print)
     1  - One or more error-level violations
     2  - Configuration or runtime failure (bad yaml, git unavailable, etc.)
 
-The rules live in scripts/doc-sync-rules.yaml. See docs/contributing.md.
+The rules live in scripts/quality/doc-sync-rules.yaml. See docs/contributing.md.
 """
 
 from __future__ import annotations
@@ -34,8 +34,8 @@ except ImportError:
     sys.exit(2)
 
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_RULES_PATH = REPO_ROOT / "scripts" / "doc-sync-rules.yaml"
+REPO_ROOT = Path(__file__).resolve().parents[2]
+DEFAULT_RULES_PATH = REPO_ROOT / "scripts" / "quality" / "doc-sync-rules.yaml"
 
 
 # ---------------------------------------------------------------------------

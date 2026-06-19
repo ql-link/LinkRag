@@ -14,8 +14,8 @@ undefined step 是 acceptance 从 .specs 提升到 tests/(LINK-110)最脆的一�
 因此一个 Scenario 可能要修完一个再暴露下一个;本门禁报"存在 undefined",迭代修复即可。
 
 Usage:
-    python scripts/check_acceptance_steps.py                 # 全量 tests/acceptance(CI 门禁)
-    python scripts/check_acceptance_steps.py <path>          # 指定 test 文件/目录(promote 复用)
+    python scripts/acceptance/check_acceptance_steps.py                 # 全量 tests/acceptance(CI 门禁)
+    python scripts/acceptance/check_acceptance_steps.py <path>          # 指定 test 文件/目录(promote 复用)
 
 Exit codes:
     0  - 无 undefined step
@@ -30,7 +30,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_TARGET = "tests/acceptance"
 
 # 运行期错误形如:

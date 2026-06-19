@@ -4,7 +4,7 @@
 真实写入 MinIO / MySQL / Qdrant / ES。
 
 用法:
-    .venv/bin/python scripts/smoke_parse_pipeline.py [--backend docling|mineru] [--pdf-path PATH] [--user-id ID] [--dataset-id ID] [--keep]
+    .venv/bin/python scripts/dev/smoke_parse_pipeline.py [--backend docling|mineru] [--pdf-path PATH] [--user-id ID] [--dataset-id ID] [--keep]
 
 默认 backend=mineru（依赖 MinerU 公网 API 拉取 MinIO URL）。
 --keep 表示保留测试产物（默认会清理）。
@@ -21,7 +21,7 @@ import uuid
 from pathlib import Path
 
 # 将仓库根加入 sys.path，便于在 worktree 内独立运行。
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from loguru import logger
 from reportlab.lib.pagesizes import LETTER

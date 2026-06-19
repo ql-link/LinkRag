@@ -12,7 +12,7 @@ repos:
     hooks:
       - id: check-docs-sync
         name: Documentation sync check
-        entry: python scripts/check_docs_sync.py --staged
+        entry: python scripts/quality/check_docs_sync.py --staged
         language: system
         pass_filenames: false
         always_run: true
@@ -21,7 +21,7 @@ repos:
 
       - id: check-docs-facts
         name: Documentation facts check
-        entry: python scripts/check_docs_facts.py
+        entry: python scripts/quality/check_docs_facts.py
         language: system
         pass_filenames: false
         always_run: true
@@ -30,7 +30,7 @@ repos:
 
       - id: check-ai-links
         name: AI asset symlinks check
-        entry: python scripts/check_ai_links.py
+        entry: python scripts/quality/check_ai_links.py
         language: system
         pass_filenames: false
         always_run: true
@@ -39,7 +39,7 @@ repos:
 
       - id: check-skills
         name: Skill quality check
-        entry: python scripts/check_skills.py
+        entry: python scripts/quality/check_skills.py
         language: system
         pass_filenames: false
         always_run: true

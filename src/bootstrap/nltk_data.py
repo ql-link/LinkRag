@@ -8,7 +8,7 @@
 1. 环境变量 ``NLTK_DATA``（Docker 镜像里设为 ``/app/nltk_data``）；
 2. 否则用 ``<项目根>/nltk_data``。
 
-数据本身不入 Git，由 ``scripts/setup_nltk_data.py`` 在构建/部署阶段下载。
+数据本身不入 Git，由 ``scripts/setup/setup_nltk_data.py`` 在构建/部署阶段下载。
 """
 
 from __future__ import annotations

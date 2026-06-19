@@ -26,7 +26,7 @@ DEFAULT_MAX_LENGTH = 8192
 # CPU 512-token sparse timing record.
 # Environment: Windows, local BAAI/bge-m3, FlagEmbedding, device=cpu, fp16=False.
 # Command:
-#   .\.venv\Scripts\python.exe scripts/benchmark_bge_m3_sparse.py --cpu-512-timing --local-files-only --repeat 5 --warmup 1
+#   .\.venv\Scripts\python.exe scripts/dev/benchmark_bge_m3_sparse.py --cpu-512-timing --local-files-only --repeat 5 --warmup 1
 # Latest result:
 # 2026-05-19, model=BAAI/bge-m3, local_files_only=True, warmup=1, repeat=5.
 # load_seconds=7.663.

@@ -7,8 +7,8 @@
   运行时联网下载，甚至直接失败。
 
 本脚本把资源统一下载到 ``<项目根>/nltk_data``（或 ``NLTK_DATA`` 指定目录），供构建/部署阶段调用：
-- Docker 构建：``RUN python scripts/setup_nltk_data.py``
-- 本地开发：``python scripts/setup_nltk_data.py``
+- Docker 构建：``RUN python scripts/setup/setup_nltk_data.py``
+- 本地开发：``python scripts/setup/setup_nltk_data.py``
 
 下载策略（国内网络友好）：
 1. 若设置环境变量 ``NLTK_GH_PROXY``（如 ``https://gh-proxy.com/``），优先经该 GitHub 加速代理下载；
@@ -46,7 +46,7 @@ def resolve_target_dir() -> Path:
     env_dir = os.environ.get("NLTK_DATA")
     if env_dir:
         return Path(env_dir).expanduser().resolve()
-    project_root = Path(__file__).resolve().parent.parent
+    project_root = Path(__file__).resolve().parents[2]
     return project_root / "nltk_data"
 
 

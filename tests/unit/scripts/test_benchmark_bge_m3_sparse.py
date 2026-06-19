@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from scripts import benchmark_bge_m3_sparse as benchmark
+from scripts.dev import benchmark_bge_m3_sparse as benchmark
 
 
 @pytest.mark.parametrize(

@@ -16,7 +16,11 @@ from .stage_contracts import StageOneAlgorithm, StageTwoAlgorithm
 from .stage_models import SplitInput
 from .stage_routers import StageOneRouter, StageTwoRouter
 from .stage_two_noop import NoopStageTwoAlgorithm
-from .validators import CoarseChunkSetValidator, SplitterOutputValidationError
+from .validators import (
+    CoarseChunkSetValidator,
+    FinalChunkSetValidator,
+    SplitterOutputValidationError,
+)
 
 
 class StructuredSemanticChunker:
@@ -43,6 +47,7 @@ class StructuredSemanticChunker:
         validator: CoarseChunkSetValidator | None = None,
         exporter: ChunkExporter | None = None,
         overlapper: ChunkOverlapper | None = None,
+        final_validator: FinalChunkSetValidator | None = None,
     ) -> None:
         """
         初始化 splitter 顶层编排器。
@@ -70,6 +75,7 @@ class StructuredSemanticChunker:
         self.min_candidate_chunk_tokens = min_candidate_chunk_tokens
         self.validator = validator or CoarseChunkSetValidator()
         self.exporter = exporter or ChunkExporter()
+        self.final_validator = final_validator or FinalChunkSetValidator()
 
         if candidate_chunker is None and stage_one_router is None:
             raise ValueError("candidate_chunker is required when stage_one_router is omitted.")
@@ -135,9 +141,13 @@ class StructuredSemanticChunker:
         Returns:
             bool: derived chunk 或含 protected element 的 chunk 返回 False。
         """
-        return chunk.metadata.get("chunk_role") != "derived_element" and not chunk.metadata.get(
-            "protected_element_types"
-        )
+        if chunk.metadata.get("chunk_role") == "derived_element":
+            return False
+        if chunk.metadata.get("protected_element_types"):
+            from src.config import settings
+
+            return bool(settings.CHUNKING_PROTECTED_NEIGHBOR_OVERLAP)
+        return True
 
     @staticmethod
     def _validate_candidate_chunks(chunks: list[Chunk]) -> None:
@@ -284,6 +294,7 @@ class StructuredSemanticChunker:
         coarse_set = self.stage_one_router.run(split_input)
         self.validator.validate(coarse_set, split_input)
         final_set = await self.stage_two_router.run(coarse_set)
+        self.final_validator.validate(final_set, coarse_set)
         chunks = self.exporter.export(final_set)
         return self._apply_neighbor_context(chunks)
 

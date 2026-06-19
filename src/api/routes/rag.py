@@ -53,16 +53,19 @@ router = APIRouter(prefix="/api/v1/rag", tags=["rag"])
 class RagStreamRequest(BaseModel):
     """RAG 问答流请求体。
 
-    接受 ``query``（必填）、``config_id``（必填，本次生成所用 CHAT 模型配置 id）与可选
+    接受 ``query``（必填）、``config_id``（必填，本次生成所用 CHAT 模型配置 id）、
+    ``conversation_id``（必填，本轮所属对话 id，作为落库挂载锚点）与可选
     ``dataset_ids``（本人授权范围内的子集选择）。**不含 ``user_id``**——身份只取 token
     claims；body 出现 ``user_id`` / ``top_k`` / ``sources`` / ``strict`` / ``doc_ids``
-    等任何未知字段，``extra=forbid`` 触发 422；缺 ``config_id`` 同样触发 422。
+    等任何未知字段，``extra=forbid`` 触发 422；缺 ``config_id`` / ``conversation_id``
+    同样触发 422（缺会话 id 不进入召回生成、不发对话轮次消息）。
     """
 
     model_config = ConfigDict(extra="forbid")
 
     query: str
     config_id: int
+    conversation_id: int
     dataset_ids: list[int] | None = None
 
 
@@ -91,6 +94,7 @@ async def _guarded_stream(
     request_id: str,
     user_id: int,
     config_id: int,
+    conversation_id: int,
     token_budget: int,
     rerank_top_n: int,
 ) -> AsyncGenerator[str, None]:
@@ -105,6 +109,7 @@ async def _guarded_stream(
             recall_req,
             request_id,
             config_id=config_id,
+            conversation_id=conversation_id,
             reranker=reranker,
             token_budget=token_budget,
             rerank_top_n=rerank_top_n,
@@ -153,6 +158,7 @@ async def rag_stream(
             ctx.request_id,
             ctx.user_id,
             body.config_id,
+            body.conversation_id,
             recall_cfg.recall_context_token_budget,
             recall_cfg.rerank_top_n,
         ),

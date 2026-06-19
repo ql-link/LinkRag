@@ -56,7 +56,7 @@ when_to_use: "仅当用户已有冻结的 .specs/<feature-name>/brief.md，并�
 
 要求：
 
-- 与 brief.md 同目录（`.specs/` 整目录 git-ignored；合并前用 `python scripts/promote_acceptance.py <feature>` 把 acceptance 提升到 `tests/acceptance/features/<name>.feature`，脚本负责搬运 + 校验 0 undefined step + 防漂移，见 [.specs/README.md](../../../.specs/README.md)）
+- 与 brief.md 同目录（`.specs/` 整目录 git-ignored；合并前用 `python scripts/acceptance/promote_acceptance.py <feature>` 把 acceptance 提升到 `tests/acceptance/features/<name>.feature`，脚本负责搬运 + 校验 0 undefined step + 防漂移，见 [.specs/README.md](../../../.specs/README.md)）
 - 文件名固定为 `acceptance.feature`
 - 同时回写同目录 `state.yaml`：`phase` 保持 `acceptance`；把 Scenario 数量、覆盖的主流程 / 异常 / 边界类别等人类可读摘要写入 `notes` 字段
 
@@ -122,7 +122,7 @@ when_to_use: "仅当用户已有冻结的 .specs/<feature-name>/brief.md，并�
 先用脚本做机器门禁，再做人工确认。**这是硬前置：脚本返回 `HARD STOP`（退出码非 0）时停止，按其 `Next:` 提示回上游，不允许从半成品 brief 直接生成 acceptance。**
 
 ```bash
-python scripts/flow-guard.py check <feature-name> acceptance
+python scripts/acceptance/flow-guard.py check <feature-name> acceptance
 ```
 
 该命令校验 `state.yaml` 结构合法且 `artifacts.brief.frozen == true`。通过后再确认：

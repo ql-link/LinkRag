@@ -1,10 +1,10 @@
 import os
 from typing import List, Optional, Union
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-SUPPORTED_CHUNKING_STAGE_TWO_ALGORITHMS = frozenset({"noop"})
+SUPPORTED_CHUNKING_STAGE_TWO_ALGORITHMS = frozenset({"noop", "semantic_depth_window"})
 
 
 class Settings(BaseSettings):
@@ -145,11 +145,22 @@ class Settings(BaseSettings):
     MARKDOWN_PARSER_VISION_MODEL: Optional[str] = None
     MARKDOWN_PARSER_LLM_TIMEOUT_MS: int = 60000
     MARKDOWN_PARSER_VISION_CONCURRENCY: int = 24
+    MARKDOWN_PARSER_ENABLE_HEADING_HIERARCHY: bool = False
+    MARKDOWN_PARSER_HEADING_NO_HEADING_MIN_TOKENS: int = 512
+    MARKDOWN_PARSER_HEADING_FLAT_MIN_HEADINGS: int = 5
+    MARKDOWN_PARSER_HEADING_SPARSE_TOKENS_PER_HEADING: int = 1536
+    MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET: int = 8192
     CHUNKING_STAGE_ONE_ALGORITHM: str = "candidate_boundary"
     CHUNKING_STAGE_TWO_ALGORITHM: str = "noop"
     CHUNKING_HEADING_BREAK_LEVEL: int = 5
     CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS: int = 128
     CHUNKING_OVERLAP_TOKENS: int = 64
+    # Stage 2 语义细分（semantic_depth_window）三层 token 阈值与 overlap 开关。
+    # 软目标：普通打包上限；硬上限：不可拆 atom（代码/公式）的绝对上限，超过即按行截断。
+    CHUNKING_MAX_CHUNK_TOKENS: int = 512
+    CHUNKING_HARD_MAX_TOKENS: int = 1024
+    # 含 protected 元素的最终 chunk 是否参与 pipeline 后置 neighbor overlap（仅文本边缘）。
+    CHUNKING_PROTECTED_NEIGHBOR_OVERLAP: bool = False
 
     @field_validator("CHUNKING_STAGE_ONE_ALGORITHM")
     @classmethod
@@ -171,6 +182,34 @@ class Settings(BaseSettings):
             )
         return normalized
 
+    @field_validator("MARKDOWN_PARSER_HEADING_NO_HEADING_MIN_TOKENS")
+    @classmethod
+    def validate_markdown_heading_no_heading_min_tokens(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("MARKDOWN_PARSER_HEADING_NO_HEADING_MIN_TOKENS must be positive")
+        return v
+
+    @field_validator("MARKDOWN_PARSER_HEADING_FLAT_MIN_HEADINGS")
+    @classmethod
+    def validate_markdown_heading_flat_min_headings(cls, v: int) -> int:
+        if v < 5:
+            raise ValueError("MARKDOWN_PARSER_HEADING_FLAT_MIN_HEADINGS must be >= 5")
+        return v
+
+    @field_validator("MARKDOWN_PARSER_HEADING_SPARSE_TOKENS_PER_HEADING")
+    @classmethod
+    def validate_markdown_heading_sparse_tokens_per_heading(cls, v: int) -> int:
+        if v < 1024:
+            raise ValueError("MARKDOWN_PARSER_HEADING_SPARSE_TOKENS_PER_HEADING must be >= 1024")
+        return v
+
+    @field_validator("MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET")
+    @classmethod
+    def validate_markdown_heading_llm_context_token_budget(cls, v: int) -> int:
+        if v < 2048:
+            raise ValueError("MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET must be >= 2048")
+        return v
+
     @field_validator("CHUNKING_OVERLAP_TOKENS")
     @classmethod
     def validate_chunking_overlap_tokens(cls, v: int) -> int:
@@ -184,6 +223,55 @@ class Settings(BaseSettings):
         if v < 128 or v > 256:
             raise ValueError("CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS must be between 128 and 256")
         return v
+
+    @field_validator("CHUNKING_MAX_CHUNK_TOKENS")
+    @classmethod
+    def validate_chunking_max_chunk_tokens(cls, v: int) -> int:
+        if v < 256 or v > 2048:
+            raise ValueError("CHUNKING_MAX_CHUNK_TOKENS must be between 256 and 2048")
+        return v
+
+    @field_validator("CHUNKING_HARD_MAX_TOKENS")
+    @classmethod
+    def validate_chunking_hard_max_tokens(cls, v: int) -> int:
+        if v < 512 or v > 8192:
+            raise ValueError("CHUNKING_HARD_MAX_TOKENS must be between 512 and 8192")
+        return v
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_chunking_token_bounds_before(cls, data):
+        if not isinstance(data, dict):
+            return data
+
+        def resolve_int(name: str) -> int | None:
+            if name not in data:
+                return None
+            try:
+                return int(data[name])
+            except (TypeError, ValueError):
+                return None
+
+        min_candidate = resolve_int("CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS")
+        max_chunk = resolve_int("CHUNKING_MAX_CHUNK_TOKENS")
+        hard_max = resolve_int("CHUNKING_HARD_MAX_TOKENS")
+        if min_candidate is not None and max_chunk is not None and max_chunk < min_candidate:
+            raise ValueError(
+                "CHUNKING_MAX_CHUNK_TOKENS must be >= CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS"
+            )
+        if hard_max is not None and max_chunk is not None and hard_max < max_chunk:
+            raise ValueError("CHUNKING_HARD_MAX_TOKENS must be >= CHUNKING_MAX_CHUNK_TOKENS")
+        return data
+
+    @model_validator(mode="after")
+    def validate_chunking_token_bounds(self) -> "Settings":
+        if self.CHUNKING_MAX_CHUNK_TOKENS < self.CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS:
+            raise ValueError(
+                "CHUNKING_MAX_CHUNK_TOKENS must be >= CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS"
+            )
+        if self.CHUNKING_HARD_MAX_TOKENS < self.CHUNKING_MAX_CHUNK_TOKENS:
+            raise ValueError("CHUNKING_HARD_MAX_TOKENS must be >= CHUNKING_MAX_CHUNK_TOKENS")
+        return self
 
     # ==========================================
     # 向量数据库配置 (Vector Store)
