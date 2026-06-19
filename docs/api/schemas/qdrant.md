@@ -39,7 +39,7 @@ Collection 名称示例：`kb_bucket_0`, `kb_bucket_1`, ..., `kb_bucket_127`。
 | `QDRANT_COLLECTION_NAME` | 全局兜底 collection 名（非分桶场景） |
 | `QDRANT_HOST` / `QDRANT_PORT` / `QDRANT_GRPC_PORT` | 连接信息 |
 | `QDRANT_API_KEY` | 鉴权 token |
-| `QDRANT_TIMEOUT_SECONDS` | 操作超时，默认 5 秒 |
+| `QDRANT_TIMEOUT_SECONDS` | 操作超时，默认 20 秒 |
 
 ### 分桶的设计目的
 

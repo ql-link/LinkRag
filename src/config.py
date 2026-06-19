@@ -285,7 +285,7 @@ class Settings(BaseSettings):
     QDRANT_GRPC_PORT: int = 6334
     QDRANT_COLLECTION_NAME: str = "tolink_rag_collection"
     QDRANT_API_KEY: Optional[str] = None
-    QDRANT_TIMEOUT_SECONDS: int = 5
+    QDRANT_TIMEOUT_SECONDS: int = 20
 
     # Chunk indexing / vector storage
     CHUNK_INDEX_BUCKET_COUNT: int = 128
