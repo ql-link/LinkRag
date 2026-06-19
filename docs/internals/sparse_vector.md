@@ -72,7 +72,12 @@ SparseVectorService(encoder, vector_name=SPARSE_VECTOR_QDRANT_VECTOR_NAME)
 
 `create_sparse_vector_service(encoder)` 是显式注入入口，仅用于测试或自定义编码器。
 
-> bge-m3 后续会以 **adapter provider** 形式重新接入：llm 层已有对接独立 `bge-m3-service` 的 `BgeM3ServiceProvider`（protocol=`bge_m3`），后续会在 DB 登记为可选模型走 per-user 解析。这部分是另开 issue 的未来工作，详见对应 issue，不要视为当前可用的系统配置。
+> **当前已接入的稀疏 adapter provider**（均在 DB 模型目录登记后由 per-user 解析选用；都产出中性 `SparseEmbeddingResult`、清洗统一在 `AdapterSparseVectorEncoder`，`api_base_url` 存完整端点、adapter 直打不拼接）：
+>
+> | protocol | provider 类 | 对接服务 |
+> | --- | --- | --- |
+> | `doubao_vision` | `DoubaoVisionProvider` | 火山方舟 doubao-embedding-vision 多模态 embedding 端点 |
+> | `bge_m3` | `BgeM3ServiceProvider` | 自部署 `bge-m3-service` 编码端点 |
 
 ---
 

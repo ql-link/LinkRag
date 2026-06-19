@@ -114,6 +114,7 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── tokenizer.py
 │   │   │   ├── user_model_resolver.py # 用户模型选择解析
 │   │   │   └── providers/        # LLM 提供方实现（openai/anthropic/qwen/glm/deepseek）
+│   │   │                         #   稀疏 provider：doubao_vision.py（火山多模态稀疏）/ bge_m3.py（自部署 bge-m3-service 稀疏）
 │   │   ├── pipeline/             # 业务流水线编排
 │   │   │   ├── parse_task/        # 解析任务主编排
 │   │   │   │   ├── pipeline.py     # ParseTaskPipeline 薄编排（分流/幂等/校验/重试）

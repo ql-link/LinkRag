@@ -155,7 +155,7 @@ logs/
 
 稀疏向量与稠密向量在同一个 chunk 向量化阶段执行，模型输入是 chunk 原文，不使用 ES 分词结果。
 
-稀疏编码模型**不再由系统级配置项指定**：写入与召回都按发起用户的默认 `SPARSE_EMBEDDING` 配置，经统一 `(protocol, capability)` adapter 解析（必配、无系统级兜底，缺配置抛 `SparseEmbeddingConfigMissingError`）。原先用 `SPARSE_VECTOR_PROVIDER` 在本地 / HTTP / 远程 BGE-M3 间切换的整套机制已移除。详见 [vectorization.md §6.6](../internals/vectorization.md) 与 [sparse_vector.md](../internals/sparse_vector.md)。
+稀疏编码模型**不再由系统级配置项指定**：写入与召回都按发起用户的默认 `SPARSE_EMBEDDING` 配置，经统一 `(protocol, capability)` adapter 解析（必配、无系统级兜底，缺配置抛 `SparseEmbeddingConfigMissingError`）。当前可选的稀疏 provider 为 `doubao_vision`（火山方舟 doubao-embedding-vision 多模态端点）/ `bge_m3`（自部署 `bge-m3-service` 端点）。原先用 `SPARSE_VECTOR_PROVIDER` 在本地 / HTTP / 远程 BGE-M3 间切换的整套机制已移除。详见 [vectorization.md §6.6](../internals/vectorization.md) 与 [sparse_vector.md](../internals/sparse_vector.md)。
 
 下表是仍保留的系统级配置项，均与具体 provider 无关，是全局开关与清洗 / 命名规则：
 

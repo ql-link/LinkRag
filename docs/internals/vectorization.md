@@ -73,7 +73,7 @@ ParseTaskPipeline
 | 组件 | 文件 | 职责 |
 | --- | --- | --- |
 | `ChunkEmbeddingPipeline` | `splitter/embedding_pipeline.py` | 批量生成 Chunk embedding，支持缓存和统计 |
-| `SparseVectorService` | `sparse_vector/pipeline.py` | 使用 BGE-M3 对 chunk 原文生成稀疏向量；`vectorize_query` 供召回侧使用 |
+| `SparseVectorService` | `sparse_vector/pipeline.py` | 按用户 `SPARSE_EMBEDDING` 配置经 adapter 对 chunk 原文生成稀疏向量；`vectorize_query` 供召回侧使用 |
 | `VectorStorageFacade` | `vector_storage/facade.py` | 向上游暴露统一入口；含写入、管理、补偿与**召回**（`search_sparse_chunks` / `search_dense_chunks`） |
 | `VectorStoragePipeline` | `vector_storage/pipeline.py` | 消费 SQL chunk 真值，写 dense Qdrant 索引副本并回写状态 |
 | `VectorStorageManagementPipeline` | `vector_storage/management_pipeline.py` | Chunk 修改、删除 |
@@ -177,7 +177,7 @@ payload: {
 
 collection 名称由 `BucketRouter.collection_name(bucket_id)` 生成。
 
-启用稀疏向量时，`SparseIndexedPoint` 使用同一 `chunk_id` 作为 Point ID，并通过 named sparse vector（默认 `sparse_text`）写入 BGE-M3 lexical weights。稀疏向量写入使用局部 vector update，不覆盖 dense vector。
+启用稀疏向量时，`SparseIndexedPoint` 使用同一 `chunk_id` 作为 Point ID，并通过 named sparse vector（默认 `sparse_text`）写入稀疏 lexical weights。稀疏向量写入使用局部 vector update，不覆盖 dense vector。
 
 ### 3.5 Elasticsearch Document
 
@@ -319,7 +319,7 @@ await facade.reindex_failed_chunks(chunk_ids)
 
 召回链路通过 `VectorStorageFacade` 暴露**两个对仗入口**：
 
-- `search_sparse_chunks`（BGE-M3 稀疏向量召回）
+- `search_sparse_chunks`（稀疏向量召回）
 - `search_dense_chunks`（system embedding 稠密向量召回）
 
 两路是**唯一对外召回入口**，调用方只需 import `vector_storage` 包。详细链路 / 失败模式 / 默认值依据 / 鬼影 hit 边界 / 模型升级 SOP 见 [§9 召回链路](#9-召回链路)。
@@ -481,9 +481,14 @@ SparseVectorService(encoder)
 一致。编码器都实现同一 `SparseVectorEncoderProtocol`（`aencode()` + `model_name`），
 **上层 `SparseVectorService` 与编排层无感**。
 
-> bge-m3 后续会以 **adapter provider** 形式重新接入：llm 层已有对接独立 `bge-m3-service`
-> 的 `BgeM3ServiceProvider`（protocol=`bge_m3`），后续会在 DB 登记为可选模型走 per-user 解析。
-> 这是另开 issue 的未来工作，详见对应 issue，不要视为当前可用的系统配置。
+当前已接入两个稀疏 adapter provider，均经上述 per-user 解析选用：
+
+| protocol | provider 类 | 对接服务 |
+| --- | --- | --- |
+| `doubao_vision` | `DoubaoVisionProvider` | 火山方舟 doubao-embedding-vision 多模态 embedding 端点 |
+| `bge_m3` | `BgeM3ServiceProvider` | 自部署 `bge-m3-service` 编码端点 |
+
+两者都产出框架中性的 `SparseEmbeddingResult`（自身不做清洗），由 `AdapterSparseVectorEncoder` 统一清洗成 `SparseVector`；其 `api_base_url` 均存“完整端点 URL”，adapter 直打不拼接。
 
 实现细节（包结构、异常族、清洗契约）见 [sparse_vector.md](sparse_vector.md)。
 
@@ -538,7 +543,7 @@ SparseVectorService(encoder)
 
 召回链路是写入链路的**只读镜像**。本期同时支持两种向量召回：
 
-- **稀疏召回**（`search_sparse_chunks`）：query 走 BGE-M3 编码 → Qdrant **named** sparse vector（默认 `sparse_text`）
+- **稀疏召回**（`search_sparse_chunks`）：query 走稀疏 adapter 编码（按发起用户 `SPARSE_EMBEDDING` 配置） → Qdrant **named** sparse vector（默认 `sparse_text`）
 - **稠密召回**（`search_dense_chunks`）：query 走 system embedding HTTP（默认 `text-embedding-v4`） → Qdrant **unnamed** dense vector（cosine 距离）
 
 两路共用 bucket 路由、payload filter 构造、`VectorSearchHit` / `VectorSearchResult` 中性 dataclass、召回侧异常族（`VectorRetrievalError` 系列）。差异仅在 query 向量化路径与 Qdrant `query_points` 调用形态。
@@ -578,7 +583,7 @@ SparseVectorService(encoder)
 | bucket 路由 | `BucketRouter.route_user(user_id)`，写入 / sparse 召回 / dense 召回共用同一路由算法（按 user_id CRC32 哈希 → bucket_id → collection 名） |
 | sparse vector 命名 | `settings.SPARSE_VECTOR_QDRANT_VECTOR_NAME`（默认 `sparse_text`），写入 `upsert_sparse_vectors` 与召回 sparse 分支都从该 setting 读取，不分叉 |
 | dense vector 形态 | unnamed vector，写入 `ensure_collection` 用 `vectors_config=VectorParams(size=1024, distance=COSINE)`，`PointStruct(vector=[...])` 裸传；召回 `query_points(using=None)` 与之对齐——不引入 `DENSE_RETRIEVAL_VECTOR_NAME` 配置避免分叉风险 |
-| BGE-M3 编码器实例 | `SparseVectorService` 在工厂构造一次后，同时下传给写入 pipeline 与召回入口 |
+| 稀疏编码器配置 | 写入与召回都经 `aresolve_user_sparse_vector_service(user_id)` 按发起用户解析同一份 `SPARSE_EMBEDDING` 配置，保证两侧落在同一 token 权重空间 |
 | system embedding 实例 | `ChunkEmbeddingPipeline` 在工厂构造一次后，`aembed_chunks`（写入）与 `aembed_query`（召回）共用同一个 `self.embedder` + `self.embedding_model` 字段——编译期保证写入 / 召回 model 不分叉 |
 | payload 字段 | `point_factory._payload()` 写入 `{chunk_id, user_id, set_id, doc_id}`；两路召回 filter 命中同名字段（`facade._build_payload_filter` 是 staticmethod，sparse / dense 共用） |
 | `chunk_id` | MySQL UK + Qdrant Point ID + 召回 `hit.chunk_id`，三处一致 |
@@ -593,7 +598,7 @@ SparseVectorService(encoder)
 | collection 存在但目标 named vector 未配置 | 返空 hits，不抛；warn 日志带 `bucket_id` + `vector_name`（**仅 sparse 触发**——dense 是 collection 创建时一并配齐的 unnamed vector，无中间状态） | sparse 写入侧 `ensure_sparse_vector_schema` 是首次写入时延迟挂载 |
 | Qdrant 网络故障 / 超时 / 服务不可用 | 抛 `VectorRetrievalBackendError` | 底层故障，由调用方决定降级或重试 |
 | `SPARSE_VECTOR_ENABLED=False` / dense `embedding_pipeline` 未注入 / 依赖缺失 / Qdrant URL 无效 | 抛 `VectorRetrievalConfigurationError` | 部署侧配置错误，不是常态 |
-| 编码器（BGE-M3 / system embedding HTTP）推理失败 | 抛 `VectorRetrievalEncodingError` | 编码失败不是召回的常态 |
+| 编码器（稀疏 adapter / system embedding HTTP）推理失败 | 抛 `VectorRetrievalEncodingError` | 编码失败不是召回的常态 |
 
 **一句话原则**：业务上等价于"没数据"的状况返空；环境 / 配置 / 底层故障一律抛。
 
@@ -602,7 +607,7 @@ SparseVectorService(encoder)
 | 配置项 | 默认值 | 依据 |
 | --- | --- | --- |
 | `SPARSE_RETRIEVAL_TOP_K` | 10 | 业界主流 RAG 框架（Dify UI 默认上限 10、Qdrant 官方 hybrid + reranking 教程"先广召回后精排"）；10 在覆盖率与上下文成本之间是常见折中 |
-| `SPARSE_RETRIEVAL_SCORE_THRESHOLD` | 0.0（不过滤） | Dify 公开文档明示"score threshold disabled = 0.0"；BGE-M3 sparse score 必须基于自身语料分布手工校准，盲设阈值会让 top_k cutoff 也救不回来；本项目暂无评测 harness，采取保守默认 |
+| `SPARSE_RETRIEVAL_SCORE_THRESHOLD` | 0.0（不过滤） | Dify 公开文档明示"score threshold disabled = 0.0"；稀疏 score 必须基于所选稀疏模型自身语料分布手工校准，盲设阈值会让 top_k cutoff 也救不回来；本项目暂无评测 harness，采取保守默认 |
 | `DENSE_RETRIEVAL_TOP_K` | 10 | 与 sparse 对仗，hybrid 融合时两路覆盖范围一致；对齐 Dify 主流上界。注意：**pipeline 路径下实际 top_k 由 `RECALL_RESULT_LIMIT` 在执行期透传覆盖**；`DENSE_RETRIEVAL_TOP_K` 仅作 facade 直调（脚本 / 评测 harness）的兜底默认 |
 | `DENSE_RETRIEVAL_SCORE_THRESHOLD` | 0.0（不过滤） | 与 sparse 对仗保守策略；cosine 物理范围 [0, 1]，facade 入口加上界校验早死。本项目暂无评测 harness，盲设阈值不可追溯——评测 harness follow-up 落地后基于实证数据回头校准 |
 | `RECALL_ENABLED_SOURCES` | `bm25,sparse,dense` | 默认开启三路召回；运维侧通过 env 显式 set `bm25,sparse` 可暂时回退到 dev 旧默认 |
