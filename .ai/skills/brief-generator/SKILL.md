@@ -71,9 +71,9 @@ when_to_use: "在 flow-router 判为 L2/L3 后，或用户直接要求'写个 br
 - 若用户未提供 feature 名称，从需求内容提取候选并向用户确认后再创建目录。
 - 首次创建目录时，用脚本初始化机器拥有的阶段状态文件 `state.yaml`（取代旧的手维护 `feature_info.md`）：
   ```bash
-  python scripts/flow-guard.py init <feature-name> --lane <L2|L3>
+  python scripts/acceptance/flow-guard.py init <feature-name> --lane <L2|L3>
   ```
-  该文件由 [scripts/flow-guard.py](../../../scripts/flow-guard.py) 校验，记录 `phase`、各 artifact 的 `frozen`、`verified` 等阶段不变量；人类可读的产物清单 / 推荐阅读顺序写入其 `notes` 字段。**不再手维护 `feature_info.md`**。
+  该文件由 [scripts/acceptance/flow-guard.py](../../../scripts/acceptance/flow-guard.py) 校验，记录 `phase`、各 artifact 的 `frozen`、`verified` 等阶段不变量；人类可读的产物清单 / 推荐阅读顺序写入其 `notes` 字段。**不再手维护 `feature_info.md`**。
 - 若目录已存在 `brief.md`，先读旧版判断是修订还是覆盖，不允许无说明地重写关键结论。
 
 ## 5. 模板

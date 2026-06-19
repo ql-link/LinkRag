@@ -19,7 +19,7 @@ toLink-Rag 的 schema 权威源是 **ORM 模型 + Alembic 迁移链**。任何�
 3. `alembic.ini` / `migrations/env.py`（迁移运行配置与 target_metadata）
 4. `migrations/db.sql`（**只读**，0001 baseline，禁改）
 5. `docs/api/schemas/mysql.md`（数据模型文档，需同步）
-6. `scripts/doc-sync-rules.yaml`（机器强制同步规则）
+6. `scripts/quality/doc-sync-rules.yaml`（机器强制同步规则）
 
 ## 硬约束（违反会被 pre-commit / CI 拦截）
 
@@ -56,7 +56,7 @@ toLink-Rag 的 schema 权威源是 **ORM 模型 + Alembic 迁移链**。任何�
 5. **同步文档**：更新 `docs/api/schemas/mysql.md` 中该表的字段说明。
 6. **自检**：
    ```bash
-   python scripts/check_docs_sync.py --staged
+   python scripts/quality/check_docs_sync.py --staged
    .venv/bin/alembic heads   # 必须只有一个 head
    ```
 

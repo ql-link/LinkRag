@@ -67,9 +67,13 @@ toLink-Rag/                         # 仓库根目录
 │   ├── db.sql                    # 0001 baseline 冻结快照（DDL，冷启动用；禁止改动）
 │   └── versions/                 # 版本化迁移脚本（NNNN_YYYYMMDD_slug.py）
 ├── scripts/                      # 可执行脚本
+│   ├── acceptance/               # 验收流程与 spec-as-test 辅助脚本
+│   ├── dev/                      # 本地开发、诊断、冒烟脚本
 │   ├── db/                       # 数据库初始化脚本
 │   │   ├── init.sql              # 叠加全部 migration 后的当前完整结构快照（仅供查阅）
 │   │   └── schema.sql            # 初始化数据脚本
+│   ├── quality/                  # 文档同步、事实校验、AI 资产与 skill 质量门禁
+│   └── setup/                    # 本地 / 构建环境初始化脚本
 ├── src/                          # 应用源码
 │   ├── config.py                 # 全局配置
 │   ├── database.py               # 数据库初始化入口

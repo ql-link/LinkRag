@@ -3,7 +3,7 @@
 本目录下每个子目录是一个 Agent skill（`<name>/SKILL.md`）。本文件是**索引 + 治理入口**，
 帮助快速查找职责、理清触发边界、安排周期复审。
 
-> 机器校验：`python scripts/check_skills.py`（pre-commit 已接入）。检查 frontmatter 完整性、
+> 机器校验：`python scripts/quality/check_skills.py`（pre-commit 已接入）。检查 frontmatter 完整性、
 > 死引用、技术栈一致性、孤儿目录。新增/修改 skill 后请确保该检查为绿。
 
 ## 管理约定
@@ -81,7 +81,7 @@
 
 每次大重构或里程碑后执行：
 
-1. 跑 `python scripts/check_skills.py`，清掉所有 error。
+1. 跑 `python scripts/quality/check_skills.py`，清掉所有 error。
 2. 检查触发边界是否仍互斥（重叠的合并、过期的下线）。
 3. 半年内从未触发的 skill 评估是否退役。
 4. 同步更新本表与 `AGENTS.md` 结构树。

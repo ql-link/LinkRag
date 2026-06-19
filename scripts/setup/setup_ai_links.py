@@ -7,7 +7,7 @@
 
 新人入职、worktree 初始化、链接被误删时运行一次即可：
 
-    python scripts/setup_ai_links.py
+    python scripts/setup/setup_ai_links.py
 """
 from __future__ import annotations
 
@@ -16,7 +16,7 @@ import shutil
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # link_path -> target_path（都相对仓库根）
 LINKS: dict[str, str] = {

@@ -7,7 +7,7 @@ splitter's intermediate stages so chunking behavior can be reviewed on real
 documents without touching network or database resources.
 
 Example:
-    .venv/bin/python scripts/splitter_diagnostics.py .papers/test_docs \
+    .venv/bin/python scripts/dev/splitter_diagnostics.py .papers/test_docs \
       --output-dir .specs/splitter-enhancement-stage2-texttilling \
       --name blog_splitter_diagnostics
 """
@@ -27,7 +27,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO_ROOT))
 
 from src.core.llm.tokenizer import Tokenizer

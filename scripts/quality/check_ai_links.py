@@ -10,7 +10,7 @@ import os
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 
 # link_path -> 期望的链接目标字符串（相对 link 自身所在目录）
 EXPECTED: dict[str, str] = {
@@ -27,7 +27,7 @@ def main() -> int:
     for link_rel, expected_target in EXPECTED.items():
         link = REPO_ROOT / link_rel
         if not link.is_symlink():
-            failures.append(f"{link_rel} 不是 symlink（运行 `python scripts/setup_ai_links.py` 修复）")
+            failures.append(f"{link_rel} 不是 symlink（运行 `python scripts/setup/setup_ai_links.py` 修复）")
             continue
 
         actual = os.readlink(link)

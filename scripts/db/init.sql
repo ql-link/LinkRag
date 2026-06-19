@@ -8,7 +8,7 @@
 --   - schema 演进的唯一权威源是 src/models/**.py + migrations/versions/*.py；
 --   - 修改字段必须先改 ORM 模型并新增 migration，再同步本文件。
 -- 同步时机：每条会改动表结构的 migration 落库时一并更新本文件。
--- 末次同步：migration 0018_20260614_add_llm_protocol_columns
+-- 末次同步：migration 0020_20260619_drop_conversation_title_unique
 -- ===============================================
 
 CREATE DATABASE IF NOT EXISTS tolink_rag_db DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -132,7 +132,6 @@ CREATE TABLE IF NOT EXISTS chat_conversation (
     created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-    UNIQUE KEY uk_conversation_user_dataset_title (user_id, dataset_id, title),
     INDEX idx_chat_conversation_user_pinned_updated (user_id, is_pinned, updated_at),
     INDEX idx_chat_conversation_dataset_updated (dataset_id, updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '对话表';

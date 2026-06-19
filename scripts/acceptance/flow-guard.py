@@ -8,7 +8,7 @@
 Python 重写以对齐本仓 ``scripts/`` 既有校验脚本风格(见 ``check_skills.py``)。
 
 设计约束:``.specs/`` 整目录 git-ignored,所以本脚本**不是** git hook,而是由
-各 skill 在运行时主动调用(``python scripts/flow-guard.py check <feature> <phase>``)。
+各 skill 在运行时主动调用(``python scripts/acceptance/flow-guard.py check <feature> <phase>``)。
 
 子命令:
     init <feature> [--lane L2|L3]   按模板生成 state.yaml(已存在则拒绝覆盖)
@@ -19,9 +19,9 @@ phase 取值(state.yaml 的 ``phase`` 字段 / check 的目标):
     brief -> acceptance -> technical_design -> implementation -> done
 
 Usage:
-    python scripts/flow-guard.py init my-feature --lane L3
-    python scripts/flow-guard.py validate my-feature
-    python scripts/flow-guard.py check my-feature acceptance
+    python scripts/acceptance/flow-guard.py init my-feature --lane L3
+    python scripts/acceptance/flow-guard.py validate my-feature
+    python scripts/acceptance/flow-guard.py check my-feature acceptance
 
 Exit codes:
     0  - 通过(可能有 warning)
@@ -41,7 +41,7 @@ except ImportError:  # pragma: no cover - 环境缺依赖时的兜底提示
     print("ERROR: PyYAML is required. Install it with: pip install pyyaml", file=sys.stderr)
     sys.exit(2)
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 SPECS_DIR = REPO_ROOT / ".specs"
 
 # 终端着色:仅在 TTY 下上色,避免污染被 skill 捕获的输出。
@@ -185,7 +185,7 @@ def load_state(feature: str) -> tuple[dict | None, list[Issue]]:
     if not path.is_file():
         print(red(f"ERROR: 未找到 state.yaml: {path}"), file=sys.stderr)
         print(
-            yellow(f"  Next: 先运行 `python scripts/flow-guard.py init {feature}` 初始化阶段状态"),
+            yellow(f"  Next: 先运行 `python scripts/acceptance/flow-guard.py init {feature}` 初始化阶段状态"),
             file=sys.stderr,
         )
         sys.exit(2)
@@ -378,7 +378,7 @@ def _render_feature(feature: str, data: dict) -> list[str]:
     read_items = [r if r.startswith("(") else f".specs/{feature}/{r}" for r in reads]
     lines.append(f"下一站  : {skill}")
     lines.append(f"待读    : {', '.join(read_items)}")
-    lines.append(f"前置校验: python scripts/flow-guard.py check {feature} {phase}")
+    lines.append(f"前置校验: python scripts/acceptance/flow-guard.py check {feature} {phase}")
     if frozen:
         lines.append(yellow(f"注意    : artifacts.{art}.frozen 已为 true,phase 本应推进到下一站,请检查"))
     return lines
@@ -391,7 +391,7 @@ def cmd_status() -> int:
 
     if invalid:
         print(yellow(f"[WARN] state.yaml 异常的 feature(跳过): {', '.join(invalid)}"), file=sys.stderr)
-        print(yellow("       Next: 逐个 `python scripts/flow-guard.py validate <feature>` 修复"), file=sys.stderr)
+        print(yellow("       Next: 逐个 `python scripts/acceptance/flow-guard.py validate <feature>` 修复"), file=sys.stderr)
 
     if not valid:
         print(green("[STATUS] 无 feature(.specs/ 下尚无 state.yaml)。新需求从 flow-router 起。"), file=sys.stderr)

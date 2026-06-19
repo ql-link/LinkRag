@@ -10,7 +10,7 @@ import importlib.util
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SCRIPT = REPO_ROOT / "scripts" / "check_acceptance_steps.py"
+SCRIPT = REPO_ROOT / "scripts" / "acceptance" / "check_acceptance_steps.py"
 
 
 def _load():

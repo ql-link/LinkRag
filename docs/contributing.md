@@ -326,7 +326,7 @@ NNNN_YYYYMMDD_slug.py
 
 ### 5.1 触发规则一览
 
-机器执行版本：[scripts/doc-sync-rules.yaml](../scripts/doc-sync-rules.yaml)。本表是人读视图。
+机器执行版本：[scripts/quality/doc-sync-rules.yaml](../scripts/quality/doc-sync-rules.yaml)。本表是人读视图。
 
 | 改动 | 同步位置 | 级别 |
 | --- | --- | --- |
@@ -340,14 +340,14 @@ NNNN_YYYYMMDD_slug.py
 
 ### 5.2 严格度
 
-- **error**：阻止 commit / merge。`scripts/check_docs_sync.py` 在 pre-commit 和 CI 上拦截。
+- **error**：阻止 commit / merge。`scripts/quality/check_docs_sync.py` 在 pre-commit 和 CI 上拦截。
 - **warning**：本项目目前不使用 warning 级规则（避免"假阻拦"）。如果发现失同步是普遍问题，应升级为 error 并加规则，而不是加 warning。
 
 ### 5.3 工具与触发时点
 
 ```
-scripts/doc-sync-rules.yaml      # 规则定义
-scripts/check_docs_sync.py       # 检测脚本
+scripts/quality/doc-sync-rules.yaml      # 规则定义
+scripts/quality/check_docs_sync.py       # 检测脚本
 .pre-commit-config.yaml          # 本地 hook
 .github/workflows/docs-sync.yml  # CI 检查
 ```
@@ -356,21 +356,21 @@ scripts/check_docs_sync.py       # 检测脚本
 | --- | --- | --- |
 | `git commit` 前 | pre-commit hook | error 阻止 commit |
 | PR / push | GitHub Actions | error 阻止 merge |
-| 手动 | `python scripts/check_docs_sync.py --staged` | 输出违规清单 |
+| 手动 | `python scripts/quality/check_docs_sync.py --staged` | 输出违规清单 |
 
 ### 5.4 手动运行
 
 ```bash
-python scripts/check_docs_sync.py --staged          # 检查暂存区
-python scripts/check_docs_sync.py --working         # 检查工作区
-python scripts/check_docs_sync.py --base origin/dev # 检查相对分支
-python scripts/check_docs_sync.py --self-check      # 仅验证 yaml 合法
+python scripts/quality/check_docs_sync.py --staged          # 检查暂存区
+python scripts/quality/check_docs_sync.py --working         # 检查工作区
+python scripts/quality/check_docs_sync.py --base origin/dev # 检查相对分支
+python scripts/quality/check_docs_sync.py --self-check      # 仅验证 yaml 合法
 ```
 
 ### 5.5 内容级事实校验（check_docs_facts）
 
 `check_docs_sync.py` 只管"改代码时有没有**一起改**文档"（文件级耦合），不看文档**内容对不对**。
-`scripts/check_docs_facts.py` 补这一层，对账文档与真实代码，专抓耦合规则抓不到的内容失真：
+`scripts/quality/check_docs_facts.py` 补这一层，对账文档与真实代码，专抓耦合规则抓不到的内容失真：
 
 | 校验 | 规则 | 拦住的典型失真 |
 | --- | --- | --- |
@@ -381,16 +381,16 @@ python scripts/check_docs_sync.py --self-check      # 仅验证 yaml 合法
 同样在 pre-commit 与 CI（`docs-sync.yml`）强制。手动运行：
 
 ```bash
-python scripts/check_docs_facts.py          # 全量校验 docs/
-python scripts/check_docs_facts.py --quiet  # 只打印问题
+python scripts/quality/check_docs_facts.py          # 全量校验 docs/
+python scripts/quality/check_docs_facts.py --quiet  # 只打印问题
 ```
 
 ### 5.5 新增规则
 
 只在出现新的"代码改动 → 文档失同步会引发集成 bug"关系时新增。流程：
 
-1. 编辑 `scripts/doc-sync-rules.yaml`，加规则（参考已有格式）。
-2. `python scripts/check_docs_sync.py --self-check` 验证。
+1. 编辑 `scripts/quality/doc-sync-rules.yaml`，加规则（参考已有格式）。
+2. `python scripts/quality/check_docs_sync.py --self-check` 验证。
 3. 同步本节 §5.1 的人读表。
 
 ### 5.6 紧急绕过
@@ -423,7 +423,7 @@ PR 合并前，把 `.specs/<feature>/` 里**有长期价值**的东西搬出去�
 | 来自 `.specs/` | 沉淀到 |
 | --- | --- |
 | 关键设计决策、风险、权衡 | PR 描述 |
-| 可执行的 Gherkin 场景 | `tests/acceptance/features/<name>.feature` + `tests/acceptance/test_<name>.py` + step 实现（用 `python scripts/promote_acceptance.py <feature>` 提升：搬运 + 改名 + scaffold + 校验 0 undefined step + 防漂移；CI `acceptance-steps.yml` 长期守 undefined step） |
+| 可执行的 Gherkin 场景 | `tests/acceptance/features/<name>.feature` + `tests/acceptance/test_<name>.py` + step 实现（用 `python scripts/acceptance/promote_acceptance.py <feature>` 提升：搬运 + 改名 + scaffold + 校验 0 undefined step + 防漂移；CI `acceptance-steps.yml` 长期守 undefined step） |
 | 新模块或边界变化 | `docs/internals/<module>.md` |
 | 新对外契约 | `docs/api/` 对应文件 |
 | 新配置项 | `docs/ops/configure.md` |

@@ -49,7 +49,7 @@ when_to_use: "当需求与技术方案已确认、要开始具体编码实现时
 编码前先用脚本做机器门禁（L3 要求 TD 已冻结，L2 跳过 TD）：
 
 ```bash
-python scripts/flow-guard.py check <feature-name> implementation
+python scripts/acceptance/flow-guard.py check <feature-name> implementation
 ```
 
 返回 `HARD STOP` 时按其 `Next:` 提示回上游冻结对应产物，不得在前置未满足时开始编码。这条门禁的意义是：让"能不能开始写代码"由可校验的状态决定，而不是靠记忆判断。
@@ -59,7 +59,7 @@ python scripts/flow-guard.py check <feature-name> implementation
 接手一个进行中的 feature（尤其 L3 跨会话续做）时，先跑一条命令定位进度，不要逐个重读 `.specs` 产物：
 
 ```bash
-python scripts/flow-guard.py status
+python scripts/acceptance/flow-guard.py status
 ```
 
 它报出当前 active feature、所在 `phase`、唯一下一站和该读的单个输入文件。据此只读必要文件再继续。
@@ -112,7 +112,7 @@ python scripts/flow-guard.py status
 
 1. **先回写 spec**：涉及业务规则 / 验收断言的，回写 `acceptance.feature`；涉及范围 / 流程 / 模块判断的，回写 `brief.md` 对应章节。回写后再继续编码。
 2. **留痕**：在 `implementation_report.md` 的「Spec 偏差记录」章节记一条（原 spec 怎么写、实际怎么改、回写到哪）。任何一次 spec 回写都使本次实现落入第 7 节"必须写改造报告"。
-3. **收口对齐**：回写过的 `acceptance.feature` 在 `branch-pr-workflow` 收口时用 `python scripts/promote_acceptance.py <feature>` 提升到 `tests/acceptance/features/`（搬运 + 校验 0 undefined step），保证追溯链不断。
+3. **收口对齐**：回写过的 `acceptance.feature` 在 `branch-pr-workflow` 收口时用 `python scripts/acceptance/promote_acceptance.py <feature>` 提升到 `tests/acceptance/features/`（搬运 + 校验 0 undefined step），保证追溯链不断。
 
 ## 9. 强制约束
 
