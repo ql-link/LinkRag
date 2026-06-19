@@ -134,6 +134,51 @@ async def test_dense_not_success_raises_fail_fast():
 
 
 @pytest.mark.asyncio
+async def test_run_resolves_sparse_service_per_user_when_not_injected(monkeypatch):
+    # 不注入 service → run() 应按 records[0].user_id 解析（读用户配置，而非 .env）。
+    repo = _RecordingRepo()
+    service = _RecordingService()
+    captured: dict[str, object] = {}
+
+    async def fake_resolve(user_id):
+        captured["user_id"] = user_id
+        return service
+
+    monkeypatch.setattr(indexing_mod, "aresolve_user_sparse_vector_service", fake_resolve)
+
+    pipeline = SparseIndexingPipeline(
+        chunk_repository=repo,
+        qdrant_store=_RecordingStore(),
+    )
+
+    rows = [_row(chunk_id="c1", user_id=7)]
+    await pipeline.run(chunks=rows, task_id="t1", db=_FakeDB())
+
+    assert captured["user_id"] == 7  # 按发起用户解析
+    assert service.texts == ["alpha"]  # 确实用解析出的 service 编码
+
+
+@pytest.mark.asyncio
+async def test_run_prefers_injected_service_over_per_user_resolution(monkeypatch):
+    # 注入了 service → 绕过 per-user 解析（测试 / 显式装配语义）。
+    async def fail_resolve(user_id):
+        raise AssertionError("must not resolve per-user when service is injected")
+
+    monkeypatch.setattr(indexing_mod, "aresolve_user_sparse_vector_service", fail_resolve)
+
+    injected = _RecordingService()
+    pipeline = SparseIndexingPipeline(
+        chunk_repository=_RecordingRepo(),
+        sparse_vector_service=injected,
+        qdrant_store=_RecordingStore(),
+    )
+
+    await pipeline.run(chunks=[_row(chunk_id="c1")], task_id="t1", db=_FakeDB())
+
+    assert injected.texts == ["alpha"]
+
+
+@pytest.mark.asyncio
 async def test_missing_bucket_id_raises():
     repo = _RecordingRepo()
     pipeline = SparseIndexingPipeline(
@@ -208,9 +253,9 @@ async def test_happy_path_extracts_bucket_id_and_uses_multivalue_cas(monkeypatch
     assert service.texts == ["alpha", "beta"]
 
 
-def test_http_provider_defaults_outer_batch_size_to_one(monkeypatch):
-    monkeypatch.setattr(indexing_mod.settings, "SPARSE_VECTOR_PROVIDER", "bge_m3_http")
-    monkeypatch.setattr(indexing_mod.settings, "SPARSE_VECTOR_HTTP_BATCH_SIZE", None)
+def test_outer_batch_size_reads_sparse_vector_batch_size(monkeypatch):
+    # 稀疏编码统一走 per-user adapter；外层批大小不再随 provider 切换，只读 SPARSE_VECTOR_BATCH_SIZE。
+    monkeypatch.setattr(indexing_mod.settings, "SPARSE_VECTOR_BATCH_SIZE", 16)
 
     pipeline = SparseIndexingPipeline(
         chunk_repository=_RecordingRepo(),
@@ -218,12 +263,11 @@ def test_http_provider_defaults_outer_batch_size_to_one(monkeypatch):
         qdrant_store=_RecordingStore(),
     )
 
-    assert pipeline.batch_size == 1
+    assert pipeline.batch_size == 16
 
 
-def test_http_provider_uses_http_batch_size_when_configured(monkeypatch):
-    monkeypatch.setattr(indexing_mod.settings, "SPARSE_VECTOR_PROVIDER", "bge_m3_http")
-    monkeypatch.setattr(indexing_mod.settings, "SPARSE_VECTOR_HTTP_BATCH_SIZE", 2)
+def test_outer_batch_size_falls_back_to_default_when_unset(monkeypatch):
+    monkeypatch.setattr(indexing_mod.settings, "SPARSE_VECTOR_BATCH_SIZE", None)
 
     pipeline = SparseIndexingPipeline(
         chunk_repository=_RecordingRepo(),
@@ -231,4 +275,4 @@ def test_http_provider_uses_http_batch_size_when_configured(monkeypatch):
         qdrant_store=_RecordingStore(),
     )
 
-    assert pipeline.batch_size == 2
+    assert pipeline.batch_size == 32

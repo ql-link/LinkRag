@@ -114,6 +114,7 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── tokenizer.py
 │   │   │   ├── user_model_resolver.py # 用户模型选择解析
 │   │   │   └── providers/        # LLM 提供方实现（openai/anthropic/qwen/glm/deepseek）
+│   │   │                         #   稀疏 provider：doubao_vision.py（火山多模态稀疏）/ bge_m3.py（自部署 bge-m3-service 稀疏）
 │   │   ├── pipeline/             # 业务流水线编排
 │   │   │   ├── parse_task/        # 解析任务主编排
 │   │   │   │   ├── pipeline.py     # ParseTaskPipeline 薄编排（分流/幂等/校验/重试）
@@ -130,9 +131,10 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── ragflow_tokenizer.py # RagFlowTokenizer 适配
 │   │   │   └── models.py          # FileIndexMeta / ChunkWithTokens / FilePostIndexPlan
 │   │   ├── encoding/             # 编码命名空间（文本 → 向量，无存储职责）
-│   │   │   └── sparse/           # BGE-M3 稀疏向量编码
-│   │   │       ├── encoder.py / http_encoder.py / remote_encoder.py # 本地 / HTTP / 远程编码器
-│   │   │       ├── factory.py     # 按 provider 装配 SparseVectorService
+│   │   │   └── sparse/           # 稀疏向量编码
+│   │   │       ├── encoder.py      # SparseVectorEncoderProtocol + 清洗工具
+│   │   │       ├── adapter_encoder.py # llm adapter 输出 → SparseVector 桥接
+│   │   │       ├── factory.py     # 按用户配置解析 provider 装配 SparseVectorService
 │   │   │       ├── pipeline.py    # SparseVectorService 服务接口
 │   │   │       ├── deploy_bge_m3.py # 本地模型部署/冒烟脚本
 │   │   │       └── constants.py / models.py / exceptions.py

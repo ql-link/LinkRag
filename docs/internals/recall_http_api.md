@@ -134,9 +134,10 @@ CORS 复用全局 `CORSMiddleware`；对外环境必须把 `CORS_ORIGINS` 由 `*
 - `dense` → `DenseRetriever(compose_vector_storage_facade(), score_threshold=...)`；
 - 配置中出现未登记 source → 装配期 `ValueError`，不静默跳过。
 
-sparse 底座含本地 BGE-M3，装配较重，必须单例。dense 底座走远程 system embedding HTTP
-（无本地模型加载），单例化主要是为了与 `recall_pipeline` 单例对齐——所有 retriever
-在 pipeline 单例之内只构造一次。
+sparse 底座的稀疏编码模型不在装配期加载，而是执行期按发起用户的默认 `SPARSE_EMBEDDING`
+配置经 adapter 解析（per-user，当前 provider 为 `doubao_vision` / `bge_m3`）；dense 底座
+走远程 system embedding HTTP。两者装配期都不加载本地模型，单例化主要是为了与
+`recall_pipeline` 单例对齐——所有 retriever 在 pipeline 单例之内只构造一次。
 
 `user_id` / `top_k` 不在装配期注入，而是执行期由 pipeline 透传给
 `Retriever.recall(query, dataset_ids, doc_ids, *, user_id, top_k)`——这是相对 LINK-6

@@ -37,6 +37,24 @@ class EmbeddingResult(BaseModel):
     usage: UsageInfo
 
 
+class SparseEmbedding(BaseModel):
+    """单条文本的稀疏向量：并列的 token_id 数组与权重数组。
+
+    ``indices`` 一律是**整数 token_id**，与 encoding 层 ``SparseVector`` 及 BGE-M3
+    输出空间对齐。若某厂商原生返回的是「词 → 权重」，需由对应 provider 在内部翻译成
+    token_id 后再填入本结构，框架层不感知词形。
+    """
+    indices: List[int]
+    values: List[float]
+
+
+class SparseEmbeddingResult(BaseModel):
+    """稀疏向量化结果（与 dense ``EmbeddingResult`` 对称，逐条文本一组稀疏维度）。"""
+    model: str
+    embeddings: List[SparseEmbedding]
+    usage: UsageInfo
+
+
 class RerankItem(BaseModel):
     """重排结果项"""
     index: int

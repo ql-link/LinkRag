@@ -29,6 +29,7 @@ from src.core.encoding.sparse import (
     SparseVector,
     SparseVectorService,
 )
+from src.core.encoding.sparse.factory import aresolve_user_sparse_vector_service
 from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
 from src.core.splitter.models import EmbeddedChunk
 from src.models.chunk_record import ChunkRecordDB
@@ -165,9 +166,11 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
                     affected_chunks=0,
                     skipped_chunk_ids=[record.chunk_id],
                 )
+            sparse_service = None
             if self._sparse_enabled():
+                sparse_service = await self._resolve_sparse_vector_service(record.user_id)
                 sparse_indexing = await self._mark_sparse_indexing(
-                    [record.chunk_id], model_name=self._sparse_model_name()
+                    [record.chunk_id], model_name=sparse_service.model_name
                 )
                 if sparse_indexing != 1:
                     raise RuntimeError(
@@ -181,6 +184,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
                 start_line=start_line,
                 end_line=end_line,
                 chunk_index=chunk_index,
+                sparse_service=sparse_service,
             )
             await self.qdrant_store.ensure_collection(
                 bucket_id=record.bucket_id,
@@ -189,7 +193,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
             await self.qdrant_store.upsert_points(bucket_id=record.bucket_id, points=[point])
             if sparse_vector is not None:
                 sparse_point = sparse_indexed_point_from_record(
-                    record, sparse_vector, vector_name=self.sparse_vector_service.vector_name
+                    record, sparse_vector, vector_name=sparse_service.vector_name
                 )
                 await self.qdrant_store.ensure_sparse_vector_schema(
                     bucket_id=record.bucket_id, vector_name=sparse_point.vector_name
@@ -199,7 +203,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
                 )
                 sparse_indexed = await self._mark_sparse_indexed(
                     [record.chunk_id],
-                    model_name=self._sparse_model_name(),
+                    model_name=sparse_service.model_name,
                     nonzero_count=len(sparse_vector.indices),
                 )
                 if sparse_indexed != 1:
@@ -530,10 +534,17 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
 
         return bool(getattr(settings, "SPARSE_VECTOR_ENABLED", False))
 
-    def _sparse_model_name(self) -> str | None:
-        """返回管理端重建使用的 sparse 模型名；未配置服务时返回 None。"""
+    async def _resolve_sparse_vector_service(self, user_id: int) -> SparseVectorService:
+        """按发起用户解析稀疏向量服务（必配不兜底）；显式注入的 service 优先（测试 / 复用）。
 
-        return self.sparse_vector_service.model_name if self.sparse_vector_service else None
+        注入的 ``self.sparse_vector_service`` 一旦提供即对所有 user 生效（绕过解析）；生产修改
+        路径不注入，按被改 chunk 所属 ``record.user_id`` 解析，保证改后向量与该用户写入侧
+        token 权重空间一致。
+        """
+
+        if self.sparse_vector_service is not None:
+            return self.sparse_vector_service
+        return await aresolve_user_sparse_vector_service(user_id)
 
     async def _mark_sparse_indexing(
         self,
@@ -543,10 +554,6 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
     ) -> int:
         """把管理端重建目标的 sparse 子状态切换为 INDEXING。"""
 
-        if self.sparse_vector_service is None:
-            raise RuntimeError(
-                "SPARSE_VECTOR_ENABLED=true but sparse vector service is not configured."
-            )
         return await self._run_in_transaction_with_result(
             lambda session: self.repository.mark_sparse_indexing(
                 session,
@@ -597,6 +604,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
         start_line: int | None,
         end_line: int | None,
         chunk_index: int | None,
+        sparse_service: SparseVectorService | None = None,
     ) -> tuple[IndexedPoint, str | None, SparseVector | None]:
         """
             根据修改后的真值字段构造新的向量和 Qdrant point。
@@ -628,8 +636,8 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
         embedded_chunk: EmbeddedChunk = embedded_chunks[0]
         point = indexed_point_from_record(record, embedded_chunk)
         sparse_vector = None
-        if self._sparse_enabled():
-            sparse_vector = await self.sparse_vector_service.vectorize_chunk(
+        if sparse_service is not None:
+            sparse_vector = await sparse_service.vectorize_chunk(
                 SparseChunkVectorizationRequest(
                     chunk_id=record.chunk_id,
                     content=content,

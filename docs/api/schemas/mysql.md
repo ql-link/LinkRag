@@ -52,7 +52,7 @@ ORM：（未在 `src/models/` 中映射，由业务侧管理）
 
 ## 2. LLM 配置与用量
 
-> **协议（protocol）与入口（api_base_url）三层语义**（LINK-123）：LLM 调用拆成两个正交维度——`protocol`（API 家族，决定 HTTP 怎么拼）× `capability`（用途，决定调哪个端点）。`protocol` 枚举：`openai` / `anthropic` / `google` / `jina` / `dashscope`（小写、大小写敏感）。同一厂商不同能力可走不同协议（如千问 chat 走 `openai`、rerank 走 `dashscope`），故 `protocol` ≠ `provider_type`。
+> **协议（protocol）与入口（api_base_url）三层语义**（LINK-123）：LLM 调用拆成两个正交维度——`protocol`（API 家族，决定 HTTP 怎么拼）× `capability`（用途，决定调哪个端点）。`protocol` 枚举：`openai` / `anthropic` / `google` / `jina` / `dashscope` / `doubao_vision` / `bge_m3`（小写、大小写敏感；后两个为稀疏向量专用）。同一厂商不同能力可走不同协议（如千问 chat 走 `openai`、rerank 走 `dashscope`），故 `protocol` ≠ `provider_type`。
 >
 > 三层定位：**厂商层**（`llm_system_provider`）= 默认模板，不参与运行决策；**模型能力层**（`llm_provider_model`）= 协议与入口的事实来源；**用户配置层**（`llm_user_config`）= 运行快照，从模型能力层复制，Python 下游按 `(protocol, capability)` 选 adapter，绝不 fallback 厂商默认。`api_base_url` 在厂商层保存协议基地址，仅用于管理端预填；在模型能力层和用户配置层保存**完整端点 URL**，Python adapter 直接请求该 URL，不再拼 capability 后缀。`google` 协议例外，保存到 `/v1beta` 为止，由 Python 按模型和流式模式补全 Gemini 原生路径。
 

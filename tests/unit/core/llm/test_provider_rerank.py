@@ -62,7 +62,8 @@ def test_jina_declares_rerank_and_embedding():
     provider = JinaProvider(api_key="sk-test")
     assert provider.has_capability(CapabilityType.RERANK)
     assert provider.has_capability(CapabilityType.EMBEDDING)
-    assert provider.has_capability(CapabilityType.SPARSE_EMBEDDING)
+    # jina 不实现 embed_sparse，不再声明 SPARSE_EMBEDDING（避免能力门禁误放行）。
+    assert not provider.has_capability(CapabilityType.SPARSE_EMBEDDING)
 
 
 @pytest.mark.asyncio

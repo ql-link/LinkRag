@@ -39,7 +39,7 @@
 | [markdown_parser.md](internals/markdown_parser.md) | Markdown 解析与 LLM 增强 |
 | [chunking.md](internals/chunking.md) | 分块策略与流水线 |
 | [vectorization.md](internals/vectorization.md) | 向量化模块（dense） |
-| [sparse_vector.md](internals/sparse_vector.md) | 稀疏向量（BGE-M3）编码与索引 |
+| [sparse_vector.md](internals/sparse_vector.md) | 稀疏向量编码与索引 |
 | [preprocessor.md](internals/preprocessor.md) | ES 预分词（RAGFlow） |
 | [es_index_storage.md](internals/es_index_storage.md) | ES 索引与 BM25 检索 |
 | [chunk_fact_storage.md](internals/chunk_fact_storage.md) | Chunk SQL 事实存储（真值源/状态机） |

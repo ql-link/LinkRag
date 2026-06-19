@@ -38,8 +38,15 @@ def _build_bm25_retriever() -> Retriever:
 
 
 def _build_sparse_retriever() -> Retriever:
+    # sparse 召回 query 编码按发起用户的 SPARSE_EMBEDDING 配置解析（与写入侧 sparse_indexing
+    # 同源）：注入 aresolve_user_sparse_vector_service，facade.search_sparse_chunks 据 user_id
+    # 解析。与 dense 的 query_embedding_resolver 对偶，保证「同一用户写入 / 召回走同一份模型」。
+    from src.core.encoding.sparse.factory import aresolve_user_sparse_vector_service
+
     return SparseRetriever(
-        backend=compose_vector_storage_facade(),
+        backend=compose_vector_storage_facade(
+            query_sparse_resolver=aresolve_user_sparse_vector_service,
+        ),
         score_threshold=settings.SPARSE_RETRIEVAL_SCORE_THRESHOLD,
     )
 

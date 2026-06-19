@@ -22,14 +22,16 @@ src/core/llm/
     ├── anthropic.py        # AnthropicProvider（protocol=anthropic）
     ├── google.py           # GoogleProvider（protocol=google，Gemini 原生）
     ├── jina.py             # JinaProvider（protocol=jina，平铺 rerank+embedding）
-    └── dashscope.py        # DashScopeProvider（protocol=dashscope，千问原生 rerank）
+    ├── dashscope.py        # DashScopeProvider（protocol=dashscope，千问原生 rerank）
+    ├── doubao_vision.py    # DoubaoVisionProvider（protocol=doubao_vision，火山多模态稀疏）
+    └── bge_m3.py           # BgeM3ServiceProvider（protocol=bge_m3，自部署 bge-m3-service 稀疏）
 ```
 
 ## 2. 协议化分发（核心）
 
 LLM 调用拆成两个正交维度：
 
-- **`protocol`（API 家族）**：决定怎么拼 HTTP 请求体、鉴权、解析响应。5 个枚举（小写、大小写敏感）：`openai` / `anthropic` / `google` / `jina` / `dashscope`。
+- **`protocol`（API 家族）**：决定怎么拼 HTTP 请求体、鉴权、解析响应。7 个枚举（小写、大小写敏感）：`openai` / `anthropic` / `google` / `jina` / `dashscope` / `doubao_vision` / `bge_m3`（后两个为稀疏向量专用）。
 - **`capability`（用途）**：`CHAT` / `EMBEDDING` / `SPARSE_EMBEDDING` / `RERANK` / `VISION`，决定调哪个能力分支。`OCR` 不再作为独立 LLM capability。
 
 **分发中台 = `ModelFactory.create_client(protocol=...)`**：所有要 LLM 的路径都经此一个口子按 `protocol` 选 adapter。**分发不依据 `provider_type`**——`provider_type` 仅作厂商身份 / 展示 / 日志。同一厂商不同能力可落不同协议（典型：千问 chat=`openai`、rerank=`dashscope`，落到两个 adapter）。
@@ -43,10 +45,12 @@ LLM 调用拆成两个正交维度：
 | `google` | `GoogleProvider` | `TEXT`(CHAT) | Python 补全（见 §2.3） |
 | `jina` | `JinaProvider` | `RERANK` / `EMBEDDING` / `SPARSE_EMBEDDING` | 直打 `api_base_url`（平铺 `/rerank` 或 `/embeddings`） |
 | `dashscope` | `DashScopeProvider` | `RERANK` | 直打 `api_base_url`（原生嵌套 `/services/rerank/text-rerank/text-rerank`） |
+| `doubao_vision` | `DoubaoVisionProvider` | `SPARSE_EMBEDDING` | 直打 `api_base_url`（火山多模态 `/embeddings/multimodal`，逐条编码） |
+| `bge_m3` | `BgeM3ServiceProvider` | `SPARSE_EMBEDDING` | 直打 `api_base_url`（自部署 `bge-m3-service` 编码端点） |
 
 每个 adapter 的 `_capabilities` 集合即"本期 (protocol, capability) 矩阵"的唯一真源。`openai` 吃掉全部 OpenAI 兼容厂商（openai/千问 chat/glm/deepseek/硅基流动…）。**本期不做多模态（VISION）与 ASR；`OCR` 不进入能力矩阵。**
 
-`SPARSE_EMBEDDING` 当前只完成配置读取与 adapter capability 门禁：`openai` / `jina` 可被解析到 embedding 端点，`google` / `dashscope` / `anthropic` 会返回 `UnsupportedProtocolCapabilityError`。现有 RAG sparse 写入/查询链路仍使用 `src/core/encoding/sparse` 的 BGE-M3 lexical weights；是否把厂商 `SPARSE_EMBEDDING` 输出接入 Qdrant sparse vector，需先确认输出 schema（token_id → weight）和写入/查询两侧是否共用同一权重空间。
+`SPARSE_EMBEDDING` 已接入 RAG sparse 写入/召回链路：按发起用户的默认 `SPARSE_EMBEDDING` 配置经 `aresolve_user_model` 解析到稀疏 adapter（当前 `doubao_vision` / `bge_m3`），产出框架中性的 `SparseEmbeddingResult`，再由 encoding 层 `AdapterSparseVectorEncoder` 统一清洗成 `SparseVector` 写入 Qdrant named sparse vector（详见 [sparse_vector.md](sparse_vector.md)）。`openai` / `jina` 仍声明 `SPARSE_EMBEDDING`（可解析到 embedding 端点），但 RAG 稀疏链路当前由 `doubao_vision` / `bge_m3` 承载；`google` / `dashscope` / `anthropic` 不支持该能力，返回 `UnsupportedProtocolCapabilityError`。
 
 ### 2.2 URL 接缝：完整 URL 直打
 
@@ -112,7 +116,7 @@ API Key 不写入文档 / 测试 / 提交；用户密钥库内密文保存，读
 | --- | --- | --- |
 | `/api/v1/llm/generate(/stream)` | `CHAT` | openai / anthropic / google |
 | `/api/v1/llm/embed` | `EMBEDDING` | openai / jina |
-| 用户配置解析 | `SPARSE_EMBEDDING` | openai / jina；当前 RAG sparse vectorizing 尚未接入 |
+| 用户配置解析 | `SPARSE_EMBEDDING` | doubao_vision / bge_m3（已接入 RAG 稀疏写入/召回）；openai / jina 仅声明能力 |
 | `/api/v1/llm/rerank` | `RERANK` | jina（平铺）/ dashscope（千问原生） |
 | Markdown 表格增强 | `CHAT` | 系统级 openai |
 | Chunk 向量化 | `EMBEDDING` | 系统级 openai |
