@@ -1,0 +1,577 @@
+# -*- coding: utf-8 -*-
+"""Markdown heading hierarchy gate and insertion-plan application.
+
+This module is intentionally LLM-provider agnostic.  It builds the deterministic
+gate/context and applies validated heading insertion plans; a future LLM-backed
+generator only needs to implement :class:`HeadingPlanGenerator`.
+"""
+
+from __future__ import annotations
+
+import logging
+import re
+from dataclasses import dataclass
+from enum import Enum
+from typing import Protocol
+
+from src.core.llm.tokenizer import Tokenizer
+
+from .models import ElementType, MarkdownElement, ParseResult
+from .parser import MarkdownParser
+
+logger = logging.getLogger(__name__)
+
+MAX_HEADING_LEVEL = 5
+PROTECTED_ELEMENT_TYPES = {
+    ElementType.CODE_BLOCK,
+    ElementType.TABLE,
+    ElementType.MATH_BLOCK,
+    ElementType.FRONT_MATTER,
+}
+COMMON_SECTION_TITLES = {
+    "概述",
+    "背景",
+    "目标",
+    "流程",
+    "配置",
+    "注意事项",
+    "示例",
+    "常见问题",
+    "安装",
+    "部署",
+    "参数说明",
+}
+
+_NUMBERED_HEADING_RE = re.compile(r"^\d+(?:\.\d+){1,4}\s+\S+")
+_CHAPTER_RE = re.compile(r"^第[一二三四五六七八九十百千万\d]+[章节篇]\s*\S*")
+_CHINESE_LIST_RE = re.compile(r"^[一二三四五六七八九十]+、\s*\S+")
+_PAREN_LIST_RE = re.compile(r"^（[一二三四五六七八九十\d]+）\s*\S+")
+_DIGIT_PAREN_RE = re.compile(r"^\d+[）)]\s*\S+")
+
+
+class HeadingGateReason(str, Enum):
+    """Reason for the heading hierarchy gate decision."""
+
+    DISABLED = "disabled"
+    NO_HEADINGS = "no_headings"
+    TOO_SHORT_WITHOUT_HEADINGS = "too_short_without_headings"
+    FLAT_HEADING_LEVELS = "flat_heading_levels"
+    FLAT_WITHOUT_HIERARCHY_CLUES = "flat_without_hierarchy_clues"
+    SPARSE_HEADING_TREE = "sparse_heading_tree"
+    HEALTHY_HEADING_TREE = "healthy_heading_tree"
+    PLAN_EMPTY = "plan_empty"
+    PLAN_INVALID = "plan_invalid"
+    GENERATOR_FAILED = "generator_failed"
+
+
+@dataclass(frozen=True)
+class ExistingHeading:
+    """Existing heading in the original Markdown line coordinate system."""
+
+    line: int
+    level: int
+    text: str
+
+
+@dataclass(frozen=True)
+class CandidateInsertionPosition:
+    """Potential original-line insertion point for a later plan generator."""
+
+    line: int
+    element_type: str | None
+    preview: str
+
+
+@dataclass(frozen=True)
+class HeadingMetrics:
+    """Metrics used by the gate and exposed to future LLM prompt builders."""
+
+    total_tokens: int
+    heading_count: int
+    distinct_heading_levels: tuple[int, ...]
+    tokens_per_heading: float | None
+    hierarchy_clue_count: int
+
+
+@dataclass(frozen=True)
+class GateDecision:
+    """Decision produced by :class:`HeadingHierarchyGate`."""
+
+    should_generate: bool
+    reason: HeadingGateReason
+    metrics: HeadingMetrics
+    existing_headings: tuple[ExistingHeading, ...]
+    candidate_insert_positions: tuple[CandidateInsertionPosition, ...]
+
+
+@dataclass(frozen=True)
+class HeadingInsertion:
+    """A single heading insertion, addressed by original Markdown line."""
+
+    line: int
+    level: int
+    text: str
+
+
+@dataclass(frozen=True)
+class HeadingPlan:
+    """A generator-produced insertion plan."""
+
+    insertions: tuple[HeadingInsertion, ...] = ()
+
+
+@dataclass(frozen=True)
+class HeadingHierarchyConfig:
+    """Runtime configuration for the heading hierarchy processor."""
+
+    enabled: bool = False
+    no_heading_min_tokens: int = 512
+    flat_min_headings: int = 5
+    sparse_tokens_per_heading: int = 1536
+    llm_context_token_budget: int = 8192
+
+    @classmethod
+    def from_settings(cls) -> "HeadingHierarchyConfig":
+        """Build config from global settings without coupling callers to Settings."""
+        from src.config import settings
+
+        return cls(
+            enabled=settings.MARKDOWN_PARSER_ENABLE_HEADING_HIERARCHY,
+            no_heading_min_tokens=settings.MARKDOWN_PARSER_HEADING_NO_HEADING_MIN_TOKENS,
+            flat_min_headings=settings.MARKDOWN_PARSER_HEADING_FLAT_MIN_HEADINGS,
+            sparse_tokens_per_heading=(settings.MARKDOWN_PARSER_HEADING_SPARSE_TOKENS_PER_HEADING),
+            llm_context_token_budget=settings.MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET,
+        )
+
+
+@dataclass(frozen=True)
+class HeadingHierarchyResult:
+    """Final Markdown/ParseResult pair after optional heading processing."""
+
+    markdown: str
+    parse_result: ParseResult
+    decision: GateDecision
+    applied: bool
+    insertion_count: int = 0
+
+
+class HeadingPlanValidationError(ValueError):
+    """Raised when a heading insertion plan cannot be safely applied."""
+
+
+class HeadingPlanGenerator(Protocol):
+    """Protocol for future LLM-backed heading plan generators."""
+
+    async def agenerate(
+        self,
+        *,
+        markdown: str,
+        parse_result: ParseResult,
+        decision: GateDecision,
+    ) -> HeadingPlan: ...
+
+
+class NoopHeadingPlanGenerator:
+    """Default generator for the framework stage: never changes Markdown."""
+
+    async def agenerate(
+        self,
+        *,
+        markdown: str,
+        parse_result: ParseResult,
+        decision: GateDecision,
+    ) -> HeadingPlan:
+        return HeadingPlan()
+
+
+class _TokenCounter(Protocol):
+    def count_tokens(self, text: str) -> int: ...
+
+
+class HeadingHierarchyGate:
+    """Deterministic gate deciding whether heading generation should run."""
+
+    def __init__(
+        self,
+        *,
+        config: HeadingHierarchyConfig | None = None,
+        tokenizer: _TokenCounter | None = None,
+    ) -> None:
+        self.config = config or HeadingHierarchyConfig.from_settings()
+        self.tokenizer = tokenizer or Tokenizer()
+
+    def evaluate(self, markdown: str, parse_result: ParseResult) -> GateDecision:
+        metrics = self._build_metrics(markdown, parse_result)
+        existing_headings = self._existing_headings(parse_result)
+        candidate_positions = self._candidate_insert_positions(markdown, parse_result)
+
+        if not self.config.enabled:
+            return self._decision(
+                False,
+                HeadingGateReason.DISABLED,
+                metrics,
+                existing_headings,
+                candidate_positions,
+            )
+
+        if metrics.heading_count == 0:
+            if metrics.total_tokens >= self.config.no_heading_min_tokens:
+                return self._decision(
+                    True,
+                    HeadingGateReason.NO_HEADINGS,
+                    metrics,
+                    existing_headings,
+                    candidate_positions,
+                )
+            return self._decision(
+                False,
+                HeadingGateReason.TOO_SHORT_WITHOUT_HEADINGS,
+                metrics,
+                existing_headings,
+                candidate_positions,
+            )
+
+        if (
+            metrics.heading_count >= self.config.flat_min_headings
+            and len(metrics.distinct_heading_levels) == 1
+        ):
+            if metrics.hierarchy_clue_count > 0:
+                return self._decision(
+                    True,
+                    HeadingGateReason.FLAT_HEADING_LEVELS,
+                    metrics,
+                    existing_headings,
+                    candidate_positions,
+                )
+            return self._decision(
+                False,
+                HeadingGateReason.FLAT_WITHOUT_HIERARCHY_CLUES,
+                metrics,
+                existing_headings,
+                candidate_positions,
+            )
+
+        if metrics.heading_count > 0 and len(metrics.distinct_heading_levels) >= 2:
+            tokens_per_heading = metrics.tokens_per_heading or 0
+            if tokens_per_heading >= self.config.sparse_tokens_per_heading:
+                return self._decision(
+                    True,
+                    HeadingGateReason.SPARSE_HEADING_TREE,
+                    metrics,
+                    existing_headings,
+                    candidate_positions,
+                )
+
+        return self._decision(
+            False,
+            HeadingGateReason.HEALTHY_HEADING_TREE,
+            metrics,
+            existing_headings,
+            candidate_positions,
+        )
+
+    @staticmethod
+    def _decision(
+        should_generate: bool,
+        reason: HeadingGateReason,
+        metrics: HeadingMetrics,
+        existing_headings: tuple[ExistingHeading, ...],
+        candidate_insert_positions: tuple[CandidateInsertionPosition, ...],
+    ) -> GateDecision:
+        return GateDecision(
+            should_generate=should_generate,
+            reason=reason,
+            metrics=metrics,
+            existing_headings=existing_headings,
+            candidate_insert_positions=candidate_insert_positions,
+        )
+
+    def _build_metrics(self, markdown: str, parse_result: ParseResult) -> HeadingMetrics:
+        headings = [
+            element for element in parse_result.elements if element.type == ElementType.HEADING
+        ]
+        heading_levels = tuple(
+            sorted(
+                {
+                    self._coerce_heading_level(element)
+                    for element in headings
+                    if self._coerce_heading_level(element) is not None
+                }
+            )
+        )
+        total_tokens = self.tokenizer.count_tokens(markdown)
+        heading_count = len(headings)
+        tokens_per_heading = total_tokens / heading_count if heading_count else None
+        hierarchy_clues = self._hierarchy_clues(parse_result)
+        return HeadingMetrics(
+            total_tokens=total_tokens,
+            heading_count=heading_count,
+            distinct_heading_levels=heading_levels,
+            tokens_per_heading=tokens_per_heading,
+            hierarchy_clue_count=len(hierarchy_clues),
+        )
+
+    @staticmethod
+    def _coerce_heading_level(element: MarkdownElement) -> int | None:
+        try:
+            return int(element.metadata.get("heading_level", 1) or 1)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _existing_headings(parse_result: ParseResult) -> tuple[ExistingHeading, ...]:
+        headings: list[ExistingHeading] = []
+        for element in parse_result.elements:
+            if element.type != ElementType.HEADING:
+                continue
+            try:
+                level = int(element.metadata.get("heading_level", 1) or 1)
+            except (TypeError, ValueError):
+                level = 1
+            text = str(element.metadata.get("heading_text") or element.content.lstrip("#").strip())
+            headings.append(ExistingHeading(line=element.start_line, level=level, text=text))
+        return tuple(headings)
+
+    def _hierarchy_clues(self, parse_result: ParseResult) -> tuple[tuple[int, str], ...]:
+        clues: list[tuple[int, str]] = []
+        for element in parse_result.elements:
+            if element.type == ElementType.HEADING:
+                heading_text = str(element.metadata.get("heading_text") or "").strip()
+                if self._looks_like_short_hierarchy_clue(heading_text):
+                    clues.append((element.start_line, heading_text))
+                    continue
+
+            for line_offset, raw_line in enumerate(element.content.splitlines() or [""]):
+                text = raw_line.strip()
+                if self._looks_like_short_hierarchy_clue(text):
+                    clues.append((element.start_line + line_offset, text))
+        return tuple(clues)
+
+    def _looks_like_short_hierarchy_clue(self, text: str) -> bool:
+        return self._is_short_clue_candidate(text) and self._looks_like_hierarchy_clue(text)
+
+    @staticmethod
+    def _is_short_clue_candidate(text: str) -> bool:
+        if not text:
+            return False
+        # Keep this conservative; long prose is context, not a structural clue.
+        return len(text) <= 40
+
+    @staticmethod
+    def _looks_like_hierarchy_clue(text: str) -> bool:
+        normalized = text.strip()
+        if normalized in COMMON_SECTION_TITLES:
+            return True
+        return any(
+            pattern.match(normalized)
+            for pattern in (
+                _NUMBERED_HEADING_RE,
+                _CHAPTER_RE,
+                _CHINESE_LIST_RE,
+                _PAREN_LIST_RE,
+                _DIGIT_PAREN_RE,
+            )
+        )
+
+    @staticmethod
+    def _candidate_insert_positions(
+        markdown: str,
+        parse_result: ParseResult,
+    ) -> tuple[CandidateInsertionPosition, ...]:
+        lines = markdown.split("\n")
+        candidates: dict[int, CandidateInsertionPosition] = {
+            0: CandidateInsertionPosition(line=0, element_type=None, preview=""),
+            len(lines): CandidateInsertionPosition(line=len(lines), element_type=None, preview=""),
+        }
+        protected = _protected_ranges(parse_result)
+        for element in parse_result.elements:
+            line = element.start_line
+            if _is_inside_protected(line, protected):
+                continue
+            candidates.setdefault(
+                line,
+                CandidateInsertionPosition(
+                    line=line,
+                    element_type=element.type.value,
+                    preview=_preview(element.content),
+                ),
+            )
+        return tuple(candidates[line] for line in sorted(candidates))
+
+
+class HeadingHierarchyProcessor:
+    """Coordinates parse -> gate -> plan generation -> validate/apply -> parse."""
+
+    def __init__(
+        self,
+        *,
+        parser: MarkdownParser | None = None,
+        tokenizer: _TokenCounter | None = None,
+        config: HeadingHierarchyConfig | None = None,
+        generator: HeadingPlanGenerator | None = None,
+    ) -> None:
+        self.parser = parser or MarkdownParser()
+        self.config = config or HeadingHierarchyConfig.from_settings()
+        self.tokenizer = tokenizer or Tokenizer()
+        self.generator = generator or NoopHeadingPlanGenerator()
+        self.gate = HeadingHierarchyGate(config=self.config, tokenizer=self.tokenizer)
+
+    async def aprocess(
+        self,
+        markdown: str,
+        *,
+        source_file: str | None = None,
+    ) -> HeadingHierarchyResult:
+        parse_result = self.parser.parse(markdown, source_file=source_file)
+        if not self.config.enabled:
+            return HeadingHierarchyResult(
+                markdown=markdown,
+                parse_result=parse_result,
+                decision=_disabled_decision(),
+                applied=False,
+            )
+
+        decision = self.gate.evaluate(markdown, parse_result)
+        if not decision.should_generate:
+            return HeadingHierarchyResult(
+                markdown=markdown,
+                parse_result=parse_result,
+                decision=decision,
+                applied=False,
+            )
+
+        try:
+            plan = await self.generator.agenerate(
+                markdown=markdown,
+                parse_result=parse_result,
+                decision=decision,
+            )
+        except Exception as exc:
+            logger.warning("Heading hierarchy generator failed, skip enhancement: %s", exc)
+            return HeadingHierarchyResult(
+                markdown=markdown,
+                parse_result=parse_result,
+                decision=decision,
+                applied=False,
+            )
+
+        if not plan.insertions:
+            return HeadingHierarchyResult(
+                markdown=markdown,
+                parse_result=parse_result,
+                decision=decision,
+                applied=False,
+            )
+
+        try:
+            validate_heading_plan(plan, markdown, parse_result)
+            updated_markdown = apply_heading_plan(markdown, plan)
+            updated_parse_result = self.parser.parse(updated_markdown, source_file=source_file)
+        except Exception as exc:
+            logger.warning("Heading hierarchy plan rejected, skip enhancement: %s", exc)
+            return HeadingHierarchyResult(
+                markdown=markdown,
+                parse_result=parse_result,
+                decision=decision,
+                applied=False,
+            )
+
+        return HeadingHierarchyResult(
+            markdown=updated_markdown,
+            parse_result=updated_parse_result,
+            decision=decision,
+            applied=True,
+            insertion_count=len(plan.insertions),
+        )
+
+
+def validate_heading_plan(
+    plan: HeadingPlan,
+    markdown: str,
+    parse_result: ParseResult,
+) -> None:
+    """Validate that a plan can be safely applied without changing source text."""
+    lines = markdown.split("\n")
+    protected_ranges = _protected_ranges(parse_result)
+
+    for insertion in plan.insertions:
+        if insertion.line < 0 or insertion.line > len(lines):
+            raise HeadingPlanValidationError(
+                f"heading insertion line out of range: {insertion.line}"
+            )
+        if insertion.level < 1 or insertion.level > MAX_HEADING_LEVEL:
+            raise HeadingPlanValidationError(
+                f"heading level must be between 1 and {MAX_HEADING_LEVEL}"
+            )
+        text = insertion.text.strip()
+        if not text:
+            raise HeadingPlanValidationError("heading text must not be empty")
+        if "\n" in text or "\r" in text:
+            raise HeadingPlanValidationError("heading text must be single-line")
+        if text.startswith("#") or text.startswith("```"):
+            raise HeadingPlanValidationError(
+                "heading text must not include markdown heading/code markers"
+            )
+        if _is_inside_protected(insertion.line, protected_ranges):
+            raise HeadingPlanValidationError(
+                f"heading insertion line is inside a protected block: {insertion.line}"
+            )
+
+
+def apply_heading_plan(markdown: str, plan: HeadingPlan) -> str:
+    """Apply insertions using original Markdown line coordinates only."""
+    lines = markdown.split("\n")
+    insertions_by_original_line: dict[int, list[HeadingInsertion]] = {}
+    for insertion in plan.insertions:
+        insertions_by_original_line.setdefault(insertion.line, []).append(insertion)
+
+    new_lines: list[str] = []
+    for index, line in enumerate(lines):
+        for insertion in insertions_by_original_line.get(index, []):
+            new_lines.append(render_heading(insertion))
+        new_lines.append(line)
+
+    for insertion in insertions_by_original_line.get(len(lines), []):
+        new_lines.append(render_heading(insertion))
+
+    return "\n".join(new_lines)
+
+
+def render_heading(insertion: HeadingInsertion) -> str:
+    """Render a validated insertion as Markdown heading syntax."""
+    return f"{'#' * insertion.level} {insertion.text.strip()}"
+
+
+def _protected_ranges(parse_result: ParseResult) -> tuple[tuple[int, int], ...]:
+    return tuple(
+        (element.start_line, element.end_line)
+        for element in parse_result.elements
+        if element.type in PROTECTED_ELEMENT_TYPES
+    )
+
+
+def _is_inside_protected(line: int, ranges: tuple[tuple[int, int], ...]) -> bool:
+    return any(start < line <= end for start, end in ranges)
+
+
+def _preview(text: str, limit: int = 120) -> str:
+    cleaned = " ".join(part.strip() for part in text.splitlines() if part.strip())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 3].rstrip() + "..."
+
+
+def _disabled_decision() -> GateDecision:
+    return GateDecision(
+        should_generate=False,
+        reason=HeadingGateReason.DISABLED,
+        metrics=HeadingMetrics(
+            total_tokens=0,
+            heading_count=0,
+            distinct_heading_levels=(),
+            tokens_per_heading=None,
+            hierarchy_clue_count=0,
+        ),
+        existing_headings=(),
+        candidate_insert_positions=(),
+    )
