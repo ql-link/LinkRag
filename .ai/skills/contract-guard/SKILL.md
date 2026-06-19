@@ -52,7 +52,7 @@ when_to_use: "当技术设计或代码实现改到 MySQL 表/字段、Qdrant/Ela
 2. 对每个面判定：**复用现有约定** / **新增约定** / **破坏性变更**（不向后兼容）。
 3. 破坏性变更要显式标注对端影响（尤其 MQ 消息、错误码、HTTP 结构会波及 Java 侧）。
 4. 列出机器强制同步项（mysql.md / migration / mq_contracts.md / mq.md / parse_task_pipeline.md）。
-5. 收尾提示自检：`python scripts/check_docs_sync.py --staged`。
+5. 收尾提示自检：`python scripts/quality/check_docs_sync.py --staged`。
 
 ## 输出要求
 

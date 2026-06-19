@@ -30,4 +30,4 @@ jobs:
           pip install -e ".[dev]"
 
       - name: Check acceptance step bindings
-        run: python scripts/check_acceptance_steps.py
+        run: python scripts/acceptance/check_acceptance_steps.py

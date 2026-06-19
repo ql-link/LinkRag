@@ -13,7 +13,7 @@
 4. 校验:调 ``check_acceptance_steps.py`` 断言 0 个 undefined step
 
 Usage:
-    python scripts/promote_acceptance.py <feature> [--name <snake_name>]
+    python scripts/acceptance/promote_acceptance.py <feature> [--name <snake_name>]
 
 Exit codes:
     0  - 提升完成且 0 undefined step
@@ -28,12 +28,12 @@ import subprocess
 import sys
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 SPECS_DIR = REPO_ROOT / ".specs"
 FEATURES_DIR = REPO_ROOT / "tests" / "acceptance" / "features"
 TESTS_DIR = REPO_ROOT / "tests" / "acceptance"
 STEPS_DIR = REPO_ROOT / "tests" / "acceptance" / "steps"
-CHECKER = REPO_ROOT / "scripts" / "check_acceptance_steps.py"
+CHECKER = REPO_ROOT / "scripts" / "acceptance" / "check_acceptance_steps.py"
 
 
 def _err(msg: str) -> None:
@@ -82,7 +82,7 @@ STEPS_TEMPLATE = '''\
 """{name} 的 pytest-bdd step 实现。
 
 由 promote_acceptance.py 生成的空骨架——在此补 @given/@when/@then,直到
-``python scripts/check_acceptance_steps.py`` 报 0 undefined step。
+``python scripts/acceptance/check_acceptance_steps.py`` 报 0 undefined step。
 """
 
 from __future__ import annotations

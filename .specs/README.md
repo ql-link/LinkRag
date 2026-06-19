@@ -33,13 +33,13 @@
 
 `state.yaml` 是这个 feature 的**机器拥有**阶段状态：`phase`、各 artifact 的 `frozen`、`acceptance_promoted`、`verified` 等不变量都记在结构化字段里，人类可读摘要放 `notes`。它取代了过去靠 agent 记得更新的散文 `feature_info.md`。
 
-阶段推进由 [scripts/flow-guard.py](../scripts/flow-guard.py) 兜底，**进入下游阶段前由对应 skill 主动调用**（`.specs/` 整目录 git-ignored，无法做 git hook）：
+阶段推进由 [scripts/acceptance/flow-guard.py](../scripts/acceptance/flow-guard.py) 兜底，**进入下游阶段前由对应 skill 主动调用**（`.specs/` 整目录 git-ignored，无法做 git hook）：
 
 ```bash
-python scripts/flow-guard.py init <feature> --lane <L2|L3>   # 链起点初始化
-python scripts/flow-guard.py check <feature> acceptance      # 进入 acceptance 前的前置校验
-python scripts/flow-guard.py validate <feature>              # 仅校验 state.yaml 结构
-python scripts/flow-guard.py status                          # 报当前 feature/phase/下一站(跨会话恢复)
+python scripts/acceptance/flow-guard.py init <feature> --lane <L2|L3>   # 链起点初始化
+python scripts/acceptance/flow-guard.py check <feature> acceptance      # 进入 acceptance 前的前置校验
+python scripts/acceptance/flow-guard.py validate <feature>              # 仅校验 state.yaml 结构
+python scripts/acceptance/flow-guard.py status                          # 报当前 feature/phase/下一站(跨会话恢复)
 ```
 
 前置不满足时打印 `HARD STOP` + 可执行的下一步并以非 0 退出。"冻结"因此从 agent 自觉降级为有脚本兜底的显式动作。
@@ -69,7 +69,7 @@ python scripts/flow-guard.py status                          # 报当前 feature
 | `.specs/` 里 | 沉淀到 |
 | --- | --- |
 | 关键设计决策、风险、权衡 | PR 描述 |
-| 可执行的 Gherkin 验收场景 | `tests/acceptance/features/<name>.feature` + `tests/acceptance/test_<name>.py` + step 实现（用 `python scripts/promote_acceptance.py <feature>` 提升，自动搬运 + 校验 0 undefined step + 防漂移） |
+| 可执行的 Gherkin 验收场景 | `tests/acceptance/features/<name>.feature` + `tests/acceptance/test_<name>.py` + step 实现（用 `python scripts/acceptance/promote_acceptance.py <feature>` 提升，自动搬运 + 校验 0 undefined step + 防漂移） |
 | 新模块或边界变化 | `docs/internals/<module>.md` |
 | 新对外契约 | `docs/api/` 对应文件 |
 | 新配置项 | `docs/ops/configure.md` |

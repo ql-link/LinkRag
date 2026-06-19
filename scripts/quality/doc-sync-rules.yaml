@@ -1,6 +1,6 @@
 # 文档同步规则（机器可读版）
 #
-# 用途：约束"改动代码时必须同步对应文档"，由 scripts/check_docs_sync.py 强制执行。
+# 用途：约束"改动代码时必须同步对应文档"，由 scripts/quality/check_docs_sync.py 强制执行。
 #
 # 设计原则：
 #   - 只保留 error 级规则（避免 warning 失同步成为习惯性 ignore）。
@@ -19,7 +19,7 @@
 #   forbid_change: true   - 任何匹配 when_changed 的改动都视为违规
 #                           （与 must_update 互斥），用于"冻结"文件。
 #
-# 修改本文件后请运行 `python scripts/check_docs_sync.py --self-check` 验证。
+# 修改本文件后请运行 `python scripts/quality/check_docs_sync.py --self-check` 验证。
 
 version: 1
 
