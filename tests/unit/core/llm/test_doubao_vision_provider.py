@@ -53,7 +53,10 @@ def test_declares_only_sparse_embedding():
 def test_default_model_and_base_url():
     provider = DoubaoVisionProvider(api_key="k")
     assert provider.model_name == "doubao-embedding-vision-251215"
-    assert provider.DEFAULT_BASE_URL == "https://ark.cn-beijing.volces.com/api/v3"
+    assert (
+        provider.DEFAULT_ENDPOINT
+        == "https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal"
+    )
 
 
 @pytest.mark.asyncio
@@ -102,6 +105,22 @@ async def test_embed_sparse_one_request_per_text():
     # 多模态端点逐条编码：两条文本 = 两次请求，顺序保持。
     assert [b["input"][0]["text"] for b in bodies] == ["a", "b"]
     assert [e.indices for e in result.embeddings] == [[1], [2]]
+
+
+@pytest.mark.asyncio
+async def test_embed_sparse_uses_api_base_url_as_full_endpoint_no_concat():
+    captured: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
+        return httpx.Response(200, json=_resp([{"index": 1, "value": 0.5}]))
+
+    # api_base_url 即完整端点 → 直打，不重复拼接 /embeddings/multimodal
+    provider = _provider(
+        handler, api_base_url="https://proxy.example.com/api/v3/embeddings/multimodal"
+    )
+    await provider.embed_sparse(["a"])
+    assert captured["url"] == "https://proxy.example.com/api/v3/embeddings/multimodal"
 
 
 @pytest.mark.asyncio

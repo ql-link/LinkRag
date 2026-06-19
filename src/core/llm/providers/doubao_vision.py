@@ -6,7 +6,7 @@ SPARSE_EMBEDDING——把响应中 ``sparse_embedding`` 数组转成框架中性
 
 服务契约（已对真实接口实测确认）::
 
-    POST {api_base_url}/embeddings/multimodal
+    POST {api_base_url}     # api_base_url 即完整端点（与种子 llm_provider_model 约定一致），直打
     Header:   Authorization: Bearer {api_key}
     Body:     {"model": "doubao-embedding-vision-251215",
                "input": [{"type": "text", "text": "..."}],
@@ -48,8 +48,9 @@ class DoubaoVisionProvider(BaseProvider):
     """火山方舟 doubao-embedding-vision 协议 adapter：仅稀疏向量化（文本）。"""
 
     DEFAULT_MODEL = "doubao-embedding-vision-251215"
-    DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
-    EMBED_ENDPOINT = "/embeddings/multimodal"
+    # api_base_url 存「完整端点」（与种子数据 llm_provider_model.api_base_url 约定一致：
+    # 库里存完整 URL、adapter 直打不拼接）；缺省时回退到 Ark 多模态端点。
+    DEFAULT_ENDPOINT = "https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal"
 
     def __init__(
         self,
@@ -117,13 +118,13 @@ class DoubaoVisionProvider(BaseProvider):
     async def _encode_one(self, model: str, text: str) -> dict:
         """对单条文本调 ``/embeddings/multimodal`` 并取出 ``data`` 单对象。"""
 
-        base = (self.api_base_url or self.DEFAULT_BASE_URL).rstrip("/")
+        url = (self.api_base_url or self.DEFAULT_ENDPOINT).rstrip("/")
         payload = {
             "model": model,
             "input": [{"type": "text", "text": text}],
             "sparse_embedding": {"type": "enabled"},
         }
-        data = await self._post(f"{base}{self.EMBED_ENDPOINT}", payload)
+        data = await self._post(url, payload)
         obj = data.get("data") if isinstance(data, dict) else None
         if not isinstance(obj, dict):
             raise InvalidResponseError(
