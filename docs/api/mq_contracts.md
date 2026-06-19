@@ -126,6 +126,43 @@ Java 管理端                          toLink-Rag (Python)
 
 不存在 "部分成功" 状态。中间步骤的细节状态由 toLink-Rag 写入 `document_parse_pipeline`，前端通过 Java 查询接口读取。
 
+## 对话轮次上报（Python→Java）
+
+RAG 问答在 Python 端（`/api/v1/rag/stream`）流式生成结束后，发送一条 `ChatTurnMessage`，由 **Java 消费并落库**：在单事务里写入 `chat_message` 一行（一行一轮：query + answer 同行）、`llm_usage_log` 一行，并更新 `chat_conversation` 的 `last_config_id` / `last_model_name` / `updated_at`。Python 侧不写这三张表。
+
+### Topic
+
+- 实际收发 topic：`tolink.rag.chat_turn`（由 `ChatTurnMessage.MQ_NAME` 固定）。
+
+### 消息体（ChatTurnPayload）
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `conversation_id` | int | ✅ | 所属对话 ID（前端请求 `/rag/stream` 时传入，由 Java 预先创建） |
+| `request_id` | string | ✅ | 请求追踪 ID / 幂等键；Java 据此去重，写入 `chat_message.request_id` 与 `llm_usage_log.request_id` |
+| `user_id` | int | ✅ | 用户 ID |
+| `query` | string | ✅ | 用户提问 → `chat_message.query` |
+| `answer` | string | ✅ | LLM 回答 → `chat_message.answer`（`partial` 为半截，`failed` 可空串） |
+| `config_id` | int | ✅ | 本轮所用 LLM 配置 ID |
+| `provider_type` | string | ✅ | LLM 厂商类型 |
+| `model_name` | string | ✅ | 模型名快照（可空时为空串） |
+| `prompt_tokens` | int | ✅ | 输入 Token 数（流式未返回 usage 时为 0） |
+| `completion_tokens` | int | ✅ | 输出 Token 数 |
+| `total_tokens` | int | ✅ | 总 Token 数 |
+| `references` | string[] | ⬜ | 召回片段 `chunk_id` 列表（仅标识，不含正文）→ `chat_message.references` |
+| `latency_ms` | int | ⬜ | 生成延迟（毫秒） |
+| `status` | string | ✅ | `success`（正常结束）/ `partial`（客户端断连，保留半截）/ `failed`（生成异常） |
+
+> 公共信封字段 `message_id` / `timestamp` 由消息基类自动附带（见 [§协议要点](#协议要点)）。
+
+### 路由键与语义
+
+- 路由键：`conversation_id`，保证同一对话的轮次有序投递。
+- **空召回不发消息**：0 命中或全部片段缺正文时只回 `recall_done`，不产生对话轮次。
+- **缺 `conversation_id` 不发消息**：`/rag/stream` 缺该字段直接 422，不进入召回生成。
+- **最终一致**：Python 端发送失败仅告警、不影响已返回答案；建议 Java 侧以 `request_id` 幂等去重，配合对账补偿。
+- **归属校验（Java 必做）**：`conversation_id` 来自前端请求体，`user_id` 取自 session token claims，Python 仅透传、不校验二者归属关系。Java 落库前**必须**校验 `conversation_id` 属于该 `user_id`（不匹配则丢弃/告警），否则存在跨用户写入他人对话的风险。
+
 ## 协议要点
 
 - **传输格式**：JSON。

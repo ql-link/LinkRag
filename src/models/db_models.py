@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import List, Optional
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     DateTime,
@@ -19,6 +20,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
+from sqlalchemy.dialects.mysql import MEDIUMTEXT
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -217,6 +219,10 @@ class UsageLogDB(Base):
     error_message: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     fallback_config_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     conversation_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    # message_id / request_id：把一条用量精确关联到产生它的 chat_message 行与同一轮请求。
+    # 行数据由 Java 在消费 ChatTurnMessage 时写入（chat-message-persistence）。
+    message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    request_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
 
     # 关系
@@ -226,7 +232,72 @@ class UsageLogDB(Base):
         Index("idx_user_date", "user_id", "created_at"),
         Index("idx_config_date", "config_id", "created_at"),
         Index("idx_conversation_id", "conversation_id"),
+        Index("idx_usage_message_id", "message_id"),
     )
+
+
+class ChatConversationDB(Base):
+    """对话表
+
+    表：chat_conversation
+
+    所有权：表结构由 Python 侧 Alembic 迁移管理；行数据的增删改由 Java 侧负责
+    （建对话、生成标题、每轮更新 last_config_id/last_model_name/updated_at）。
+    Python 侧不写本表，仅保留 ORM 映射作为 schema 权威源。
+    """
+
+    __tablename__ = "chat_conversation"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    dataset_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    last_config_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    last_model_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    title: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    is_pinned: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        Index(
+            "idx_chat_conversation_user_pinned_updated",
+            "user_id",
+            "is_pinned",
+            "updated_at",
+        ),
+        Index("idx_chat_conversation_dataset_updated", "dataset_id", "updated_at"),
+    )
+
+
+class ChatMessageDB(Base):
+    """对话消息表（一行一轮：query + answer 同行）
+
+    表：chat_message
+
+    一行同时承载用户提问、LLM 回答、召回引用（仅 chunk_id，不含正文）与本轮状态。
+    所有权同 chat_conversation：结构归 Python，行数据由 Java 在消费 ChatTurnMessage
+    时写入；Python 侧不写本表（chat-message-persistence）。
+    """
+
+    __tablename__ = "chat_message"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    config_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
+    model_name: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    # query 设为可空：本列由 add_column 加到既有（Java 管理）表，MEDIUMTEXT 在 MySQL 下
+    # 无法带 DEFAULT 兜底既有行，NOT NULL 会导致迁移在非空表上失败。Java 落库时总会写入，
+    # 业务上不出现 NULL（chat-message-persistence）。
+    query: Mapped[Optional[str]] = mapped_column(MEDIUMTEXT, nullable=True)
+    answer: Mapped[str] = mapped_column(MEDIUMTEXT, nullable=False)
+    references: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
+    request_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), default="success", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
+
+    __table_args__ = (Index("idx_conversation_created", "conversation_id", "created_at"),)
 
 
 class BlogPostDB(Base):
