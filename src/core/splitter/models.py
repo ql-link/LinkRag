@@ -176,3 +176,7 @@ class EmbeddingPipelineStats:
     cache_misses: int = 0
     batch_count: int = 0
     embedding_model: str | None = None
+    # 本次向量化消耗的 token（仅 cache miss 的真实 API 调用产生；命中缓存为 0）。
+    # 由模型返回，向量类只有输入 token，故 total 等同输入；供全链路用量统计采集。
+    prompt_tokens: int = 0
+    total_tokens: int = 0

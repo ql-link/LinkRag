@@ -154,22 +154,28 @@ CREATE TABLE IF NOT EXISTS chat_message (
 CREATE TABLE IF NOT EXISTS llm_usage_log (
     id                  BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '记录唯一标识',
     user_id             BIGINT UNSIGNED NOT NULL COMMENT '用户 ID',
-    config_id           BIGINT UNSIGNED NOT NULL COMMENT '用户配置 ID',
+    config_id           BIGINT UNSIGNED COMMENT '用户配置 ID；系统配置调用可缺省',
     provider_type       VARCHAR(32)     NOT NULL COMMENT '厂商类型',
     model_name          VARCHAR(128)    NOT NULL COMMENT '模型名称',
     prompt_tokens       INT             NOT NULL COMMENT '输入 Token 数',
-    completion_tokens   INT             NOT NULL COMMENT '输出 Token 数',
+    completion_tokens   INT             NOT NULL COMMENT '输出 Token 数；向量类调用恒为 0',
     total_tokens        INT             NOT NULL COMMENT '总 Token 数',
     latency_ms          INT             COMMENT '响应延迟(毫秒)',
     status              VARCHAR(16)     NOT NULL COMMENT '调用状态：success/failed/partial',
     error_message       VARCHAR(512)    COMMENT '错误信息',
     fallback_config_id  BIGINT UNSIGNED COMMENT '触发 Fallback 时记录原配置 ID',
     conversation_id     BIGINT UNSIGNED COMMENT '关联对话 ID',
+    message_id          BIGINT UNSIGNED COMMENT '关联产生该用量的 chat_message 行（Java 写入）',
+    request_id          VARCHAR(64)     COMMENT '与 chat_message 同一把 key，串联一轮问答',
+    stage               VARCHAR(16)     COMMENT '阶段：parse/recall/chat',
+    operation           VARCHAR(16)     COMMENT '操作：embed/sparse/rerank/vision/table/generate',
     created_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     INDEX idx_user_date (user_id, created_at),
     INDEX idx_config_date (config_id, created_at),
-    INDEX idx_conversation_id (conversation_id)
+    INDEX idx_conversation_id (conversation_id),
+    INDEX idx_usage_message_id (message_id),
+    INDEX idx_user_stage_date (user_id, stage, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT 'LLM 调用用量日志表';
 
 -- 8. 原始文档上传表

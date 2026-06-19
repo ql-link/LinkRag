@@ -125,6 +125,9 @@ class ChunkEmbeddingPipeline:
         cache_hits = 0
         cache_misses = 0
         batch_count = 0
+        # token 累加器：只有真正发起 API 调用（cache miss）的 batch 才有 usage。
+        prompt_tokens_sum = 0
+        total_tokens_sum = 0
         resolved_model = self.embedding_model
 
         for index, chunk in enumerate(chunks):
@@ -170,6 +173,10 @@ class ChunkEmbeddingPipeline:
                 )
                 raise
             resolved_model = getattr(response, "model", resolved_model)
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                prompt_tokens_sum += int(getattr(usage, "prompt_tokens", 0) or 0)
+                total_tokens_sum += int(getattr(usage, "total_tokens", 0) or 0)
             embeddings = getattr(response, "embeddings", None) or []
             if len(embeddings) != len(batch):
                 raise ValueError(
@@ -192,6 +199,8 @@ class ChunkEmbeddingPipeline:
             cache_misses=cache_misses,
             batch_count=batch_count,
             embedding_model=resolved_model,
+            prompt_tokens=prompt_tokens_sum,
+            total_tokens=total_tokens_sum,
         )
         return [result for result in results if result is not None]
 
@@ -234,14 +243,25 @@ class ChunkEmbeddingPipeline:
         return await self._embed_chunks(chunks)
 
     async def aembed_query(self, query: str) -> list[float]:
+        """对单条 query 文本向量化，返回稠密向量（不含用量）。
+
+        薄封装 :meth:`aembed_query_detailed`，丢弃 usage——给只要向量、不关心 token 的
+        调用方用，保持原有返回契约不变。
         """
-        对单条 query 文本向量化，供召回路径（``VectorStorageFacade.search_dense_chunks``）使用。
+        vector, _usage = await self.aembed_query_detailed(query)
+        return vector
+
+    async def aembed_query_detailed(self, query: str):
+        """
+        对单条 query 文本向量化，供召回路径（``VectorStorageFacade.search_dense_chunks``）使用，
+        同时返回模型用量，便于召回侧上报 query embed 的 token 成本。
 
         与 ``aembed_chunks`` 共用 ``self.embedder`` + ``self.embedding_model``，
         从代码层保证写入 / 召回向量空间不分叉（§4.4.1 假设）。**故意不走 cache**
         （query 几乎不重复，cache key 是 hash(model+content) 对 query 无意义），
         **故意不批量化**（query 是单条），**故意不更新 last_stats**（last_stats 是
-        写入路径的统计字段，与 query 无关）。
+        写入路径的统计字段，与 query 无关）。usage 随调用一并返回、不落实例字段，
+        避免进程级共享 pipeline 在并发 query 下相互覆盖。
 
         Args:
             query: 用户问题或关键词；空字符串或全空白抛 ``ValueError``。
@@ -249,8 +269,9 @@ class ChunkEmbeddingPipeline:
                 路径下不会让空 query 走到本方法；这里的 ValueError 是防御性兜底。
 
         Returns:
-            list[float]: 单条 query 的稠密向量（与 ``aembed_chunks`` 输出每条
-            ``EmbeddedChunk.embedding`` 同维度、同空间）。
+            tuple[list[float], Any | None]: (单条 query 的稠密向量, 模型 usage 对象或 None)。
+            向量与 ``aembed_chunks`` 输出每条 ``EmbeddedChunk.embedding`` 同维度、同空间；
+            usage 形如 ``UsageInfo``（prompt_tokens/total_tokens），缺失时为 None。
 
         Raises:
             ValueError: query 为空或全空白；或 embedder 返回向量数量不为 1。
@@ -270,7 +291,7 @@ class ChunkEmbeddingPipeline:
                 f"Embedding API returned {len(embeddings)} vectors for single query, "
                 f"expected 1."
             )
-        return [float(value) for value in embeddings[0]]
+        return [float(value) for value in embeddings[0]], getattr(response, "usage", None)
 
     def process(
         self,

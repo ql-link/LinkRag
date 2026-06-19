@@ -63,12 +63,12 @@ FastAPI lifespan（src/main.py 组合根装配）
 | --- | --- | --- | --- |
 | `ParseTaskMessage` | `tolink.rag.parse_task` | Java -> Python | 触发文档解析任务（含首次解析与重试，由 `is_retry` + `previous_task_id` 区分；详见 [mq_integration.md §ParseTaskPayload](../api/mq_contracts.md)） |
 | `CacheSyncMessage` | `tolink.rag.cache_sync` | Java -> Python | 失效或刷新用户 LLM 配置缓存 |
-| `UsageReportMessage` | `tolink.rag.usage_report` | Python -> Java/统计侧 | 上报 LLM 调用用量（非对话型） |
+| `UsageReportMessage` | `tolink.rag.usage_report` | Python -> Java/统计侧 | 上报全链路非对话型模型调用用量（解析 embed/vision/table、召回 embed/rerank），含 `stage`/`operation` 归属（详见 [mq_contracts.md §用量上报](../api/mq_contracts.md#用量上报pythonjava统计侧)） |
 | `ChatTurnMessage` | `tolink.rag.chat_turn` | Python -> Java | 上报一轮 RAG 问答（query/answer/usage/references/status），供 Java 落库 `chat_message` + `llm_usage_log` + 更新 `chat_conversation`（详见 [mq_contracts.md](../api/mq_contracts.md)） |
 
 `ParseTaskMessage` 中的 `md_bucket` 为历史兼容字段；Python 侧非 `md`/`markdown` 解析产物实际写入 `MINIO_PRIVATE_BUCKET` 配置桶，`md_object_key` 仍来自消息。`md`/`markdown` 透传文件的产物坐标沿用源文件上传位置。
 
-> 当前 `consumers/` 下只有 `parse_task_consumer.py` 一个消费入口。`CacheSyncMessage` / `UsageReportMessage` / `ChatTurnMessage` 仅定义了消息类与 topic，本服务侧暂未注册对应消费者（生产/订阅由各自业务链路按需接入）。`ChatTurnMessage` 由 RAG 流式生成结束时生产（`recall_stream_runtime`），消费在 Java 侧；本服务不消费。
+> 当前 `consumers/` 下只有 `parse_task_consumer.py` 一个消费入口。`CacheSyncMessage` / `UsageReportMessage` / `ChatTurnMessage` 在本服务侧均不消费——消费在 Java 侧。`ChatTurnMessage` 由 RAG 流式生成结束时生产（`recall_stream_runtime`）；`UsageReportMessage` 由全链路埋点经 `src/services/usage_reporter.py` 生产（解析 `VectorizingStage`/增强 provider client、召回 facade/reranker），旁路 fire-and-forget，发送失败仅告警不阻断主链路。
 >
 > 收发 topic 名由各消息类的 `MQ_NAME` 常量固定，`PARSE_TASK_TOPIC` 等环境变量仅用于 §4.1 的 Kafka topic 自动创建，不改变实际收发 topic。
 

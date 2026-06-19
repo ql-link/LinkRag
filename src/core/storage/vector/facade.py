@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from src.config import settings
 from src.core.splitter.models import Chunk
+from src.services.usage_reporter import report_usage_nowait
 from src.utils.logger import logger
 
 from .compensation_pipeline import VectorStorageCompensationPipeline
@@ -587,12 +588,26 @@ class VectorStorageFacade:
         # ValueError（空 query / 长度不一致）属于 caller 错误，由 ① / ② 段已拦下，
         # 不到这里。
         try:
-            dense_vector = await embedding_pipeline.aembed_query(query)
+            dense_vector, _q_usage = await embedding_pipeline.aembed_query_detailed(query)
         except Exception as exc:
             # 包含 httpx.HTTPStatusError / httpx.TimeoutException / 其它远程错误。
             # ValueError 经 ① / ② 段后不会到这一步，但理论上仍会被吞——这是预期，
             # 防御性 invariant 失败时不漏到调用方意外手里。
             raise VectorRetrievalEncodingError(str(exc)) from exc
+
+        # 用量上报（旁路）：query embed token 由模型返回，向量类 completion 恒 0；
+        # 失败不阻断召回。stage/operation 在此写死；召回侧暂不透传 request_id/conversation_id。
+        if _q_usage is not None:
+            report_usage_nowait(
+                user_id=user_id,
+                provider_type=getattr(embedding_pipeline.embedder, "provider_type", "") or "",
+                model_name=embedding_pipeline.embedding_model or "",
+                stage="recall",
+                operation="embed",
+                prompt_tokens=int(getattr(_q_usage, "prompt_tokens", 0) or 0),
+                completion_tokens=0,
+                total_tokens=int(getattr(_q_usage, "total_tokens", 0) or 0),
+            )
 
         # ───────────────────── ⑤ bucket 路由（与写入侧共用 BucketRouter）────────
         bucket_route = self.qdrant_store.bucket_router.route_user(user_id)

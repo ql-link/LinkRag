@@ -24,6 +24,7 @@ from src.core.llm.user_model_resolver import ResolvedModel, aresolve_user_model
 from src.core.pipeline.chunk_content import fetch_chunk_contents
 from src.core.pipeline.recall.models import RecallHit
 from src.core.pipeline.rerank.models import RerankedHit, RerankRequest, RerankResponse
+from src.services.usage_reporter import report_usage_nowait
 
 # 注入点签名：正文回填 (chunk_ids, user_id) -> {chunk_id: 正文}
 ContentFetcher = Callable[[list[str], int], Awaitable[dict[str, str]]]
@@ -142,6 +143,21 @@ class PostRecallReranker:
                 request.user_id, exc,
             )
             return _resp(self._degrade(scored_hits, top_n), False)
+
+        # 用量上报（旁路、非阻塞）：rerank token 由模型返回，向量类 completion 恒 0；
+        # 调度后台 task 发送，不阻塞召回返回。
+        _usage = getattr(result, "usage", None)
+        report_usage_nowait(
+            user_id=request.user_id,
+            provider_type=getattr(resolved, "provider_type", "") or "",
+            model_name=resolved.model_name or "",
+            stage="recall",
+            operation="rerank",
+            prompt_tokens=int(getattr(_usage, "prompt_tokens", 0) or 0),
+            completion_tokens=0,
+            total_tokens=int(getattr(_usage, "total_tokens", 0) or 0),
+            config_id=getattr(resolved, "config_id", None),
+        )
 
         ranked = self._map_results(scored_hits, result)
         if ranked is None:
