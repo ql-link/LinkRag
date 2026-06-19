@@ -126,7 +126,7 @@ Java 管理端                          toLink-Rag (Python)
 
 不存在 "部分成功" 状态。中间步骤的细节状态由 toLink-Rag 写入 `document_parse_pipeline`，前端通过 Java 查询接口读取。
 
-## 对话轮次上报（Python → Java）
+## 对话轮次上报（Python→Java）
 
 RAG 问答在 Python 端（`/api/v1/rag/stream`）流式生成结束后，发送一条 `ChatTurnMessage`，由 **Java 消费并落库**：在单事务里写入 `chat_message` 一行（一行一轮：query + answer 同行）、`llm_usage_log` 一行，并更新 `chat_conversation` 的 `last_config_id` / `last_model_name` / `updated_at`。Python 侧不写这三张表。
 

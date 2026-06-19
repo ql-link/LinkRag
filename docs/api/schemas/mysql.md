@@ -256,7 +256,7 @@ ORM：[`ChatMessageDB`](../../../src/models/db_models.py)
 
 索引：`idx_conversation_created(conversation_id, created_at)`。
 
-> 所有权：表结构由 Python 侧 Alembic 迁移管理（含 `chat_conversation`）；**行数据的增删改由 Java 侧负责**——Java 消费 Python 发出的 `tolink.rag.chat_turn` 消息后，单事务写入 `chat_message` 行、`llm_usage_log` 行并更新 `chat_conversation`。Python 侧不写这三张表的行数据。详见 [mq_contracts.md](../mq_contracts.md#对话轮次上报javapython)。
+> 所有权：表结构由 Python 侧 Alembic 迁移管理（含 `chat_conversation`）；**行数据的增删改由 Java 侧负责**——Java 消费 Python 发出的 `tolink.rag.chat_turn` 消息后，单事务写入 `chat_message` 行、`llm_usage_log` 行并更新 `chat_conversation`。Python 侧不写这三张表的行数据。详见 [mq_contracts.md](../mq_contracts.md#对话轮次上报pythonjava)。
 
 ---
 
