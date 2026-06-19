@@ -40,7 +40,7 @@ from src.models.chunk_record import ChunkRecordDB
 
 from src.core.encoding.sparse.constants import SPARSE_VECTOR_PROVIDER_HTTP
 from src.core.encoding.sparse.exceptions import SparseVectorError
-from src.core.encoding.sparse.factory import create_sparse_vector_service_from_settings
+from src.core.encoding.sparse.factory import aresolve_user_sparse_vector_service
 from src.core.encoding.sparse.pipeline import SparseVectorService
 
 
@@ -141,7 +141,12 @@ class SparseIndexingPipeline:
             )
 
         # ④ 分批编排：encode → Qdrant upsert → mark INDEXED；任一批失败抛文件级异常。
-        service = self._get_sparse_vector_service()
+        # 稀疏 encoder 背后的 provider 按发起用户解析（必配 SPARSE_EMBEDDING、无系统兜底）：
+        # 同一文档的 chunks 必定同 user，故按首条 user_id 一次解析、整篇复用，与 dense 写入侧
+        # per-document 解析同构。vector_name 仍是全局 Qdrant named vector（解析函数取自 settings），
+        # 保证所有用户写进同一个稀疏向量命名空间。
+        user_id = int(records[0].user_id)
+        service = await self._resolve_sparse_vector_service(user_id)
         store = self._get_qdrant_store()
         model_name = service.model_name
         vector_name = service.vector_name
@@ -263,10 +268,21 @@ class SparseIndexingPipeline:
                 bookkeeping_exc,
             )
 
-    def _get_sparse_vector_service(self) -> SparseVectorService:
-        if self._sparse_vector_service is None:
-            self._sparse_vector_service = create_sparse_vector_service_from_settings()
-        return self._sparse_vector_service
+    async def _resolve_sparse_vector_service(self, user_id: int) -> SparseVectorService:
+        """按发起用户解析稀疏向量服务（必配不兜底）；显式注入的 service 优先（测试 / 复用）。
+
+        注入的 ``self._sparse_vector_service`` 一旦提供即对所有 user 生效（绕过解析），服务于
+        测试与显式装配；生产路径不注入，每次 run() 按 ``user_id`` 解析一次。**不缓存**到实例
+        属性——per-user 解析结果不可跨 user 复用。
+
+        Raises:
+            SparseEmbeddingConfigMissingError: 用户无默认 SPARSE_EMBEDDING 配置（由解析函数透传，
+                上层 ``SparseVectorizingStage`` 据此归类失败）。
+        """
+
+        if self._sparse_vector_service is not None:
+            return self._sparse_vector_service
+        return await aresolve_user_sparse_vector_service(user_id)
 
     def _get_qdrant_store(self) -> QdrantIndexStore:
         if self._qdrant_store is None:

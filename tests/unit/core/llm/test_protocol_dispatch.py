@@ -16,6 +16,7 @@ import pytest
 from src.core.llm.factory import ModelFactory
 from src.core.llm.interfaces import CapabilityType as T
 from src.core.llm.providers.anthropic import AnthropicProvider
+from src.core.llm.providers.bge_m3 import BgeM3ServiceProvider
 from src.core.llm.providers.dashscope import DashScopeProvider
 from src.core.llm.providers.google import GoogleClient, GoogleProvider
 from src.core.llm.providers.jina import JinaProvider
@@ -30,6 +31,7 @@ from src.core.llm.providers.openai import OpenAICompatibleProvider
         ("google", GoogleProvider),
         ("jina", JinaProvider),
         ("dashscope", DashScopeProvider),
+        ("bge_m3", BgeM3ServiceProvider),
     ],
 )
 def test_create_client_dispatches_by_protocol(protocol, cls):
@@ -40,11 +42,12 @@ def test_create_client_dispatches_by_protocol(protocol, cls):
 @pytest.mark.parametrize(
     "protocol,expected",
     [
-        ("openai", {T.TEXT, T.EMBEDDING, T.SPARSE_EMBEDDING}),
+        ("openai", {T.TEXT, T.EMBEDDING}),
         ("anthropic", {T.TEXT}),
         ("google", {T.TEXT}),
-        ("jina", {T.RERANK, T.EMBEDDING, T.SPARSE_EMBEDDING}),
+        ("jina", {T.RERANK, T.EMBEDDING}),
         ("dashscope", {T.RERANK}),
+        ("bge_m3", {T.SPARSE_EMBEDDING}),
     ],
 )
 def test_capability_matrix(protocol, expected):
@@ -56,6 +59,8 @@ def test_capability_matrix(protocol, expected):
     "protocol,capability",
     [
         ("openai", T.RERANK),
+        ("openai", T.SPARSE_EMBEDDING),
+        ("jina", T.SPARSE_EMBEDDING),
         ("anthropic", T.EMBEDDING),
         ("anthropic", T.SPARSE_EMBEDDING),
         ("anthropic", T.RERANK),

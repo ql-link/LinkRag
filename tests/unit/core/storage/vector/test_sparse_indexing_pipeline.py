@@ -134,6 +134,51 @@ async def test_dense_not_success_raises_fail_fast():
 
 
 @pytest.mark.asyncio
+async def test_run_resolves_sparse_service_per_user_when_not_injected(monkeypatch):
+    # 不注入 service → run() 应按 records[0].user_id 解析（读用户配置，而非 .env）。
+    repo = _RecordingRepo()
+    service = _RecordingService()
+    captured: dict[str, object] = {}
+
+    async def fake_resolve(user_id):
+        captured["user_id"] = user_id
+        return service
+
+    monkeypatch.setattr(indexing_mod, "aresolve_user_sparse_vector_service", fake_resolve)
+
+    pipeline = SparseIndexingPipeline(
+        chunk_repository=repo,
+        qdrant_store=_RecordingStore(),
+    )
+
+    rows = [_row(chunk_id="c1", user_id=7)]
+    await pipeline.run(chunks=rows, task_id="t1", db=_FakeDB())
+
+    assert captured["user_id"] == 7  # 按发起用户解析
+    assert service.texts == ["alpha"]  # 确实用解析出的 service 编码
+
+
+@pytest.mark.asyncio
+async def test_run_prefers_injected_service_over_per_user_resolution(monkeypatch):
+    # 注入了 service → 绕过 per-user 解析（测试 / 显式装配语义）。
+    async def fail_resolve(user_id):
+        raise AssertionError("must not resolve per-user when service is injected")
+
+    monkeypatch.setattr(indexing_mod, "aresolve_user_sparse_vector_service", fail_resolve)
+
+    injected = _RecordingService()
+    pipeline = SparseIndexingPipeline(
+        chunk_repository=_RecordingRepo(),
+        sparse_vector_service=injected,
+        qdrant_store=_RecordingStore(),
+    )
+
+    await pipeline.run(chunks=[_row(chunk_id="c1")], task_id="t1", db=_FakeDB())
+
+    assert injected.texts == ["alpha"]
+
+
+@pytest.mark.asyncio
 async def test_missing_bucket_id_raises():
     repo = _RecordingRepo()
     pipeline = SparseIndexingPipeline(

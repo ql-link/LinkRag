@@ -29,6 +29,7 @@ def create_vector_storage_facade(
     qdrant_store: QdrantIndexStore | None = None,
     qdrant_client: Any | None = None,
     query_embedding_resolver: Any | None = None,
+    query_sparse_resolver: Any | None = None,
 ) -> VectorStorageFacade:
     """
     使用项目默认配置装配向量存储统一入口。
@@ -55,7 +56,12 @@ def create_vector_storage_facade(
         bucket_router=resolved_bucket_router,
     )
     sparse_vector_service = None
-    if getattr(settings, "SPARSE_VECTOR_ENABLED", False):
+    # 注入了 query_sparse_resolver（召回路径，按 user 解析）时不再构造系统级 service：召回改走
+    # per-user，系统 service 既不会被用到，其构造又强依赖 SPARSE_VECTOR_* 系统配置（per-user
+    # 化后这些系统配置可能缺省，构造期会直接抛错）。无 resolver 的装配（dense 写入 facade）保持
+    # 原状——其 sparse 分支当前为 dead code，management / compensation 设计为「生产不注入→
+    # per-record 解析」，注入的系统 service 仅服务于测试与显式装配。
+    if query_sparse_resolver is None and getattr(settings, "SPARSE_VECTOR_ENABLED", False):
         from src.core.encoding.sparse import create_sparse_vector_service_from_settings
 
         sparse_vector_service = create_sparse_vector_service_from_settings()
@@ -91,6 +97,7 @@ def create_vector_storage_facade(
         sparse_vector_service=sparse_vector_service,
         embedding_pipeline=embedding_pipeline,
         query_embedding_resolver=query_embedding_resolver,
+        query_sparse_resolver=query_sparse_resolver,
     )
 
 
@@ -103,12 +110,15 @@ def compose_vector_storage_facade(
     qdrant_store: QdrantIndexStore | None = None,
     qdrant_client: Any | None = None,
     query_embedding_resolver: Any | None = None,
+    query_sparse_resolver: Any | None = None,
 ) -> VectorStorageFacade:
     """一站式装配：未传 embedding_pipeline 时按系统配置自动构造。
 
     适合调用方只关心"我要一个开箱即用的 VectorStorageFacade"的场景。
     ``query_embedding_resolver``：召回路径传入「按 user_id 解析 query embedding pipeline」回调，
     使 dense 召回 query 编码按发起用户模型解析（写入侧已按用户解析，两侧同源）。
+    ``query_sparse_resolver``：sparse 侧对偶回调，传入「按 user_id 解析 sparse 向量服务」，
+    使 sparse 召回 query 编码同样按用户模型解析。
     """
     if embedding_pipeline is None:
         from src.core.splitter.factory import create_chunk_embedding_pipeline
@@ -122,4 +132,5 @@ def compose_vector_storage_facade(
         qdrant_store=qdrant_store,
         qdrant_client=qdrant_client,
         query_embedding_resolver=query_embedding_resolver,
+        query_sparse_resolver=query_sparse_resolver,
     )

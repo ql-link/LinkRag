@@ -55,6 +55,7 @@ class VectorStorageFacade:
         sparse_vector_service: "SparseVectorService | None" = None,
         embedding_pipeline: "ChunkEmbeddingPipeline | None" = None,
         query_embedding_resolver: "Callable[[int], Awaitable[ChunkEmbeddingPipeline]] | None" = None,
+        query_sparse_resolver: "Callable[[int], Awaitable[SparseVectorService]] | None" = None,
     ) -> None:
         """
         初始化统一入口，并注入已经装配好的底层服务。
@@ -75,6 +76,11 @@ class VectorStorageFacade:
                 ``aresolve_user_chunk_embedding_pipeline``，使 dense 召回 query 编码与写入侧
                 同源、按用户模型解析；注入后 ``search_dense_chunks`` 优先用它而非进程级
                 ``embedding_pipeline``。
+            query_sparse_resolver: 可选的「按发起 user_id 解析 sparse 向量服务」回调（sparse 侧
+                与 ``query_embedding_resolver`` 对偶）。召回装配注入
+                ``aresolve_user_sparse_vector_service``，使 sparse 召回 query 编码与写入侧
+                同源、按用户模型解析；注入后 ``search_sparse_chunks`` 优先用它而非进程级
+                ``sparse_vector_service``。
 
         Returns:
             None.
@@ -87,6 +93,7 @@ class VectorStorageFacade:
         self._sparse_vector_service = sparse_vector_service
         self._embedding_pipeline = embedding_pipeline
         self._query_embedding_resolver = query_embedding_resolver
+        self._query_sparse_resolver = query_sparse_resolver
 
     async def store_chunks(
         self,
@@ -331,11 +338,12 @@ class VectorStorageFacade:
             )
 
         # ───────────────────── ③ 配置就绪检查 ───────────────────────────────────
-        # SPARSE_VECTOR_ENABLED=False / 工厂未注入 service → 部署侧配置问题，
+        # SPARSE_VECTOR_ENABLED=False / 既无 resolver 也无 service → 部署侧配置问题，
         # 静默返空会让运维找不到原因，必须显式抛配置异常（acceptance 已断言）。
-        if (
-            not bool(getattr(settings, "SPARSE_VECTOR_ENABLED", False))
-            or self._sparse_vector_service is None
+        # query 编码来源二选一（与 dense 的 ③ 段对偶）：注入了 query_sparse_resolver
+        # （召回路径，按用户模型解析）走它；否则回退进程级 sparse_vector_service。
+        if not bool(getattr(settings, "SPARSE_VECTOR_ENABLED", False)) or (
+            self._query_sparse_resolver is None and self._sparse_vector_service is None
         ):
             raise VectorRetrievalConfigurationError(
                 "Sparse vector recall is unavailable: "
@@ -352,7 +360,18 @@ class VectorStorageFacade:
             score_threshold=effective_threshold,
         )
 
-        service = self._sparse_vector_service
+        # 按发起用户解析 sparse 向量服务（与写入侧同源），缺默认 SPARSE_EMBEDDING 配置 →
+        # 翻成 VectorRetrievalUserConfigMissingError（上层据此硬失败，不做宽松降级，
+        # 与 dense 的 DenseEmbeddingConfigMissingError 翻译对偶）。
+        if self._query_sparse_resolver is not None:
+            from src.core.encoding.sparse.factory import SparseEmbeddingConfigMissingError
+
+            try:
+                service = await self._query_sparse_resolver(user_id)
+            except SparseEmbeddingConfigMissingError as exc:
+                raise VectorRetrievalUserConfigMissingError(str(exc)) from exc
+        else:
+            service = self._sparse_vector_service
 
         # ───────────────────── ④ query 向量化（异常翻译）─────────────────────────
         # 配置错优先（含依赖缺失），再降级为编码错；底层 SparseVectorOutputError

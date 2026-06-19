@@ -216,6 +216,7 @@ class Settings(BaseSettings):
     #   bge_m3        → 本地进程内加载模型（下方 MODEL/CACHE/DEVICE/BATCH 等生效）
     #   bge_m3_http   → 调用早期 bge-m3-server（下方 SPARSE_VECTOR_HTTP_* 生效）
     #   remote_bge_m3 → 调用独立 bge-m3-service（下方 BGE_M3_* 生效，dense + sparse 同出）
+    #   llm_adapter   → 走统一 (protocol, capability) adapter 分发（下方 SPARSE_VECTOR_LLM_* 生效）
     SPARSE_VECTOR_ENABLED: bool = True
     SPARSE_VECTOR_PROVIDER: str = "bge_m3"
     SPARSE_VECTOR_MODEL_NAME: str = "BAAI/bge-m3"
@@ -233,6 +234,12 @@ class Settings(BaseSettings):
     BGE_M3_SERVICE_URL: Optional[str] = None
     BGE_M3_TIMEOUT_SECONDS: float = 30.0
     BGE_M3_MAX_RETRIES: int = 3
+    # 统一 LLM adapter 分发（仅 SPARSE_VECTOR_PROVIDER=llm_adapter 时生效）
+    # 按 protocol 经 ModelFactory 造 provider，要求其具备 SPARSE_EMBEDDING 能力。
+    SPARSE_VECTOR_LLM_PROTOCOL: Optional[str] = None
+    SPARSE_VECTOR_LLM_API_KEY: Optional[str] = None
+    SPARSE_VECTOR_LLM_API_BASE_URL: Optional[str] = None
+    SPARSE_VECTOR_LLM_MODEL_NAME: Optional[str] = None
     SPARSE_VECTOR_QDRANT_VECTOR_NAME: str = "sparse_text"
     SPARSE_VECTOR_TOP_K: int = 256
     SPARSE_VECTOR_MIN_WEIGHT: float = 0.0

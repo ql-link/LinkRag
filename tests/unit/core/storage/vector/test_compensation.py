@@ -241,3 +241,59 @@ async def test_reindex_marks_chunk_failed_when_user_has_no_embedding_config(
     assert result.failed_chunk_ids == ["chunk-failed-1"]
     mock_qdrant_store.ensure_collection.assert_not_awaited()
     mock_repository.mark_failed.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_reindex_resolves_sparse_service_per_user(
+    monkeypatch,
+    chunk_compensation_service,
+    mock_session,
+    mock_repository,
+    mock_qdrant_store,
+    sample_embedded_chunks,
+    failed_chunk_record,
+):
+    # 补偿重建时 sparse 也按 chunk 所属用户解析（与 dense 同源），而非系统 .env。
+    import src.core.storage.vector.compensation_pipeline as comp_module
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from src.core.encoding.sparse.models import SparseVector
+
+    monkeypatch.setattr(comp_module.settings, "SPARSE_VECTOR_ENABLED", True)
+    monkeypatch.setattr(comp_module.settings, "DENSE_VECTOR_DIMENSION", 2)
+
+    # dense per-user 解析（已有样板）
+    fake_user_pipeline = SimpleNamespace(
+        embedding_model="embed-v1",
+        aembed_chunks=AsyncMock(return_value=[sample_embedded_chunks[0]]),
+    )
+    monkeypatch.setattr(
+        comp_module,
+        "aresolve_user_chunk_embedding_pipeline",
+        AsyncMock(return_value=fake_user_pipeline),
+    )
+
+    # sparse per-user 解析（本次新增）
+    fake_sparse_service = SimpleNamespace(
+        model_name="user-bge-m3",
+        vector_name="sparse_text",
+        vectorize_chunk=AsyncMock(return_value=SparseVector(indices=[1, 2], values=[0.5, 0.3])),
+    )
+    sparse_resolver = AsyncMock(return_value=fake_sparse_service)
+    monkeypatch.setattr(comp_module, "aresolve_user_sparse_vector_service", sparse_resolver)
+
+    mock_repository.get_by_chunk_ids.return_value = [failed_chunk_record]
+    mock_repository.claim_failed_for_reindex.return_value = True
+    mock_repository.mark_indexed.return_value = 1
+    mock_repository.mark_sparse_indexing.return_value = 1
+    mock_repository.mark_sparse_indexed.return_value = 1
+
+    result = await chunk_compensation_service.reindex_failed_chunks(["chunk-failed-1"])
+
+    # 关键：sparse 服务按 chunk 所属用户（user_id=300）解析，并真正用它编码 + 写 Qdrant。
+    sparse_resolver.assert_awaited_once_with(300)
+    fake_sparse_service.vectorize_chunk.assert_awaited_once()
+    mock_qdrant_store.upsert_sparse_vectors.assert_awaited_once()
+    assert result.indexed_chunks == 1
+    assert result.failed_chunk_ids == []

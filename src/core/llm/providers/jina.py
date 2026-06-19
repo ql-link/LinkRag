@@ -46,7 +46,6 @@ class JinaProvider(BaseProvider):
         self._capabilities = {
             CapabilityType.RERANK,
             CapabilityType.EMBEDDING,
-            CapabilityType.SPARSE_EMBEDDING,
         }
         self._client = OpenAIClient(
             api_key=api_key,
