@@ -22,7 +22,15 @@ class ModelFactory:
     # provider_type 别名（仅用于展示归一，不参与分发）
     _provider_aliases = {"claude": "anthropic", "aliyun": "qwen"}
     # 本期支持的协议；被测试清空注册表后据此自动恢复默认注册
-    _default_protocols = {"openai", "anthropic", "google", "jina", "dashscope", "bge_m3"}
+    _default_protocols = {
+        "openai",
+        "anthropic",
+        "google",
+        "jina",
+        "dashscope",
+        "bge_m3",
+        "doubao_vision",
+    }
 
     def __new__(cls) -> "ModelFactory":
         if cls._instance is None:
@@ -36,6 +44,7 @@ class ModelFactory:
         from src.core.llm.providers.anthropic import AnthropicProvider
         from src.core.llm.providers.bge_m3 import BgeM3ServiceProvider
         from src.core.llm.providers.dashscope import DashScopeProvider
+        from src.core.llm.providers.doubao_vision import DoubaoVisionProvider
         from src.core.llm.providers.google import GoogleProvider
         from src.core.llm.providers.jina import JinaProvider
         from src.core.llm.providers.openai import OpenAICompatibleProvider
@@ -47,6 +56,7 @@ class ModelFactory:
             "jina": JinaProvider,
             "dashscope": DashScopeProvider,
             "bge_m3": BgeM3ServiceProvider,
+            "doubao_vision": DoubaoVisionProvider,
         }
         for protocol, provider_cls in defaults.items():
             self._providers.setdefault(protocol, provider_cls)
