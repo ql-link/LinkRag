@@ -163,6 +163,44 @@ RAG 问答在 Python 端（`/api/v1/rag/stream`）流式生成结束后，发送
 - **最终一致**：Python 端发送失败仅告警、不影响已返回答案；建议 Java 侧以 `request_id` 幂等去重，配合对账补偿。
 - **归属校验（Java 必做）**：`conversation_id` 来自前端请求体，`user_id` 取自 session token claims，Python 仅透传、不校验二者归属关系。Java 落库前**必须**校验 `conversation_id` 属于该 `user_id`（不匹配则丢弃/告警），否则存在跨用户写入他人对话的风险。
 
+## 用量上报（Python→Java/统计侧）
+
+对话最终 `generate` 的用量随上面的 `ChatTurnMessage` 落库；**全链路其余模型调用**——解析侧 dense embed / 图片增强(vision) / 表格增强(table)、召回侧 query embed / rerank——的用量经 `UsageReportMessage` 单独上报，由 Java 消费后落 `llm_usage_log` 一行。
+
+### Topic
+
+- 实际收发 topic：`tolink.rag.usage_report`（由 `UsageReportMessage.MQ_NAME` 固定）。
+
+### 消息体（UsageReportPayload）
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `user_id` | string | ✅ | 用户 ID |
+| `provider_type` | string | ✅ | LLM 厂商类型 |
+| `model_name` | string | ✅ | 模型名称 |
+| `stage` | string | ✅ | 阶段：`parse` / `recall` / `chat` |
+| `operation` | string | ✅ | 操作：`embed` / `sparse` / `rerank` / `vision` / `table`（`generate` 走 `chat_turn`） |
+| `prompt_tokens` | int | ✅ | 输入 Token；向量类调用即此列 |
+| `completion_tokens` | int | ✅ | 输出 Token；向量类（embed/rerank）恒为 0，vision/table 为真实生成 token |
+| `total_tokens` | int | ✅ | 总 Token |
+| `config_id` | int | ⬜ | 用户配置 ID；系统配置调用缺省 → 落 NULL |
+| `task_id` | string | ⬜ | 解析任务锚点（parse·embed 带；vision/table 暂不带） |
+| `conversation_id` | int | ⬜ | 对话 ID（recall/chat 关联） |
+| `request_id` | string | ⬜ | 请求追踪 ID，关联同一次召回多条用量（召回侧暂不透传） |
+| `latency_ms` | int | ⬜ | 调用耗时（毫秒） |
+| `status` | string | ⬜ | `success` / `partial` / `failed`，默认 `success` |
+
+> 公共信封字段 `message_id` / `timestamp` 由消息基类自动附带。
+
+### 路由键与语义
+
+- 路由键：`user_id`，按用户分区。
+- **口径**：token 一律由模型返回，Python 不自算；向量类 `completion_tokens=0`。
+- **token 由模型返回的取舍**：`sparse` 向量模型不返回 token，本期**预留不上报**，仅在 `operation` 枚举占位；启用需 `bge-m3-server` 在响应里返回 `usage`。
+- **解析侧粒度**：task 级聚合——每个解析任务每 operation 上报一条（token 在任务内累加），不落 chunk 级明细。全缓存命中（token=0）不上报。
+- **旁路、最终一致**：用量是事后算账的旁路记录。Python 上报失败仅告警、不阻断解析/召回主链路，丢一条用量可接受。
+- **Java 落库**：字段直映射 `llm_usage_log`；可空字段缺失落 NULL。对话 `generate` 的行由 Java 消费 `chat_turn` 时补 `stage='chat'`、`operation='generate'`，使本表口径全链路一致。
+
 ## 协议要点
 
 - **传输格式**：JSON。

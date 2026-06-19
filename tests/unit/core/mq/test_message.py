@@ -213,6 +213,8 @@ class TestUsageReportMessage:
             user_id="u-500",
             provider_type="qwen",
             model_name="qwen-turbo",
+            stage="recall",
+            operation="rerank",
             prompt_tokens=100,
             completion_tokens=50,
             total_tokens=150,
@@ -220,19 +222,27 @@ class TestUsageReportMessage:
         payload = msg.get_payload()
         assert payload.prompt_tokens == 100
         assert payload.total_tokens == 150
+        assert payload.stage == "recall"
+        assert payload.operation == "rerank"
         assert msg.get_routing_key() == "u-500"
 
     def test_roundtrip(self):
         msg = UsageReportMessage.build(
             user_id="u-600",
             provider_type="openai",
-            model_name="gpt-4",
+            model_name="text-embedding-3-small",
+            stage="parse",
+            operation="embed",
             total_tokens=200,
+            task_id="task-9",
         )
         parsed = UsageReportMessage.parse_msg(msg.serialize())
         assert parsed.provider_type == "openai"
-        assert parsed.model_name == "gpt-4"
+        assert parsed.model_name == "text-embedding-3-small"
         assert parsed.total_tokens == 200
+        assert parsed.stage == "parse"
+        assert parsed.operation == "embed"
+        assert parsed.task_id == "task-9"
 
 
 class TestChatTurnMessage:

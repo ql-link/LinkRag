@@ -158,11 +158,11 @@ ORM：[`UsageLogDB`](../../../src/models/db_models.py)
 | --- | --- | --- |
 | `id` | BIGINT UNSIGNED PK | 记录唯一标识 |
 | `user_id` | BIGINT UNSIGNED | 用户 ID |
-| `config_id` | BIGINT UNSIGNED | 用户配置 ID |
+| `config_id` | BIGINT UNSIGNED NULL | 用户配置 ID；走系统配置的调用（如召回 query 编码）无 per-user 配置，可空 |
 | `provider_type` | VARCHAR(32) | 厂商类型 |
 | `model_name` | VARCHAR(128) | 模型名称 |
-| `prompt_tokens` | INT | 输入 Token 数 |
-| `completion_tokens` | INT | 输出 Token 数 |
+| `prompt_tokens` | INT | 输入 Token 数；向量类调用（embed/sparse/rerank）即此列 |
+| `completion_tokens` | INT | 输出 Token 数；向量类调用恒为 0 |
 | `total_tokens` | INT | 总 Token 数 |
 | `latency_ms` | INT | 响应延迟（毫秒） |
 | `status` | VARCHAR(16) | `success` / `failed` / `partial` |
@@ -171,9 +171,13 @@ ORM：[`UsageLogDB`](../../../src/models/db_models.py)
 | `conversation_id` | BIGINT UNSIGNED | 关联对话 ID（由 Java 消费 `chat_turn` 消息时写入） |
 | `message_id` | BIGINT UNSIGNED | 关联产生该用量的 `chat_message` 行 |
 | `request_id` | VARCHAR(64) | 与 `chat_message` 同一把 key，串联一轮问答 |
+| `stage` | VARCHAR(16) NULL | 阶段：`parse` / `recall` / `chat`；归属一条用量出自哪个阶段 |
+| `operation` | VARCHAR(16) NULL | 操作：`embed` / `sparse` / `rerank` / `vision` / `table` / `generate`；`sparse` 本期预留不写入 |
 | `created_at` | DATETIME | 创建时间 |
 
-索引：`idx_user_date`, `idx_config_date`, `idx_conversation_id`, `idx_usage_message_id`。
+索引：`idx_user_date`, `idx_config_date`, `idx_conversation_id`, `idx_usage_message_id`, `idx_user_stage_date`。
+
+> 全链路归属（0022）：本表从「对话账本」升级为「全链路模型调用账本」。对话最终 `generate` 的行仍由 Java 消费 `chat_turn` 落库（Java 补 `stage='chat'`、`operation='generate'`）；解析侧 embed/vision/table、召回侧 embed/rerank 的行由 Python 通过 `tolink.rag.usage_report` 上报、Java 消费落库。token 一律由模型返回（不自算），向量类 `completion_tokens=0`。`sparse` 因模型不返回 token 本期预留不上报，仅在 `operation` 枚举占位。详见 [mq_contracts.md](../mq_contracts.md#用量上报pythonjava统计侧)。
 
 ---
 

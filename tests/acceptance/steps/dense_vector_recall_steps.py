@@ -113,6 +113,16 @@ def dense_recall_state(monkeypatch) -> _DenseRecallState:
 
     embedding_pipeline.aembed_query = AsyncMock(side_effect=_aembed_query)
 
+    # 召回侧 facade 现走 aembed_query_detailed（带回 usage 供用量上报）。这里**转调
+    # embedding_pipeline.aembed_query 这个 mock**（而非内层闭包），保证：① 计数/入参记录一致；
+    # ② 测试对 .aembed_query 的覆盖注入（如抛 HTTPStatusError）仍生效；③ 对 .aembed_query 的
+    # assert_awaited_once_with 断言仍成立。usage 返回 None → facade 跳过用量上报，测试不触 MQ。
+    async def _aembed_query_detailed(query: str):
+        vector = await embedding_pipeline.aembed_query(query)
+        return vector, None
+
+    embedding_pipeline.aembed_query_detailed = AsyncMock(side_effect=_aembed_query_detailed)
+
     # embedder 桩件（aembed_query 直调路径用）
     embedder = MagicMock()
 

@@ -206,8 +206,10 @@ class UsageLogDB(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
-    config_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("llm_user_config.id"), nullable=False
+    # config_id 放开为可空：对话 / 解析写入侧走用户配置（有 config_id），但召回 query 编码
+    # 等走系统配置的调用没有 per-user 配置行，全链路用量上报时该列可能缺省。
+    config_id: Mapped[Optional[int]] = mapped_column(
+        BigInteger, ForeignKey("llm_user_config.id"), nullable=True
     )
     provider_type: Mapped[str] = mapped_column(String(32), nullable=False)
     model_name: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -223,16 +225,26 @@ class UsageLogDB(Base):
     # 行数据由 Java 在消费 ChatTurnMessage 时写入（chat-message-persistence）。
     message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     request_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # stage / operation：归属维度，区分一条用量出自哪个阶段、哪种模型调用。
+    # stage: parse / recall / chat；operation: embed / sparse / rerank / vision / table / generate。
+    # 对话侧由 Java 消费 ChatTurnMessage 落库时补 stage='chat'、operation='generate'；
+    # parse / recall 侧由 Python 通过扩展后的 UsageReportMessage 上报填入。可空以兼容存量行。
+    stage: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    operation: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
 
     # 关系
-    config: Mapped["UserLLMConfigDB"] = relationship("UserLLMConfigDB", back_populates="usage_logs")
+    config: Mapped[Optional["UserLLMConfigDB"]] = relationship(
+        "UserLLMConfigDB", back_populates="usage_logs"
+    )
 
     __table_args__ = (
         Index("idx_user_date", "user_id", "created_at"),
         Index("idx_config_date", "config_id", "created_at"),
         Index("idx_conversation_id", "conversation_id"),
         Index("idx_usage_message_id", "message_id"),
+        # 用量分析常按「用户 × 阶段 × 时间」聚合，复合索引覆盖该访问路径。
+        Index("idx_user_stage_date", "user_id", "stage", "created_at"),
     )
 
 
