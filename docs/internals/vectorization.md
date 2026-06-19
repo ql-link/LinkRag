@@ -396,16 +396,12 @@ chunk_id_to_content = {
 - `DENSE_RETRIEVAL_SCORE_THRESHOLD`（默认 0.0；cosine 上界 [0, 1]，facade 入口校验早死）
 - `RECALL_ENABLED_SOURCES`（默认 `bm25,sparse,dense`；运维侧通过 env 显式设置可暂时回退）
 
-稀疏向量推理（dense embedding 与之独立，见下表）：
+稀疏向量推理（dense embedding 与之独立，见下表）。稀疏编码模型不再由系统级配置项指定，而是按**发起用户的默认 SPARSE_EMBEDDING 配置**经统一 adapter 解析（必配、无系统级兜底），详见 §6.6 与 [sparse_vector.md](sparse_vector.md)。保留的系统级配置项只剩与具体 provider 无关的全局开关与清洗 / 命名规则：
 
-- `SPARSE_VECTOR_PROVIDER`（默认 `bge_m3`）：选择稀疏向量推理实现，见 §6.6。
-  - `bge_m3`：本地进程内加载 BGE-M3 模型。
-  - `bge_m3_http`：调用早期 `bge-m3-server` 的 `/encode` 接口（仅 sparse）。
-  - `remote_bge_m3`：调用独立部署的 `bge-m3-service`（dense + sparse 同出，带重试）。
-- `SPARSE_VECTOR_MODEL_NAME` / `SPARSE_VECTOR_MODEL_CACHE_DIR` / `SPARSE_VECTOR_LOCAL_FILES_ONLY` / `SPARSE_VECTOR_DEVICE` / `SPARSE_VECTOR_BATCH_SIZE`（仅 `bge_m3` 本地推理生效）。
-- `SPARSE_VECTOR_HTTP_ENDPOINT` / `SPARSE_VECTOR_HTTP_TIMEOUT` / `SPARSE_VECTOR_HTTP_BATCH_SIZE`（仅 `bge_m3_http` 远程推理生效；`SPARSE_VECTOR_HTTP_TIMEOUT` 是单次 `/encode` 的小请求基线，长文本会按本次请求总字符数动态放宽）。
-- `BGE_M3_SERVICE_URL` / `BGE_M3_TIMEOUT_SECONDS` / `BGE_M3_MAX_RETRIES`（仅 `remote_bge_m3` 远程推理生效）。
-- `SPARSE_VECTOR_MAX_LENGTH` / `SPARSE_VECTOR_TOP_K` / `SPARSE_VECTOR_MIN_WEIGHT`：三种 provider 共用，保证产出经过同一套清洗规则。
+- `SPARSE_VECTOR_ENABLED`（默认 `true`）：稀疏向量总开关；关闭后保持旧 dense-only 语义。
+- `SPARSE_VECTOR_TOP_K` / `SPARSE_VECTOR_MIN_WEIGHT`：全局输出清洗规则，各 provider 复用，保证产出经过同一套清洗。
+- `SPARSE_VECTOR_BATCH_SIZE`（默认 `32`）：稀疏索引外层批大小（一次从 DB 取多少 chunk 原文喂给编码器），不随 provider 切换。
+- `SPARSE_VECTOR_QDRANT_VECTOR_NAME`（默认 `sparse_text`）：Qdrant named sparse vector 名，写入与召回共用。
 
 Embedding 客户端由 `ModelFactory` 创建，必须支持 `CapabilityType.EMBEDDING`。
 
@@ -460,67 +456,38 @@ Embedding 客户端由 `ModelFactory` 创建，必须支持 `CapabilityType.EMBE
 
 ES 阶段只返回文件级 `EsIndexingResult`，不直接维护 `kb_document_chunk.es_status`；Chunk 级 ES 状态字段保留给更细粒度索引状态扩展。
 
-### 6.6 切换稀疏向量推理实现（本地 / 远程 HTTP）
+### 6.6 稀疏向量 provider 的 per-user 解析
 
-稀疏向量推理通过 `SPARSE_VECTOR_PROVIDER` 在两种实现间切换，二者都实现同一
-`SparseVectorEncoderProtocol`（`aencode()` + `model_name`），由
-`sparse_vector/factory.py::create_sparse_vector_service_from_settings()` 按配置装配，
+稀疏向量的编码模型按**发起用户的默认 SPARSE_EMBEDDING 配置**解析，不再由系统级
+`SPARSE_VECTOR_PROVIDER` 切换（该机制及其本地 / HTTP / 远程 BGE-M3 实现已移除）。
+运行时唯一装配入口是
+`sparse_vector/factory.py::aresolve_user_sparse_vector_service(user_id)`，**写入与召回共用**：
+
+```text
+aresolve_user_sparse_vector_service(user_id)
+    ↓ 读用户默认 SPARSE_EMBEDDING 配置
+aresolve_user_model(user_id, capability="SPARSE_EMBEDDING")   # (protocol, capability) 门禁
+    ↓ 解析 provider（必配，无配置抛 SparseEmbeddingConfigMissingError）
+AdapterSparseVectorEncoder(provider)   # sparse_vector/adapter_encoder.py
+    ↓
+SparseVectorService(encoder)
+```
+
+`AdapterSparseVectorEncoder` 是 llm 层与 encoding 层之间**唯一**的桥接点：调
+`provider.embed_sparse` 拿到中性的 `SparseEmbeddingResult`，再用与各 provider 通用的
+`normalize_lexical_weights` 做 `top_k` / `min_weight` 清洗与升序排序，转成 `SparseVector`。
+因为清洗规则全局统一（`SPARSE_VECTOR_TOP_K` / `SPARSE_VECTOR_MIN_WEIGHT`），且同一用户写入
+与召回走同一份解析配置，所以不同用户、不同 provider 产出的稀疏向量在 Qdrant 写入与召回口径上
+一致。编码器都实现同一 `SparseVectorEncoderProtocol`（`aencode()` + `model_name`），
 **上层 `SparseVectorService` 与编排层无感**。
 
-| provider | 编码器 | 位置 | 推理方式 |
-| --- | --- | --- | --- |
-| `bge_m3`（默认） | `BGEM3SparseVectorEncoder` | `sparse_vector/encoder.py` | 本地进程内 `FlagEmbedding.BGEM3FlagModel` 推理 |
-| `bge_m3_http` | `BGEM3HttpSparseVectorEncoder` | `sparse_vector/http_encoder.py` | `POST {endpoint}/encode` 调用早期 `bge-m3-server`（仅 sparse） |
-| `remote_bge_m3` | `RemoteBGEM3Encoder` | `sparse_vector/remote_encoder.py` | `POST {BGE_M3_SERVICE_URL}/encode` 调用独立 `bge-m3-service`（dense + sparse，带重试） |
+> bge-m3 后续会以 **adapter provider** 形式重新接入：llm 层已有对接独立 `bge-m3-service`
+> 的 `BgeM3ServiceProvider`（protocol=`bge_m3`），后续会在 DB 登记为可选模型走 per-user 解析。
+> 这是另开 issue 的未来工作，详见对应 issue，不要视为当前可用的系统配置。
 
-两条路径产出对齐：远程 `/encode` 返回的 `sparse` 列表元素是 `{token_id: weight}`，与本地
-`output["lexical_weights"]` 同构，HTTP 编码器复用 `normalize_lexical_weights` 做同一套
-`top_k` / `min_weight` 清洗与升序排序，因此切换 provider 不改变 Qdrant 写入与召回口径。
+实现细节（包结构、异常族、清洗契约）见 [sparse_vector.md](sparse_vector.md)。
 
-远程服务契约（`bge-m3-server`）：
-
-```text
-POST {SPARSE_VECTOR_HTTP_ENDPOINT}/encode
-请求: {"texts": [...], "return_dense": false, "return_sparse": true, "return_colbert": false,
-       "max_length"?: int, "batch_size"?: int}
-响应: {"sparse": [ {"<token_id>": weight, ...}, ... ]}   # 与 texts 一一同序
-```
-
-切换到远程只需 `.env`：
-
-```bash
-# 早期 bge-m3-server（仅 sparse）
-SPARSE_VECTOR_PROVIDER=bge_m3_http
-SPARSE_VECTOR_HTTP_ENDPOINT=http://<host>:<port>
-
-# 或：独立 bge-m3-service（dense + sparse 同出，带重试）
-SPARSE_VECTOR_PROVIDER=remote_bge_m3
-BGE_M3_SERVICE_URL=http://<host>:<port>
-BGE_M3_TIMEOUT_SECONDS=30.0
-BGE_M3_MAX_RETRIES=3
-```
-
-`remote_bge_m3` 服务契约（独立 ``bge-m3-service``）：
-
-```text
-POST {BGE_M3_SERVICE_URL}/encode
-请求: {"texts": [...], "return_dense": true, "return_sparse": true}
-响应: {"dense":  [[float, ...]],          # shape (n, 1024)
-       "sparse": [{"<token_id>": weight, ...}, ...]}  # 与 texts 一一同序
-```
-
-`RemoteBGEM3Encoder` 的 `aencode()` 走 `return_dense=False` 节省带宽；当
-dense 召回侧需要复用同一次推理时，可调 `aencode_with_dense()` 同时返回
-`(list[SparseVector], list[list[float]])`。HTTP 失败的处理：
-
-- 4xx：当作永久错误，立即抛 `SparseVectorEncodingError`，不重试。
-- 5xx / 网络错误：按 `BGE_M3_MAX_RETRIES` 线性退避重试，耗尽后抛
-  `SparseVectorEncodingError`。
-
-新增第三种 provider 时：实现 `SparseVectorEncoderProtocol`，在 `constants.py` 注册 provider
-常量，并在 `factory.py` 增加对应 `_build_*_encoder()` 分支即可。
-
-> 注意：切换 provider 只改变“如何计算稀疏向量”，不修复 MySQL 与 Qdrant 的既有不一致。
+> 注意：更换用户所选稀疏模型只改变“如何计算稀疏向量”，不修复 MySQL 与 Qdrant 的既有不一致。
 > 若清空过 Qdrant，仍需按 §7 一致性原则把相关 chunk 的
 > `dense_vector_status` / `sparse_vector_status` 重置后重新解析，否则
 > `update_vectors` 会因 point 缺失返回 404。

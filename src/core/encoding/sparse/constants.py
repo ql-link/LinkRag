@@ -1,19 +1,7 @@
 """定义稀疏向量索引阶段使用的常量。"""
 
-DEFAULT_SPARSE_VECTOR_MODEL_NAME = "BAAI/bge-m3"
-DEFAULT_SPARSE_VECTOR_PROVIDER = "bge_m3"
+# Qdrant named sparse vector 的字段名；写入与召回共用，per-user 解析路径同样依赖。
 DEFAULT_SPARSE_VECTOR_NAME = "sparse_text"
-
-# Provider 取值：
-# - ``bge_m3``        ：本地进程内加载 BGE-M3 模型推理（默认，零外部依赖）。
-# - ``bge_m3_http``   ：调用早期 ``bge-m3-server`` 的 /encode 接口（仅 sparse）。
-# - ``remote_bge_m3`` ：调用独立部署的 ``bge-m3-service``（dense + sparse，带重试）。
-# - ``llm_adapter``   ：走统一 (protocol, capability) adapter 分发，由具备
-#                       SPARSE_EMBEDDING 能力的 provider 产出稀疏向量。
-SPARSE_VECTOR_PROVIDER_LOCAL = "bge_m3"
-SPARSE_VECTOR_PROVIDER_HTTP = "bge_m3_http"
-SPARSE_VECTOR_PROVIDER_REMOTE = "remote_bge_m3"
-SPARSE_VECTOR_PROVIDER_LLM_ADAPTER = "llm_adapter"
 
 SPARSE_VECTOR_STATUS_PENDING = "PENDING"
 SPARSE_VECTOR_STATUS_INDEXING = "PENDING"

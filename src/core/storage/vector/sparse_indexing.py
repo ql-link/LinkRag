@@ -38,7 +38,6 @@ from src.core.storage.qdrant import QdrantIndexStore
 from src.core.storage.qdrant.point_factory import sparse_indexed_point_from_record
 from src.models.chunk_record import ChunkRecordDB
 
-from src.core.encoding.sparse.constants import SPARSE_VECTOR_PROVIDER_HTTP
 from src.core.encoding.sparse.exceptions import SparseVectorError
 from src.core.encoding.sparse.factory import aresolve_user_sparse_vector_service
 from src.core.encoding.sparse.pipeline import SparseVectorService
@@ -81,13 +80,11 @@ class SparseIndexingPipeline:
         """构造编排器；所有依赖均支持显式注入（测试友好）+ 懒加载默认值。"""
         self._chunk_repository = chunk_repository or ChunkRepository()
         # sparse_vector_service 与 qdrant_store 延迟到第一次 run() 调用时再构造，
-        # 避免在 worker 启动期就触发本地 BGE-M3 模型加载。
+        # 生产路径不注入 service，按发起用户在 run() 内 per-record 解析（见 _resolve_sparse_vector_service）。
         self._sparse_vector_service = sparse_vector_service
         self._qdrant_store = qdrant_store
-        # batch_size 优先级：显式注入 > provider 专用 settings > 默认。
-        # 这里的 batch 是"切多少个 chunk 一组喂 encoder"的外层批；远程早期
-        # bge-m3-server 对长文本批量请求容易超过 HTTP 超时，因此 provider=bge_m3_http
-        # 时使用独立的 SPARSE_VECTOR_HTTP_BATCH_SIZE，未配置则保守按 1 条发送。
+        # batch_size 优先级：显式注入 > settings。这里的 batch 是"切多少个 chunk 一组喂 encoder"的
+        # 外层批；稀疏编码已统一走 per-user adapter，外层批只读 SPARSE_VECTOR_BATCH_SIZE。
         self.batch_size = batch_size or _resolve_sparse_index_batch_size()
 
     async def run(
@@ -291,11 +288,11 @@ class SparseIndexingPipeline:
 
 
 def _resolve_sparse_index_batch_size() -> int:
-    """Resolve outer sparse indexing batch size from runtime settings."""
-    provider = getattr(settings, "SPARSE_VECTOR_PROVIDER", "")
-    if provider == SPARSE_VECTOR_PROVIDER_HTTP:
-        raw_value = getattr(settings, "SPARSE_VECTOR_HTTP_BATCH_SIZE", None)
-        return _positive_int(raw_value, default=1, name="SPARSE_VECTOR_HTTP_BATCH_SIZE")
+    """解析稀疏索引「外层批大小」：一次从 DB 取多少 chunk 原文喂给编码器。
+
+    稀疏编码已统一走 per-user adapter（provider 由用户配置解析，各自的请求批策略由 provider
+    内部决定），外层批大小不再随 provider 切换，统一取 ``SPARSE_VECTOR_BATCH_SIZE``。
+    """
     return _positive_int(
         getattr(settings, "SPARSE_VECTOR_BATCH_SIZE", None),
         default=32,

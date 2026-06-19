@@ -130,9 +130,10 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── ragflow_tokenizer.py # RagFlowTokenizer 适配
 │   │   │   └── models.py          # FileIndexMeta / ChunkWithTokens / FilePostIndexPlan
 │   │   ├── encoding/             # 编码命名空间（文本 → 向量，无存储职责）
-│   │   │   └── sparse/           # BGE-M3 稀疏向量编码
-│   │   │       ├── encoder.py / http_encoder.py / remote_encoder.py # 本地 / HTTP / 远程编码器
-│   │   │       ├── factory.py     # 按 provider 装配 SparseVectorService
+│   │   │   └── sparse/           # 稀疏向量编码
+│   │   │       ├── encoder.py      # SparseVectorEncoderProtocol + 清洗工具
+│   │   │       ├── adapter_encoder.py # llm adapter 输出 → SparseVector 桥接
+│   │   │       ├── factory.py     # 按用户配置解析 provider 装配 SparseVectorService
 │   │   │       ├── pipeline.py    # SparseVectorService 服务接口
 │   │   │       ├── deploy_bge_m3.py # 本地模型部署/冒烟脚本
 │   │   │       └── constants.py / models.py / exceptions.py

@@ -55,16 +55,10 @@ def create_vector_storage_facade(
         client=qdrant_client,
         bucket_router=resolved_bucket_router,
     )
+    # 稀疏链路统一按用户解析：召回经 query_sparse_resolver、写入三路径经 per-record
+    # aresolve_user_sparse_vector_service（见各 pipeline 的 _resolve_sparse_vector_service）。
+    # 系统级 service 已移除，此处不再构造；显式注入的 sparse_vector_service 仅用于测试 / 显式装配。
     sparse_vector_service = None
-    # 注入了 query_sparse_resolver（召回路径，按 user 解析）时不再构造系统级 service：召回改走
-    # per-user，系统 service 既不会被用到，其构造又强依赖 SPARSE_VECTOR_* 系统配置（per-user
-    # 化后这些系统配置可能缺省，构造期会直接抛错）。无 resolver 的装配（dense 写入 facade）保持
-    # 原状——其 sparse 分支当前为 dead code，management / compensation 设计为「生产不注入→
-    # per-record 解析」，注入的系统 service 仅服务于测试与显式装配。
-    if query_sparse_resolver is None and getattr(settings, "SPARSE_VECTOR_ENABLED", False):
-        from src.core.encoding.sparse import create_sparse_vector_service_from_settings
-
-        sparse_vector_service = create_sparse_vector_service_from_settings()
 
     storage_service = VectorStoragePipeline(
         session_factory=resolved_session_factory,

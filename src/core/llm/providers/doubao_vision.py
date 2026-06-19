@@ -16,8 +16,8 @@ SPARSE_EMBEDDING——把响应中 ``sparse_embedding`` 数组转成框架中性
 
 关键语义：多模态端点把一次请求的 ``input``（一组内容块）融合成**单个**向量，故
 ``data`` 是单对象、不是数组。因此本 adapter 对 N 条文本**逐条**发请求（每条 ``input``
-仅含一个 text 块），与 bge-m3 的批量不同——上层对 HTTP provider 已用
-``SPARSE_VECTOR_HTTP_BATCH_SIZE`` 默认外层 batch=1，正好契合。
+仅含一个 text 块）；外层取多少 chunk 一批由索引阶段 ``SPARSE_VECTOR_BATCH_SIZE`` 控制，
+本 provider 内部再逐条编码。
 
 与 :class:`~src.core.llm.providers.bge_m3.BgeM3ServiceProvider` 同样的两层解耦纪律：
 本类（llm 层）只产出中性 ``SparseEmbeddingResult``、**不做** top_k/min_weight 清洗

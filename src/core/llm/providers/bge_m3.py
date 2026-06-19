@@ -4,22 +4,15 @@
 统一 ``(protocol, capability)`` 分发的**第一个**稀疏 provider，把
 ``{token_id: weight}`` 响应转成框架中性的 :class:`SparseEmbeddingResult`。
 
-服务契约（与 :class:`~src.core.encoding.sparse.remote_encoder.RemoteBGEM3Encoder` 一致）::
+服务契约::
 
     POST {api_base_url}/encode
     Body:     {"texts": [...], "return_dense": false, "return_sparse": true}
     Response: {"sparse": [{"<token_id>": weight, ...}, ...]}   # token_id → weight
 
-与 ``RemoteBGEM3Encoder`` 共用同一契约，但分属两层、各自独立（**不互相依赖**，
-保持「llm 层不认识 Qdrant、encoding 层不认识 HTTP 协议族」的解耦）：
-
-- 本类（llm 层）：产出中性结构 ``SparseEmbeddingResult``，**不做** top_k/min_weight 清洗
-  （清洗由 encoding 层桥接器 ``AdapterSparseVectorEncoder`` 统一执行，保证 adapter 路径与
-  本地/远程 BGE 路径在召回侧表现一致）；不触碰 Qdrant。
-- ``RemoteBGEM3Encoder``（encoding 层）：直出已清洗的 ``SparseVector``，供非 adapter 路径复用。
-
-HTTP/重试在本类内独立实现（薄封装，参考 ``OpenAIClient`` 风格）；此处与
-``RemoteBGEM3Encoder`` 有少量重复，是为换取两层解耦的有意取舍。
+定位与解耦：本类（llm 层）产出中性结构 ``SparseEmbeddingResult``，**不做** top_k/min_weight
+清洗（清洗由 encoding 层桥接器 ``AdapterSparseVectorEncoder`` 统一执行，保证各 sparse provider
+在召回侧表现一致）；不触碰 Qdrant。HTTP/重试在本类内独立实现（薄封装，参考 ``OpenAIClient`` 风格）。
 
 本 adapter 不做文本生成（``generate`` / ``stream`` 为满足抽象签名的占位，调用即报错）。
 """

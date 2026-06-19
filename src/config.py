@@ -299,41 +299,18 @@ class Settings(BaseSettings):
     CHUNK_INDEX_RETRY_INTERVAL_SECONDS: int = 300
     CHUNK_INDEX_INDEXING_STALE_SECONDS: int = 900
 
-    # Sparse vector / BGE-M3
-    # SPARSE_VECTOR_PROVIDER 切换推理实现：
-    #   bge_m3        → 本地进程内加载模型（下方 MODEL/CACHE/DEVICE/BATCH 等生效）
-    #   bge_m3_http   → 调用早期 bge-m3-server（下方 SPARSE_VECTOR_HTTP_* 生效）
-    #   remote_bge_m3 → 调用独立 bge-m3-service（下方 BGE_M3_* 生效，dense + sparse 同出）
-    #   llm_adapter   → 走统一 (protocol, capability) adapter 分发（下方 SPARSE_VECTOR_LLM_* 生效）
+    # Sparse vector
+    # 稀疏向量的「用哪个模型 / 连哪个端点」已统一按发起用户配置经 (protocol, capability)
+    # adapter 解析（必配不兜底），不再有系统级 provider / 模型 / 连接配置。以下仅保留与
+    # 具体 provider 无关的全局策略：开关、Qdrant named vector 名、清洗规则、外层批大小。
     SPARSE_VECTOR_ENABLED: bool = True
-    SPARSE_VECTOR_PROVIDER: str = "bge_m3"
-    SPARSE_VECTOR_MODEL_NAME: str = "BAAI/bge-m3"
-    SPARSE_VECTOR_MODEL_CACHE_DIR: Optional[str] = None
-    SPARSE_VECTOR_LOCAL_FILES_ONLY: bool = False
-    SPARSE_VECTOR_DEVICE: str = "auto"
-    SPARSE_VECTOR_BATCH_SIZE: int = 12
-    SPARSE_VECTOR_MAX_LENGTH: int = 8192
-    # 远程 bge-m3-server（仅 SPARSE_VECTOR_PROVIDER=bge_m3_http 时生效）
-    SPARSE_VECTOR_HTTP_ENDPOINT: Optional[str] = None
-    SPARSE_VECTOR_HTTP_TIMEOUT: float = 30.0
-    SPARSE_VECTOR_HTTP_BATCH_SIZE: Optional[int] = None
-    # 独立 bge-m3-service（仅 SPARSE_VECTOR_PROVIDER=remote_bge_m3 时生效）
-    # 同时返回 dense（1024 维）+ sparse；带超时 / 重试。
-    BGE_M3_SERVICE_URL: Optional[str] = None
-    BGE_M3_TIMEOUT_SECONDS: float = 30.0
-    BGE_M3_MAX_RETRIES: int = 3
-    # 统一 LLM adapter 分发（仅 SPARSE_VECTOR_PROVIDER=llm_adapter 时生效）
-    # 按 protocol 经 ModelFactory 造 provider，要求其具备 SPARSE_EMBEDDING 能力。
-    SPARSE_VECTOR_LLM_PROTOCOL: Optional[str] = None
-    SPARSE_VECTOR_LLM_API_KEY: Optional[str] = None
-    SPARSE_VECTOR_LLM_API_BASE_URL: Optional[str] = None
-    SPARSE_VECTOR_LLM_MODEL_NAME: Optional[str] = None
+    # Qdrant named sparse vector 字段名；写入与召回共用。
     SPARSE_VECTOR_QDRANT_VECTOR_NAME: str = "sparse_text"
+    # 全局清洗规则（各 provider 复用，保证召回侧表现一致）。
     SPARSE_VECTOR_TOP_K: int = 256
     SPARSE_VECTOR_MIN_WEIGHT: float = 0.0
-    SPARSE_VECTOR_RETRY_LIMIT: int = 3
-    SPARSE_VECTOR_INDEXING_STALE_SECONDS: int = 900
-    TOLINK_RUN_REAL_SPARSE_VECTOR_TESTS: bool = False
+    # 稀疏索引外层批大小：一次从 DB 取多少 chunk 原文喂给编码器（provider 内部请求批策略各自决定）。
+    SPARSE_VECTOR_BATCH_SIZE: int = 32
 
     # Sparse retrieval defaults (called by VectorStorageFacade.search_sparse_chunks).
     # 默认值依据：业界保守占位（Dify "score threshold disabled = 0.0"、

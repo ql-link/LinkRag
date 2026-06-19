@@ -253,9 +253,9 @@ async def test_happy_path_extracts_bucket_id_and_uses_multivalue_cas(monkeypatch
     assert service.texts == ["alpha", "beta"]
 
 
-def test_http_provider_defaults_outer_batch_size_to_one(monkeypatch):
-    monkeypatch.setattr(indexing_mod.settings, "SPARSE_VECTOR_PROVIDER", "bge_m3_http")
-    monkeypatch.setattr(indexing_mod.settings, "SPARSE_VECTOR_HTTP_BATCH_SIZE", None)
+def test_outer_batch_size_reads_sparse_vector_batch_size(monkeypatch):
+    # 稀疏编码统一走 per-user adapter；外层批大小不再随 provider 切换，只读 SPARSE_VECTOR_BATCH_SIZE。
+    monkeypatch.setattr(indexing_mod.settings, "SPARSE_VECTOR_BATCH_SIZE", 16)
 
     pipeline = SparseIndexingPipeline(
         chunk_repository=_RecordingRepo(),
@@ -263,12 +263,11 @@ def test_http_provider_defaults_outer_batch_size_to_one(monkeypatch):
         qdrant_store=_RecordingStore(),
     )
 
-    assert pipeline.batch_size == 1
+    assert pipeline.batch_size == 16
 
 
-def test_http_provider_uses_http_batch_size_when_configured(monkeypatch):
-    monkeypatch.setattr(indexing_mod.settings, "SPARSE_VECTOR_PROVIDER", "bge_m3_http")
-    monkeypatch.setattr(indexing_mod.settings, "SPARSE_VECTOR_HTTP_BATCH_SIZE", 2)
+def test_outer_batch_size_falls_back_to_default_when_unset(monkeypatch):
+    monkeypatch.setattr(indexing_mod.settings, "SPARSE_VECTOR_BATCH_SIZE", None)
 
     pipeline = SparseIndexingPipeline(
         chunk_repository=_RecordingRepo(),
@@ -276,4 +275,4 @@ def test_http_provider_uses_http_batch_size_when_configured(monkeypatch):
         qdrant_store=_RecordingStore(),
     )
 
-    assert pipeline.batch_size == 2
+    assert pipeline.batch_size == 32
