@@ -388,54 +388,40 @@ class OpenAICompatibleProvider(BaseProvider):
             ),
         )
 
-    async def _vision_chat(self, image_base64, prompt, model=None, **kwargs):
-        """VISION 复用 Chat Completions 通路：仅多拼一个 image_url content block。
+    async def analyze_image(
+        self, image_base64, prompt, model=None, media_type="image/jpeg", **kwargs
+    ):
+        """视觉分析（含 OCR），复用 Chat Completions 通路：仅多拼一个 image_url block。
 
         图片块用 Chat Completions 形态（``type:"image_url"`` + 对象 + ``data:`` URI），
         **不是** Responses API 的 ``input_image``（后者打到 /chat/completions 会 400）。
-        ``model`` 显式接住调用方透传的模型名，避免与下方 ``model=`` 撞车。
-        返回 ``(content, model, usage)`` 供 extract_text / analyze_image 复用。
+        ``model`` / ``media_type`` 显式接住调用方透传值（``model`` 避免与下方 ``model=``
+        撞车；``media_type`` 跟随真实图片格式，不再写死 jpeg）。
         """
-        content = []
+        from src.core.llm.response import VisionResult
+
+        content_parts = []
         if prompt:
-            content.append({"type": "text", "text": prompt})
-        content.append({
+            content_parts.append({"type": "text", "text": prompt})
+        content_parts.append({
             "type": "image_url",
-            "image_url": {"url": f"data:image/jpeg;base64,{image_base64}"},
+            "image_url": {"url": f"data:{media_type};base64,{image_base64}"},
         })
 
         response = await self._client.chat_completions(
             model=model or self.model_name,
-            messages=[{"role": "user", "content": content}],
+            messages=[{"role": "user", "content": content_parts}],
             **kwargs,
         )
 
         message = response["choices"][0]["message"]
         usage = response.get("usage", {})
-        return (
-            message.get("content") or "",
-            response.get("model", model or self.model_name),
-            UsageInfo(
+        return VisionResult(
+            content=message.get("content") or "",
+            model=response.get("model", model or self.model_name),
+            usage=UsageInfo(
                 prompt_tokens=usage.get("prompt_tokens", 0),
                 completion_tokens=usage.get("completion_tokens", 0),
                 total_tokens=usage.get("total_tokens", 0),
             ),
         )
-
-    async def extract_text(self, image_base64, prompt=None, model=None, **kwargs):
-        """OCR（图像文本提取）= VISION + prompt，经 Chat Completions 图片块实现。"""
-        from src.core.llm.response import OcrResult
-
-        content, resolved_model, usage = await self._vision_chat(
-            image_base64, prompt, model=model, **kwargs
-        )
-        return OcrResult(content=content, model=resolved_model, usage=usage)
-
-    async def analyze_image(self, image_base64, prompt, model=None, **kwargs):
-        """视觉分析，经 Chat Completions 图片块实现。"""
-        from src.core.llm.response import VisionResult
-
-        content, resolved_model, usage = await self._vision_chat(
-            image_base64, prompt, model=model, **kwargs
-        )
-        return VisionResult(content=content, model=resolved_model, usage=usage)

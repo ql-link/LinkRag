@@ -1,13 +1,16 @@
 # -*- coding: utf-8 -*-
 """VISION（图片增强 / OCR）adapter 执行层单测。
 
-钉住三协议「图片块」请求体（经官方文档核实）与响应解析：
+OCR 不再是独立能力：图片文字提取 = VISION + 文字提取 prompt，统一走 analyze_image。
+本测试钉住三协议「图片块」请求体（经官方文档核实）与响应解析：
 - openai 兼容：Chat Completions ``image_url`` + ``data:`` URI（复用 chat_completions）；
 - google：generateContent ``inline_data`` / ``mime_type`` snake_case（复用 generate_content）；
 - anthropic：Messages ``image`` + ``source.base64``（复用 messages）。
 
-并回归图片增强 ImageDescriber 透传 ``model=`` 的坑：三家 analyze_image 必须显式接住
-``model`` kwarg，否则与内部 ``model=self.model_name`` 撞车（TypeError）。
+并回归两个坑：
+- 图片增强 ImageDescriber 透传 ``model=`` → analyze_image 须显式接住，否则与内部
+  ``model=self.model_name`` 撞车（TypeError）。
+- ``media_type`` 不再写死 jpeg → 透传 PNG 等真实格式时请求体须跟随。
 """
 
 from __future__ import annotations
@@ -17,7 +20,7 @@ import pytest
 from src.core.llm.providers.anthropic import AnthropicProvider
 from src.core.llm.providers.google import GoogleProvider
 from src.core.llm.providers.openai import OpenAICompatibleProvider
-from src.core.llm.response import OcrResult, VisionResult
+from src.core.llm.response import VisionResult
 
 B64 = "QkFTRTY0"  # 任意 base64 占位
 
@@ -55,6 +58,7 @@ async def test_openai_analyze_image_builds_image_url_block():
     assert result.usage.total_tokens == 8
     content = captured["messages"][0]["content"]
     assert {"type": "text", "text": "描述这张图"} in content
+    # 默认 media_type=jpeg
     assert {
         "type": "image_url",
         "image_url": {"url": f"data:image/jpeg;base64,{B64}"},
@@ -62,17 +66,17 @@ async def test_openai_analyze_image_builds_image_url_block():
 
 
 @pytest.mark.asyncio
-async def test_openai_extract_text_returns_ocr_result_and_omits_text_when_no_prompt():
+async def test_openai_analyze_image_media_type_flows_into_data_uri():
     provider = OpenAICompatibleProvider(api_key="k", model_name="gpt-4o")
     captured = _capture(provider, "chat_completions", _OPENAI_RESP)
 
-    result = await provider.extract_text(image_base64=B64)
+    await provider.analyze_image(image_base64=B64, prompt="p", media_type="image/png")
 
-    assert isinstance(result, OcrResult)
     content = captured["messages"][0]["content"]
-    # 无 prompt → 仅图片块，不拼空 text block
-    assert all(part["type"] != "text" for part in content)
-    assert content[0]["type"] == "image_url"
+    assert {
+        "type": "image_url",
+        "image_url": {"url": f"data:image/png;base64,{B64}"},
+    } in content
 
 
 @pytest.mark.asyncio
@@ -111,8 +115,19 @@ async def test_google_analyze_image_builds_inline_data_snake_case():
     assert result.usage.total_tokens == 8
     parts = captured["contents"][0]["parts"]
     assert {"text": "描述这张图"} in parts
-    # 裸 REST 必须 snake_case：inline_data / mime_type
+    # 裸 REST 必须 snake_case：inline_data / mime_type；默认 jpeg
     assert {"inline_data": {"mime_type": "image/jpeg", "data": B64}} in parts
+
+
+@pytest.mark.asyncio
+async def test_google_analyze_image_media_type_flows_into_inline_data():
+    provider = GoogleProvider(api_key="k", model_name="gemini-2.5-flash")
+    captured = _capture(provider, "generate_content", _GOOGLE_RESP)
+
+    await provider.analyze_image(image_base64=B64, prompt="p", media_type="image/webp")
+
+    parts = captured["contents"][0]["parts"]
+    assert {"inline_data": {"mime_type": "image/webp", "data": B64}} in parts
 
 
 @pytest.mark.asyncio
@@ -146,9 +161,24 @@ async def test_anthropic_analyze_image_builds_image_source_block():
     assert result.usage.total_tokens == 8
     content = captured["messages"][0]["content"]
     assert {"type": "text", "text": "描述这张图"} in content
+    # 默认 media_type=jpeg
     assert {
         "type": "image",
         "source": {"type": "base64", "media_type": "image/jpeg", "data": B64},
+    } in content
+
+
+@pytest.mark.asyncio
+async def test_anthropic_analyze_image_media_type_flows_into_source():
+    provider = AnthropicProvider(api_key="k", model_name="claude-3-5-sonnet")
+    captured = _capture(provider, "messages", _ANTHROPIC_RESP)
+
+    await provider.analyze_image(image_base64=B64, prompt="p", media_type="image/png")
+
+    content = captured["messages"][0]["content"]
+    assert {
+        "type": "image",
+        "source": {"type": "base64", "media_type": "image/png", "data": B64},
     } in content
 
 

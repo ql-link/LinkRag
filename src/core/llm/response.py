@@ -69,13 +69,6 @@ class RerankResult(BaseModel):
     usage: UsageInfo
 
 
-class OcrResult(BaseModel):
-    """OCR 识别结果"""
-    content: str
-    model: str
-    usage: UsageInfo
-
-
 class VisionResult(BaseModel):
     """视觉分析结果"""
     content: str

@@ -317,53 +317,15 @@ class AnthropicProvider(BaseProvider):
         """Anthropic 不支持 rerank"""
         raise NotImplementedError("Anthropic does not support rerank")
 
-    async def extract_text(self, image_base64, prompt=None, model=None, **kwargs):
-        """OCR - Anthropic Vision 支持图像理解。
+    async def analyze_image(
+        self, image_base64, prompt, model=None, media_type="image/jpeg", **kwargs
+    ):
+        """视觉分析（含 OCR：图片文字提取 = 视觉 + 文字提取 prompt）。
 
-        ``model`` 显式接住调用方（如图片增强 ImageDescriber）透传的模型名，避免与下方
-        ``model=`` 同名 kwarg 撞车（``TypeError: multiple values for 'model'``）。
+        ``model`` / ``media_type`` 显式接住调用方透传值：``model`` 避免与下方 ``model=``
+        撞车（``TypeError: multiple values for 'model'``）；``media_type`` 跟随真实图片
+        格式（PNG/webp/gif…），不再写死 jpeg，否则 Anthropic 会按声明类型校验而拒图。
         """
-        from src.core.llm.response import OcrResult
-
-        messages = [{
-            "role": "user",
-            "content": []
-        }]
-
-        if prompt:
-            messages[0]["content"].append({"type": "text", "text": prompt})
-
-        messages[0]["content"].append({
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/jpeg",
-                "data": image_base64
-            }
-        })
-
-        response = await self._client.messages(
-            model=model or self.model_name,
-            messages=messages,
-            max_tokens=1024,
-            **kwargs
-        )
-
-        content = response["content"][0]["text"]
-        usage = response["usage"]
-
-        return OcrResult(
-            content=content,
-            model=response.get("model", self.model_name),
-            usage=UsageInfo(
-                prompt_tokens=usage["input_tokens"],
-                completion_tokens=usage["output_tokens"],
-                total_tokens=usage["input_tokens"] + usage["output_tokens"],
-            ),
-        )
-
-    async def analyze_image(self, image_base64, prompt, model=None, **kwargs):
-        """视觉分析。``model`` 显式接住透传的模型名，避免与下方 ``model=`` 撞车。"""
         from src.core.llm.response import VisionResult
 
         messages = [{
@@ -374,11 +336,11 @@ class AnthropicProvider(BaseProvider):
                     "type": "image",
                     "source": {
                         "type": "base64",
-                        "media_type": "image/jpeg",
-                        "data": image_base64
-                    }
-                }
-            ]
+                        "media_type": media_type,
+                        "data": image_base64,
+                    },
+                },
+            ],
         }]
 
         response = await self._client.messages(

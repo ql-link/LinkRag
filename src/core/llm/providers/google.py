@@ -226,42 +226,28 @@ class GoogleProvider(BaseProvider):
                 usage=_usage(chunk) if is_end else None,
             )
 
-    async def _vision_generate(self, image_base64, prompt, model=None, **kwargs):
-        """VISION 复用 generateContent 通路：仅多拼一个 inline_data part。
+    async def analyze_image(
+        self, image_base64, prompt, model=None, media_type="image/jpeg", **kwargs
+    ):
+        """视觉分析（含 OCR），复用 generateContent 通路：仅多拼一个 inline_data part。
 
         裸 REST 用 snake_case ``inline_data`` / ``mime_type``（**不是** SDK 的
-        ``inlineData`` / ``mimeType``）。``model`` 显式接住调用方透传的模型名，避免
-        与下方 ``model=`` 撞车。返回 ``(content, model, usage)`` 供两个公开方法复用。
+        ``inlineData`` / ``mimeType``）。``model`` / ``media_type`` 显式接住调用方透传值
+        （``model`` 避免与下方 ``model=`` 撞车；``media_type`` 跟随真实图片格式，不再写死 jpeg）。
         """
+        from src.core.llm.response import VisionResult
+
         parts = []
         if prompt:
             parts.append({"text": prompt})
-        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": image_base64}})
+        parts.append({"inline_data": {"mime_type": media_type, "data": image_base64}})
 
         data = await self._client.generate_content(
             model=model or self.model_name,
             contents=[{"role": "user", "parts": parts}],
         )
-        return (
-            _extract_text(data),
-            data.get("modelVersion", model or self.model_name),
-            _usage(data),
+        return VisionResult(
+            content=_extract_text(data),
+            model=data.get("modelVersion", model or self.model_name),
+            usage=_usage(data),
         )
-
-    async def extract_text(self, image_base64, prompt=None, model=None, **kwargs):
-        """OCR（图像文本提取）= VISION + prompt，经 generateContent 图片块实现。"""
-        from src.core.llm.response import OcrResult
-
-        content, resolved_model, usage = await self._vision_generate(
-            image_base64, prompt, model=model, **kwargs
-        )
-        return OcrResult(content=content, model=resolved_model, usage=usage)
-
-    async def analyze_image(self, image_base64, prompt, model=None, **kwargs):
-        """视觉分析，经 generateContent 图片块实现。"""
-        from src.core.llm.response import VisionResult
-
-        content, resolved_model, usage = await self._vision_generate(
-            image_base64, prompt, model=model, **kwargs
-        )
-        return VisionResult(content=content, model=resolved_model, usage=usage)
