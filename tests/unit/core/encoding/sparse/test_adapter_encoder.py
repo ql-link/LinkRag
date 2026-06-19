@@ -115,7 +115,7 @@ async def test_end_to_end_bge_m3_provider_via_model_factory():
         return httpx.Response(200, json={"sparse": [{"12": 0.5, "5": 0.8}, {"7": 0.9}]})
 
     provider = ModelFactory().create_client(
-        protocol="bge_m3", api_key="", api_base_url="http://svc:7997"
+        protocol="bge_m3", api_key="", api_base_url="http://svc:7997/encode"
     )
     provider._http_client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
 

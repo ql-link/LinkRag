@@ -1,7 +1,7 @@
 -- =============================================================
 -- toLink-Service：LLM 厂商与模型目录精简种子数据
 -- 基于远端库 active 模型目录收敛生成（2026-06-17）
--- 厂商：14 个，模型能力记录：84 条（83 条运营白名单 + 1 条 doubao_vision 稀疏）
+-- 厂商：14 个，模型能力记录：85 条（83 条运营白名单 + 2 条稀疏：doubao_vision + bge_m3）
 -- 说明：只保留当前运营白名单；protocol/api_base_url 为模型能力层事实来源。
 -- =============================================================
 
@@ -207,6 +207,10 @@ UNION ALL
     SELECT id, 'doubao-embedding-vision-251215', 'EMBEDDING', 'openai', 'https://ark.cn-beijing.volces.com/api/v3/embeddings', TRUE FROM llm_system_provider WHERE provider_type = 'volcengine'
 UNION ALL
     SELECT id, 'doubao-embedding-vision-251215', 'SPARSE_EMBEDDING', 'doubao_vision', 'https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal', TRUE FROM llm_system_provider WHERE provider_type = 'volcengine'
+UNION ALL
+    -- bge-m3 稀疏：自部署 bge-m3-server，借 volcengine 厂商记录登记；protocol=bge_m3，无需 api_key。
+    -- 用户配置复制本目录的模型 url（无手填入口），故此处直接落完整端点；与 doubao 一致：api_base_url 即完整 url，adapter 直打不拼接。
+    SELECT id, 'bge-m3', 'SPARSE_EMBEDDING', 'bge_m3', 'http://103.205.254.30:37997/encode', TRUE FROM llm_system_provider WHERE provider_type = 'volcengine'
 ON DUPLICATE KEY UPDATE
     protocol     = VALUES(protocol),
     api_base_url = VALUES(api_base_url),

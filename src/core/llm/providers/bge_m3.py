@@ -1,12 +1,12 @@
 """独立 bge-m3-service 稀疏向量 adapter（protocol = "bge_m3"）。
 
-对接独立部署的 ``bge-m3-service`` ``/encode`` 契约，仅承载 SPARSE_EMBEDDING——作为接入
+对接独立部署的 ``bge-m3-service`` 编码端点，仅承载 SPARSE_EMBEDDING——作为接入
 统一 ``(protocol, capability)`` 分发的**第一个**稀疏 provider，把
 ``{token_id: weight}`` 响应转成框架中性的 :class:`SparseEmbeddingResult`。
 
 服务契约::
 
-    POST {api_base_url}/encode
+    POST {api_base_url}     # api_base_url 即完整端点（与种子 llm_provider_model 约定一致），直打不拼接
     Body:     {"texts": [...], "return_dense": false, "return_sparse": true}
     Response: {"sparse": [{"<token_id>": weight, ...}, ...]}   # token_id → weight
 
@@ -38,7 +38,6 @@ class BgeM3ServiceProvider(BaseProvider):
     """bge-m3-service 协议 adapter：仅稀疏向量化。"""
 
     DEFAULT_MODEL = "bge-m3"
-    ENCODE_ENDPOINT = "/encode"
 
     def __init__(
         self,
@@ -99,16 +98,16 @@ class BgeM3ServiceProvider(BaseProvider):
         )
 
     async def _encode_sparse(self, texts: List[str]) -> list:
-        """调用 ``/encode`` 并取出 ``sparse`` 列表，做数量级别校验。"""
+        """调用配置的完整端点并取出 ``sparse`` 列表，做数量级别校验。"""
 
-        base = (self.api_base_url or "").rstrip("/")
-        if not base:
+        url = (self.api_base_url or "").rstrip("/")
+        if not url:
             raise ProviderConnectionError(
                 message="bge-m3-service base url is not configured.",
                 provider_type=self.provider_type,
             )
         payload = {"texts": texts, "return_dense": False, "return_sparse": True}
-        data = await self._post(f"{base}{self.ENCODE_ENDPOINT}", payload)
+        data = await self._post(url, payload)
         sparse = data.get("sparse") if isinstance(data, dict) else None
         if not isinstance(sparse, list):
             raise InvalidResponseError(
@@ -149,7 +148,7 @@ class BgeM3ServiceProvider(BaseProvider):
         return SparseEmbedding(indices=indices, values=values)
 
     async def _post(self, url: str, json: dict, retry_count: int = 0) -> dict:
-        """POST ``/encode``：网络错误与 5xx 走有限重试，4xx 立即抛出。"""
+        """POST 编码端点：网络错误与 5xx 走有限重试，4xx 立即抛出。"""
 
         client = await self._get_client()
         try:

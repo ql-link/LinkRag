@@ -16,11 +16,11 @@ from src.core.llm.response import SparseEmbeddingResult
 
 def _provider(handler, **kwargs) -> BgeM3ServiceProvider:
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
-    return BgeM3ServiceProvider(api_base_url="http://svc:7997", http_client=client, **kwargs)
+    return BgeM3ServiceProvider(api_base_url="http://svc:7997/encode", http_client=client, **kwargs)
 
 
 def test_declares_only_sparse_embedding():
-    provider = BgeM3ServiceProvider(api_base_url="http://svc:7997")
+    provider = BgeM3ServiceProvider(api_base_url="http://svc:7997/encode")
     assert provider.get_capabilities() == {CapabilityType.SPARSE_EMBEDDING}
     assert provider.has_capability(CapabilityType.SPARSE_EMBEDDING)
     assert not provider.has_capability(CapabilityType.EMBEDDING)
