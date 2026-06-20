@@ -31,3 +31,15 @@ class BaseObjectStorage(ABC):
     @abstractmethod
     def build_object_url(self, bucket: str, object_key: str) -> str:
         """构造对象访问 URL。"""
+
+    @abstractmethod
+    def remove_prefix(self, bucket: str, prefix: str) -> int:
+        """删除某前缀下的全部对象，返回删除的对象数。
+
+        用于删除链路按解析任务目录前缀清理 OSS 产物（Markdown + 图片同在
+        ``parsed/.../{taskId}/`` 下）。约定：
+
+        - 前缀下无对象时为 no-op（返回 0），不报错——支撑删除幂等与"删不存在产物"安全。
+        - 空前缀必须拒绝（返回 0 或抛错），避免误删整桶；调用方只应传具体 taskId 目录前缀。
+        - 对象存储侧的网络 / 超时异常向上抛，由删除编排归类为暂时性失败重试。
+        """

@@ -28,6 +28,11 @@ from src.api.routes import internal, llm, mq, parse, rag, recall
 from src.application.recall_errors import RecallApiError
 from src.cache.redis_client import redis_client
 from src.config import settings
+from src.core.mq.consumers.document_delete_consumer import (
+    DOCUMENT_DELETE_GROUP,
+    DOCUMENT_DELETE_TOPIC,
+    handle_document_delete,
+)
 from src.core.mq.consumers.parse_task_consumer import (
     PARSE_TASK_GROUP,
     PARSE_TASK_TOPIC,
@@ -44,11 +49,11 @@ from src.database import close_database, init_database
 from src.services.mq_service import MQService
 
 
-async def _start_parse_consumer() -> None:
-    """组合根装配：用 MQService 订阅解析任务 handler 并启动消费。
+async def _start_mq_consumers() -> None:
+    """组合根装配：用 MQService 订阅各业务 handler 并启动消费。
 
     core 层消费者模块只暴露 handler 与 topic/group 常量，订阅装配在此完成，
-    避免 core 反向依赖 services。
+    避免 core 反向依赖 services。各消费者用独立 group_id，offset 互不干扰。
     """
     mq_service = MQService()
     await mq_service.subscribe(
@@ -56,9 +61,16 @@ async def _start_parse_consumer() -> None:
         group_id=PARSE_TASK_GROUP,
         callback=handle_parse_task,
     )
+    await mq_service.subscribe(
+        topic=DOCUMENT_DELETE_TOPIC,
+        group_id=DOCUMENT_DELETE_GROUP,
+        callback=handle_document_delete,
+    )
     await mq_service.start_consuming()
     logger.info(
-        f"[ParseTaskConsumer] 消费者已启动: " f"topic={PARSE_TASK_TOPIC}, group={PARSE_TASK_GROUP}"
+        f"[MQConsumers] 消费者已启动: "
+        f"parse_task(topic={PARSE_TASK_TOPIC}, group={PARSE_TASK_GROUP}), "
+        f"document_delete(topic={DOCUMENT_DELETE_TOPIC}, group={DOCUMENT_DELETE_GROUP})"
     )
 
 
@@ -83,7 +95,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     temp_workspace.ensure_clean_on_startup(Path(settings.PARSE_TEMP_DIR))
     if settings.MQ_VENDOR.lower() == "kafka" and settings.INIT_KAFKA_TOPICS_ON_STARTUP:
         ensure_topics()
-    await _start_parse_consumer()
+    await _start_mq_consumers()
     yield
     # 关闭时清理（MQ 连接优先关闭，避免消息丢失）
     try:

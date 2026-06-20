@@ -12,9 +12,9 @@ def test_build_default_topic_specs_emits_dlt_siblings() -> None:
     business = [s for s in specs if not s.name.endswith(".DLT")]
     dlt = [s for s in specs if s.name.endswith(".DLT")]
 
-    # 业务 topic 与 DLT 同长度（每个业务 topic 对应一个 DLT）
-    assert len(business) == 3
-    assert len(dlt) == 3
+    # 业务 topic 与 DLT 一一对应（每个业务 topic 对应一个 DLT）
+    assert len(business) == len(dlt)
+    assert len(business) >= 4  # parse_task / cache_sync / usage_report / document_delete
 
     biz_by_name = {s.name: s for s in business}
     for d in dlt:
@@ -34,3 +34,10 @@ def test_dlt_includes_parse_task_topic() -> None:
     names = {s.name for s in build_default_topic_specs()}
     assert "tolink.rag.parse_task" in names
     assert "tolink.rag.parse_task.DLT" in names
+
+
+def test_includes_document_delete_topic() -> None:
+    """document_delete 业务 topic 与其 DLT 必须被装配（LINK-55）。"""
+    names = {s.name for s in build_default_topic_specs()}
+    assert "tolink.rag.document_delete" in names
+    assert "tolink.rag.document_delete.DLT" in names

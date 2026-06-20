@@ -111,6 +111,53 @@ Java 管理端                          toLink-Rag (Python)
 
 消息以 `file_type` 作为 routing key，便于按文件类型做消费侧分流。
 
+## 删除通知（Java → Python，LINK-55）
+
+数据集 / 文件删除采用「Java 隐性软删 + Python 清产物」两段式：Java 在删除事务里软删原文件行（`document_original_file.is_deleted=1`，保留 OSS 原文件对象）、物理删会话消息，提交后（afterCommit）发本通知；Python 据此删除**解析域衍生产物**（解析三表 + `kb_document_chunk` + Qdrant 向量点 + ES 索引 + OSS `parsed/.../{taskId}/` 下的 Markdown 与图片），**不碰原文件**。
+
+### Topic
+
+- 实际收发 topic：`tolink.rag.document_delete`（由 `DocumentDeleteMessage.MQ_NAME` 固定）。
+- 环境变量 `DOCUMENT_DELETE_TOPIC` 仅用于 Kafka topic 自动创建，默认同名；不改变 Python 实际订阅 topic。
+- 语义 `QUEUE`（点对点），消费组 `tolink.rag.document_delete`。
+
+### 消息体（DocumentDeletePayload）
+
+扁平裸 JSON + snake_case，**无信封**（与 parse_task 一致，区别于 chat_turn / usage_report 的 `{mq_type,mq_name,payload}` 信封）；Java 侧 `JSON.toJSONString` 直发，消费端 `json.loads` 即得下表。
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `delete_type` | string | ✅ | 删除范围：`dataset` / `file` |
+| `dataset_id` | int (BIGINT) | ✅ | 所属数据集 id |
+| `user_id` | int (BIGINT) | ✅ | 操作用户 id（归属维度，删除时兜底校验防越权） |
+| `original_file_id` | int (BIGINT) | 仅 `file` 必填 | 被软删的原文件 id；`dataset` 范围不下发（Java 端为 null，fastjson 省略） |
+
+### 消息示例
+
+删数据集（按 dataset 级联删名下全部衍生产物，不下发文件清单）：
+
+```json
+{"delete_type": "dataset", "dataset_id": 10, "user_id": 100}
+```
+
+删单文件（按 original_file_id 删该文件衍生产物）：
+
+```json
+{"delete_type": "file", "dataset_id": 200, "user_id": 100, "original_file_id": 1}
+```
+
+### 幂等、顺序与可靠性
+
+- **幂等**：按 id / filter 删，重复消费 no-op；删不存在产物按成功处理。
+- **删除次序（Python 侧）**：先删外部存储（Qdrant/ES/OSS），最后删 DB 行——DB 行是定位外部产物的账本，留到最后删保证崩溃/重试安全。
+- **无顺序保证**：Java 发送不带 key，分区轮询；删除通知之间、与 parse_task 之间均无时序约束。
+- **可靠性**：Java 尽力发（afterCommit 失败仅告警吞掉，无对账）；Python 坏消息进死信跳过，暂时性失败退避重试（≤3 次）耗尽进 `.DLT`。
+
+### 边界
+
+- 不删原文件：`document_original_file` 行（Java 软删保留）与 OSS 原文件对象（Java 保留）。透传 md（`file_type∈{md,markdown}`）的 `parsed_object_key` 指向原文件对象，Python 按「非 `parsed/` 前缀跳过」护栏排除。
+- 不删账务/用户态：`llm_usage_log`、`chat_*`（会话消息由 Java 物理删）。
+
 ## 终态读取（Python → DB → 前端轮询）
 
 > **parse_result 终态回传 MQ 已下线（LINK-166）**。Python 端解析完成后**只写 DB 终态**，不再向 Java 发送 MQ 通知；`ParseResultMessage` 消息体与生产侧代码、`PARSE_RESULT_TOPIC` 配置项均已删除。Java 端停止消费见 LINK-165。

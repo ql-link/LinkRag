@@ -13,9 +13,11 @@ src/core/mq/
 ├── exceptions.py              # MQ 异常类型（含 RetriableError 可重试基类）
 ├── retry.py                   # 厂商中立失败兜底编排：有限退避重试 + 死信投递
 ├── consumers/
-│   └── parse_task_consumer.py # 解析任务消费 handler（订阅装配在组合根 src/main.py）
+│   ├── parse_task_consumer.py      # 解析任务消费 handler（订阅装配在组合根 src/main.py）
+│   └── document_delete_consumer.py # 删除通知消费 handler（LINK-55；委托 DocumentDeletePurger）
 ├── messages/
 │   ├── parse_task.py          # Java -> Python 解析任务消息
+│   ├── document_delete.py     # Java -> Python 删除通知（LINK-55，扁平裸 JSON 无信封）
 │   ├── cache_sync.py          # 用户 LLM 配置缓存同步
 │   ├── usage_report.py        # LLM 用量上报
 │   └── chat_turn.py           # 对话轮次完成上报（Python -> Java 落库）
@@ -39,11 +41,14 @@ BusinessCode
 消费链路：
 
 ```text
-FastAPI lifespan（src/main.py 组合根装配）
-  -> MQService.subscribe(topic, group, handle_parse_task)
-    -> ParseTaskMessage.parse_msg()
-    -> ParseTaskPipeline.execute()
+FastAPI lifespan（src/main.py 组合根装配 _start_mq_consumers）
+  -> MQService.subscribe(parse_task, group, handle_parse_task)
+    -> ParseTaskMessage.parse_msg() -> ParseTaskPipeline.execute()
+  -> MQService.subscribe(document_delete, group, handle_document_delete)
+    -> DocumentDeleteMessage.parse_msg() -> DocumentDeletePurger.purge()
 ```
+
+> 删除消费 `document_delete`：删除幂等可重试，`handle_document_delete` 把 purge 执行异常统一包成 `RetriableError` 交框架退避重试；坏消息在 `parse_msg` 抛 `MQSerializationError`（终态）直进死信。删除编排见 `src/core/pipeline/document_delete/`（先删 Qdrant/ES/OSS，最后删 DB 行；不碰原文件）。
 
 ## 2. 核心角色
 
@@ -62,13 +67,14 @@ FastAPI lifespan（src/main.py 组合根装配）
 | 消息 | 默认 Topic/Queue | 方向 | 说明 |
 | --- | --- | --- | --- |
 | `ParseTaskMessage` | `tolink.rag.parse_task` | Java -> Python | 触发文档解析任务（含首次解析与重试，由 `is_retry` + `previous_task_id` 区分；详见 [mq_integration.md §ParseTaskPayload](../api/mq_contracts.md)） |
+| `DocumentDeleteMessage` | `tolink.rag.document_delete` | Java -> Python | 删除通知：按 `delete_type`（dataset/file）清理解析域衍生产物，不碰原文件（详见 [mq_contracts.md §删除通知](../api/mq_contracts.md)） |
 | `CacheSyncMessage` | `tolink.rag.cache_sync` | Java -> Python | 失效或刷新用户 LLM 配置缓存 |
 | `UsageReportMessage` | `tolink.rag.usage_report` | Python -> Java/统计侧 | 上报全链路非对话型模型调用用量（解析 embed/vision/table、召回 embed/rerank），含 `stage`/`operation` 归属（详见 [mq_contracts.md §用量上报](../api/mq_contracts.md#用量上报pythonjava统计侧)） |
 | `ChatTurnMessage` | `tolink.rag.chat_turn` | Python -> Java | 上报一轮 RAG 问答（query/answer/usage/references/status），供 Java 落库 `chat_message` + `llm_usage_log` + 更新 `chat_conversation`（详见 [mq_contracts.md](../api/mq_contracts.md)） |
 
 `ParseTaskMessage` 中的 `md_bucket` 为历史兼容字段；Python 侧非 `md`/`markdown` 解析产物实际写入 `MINIO_PRIVATE_BUCKET` 配置桶，`md_object_key` 仍来自消息。`md`/`markdown` 透传文件的产物坐标沿用源文件上传位置。
 
-> 当前 `consumers/` 下只有 `parse_task_consumer.py` 一个消费入口。`CacheSyncMessage` / `UsageReportMessage` / `ChatTurnMessage` 在本服务侧均不消费——消费在 Java 侧。`ChatTurnMessage` 由 RAG 流式生成结束时生产（`recall_stream_runtime`）；`UsageReportMessage` 由全链路埋点经 `src/services/usage_reporter.py` 生产（解析 `VectorizingStage`/增强 provider client、召回 facade/reranker），旁路 fire-and-forget，发送失败仅告警不阻断主链路。
+> 当前 `consumers/` 下有 `parse_task_consumer.py` 与 `document_delete_consumer.py` 两个消费入口。`CacheSyncMessage` / `UsageReportMessage` / `ChatTurnMessage` 在本服务侧均不消费——消费在 Java 侧。`ChatTurnMessage` 由 RAG 流式生成结束时生产（`recall_stream_runtime`）；`UsageReportMessage` 由全链路埋点经 `src/services/usage_reporter.py` 生产（解析 `VectorizingStage`/增强 provider client、召回 facade/reranker），旁路 fire-and-forget，发送失败仅告警不阻断主链路。
 >
 > 收发 topic 名由各消息类的 `MQ_NAME` 常量固定，`PARSE_TASK_TOPIC` 等环境变量仅用于 §4.1 的 Kafka topic 自动创建，不改变实际收发 topic。
 

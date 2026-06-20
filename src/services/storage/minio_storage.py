@@ -62,3 +62,43 @@ class MinioStorage(BaseObjectStorage):
     def build_object_url(self, bucket: str, object_key: str) -> str:
         escaped_key = "/".join(quote(part) for part in object_key.split("/"))
         return f"{self._endpoint_url}/{bucket}/{escaped_key}"
+
+    def remove_prefix(self, bucket: str, prefix: str) -> int:
+        """列举前缀下全部对象并分批删除（S3 ``delete_objects`` 单批上限 1000）。
+
+        前缀为空直接拒绝（返回 0），避免误删整桶；前缀下无对象时 ``list_objects_v2``
+        返回空 ``Contents``，循环自然 no-op。删除失败（网络 / 超时）由 botocore 抛出，
+        交删除编排归类为暂时性失败重试。
+        """
+        if not prefix:
+            return 0
+
+        paginator = self._client.get_paginator("list_objects_v2")
+        deleted = 0
+        batch: list[dict[str, str]] = []
+        for page in paginator.paginate(Bucket=bucket, Prefix=prefix):
+            for obj in page.get("Contents", []):
+                batch.append({"Key": obj["Key"]})
+                if len(batch) == 1000:
+                    deleted += self._delete_batch(bucket, batch)
+                    batch = []
+        if batch:
+            deleted += self._delete_batch(bucket, batch)
+        return deleted
+
+    def _delete_batch(self, bucket: str, batch: list[dict[str, str]]) -> int:
+        """删一批对象并校验逐键结果。
+
+        S3 ``delete_objects`` 对逐键失败**不抛异常**，而是放在响应的 ``Errors`` 里。
+        若静默吞掉，删除编排会误以为 OSS 已清干净并继续删 DB 账本，导致失败对象永久泄漏。
+        故此处显式校验：有 ``Errors`` 即抛，交编排归类为暂时性失败重试。返回实际删除数。
+        """
+        resp = self._client.delete_objects(Bucket=bucket, Delete={"Objects": batch})
+        errors = resp.get("Errors") or []
+        if errors:
+            sample = errors[0]
+            raise OSError(
+                f"delete_objects 部分失败 bucket={bucket}: {len(errors)}/{len(batch)} 个对象未删, "
+                f"示例 key={sample.get('Key')} code={sample.get('Code')} msg={sample.get('Message')}"
+            )
+        return len(resp.get("Deleted") or [])
