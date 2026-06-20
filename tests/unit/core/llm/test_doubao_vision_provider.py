@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json as jsonlib
 
 import httpx
@@ -213,3 +214,48 @@ async def test_embed_sparse_retries_then_fails_on_server_error():
     with pytest.raises(ProviderConnectionError):
         await provider.embed_sparse(["a"])
     assert len(calls) == 3  # 首次 + 2 次重试
+
+
+# --- 并发：逐条请求用 Semaphore 限并发的 gather 发出（限流生效 + 保序） ---
+
+
+@pytest.mark.asyncio
+async def test_embed_sparse_concurrency_is_bounded_and_ordered():
+    active = 0
+    peak = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal active, peak
+        active += 1
+        peak = max(peak, active)
+        # 制造重叠窗口：让多条请求真正同时在飞，才能观测 semaphore 是否限流。
+        await asyncio.sleep(0.02)
+        idx = int(jsonlib.loads(request.content)["input"][0]["text"])
+        active -= 1
+        return httpx.Response(200, json=_resp([{"index": idx, "value": 0.5}]))
+
+    texts = [str(i) for i in range(6)]
+    provider = _provider(handler, max_concurrency=2)
+    result = await provider.embed_sparse(texts)
+
+    # 6 条 > 上限 2：确实并发过（peak 到 2），且同时在飞数不越界。
+    assert peak == 2
+    # gather 保序：返回与输入一一对应。
+    assert [e.indices for e in result.embeddings] == [[i] for i in range(6)]
+
+
+def test_max_concurrency_defaults_from_settings(monkeypatch):
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "SPARSE_VECTOR_DOUBAO_CONCURRENCY", 7, raising=False)
+    assert DoubaoVisionProvider(api_key="k")._max_concurrency == 7
+
+
+def test_max_concurrency_explicit_overrides_settings():
+    assert DoubaoVisionProvider(api_key="k", max_concurrency=3)._max_concurrency == 3
+
+
+def test_max_concurrency_normalizes_invalid_or_nonpositive_to_one():
+    # 非法字符串与 <=0 都规整为 >=1（参照 ProviderVisionClient 的兜底）。
+    assert DoubaoVisionProvider(api_key="k", max_concurrency="oops")._max_concurrency == 1
+    assert DoubaoVisionProvider(api_key="k", max_concurrency=0)._max_concurrency == 1
