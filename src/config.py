@@ -399,6 +399,10 @@ class Settings(BaseSettings):
     MQ_RETRY_BACKOFF_SECONDS: float = 1.0
     MQ_DLQ_SUFFIX: str = ".DLT"
 
+    # 删除链路（LINK-55）：dataset 范围按 dataset_id 分页枚举名下文件逐个清理，
+    # 每页文件数。超大数据集靠分页避免一次性载入全部 chunk_id 导致 OOM / 超时。
+    DOCUMENT_DELETE_PAGE_SIZE: int = 200
+
     # ==========================================
     # 杂项配置 (Misc)
     # ==========================================

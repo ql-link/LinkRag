@@ -54,6 +54,28 @@ class ChunkRepository:
         )
         return int(result.rowcount or 0)
 
+    async def list_routing_by_doc_id(
+        self,
+        db: AsyncSession,
+        doc_id: int,
+        user_id: int,
+    ) -> list[tuple[str, int | None]]:
+        """返回某文档全部 chunk 的 ``(chunk_id, bucket_id)``，供删除链路定位 Qdrant 点。
+
+        服务于 LINK-55 删除编排「先读路由、后删点、最后删 DB 行」：必须在删 chunk 真值行
+        之前取出 chunk_id 清单，否则删行后再也无法定位向量点。
+
+        - **不过滤 lifecycle**：REMOVED 残片可能仍有 Qdrant 点，删除范围应覆盖全部。
+        - **带 user_id 兜底**：防止伪造 doc_id 越权删他人产物（与 Java 软删 ownership 对齐）。
+        """
+        stmt = (
+            select(self.model_cls.chunk_id, self.model_cls.bucket_id)
+            .where(self.model_cls.doc_id == doc_id)
+            .where(self.model_cls.user_id == user_id)
+        )
+        result = await db.execute(stmt)
+        return [(row[0], row[1]) for row in result.all()]
+
     async def bulk_insert_pending(
         self,
         db: AsyncSession,
