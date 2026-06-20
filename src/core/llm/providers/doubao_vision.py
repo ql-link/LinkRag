@@ -17,7 +17,8 @@ SPARSE_EMBEDDING——把响应中 ``sparse_embedding`` 数组转成框架中性
 关键语义：多模态端点把一次请求的 ``input``（一组内容块）融合成**单个**向量，故
 ``data`` 是单对象、不是数组。因此本 adapter 对 N 条文本**逐条**发请求（每条 ``input``
 仅含一个 text 块）；外层取多少 chunk 一批由索引阶段 ``SPARSE_VECTOR_BATCH_SIZE`` 控制，
-本 provider 内部再逐条编码。
+本 provider 内部对这一批的逐条请求用 ``asyncio.gather`` 并发发出，并发上限由
+``SPARSE_VECTOR_DOUBAO_CONCURRENCY`` 限制、``gather`` 保序。
 
 与 :class:`~src.core.llm.providers.bge_m3.BgeM3ServiceProvider` 同样的两层解耦纪律：
 本类（llm 层）只产出中性 ``SparseEmbeddingResult``、**不做** top_k/min_weight 清洗
@@ -29,10 +30,13 @@ provider 召回侧表现一致），不触碰 Qdrant。
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, AsyncIterator, List, Optional, Union
 
 import httpx
+from loguru import logger
 
+from src.config import settings
 from src.core.llm.base_provider import BaseProvider
 from src.core.llm.exceptions import InvalidResponseError, ProviderConnectionError
 from src.core.llm.interfaces import CapabilityType
@@ -62,6 +66,7 @@ class DoubaoVisionProvider(BaseProvider):
         timeout_ms: int = 60000,
         max_retries: int = 3,
         http_client: httpx.AsyncClient | None = None,
+        max_concurrency: Optional[int] = None,
         **kwargs,
     ):
         super().__init__(
@@ -77,6 +82,12 @@ class DoubaoVisionProvider(BaseProvider):
         self._capabilities = {CapabilityType.SPARSE_EMBEDDING}
         # 允许测试注入 httpx 客户端；生产按需懒建。
         self._http_client = http_client
+        # 逐条请求的并发上限：缺省读全局 SPARSE_VECTOR_DOUBAO_CONCURRENCY，可由构造参数覆盖（测试）。
+        self._max_concurrency = self._normalize_concurrency(
+            max_concurrency
+            if max_concurrency is not None
+            else getattr(settings, "SPARSE_VECTOR_DOUBAO_CONCURRENCY", 16)
+        )
 
     async def embed_sparse(
         self, texts: Union[str, List[str]], model: Optional[str] = None, **kwargs
@@ -107,13 +118,27 @@ class DoubaoVisionProvider(BaseProvider):
                 provider_type=self.provider_type,
             )
 
-        # 多模态端点一次只融合出一个向量 → 逐条编码（与 bge-m3 的批量请求不同）。
-        embeddings = [self._to_sparse_embedding(await self._encode_one(resolved_model, t)) for t in ordered]
+        # 多模态端点一次只融合出一个向量 → 必须逐条请求（与 bge-m3 的批量请求不同）。
+        # 逐条请求彼此独立，用 Semaphore 限并发的 asyncio.gather 并发发出（参照
+        # ProviderVisionClient 的 per-image 并发写法）；gather 保序，返回与输入一一对应。
+        semaphore = asyncio.Semaphore(self._max_concurrency)
+        data_objs = await asyncio.gather(
+            *[self._encode_one_guarded(resolved_model, t, semaphore) for t in ordered]
+        )
+        embeddings = [self._to_sparse_embedding(obj) for obj in data_objs]
         return SparseEmbeddingResult(
             model=resolved_model,
             embeddings=embeddings,
             usage=UsageInfo(),
         )
+
+    async def _encode_one_guarded(
+        self, model: str, text: str, semaphore: asyncio.Semaphore
+    ) -> dict:
+        """在并发信号量保护下编码单条文本，约束同时在飞的请求数。"""
+
+        async with semaphore:
+            return await self._encode_one(model, text)
 
     async def _encode_one(self, model: str, text: str) -> dict:
         """对单条文本调 ``/embeddings/multimodal`` 并取出 ``data`` 单对象。"""
@@ -218,6 +243,16 @@ class DoubaoVisionProvider(BaseProvider):
                 limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
             )
         return self._http_client
+
+    @staticmethod
+    def _normalize_concurrency(value: int | str | None) -> int:
+        """把并发上限规整为 ``>=1`` 的整数；非法值回退到 1（参照 ProviderVisionClient）。"""
+
+        try:
+            return max(1, int(value if value is not None else 1))
+        except (TypeError, ValueError):
+            logger.warning("Invalid sparse doubao concurrency %r, fallback to 1", value)
+            return 1
 
     async def close(self) -> None:
         """关闭内部 httpx 客户端（生命周期管理，可选调用）。"""

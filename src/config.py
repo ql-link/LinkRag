@@ -311,6 +311,9 @@ class Settings(BaseSettings):
     SPARSE_VECTOR_MIN_WEIGHT: float = 0.0
     # 稀疏索引外层批大小：一次从 DB 取多少 chunk 原文喂给编码器（provider 内部请求批策略各自决定）。
     SPARSE_VECTOR_BATCH_SIZE: int = 32
+    # doubao_vision 稀疏 adapter 的逐条请求并发上限：多模态端点一次只融合出一个向量，
+    # 必须逐条发请求，本值限制同一批文本并发发出的请求数（参照 MARKDOWN_PARSER_VISION_CONCURRENCY）。
+    SPARSE_VECTOR_DOUBAO_CONCURRENCY: int = 16
 
     # Sparse retrieval defaults (called by VectorStorageFacade.search_sparse_chunks).
     # 默认值依据：业界保守占位（Dify "score threshold disabled = 0.0"、
