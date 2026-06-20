@@ -281,6 +281,13 @@ class AnthropicProvider(BaseProvider):
         messages = [{"role": "user", "content": prompt}]
         max_output_tokens = max_tokens or 1024
 
+        # Anthropic 流式的 usage 分散在两类事件上，message_stop 本身**不带 usage**：
+        #   - message_start.message.usage.input_tokens —— 输入 token；
+        #   - message_delta.usage.output_tokens —— 累计输出 token（末帧给最终值）。
+        # 故全程累积，message_stop 时一并发出，否则 token 恒为 0。
+        prompt_tokens = 0
+        completion_tokens = 0
+
         async for chunk in self._client.stream_messages(
             model=self.model_name,
             messages=messages,
@@ -289,23 +296,34 @@ class AnthropicProvider(BaseProvider):
             max_tokens=max_output_tokens,
             **kwargs
         ):
-            if chunk.get("type") == "content_block_delta":
+            ctype = chunk.get("type")
+            if ctype == "message_start":
+                usage = (chunk.get("message") or {}).get("usage") or {}
+                prompt_tokens = usage.get("input_tokens", prompt_tokens) or prompt_tokens
+                completion_tokens = usage.get("output_tokens", completion_tokens) or completion_tokens
+            elif ctype == "content_block_delta":
                 delta = chunk.get("delta", {}).get("text") or ""
                 yield StreamChunk(
                     delta=delta,
                     content="",  # 由调用方累积
                     is_end=False,
                 )
-            elif chunk.get("type") == "message_stop":
-                usage = chunk.get("usage", {})
+            elif ctype == "message_delta":
+                usage = chunk.get("usage") or {}
+                # output_tokens 为累计值，直接覆盖；部分实现也会在此回补 input_tokens。
+                if usage.get("output_tokens") is not None:
+                    completion_tokens = usage["output_tokens"]
+                if usage.get("input_tokens") is not None:
+                    prompt_tokens = usage["input_tokens"]
+            elif ctype == "message_stop":
                 yield StreamChunk(
                     delta="",
                     content="",
                     is_end=True,
                     usage=UsageInfo(
-                        prompt_tokens=usage.get("input_tokens", 0),
-                        completion_tokens=usage.get("output_tokens", 0),
-                        total_tokens=usage.get("input_tokens", 0) + usage.get("output_tokens", 0),
+                        prompt_tokens=prompt_tokens,
+                        completion_tokens=completion_tokens,
+                        total_tokens=prompt_tokens + completion_tokens,
                     )
                 )
 

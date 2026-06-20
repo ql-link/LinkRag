@@ -168,6 +168,10 @@ class OpenAIClient:
             "messages": messages,
             "temperature": temperature,
             "stream": True,
+            # OpenAI 兼容协议下，流式默认**不返回 usage**；必须显式开启 include_usage，
+            # 服务端才会在末尾追加一条 choices 为空、仅携带 usage 的 chunk。不开则
+            # prompt/completion token 全部收不到（对话 generate 用量恒为 0）。
+            "stream_options": {"include_usage": True},
         }
         if max_tokens:
             payload["max_tokens"] = max_tokens
@@ -330,6 +334,8 @@ class OpenAICompatibleProvider(BaseProvider):
         messages.append({"role": "user", "content": prompt})
 
         content_so_far = ""
+        final_usage: Optional[UsageInfo] = None
+        usage_emitted = False
 
         async for chunk in self._client.stream_chat_completions(
             model=self.model_name,
@@ -338,24 +344,44 @@ class OpenAICompatibleProvider(BaseProvider):
             max_tokens=max_tokens,
             **kwargs
         ):
-            choices = chunk.get("choices") or []
-            if choices:
-                choice = choices[0] or {}
-                delta = (choice.get("delta") or {}).get("content") or ""
-                is_end = choice.get("finish_reason") is not None
-                content_so_far += delta
-
-                usage = chunk.get("usage") or {}
-                yield StreamChunk(
-                    delta=delta,
-                    content=content_so_far,
-                    is_end=is_end,
-                    usage=UsageInfo(
-                        prompt_tokens=usage.get("prompt_tokens", 0),
-                        completion_tokens=usage.get("completion_tokens", 0),
-                        total_tokens=usage.get("total_tokens", 0),
-                    ) if is_end else None
+            # usage 可能随末帧单独下发：该帧 choices 为空、仅含 usage，故先于 choices 判断捕获，
+            # 否则会被下面的 `if not choices` 跳过，token 永远收不到。
+            usage_raw = chunk.get("usage")
+            if usage_raw:
+                final_usage = UsageInfo(
+                    prompt_tokens=usage_raw.get("prompt_tokens", 0),
+                    completion_tokens=usage_raw.get("completion_tokens", 0),
+                    total_tokens=usage_raw.get("total_tokens", 0),
                 )
+
+            choices = chunk.get("choices") or []
+            if not choices:
+                continue
+            choice = choices[0] or {}
+            delta = (choice.get("delta") or {}).get("content") or ""
+            is_end = choice.get("finish_reason") is not None
+            content_so_far += delta
+
+            chunk_usage = final_usage if is_end else None
+            if chunk_usage is not None:
+                usage_emitted = True
+            yield StreamChunk(
+                delta=delta,
+                content=content_so_far,
+                is_end=is_end,
+                usage=chunk_usage,
+            )
+
+        # usage 随 choices 为空的 usage-only 末帧到达（OpenAI/include_usage 的标准形态）时，
+        # 上面的循环不会承载它；补发一帧，保证消费侧（chat_turn 落库）拿得到 token 数。
+        # 若 usage 已随 finish_reason 帧发出（qwen 等），则不重复补发。
+        if final_usage is not None and not usage_emitted:
+            yield StreamChunk(
+                delta="",
+                content=content_so_far,
+                is_end=True,
+                usage=final_usage,
+            )
 
     async def embed(
         self,
