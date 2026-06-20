@@ -35,7 +35,6 @@ src/core/pipeline/
 │   ├── error_codes.py           # ParseFailureCode + build_failure_reason
 │   ├── models.py                # ParsePipelineResult / PipelineStatus
 │   ├── log_repository.py        # document_parsed_log 仓储
-│   ├── notifier.py              # parse_result MQ 通知与兜底
 │   ├── source.py                # 对象存储下载、Markdown 上传、MinerU URL 构造
 │   ├── temp_workspace.py        # PARSE_TEMP_DIR 清理、临时文件分配、safe_unlink
 │   ├── validator.py             # 前置校验、MQ 重投、中断状态收敛、重试校验
@@ -90,7 +89,7 @@ CleaningStage
   -> SparseVectorizingStage
 ```
 
-`ParseTaskPipeline._build_stage_pipeline()` 每次执行时从当前协作者重新装配 `StagePipeline`，便于单测在构造后替换 fake repository、notifier 或 services。
+`ParseTaskPipeline._build_stage_pipeline()` 每次执行时从当前协作者重新装配 `StagePipeline`，便于单测在构造后替换 fake repository 或 services。
 
 ---
 
@@ -100,7 +99,7 @@ CleaningStage
 | --- | --- | --- |
 | `ParseTaskPipeline` | 薄编排 | 首次/重试分流、幂等屏障、上下文校验、重试 CAS、未归类异常兜底 |
 | `StagePipeline` | 阶段循环 | 按固定顺序执行六阶段，遇到 finalized 结果立即返回 |
-| `Stage` 子类 | 单阶段模板 | `mark_started -> run -> mark_success`；失败时 `mark_failed + notify failed`；继承 SUCCESS 时走 `on_skip` |
+| `Stage` 子类 | 单阶段模板 | `mark_started -> run -> mark_success`；失败时 `mark_failed`（终态只写 DB，不再发 MQ 通知）；继承 SUCCESS 时走 `on_skip` |
 | `StageServices` | 底层操作集合 | 解析、分片、dense 向量化、预分词、ES 写入、sparse 向量化、chunk 反查 |
 | `ParsePipelineRepository` | 状态仓储 | 写 `document_parse_pipeline` 整体状态、阶段状态、耗时、失败原因和恢复入口 |
 
@@ -110,8 +109,7 @@ CleaningStage
 | --- | --- | --- | --- |
 | `ParseLogRepository` | `ParsePipelineRepository` | `document_parsed_log` 创建、查询、解析产物快照写入；首次创建时同步生成 `document_parse_pipeline` 行 | MySQL |
 | `ParseSourceIO` | `BaseObjectStorage` | 源文件下载、Markdown 上传、MinerU URL 构造、判断是否跳过下载 | OSS |
-| `ParseResultNotifier` | `MQService`, `ParseLogRepository`, `ParsePipelineRepository` | 发送 `parse_result` 终态消息；通知失败时兜底落库 | MQ + MySQL |
-| `ParseTaskGuard` | `ParseLogRepository`, `ParsePipelineRepository`, `ParseResultNotifier` | MQ 消息一致性校验、重复 task_id 终态补发、非终态 pipeline 中断收敛、重试上下文校验 | 通过依赖产生副作用 |
+| `ParseTaskGuard` | `ParseLogRepository`, `ParsePipelineRepository` | MQ 消息与 DB 记录一致性校验、重复 task_id 按 DB 终态返回、非终态 pipeline 中断收敛为可恢复失败、重试上下文校验 | MySQL |
 
 ---
 

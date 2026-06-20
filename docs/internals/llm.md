@@ -33,6 +33,7 @@ LLM 调用拆成两个正交维度：
 
 - **`protocol`（API 家族）**：决定怎么拼 HTTP 请求体、鉴权、解析响应。7 个枚举（小写、大小写敏感）：`openai` / `anthropic` / `google` / `jina` / `dashscope` / `doubao_vision` / `bge_m3`（后两个为稀疏向量专用）。
 - **`capability`（用途）**：`CHAT` / `EMBEDDING` / `SPARSE_EMBEDDING` / `RERANK` / `VISION`，决定调哪个能力分支。`OCR` 不再作为独立 LLM capability。
+  > 命名口径：对外字符串用 `"CHAT"`，内部枚举为 `CapabilityType.TEXT`（值 `"text"`），二者经 `user_model_resolver` 映射对应（`"CHAT" → CapabilityType.TEXT`）；下表 `TEXT(CHAT)` 即此意。
 
 **分发中台 = `ModelFactory.create_client(protocol=...)`**：所有要 LLM 的路径都经此一个口子按 `protocol` 选 adapter。**分发不依据 `provider_type`**——`provider_type` 仅作厂商身份 / 展示 / 日志。同一厂商不同能力可落不同协议（典型：千问 chat=`openai`、rerank=`dashscope`，落到两个 adapter）。
 
