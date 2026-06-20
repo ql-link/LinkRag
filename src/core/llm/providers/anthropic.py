@@ -219,8 +219,8 @@ class AnthropicProvider(BaseProvider):
             **kwargs
         )
         self.model_name = model_name or self.DEFAULT_MODEL
-        # 本期多模态停做：仅声明 TEXT；VISION 请求经中台门禁报 UnsupportedProtocolCapabilityError。
-        self._capabilities = {CapabilityType.TEXT}
+        # CHAT 走 messages，VISION 复用同一 messages 通路（仅多一个 image content block）。
+        self._capabilities = {CapabilityType.TEXT, CapabilityType.VISION}
         self._client = AnthropicClient(
             api_key=api_key,
             api_base_url=self.api_base_url,
@@ -317,49 +317,15 @@ class AnthropicProvider(BaseProvider):
         """Anthropic 不支持 rerank"""
         raise NotImplementedError("Anthropic does not support rerank")
 
-    async def extract_text(self, image_base64, prompt=None, **kwargs):
-        """OCR - Anthropic Vision 支持图像理解"""
-        from src.core.llm.response import OcrResult
+    async def analyze_image(
+        self, image_base64, prompt, model=None, media_type="image/jpeg", **kwargs
+    ):
+        """视觉分析（含 OCR：图片文字提取 = 视觉 + 文字提取 prompt）。
 
-        messages = [{
-            "role": "user",
-            "content": []
-        }]
-
-        if prompt:
-            messages[0]["content"].append({"type": "text", "text": prompt})
-
-        messages[0]["content"].append({
-            "type": "image",
-            "source": {
-                "type": "base64",
-                "media_type": "image/jpeg",
-                "data": image_base64
-            }
-        })
-
-        response = await self._client.messages(
-            model=self.model_name,
-            messages=messages,
-            max_tokens=1024,
-            **kwargs
-        )
-
-        content = response["content"][0]["text"]
-        usage = response["usage"]
-
-        return OcrResult(
-            content=content,
-            model=response.get("model", self.model_name),
-            usage=UsageInfo(
-                prompt_tokens=usage["input_tokens"],
-                completion_tokens=usage["output_tokens"],
-                total_tokens=usage["input_tokens"] + usage["output_tokens"],
-            ),
-        )
-
-    async def analyze_image(self, image_base64, prompt, **kwargs):
-        """视觉分析"""
+        ``model`` / ``media_type`` 显式接住调用方透传值：``model`` 避免与下方 ``model=``
+        撞车（``TypeError: multiple values for 'model'``）；``media_type`` 跟随真实图片
+        格式（PNG/webp/gif…），不再写死 jpeg，否则 Anthropic 会按声明类型校验而拒图。
+        """
         from src.core.llm.response import VisionResult
 
         messages = [{
@@ -370,15 +336,15 @@ class AnthropicProvider(BaseProvider):
                     "type": "image",
                     "source": {
                         "type": "base64",
-                        "media_type": "image/jpeg",
-                        "data": image_base64
-                    }
-                }
-            ]
+                        "media_type": media_type,
+                        "data": image_base64,
+                    },
+                },
+            ],
         }]
 
         response = await self._client.messages(
-            model=self.model_name,
+            model=model or self.model_name,
             messages=messages,
             max_tokens=1024,
             **kwargs

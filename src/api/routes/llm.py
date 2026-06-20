@@ -17,6 +17,32 @@ from src.database import get_db
 
 router = APIRouter(prefix="/api/v1/llm", tags=["llm"])
 
+# OCR 不是独立能力：图片文字提取 = VISION + 文字提取 prompt。/ocr 未带 prompt 时用此默认值。
+_DEFAULT_OCR_PROMPT = "请提取这张图片中的所有文字，按原始排版尽量还原；若图中无文字，则简要描述图片内容。"
+
+
+def _sniff_image_media_type(image_base64: str) -> str:
+    """从 base64 图片数据的 magic bytes 嗅探 MIME 类型，无法识别时回退 image/jpeg。
+
+    /ocr 入参只有 base64、没有 mime 信息；据此推断后传给 VISION adapter 的 ``media_type``，
+    避免一律写死 jpeg 导致 PNG/webp 在 Anthropic/Google 上因类型不符被拒。
+    """
+    import base64 as _base64
+
+    try:
+        head = _base64.b64decode(image_base64[:24])
+    except Exception:
+        return "image/jpeg"
+    if head.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if head.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if head[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif"
+    if head[:4] == b"RIFF" and head[8:12] == b"WEBP":
+        return "image/webp"
+    return "image/jpeg"
+
 
 def _coerce_int(value: str, field: str) -> int:
     """把请求边界传入的 ID 字符串归一成 int，非法值 → 422。
@@ -264,21 +290,23 @@ async def extract_text_from_image(
     x_user_id: str = Header(..., alias="X-User-Id"),
     db: AsyncSession = Depends(get_db),
 ) -> APIResponse:
-    """OCR 图像文本提取
+    """OCR 图像文本提取（兼容旧 endpoint）。
+
+    OCR 不再是独立 LLM 能力：统一走 VISION（``analyze_image``）实现——读 VISION 配置、
+    用文字提取 prompt、按嗅探到的真实 mime 传图。返回结构与原 OCR 一致（content/model/usage）。
 
     Returns:
         APIResponse[dict]
     """
     try:
-        # OCR is no longer an independent LLM capability. Keep the legacy endpoint
-        # but resolve image-text extraction through VISION configuration.
         client = await _resolve_provider(
             db, x_user_id, "VISION", config_id=request.config_id,
         )
 
-        result = await client.extract_text(
+        result = await client.analyze_image(
             image_base64=request.image_base64,
-            prompt=request.prompt,
+            prompt=request.prompt or _DEFAULT_OCR_PROMPT,
+            media_type=_sniff_image_media_type(request.image_base64),
         )
 
         return APIResponse(

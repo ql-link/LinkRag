@@ -1,6 +1,7 @@
 """Google (Gemini) 原生协议 adapter（protocol = "google"）。
 
-本期仅 CHAT。Gemini 原生与 OpenAI/Anthropic 有两点不同，由本 adapter 特殊处理：
+承载 CHAT + VISION（同走 generateContent，VISION 仅多拼 inline_data part）。
+Gemini 原生与 OpenAI/Anthropic 有两点不同，由本 adapter 特殊处理：
 - 非流式 URL: ``{base}/models/{model}:generateContent``
 - 流式  URL: ``{base}/models/{model}:streamGenerateContent?alt=sse``
   （不加 ``alt=sse`` 时 Gemini 返回 JSON 数组而非标准 SSE，故**强制追加**）
@@ -143,7 +144,7 @@ def _usage(data: dict) -> UsageInfo:
 
 
 class GoogleProvider(BaseProvider):
-    """Gemini 原生协议 adapter（protocol = "google"），本期仅 CHAT。"""
+    """Gemini 原生协议 adapter（protocol = "google"），承载 CHAT + VISION。"""
 
     DEFAULT_API_BASE = "https://generativelanguage.googleapis.com/v1beta"
     DEFAULT_MODEL = "gemini-2.5-flash"
@@ -169,7 +170,8 @@ class GoogleProvider(BaseProvider):
             **kwargs,
         )
         self.model_name = model_name or self.DEFAULT_MODEL
-        self._capabilities = {CapabilityType.TEXT}
+        # CHAT 与 VISION 同走 generateContent，VISION 仅多拼一个 inline_data part。
+        self._capabilities = {CapabilityType.TEXT, CapabilityType.VISION}
         self._client = GoogleClient(
             api_key=api_key,
             api_base_url=self.api_base_url,
@@ -223,3 +225,29 @@ class GoogleProvider(BaseProvider):
                 is_end=is_end,
                 usage=_usage(chunk) if is_end else None,
             )
+
+    async def analyze_image(
+        self, image_base64, prompt, model=None, media_type="image/jpeg", **kwargs
+    ):
+        """视觉分析（含 OCR），复用 generateContent 通路：仅多拼一个 inline_data part。
+
+        裸 REST 用 snake_case ``inline_data`` / ``mime_type``（**不是** SDK 的
+        ``inlineData`` / ``mimeType``）。``model`` / ``media_type`` 显式接住调用方透传值
+        （``model`` 避免与下方 ``model=`` 撞车；``media_type`` 跟随真实图片格式，不再写死 jpeg）。
+        """
+        from src.core.llm.response import VisionResult
+
+        parts = []
+        if prompt:
+            parts.append({"text": prompt})
+        parts.append({"inline_data": {"mime_type": media_type, "data": image_base64}})
+
+        data = await self._client.generate_content(
+            model=model or self.model_name,
+            contents=[{"role": "user", "parts": parts}],
+        )
+        return VisionResult(
+            content=_extract_text(data),
+            model=data.get("modelVersion", model or self.model_name),
+            usage=_usage(data),
+        )
