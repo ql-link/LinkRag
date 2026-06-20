@@ -209,6 +209,9 @@ class GoogleProvider(BaseProvider):
         self, prompt, system_prompt=None, temperature=0.7, max_tokens=None, **kwargs
     ) -> AsyncIterator[StreamChunk]:
         content_so_far = ""
+        # Gemini 流式按 chunk 下发 usageMetadata（末帧给最终值）。逐 chunk 捕获最近一次非空
+        # usage，末帧承载，避免 finishReason 帧恰好不带 usageMetadata 时 token 丢失。
+        last_usage: Optional[UsageInfo] = None
         async for chunk in self._client.stream_generate_content(
             model=self.model_name,
             contents=[{"role": "user", "parts": [{"text": prompt}]}],
@@ -219,11 +222,13 @@ class GoogleProvider(BaseProvider):
             finish = ((chunk.get("candidates") or [{}])[0] or {}).get("finishReason")
             is_end = finish is not None
             content_so_far += delta
+            if chunk.get("usageMetadata"):
+                last_usage = _usage(chunk)
             yield StreamChunk(
                 delta=delta,
                 content=content_so_far,
                 is_end=is_end,
-                usage=_usage(chunk) if is_end else None,
+                usage=last_usage if is_end else None,
             )
 
     async def analyze_image(
