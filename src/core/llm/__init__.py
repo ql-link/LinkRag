@@ -6,7 +6,6 @@ from src.core.llm.interfaces import (
     ITextGenerator,
     IEmbedder,
     IReranker,
-    IOcrProcessor,
     IVisionProcessor,
 )
 from src.core.llm.exceptions import (
@@ -30,7 +29,6 @@ from src.core.llm.response import (
     EmbeddingResult,
     RerankItem,
     RerankResult,
-    OcrResult,
     VisionResult,
     ToolCallResult,
     APIResponse,
@@ -42,7 +40,6 @@ __all__ = [
     "ITextGenerator",
     "IEmbedder",
     "IReranker",
-    "IOcrProcessor",
     "IVisionProcessor",
     "LLMException",
     "ProviderException",
@@ -62,7 +59,6 @@ __all__ = [
     "EmbeddingResult",
     "RerankItem",
     "RerankResult",
-    "OcrResult",
     "VisionResult",
     "ToolCallResult",
     "APIResponse",

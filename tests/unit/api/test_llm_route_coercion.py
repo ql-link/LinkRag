@@ -52,7 +52,7 @@ async def test_resolve_provider_missing_config_maps_to_404(monkeypatch):
 async def test_legacy_ocr_endpoint_resolves_vision_capability(monkeypatch):
     captured = {}
     provider = AsyncMock()
-    provider.extract_text.return_value = SimpleNamespace(model_dump=lambda: {"content": "text"})
+    provider.analyze_image.return_value = SimpleNamespace(model_dump=lambda: {"content": "text"})
 
     async def _resolve(db, user_id, capability, *, config_id=None, override_model=None):
         captured.update(
@@ -80,4 +80,7 @@ async def test_legacy_ocr_endpoint_resolves_vision_capability(monkeypatch):
         "config_id": "77",
         "override_model": None,
     }
-    provider.extract_text.assert_awaited_once_with(image_base64="abc", prompt="read text")
+    # OCR 统一走 VISION：调 analyze_image，prompt 透传、media_type 由 base64 嗅探（"abc" 无法解码 → 回退 jpeg）
+    provider.analyze_image.assert_awaited_once_with(
+        image_base64="abc", prompt="read text", media_type="image/jpeg"
+    )

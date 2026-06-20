@@ -431,9 +431,9 @@ class ProviderVisionClient(VisionClient):
         async with semaphore:
             try:
                 if image_bytes_by_url and image_url in image_bytes_by_url:
-                    image_bytes, _mime_type = image_bytes_by_url[image_url]
+                    image_bytes, mime_type = image_bytes_by_url[image_url]
                 else:
-                    image_bytes, _mime_type = await asyncio.to_thread(
+                    image_bytes, mime_type = await asyncio.to_thread(
                         _load_image_bytes,
                         image_url,
                         source_file,
@@ -447,6 +447,9 @@ class ProviderVisionClient(VisionClient):
             image_base64 = base64.b64encode(image_bytes).decode("utf-8")
             prompt = self._prompt_template.format(source_context=source_context)
             analyze_kwargs = {"model": self._model_name} if self._model_name else {}
+            if mime_type:
+                # 透传真实图片 mime（PNG/webp…），不让 provider 写死 jpeg 而被 Anthropic/Google 拒图。
+                analyze_kwargs["media_type"] = mime_type
             try:
                 response = await self._provider.analyze_image(
                     image_base64=image_base64,

@@ -265,6 +265,7 @@ class OpenAICompatibleProvider(BaseProvider):
         self._capabilities = {
             CapabilityType.TEXT,
             CapabilityType.EMBEDDING,
+            CapabilityType.VISION,
         }
         self._client = OpenAIClient(
             api_key=api_key,
@@ -383,6 +384,44 @@ class OpenAICompatibleProvider(BaseProvider):
             usage=UsageInfo(
                 prompt_tokens=usage.get("prompt_tokens", 0),
                 completion_tokens=0,
+                total_tokens=usage.get("total_tokens", 0),
+            ),
+        )
+
+    async def analyze_image(
+        self, image_base64, prompt, model=None, media_type="image/jpeg", **kwargs
+    ):
+        """视觉分析（含 OCR），复用 Chat Completions 通路：仅多拼一个 image_url block。
+
+        图片块用 Chat Completions 形态（``type:"image_url"`` + 对象 + ``data:`` URI），
+        **不是** Responses API 的 ``input_image``（后者打到 /chat/completions 会 400）。
+        ``model`` / ``media_type`` 显式接住调用方透传值（``model`` 避免与下方 ``model=``
+        撞车；``media_type`` 跟随真实图片格式，不再写死 jpeg）。
+        """
+        from src.core.llm.response import VisionResult
+
+        content_parts = []
+        if prompt:
+            content_parts.append({"type": "text", "text": prompt})
+        content_parts.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{media_type};base64,{image_base64}"},
+        })
+
+        response = await self._client.chat_completions(
+            model=model or self.model_name,
+            messages=[{"role": "user", "content": content_parts}],
+            **kwargs,
+        )
+
+        message = response["choices"][0]["message"]
+        usage = response.get("usage", {})
+        return VisionResult(
+            content=message.get("content") or "",
+            model=response.get("model", model or self.model_name),
+            usage=UsageInfo(
+                prompt_tokens=usage.get("prompt_tokens", 0),
+                completion_tokens=usage.get("completion_tokens", 0),
                 total_tokens=usage.get("total_tokens", 0),
             ),
         )

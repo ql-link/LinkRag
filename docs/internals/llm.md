@@ -33,6 +33,7 @@ LLM 调用拆成两个正交维度：
 
 - **`protocol`（API 家族）**：决定怎么拼 HTTP 请求体、鉴权、解析响应。7 个枚举（小写、大小写敏感）：`openai` / `anthropic` / `google` / `jina` / `dashscope` / `doubao_vision` / `bge_m3`（后两个为稀疏向量专用）。
 - **`capability`（用途）**：`CHAT` / `EMBEDDING` / `SPARSE_EMBEDDING` / `RERANK` / `VISION`，决定调哪个能力分支。`OCR` 不再作为独立 LLM capability。
+  > 命名口径：对外字符串用 `"CHAT"`，内部枚举为 `CapabilityType.TEXT`（值 `"text"`），二者经 `user_model_resolver` 映射对应（`"CHAT" → CapabilityType.TEXT`）；下表 `TEXT(CHAT)` 即此意。
 
 **分发中台 = `ModelFactory.create_client(protocol=...)`**：所有要 LLM 的路径都经此一个口子按 `protocol` 选 adapter。**分发不依据 `provider_type`**——`provider_type` 仅作厂商身份 / 展示 / 日志。同一厂商不同能力可落不同协议（典型：千问 chat=`openai`、rerank=`dashscope`，落到两个 adapter）。
 
@@ -40,15 +41,15 @@ LLM 调用拆成两个正交维度：
 
 | protocol | adapter | 本期能力 | URL 策略 |
 | --- | --- | --- | --- |
-| `openai` | `OpenAICompatibleProvider` | `TEXT`(CHAT) / `EMBEDDING` / `SPARSE_EMBEDDING` | 直打 `api_base_url` |
-| `anthropic` | `AnthropicProvider` | `TEXT`(CHAT) | 直打 `api_base_url`（`/v1/messages`） |
-| `google` | `GoogleProvider` | `TEXT`(CHAT) | Python 补全（见 §2.3） |
+| `openai` | `OpenAICompatibleProvider` | `TEXT`(CHAT) / `EMBEDDING` / `SPARSE_EMBEDDING` / `VISION` | 直打 `api_base_url` |
+| `anthropic` | `AnthropicProvider` | `TEXT`(CHAT) / `VISION` | 直打 `api_base_url`（`/v1/messages`） |
+| `google` | `GoogleProvider` | `TEXT`(CHAT) / `VISION` | Python 补全（见 §2.3） |
 | `jina` | `JinaProvider` | `RERANK` / `EMBEDDING` / `SPARSE_EMBEDDING` | 直打 `api_base_url`（平铺 `/rerank` 或 `/embeddings`） |
 | `dashscope` | `DashScopeProvider` | `RERANK` | 直打 `api_base_url`（原生嵌套 `/services/rerank/text-rerank/text-rerank`） |
 | `doubao_vision` | `DoubaoVisionProvider` | `SPARSE_EMBEDDING` | 直打 `api_base_url`（火山多模态 `/embeddings/multimodal`，逐条编码） |
 | `bge_m3` | `BgeM3ServiceProvider` | `SPARSE_EMBEDDING` | 直打 `api_base_url`（自部署 `bge-m3-service` 编码端点） |
 
-每个 adapter 的 `_capabilities` 集合即"本期 (protocol, capability) 矩阵"的唯一真源。`openai` 吃掉全部 OpenAI 兼容厂商（openai/千问 chat/glm/deepseek/硅基流动…）。**本期不做多模态（VISION）与 ASR；`OCR` 不进入能力矩阵。**
+每个 adapter 的 `_capabilities` 集合即"本期 (protocol, capability) 矩阵"的唯一真源。`openai` 吃掉全部 OpenAI 兼容厂商（openai/千问 chat/glm/deepseek/硅基流动…）。**`VISION` 已接入 `openai` / `anthropic` / `google` 三协议**：复用各自 CHAT 通路（chat_completions / messages / generateContent），仅请求体多拼一个图片块，响应解析与 CHAT 一致；其余协议不支持 `VISION`，返回 `UnsupportedProtocolCapabilityError`。`OCR` 仍不作为独立能力，图片文字提取 = `VISION` + prompt（`/ocr` 兼容 endpoint 读 `VISION` 配置）。**ASR 本期不做。**
 
 `SPARSE_EMBEDDING` 已接入 RAG sparse 写入/召回链路：按发起用户的默认 `SPARSE_EMBEDDING` 配置经 `aresolve_user_model` 解析到稀疏 adapter（当前 `doubao_vision` / `bge_m3`），产出框架中性的 `SparseEmbeddingResult`，再由 encoding 层 `AdapterSparseVectorEncoder` 统一清洗成 `SparseVector` 写入 Qdrant named sparse vector（详见 [sparse_vector.md](sparse_vector.md)）。`openai` / `jina` 仍声明 `SPARSE_EMBEDDING`（可解析到 embedding 端点），但 RAG 稀疏链路当前由 `doubao_vision` / `bge_m3` 承载；`google` / `dashscope` / `anthropic` 不支持该能力，返回 `UnsupportedProtocolCapabilityError`。
 
@@ -120,7 +121,7 @@ API Key 不写入文档 / 测试 / 提交；用户密钥库内密文保存，读
 | `/api/v1/llm/rerank` | `RERANK` | jina（平铺）/ dashscope（千问原生） |
 | Markdown 表格增强 | `CHAT` | 系统级 openai |
 | Chunk 向量化 | `EMBEDDING` | 系统级 openai |
-| Markdown 图片增强 / `/ocr` | `VISION` | **本期不做**（多模态停做，优雅降级）；`/ocr` 为兼容旧 endpoint，不再读取 `OCR` 默认模型 |
+| Markdown 图片增强 / `/ocr` | `VISION` | openai / anthropic / google；`/ocr` 为兼容旧 endpoint，读 `VISION` 配置（不再读 `OCR` 默认模型）。图片增强按发起用户 `VISION` 默认配置解析，未配则抛 `EnhancementModelMissingError`（不静默跳过） |
 
 ## 7. 新增 adapter（新增 protocol）
 

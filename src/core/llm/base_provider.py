@@ -97,10 +97,6 @@ class BaseProvider(ABC):
         """语义重排（子类可选实现）"""
         raise NotImplementedError(f"{self.provider_type} does not support rerank")
 
-    async def extract_text(self, image_base64, prompt=None, **kwargs):
-        """OCR（子类可选实现）"""
-        raise NotImplementedError(f"{self.provider_type} does not support OCR")
-
     async def analyze_image(self, image_base64, prompt, **kwargs):
-        """视觉分析（子类可选实现）"""
+        """视觉分析（子类可选实现；OCR 即视觉 + 文字提取 prompt，不再单列）"""
         raise NotImplementedError(f"{self.provider_type} does not support vision")
