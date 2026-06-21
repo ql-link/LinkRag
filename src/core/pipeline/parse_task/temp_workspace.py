@@ -4,8 +4,8 @@
 
 - 启动清理（``ensure_clean_on_startup``）：worker 启动时确保目录存在且为空，兜底回收
   进程异常退出残留的临时文件。
-- 临时文件分配（``create_temp_file``）：按 ``parse-{task_id}-{rand}.tmp`` 命名隔离同
-  task_id 重投与并发场景。
+- 临时文件分配（``create_temp_file``）：按 ``parse-{task_id}-{rand}{suffix}`` 命名隔离同
+  task_id 重投与并发场景；PDF 等依赖扩展名识别格式的解析器可传入真实后缀。
 - 幂等删除（``safe_unlink``）：早删与 finally 兜底使用同一入口，避免 ``FileNotFoundError``
   污染失败兜底链路。
 
@@ -15,10 +15,13 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from pathlib import Path
 
 from loguru import logger
+
+_SAFE_SUFFIX_PATTERN = re.compile(r"^[a-zA-Z0-9]{1,16}$")
 
 
 def ensure_clean_on_startup(temp_dir: Path) -> None:
@@ -44,17 +47,28 @@ def ensure_clean_on_startup(temp_dir: Path) -> None:
     )
 
 
-def create_temp_file(task_id: str, temp_dir: Path) -> Path:
+def create_temp_file(task_id: str, temp_dir: Path, *, suffix: str | None = ".tmp") -> Path:
     """生成命名隔离的临时文件路径（不创建实际文件）。
 
     实际写入由 ``storage.download_to_path`` 完成；本函数只负责生成唯一路径。命名格式
-    ``parse-{task_id}-{uuid4 hex[:8]}.tmp``：
+    ``parse-{task_id}-{uuid4 hex[:8]}{suffix}``：
 
     - ``task_id`` 便于异常时人工定位归属
     - 8 位随机 hex 兜底极端 MQ 重投 / 同 task_id 并发场景的命名碰撞
+    - ``suffix`` 只接受 1-16 位字母数字后缀，避免路径注入；非法值回退到 ``.tmp``
     """
-    name = f"parse-{task_id}-{uuid.uuid4().hex[:8]}.tmp"
+    safe_suffix = _normalize_suffix(suffix)
+    name = f"parse-{task_id}-{uuid.uuid4().hex[:8]}{safe_suffix}"
     return temp_dir / name
+
+
+def _normalize_suffix(suffix: str | None) -> str:
+    if not suffix:
+        return ".tmp"
+    cleaned = suffix.strip().lstrip(".")
+    if not _SAFE_SUFFIX_PATTERN.fullmatch(cleaned):
+        return ".tmp"
+    return f".{cleaned.lower()}"
 
 
 def safe_unlink(path: Path | None) -> None:
