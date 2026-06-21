@@ -35,9 +35,14 @@ class _FakeSessionFactory:
 class _FakeEmbedder:
     def __init__(self, provider_type: str = "qwen") -> None:
         self.provider_type = provider_type
+        self.last_model: str | None = None
 
     def has_capability(self, _cap):
         return True
+
+    async def embed(self, texts, model=None, **kwargs):
+        self.last_model = model
+        return type("_EmbeddingResponse", (), {"embeddings": [[0.1, 0.2] for _ in texts]})()
 
 
 def _patch_session_factory(monkeypatch):
@@ -111,6 +116,26 @@ async def test_resolve_user_embedding_client_uses_user_config(monkeypatch):
     assert created["api_base_url"] == "https://user.example/v1"
     assert created["model_name"] == "user-embed-model"
     assert embedder.provider_type == "qwen"
+
+
+@pytest.mark.asyncio
+async def test_model_bound_embedder_uses_resolved_model_when_call_omits_model():
+    base = _FakeEmbedder()
+    embedder = factory.ModelBoundEmbedder(base, "text-embedding-v4")
+
+    await embedder.embed(["hello"], model=None)
+
+    assert base.last_model == "text-embedding-v4"
+
+
+def test_create_chunking_engine_injects_embedder_into_stage_two(monkeypatch):
+    monkeypatch.setattr(factory.settings, "CHUNKING_STAGE_TWO_ALGORITHM", "semantic_depth_window")
+    embedder = _FakeEmbedder()
+
+    engine = factory.create_chunking_engine(embedder=embedder)
+
+    stage_two = engine.chunker.stage_two_router.algorithm
+    assert stage_two._scorer.embedder is embedder
 
 
 @pytest.mark.asyncio

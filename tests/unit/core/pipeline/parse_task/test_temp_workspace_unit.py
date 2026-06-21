@@ -38,12 +38,26 @@ def test_create_temp_file_name_pattern(tmp_path):
     p = temp_workspace.create_temp_file("task-A", tmp_path)
     assert p.parent == tmp_path
     name = p.name
-    # 命名格式 ``parse-{task_id}-{8-hex}.tmp``
+    # 默认命名格式 ``parse-{task_id}-{8-hex}.tmp``
     assert name.startswith("parse-task-A-")
     assert name.endswith(".tmp")
     rand_part = name[len("parse-task-A-") : -len(".tmp")]
     assert len(rand_part) == 8
     int(rand_part, 16)  # 必须是合法 hex
+
+
+def test_create_temp_file_preserves_safe_suffix(tmp_path):
+    p = temp_workspace.create_temp_file("task-pdf", tmp_path, suffix="PDF")
+    assert p.parent == tmp_path
+    assert p.name.startswith("parse-task-pdf-")
+    assert p.name.endswith(".pdf")
+
+
+def test_create_temp_file_rejects_unsafe_suffix(tmp_path):
+    p = temp_workspace.create_temp_file("task-bad", tmp_path, suffix="../pdf")
+    assert p.parent == tmp_path
+    assert p.name.startswith("parse-task-bad-")
+    assert p.name.endswith(".tmp")
 
 
 def test_create_temp_file_collision_uses_random_suffix(tmp_path):

@@ -274,6 +274,7 @@ CoarseChunkSet -> SemanticDepthWindowStageTwo -> FinalChunkSet
 阶段契约：
 
 - `run(coarse_set)` 签名与 `StageTwoAlgorithm` 保持一致；tokenizer、embedder、阈值在构造期注入。
+- 解析流水线启用本算法时，embedder 按发起用户默认 `EMBEDDING` 配置经 adapter 构造；不使用系统级 `SYSTEM_LLM_*` 预设，保证分块语义打分与用户模型配置一致。
 - `derived_element` 与 token 数 `<= CHUNKING_MAX_CHUNK_TOKENS` 的 `mixed` chunk 等价透传，不触发 atomization 或 embedding。
 - 仅对 token 数超过软上限的 `mixed` chunk 构造 atom timeline；普通文本可按段落、行、句、token-safe 前缀降级，table / image / code block / math block 作为 protected atom，不在元素内部切分。
 - cohesion 评分只使用可评分文本：普通文本用自身文本，image / table 用非空 `semantic_text`，code block / math block 不参与评分但计入 token 预算。

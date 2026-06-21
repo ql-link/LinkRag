@@ -96,6 +96,21 @@ class LazyEmbeddingClient(IEmbedder):
         return await self._get_client().embed(texts=texts, model=model, **kwargs)
 
 
+class ModelBoundEmbedder(IEmbedder):
+    """Bind a resolved provider to its configured default embedding model."""
+
+    def __init__(self, embedder: IEmbedder, model_name: str | None) -> None:
+        self._embedder = embedder
+        self.model_name = model_name
+        self.provider_type = getattr(embedder, "provider_type", None)
+
+    def has_capability(self, capability: CapabilityType) -> bool:
+        return self._embedder.has_capability(capability)
+
+    async def embed(self, texts: str | list[str], model: str | None = None, **kwargs):
+        return await self._embedder.embed(texts=texts, model=model or self.model_name, **kwargs)
+
+
 def create_system_embedding_client() -> Any:
     """按 ``settings.SYSTEM_LLM_*`` 创建系统级 Embedding 客户端。
 
@@ -202,7 +217,10 @@ def _create_structured_chunking_engine(
     return ChunkingEngine(chunker=chunker)
 
 
-def create_chunking_engine(config: "ChunkingConfig | None" = None) -> ChunkingEngine:
+def create_chunking_engine(
+    config: "ChunkingConfig | None" = None,
+    embedder: IEmbedder | None = None,
+) -> ChunkingEngine:
     """按配置构建 Markdown 分块引擎。
 
     ``config`` 为数据集级分块配置（LINK-148）；``None`` 时取运行期系统 ``Settings``，
@@ -210,7 +228,7 @@ def create_chunking_engine(config: "ChunkingConfig | None" = None) -> ChunkingEn
 
     按显式阶段算法配置装配 splitter 闭环，不保留旧规则分片器 fallback。
     """
-    return _create_structured_chunking_engine(config)
+    return _create_structured_chunking_engine(config, embedder=embedder)
 
 
 # DashScope text-embedding-* 系列单次 /embeddings 请求的 input 条数上限。
@@ -294,7 +312,9 @@ def create_chunk_embedding_pipeline() -> ChunkEmbeddingPipeline:
     )
 
 
-async def aresolve_user_embedding_client(user_id: int) -> tuple[Any, str | None]:
+async def aresolve_user_embedding_client(
+    user_id: int, db: Any | None = None
+) -> tuple[Any, str | None]:
     """按发起用户的默认 EMBEDDING 配置构造稠密 embedder（LINK-91）。
 
     经统一的 :func:`src.core.llm.user_model_resolver.aresolve_user_model` 按
@@ -318,10 +338,10 @@ async def aresolve_user_embedding_client(user_id: int) -> tuple[Any, str | None]
     from src.core.llm.user_model_resolver import aresolve_user_model
 
     try:
-        resolved = await aresolve_user_model(user_id=user_id, capability="EMBEDDING")
+        resolved = await aresolve_user_model(user_id=user_id, capability="EMBEDDING", db=db)
     except UserModelConfigMissingError as exc:
         raise DenseEmbeddingConfigMissingError(user_id) from exc
-    return resolved.provider, resolved.model_name
+    return ModelBoundEmbedder(resolved.provider, resolved.model_name), resolved.model_name
 
 
 def validate_dense_dimension(
