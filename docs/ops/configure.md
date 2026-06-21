@@ -43,7 +43,7 @@
 | --- | --- | --- |
 | `MQ_VENDOR` | `kafka` | 切换 Kafka / RabbitMQ |
 | `VECTOR_STORE_TYPE` | `qdrant` | 切换 Qdrant / Elasticsearch |
-| `SPARSE_VECTOR_ENABLED` | `true` | 是否在向量化阶段同步生成 BGE-M3 稀疏向量；关闭后保持旧 dense-only 语义 |
+| `SPARSE_VECTOR_ENABLED` | `true` | 是否在向量化阶段同步生成稀疏向量；关闭后保持旧 dense-only 语义 |
 | `STORAGE_TYPE` | `minio` | 切换 MinIO / 本地存储 |
 | `MINIO_PUBLIC_BUCKET` | `tolink-public` | Java 端公开读桶（博客 + 反馈附件）；Python 解析产物桶使用 `MINIO_PRIVATE_BUCKET`。原博客专用桶 `tolink-blog` 已并入 |
 | `PARSE_TEMP_DIR` | `/tmp/tolink-rag-parse` | 解析任务源文件临时落盘目录。流式下载在此创建临时文件；解析为 markdown 后立即清理；worker 启动时清空兜底。不预设最小容量，沿用部署机系统盘大小；写满会归类为 `TEMP_DISK_FULL` 错误码。扩消费者时容量需要 ≥ 单文件上限 × 并发数 |
@@ -55,10 +55,15 @@
 | `MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT` | `true` | 是否启用表格 LLM 增强 |
 | `MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT` | `true` | 是否启用图片 LLM 增强 |
 | `MARKDOWN_PARSER_VISION_CONCURRENCY` | `24` | 图片视觉增强最大并发数，可降为 `16` / `8` / `1` 控制限流风险 |
+| `MARKDOWN_PARSER_ENABLE_HEADING_HIERARCHY` | `false` | 是否启用 Markdown 标题层级后处理；默认关闭，关闭时行为与普通 parser 等价 |
+| `MARKDOWN_PARSER_HEADING_NO_HEADING_MIN_TOKENS` | `512` | 全文无 heading 时进入标题生成门禁的最小 token 数 |
+| `MARKDOWN_PARSER_HEADING_FLAT_MIN_HEADINGS` | `5` | 全篇只有同级 heading 时进入扁平标题门禁的最小 heading 数；下限为 `5` |
+| `MARKDOWN_PARSER_HEADING_SPARSE_TOKENS_PER_HEADING` | `1536` | 多级 heading 但数量太少时的密度阈值；下限为 `1024` |
+| `MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET` | `8192` | 后续真实 LLM 标题生成器单次输入 token 预算；当前框架阶段不触发真实 LLM 调用 |
 | `CHUNKING_STAGE_ONE_ALGORITHM` | `candidate_boundary` | splitter 第一阶段算法名；当前支持 `candidate_boundary`，未知值启动失败 |
-| `CHUNKING_STAGE_TWO_ALGORITHM` | `noop` | splitter 第二阶段算法名；当前仅支持 `noop`，未知值启动失败 |
+| `CHUNKING_STAGE_TWO_ALGORITHM` | `noop` | splitter 第二阶段算法名；支持 `noop` / `semantic_depth_window`，未知值启动失败 |
 
-> splitter 不再保留 `CHUNKING_ENABLE_ADVANCED_PIPELINE` 布尔开关，也不再回退到旧规则分片器。当前第二阶段默认使用 `noop`，新的 mixed-aware 第二阶段算法落地前不提供 oversized 语义细分路由。
+> splitter 不再保留 `CHUNKING_ENABLE_ADVANCED_PIPELINE` 布尔开关，也不再回退到旧规则分片器。第二阶段默认使用 `noop`；如需启用 TextTiling depth valley 语义细分，显式配置 `CHUNKING_STAGE_TWO_ALGORITHM=semantic_depth_window`。
 
 > 注：ES 入库失败即终态，无 ES 内部自动重试配置。原 `ES_INDEXING_MAX_RETRY` 已移除（用户侧重试由 `document_parse_pipeline.retry_count` 记录，触发路径待后续需求接线）。
 
@@ -138,34 +143,31 @@ logs/
 | 变量 | 默认 | 调整方向 |
 | --- | --- | --- |
 | `CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` | 128 | 第一阶段候选边界粗分片软下限，范围 `128..256`；调大可减少短 chunk |
+| `CHUNKING_MAX_CHUNK_TOKENS` | 512 | `semantic_depth_window` 普通 final chunk 软目标，范围 `256..2048`；必须 `>= CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` |
+| `CHUNKING_HARD_MAX_TOKENS` | 1024 | `semantic_depth_window` 绝对硬上限，范围 `512..8192`；必须 `>= CHUNKING_MAX_CHUNK_TOKENS`，不可拆 protected 超过时按完整行截断并标记 |
 | `CHUNKING_OVERLAP_TOKENS` | 64 | overlap token 数，范围 `0..64`；`0` 表示关闭 |
+| `CHUNKING_PROTECTED_NEIGHBOR_OVERLAP` | false | 含 protected 元素的 final chunk 是否参与后置 neighbor overlap；默认关闭，避免 overlap 进入表格/代码等结构块 |
 | `CHUNKING_HEADING_BREAK_LEVEL` | 5 | heading trail 与动态标题边界保护的最大层级；最多保护到 5 级 |
 
 详细分块策略见 [chunking.md](../internals/chunking.md)。
 
 ## 稀疏向量配置
 
-稀疏向量首期使用本地 `BAAI/bge-m3`，与稠密向量在同一个 chunk 向量化阶段执行。模型输入是 chunk 原文，不使用 ES 分词结果。
+稀疏向量与稠密向量在同一个 chunk 向量化阶段执行，模型输入是 chunk 原文，不使用 ES 分词结果。
+
+稀疏编码模型**不再由系统级配置项指定**：写入与召回都按发起用户的默认 `SPARSE_EMBEDDING` 配置，经统一 `(protocol, capability)` adapter 解析（必配、无系统级兜底，缺配置抛 `SparseEmbeddingConfigMissingError`）。当前可选的稀疏 provider 为 `doubao_vision`（火山方舟 doubao-embedding-vision 多模态端点）/ `bge_m3`（自部署 `bge-m3-service` 端点）。原先用 `SPARSE_VECTOR_PROVIDER` 在本地 / HTTP / 远程 BGE-M3 间切换的整套机制已移除。详见 [vectorization.md §6.6](../internals/vectorization.md) 与 [sparse_vector.md](../internals/sparse_vector.md)。
+
+下表是仍保留的系统级配置项，均与具体 provider 无关，是全局开关与清洗 / 命名规则：
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `SPARSE_VECTOR_ENABLED` | `true` | 是否启用稀疏向量；关闭后只执行旧稠密向量流程 |
-| `SPARSE_VECTOR_PROVIDER` | `bge_m3` | 稀疏向量提供方：`bge_m3` / `bge_m3_http` / `remote_bge_m3` |
-| `SPARSE_VECTOR_MODEL_NAME` | `BAAI/bge-m3` | Hugging Face 模型名或本地模型目录 |
-| `SPARSE_VECTOR_MODEL_CACHE_DIR` | 空 | 模型缓存目录，空值使用默认 Hugging Face 缓存 |
-| `SPARSE_VECTOR_LOCAL_FILES_ONLY` | `false` | 是否只使用本地已有模型文件 |
-| `SPARSE_VECTOR_DEVICE` | `auto` | 推理设备：`auto` / `cpu` / `cuda` / `cuda:n`；CPU 固定 fp32，CUDA 固定 fp16 |
-| `SPARSE_VECTOR_BATCH_SIZE` | `12` | BGE-M3 稀疏编码批大小 |
-| `SPARSE_VECTOR_MAX_LENGTH` | `8192` | 输入文本最大 token 长度 |
-| `SPARSE_VECTOR_HTTP_ENDPOINT` | 空 | 早期 `bge_m3_http` provider 的 bge-m3-server 地址 |
-| `SPARSE_VECTOR_HTTP_TIMEOUT` | `30.0` | 早期 `bge_m3_http` provider 单次 HTTP 请求超时（秒） |
-| `SPARSE_VECTOR_HTTP_BATCH_SIZE` | 空 | 早期 `bge_m3_http` provider 的外层 chunk 批大小；空值时 Python 侧按 1 条 chunk 一批请求，避免长文本批量超时 |
-| `SPARSE_VECTOR_QDRANT_VECTOR_NAME` | `sparse_text` | Qdrant named sparse vector 名称 |
-| `SPARSE_VECTOR_TOP_K` | `256` | 每条稀疏向量最多保留的非零 token 数；`0` 表示不截断 |
-| `SPARSE_VECTOR_MIN_WEIGHT` | `0.0` | 过滤低权重 token 的阈值 |
-| `TOLINK_RUN_REAL_SPARSE_VECTOR_TESTS` | `false` | 是否运行真实 BGE-M3 smoke 测试 |
+| `SPARSE_VECTOR_ENABLED` | `true` | 稀疏向量总开关；关闭后只执行旧稠密向量流程 |
+| `SPARSE_VECTOR_QDRANT_VECTOR_NAME` | `sparse_text` | Qdrant named sparse vector 名称，写入与召回共用 |
+| `SPARSE_VECTOR_TOP_K` | `256` | 每条稀疏向量最多保留的非零 token 数；`0` 表示不截断。全局清洗规则，各 provider 复用 |
+| `SPARSE_VECTOR_MIN_WEIGHT` | `0.0` | 过滤低权重 token 的阈值。全局清洗规则，各 provider 复用 |
+| `SPARSE_VECTOR_BATCH_SIZE` | `32` | 稀疏索引外层批大小：一次从 DB 取多少 chunk 原文喂给编码器；编码器内部批大小由 provider 自行决定，不随之变化 |
 
-不再提供 `SPARSE_VECTOR_USE_FP16` 配置。推理精度只由 `SPARSE_VECTOR_DEVICE` 决定：CPU 使用 fp32，CUDA 使用 fp16。
+> 已移除的稀疏向量配置项（不再生效，配置也无效果）：`SPARSE_VECTOR_PROVIDER`、`SPARSE_VECTOR_MODEL_NAME`、`SPARSE_VECTOR_MODEL_CACHE_DIR`、`SPARSE_VECTOR_LOCAL_FILES_ONLY`、`SPARSE_VECTOR_DEVICE`、`SPARSE_VECTOR_MAX_LENGTH`、`SPARSE_VECTOR_HTTP_ENDPOINT` / `SPARSE_VECTOR_HTTP_TIMEOUT` / `SPARSE_VECTOR_HTTP_BATCH_SIZE`、`BGE_M3_SERVICE_URL` / `BGE_M3_TIMEOUT_SECONDS` / `BGE_M3_MAX_RETRIES`、`SPARSE_VECTOR_RETRY_LIMIT` / `SPARSE_VECTOR_INDEXING_STALE_SECONDS`、`TOLINK_RUN_REAL_SPARSE_VECTOR_TESTS`，以及更早的 `SPARSE_VECTOR_USE_FP16`。
 
 ## 召回执行配置
 
@@ -205,19 +207,6 @@ logs/
 > token 短期可复用：Python 只校验 `exp`（建议 Java 签发 30s，仅够建连），不做一次性 /
 > 防重放 / 撤销；连上后流的存活由 `RECALL_STREAM_TIMEOUT_MS` 控制。并发计数依赖 Redis，
 > Redis 不可用时 fail-open（放行，因限流是资源保护非鉴权）。
-
-### 远程 BGE-M3 推理服务（`remote_bge_m3` provider）
-
-`SPARSE_VECTOR_PROVIDER` 除已有 `bge_m3`（本地）/ `bge_m3_http`（早期 bge-m3-server）
-外，新增 `remote_bge_m3`：对接独立部署的 ``bge-m3-service``，单次 `/encode` 同时
-拿到 dense（1024 维）+ sparse lexical weights，并在客户端做超时 + 重试。详见
-[docs/internals/vectorization.md §6.6](../internals/vectorization.md)。
-
-| 变量 | 默认 | 说明 |
-| --- | --- | --- |
-| `BGE_M3_SERVICE_URL` | 空 | ``bge-m3-service`` 根地址（如 `http://127.0.0.1:7997`），尾部 `/` 会被忽略；provider=`remote_bge_m3` 时必填 |
-| `BGE_M3_TIMEOUT_SECONDS` | `30.0` | 单次 `/encode` 请求超时（秒） |
-| `BGE_M3_MAX_RETRIES` | `3` | 网络错误 / 5xx 的重试次数（不含首次请求；`0` = 不重试；4xx 直接抛错不重试） |
 
 ## 配置加载与覆盖
 

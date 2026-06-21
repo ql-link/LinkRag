@@ -208,6 +208,13 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         embedding_model: str | None = None
         indexed_count = 0
         batch_size = embedding_pipeline.batch_size
+        # dense embed 用量累加（跨 batch）：token 由模型返回、仅 cache miss 产生；
+        # provider 取自 embedder 快照，供 store_chunk_vectors 上报 task 级 embed 成本。
+        embed_prompt_tokens = 0
+        embed_total_tokens = 0
+        embed_provider_type = getattr(
+            getattr(embedding_pipeline, "embedder", None), "provider_type", None
+        )
 
         # ── 以 batch 为单位逐批处理 ────────────────────────────────────────
         # 每批：mark_indexing → embed → 写 Qdrant → mark_indexed
@@ -295,6 +302,10 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
             embedding_model = self._resolve_embedding_model(
                 embedded_batch, pipeline=embedding_pipeline
             )
+            # 累加本批 embed 的 token（last_stats 由 aembed_chunks 每次重写，逐批读取累加）。
+            _embed_stats = embedding_pipeline.last_stats
+            embed_prompt_tokens += int(getattr(_embed_stats, "prompt_tokens", 0) or 0)
+            embed_total_tokens += int(getattr(_embed_stats, "total_tokens", 0) or 0)
 
             # 3. 逐条写入 Qdrant + mark_indexed
             # 写入阶段遇到失败立即停止（该 chunk 标 FAILED），
@@ -359,6 +370,9 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
             total_chunks=len(records),
             indexed_chunks=indexed_count,
             embedding_model=embedding_model,
+            embed_prompt_tokens=embed_prompt_tokens,
+            embed_total_tokens=embed_total_tokens,
+            embed_provider_type=embed_provider_type,
         )
 
     async def _index_record_with_retry(self, record: object) -> ChunkIndexingResult:

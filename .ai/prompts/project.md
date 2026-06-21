@@ -75,7 +75,7 @@ docs/
 | `src/core/mq/messages/**` | [docs/api/mq_contracts.md](docs/api/mq_contracts.md) + [docs/internals/mq.md](docs/internals/mq.md) |
 | `src/core/pipeline/parse_task/**` | [docs/internals/parse_task_pipeline.md](docs/internals/parse_task_pipeline.md) |
 
-机器规则在 [scripts/doc-sync-rules.yaml](scripts/doc-sync-rules.yaml)，由 pre-commit 与 CI 强制。详见 [docs/contributing.md §五](docs/contributing.md#五文档同步规则)。
+机器规则在 [scripts/quality/doc-sync-rules.yaml](scripts/quality/doc-sync-rules.yaml)，由 pre-commit 与 CI 强制。详见 [docs/contributing.md §五](docs/contributing.md#五文档同步规则)。
 
 ---
 
@@ -84,9 +84,9 @@ docs/
 - **改动前**：按角色看 [docs/README.md](docs/README.md) 找到最小必要文档；查第四节确认本次会触发的同步规则。
 - **实现中**：优先复用现有模块边界、配置入口、错误处理；不为业务需求轻易改动 framework 层。
 - **改动后**：同步更新受影响的对外契约文档；内部模块文档按需更新。
-- **提交前**：运行 `python scripts/check_docs_sync.py --staged` 自检；pre-commit hook 会自动执行。
+- **提交前**：运行 `python scripts/quality/check_docs_sync.py --staged` 自检；pre-commit hook 会自动执行。
 - **校验**：按改动范围运行对应测试。
-- **CLAUDE.md / AGENTS.md** 已统一为 `.ai/prompts/project.md` 的 symlink，物理同一份文件。新人 / 新 worktree 初始化运行：`python scripts/setup_ai_links.py`。
+- **CLAUDE.md / AGENTS.md** 已统一为 `.ai/prompts/project.md` 的 symlink，物理同一份文件。新人 / 新 worktree 初始化运行：`python scripts/setup/setup_ai_links.py`。
 
 ---
 

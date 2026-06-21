@@ -1,10 +1,10 @@
 import os
 from typing import List, Optional, Union
 
-from pydantic import Field, field_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-SUPPORTED_CHUNKING_STAGE_TWO_ALGORITHMS = frozenset({"noop"})
+SUPPORTED_CHUNKING_STAGE_TWO_ALGORITHMS = frozenset({"noop", "semantic_depth_window"})
 
 
 class Settings(BaseSettings):
@@ -145,11 +145,22 @@ class Settings(BaseSettings):
     MARKDOWN_PARSER_VISION_MODEL: Optional[str] = None
     MARKDOWN_PARSER_LLM_TIMEOUT_MS: int = 60000
     MARKDOWN_PARSER_VISION_CONCURRENCY: int = 24
+    MARKDOWN_PARSER_ENABLE_HEADING_HIERARCHY: bool = False
+    MARKDOWN_PARSER_HEADING_NO_HEADING_MIN_TOKENS: int = 512
+    MARKDOWN_PARSER_HEADING_FLAT_MIN_HEADINGS: int = 5
+    MARKDOWN_PARSER_HEADING_SPARSE_TOKENS_PER_HEADING: int = 1536
+    MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET: int = 8192
     CHUNKING_STAGE_ONE_ALGORITHM: str = "candidate_boundary"
     CHUNKING_STAGE_TWO_ALGORITHM: str = "noop"
     CHUNKING_HEADING_BREAK_LEVEL: int = 5
     CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS: int = 128
     CHUNKING_OVERLAP_TOKENS: int = 64
+    # Stage 2 语义细分（semantic_depth_window）三层 token 阈值与 overlap 开关。
+    # 软目标：普通打包上限；硬上限：不可拆 atom（代码/公式）的绝对上限，超过即按行截断。
+    CHUNKING_MAX_CHUNK_TOKENS: int = 512
+    CHUNKING_HARD_MAX_TOKENS: int = 1024
+    # 含 protected 元素的最终 chunk 是否参与 pipeline 后置 neighbor overlap（仅文本边缘）。
+    CHUNKING_PROTECTED_NEIGHBOR_OVERLAP: bool = False
 
     @field_validator("CHUNKING_STAGE_ONE_ALGORITHM")
     @classmethod
@@ -171,6 +182,34 @@ class Settings(BaseSettings):
             )
         return normalized
 
+    @field_validator("MARKDOWN_PARSER_HEADING_NO_HEADING_MIN_TOKENS")
+    @classmethod
+    def validate_markdown_heading_no_heading_min_tokens(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("MARKDOWN_PARSER_HEADING_NO_HEADING_MIN_TOKENS must be positive")
+        return v
+
+    @field_validator("MARKDOWN_PARSER_HEADING_FLAT_MIN_HEADINGS")
+    @classmethod
+    def validate_markdown_heading_flat_min_headings(cls, v: int) -> int:
+        if v < 5:
+            raise ValueError("MARKDOWN_PARSER_HEADING_FLAT_MIN_HEADINGS must be >= 5")
+        return v
+
+    @field_validator("MARKDOWN_PARSER_HEADING_SPARSE_TOKENS_PER_HEADING")
+    @classmethod
+    def validate_markdown_heading_sparse_tokens_per_heading(cls, v: int) -> int:
+        if v < 1024:
+            raise ValueError("MARKDOWN_PARSER_HEADING_SPARSE_TOKENS_PER_HEADING must be >= 1024")
+        return v
+
+    @field_validator("MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET")
+    @classmethod
+    def validate_markdown_heading_llm_context_token_budget(cls, v: int) -> int:
+        if v < 2048:
+            raise ValueError("MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET must be >= 2048")
+        return v
+
     @field_validator("CHUNKING_OVERLAP_TOKENS")
     @classmethod
     def validate_chunking_overlap_tokens(cls, v: int) -> int:
@@ -185,6 +224,55 @@ class Settings(BaseSettings):
             raise ValueError("CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS must be between 128 and 256")
         return v
 
+    @field_validator("CHUNKING_MAX_CHUNK_TOKENS")
+    @classmethod
+    def validate_chunking_max_chunk_tokens(cls, v: int) -> int:
+        if v < 256 or v > 2048:
+            raise ValueError("CHUNKING_MAX_CHUNK_TOKENS must be between 256 and 2048")
+        return v
+
+    @field_validator("CHUNKING_HARD_MAX_TOKENS")
+    @classmethod
+    def validate_chunking_hard_max_tokens(cls, v: int) -> int:
+        if v < 512 or v > 8192:
+            raise ValueError("CHUNKING_HARD_MAX_TOKENS must be between 512 and 8192")
+        return v
+
+    @model_validator(mode="before")
+    @classmethod
+    def validate_chunking_token_bounds_before(cls, data):
+        if not isinstance(data, dict):
+            return data
+
+        def resolve_int(name: str) -> int | None:
+            if name not in data:
+                return None
+            try:
+                return int(data[name])
+            except (TypeError, ValueError):
+                return None
+
+        min_candidate = resolve_int("CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS")
+        max_chunk = resolve_int("CHUNKING_MAX_CHUNK_TOKENS")
+        hard_max = resolve_int("CHUNKING_HARD_MAX_TOKENS")
+        if min_candidate is not None and max_chunk is not None and max_chunk < min_candidate:
+            raise ValueError(
+                "CHUNKING_MAX_CHUNK_TOKENS must be >= CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS"
+            )
+        if hard_max is not None and max_chunk is not None and hard_max < max_chunk:
+            raise ValueError("CHUNKING_HARD_MAX_TOKENS must be >= CHUNKING_MAX_CHUNK_TOKENS")
+        return data
+
+    @model_validator(mode="after")
+    def validate_chunking_token_bounds(self) -> "Settings":
+        if self.CHUNKING_MAX_CHUNK_TOKENS < self.CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS:
+            raise ValueError(
+                "CHUNKING_MAX_CHUNK_TOKENS must be >= CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS"
+            )
+        if self.CHUNKING_HARD_MAX_TOKENS < self.CHUNKING_MAX_CHUNK_TOKENS:
+            raise ValueError("CHUNKING_HARD_MAX_TOKENS must be >= CHUNKING_MAX_CHUNK_TOKENS")
+        return self
+
     # ==========================================
     # 向量数据库配置 (Vector Store)
     # ==========================================
@@ -197,7 +285,7 @@ class Settings(BaseSettings):
     QDRANT_GRPC_PORT: int = 6334
     QDRANT_COLLECTION_NAME: str = "tolink_rag_collection"
     QDRANT_API_KEY: Optional[str] = None
-    QDRANT_TIMEOUT_SECONDS: int = 5
+    QDRANT_TIMEOUT_SECONDS: int = 20
 
     # Chunk indexing / vector storage
     CHUNK_INDEX_BUCKET_COUNT: int = 128
@@ -211,34 +299,21 @@ class Settings(BaseSettings):
     CHUNK_INDEX_RETRY_INTERVAL_SECONDS: int = 300
     CHUNK_INDEX_INDEXING_STALE_SECONDS: int = 900
 
-    # Sparse vector / BGE-M3
-    # SPARSE_VECTOR_PROVIDER 切换推理实现：
-    #   bge_m3        → 本地进程内加载模型（下方 MODEL/CACHE/DEVICE/BATCH 等生效）
-    #   bge_m3_http   → 调用早期 bge-m3-server（下方 SPARSE_VECTOR_HTTP_* 生效）
-    #   remote_bge_m3 → 调用独立 bge-m3-service（下方 BGE_M3_* 生效，dense + sparse 同出）
+    # Sparse vector
+    # 稀疏向量的「用哪个模型 / 连哪个端点」已统一按发起用户配置经 (protocol, capability)
+    # adapter 解析（必配不兜底），不再有系统级 provider / 模型 / 连接配置。以下仅保留与
+    # 具体 provider 无关的全局策略：开关、Qdrant named vector 名、清洗规则、外层批大小。
     SPARSE_VECTOR_ENABLED: bool = True
-    SPARSE_VECTOR_PROVIDER: str = "bge_m3"
-    SPARSE_VECTOR_MODEL_NAME: str = "BAAI/bge-m3"
-    SPARSE_VECTOR_MODEL_CACHE_DIR: Optional[str] = None
-    SPARSE_VECTOR_LOCAL_FILES_ONLY: bool = False
-    SPARSE_VECTOR_DEVICE: str = "auto"
-    SPARSE_VECTOR_BATCH_SIZE: int = 12
-    SPARSE_VECTOR_MAX_LENGTH: int = 8192
-    # 远程 bge-m3-server（仅 SPARSE_VECTOR_PROVIDER=bge_m3_http 时生效）
-    SPARSE_VECTOR_HTTP_ENDPOINT: Optional[str] = None
-    SPARSE_VECTOR_HTTP_TIMEOUT: float = 30.0
-    SPARSE_VECTOR_HTTP_BATCH_SIZE: Optional[int] = None
-    # 独立 bge-m3-service（仅 SPARSE_VECTOR_PROVIDER=remote_bge_m3 时生效）
-    # 同时返回 dense（1024 维）+ sparse；带超时 / 重试。
-    BGE_M3_SERVICE_URL: Optional[str] = None
-    BGE_M3_TIMEOUT_SECONDS: float = 30.0
-    BGE_M3_MAX_RETRIES: int = 3
+    # Qdrant named sparse vector 字段名；写入与召回共用。
     SPARSE_VECTOR_QDRANT_VECTOR_NAME: str = "sparse_text"
+    # 全局清洗规则（各 provider 复用，保证召回侧表现一致）。
     SPARSE_VECTOR_TOP_K: int = 256
     SPARSE_VECTOR_MIN_WEIGHT: float = 0.0
-    SPARSE_VECTOR_RETRY_LIMIT: int = 3
-    SPARSE_VECTOR_INDEXING_STALE_SECONDS: int = 900
-    TOLINK_RUN_REAL_SPARSE_VECTOR_TESTS: bool = False
+    # 稀疏索引外层批大小：一次从 DB 取多少 chunk 原文喂给编码器（provider 内部请求批策略各自决定）。
+    SPARSE_VECTOR_BATCH_SIZE: int = 32
+    # doubao_vision 稀疏 adapter 的逐条请求并发上限：多模态端点一次只融合出一个向量，
+    # 必须逐条发请求，本值限制同一批文本并发发出的请求数（参照 MARKDOWN_PARSER_VISION_CONCURRENCY）。
+    SPARSE_VECTOR_DOUBAO_CONCURRENCY: int = 16
 
     # Sparse retrieval defaults (called by VectorStorageFacade.search_sparse_chunks).
     # 默认值依据：业界保守占位（Dify "score threshold disabled = 0.0"、
@@ -326,6 +401,10 @@ class Settings(BaseSettings):
     MQ_MAX_RETRIES: int = 3
     MQ_RETRY_BACKOFF_SECONDS: float = 1.0
     MQ_DLQ_SUFFIX: str = ".DLT"
+
+    # 删除链路（LINK-55）：dataset 范围按 dataset_id 分页枚举名下文件逐个清理，
+    # 每页文件数。超大数据集靠分页避免一次性载入全部 chunk_id 导致 OOM / 超时。
+    DOCUMENT_DELETE_PAGE_SIZE: int = 200
 
     # ==========================================
     # 杂项配置 (Misc)

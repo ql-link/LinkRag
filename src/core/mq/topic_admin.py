@@ -94,6 +94,14 @@ def build_default_topic_specs() -> list[TopicSpec]:
             min_insync_replicas=min_insync_replicas,
             max_message_bytes=max_message_bytes,
         ),
+        TopicSpec(
+            name=os.getenv("DOCUMENT_DELETE_TOPIC", "tolink.rag.document_delete"),
+            partitions=_env_int("DOCUMENT_DELETE_PARTITIONS", 1),
+            replication_factor=replication_factor,
+            retention_ms=_env_int("RETENTION_MS_DOCUMENT_DELETE", 604800000),
+            min_insync_replicas=min_insync_replicas,
+            max_message_bytes=max_message_bytes,
+        ),
     ]
     # 为每个业务 topic 同规格创建对应死信 topic（<原 topic> + MQ_DLQ_SUFFIX）：
     # - 与业务 topic 同 replication / min_insync_replicas，避免死信比正常消息更脆弱

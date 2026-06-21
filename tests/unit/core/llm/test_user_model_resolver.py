@@ -86,6 +86,24 @@ def test_build_provider_from_config_user_decrypts(monkeypatch):
     provider.has_capability.assert_called_with(CapabilityType.TEXT)
 
 
+def test_build_provider_from_config_sparse_embedding(monkeypatch):
+    captured, provider = _patch_factory(monkeypatch)
+    rm = build_provider_from_config(
+        {
+            "id": 42,
+            "provider_type": "jina",
+            "protocol": "jina",
+            "api_key": "ENC",
+            "api_base_url": "https://api.jina.ai/v1/embeddings",
+            "model_name": "jina-sparse",
+        },
+        capability="SPARSE_EMBEDDING",
+    )
+    assert rm.protocol == "jina"
+    assert captured["protocol"] == "jina"
+    provider.has_capability.assert_called_with(CapabilityType.SPARSE_EMBEDDING)
+
+
 def test_build_provider_keeps_provider_type_identity_alias(monkeypatch):
     # provider_type 仍归一化作身份（aliyun→qwen），但不参与分发（分发看 protocol）。
     captured, _ = _patch_factory(monkeypatch)
@@ -160,12 +178,30 @@ def test_build_provider_missing_protocol_raises(monkeypatch):
 
 
 def test_build_provider_capability_unsupported(monkeypatch):
-    _patch_factory(monkeypatch, supports=False)
-    with pytest.raises(UnsupportedProtocolCapabilityError):
+    provider = MagicMock(name="provider")
+    provider.has_capability.return_value = False
+    provider.get_capabilities.return_value = {CapabilityType.TEXT}
+    factory = MagicMock(name="ModelFactory")
+    factory.create_client.return_value = provider
+    monkeypatch.setattr(umr, "ModelFactory", lambda: factory)
+    monkeypatch.setattr(umr, "decrypt_api_key", lambda key: key)
+
+    with pytest.raises(UnsupportedProtocolCapabilityError) as exc:
         build_provider_from_config(
-            {"provider_type": "qwen", "protocol": "openai", "api_key": "x", "model_name": "m"},
-            capability="EMBEDDING",
+            {
+                "id": 99,
+                "provider_type": "google",
+                "protocol": "google",
+                "api_key": "x",
+                "model_name": "gemini-embedding-001",
+            },
+            capability="SPARSE_EMBEDDING",
         )
+    assert exc.value.protocol == "google"
+    assert exc.value.capability == "SPARSE_EMBEDDING"
+    assert exc.value.model_name == "gemini-embedding-001"
+    assert exc.value.config_id == 99
+    assert "google:CHAT" in exc.value.supported_combinations
 
 
 @pytest.mark.asyncio
@@ -178,6 +214,23 @@ async def test_resolve_user_default_hit(monkeypatch):
     assert rm.source == "user"
     assert rm.model_name == "m-user"
     assert captured["api_key"] == "dec::ENC"
+
+
+@pytest.mark.asyncio
+async def test_resolve_sparse_embedding_uses_sparse_capability(monkeypatch):
+    captured, provider = _patch_factory(monkeypatch)
+    svc = _FakeConfigService(
+        default={
+            "provider_type": "openai",
+            "protocol": "openai",
+            "api_key": "ENC",
+            "model_name": "sparse-model",
+        }
+    )
+    rm = await aresolve_user_model(user_id=7, capability="SPARSE_EMBEDDING", config_service=svc)
+    assert rm.model_name == "sparse-model"
+    assert captured["protocol"] == "openai"
+    provider.has_capability.assert_called_with(CapabilityType.SPARSE_EMBEDDING)
 
 
 @pytest.mark.asyncio

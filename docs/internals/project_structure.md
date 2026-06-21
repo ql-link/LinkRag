@@ -67,9 +67,13 @@ toLink-Rag/                         # 仓库根目录
 │   ├── db.sql                    # 0001 baseline 冻结快照（DDL，冷启动用；禁止改动）
 │   └── versions/                 # 版本化迁移脚本（NNNN_YYYYMMDD_slug.py）
 ├── scripts/                      # 可执行脚本
+│   ├── acceptance/               # 验收流程与 spec-as-test 辅助脚本
+│   ├── dev/                      # 本地开发、诊断、冒烟脚本
 │   ├── db/                       # 数据库初始化脚本
 │   │   ├── init.sql              # 叠加全部 migration 后的当前完整结构快照（仅供查阅）
 │   │   └── schema.sql            # 初始化数据脚本
+│   ├── quality/                  # 文档同步、事实校验、AI 资产与 skill 质量门禁
+│   └── setup/                    # 本地 / 构建环境初始化脚本
 ├── src/                          # 应用源码
 │   ├── config.py                 # 全局配置
 │   ├── database.py               # 数据库初始化入口
@@ -110,6 +114,7 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── tokenizer.py
 │   │   │   ├── user_model_resolver.py # 用户模型选择解析
 │   │   │   └── providers/        # LLM 提供方实现（openai/anthropic/qwen/glm/deepseek）
+│   │   │                         #   稀疏 provider：doubao_vision.py（火山多模态稀疏）/ bge_m3.py（自部署 bge-m3-service 稀疏）
 │   │   ├── pipeline/             # 业务流水线编排
 │   │   │   ├── parse_task/        # 解析任务主编排
 │   │   │   │   ├── pipeline.py     # ParseTaskPipeline 薄编排（分流/幂等/校验/重试）
@@ -126,9 +131,10 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── ragflow_tokenizer.py # RagFlowTokenizer 适配
 │   │   │   └── models.py          # FileIndexMeta / ChunkWithTokens / FilePostIndexPlan
 │   │   ├── encoding/             # 编码命名空间（文本 → 向量，无存储职责）
-│   │   │   └── sparse/           # BGE-M3 稀疏向量编码
-│   │   │       ├── encoder.py / http_encoder.py / remote_encoder.py # 本地 / HTTP / 远程编码器
-│   │   │       ├── factory.py     # 按 provider 装配 SparseVectorService
+│   │   │   └── sparse/           # 稀疏向量编码
+│   │   │       ├── encoder.py      # SparseVectorEncoderProtocol + 清洗工具
+│   │   │       ├── adapter_encoder.py # llm adapter 输出 → SparseVector 桥接
+│   │   │       ├── factory.py     # 按用户配置解析 provider 装配 SparseVectorService
 │   │   │       ├── pipeline.py    # SparseVectorService 服务接口
 │   │   │       ├── deploy_bge_m3.py # 本地模型部署/冒烟脚本
 │   │   │       └── constants.py / models.py / exceptions.py

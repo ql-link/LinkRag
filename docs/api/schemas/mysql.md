@@ -10,7 +10,7 @@ ORM 与 migration 不一致时，以 migration 为准并修正 ORM；scripts/db/
 
 ## 表清单
 
-按业务域共 17 张表：
+按业务域共 18 张表：
 
 | 业务域 | 表 | 主键 ID 起始 |
 | --- | --- | --- |
@@ -52,7 +52,7 @@ ORM：（未在 `src/models/` 中映射，由业务侧管理）
 
 ## 2. LLM 配置与用量
 
-> **协议（protocol）与入口（api_base_url）三层语义**（LINK-123）：LLM 调用拆成两个正交维度——`protocol`（API 家族，决定 HTTP 怎么拼）× `capability`（用途，决定调哪个端点）。`protocol` 枚举：`openai` / `anthropic` / `google` / `jina` / `dashscope`（小写、大小写敏感）。同一厂商不同能力可走不同协议（如千问 chat 走 `openai`、rerank 走 `dashscope`），故 `protocol` ≠ `provider_type`。
+> **协议（protocol）与入口（api_base_url）三层语义**（LINK-123）：LLM 调用拆成两个正交维度——`protocol`（API 家族，决定 HTTP 怎么拼）× `capability`（用途，决定调哪个端点）。`protocol` 枚举：`openai` / `anthropic` / `google` / `jina` / `dashscope` / `doubao_vision` / `bge_m3`（小写、大小写敏感；后两个为稀疏向量专用）。同一厂商不同能力可走不同协议（如千问 chat 走 `openai`、rerank 走 `dashscope`），故 `protocol` ≠ `provider_type`。
 >
 > 三层定位：**厂商层**（`llm_system_provider`）= 默认模板，不参与运行决策；**模型能力层**（`llm_provider_model`）= 协议与入口的事实来源；**用户配置层**（`llm_user_config`）= 运行快照，从模型能力层复制，Python 下游按 `(protocol, capability)` 选 adapter，绝不 fallback 厂商默认。`api_base_url` 在厂商层保存协议基地址，仅用于管理端预填；在模型能力层和用户配置层保存**完整端点 URL**，Python adapter 直接请求该 URL，不再拼 capability 后缀。`google` 协议例外，保存到 `/v1beta` 为止，由 Python 按模型和流式模式补全 Gemini 原生路径。
 
@@ -127,7 +127,7 @@ ORM：[`UserLLMConfigDB`](../../../src/models/db_models.py)
 | `api_base_url` | VARCHAR(512) | 实际生效地址：完整端点 URL，复制自模型能力层事实（不 fallback 厂商默认） |
 | `protocol` | VARCHAR(32) | 调用协议快照：复制自模型能力层，下游按 `protocol`+`capability` 选 adapter |
 | `model_name` | VARCHAR(128) | 具体模型名 |
-| `capability` | VARCHAR(32) | `CHAT` / `EMBEDDING` / `RERANK` / `OCR` / `VISION` 等，默认 `CHAT` |
+| `capability` | VARCHAR(32) | `CHAT` / `EMBEDDING` / `SPARSE_EMBEDDING` / `RERANK` / `VISION` 等，默认 `CHAT`；`OCR` 不再作为独立 LLM capability |
 | `is_active` | BOOLEAN | 模型启停 + 生效过滤 |
 | `is_default` | BOOLEAN | 该能力是否生效 |
 | `is_system_preset` | BOOLEAN | 是否系统预设行 |
@@ -158,20 +158,26 @@ ORM：[`UsageLogDB`](../../../src/models/db_models.py)
 | --- | --- | --- |
 | `id` | BIGINT UNSIGNED PK | 记录唯一标识 |
 | `user_id` | BIGINT UNSIGNED | 用户 ID |
-| `config_id` | BIGINT UNSIGNED | 用户配置 ID |
+| `config_id` | BIGINT UNSIGNED NULL | 用户配置 ID；走系统配置的调用（如召回 query 编码）无 per-user 配置，可空 |
 | `provider_type` | VARCHAR(32) | 厂商类型 |
 | `model_name` | VARCHAR(128) | 模型名称 |
-| `prompt_tokens` | INT | 输入 Token 数 |
-| `completion_tokens` | INT | 输出 Token 数 |
+| `prompt_tokens` | INT | 输入 Token 数；向量类调用（embed/sparse/rerank）即此列 |
+| `completion_tokens` | INT | 输出 Token 数；向量类调用恒为 0 |
 | `total_tokens` | INT | 总 Token 数 |
 | `latency_ms` | INT | 响应延迟（毫秒） |
 | `status` | VARCHAR(16) | `success` / `failed` / `partial` |
 | `error_message` | VARCHAR(512) | 错误信息 |
 | `fallback_config_id` | BIGINT UNSIGNED | 触发 Fallback 时记录原配置 ID |
-| `conversation_id` | BIGINT UNSIGNED | 关联对话 ID |
+| `conversation_id` | BIGINT UNSIGNED | 关联对话 ID（由 Java 消费 `chat_turn` 消息时写入） |
+| `message_id` | BIGINT UNSIGNED | 关联产生该用量的 `chat_message` 行 |
+| `request_id` | VARCHAR(64) | 与 `chat_message` 同一把 key，串联一轮问答 |
+| `stage` | VARCHAR(16) NULL | 阶段：`parse` / `recall` / `chat`；归属一条用量出自哪个阶段 |
+| `operation` | VARCHAR(16) NULL | 操作：`embed` / `sparse` / `rerank` / `vision` / `table` / `generate`；`sparse` 本期预留不写入 |
 | `created_at` | DATETIME | 创建时间 |
 
-索引：`idx_user_date`, `idx_config_date`, `idx_conversation_id`。
+索引：`idx_user_date`, `idx_config_date`, `idx_conversation_id`, `idx_usage_message_id`, `idx_user_stage_date`。
+
+> 全链路归属（0022）：本表从「对话账本」升级为「全链路模型调用账本」。对话最终 `generate` 的行仍由 Java 消费 `chat_turn` 落库（Java 补 `stage='chat'`、`operation='generate'`）；解析侧 embed/vision/table、召回侧 embed/rerank 的行由 Python 通过 `tolink.rag.usage_report` 上报、Java 消费落库。token 一律由模型返回（不自算），向量类 `completion_tokens=0`。`sparse` 因模型不返回 token 本期预留不上报，仅在 `operation` 枚举占位。详见 [mq_contracts.md](../mq_contracts.md#用量上报pythonjava统计侧)。
 
 ---
 
@@ -230,11 +236,14 @@ ORM：[`UsageLogDB`](../../../src/models/db_models.py)
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
 
 索引：
-- `uk_conversation_user_dataset_title(user_id, dataset_id, title)`
 - `idx_chat_conversation_user_pinned_updated(user_id, is_pinned, updated_at)`
 - `idx_chat_conversation_dataset_updated(dataset_id, updated_at)`
 
-### `chat_message` — 对话消息表
+### `chat_message` — 对话消息表（一行一轮）
+
+一行同时承载用户提问与 LLM 回答（RAG 单轮严格一问一答），不再用 role 区分的逐消息两行模型。
+
+ORM：[`ChatMessageDB`](../../../src/models/db_models.py)
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -242,12 +251,16 @@ ORM：[`UsageLogDB`](../../../src/models/db_models.py)
 | `conversation_id` | BIGINT UNSIGNED | 所属对话 |
 | `config_id` | BIGINT UNSIGNED | 产生该消息所使用的 LLM 配置 |
 | `model_name` | VARCHAR(128) | 模型名快照 |
-| `role` | VARCHAR(16) | `user` / `assistant` / `system` |
-| `content` | MEDIUMTEXT | 消息内容 |
-| `token_count` | INT | 该条消息消耗的 Token 数 |
+| `query` | MEDIUMTEXT | 用户提问 |
+| `answer` | MEDIUMTEXT | LLM 回答（partial 为半截，failed 可空） |
+| `references` | JSON | 召回片段 `chunk_id` 列表（仅标识，不含正文） |
+| `request_id` | VARCHAR(64) | 请求追踪 ID / 幂等键，与 `llm_usage_log` 对应 |
+| `status` | VARCHAR(16) | `success` / `partial` / `failed` |
 | `created_at` | DATETIME | 创建时间 |
 
 索引：`idx_conversation_created(conversation_id, created_at)`。
+
+> 所有权：表结构由 Python 侧 Alembic 迁移管理（含 `chat_conversation`）；**行数据的增删改由 Java 侧负责**——Java 消费 Python 发出的 `tolink.rag.chat_turn` 消息后，单事务写入 `chat_message` 行、`llm_usage_log` 行并更新 `chat_conversation`。Python 侧不写这三张表的行数据。详见 [mq_contracts.md](../mq_contracts.md#对话轮次上报pythonjava)。
 
 ---
 

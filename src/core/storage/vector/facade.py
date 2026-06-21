@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any
 
 from src.config import settings
 from src.core.splitter.models import Chunk
+from src.services.usage_reporter import report_usage_nowait
 from src.utils.logger import logger
 
 from .compensation_pipeline import VectorStorageCompensationPipeline
@@ -55,6 +56,7 @@ class VectorStorageFacade:
         sparse_vector_service: "SparseVectorService | None" = None,
         embedding_pipeline: "ChunkEmbeddingPipeline | None" = None,
         query_embedding_resolver: "Callable[[int], Awaitable[ChunkEmbeddingPipeline]] | None" = None,
+        query_sparse_resolver: "Callable[[int], Awaitable[SparseVectorService]] | None" = None,
     ) -> None:
         """
         初始化统一入口，并注入已经装配好的底层服务。
@@ -75,6 +77,11 @@ class VectorStorageFacade:
                 ``aresolve_user_chunk_embedding_pipeline``，使 dense 召回 query 编码与写入侧
                 同源、按用户模型解析；注入后 ``search_dense_chunks`` 优先用它而非进程级
                 ``embedding_pipeline``。
+            query_sparse_resolver: 可选的「按发起 user_id 解析 sparse 向量服务」回调（sparse 侧
+                与 ``query_embedding_resolver`` 对偶）。召回装配注入
+                ``aresolve_user_sparse_vector_service``，使 sparse 召回 query 编码与写入侧
+                同源、按用户模型解析；注入后 ``search_sparse_chunks`` 优先用它而非进程级
+                ``sparse_vector_service``。
 
         Returns:
             None.
@@ -87,6 +94,7 @@ class VectorStorageFacade:
         self._sparse_vector_service = sparse_vector_service
         self._embedding_pipeline = embedding_pipeline
         self._query_embedding_resolver = query_embedding_resolver
+        self._query_sparse_resolver = query_sparse_resolver
 
     async def store_chunks(
         self,
@@ -331,11 +339,12 @@ class VectorStorageFacade:
             )
 
         # ───────────────────── ③ 配置就绪检查 ───────────────────────────────────
-        # SPARSE_VECTOR_ENABLED=False / 工厂未注入 service → 部署侧配置问题，
+        # SPARSE_VECTOR_ENABLED=False / 既无 resolver 也无 service → 部署侧配置问题，
         # 静默返空会让运维找不到原因，必须显式抛配置异常（acceptance 已断言）。
-        if (
-            not bool(getattr(settings, "SPARSE_VECTOR_ENABLED", False))
-            or self._sparse_vector_service is None
+        # query 编码来源二选一（与 dense 的 ③ 段对偶）：注入了 query_sparse_resolver
+        # （召回路径，按用户模型解析）走它；否则回退进程级 sparse_vector_service。
+        if not bool(getattr(settings, "SPARSE_VECTOR_ENABLED", False)) or (
+            self._query_sparse_resolver is None and self._sparse_vector_service is None
         ):
             raise VectorRetrievalConfigurationError(
                 "Sparse vector recall is unavailable: "
@@ -352,7 +361,18 @@ class VectorStorageFacade:
             score_threshold=effective_threshold,
         )
 
-        service = self._sparse_vector_service
+        # 按发起用户解析 sparse 向量服务（与写入侧同源），缺默认 SPARSE_EMBEDDING 配置 →
+        # 翻成 VectorRetrievalUserConfigMissingError（上层据此硬失败，不做宽松降级，
+        # 与 dense 的 DenseEmbeddingConfigMissingError 翻译对偶）。
+        if self._query_sparse_resolver is not None:
+            from src.core.encoding.sparse.factory import SparseEmbeddingConfigMissingError
+
+            try:
+                service = await self._query_sparse_resolver(user_id)
+            except SparseEmbeddingConfigMissingError as exc:
+                raise VectorRetrievalUserConfigMissingError(str(exc)) from exc
+        else:
+            service = self._sparse_vector_service
 
         # ───────────────────── ④ query 向量化（异常翻译）─────────────────────────
         # 配置错优先（含依赖缺失），再降级为编码错；底层 SparseVectorOutputError
@@ -568,12 +588,26 @@ class VectorStorageFacade:
         # ValueError（空 query / 长度不一致）属于 caller 错误，由 ① / ② 段已拦下，
         # 不到这里。
         try:
-            dense_vector = await embedding_pipeline.aembed_query(query)
+            dense_vector, _q_usage = await embedding_pipeline.aembed_query_detailed(query)
         except Exception as exc:
             # 包含 httpx.HTTPStatusError / httpx.TimeoutException / 其它远程错误。
             # ValueError 经 ① / ② 段后不会到这一步，但理论上仍会被吞——这是预期，
             # 防御性 invariant 失败时不漏到调用方意外手里。
             raise VectorRetrievalEncodingError(str(exc)) from exc
+
+        # 用量上报（旁路）：query embed token 由模型返回，向量类 completion 恒 0；
+        # 失败不阻断召回。stage/operation 在此写死；召回侧暂不透传 request_id/conversation_id。
+        if _q_usage is not None:
+            report_usage_nowait(
+                user_id=user_id,
+                provider_type=getattr(embedding_pipeline.embedder, "provider_type", "") or "",
+                model_name=embedding_pipeline.embedding_model or "",
+                stage="recall",
+                operation="embed",
+                prompt_tokens=int(getattr(_q_usage, "prompt_tokens", 0) or 0),
+                completion_tokens=0,
+                total_tokens=int(getattr(_q_usage, "total_tokens", 0) or 0),
+            )
 
         # ───────────────────── ⑤ bucket 路由（与写入侧共用 BucketRouter）────────
         bucket_route = self.qdrant_store.bucket_router.route_user(user_id)

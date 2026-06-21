@@ -39,7 +39,7 @@ COPY . .
 ENV NLTK_DATA=/app/nltk_data
 # 经 GitHub 加速代理下载 NLTK 数据，避免直连 raw.githubusercontent 国内超时；失败自动回退官方源
 ENV NLTK_GH_PROXY=https://gh-proxy.com/
-RUN python scripts/setup_nltk_data.py
+RUN python scripts/setup/setup_nltk_data.py
 
 EXPOSE 8000
 

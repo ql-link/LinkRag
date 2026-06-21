@@ -5,7 +5,10 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
-from src.core.markdown_parser import MarkdownEnhancementOrchestrator, MarkdownParser
+from src.core.markdown_parser import (
+    HeadingHierarchyProcessor,
+    MarkdownEnhancementOrchestrator,
+)
 from src.core.markdown_parser.text_formatter import TextFormatter
 from src.core.parser.factory import ParserFactory
 
@@ -70,14 +73,26 @@ class ParseTaskService:
         )
         final_markdown = TextFormatter.clean(enhanced_parse_result.to_markdown())
         final_parse_started_at = time.monotonic()
-        final_parse_result = MarkdownParser().parse(final_markdown, source_file=source_file)
+        heading_result = await HeadingHierarchyProcessor().aprocess(
+            final_markdown,
+            source_file=source_file,
+        )
+        final_markdown = heading_result.markdown
+        final_parse_result = heading_result.parse_result
         final_parse_elapsed = time.monotonic() - final_parse_started_at
         logger.info(
-            "[ParseTaskService] final markdown parsed: elapsed={:.2f}s chars={}",
+            "[ParseTaskService] final markdown parsed: elapsed={:.2f}s chars={} "
+            "heading_hierarchy_applied={} reason={}",
             final_parse_elapsed,
             len(final_markdown or ""),
+            heading_result.applied,
+            heading_result.decision.reason.value,
         )
         metadata["markdown_enhanced"] = final_markdown != cleaned_markdown
+        metadata["heading_hierarchy_enabled"] = heading_result.decision.reason.value != "disabled"
+        metadata["heading_hierarchy_applied"] = heading_result.applied
+        metadata["heading_hierarchy_reason"] = heading_result.decision.reason.value
+        metadata["heading_hierarchy_insertions"] = heading_result.insertion_count
 
         time_cost_ms = int((time.time() - start_time) * 1000)
 

@@ -16,6 +16,7 @@ import pytest
 from src.core.llm.factory import ModelFactory
 from src.core.llm.interfaces import CapabilityType as T
 from src.core.llm.providers.anthropic import AnthropicProvider
+from src.core.llm.providers.bge_m3 import BgeM3ServiceProvider
 from src.core.llm.providers.dashscope import DashScopeProvider
 from src.core.llm.providers.google import GoogleClient, GoogleProvider
 from src.core.llm.providers.jina import JinaProvider
@@ -30,6 +31,7 @@ from src.core.llm.providers.openai import OpenAICompatibleProvider
         ("google", GoogleProvider),
         ("jina", JinaProvider),
         ("dashscope", DashScopeProvider),
+        ("bge_m3", BgeM3ServiceProvider),
     ],
 )
 def test_create_client_dispatches_by_protocol(protocol, cls):
@@ -40,11 +42,12 @@ def test_create_client_dispatches_by_protocol(protocol, cls):
 @pytest.mark.parametrize(
     "protocol,expected",
     [
-        ("openai", {T.TEXT, T.EMBEDDING}),
-        ("anthropic", {T.TEXT}),
-        ("google", {T.TEXT}),
+        ("openai", {T.TEXT, T.EMBEDDING, T.VISION}),
+        ("anthropic", {T.TEXT, T.VISION}),
+        ("google", {T.TEXT, T.VISION}),
         ("jina", {T.RERANK, T.EMBEDDING}),
         ("dashscope", {T.RERANK}),
+        ("bge_m3", {T.SPARSE_EMBEDDING}),
     ],
 )
 def test_capability_matrix(protocol, expected):
@@ -52,19 +55,31 @@ def test_capability_matrix(protocol, expected):
     assert client.get_capabilities() == expected
 
 
+@pytest.mark.parametrize("protocol", ["openai", "anthropic", "google"])
+def test_vision_now_supported_passes_gate(protocol):
+    # VISION 已接入：openai/anthropic/google 三协议门禁放行（曾因「本期停做」恒拦死）。
+    client = ModelFactory().create_client(protocol=protocol, api_key="k")
+    assert client.has_capability(T.VISION)
+
+
 @pytest.mark.parametrize(
     "protocol,capability",
     [
         ("openai", T.RERANK),
+        ("openai", T.SPARSE_EMBEDDING),
+        ("jina", T.SPARSE_EMBEDDING),
         ("anthropic", T.EMBEDDING),
+        ("anthropic", T.SPARSE_EMBEDDING),
         ("anthropic", T.RERANK),
         ("google", T.EMBEDDING),
+        ("google", T.SPARSE_EMBEDDING),
         ("google", T.RERANK),
         ("dashscope", T.TEXT),
-        # 多模态停做
-        ("openai", T.VISION),
-        ("openai", T.OCR),
-        ("anthropic", T.VISION),
+        ("dashscope", T.SPARSE_EMBEDDING),
+        # VISION 仅 openai/anthropic/google 承载，其余协议仍明确不支持
+        ("jina", T.VISION),
+        ("dashscope", T.VISION),
+        ("bge_m3", T.VISION),
     ],
 )
 def test_unsupported_or_stopped_combos_not_capable(protocol, capability):

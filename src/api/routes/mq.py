@@ -107,9 +107,17 @@ async def send_usage_report(request: SendUsageReportRequest):
             user_id=request.user_id,
             provider_type=request.provider_type,
             model_name=request.model_name,
+            stage=request.stage,
+            operation=request.operation,
             prompt_tokens=request.prompt_tokens,
             completion_tokens=request.completion_tokens,
             total_tokens=request.total_tokens,
+            config_id=request.config_id,
+            task_id=request.task_id,
+            conversation_id=request.conversation_id,
+            request_id=request.request_id,
+            latency_ms=request.latency_ms,
+            status=request.status,
         )
         await mq_service.send(msg)
         return MQResponse(success=True, message="用量上报已投递")

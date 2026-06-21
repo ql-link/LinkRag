@@ -141,6 +141,7 @@ StagePipeline.run（唯一的 6 阶段编排）
   - **markdown 产物坐标解析**：markdown 真实所在位置由 `ParseTaskPayload.markdown_bucket` / `markdown_object_key` 统一解析——**md/markdown 取上传位置 `source_*`，其余格式取 Python 侧 `MINIO_PRIVATE_BUCKET` + 消息中的 `md_object_key`**。`mark_parsed`（写 `parsed_bucket_name`/`parsed_object_key`）、`StageServices.load_markdown`（重试从 CHUNKING 恢复读回旧 markdown）、重试 `create_for_retry` 的预写坐标三处一致取用，确保「清洗完成、分片失败」重试时 md 按真实产物位置读回，不会误用历史 `md_bucket` 字段。
 - **ChunkingStage**：`chunking_status == SUCCESS` → `on_skip` 调 `StageServices.load_all_chunks_from_db` 反查完整 chunk truth set；反查为空按历史语义落 `vectorizing_failed` 终态（`finalized`）。否则进入 `run`：有本轮 cleaning 产物用其分片；无 cleaning 产物但旧 markdown 坐标可用（**重试从 CHUNKING 恢复**，LINK-32）则经 `StageServices.load_markdown` 读回旧 markdown 重新分片；二者皆无（无产物也无 markdown 坐标）才视为状态不一致落 `chunking_failed`（`failure_reason` 含 `chunking_not_success_in_retry`）。
 - **VectorizingStage / PretokenizeStage / SparseVectorizingStage**：`*_status != SUCCESS` 才执行。SparseVectorizingStage 是 `pipeline_status=SUCCESS` 的**唯一**翻转点——即便继承 SUCCESS 被跳过，也在 `on_skip` 翻转整体终态。
+  - **用量上报（旁路，不影响状态机）**：VectorizingStage `run` 后按 task 聚合 dense embed 的输入 token，经 `src/services/usage_reporter.py` 发 `tolink.rag.usage_report`（`stage=parse`/`operation=embed`，token 由模型返回、仅 cache miss 计入）。这是 fire-and-forget 的旁路遥测，发送失败仅告警、**不参与阶段成败判定与终态语义**。表格/图片增强的用量在 cleaning 阶段的增强 provider client 内同样上报（`operation=table`/`vision`）；详见 [mq_contracts.md §用量上报](../api/mq_contracts.md#用量上报pythonjava统计侧)。
 - **EsIndexingStage**：依赖 pretokenize 的内存态 `FilePostIndexPlan`，`ctx.plan` 缺失（pretokenize 继承 SUCCESS 被跳过）时先重做 pretokenize 重建再消费（见 §4 重试恢复起点）。
 
 | 阶段 | StageServices 主要方法 | 说明 |
@@ -196,6 +197,8 @@ StagePipeline.run（唯一的 6 阶段编排）
 ### 失败即终态与恢复入口（无内部自动重试）
 
 任一阶段失败即终态：只把结果写入 `document_parse_pipeline`（阶段状态 FAILED、`failed_stage`、`recover_from_stage`、`failure_reason`、`finished_at`、耗时）。终态写 DB 即为权威，前端轮询读取。系统**不计数、不设上限、不写 retry_exhausted、不自动重试**。
+
+> **耗时计算的时区归一化（issue #164）**：`_utils.duration_ms()` 对 `started_at` / `finished_at` 统一做 UTC 归一化（naive 视为 UTC、aware 换算到 UTC）后再相减。`now()` 返回 tz-aware UTC，而 MySQL `DATETIME` 经 SQLAlchemy 读出为 naive；中断任务收敛（`handle_duplicate` → `_mark_incomplete_pipeline_failed`，`started_at` 来自 DB）若直接相减会抛 `TypeError: can't subtract offset-naive and offset-aware datetimes`，导致非终态 `PROCESSING` 无法收敛为 `FAILED` 而被投递到 `tolink.rag.parse_task.DLT`。归一化后该路径稳定收敛。注意：parse_task 相关时间字段均由应用层 UTC 写入（`now()` / `utc_now`），故 naive 语义即 UTC；**勿**将 DB 端 `func.now()`（服务器本地时区）写入的字段交给 `duration_ms`。
 
 - **文档清洗失败**：`mark_cleaning_failed` 落 `cleaning_status=FAILED` + `failed_stage=CLEANING` + `recover_from_stage=CLEANING`。`failure_reason` 含前缀 `INVALID_TASK_CONTEXT:` / `SOURCE_FILE_NOT_FOUND:` / `PARSE_ENGINE_FAILED:` / `PARSED_FILE_UPLOAD_FAILED:` / `INTERRUPTED_TASK:` / `INTERNAL_UNKNOWN_ERROR:` / `PARSING_FAILED:` 等。
 - **预分词失败**（`StageServices.build_pretokenize_plan` 捕获 `PreprocessorError`，或空 plan 但仍有未完成 chunk）：`PretokenizeStage` 落 `mark_pretokenize_failed`（`pretokenize_status=FAILED` + `recover_from_stage=PRETOKENIZE`）；**绝不写任何 chunk es_status**（文件级 all-or-nothing）。

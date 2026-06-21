@@ -6,12 +6,13 @@
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
 
-from src.api.routes.llm import _coerce_int, _resolve_provider
+from src.api.routes.llm import OcrRequest, _coerce_int, _resolve_provider, extract_text_from_image
 from src.core.llm.exceptions import UserModelConfigMissingError
 
 
@@ -45,3 +46,41 @@ async def test_resolve_provider_missing_config_maps_to_404(monkeypatch):
         await _resolve_provider(db=AsyncMock(), user_id="123", capability="EMBEDDING")
     assert exc.value.status_code == 404
     assert "EMBEDDING" in exc.value.detail
+
+
+@pytest.mark.asyncio
+async def test_legacy_ocr_endpoint_resolves_vision_capability(monkeypatch):
+    captured = {}
+    provider = AsyncMock()
+    provider.analyze_image.return_value = SimpleNamespace(model_dump=lambda: {"content": "text"})
+
+    async def _resolve(db, user_id, capability, *, config_id=None, override_model=None):
+        captured.update(
+            {
+                "user_id": user_id,
+                "capability": capability,
+                "config_id": config_id,
+                "override_model": override_model,
+            }
+        )
+        return provider
+
+    monkeypatch.setattr("src.api.routes.llm._resolve_provider", _resolve)
+
+    response = await extract_text_from_image(
+        OcrRequest(config_id="77", image_base64="abc", prompt="read text"),
+        x_user_id="123",
+        db=AsyncMock(),
+    )
+
+    assert response.code == 200
+    assert captured == {
+        "user_id": "123",
+        "capability": "VISION",
+        "config_id": "77",
+        "override_model": None,
+    }
+    # OCR 统一走 VISION：调 analyze_image，prompt 透传、media_type 由 base64 嗅探（"abc" 无法解码 → 回退 jpeg）
+    provider.analyze_image.assert_awaited_once_with(
+        image_base64="abc", prompt="read text", media_type="image/jpeg"
+    )

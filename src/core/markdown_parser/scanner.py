@@ -13,6 +13,7 @@ MarkdownElementExtractor 类，在其基础上做了以下改进：
 """
 
 import re
+
 from .models import ElementType, MarkdownElement
 
 
@@ -82,12 +83,14 @@ class MarkdownScanner:
 
             # 水平线 (新增, RAGFlow 不识别)
             if self._HR_RE.match(line):
-                elements.append(MarkdownElement(
-                    type=ElementType.HORIZONTAL_RULE,
-                    content=line,
-                    start_line=i,
-                    end_line=i,
-                ))
+                elements.append(
+                    MarkdownElement(
+                        type=ElementType.HORIZONTAL_RULE,
+                        content=line,
+                        start_line=i,
+                        end_line=i,
+                    )
+                )
                 i += 1
 
             # 标题 — 来自 RAGFlow L176
@@ -101,7 +104,7 @@ class MarkdownScanner:
                 element = self._extract_code_block(i)
                 elements.append(element)
                 i = element.end_line + 1
-                
+
             # 公式块 (新增)
             elif self._MATH_BLOCK_START_RE.match(line):
                 element = self._extract_math_block(i)
@@ -115,13 +118,14 @@ class MarkdownScanner:
                 i = element.end_line + 1
 
             # 表格探测 (新增: 直接原生支持 TABLE 切分)
-            elif "|" in line:
-                table_element = self._extract_table(i)
-                if table_element:
-                    elements.append(table_element)
-                    i = table_element.end_line + 1
-                    continue
-                # 如果不是表格，则顺延到可能成为 list 或者 blockquote，甚至是段落。
+            # 注意：必须把「是否真为表格」并入 elif 条件。否则当行内含 `|` 但不是表格时
+            # （如普通段落带竖线、或增强描述标记 [视觉描述|src=...]），既不 continue 也不
+            # 推进 i，会导致 while 主循环原地死循环。并入条件后，非表格的 `|` 行会自然落到
+            # 下面的 list/blockquote/段落兜底分支，由它们推进 i。
+            elif "|" in line and (table_element := self._extract_table(i)) is not None:
+                elements.append(table_element)
+                i = table_element.end_line + 1
+                continue
 
             # 列表块 — 来自 RAGFlow L186
             elif self._UNORDERED_LIST_RE.match(line) or self._ORDERED_LIST_RE.match(line):
@@ -280,7 +284,7 @@ class MarkdownScanner:
                 or self._IMAGE_LINE_RE.match(line)
             ):
                 break
-                
+
             # 若下一行突然有了 |---| 表格符，则说明表格开始了，应该切断当前段落
             if "|" in line:
                 if i + 1 < len(self._lines) and self._TABLE_DELIMITER_RE.match(self._lines[i + 1]):
@@ -310,22 +314,22 @@ class MarkdownScanner:
 
     def _extract_table(self, start: int) -> MarkdownElement | None:
         """提取表格块 (原生行扫描)
-        
+
         通过识别当前行含有 `|`，且下一行匹配 `_TABLE_DELIMITER_RE` 即确认为表格，并持续吃入直至断开。
         """
         if start + 1 >= len(self._lines):
             return None
-            
+
         l1 = self._lines[start]
         l2 = self._lines[start + 1]
-        
+
         # 必须都包含管线符号，且下一行是标准的头部分隔符
         if "|" not in l1 or "|" not in l2:
             return None
-            
+
         if not self._TABLE_DELIMITER_RE.match(l2):
             return None
-            
+
         end = start
         content_lines = []
         for i in range(start, len(self._lines)):
@@ -336,7 +340,7 @@ class MarkdownScanner:
                 break
             content_lines.append(line)
             end = i
-            
+
         if len(content_lines) >= 2:
             return MarkdownElement(
                 type=ElementType.TABLE,
@@ -371,7 +375,7 @@ class MarkdownScanner:
         m = self._MATH_BLOCK_START_RE.match(self._lines[start])
         delimiter = m.group(1)
         closing_delimiter = r"\]" if delimiter == r"\[" else "$$"
-        
+
         # 探测是否为单行公式块 (例如：$$ E=mc^2 $$)
         line_stripped = self._lines[start].strip()
         if len(line_stripped) > len(delimiter) and line_stripped.endswith(closing_delimiter):
@@ -379,9 +383,9 @@ class MarkdownScanner:
                 type=ElementType.MATH_BLOCK,
                 content=self._lines[start],
                 start_line=start,
-                end_line=start
+                end_line=start,
             )
-            
+
         end = start
         content_lines = [self._lines[start]]
         for i in range(start + 1, len(self._lines)):
@@ -391,10 +395,10 @@ class MarkdownScanner:
             # 公式块闭合只要包含对应的符号即可（宽松匹配以增加容错）
             if closing_delimiter in line:
                 break
-                
+
         return MarkdownElement(
             type=ElementType.MATH_BLOCK,
             content="\n".join(content_lines),
             start_line=start,
-            end_line=end
+            end_line=end,
         )

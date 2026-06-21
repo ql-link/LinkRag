@@ -34,7 +34,8 @@ CODE: 中文业务原因；底层详情
 | `INTERNAL_UNKNOWN_ERROR` | 系统异常，请稍后重试 | 未归类内部异常 |
 | `PARSING_FAILED` | 文件解析阶段失败，请检查文件内容或重新解析 | 文档清洗（解析+上传）阶段统一失败前缀，对应 `failed_stage=CLEANING`（brief 称 `PARSING`） |
 | `SPARSE_VECTORIZING_FAILED` | 稀疏向量化失败，请稍后重试 | 稀疏向量阶段任一 chunk 失败、health-check 总数为 0、Qdrant 写入失败等 |
-| `LLM_CONFIG_MISSING` | 未配置默认大模型，请先在系统中配置后重试 | 发起用户缺少必配能力的默认 LLM 配置：解析增强缺 CHAT（无法按用户配置调用，配置读取失败按 `PARSE_ENGINE_FAILED`；图片增强 VISION 非必配，缺失跳过不报错），或稠密向量化缺 EMBEDDING（LINK-91）。仅「确实未配置」时使用 |
+| `LLM_CONFIG_MISSING` | 未配置默认大模型，请先在系统中配置后重试 | 发起用户缺少必配能力的默认 LLM 配置：稠密向量化缺 EMBEDDING（仅「确实未配置」时归此码，配置读取失败仍按 `PARSE_ENGINE_FAILED`，LINK-91）。解析增强缺 CHAT/VISION 默认模型现归 `ENHANCEMENT_MODEL_MISSING` |
+| `ENHANCEMENT_MODEL_MISSING` | 已开启表格/图片增强，但未配置对应的默认模型，请先配置默认模型后重试 | 数据集开启表格/图片增强，但发起用户未配对应能力（表格→CHAT，图片→VISION）的默认模型。数据集层不再选择增强模型，统一用用户默认模型，开启增强即要求已配；按约定不回退系统兜底模型，表格与图片对称失败（图片增强不再静默跳过） |
 | `EMBEDDING_DIMENSION_UNSUPPORTED` | 所选向量模型维度不受支持，请改用系统支持的向量模型 | 稠密向量化阶段，用户 EMBEDDING 模型输出维度 ≠ `DENSE_VECTOR_DIMENSION`（方案 A 维度约束，LINK-91） |
 | `RETRY_VALIDATION_FAILED` | 重试前置校验失败，请确认上次任务状态 | `ParseTaskGuard.validate_retry_context` 任一校验项不满足，或 `mark_superseded` CAS rowcount=0 |
 
@@ -45,31 +46,15 @@ CODE: 中文业务原因；底层详情
 | `VECTORIZING_FAILED` | 向量化失败 | Chunk embedding、MySQL 真值写入或 Qdrant 写入存在失败 Chunk |
 | `ES_INDEXING_FAILED` | ES 入库失败 | Elasticsearch index 创建或 Chunk 文档写入失败 |
 
-## 3. Parse Result 失败通知
+## 3. 解析终态读取（parse_result MQ 已下线，LINK-166）
 
-发送给 Java 的 parse result payload 字段：
+> **parse_result 终态回传 MQ 已下线（LINK-166）**：Python 端解析完成后**只写 DB 终态**，不再向 Java 发送 `ParseResultMessage`；生产侧 `ParseResultNotifier`、`messages/parse_result.py` 与 `PARSE_RESULT_TOPIC` 配置项均已删除。
 
-```json
-{
-  "task_id": "...",
-  "original_file_id": 10001,
-  "document_parsed_log_id": 10002,
-  "dataset_id": 10003,
-  "user_id": 10002,
-  "task_status": "failed",
-  "failure_reason": "PARSE_ENGINE_FAILED: 文件解析失败，请检查文件内容；...",
-  "parse_finished_at": "2026-04-28T10:00:08",
-  "user_message": "解析失败，请稍后重试"
-}
-```
+解析终态的权威单源是 MySQL `document_parse_pipeline.pipeline_status`（`SUCCESS` / `FAILED`，附 `failed_stage` / `recover_from_stage` / `failure_reason` / 各阶段耗时）。
 
-约定：
-
-- 成功时 `failure_reason` 为 `null`。
-- 失败时异常详情放入 `failure_reason`。
-- `user_message` 为可选用户提示，成功或失败均可为空。
-- 不添加 `mq_type`、`mq_name`、`payload` 信封。
-- `success` 表示 Markdown、分片、向量化、ES 入库全部完成；任一阶段失败都发送 `failed`。
+- `failure_reason` 由 `build_failure_reason` 构造（见 §2），格式 `CODE: 中文原因；底层详情`；成功时为 `null`。
+- `pipeline_status=SUCCESS` 表示 Markdown、分片、向量化、ES 入库、稀疏向量全部完成；任一阶段失败即 `FAILED`。
+- 前端改由轮询 Java `parse-results` 接口读 DB 获取终态（LINK-98）；Java 端停止消费见 LINK-165。详见 [http_contracts.md](http_contracts.md) / [mq_contracts.md](mq_contracts.md) 的「解析终态读取」。
 
 ## 4. Module Exceptions
 

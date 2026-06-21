@@ -43,7 +43,10 @@ class JinaProvider(BaseProvider):
             **kwargs,
         )
         self.model_name = model_name
-        self._capabilities = {CapabilityType.RERANK, CapabilityType.EMBEDDING}
+        self._capabilities = {
+            CapabilityType.RERANK,
+            CapabilityType.EMBEDDING,
+        }
         self._client = OpenAIClient(
             api_key=api_key,
             api_base_url=self.api_base_url or "",

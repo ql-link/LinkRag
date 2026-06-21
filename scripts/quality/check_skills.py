@@ -10,8 +10,8 @@
 4. 孤儿目录：``.ai/skills/<name>/`` 存在却没有 SKILL.md。
 
 Usage:
-    python scripts/check_skills.py                 # 扫描全部 skill（pre-commit / CI）
-    python scripts/check_skills.py --skills-dir .ai/skills
+    python scripts/quality/check_skills.py                 # 扫描全部 skill（pre-commit / CI）
+    python scripts/quality/check_skills.py --skills-dir .ai/skills
 
 Exit codes:
     0  - 无 error（可能有 warning）
@@ -32,7 +32,7 @@ except ImportError:
     print("ERROR: PyYAML is required. Install it with: pip install pyyaml", file=sys.stderr)
     sys.exit(2)
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SKILLS_DIR = REPO_ROOT / ".ai" / "skills"
 
 # 路径根：只校验这些前缀开头的 token，避免误判普通词。

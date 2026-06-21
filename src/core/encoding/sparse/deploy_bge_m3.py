@@ -9,10 +9,12 @@ from pathlib import Path
 from time import perf_counter
 from typing import Any, Mapping, Sequence
 
-from .constants import DEFAULT_SPARSE_VECTOR_MODEL_NAME
 from .exceptions import SparseVectorConfigurationError, SparseVectorOutputError
 
 
+# 本地 bge-m3 部署脚本自带默认模型名（运行时稀疏链路已改为 per-user adapter 解析，
+# 不再从 settings 读系统级 SPARSE_VECTOR_MODEL_NAME；此处仅供该独立部署工具使用）。
+DEFAULT_BGE_M3_MODEL_NAME = "BAAI/bge-m3"
 DEFAULT_SAMPLE_TEXT = "Local BGE-M3 sparse vector smoke test for toLink RAG."
 
 
@@ -120,7 +122,7 @@ def _parse_args(argv: Sequence[str] | None) -> DeploymentConfig:
     )
     parser.add_argument(
         "--model-name",
-        default=os.getenv("SPARSE_VECTOR_MODEL_NAME", DEFAULT_SPARSE_VECTOR_MODEL_NAME),
+        default=os.getenv("SPARSE_VECTOR_MODEL_NAME", DEFAULT_BGE_M3_MODEL_NAME),
         help="Hugging Face model id or local model directory.",
     )
     parser.add_argument(

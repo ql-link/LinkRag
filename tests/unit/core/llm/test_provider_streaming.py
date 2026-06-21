@@ -13,6 +13,7 @@ import pytest
 from src.core.llm.exceptions import AuthenticationError
 from src.core.llm.providers._sse import iter_sse_json
 from src.core.llm.providers.anthropic import AnthropicProvider
+from src.core.llm.providers.google import GoogleProvider
 from src.core.llm.providers.openai import OpenAICompatibleProvider
 
 
@@ -136,6 +137,83 @@ async def test_qwen_stream_yields_deltas_then_end():
 
 
 @pytest.mark.asyncio
+async def test_qwen_stream_requests_include_usage():
+    # 必须显式带 stream_options.include_usage，否则 OpenAI 兼容流式不返回 usage，
+    # 对话 generate 的 token 会恒为 0（chat_turn 落库 p/c/t 全 0 的根因）。
+    resp = _FakeStreamResponse(
+        ['data: {"choices":[{"delta":{"content":"x"},"finish_reason":"stop"}]}', "data: [DONE]"]
+    )
+    provider = OpenAICompatibleProvider(
+        api_key="k",
+        model_name="qwen3.5-flash",
+        api_base_url="https://example.test/v1/chat/completions",
+    )
+    fake = _inject(provider, resp)
+
+    _ = [c async for c in provider.stream(prompt="hi")]
+
+    _, _, body, _ = fake.calls[0]
+    assert body["stream_options"] == {"include_usage": True}
+
+
+@pytest.mark.asyncio
+async def test_openai_stream_captures_usage_only_trailing_chunk():
+    # OpenAI/include_usage 标准形态：finish_reason 帧的 usage 为空，usage 随后单独
+    # 在一条 choices=[] 的末帧下发。必须捕获该帧，否则 token 丢失。
+    resp = _FakeStreamResponse(
+        [
+            'data: {"choices":[{"delta":{"content":"答"},"finish_reason":null}]}',
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+            'data: {"choices":[],'
+            '"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}}',
+            "data: [DONE]",
+        ]
+    )
+    provider = OpenAICompatibleProvider(
+        api_key="k",
+        model_name="gpt-4o",
+        api_base_url="https://example.test/v1/chat/completions",
+    )
+    _inject(provider, resp)
+
+    chunks = [c async for c in provider.stream(prompt="hi")]
+
+    assert "".join(c.delta for c in chunks) == "答"
+    last = chunks[-1]
+    assert last.is_end is True
+    assert last.usage is not None
+    assert last.usage.prompt_tokens == 11
+    assert last.usage.completion_tokens == 7
+    assert last.usage.total_tokens == 18
+
+
+@pytest.mark.asyncio
+async def test_qwen_stream_usage_on_finish_chunk_not_duplicated():
+    # qwen 把 usage 挂在 finish_reason 帧上：应在该帧承载 usage，且不再补发重复末帧。
+    resp = _FakeStreamResponse(
+        [
+            'data: {"choices":[{"delta":{"content":"答"},"finish_reason":null}]}',
+            'data: {"choices":[{"delta":{},"finish_reason":"stop"}],'
+            '"usage":{"prompt_tokens":1,"completion_tokens":2,"total_tokens":3}}',
+            "data: [DONE]",
+        ]
+    )
+    provider = OpenAICompatibleProvider(
+        api_key="k",
+        model_name="qwen3.5-flash",
+        api_base_url="https://example.test/v1/chat/completions",
+    )
+    _inject(provider, resp)
+
+    chunks = [c async for c in provider.stream(prompt="hi")]
+
+    end_chunks = [c for c in chunks if c.is_end]
+    assert len(end_chunks) == 1
+    assert end_chunks[0].usage is not None
+    assert end_chunks[0].usage.total_tokens == 3
+
+
+@pytest.mark.asyncio
 async def test_qwen_stream_tolerates_null_content_delta():
     # DashScope/OpenAI 流式首个 role chunk 常带 content=null；不应崩在 content_so_far += None。
     resp = _FakeStreamResponse(
@@ -201,13 +279,17 @@ async def test_qwen_stream_raises_on_auth_error():
 
 
 @pytest.mark.asyncio
-async def test_anthropic_stream_parses_content_block_delta():
+async def test_anthropic_stream_parses_content_block_delta_and_usage():
+    # 真实 Anthropic 流式：input_tokens 在 message_start，output_tokens（累计）在
+    # message_delta，message_stop 不带 usage。须跨事件累积，否则 token 恒为 0。
     resp = _FakeStreamResponse(
         [
+            'data: {"type":"message_start","message":{"usage":{"input_tokens":12,"output_tokens":1}}}',
             "event: content_block_delta",
             'data: {"type":"content_block_delta","delta":{"text":"Hel"}}',
             'data: {"type":"content_block_delta","delta":{"text":"lo"}}',
-            'data: {"type":"message_stop","usage":{"input_tokens":1,"output_tokens":2}}',
+            'data: {"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":9}}',
+            'data: {"type":"message_stop"}',
         ]
     )
     provider = AnthropicProvider(api_key="k", model_name="claude-3-sonnet-20240229")
@@ -216,4 +298,36 @@ async def test_anthropic_stream_parses_content_block_delta():
     chunks = [c async for c in provider.stream(prompt="hi", system_prompt="sys")]
 
     assert "".join(c.delta for c in chunks) == "Hello"
-    assert chunks[-1].is_end is True
+    last = chunks[-1]
+    assert last.is_end is True
+    assert last.usage is not None
+    assert last.usage.prompt_tokens == 12
+    assert last.usage.completion_tokens == 9
+    assert last.usage.total_tokens == 21
+
+
+# ────────────────────────── google（Gemini 原生 schema） ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_google_stream_carries_usage_on_final_chunk():
+    # Gemini 流式按 chunk 下发 usageMetadata，末帧（带 finishReason）给最终值。
+    resp = _FakeStreamResponse(
+        [
+            'data: {"candidates":[{"content":{"parts":[{"text":"你"}]}}]}',
+            'data: {"candidates":[{"content":{"parts":[{"text":"好"}]},"finishReason":"STOP"}],'
+            '"usageMetadata":{"promptTokenCount":8,"candidatesTokenCount":5,"totalTokenCount":13}}',
+        ]
+    )
+    provider = GoogleProvider(api_key="k", model_name="gemini-2.5-flash")
+    _inject(provider, resp)
+
+    chunks = [c async for c in provider.stream(prompt="hi")]
+
+    assert "".join(c.delta for c in chunks) == "你好"
+    last = chunks[-1]
+    assert last.is_end is True
+    assert last.usage is not None
+    assert last.usage.prompt_tokens == 8
+    assert last.usage.completion_tokens == 5
+    assert last.usage.total_tokens == 13

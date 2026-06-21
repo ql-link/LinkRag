@@ -72,6 +72,41 @@ def _guess_source_file(source_file: str | None) -> str:
     return source_file or "unknown"
 
 
+def _report_enhancement_usage(
+    *,
+    user_id: int | None,
+    provider_type: str | None,
+    model_name: str | None,
+    config_id: int | None,
+    operation: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    total_tokens: int,
+) -> None:
+    """解析侧 vision/table 增强用量上报（旁路、非阻塞，失败不阻断）。
+
+    仅在按用户构造（有 ``user_id``）且确有 token 时上报；系统默认 client 无 user_id，跳过。
+    provider client 不知道所属解析任务，故不带 ``task_id``——user + model 足以做成本归因。
+    lazy import ``report_usage_nowait`` 避免 core → services 的模块级耦合；它调度后台 task
+    发送、立即返回，不阻塞增强主链路。
+    """
+    if not user_id or total_tokens <= 0:
+        return
+    from src.services.usage_reporter import report_usage_nowait
+
+    report_usage_nowait(
+        user_id=user_id,
+        provider_type=provider_type or "",
+        model_name=model_name or "",
+        stage="parse",
+        operation=operation,
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        config_id=config_id,
+    )
+
+
 def _resolve_relative_path(image_url: str, source_file: str | None) -> Path:
     image_path = Path(image_url)
     if image_path.is_absolute():
@@ -186,7 +221,13 @@ async def abuild_table_client(user_id: int) -> "ProviderTableClient":
         resolved = await _resolve_user_model("CHAT", user_id=user_id)
     except LLMConfigMissingError as exc:
         raise EnhancementModelMissingError("table") from exc
-    return ProviderTableClient(provider=resolved.provider)
+    return ProviderTableClient(
+        provider=resolved.provider,
+        model_name=resolved.model_name,
+        user_id=user_id,
+        provider_type=getattr(resolved, "provider_type", None),
+        config_id=getattr(resolved, "config_id", None),
+    )
 
 
 async def abuild_vision_client(user_id: int) -> "ProviderVisionClient":
@@ -200,7 +241,13 @@ async def abuild_vision_client(user_id: int) -> "ProviderVisionClient":
         resolved = await _resolve_user_model("VISION", user_id=user_id)
     except LLMConfigMissingError as exc:
         raise EnhancementModelMissingError("vision") from exc
-    return ProviderVisionClient(provider=resolved.provider, model_name=resolved.model_name)
+    return ProviderVisionClient(
+        provider=resolved.provider,
+        model_name=resolved.model_name,
+        user_id=user_id,
+        provider_type=getattr(resolved, "provider_type", None),
+        config_id=getattr(resolved, "config_id", None),
+    )
 
 
 class ProviderTableClient(TableClient):
@@ -214,6 +261,9 @@ class ProviderTableClient(TableClient):
         temperature: float = 0.2,
         max_tokens: int = 256,
         model_name: str | None = None,
+        user_id: int | None = None,
+        provider_type: str | None = None,
+        config_id: int | None = None,
     ) -> None:
         capability_type = _get_capability_type()
         resolved_model_name = model_name
@@ -228,12 +278,21 @@ class ProviderTableClient(TableClient):
         self._system_prompt = system_prompt
         self._temperature = temperature
         self._max_tokens = max_tokens
+        self._model_name = resolved_model_name
+        # 用量归属上下文：仅在按用户构造（abuild_table_client）时有 user_id，系统默认 client 为 None。
+        self._user_id = user_id
+        self._provider_type = provider_type
+        self._config_id = config_id
 
     def describe_tables(self, tables, source_file=None):
         raise RuntimeError("ProviderTableClient only supports async usage. Please call `adescribe_tables`.")
 
     async def adescribe_tables(self, tables: list[str], source_file: str | None = None) -> dict[str, str]:
         results: dict[str, str] = {}
+        prompt_tokens_sum = 0
+        completion_tokens_sum = 0
+        total_tokens_sum = 0
+        resolved_model = self._model_name
         for table in tables:
             prompt = TABLE_PROMPT_TEMPLATE.format(
                 source_file=_guess_source_file(source_file),
@@ -245,9 +304,28 @@ class ProviderTableClient(TableClient):
                 temperature=self._temperature,
                 max_tokens=self._max_tokens,
             )
+            usage = getattr(response, "usage", None)
+            if usage is not None:
+                prompt_tokens_sum += int(getattr(usage, "prompt_tokens", 0) or 0)
+                completion_tokens_sum += int(getattr(usage, "completion_tokens", 0) or 0)
+                total_tokens_sum += int(getattr(usage, "total_tokens", 0) or 0)
+            resolved_model = getattr(response, "model", None) or resolved_model
             description = _clean_llm_text(response.content if response else "")
             if description:
                 results[table] = description
+
+        # 用量上报（旁路）：表格增强是文本生成，prompt/completion 均真实计入；按本次调用
+        # （= 本文档全部表格）聚合一条。仅在按用户构造且确有 token 时上报。
+        _report_enhancement_usage(
+            user_id=self._user_id,
+            provider_type=self._provider_type,
+            model_name=resolved_model,
+            config_id=self._config_id,
+            operation="table",
+            prompt_tokens=prompt_tokens_sum,
+            completion_tokens=completion_tokens_sum,
+            total_tokens=total_tokens_sum,
+        )
         return results
 
 
@@ -261,6 +339,9 @@ class ProviderVisionClient(VisionClient):
         prompt_template: str = VISION_PROMPT_TEMPLATE,
         model_name: str | None = None,
         max_concurrency: int | None = None,
+        user_id: int | None = None,
+        provider_type: str | None = None,
+        config_id: int | None = None,
     ) -> None:
         capability_type = _get_capability_type()
         settings = _get_settings()
@@ -274,6 +355,10 @@ class ProviderVisionClient(VisionClient):
             self._provider = provider
         self._prompt_template = prompt_template
         self._model_name = resolved_model_name
+        # 用量归属上下文：仅在按用户构造（abuild_vision_client）时有 user_id。
+        self._user_id = user_id
+        self._provider_type = provider_type
+        self._config_id = config_id
         concurrency = (
             max_concurrency
             if max_concurrency is not None
@@ -305,11 +390,32 @@ class ProviderVisionClient(VisionClient):
             )
             for image_url in image_urls
         ]
-        pairs = await asyncio.gather(*tasks)
+        triples = await asyncio.gather(*tasks)
+
+        # 聚合本次调用（= 本文档全部图片）各图的 token，按 vision 一条上报。
+        prompt_tokens_sum = 0
+        completion_tokens_sum = 0
+        total_tokens_sum = 0
+        resolved_model = self._model_name
+        for _url, _desc, usage in triples:
+            if usage is not None:
+                prompt_tokens_sum += int(getattr(usage, "prompt_tokens", 0) or 0)
+                completion_tokens_sum += int(getattr(usage, "completion_tokens", 0) or 0)
+                total_tokens_sum += int(getattr(usage, "total_tokens", 0) or 0)
+        _report_enhancement_usage(
+            user_id=self._user_id,
+            provider_type=self._provider_type,
+            model_name=resolved_model,
+            config_id=self._config_id,
+            operation="vision",
+            prompt_tokens=prompt_tokens_sum,
+            completion_tokens=completion_tokens_sum,
+            total_tokens=total_tokens_sum,
+        )
 
         return {
             image_url: description
-            for image_url, description in pairs
+            for image_url, description, _usage in triples
             if description
         }
 
@@ -321,13 +427,13 @@ class ProviderVisionClient(VisionClient):
         source_context: str,
         image_bytes_by_url: dict[str, tuple[bytes, str]] | None,
         semaphore: asyncio.Semaphore,
-    ) -> tuple[str, str | None]:
+    ) -> tuple[str, str | None, object | None]:
         async with semaphore:
             try:
                 if image_bytes_by_url and image_url in image_bytes_by_url:
-                    image_bytes, _mime_type = image_bytes_by_url[image_url]
+                    image_bytes, mime_type = image_bytes_by_url[image_url]
                 else:
-                    image_bytes, _mime_type = await asyncio.to_thread(
+                    image_bytes, mime_type = await asyncio.to_thread(
                         _load_image_bytes,
                         image_url,
                         source_file,
@@ -336,11 +442,14 @@ class ProviderVisionClient(VisionClient):
                 raise
             except Exception as exc:
                 logger.warning("Image enhancement failed for %s: %s", image_url, exc)
-                return image_url, None
+                return image_url, None, None
 
             image_base64 = base64.b64encode(image_bytes).decode("utf-8")
             prompt = self._prompt_template.format(source_context=source_context)
             analyze_kwargs = {"model": self._model_name} if self._model_name else {}
+            if mime_type:
+                # 透传真实图片 mime（PNG/webp…），不让 provider 写死 jpeg 而被 Anthropic/Google 拒图。
+                analyze_kwargs["media_type"] = mime_type
             try:
                 response = await self._provider.analyze_image(
                     image_base64=image_base64,
@@ -351,10 +460,10 @@ class ProviderVisionClient(VisionClient):
                 raise
             except Exception as exc:
                 logger.warning("Image enhancement failed for %s: %s", image_url, exc)
-                return image_url, None
+                return image_url, None, None
 
             description = _clean_llm_text(response.content if response else "")
-            return image_url, description or None
+            return image_url, description or None, getattr(response, "usage", None)
 
     @staticmethod
     def _normalize_concurrency(value: int | str | None) -> int:

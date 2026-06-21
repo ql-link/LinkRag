@@ -111,6 +111,53 @@ Java 管理端                          toLink-Rag (Python)
 
 消息以 `file_type` 作为 routing key，便于按文件类型做消费侧分流。
 
+## 删除通知（Java → Python，LINK-55）
+
+数据集 / 文件删除采用「Java 隐性软删 + Python 清产物」两段式：Java 在删除事务里软删原文件行（`document_original_file.is_deleted=1`，保留 OSS 原文件对象）、物理删会话消息，提交后（afterCommit）发本通知；Python 据此删除**解析域衍生产物**（解析三表 + `kb_document_chunk` + Qdrant 向量点 + ES 索引 + OSS `parsed/.../{taskId}/` 下的 Markdown 与图片），**不碰原文件**。
+
+### Topic
+
+- 实际收发 topic：`tolink.rag.document_delete`（由 `DocumentDeleteMessage.MQ_NAME` 固定）。
+- 环境变量 `DOCUMENT_DELETE_TOPIC` 仅用于 Kafka topic 自动创建，默认同名；不改变 Python 实际订阅 topic。
+- 语义 `QUEUE`（点对点），消费组 `tolink.rag.document_delete`。
+
+### 消息体（DocumentDeletePayload）
+
+扁平裸 JSON + snake_case，**无信封**（与 parse_task 一致，区别于 chat_turn / usage_report 的 `{mq_type,mq_name,payload}` 信封）；Java 侧 `JSON.toJSONString` 直发，消费端 `json.loads` 即得下表。
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `delete_type` | string | ✅ | 删除范围：`dataset` / `file` |
+| `dataset_id` | int (BIGINT) | ✅ | 所属数据集 id |
+| `user_id` | int (BIGINT) | ✅ | 操作用户 id（归属维度，删除时兜底校验防越权） |
+| `original_file_id` | int (BIGINT) | 仅 `file` 必填 | 被软删的原文件 id；`dataset` 范围不下发（Java 端为 null，fastjson 省略） |
+
+### 消息示例
+
+删数据集（按 dataset 级联删名下全部衍生产物，不下发文件清单）：
+
+```json
+{"delete_type": "dataset", "dataset_id": 10, "user_id": 100}
+```
+
+删单文件（按 original_file_id 删该文件衍生产物）：
+
+```json
+{"delete_type": "file", "dataset_id": 200, "user_id": 100, "original_file_id": 1}
+```
+
+### 幂等、顺序与可靠性
+
+- **幂等**：按 id / filter 删，重复消费 no-op；删不存在产物按成功处理。
+- **删除次序（Python 侧）**：先删外部存储（Qdrant/ES/OSS），最后删 DB 行——DB 行是定位外部产物的账本，留到最后删保证崩溃/重试安全。
+- **无顺序保证**：Java 发送不带 key，分区轮询；删除通知之间、与 parse_task 之间均无时序约束。
+- **可靠性**：Java 尽力发（afterCommit 失败仅告警吞掉，无对账）；Python 坏消息进死信跳过，暂时性失败退避重试（≤3 次）耗尽进 `.DLT`。
+
+### 边界
+
+- 不删原文件：`document_original_file` 行（Java 软删保留）与 OSS 原文件对象（Java 保留）。透传 md（`file_type∈{md,markdown}`）的 `parsed_object_key` 指向原文件对象，Python 按「非 `parsed/` 前缀跳过」护栏排除。
+- 不删账务/用户态：`llm_usage_log`、`chat_*`（会话消息由 Java 物理删）。
+
 ## 终态读取（Python → DB → 前端轮询）
 
 > **parse_result 终态回传 MQ 已下线（LINK-166）**。Python 端解析完成后**只写 DB 终态**，不再向 Java 发送 MQ 通知；`ParseResultMessage` 消息体与生产侧代码、`PARSE_RESULT_TOPIC` 配置项均已删除。Java 端停止消费见 LINK-165。
@@ -125,6 +172,81 @@ Java 管理端                          toLink-Rag (Python)
 - `FAILED`：上述任一环节失败，具体原因见 `failure_reason`。
 
 不存在 "部分成功" 状态。中间步骤的细节状态由 toLink-Rag 写入 `document_parse_pipeline`，前端通过 Java 查询接口读取。
+
+## 对话轮次上报（Python→Java）
+
+RAG 问答在 Python 端（`/api/v1/rag/stream`）流式生成结束后，发送一条 `ChatTurnMessage`，由 **Java 消费并落库**：在单事务里写入 `chat_message` 一行（一行一轮：query + answer 同行）、`llm_usage_log` 一行，并更新 `chat_conversation` 的 `last_config_id` / `last_model_name` / `updated_at`。Python 侧不写这三张表。
+
+### Topic
+
+- 实际收发 topic：`tolink.rag.chat_turn`（由 `ChatTurnMessage.MQ_NAME` 固定）。
+
+### 消息体（ChatTurnPayload）
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `conversation_id` | int | ✅ | 所属对话 ID（前端请求 `/rag/stream` 时传入，由 Java 预先创建） |
+| `request_id` | string | ✅ | 请求追踪 ID / 幂等键；Java 据此去重，写入 `chat_message.request_id` 与 `llm_usage_log.request_id` |
+| `user_id` | int | ✅ | 用户 ID |
+| `query` | string | ✅ | 用户提问 → `chat_message.query` |
+| `answer` | string | ✅ | LLM 回答 → `chat_message.answer`（`partial` 为半截，`failed` 可空串） |
+| `config_id` | int | ✅ | 本轮所用 LLM 配置 ID |
+| `provider_type` | string | ✅ | LLM 厂商类型 |
+| `model_name` | string | ✅ | 模型名快照（可空时为空串） |
+| `prompt_tokens` | int | ✅ | 输入 Token 数（流式未返回 usage 时为 0） |
+| `completion_tokens` | int | ✅ | 输出 Token 数 |
+| `total_tokens` | int | ✅ | 总 Token 数 |
+| `references` | string[] | ⬜ | 召回片段 `chunk_id` 列表（仅标识，不含正文）→ `chat_message.references` |
+| `latency_ms` | int | ⬜ | 生成延迟（毫秒） |
+| `status` | string | ✅ | `success`（正常结束）/ `partial`（客户端断连，保留半截）/ `failed`（生成异常） |
+
+> 公共信封字段 `message_id` / `timestamp` 由消息基类自动附带（见 [§协议要点](#协议要点)）。
+
+### 路由键与语义
+
+- 路由键：`conversation_id`，保证同一对话的轮次有序投递。
+- **空召回不发消息**：0 命中或全部片段缺正文时只回 `recall_done`，不产生对话轮次。
+- **缺 `conversation_id` 不发消息**：`/rag/stream` 缺该字段直接 422，不进入召回生成。
+- **最终一致**：Python 端发送失败仅告警、不影响已返回答案；建议 Java 侧以 `request_id` 幂等去重，配合对账补偿。
+- **归属校验（Java 必做）**：`conversation_id` 来自前端请求体，`user_id` 取自 session token claims，Python 仅透传、不校验二者归属关系。Java 落库前**必须**校验 `conversation_id` 属于该 `user_id`（不匹配则丢弃/告警），否则存在跨用户写入他人对话的风险。
+
+## 用量上报（Python→Java/统计侧）
+
+对话最终 `generate` 的用量随上面的 `ChatTurnMessage` 落库；**全链路其余模型调用**——解析侧 dense embed / 图片增强(vision) / 表格增强(table)、召回侧 query embed / rerank——的用量经 `UsageReportMessage` 单独上报，由 Java 消费后落 `llm_usage_log` 一行。
+
+### Topic
+
+- 实际收发 topic：`tolink.rag.usage_report`（由 `UsageReportMessage.MQ_NAME` 固定）。
+
+### 消息体（UsageReportPayload）
+
+| 字段 | 类型 | 必填 | 说明 |
+| --- | --- | --- | --- |
+| `user_id` | string | ✅ | 用户 ID |
+| `provider_type` | string | ✅ | LLM 厂商类型 |
+| `model_name` | string | ✅ | 模型名称 |
+| `stage` | string | ✅ | 阶段：`parse` / `recall` / `chat` |
+| `operation` | string | ✅ | 操作：`embed` / `sparse` / `rerank` / `vision` / `table`（`generate` 走 `chat_turn`） |
+| `prompt_tokens` | int | ✅ | 输入 Token；向量类调用即此列 |
+| `completion_tokens` | int | ✅ | 输出 Token；向量类（embed/rerank）恒为 0，vision/table 为真实生成 token |
+| `total_tokens` | int | ✅ | 总 Token |
+| `config_id` | int | ⬜ | 用户配置 ID；系统配置调用缺省 → 落 NULL |
+| `task_id` | string | ⬜ | 解析任务锚点（parse·embed 带；vision/table 暂不带） |
+| `conversation_id` | int | ⬜ | 对话 ID（recall/chat 关联） |
+| `request_id` | string | ⬜ | 请求追踪 ID，关联同一次召回多条用量（召回侧暂不透传） |
+| `latency_ms` | int | ⬜ | 调用耗时（毫秒） |
+| `status` | string | ⬜ | `success` / `partial` / `failed`，默认 `success` |
+
+> 公共信封字段 `message_id` / `timestamp` 由消息基类自动附带。
+
+### 路由键与语义
+
+- 路由键：`user_id`，按用户分区。
+- **口径**：token 一律由模型返回，Python 不自算；向量类 `completion_tokens=0`。
+- **token 由模型返回的取舍**：`sparse` 向量模型不返回 token，本期**预留不上报**，仅在 `operation` 枚举占位；启用需 `bge-m3-server` 在响应里返回 `usage`。
+- **解析侧粒度**：task 级聚合——每个解析任务每 operation 上报一条（token 在任务内累加），不落 chunk 级明细。全缓存命中（token=0）不上报。
+- **旁路、最终一致**：用量是事后算账的旁路记录。Python 上报失败仅告警、不阻断解析/召回主链路，丢一条用量可接受。
+- **Java 落库**：字段直映射 `llm_usage_log`；可空字段缺失落 NULL。对话 `generate` 的行由 Java 消费 `chat_turn` 时补 `stage='chat'`、`operation='generate'`，使本表口径全链路一致。
 
 ## 协议要点
 

@@ -11,8 +11,8 @@ class CapabilityType(Enum):
     """LLM 能力类型枚举"""
     TEXT = "text"                      # 文本生成
     EMBEDDING = "embedding"            # 向量化
+    SPARSE_EMBEDDING = "sparse_embedding"  # 稀疏向量化
     RERANK = "rerank"                  # 重排
-    OCR = "ocr"                        # 图像文本提取
     VISION = "vision"                  # 视觉理解
     TOOL_CALLING = "tool_calling"      # 工具调用
 
@@ -75,22 +75,8 @@ class IReranker(ABC):
         pass
 
 
-class IOcrProcessor(ABC):
-    """OCR/图像文本提取接口"""
-
-    @abstractmethod
-    async def extract_text(
-        self,
-        image_base64: str,
-        prompt: str | None = None,
-        **kwargs
-    ) -> "OcrResult":
-        """从图像中提取文本"""
-        pass
-
-
 class IVisionProcessor(ABC):
-    """视觉理解接口"""
+    """视觉理解接口（OCR 即视觉 + 文字提取 prompt，不再单列 IOcrProcessor）"""
 
     @abstractmethod
     async def analyze_image(
@@ -120,11 +106,6 @@ class EmbeddingResult:
 
 class RerankResult:
     """语义重排结果（占位，实际定义在 response.py）"""
-    pass
-
-
-class OcrResult:
-    """OCR 识别结果（占位，实际定义在 response.py）"""
     pass
 
 

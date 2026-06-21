@@ -84,14 +84,19 @@ class BaseProvider(ABC):
         """向量化（子类可选实现）"""
         raise NotImplementedError(f"{self.provider_type} does not support embedding")
 
+    async def embed_sparse(self, texts, model=None, **kwargs):
+        """稀疏向量化（子类可选实现）
+
+        返回 :class:`~src.core.llm.response.SparseEmbeddingResult`，其中每条文本对应一组
+        整数 token_id 与权重。声明 :class:`CapabilityType.SPARSE_EMBEDDING` 的子类必须实现，
+        否则能力门禁放行后会在此抛错。
+        """
+        raise NotImplementedError(f"{self.provider_type} does not support sparse embedding")
+
     async def rerank(self, query, documents, model=None, top_n=None, **kwargs):
         """语义重排（子类可选实现）"""
         raise NotImplementedError(f"{self.provider_type} does not support rerank")
 
-    async def extract_text(self, image_base64, prompt=None, **kwargs):
-        """OCR（子类可选实现）"""
-        raise NotImplementedError(f"{self.provider_type} does not support OCR")
-
     async def analyze_image(self, image_base64, prompt, **kwargs):
-        """视觉分析（子类可选实现）"""
+        """视觉分析（子类可选实现；OCR 即视觉 + 文字提取 prompt，不再单列）"""
         raise NotImplementedError(f"{self.provider_type} does not support vision")

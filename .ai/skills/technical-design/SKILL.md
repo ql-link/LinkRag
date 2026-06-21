@@ -170,7 +170,7 @@ when_to_use: 当用户明确要求"生成技术方案 / 生成技术实现文档
 先用脚本做机器门禁：
 
 ```bash
-python scripts/flow-guard.py check <feature-name> technical_design
+python scripts/acceptance/flow-guard.py check <feature-name> technical_design
 ```
 
 该命令校验 `state.yaml` 合法且 `brief`、`acceptance` 均已冻结。返回 `HARD STOP` 时按 `Next:` 回上游，不得继续。通过后再确认：

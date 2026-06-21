@@ -26,7 +26,8 @@ from .overlap import ChunkOverlapConfig, ChunkOverlapper
 from .pipeline_chunker import StructuredSemanticChunker
 from .stage_routers import StageOneRouter, StageTwoRouter
 from .stage_two_noop import NoopStageTwoAlgorithm
-from .validators import CoarseChunkSetValidator
+from .stage_two_semantic_depth import SemanticDepthWindowStageTwo
+from .validators import CoarseChunkSetValidator, FinalChunkSetValidator
 
 
 class DenseEmbeddingConfigMissingError(RuntimeError):
@@ -128,6 +129,7 @@ def create_lazy_system_embedding_client() -> LazyEmbeddingClient:
 
 def _create_structured_chunking_engine(
     config: "ChunkingConfig | None" = None,
+    embedder: IEmbedder | None = None,
 ) -> ChunkingEngine:
     """创建标准两阶段 splitter 引擎。
 
@@ -144,10 +146,14 @@ def _create_structured_chunking_engine(
         if config is not None
         else settings.CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS
     )
+    max_chunk_tokens = (
+        config.max_chunk_tokens if config is not None else settings.CHUNKING_MAX_CHUNK_TOKENS
+    )
+    hard_max_tokens = (
+        config.hard_max_tokens if config is not None else settings.CHUNKING_HARD_MAX_TOKENS
+    )
     heading_break_level = (
-        config.heading_break_level
-        if config is not None
-        else settings.CHUNKING_HEADING_BREAK_LEVEL
+        config.heading_break_level if config is not None else settings.CHUNKING_HEADING_BREAK_LEVEL
     )
 
     tokenizer = Tokenizer()
@@ -166,15 +172,30 @@ def _create_structured_chunking_engine(
         algorithms=[candidate_algorithm],
     )
 
+    stage_two_embedder = embedder
+    if stage_two_embedder is None:
+        stage_two_embedder = create_lazy_system_embedding_client()
     stage_two_router = StageTwoRouter(
         algorithm_name=settings.CHUNKING_STAGE_TWO_ALGORITHM,
-        algorithms=[NoopStageTwoAlgorithm()],
+        algorithms=[
+            NoopStageTwoAlgorithm(),
+            SemanticDepthWindowStageTwo(
+                tokenizer=tokenizer,
+                embedder=stage_two_embedder,
+                max_chunk_tokens=max_chunk_tokens,
+                hard_max_tokens=hard_max_tokens,
+                min_chunk_tokens=min_candidate_chunk_tokens,
+            ),
+        ],
     )
     chunker = StructuredSemanticChunker(
         candidate_chunker=candidate_algorithm,
         stage_one_router=stage_one_router,
         stage_two_router=stage_two_router,
         validator=CoarseChunkSetValidator(),
+        final_validator=FinalChunkSetValidator(
+            tokenizer=tokenizer, hard_max_tokens=hard_max_tokens
+        ),
         exporter=ChunkExporter(),
         overlapper=overlapper,
     )
@@ -266,7 +287,7 @@ def create_chunk_embedding_pipeline() -> ChunkEmbeddingPipeline:
         configured_batch_size=settings.CHUNK_INDEX_EMBED_BATCH_SIZE,
     )
     return ChunkEmbeddingPipeline(
-        chunking_engine=_create_structured_chunking_engine(),
+        chunking_engine=_create_structured_chunking_engine(embedder=embedder),
         embedder=embedder,
         embedding_model=settings.SYSTEM_LLM_MODEL_EMBEDDING,
         batch_size=batch_size,
@@ -355,7 +376,7 @@ async def aresolve_user_chunk_embedding_pipeline(user_id: int) -> ChunkEmbedding
         configured_batch_size=settings.CHUNK_INDEX_EMBED_BATCH_SIZE,
     )
     return ChunkEmbeddingPipeline(
-        chunking_engine=_create_structured_chunking_engine(),
+        chunking_engine=_create_structured_chunking_engine(embedder=embedder),
         embedder=embedder,
         embedding_model=model_name,
         batch_size=batch_size,

@@ -12,8 +12,8 @@ check_docs_sync.py 只校验"改代码时有没有同时改文档"（文件级�
                       （如召回错误码引用 §6 实为 §5 的失效锚点）
 
 用法：
-    python scripts/check_docs_facts.py            # 全量校验 docs/
-    python scripts/check_docs_facts.py --quiet    # 只打印问题行
+    python scripts/quality/check_docs_facts.py            # 全量校验 docs/
+    python scripts/quality/check_docs_facts.py --quiet    # 只打印问题行
 退出码：0 通过 / 1 发现问题 / 2 运行错误。
 """
 
@@ -25,7 +25,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
+REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCS_DIR = REPO_ROOT / "docs"
 MQ_MESSAGES_DIR = REPO_ROOT / "src" / "core" / "mq" / "messages"
 

@@ -87,7 +87,7 @@
 | --- | --- | --- | --- | --- |
 | `POST` | `/send/parse-task` | 发送文档解析任务 MQ 消息 | `SendParseTaskRequest` | `MQResponse` |
 | `POST` | `/send/cache-sync` | 发送用户 LLM 配置缓存同步消息 | `SendCacheSyncRequest` | `MQResponse` |
-| `POST` | `/send/usage-report` | 发送 LLM 用量上报消息 | `SendUsageReportRequest` | `MQResponse` |
+| `POST` | `/send/usage-report` | 发送 LLM 用量上报消息（全链路归属：新增必填 `stage`/`operation`，详见下注） | `SendUsageReportRequest` | `MQResponse` |
 | `POST` | `/send/raw` | 向指定 topic/queue 发送原始消息 | `SendRawMessageRequest` | `MQResponse` |
 | `GET` | `/vendor/info` | 查询当前 MQ vendor 和可用 vendor | 无 | `MQVendorInfoResponse` |
 
@@ -105,6 +105,8 @@
 | ParseTask | `tolink.rag.parse_task` | Java/Python 解析任务输入 |
 | CacheSync | `tolink.rag.cache_sync` | 缓存同步 |
 | UsageReport | `tolink.rag.usage_report` | 用量上报 |
+
+> `SendUsageReportRequest`（用量上报全链路归属）：必填 `user_id` / `provider_type` / `model_name` / `stage`(`parse`/`recall`/`chat`) / `operation`(`embed`/`sparse`/`rerank`/`vision`/`table`/`generate`) / `prompt_tokens` / `completion_tokens` / `total_tokens`；可选 `config_id` / `task_id` / `conversation_id` / `request_id` / `latency_ms` / `status`。字段语义与 MQ 载荷一致，见 [mq_contracts.md §用量上报](mq_contracts.md#用量上报pythonjava统计侧)。
 
 > parse_result 终态回传 topic（Python→Java 解析终态通知）已下线（LINK-166）：终态只写 DB，前端轮询 Java 查询读取，见下方「解析终态读取」。
 
@@ -135,7 +137,7 @@ parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权�
 | `POST` | `/generate/stream` | SSE 流式文本生成 | `GenerateRequest` |
 | `POST` | `/embed` | 文本向量化 | `EmbedRequest` |
 | `POST` | `/rerank` | 文档重排 | `RerankRequest` |
-| `POST` | `/ocr` | 图片 OCR | `OcrRequest` |
+| `POST` | `/ocr` | 图片文字提取（兼容旧 endpoint）。OCR 不再是独立能力，内部统一走 VISION（`analyze_image`）：读 `VISION` 配置、按 base64 嗅探的真实 mime 传图、未带 `prompt` 时用默认文字提取提示词；返回 `content/model/usage`，与原结构一致 | `OcrRequest` |
 
 `GenerateRequest`：
 
@@ -213,7 +215,10 @@ session token 由 Java 签发、Python 用**独立专用密钥**验签；claims�
 | --- | --- | --- | --- |
 | `query` | string | 是 | 用户问题，不能为空或纯空白 |
 | `config_id` | int | 是 | 本次生成所用 CHAT 模型配置 id（前端选中、用户已配置）。缺失 `422`；不属本用户 / 非 CHAT / 已停用 / 不存在 → 召回前置失败 `RECALL_MODEL_CONFIG_MISSING` |
+| `conversation_id` | int | 是 | 本轮所属对话 id（Java 预先创建），作为对话落库挂载锚点。缺失 `422`，不进入召回生成、不发对话轮次消息 |
 | `dataset_ids` | list[int] | 否 | 本次查询的数据集**子集选择**，必须 ⊆ token 授权范围（超出 `403`）；省略/空 = 用 token 全量授权范围 |
+
+> 问答正常结束 / 生成失败 / 客户端断连时，Python 端发一条 `tolink.rag.chat_turn` 消息供 Java 落库对话与用量（空召回不发）。契约见 [mq_contracts.md §对话轮次上报](mq_contracts.md#对话轮次上报pythonjava)。
 
 **身份只取 token claims**——body 不含 `user_id`，前端自报一律不信任。`top_k` / 召回分数阈值 /
 召回路 / 容错模式 / rerank 条数均由服务端**按数据集配置**控制（`dataset_parse_config.recall_config`：
@@ -240,15 +245,16 @@ data: {"answer": "<完整答案>", "hits": [...], "rerank_applied": true, "faile
 ```
 
 - `answer_delta`：流式增量 token，可 0 到多帧；
-- `answer_done`：生成结束终态，`hits` 为 **rerank 精排后**的最终候选（不含正文），发送后关闭流；
-- **空命中 / 全部片段缺正文**：不生成，发 `recall_done`（`hits` 可空，不含正文，同带 `rerank_applied`）；
+- `answer_done`：生成结束终态，`hits` 为 **rerank 精排后**的最终候选（含正文 `content`），发送后关闭流；
+- **空命中 / 全部片段缺正文**：不生成，发 `recall_done`（`hits` 可空，同带 `rerank_applied`；全部缺正文时各 hit `content` 为空串）；
 - **生成阶段失败**：整请求失败，发 `error` `RECALL_GENERATION_FAILED`，不返回部分召回片段。
 
-终态 `hits` 单项在 RRF 字段基础上补 rerank 字段：
+终态 `hits` 单项在 RRF 字段基础上补 rerank 字段与 chunk 正文 `content`：
 
 ```json
 {"chunk_id": "...", "doc_id": 10, "dataset_id": 1, "fused_score": 0.033,
- "scores": {"bm25": 10.16, "sparse": 0.05}, "rerank_score": 0.87, "rerank_rank": 1}
+ "scores": {"bm25": 10.16, "sparse": 0.05}, "rerank_score": 0.87, "rerank_rank": 1,
+ "content": "<chunk 正文，供前端展示召回片段>"}
 ```
 
 - `rerank_applied`（顶层 bool）：rerank 是否实际生效。**未配置 RERANK 模型 / 调用失败 / 返回不可用
@@ -261,6 +267,8 @@ data: {"answer": "<完整答案>", "hits": [...], "rerank_applied": true, "faile
   截断到 `rerank_top_n`；
 - `fused_score` / `scores` 为 RRF 解释信息，原样保留；`scores` 键集合等于本次生效的召回路
   （即数据集 `recall_enabled_sources` 在已装配路集合内收窄后的结果）。
+- `content` 为该 chunk 的正文（与生成阶段上下文同源、一次性回填，无需另起反查）；某候选正文缺失
+  时为空串。仅 rag/stream 终态 `hits` 含此字段，纯召回 JSON 端点（下文 `/api/v1/recall`）不含。
 
 `failed_sources` 表达「降级成功」（如 bm25 成功、sparse 失败），空列表表示无失败路。失败终态
 `error` 发送后关闭流，`message` 不含内部堆栈。错误码见

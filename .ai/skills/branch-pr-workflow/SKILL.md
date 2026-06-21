@@ -26,8 +26,8 @@ when_to_use: "当代码实现完成、准备从 dev 新建规范分支并发起�
 
 这些门槛由仓库已有机器规则强制，提交时自动执行，无需在此重写逻辑——只需确认它们已通过：
 
-- **契约文档同步**：改动触碰 `src/models/**`、`src/core/mq/messages/**`、`src/core/pipeline/parse_task/**` 等契约点时，[scripts/doc-sync-rules.yaml](../../../scripts/doc-sync-rules.yaml) 要求同步对应文档，缺一即 block commit。提交前先跑 `python scripts/check_docs_sync.py --staged` 确认为绿。
-- **skill 质量**：若本次改了 `.ai/skills/**`，`python scripts/check_skills.py` 必须为绿。
+- **契约文档同步**：改动触碰 `src/models/**`、`src/core/mq/messages/**`、`src/core/pipeline/parse_task/**` 等契约点时，[scripts/quality/doc-sync-rules.yaml](../../../scripts/quality/doc-sync-rules.yaml) 要求同步对应文档，缺一即 block commit。提交前先跑 `python scripts/quality/check_docs_sync.py --staged` 确认为绿。
+- **skill 质量**：若本次改了 `.ai/skills/**`，`python scripts/quality/check_skills.py` 必须为绿。
 - **全量测试**：CI 跑 `tests` 全量，未全绿不得合并。
 
 ### prompt 层（机器看不见，靠自觉执行 + PR 留痕）
@@ -38,7 +38,7 @@ when_to_use: "当代码实现完成、准备从 dev 新建规范分支并发起�
 - **契约语义已核对**：若触碰公共契约，除文档同步外，还需确认改动不破坏对端消费语义。未核对 → 回退 `contract-guard`（破坏性判断）/ `config-contract-sync`（跨端取值一致）。
 - **acceptance 已提升**：本 feature 的 `acceptance.feature` 已从 `.specs/<feature>/` 提升到 `tests/acceptance/features/<name>.feature`。提升用脚本完成，不再手工 copy：
   ```bash
-  python scripts/promote_acceptance.py <feature>
+  python scripts/acceptance/promote_acceptance.py <feature>
   ```
   它搬运 + 改名(kebab→snake) + scaffold `test_/steps` + 令两版逐字一致，并校验 0 个 undefined step；返回非 0(仍有未实现 step)→ 补全 step 后重跑。仍停在 `.specs/` → 回退 `acceptance-generator` 提升后再收口。提升后的 `tests/acceptance` 由 CI(`acceptance-steps.yml`)守 undefined step，对全员生效。
 

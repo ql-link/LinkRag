@@ -132,6 +132,11 @@ class ChunkIndexingResult:
     embedding_model: str | None = None
     sparse_model: str | None = None
     compensation_entry: VectorCompensationEntry | None = None
+    # dense embed 用量：task 级累加的输入 token（仅 cache miss 的真实调用）+ provider 快照，
+    # 供解析侧把 embed 成本上报到 llm_usage_log（completion 恒 0，total 等同输入）。
+    embed_prompt_tokens: int = 0
+    embed_total_tokens: int = 0
+    embed_provider_type: str | None = None
 
     @property
     def is_success(self) -> bool:

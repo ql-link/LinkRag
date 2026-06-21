@@ -1,139 +1,60 @@
-﻿from __future__ import annotations
+"""normalize_lexical_weights 清洗规则单测。
 
-import inspect
-import sys
-from types import SimpleNamespace
+本地 BGE-M3 编码器已随系统级稀疏路径移除；运行时清洗逻辑（min_weight 过滤、top_k 截断、
+index 升序、空向量报错）由 :func:`normalize_lexical_weights` 承载，被 per-user adapter 路径
+（:class:`AdapterSparseVectorEncoder`）复用，故在此直接对该函数钉住行为。
+"""
+
+from __future__ import annotations
 
 import pytest
 
-from src.core.encoding.sparse import BGEM3SparseVectorEncoder, SparseVectorEncodingError, SparseVectorOutputError
-from src.core.encoding.sparse import encoder as encoder_module
-from src.core.encoding.sparse.exceptions import SparseVectorConfigurationError
+from src.core.encoding.sparse.encoder import normalize_lexical_weights
+from src.core.encoding.sparse.exceptions import (
+    SparseVectorEncodingError,
+    SparseVectorOutputError,
+)
 
 
-class FakeBGEM3Model:
-    def __init__(self, lexical_weights):
-        self.lexical_weights = lexical_weights
-        self.calls = []
+def test_should_merge_and_sort_indices_ascending():
+    # token_id 可能是字符串或整数，权重原样保留；输出按 index 升序。
+    vector = normalize_lexical_weights({"7": 0.2, "3": 0.4, 11: 1.5, "2": 0.1}, top_k=0)
 
-    def encode(self, texts, **kwargs):
-        self.calls.append((texts, kwargs))
-        return {"lexical_weights": self.lexical_weights}
+    assert vector.indices == [2, 3, 7, 11]
+    assert vector.values == [0.1, 0.4, 0.2, 1.5]
 
 
-def test_should_not_accept_external_fp16_parameter():
-    signature = inspect.signature(BGEM3SparseVectorEncoder)
+def test_should_apply_top_k_by_weight_then_return_indices_sorted():
+    vector = normalize_lexical_weights({1: 0.1, 2: 0.9, 3: 0.8, 4: 0.7}, top_k=2)
 
-    assert "use_fp16" not in signature.parameters
-
-
-def test_should_load_bge_m3_with_fp32_on_cpu(monkeypatch):
-    captured_kwargs: dict[str, object] = {}
-
-    class FakeBGEM3FlagModel:
-        def __init__(self, model_name, **kwargs):
-            captured_kwargs["model_name"] = model_name
-            captured_kwargs.update(kwargs)
-
-    monkeypatch.setitem(
-        sys.modules,
-        "FlagEmbedding",
-        SimpleNamespace(BGEM3FlagModel=FakeBGEM3FlagModel),
-    )
-    monkeypatch.setattr(encoder_module, "resolve_sparse_vector_device", lambda device: "cpu")
-
-    encoder = BGEM3SparseVectorEncoder(model_name="BAAI/bge-m3", device="cpu")
-
-    encoder._get_model()
-
-    assert captured_kwargs["model_name"] == "BAAI/bge-m3"
-    assert captured_kwargs["devices"] == "cpu"
-    assert captured_kwargs["use_fp16"] is False
+    # 先按权重取 top_k（2、3），再按 index 升序输出。
+    assert vector.indices == [2, 3]
+    assert vector.values == [0.9, 0.8]
 
 
-def test_should_load_bge_m3_with_fp16_on_cuda(monkeypatch):
-    captured_kwargs: dict[str, object] = {}
-
-    class FakeBGEM3FlagModel:
-        def __init__(self, model_name, **kwargs):
-            captured_kwargs["model_name"] = model_name
-            captured_kwargs.update(kwargs)
-
-    monkeypatch.setitem(
-        sys.modules,
-        "FlagEmbedding",
-        SimpleNamespace(BGEM3FlagModel=FakeBGEM3FlagModel),
-    )
-    monkeypatch.setattr(encoder_module, "resolve_sparse_vector_device", lambda device: "cuda:0")
-
-    encoder = BGEM3SparseVectorEncoder(model_name="BAAI/bge-m3", device="cuda:0")
-
-    encoder._get_model()
-
-    assert captured_kwargs["model_name"] == "BAAI/bge-m3"
-    assert captured_kwargs["devices"] == "cuda:0"
-    assert captured_kwargs["use_fp16"] is True
-
-
-def test_should_reject_explicit_cuda_when_unavailable(monkeypatch):
-    fake_torch = SimpleNamespace(cuda=SimpleNamespace(is_available=lambda: False))
-    monkeypatch.setitem(sys.modules, "torch", fake_torch)
-
-    with pytest.raises(SparseVectorConfigurationError, match="CUDA is unavailable"):
-        encoder_module.resolve_sparse_vector_device("cuda")
-
-
-@pytest.mark.asyncio
-async def test_should_normalize_lexical_weights_from_fake_bge_m3_model():
-    model = FakeBGEM3Model([
-        {"7": 0.2, "3": 0.4},
-        {11: 1.5, "2": 0.1},
-    ])
-    encoder = BGEM3SparseVectorEncoder(model=model, top_k=0)
-
-    vectors = await encoder.aencode(["alpha", "beta"])
-
-    assert vectors[0].indices == [3, 7]
-    assert vectors[0].values == [0.4, 0.2]
-    assert vectors[1].indices == [2, 11]
-    assert vectors[1].values == [0.1, 1.5]
-    assert model.calls[0][1]["return_sparse"] is True
-    assert model.calls[0][1]["return_dense"] is False
-
-
-@pytest.mark.asyncio
-async def test_should_apply_top_k_by_weight_then_return_indices_sorted():
-    model = FakeBGEM3Model([{1: 0.1, 2: 0.9, 3: 0.8, 4: 0.7}])
-    encoder = BGEM3SparseVectorEncoder(model=model, top_k=2)
-
-    vectors = await encoder.aencode(["alpha"])
-
-    assert vectors[0].indices == [2, 3]
-    assert vectors[0].values == [0.9, 0.8]
-
-
-@pytest.mark.asyncio
-async def test_should_filter_min_weight_and_empty_output_fails():
-    model = FakeBGEM3Model([{1: 0.05, 2: 0.1}])
-    encoder = BGEM3SparseVectorEncoder(model=model, min_weight=0.2)
-
+def test_should_filter_min_weight_and_empty_output_fails():
     with pytest.raises(SparseVectorOutputError):
-        await encoder.aencode(["alpha"])
+        normalize_lexical_weights({1: 0.05, 2: 0.1}, min_weight=0.2)
 
 
-@pytest.mark.asyncio
-async def test_should_fail_when_output_count_mismatches_input_count():
-    model = FakeBGEM3Model([{1: 0.5}])
-    encoder = BGEM3SparseVectorEncoder(model=model)
+def test_should_keep_max_weight_for_duplicate_index():
+    # 同一 token 因上游格式差异重复出现时，保留最大权重，避免重复维度写入 Qdrant。
+    vector = normalize_lexical_weights({"5": 0.3, 5: 0.8}, top_k=0)
 
-    with pytest.raises(SparseVectorEncodingError, match="count"):
-        await encoder.aencode(["alpha", "beta"])
+    assert vector.indices == [5]
+    assert vector.values == [0.8]
 
 
-@pytest.mark.asyncio
-async def test_should_fail_when_lexical_weight_item_is_invalid():
-    model = FakeBGEM3Model([{object(): "bad"}])
-    encoder = BGEM3SparseVectorEncoder(model=model)
-
+def test_should_fail_when_item_is_not_mapping():
     with pytest.raises(SparseVectorEncodingError):
-        await encoder.aencode(["alpha"])
+        normalize_lexical_weights([(1, 0.5)])
+
+
+def test_should_fail_when_lexical_weight_item_is_invalid():
+    with pytest.raises(SparseVectorEncodingError):
+        normalize_lexical_weights({object(): "bad"})
+
+
+def test_should_fail_when_index_is_negative():
+    with pytest.raises(SparseVectorEncodingError):
+        normalize_lexical_weights({-1: 0.5})

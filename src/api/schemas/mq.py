@@ -64,9 +64,17 @@ class SendUsageReportRequest(BaseModel):
     user_id: str = Field(..., title="用户ID")
     provider_type: str = Field(..., title="LLM厂商类型")
     model_name: str = Field(..., title="模型名称")
+    stage: str = Field(..., title="阶段", description="parse/recall/chat")
+    operation: str = Field(..., title="操作", description="embed/sparse/rerank/vision/table（对话 generate 走 chat_turn，不走本接口）")
     prompt_tokens: int = Field(0, ge=0, title="输入Token数")
     completion_tokens: int = Field(0, ge=0, title="输出Token数")
     total_tokens: int = Field(0, ge=0, title="总Token数")
+    config_id: Optional[int] = Field(None, title="LLM 用户配置ID")
+    task_id: Optional[str] = Field(None, title="解析任务锚点")
+    conversation_id: Optional[int] = Field(None, title="对话ID")
+    request_id: Optional[str] = Field(None, title="请求追踪ID")
+    latency_ms: Optional[int] = Field(None, title="调用耗时(毫秒)")
+    status: str = Field("success", title="调用状态", description="success/partial/failed")
 
     model_config = ConfigDict(title="发送用量上报请求体", populate_by_name=True)
 

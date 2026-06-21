@@ -39,7 +39,7 @@ Collection 名称示例：`kb_bucket_0`, `kb_bucket_1`, ..., `kb_bucket_127`。
 | `QDRANT_COLLECTION_NAME` | 全局兜底 collection 名（非分桶场景） |
 | `QDRANT_HOST` / `QDRANT_PORT` / `QDRANT_GRPC_PORT` | 连接信息 |
 | `QDRANT_API_KEY` | 鉴权 token |
-| `QDRANT_TIMEOUT_SECONDS` | 操作超时，默认 5 秒 |
+| `QDRANT_TIMEOUT_SECONDS` | 操作超时，默认 20 秒 |
 
 ### 分桶的设计目的
 
@@ -94,7 +94,7 @@ user_id, set_id, doc_id
 
 ### Sparse Vector
 
-启用 BGE-M3 稀疏向量后，`QdrantIndexStore.ensure_sparse_vector_schema` 会在既有 bucket collection 上确认 named sparse vector schema，默认 vector name 为 `sparse_text`。
+启用稀疏向量后，`QdrantIndexStore.ensure_sparse_vector_schema` 会在既有 bucket collection 上确认 named sparse vector schema，默认 vector name 为 `sparse_text`。
 
 写入时使用 `QdrantIndexStore.upsert_sparse_vectors`，通过 Qdrant `update_vectors` 对同一 `point_id=chunk_id` 追加或覆盖 sparse vector，不覆盖已存在的 dense vector 与 payload。
 
@@ -131,7 +131,7 @@ response = await client.query_points(
 | named sparse vector 未配置 | 返空 hits，不抛；warn 日志带 `bucket_id` + `vector_name` |
 | Qdrant 网络故障 / 超时 | 抛 `QdrantStoreError`，由 facade 翻译为 `VectorRetrievalBackendError` |
 
-**写读不变量**：bucket 路由、vector name、payload 字段、BGE-M3 encoder 实例写入与召回共用同一套，不允许分叉。
+**写读不变量**：bucket 路由、vector name、payload 字段、稀疏 encoder 实例写入与召回共用同一套，不允许分叉。
 
 ### Dense 召回
 
