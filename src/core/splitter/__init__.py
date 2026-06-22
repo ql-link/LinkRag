@@ -15,6 +15,7 @@ from .chunking_engine import ChunkingEngine
 from .embedding_pipeline import ChunkEmbeddingPipeline
 from .factory import (
     LazyEmbeddingClient,
+    ModelBoundEmbedder,
     create_chunk_embedding_pipeline,
     create_chunking_engine,
     create_lazy_system_embedding_client,
@@ -71,6 +72,7 @@ __all__ = [
     "FinalChunkSetValidator",
     "ChunkEmbeddingPipeline",
     "LazyEmbeddingClient",
+    "ModelBoundEmbedder",
     "create_chunk_embedding_pipeline",
     "create_chunking_engine",
     "create_lazy_system_embedding_client",

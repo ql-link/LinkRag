@@ -14,6 +14,7 @@ from __future__ import annotations
 from loguru import logger
 
 from src.core.dataset_config import DatasetConfigService
+from src.core.splitter.factory import DenseEmbeddingConfigMissingError
 
 from .._utils import coerce_optional_int, duration_ms, now
 from ..error_codes import ParseFailureCode, build_failure_reason
@@ -101,6 +102,11 @@ class ChunkingStage(Stage):
                 ctx.payload,
                 ctx.db,
                 chunking_config,
+            )
+        except DenseEmbeddingConfigMissingError as exc:
+            return StageOutcome.failure(
+                build_failure_reason(ParseFailureCode.LLM_CONFIG_MISSING, str(exc)),
+                error=exc,
             )
         except Exception as exc:
             return StageOutcome.failure(

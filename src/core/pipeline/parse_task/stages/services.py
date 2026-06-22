@@ -37,6 +37,7 @@ from src.core.splitter import create_chunking_engine
 from src.core.splitter.factory import (
     DenseEmbeddingConfigMissingError,
     DenseEmbeddingDimensionError,
+    aresolve_user_embedding_client,
 )
 from src.core.splitter.models import Chunk
 from src.core.storage.vector import compose_vector_storage_facade
@@ -185,12 +186,20 @@ class StageServices:
         """
         import asyncio
 
+        embedder = None
+        if settings.CHUNKING_STAGE_TWO_ALGORITHM == "semantic_depth_window":
+            user_id = coerce_optional_int(payload.user_id)
+            if user_id is None:
+                raise RuntimeError("chunking semantic stage requires payload.user_id")
+            embedder, _ = await aresolve_user_embedding_client(user_id, db=db)
+
         chunks = await asyncio.to_thread(
             self._chunk_markdown,
             markdown,
             payload.md_object_key,
             parse_result,
             chunking_config,
+            embedder,
         )
         await self._persist_chunk_facts(chunks, payload, db)
 
@@ -266,8 +275,9 @@ class StageServices:
         source_file: str | None,
         parse_result: ParseResult | None = None,
         chunking_config: "ChunkingConfig | None" = None,
+        embedder: Any | None = None,
     ) -> list[Chunk]:
-        processor = create_chunking_engine(config=chunking_config)
+        processor = create_chunking_engine(config=chunking_config, embedder=embedder)
         if parse_result is None:
             return processor.process(markdown, source_file=source_file)
         parse_result_for_chunking = replace(parse_result, source_file=source_file)

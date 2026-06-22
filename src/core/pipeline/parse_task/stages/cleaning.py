@@ -55,7 +55,9 @@ class CleaningStage(Stage):
                 )
             else:
                 source_path = temp_workspace.create_temp_file(
-                    payload.task_id, Path(settings.PARSE_TEMP_DIR)
+                    payload.task_id,
+                    Path(settings.PARSE_TEMP_DIR),
+                    suffix=payload.file_type,
                 )
                 download_started_at = time.monotonic()
                 try:
