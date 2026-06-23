@@ -131,6 +131,13 @@ parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权�
 | --- | --- |
 | `X-User-Id` | 用户 ID，用于读取用户 LLM 配置 |
 
+配置解析规则：
+
+- `config_id` 为空时，按 `X-User-Id + capability` 读取该用户默认配置。
+- `config_id` 非空时，只读取该用户名下对应配置；配置不存在、不属于该用户、已停用或能力不匹配均视为用户模型配置缺失。
+- 直调 LLM 接口不使用系统模型兜底；用户缺少对应能力配置时不会读取 `SYSTEM_LLM_*` 环境变量。
+- 缺配置返回 HTTP `422`，响应体 `detail.code` 为 `LLM_CONFIG_MISSING`，`detail.message` 会说明缺少的能力（如 `CHAT` / `EMBEDDING` / `RERANK` / `VISION`）。
+
 | Method | Path | 用途 | 请求 |
 | --- | --- | --- | --- |
 | `POST` | `/generate` | 非流式文本生成 | `GenerateRequest` |
