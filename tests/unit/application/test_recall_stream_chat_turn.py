@@ -53,10 +53,17 @@ class _CapturingMQ:
         _CapturingMQ.sent.append(msg)
 
 
+# generate token 用量改走 report_usage_nowait（与 chat_turn 解耦，LINK-191）；
+# 捕获其调用以单独断言用量上报。
+_USAGE_REPORTS: list[dict] = []
+
+
 @pytest.fixture(autouse=True)
 def _patch_mq(monkeypatch):
     _CapturingMQ.sent = []
+    _USAGE_REPORTS.clear()
     monkeypatch.setattr(rt, "MQService", _CapturingMQ)
+    monkeypatch.setattr(rt, "report_usage_nowait", lambda **kw: _USAGE_REPORTS.append(kw))
     yield
 
 
@@ -110,19 +117,27 @@ async def test_success_emits_chat_turn_with_usage_and_references():
     data = json.loads(done[0].split("data: ", 1)[1])
     assert data["usage"]["total_tokens"] == 200
 
+    # chat_turn 只承载对话内容，不再带 token（LINK-191）
     assert len(_CapturingMQ.sent) == 1
     p = _payloads()[0]
     assert p.status == "success"
     assert p.conversation_id == 10086
     assert p.query == "什么是RAG"
     assert p.answer == "RAG 是检索增强生成"
-    assert p.prompt_tokens == 120 and p.completion_tokens == 80 and p.total_tokens == 200
     assert p.references == ["1001", "1002"]
     assert p.request_id == "req-1"
+    assert not hasattr(p, "prompt_tokens")  # token 已剥离
+
+    # generate 用量改走统一消息：stage=chat / operation=generate
+    assert len(_USAGE_REPORTS) == 1
+    u = _USAGE_REPORTS[0]
+    assert u["stage"] == "chat" and u["operation"] == "generate"
+    assert (u["prompt_tokens"], u["completion_tokens"], u["total_tokens"]) == (120, 80, 200)
+    assert u["provider_type"] == "openai" and u["model_name"] == "gpt-x" and u["config_id"] == 7
 
 
-async def test_usage_absent_defaults_to_zero():
-    # Scenario: 用量字段缺省时按 0 上报
+async def test_usage_absent_skips_usage_report():
+    # Scenario: 流式未返回 usage（0 token）时对话轮次照常上报，但不发 token 用量消息
     gen = rt._generate_answer(
         _resolved(_FakeProvider([StreamChunk(delta="答案")])), _hits(), True,
         _contents(), [], _recall_req(), "req-2", 4096,
@@ -130,8 +145,8 @@ async def test_usage_absent_defaults_to_zero():
     )
     await _drain(gen)
     p = _payloads()[0]
-    assert (p.prompt_tokens, p.completion_tokens, p.total_tokens) == (0, 0, 0)
     assert p.status == "success"
+    assert _USAGE_REPORTS == []  # 0 token 不落空用量行
 
 
 async def test_generation_failure_emits_failed():

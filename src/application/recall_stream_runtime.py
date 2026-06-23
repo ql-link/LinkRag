@@ -52,6 +52,7 @@ from src.core.pipeline.rerank import (
 )
 from src.core.prompts import RAG_GENERATION_SYSTEM_PROMPT, build_rag_user_prompt
 from src.services.mq_service import MQService
+from src.services.usage_reporter import report_usage_nowait
 
 
 def recall_event(name: str, payload: dict) -> str:
@@ -392,10 +393,14 @@ async def _emit_chat_turn(
     latency_ms: int,
     status: str,
 ) -> None:
-    """构造并发送对话轮次完成消息（chat-message-persistence）。
+    """发送对话轮次完成消息 + generate token 用量（两者解耦，LINK-191）。
 
-    置于 SSE 终态之后调用：携带 query/answer/usage/references/status 供 Java 落库。
-    发送失败仅告警，绝不影响已返回答案或异常传播——对话落库是最终一致，不进用户关键路径。
+    置于 SSE 终态之后调用：
+    - ``chat_turn`` 只携带对话内容（query/answer/references/status）供 Java 落 chat_message；
+    - 本轮 generate 的 token 用量另走统一的 ``TokenUsageMessage``（stage='chat'、
+      operation='generate'），不再挂在携带大文本的对话消息上。
+
+    两者均为最终一致、不进用户关键路径：chat_turn 发送失败仅告警；用量上报旁路 fire-and-forget。
     """
     try:
         msg = ChatTurnMessage.build(
@@ -405,14 +410,9 @@ async def _emit_chat_turn(
             query=recall_req.query,
             answer=answer,
             config_id=config_id,
-            provider_type=resolved.provider_type,
             model_name=resolved.model_name or "",
             status=status,
-            prompt_tokens=usage.prompt_tokens,
-            completion_tokens=usage.completion_tokens,
-            total_tokens=usage.total_tokens,
             references=references,
-            latency_ms=latency_ms,
         )
         await MQService().send(msg)
     except Exception as exc:  # noqa: BLE001 - 落库通知失败不影响问答主流程
@@ -421,4 +421,21 @@ async def _emit_chat_turn(
             request_id,
             status,
             exc,
+        )
+
+    # generate token 用量统一上报（旁路、非阻塞）：与 chat_turn 解耦，发送独立于上面的落库通知。
+    # 断连/失败可能 0 token（usage 维持初值），无意义则跳过，避免落空行。
+    if usage.total_tokens > 0:
+        report_usage_nowait(
+            user_id=recall_req.user_id,
+            provider_type=resolved.provider_type,
+            model_name=resolved.model_name or "",
+            stage="chat",
+            operation="generate",
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            total_tokens=usage.total_tokens,
+            config_id=config_id,
+            latency_ms=latency_ms,
+            status=status,
         )

@@ -219,16 +219,10 @@ class UsageLogDB(Base):
     latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     status: Mapped[str] = mapped_column(String(16), default="success", nullable=False)
     error_message: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
-    fallback_config_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
-    conversation_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
-    # message_id / request_id：把一条用量精确关联到产生它的 chat_message 行与同一轮请求。
-    # 行数据由 Java 在消费 ChatTurnMessage 时写入（chat-message-persistence）。
-    message_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
-    request_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     # stage / operation：归属维度，区分一条用量出自哪个阶段、哪种模型调用。
     # stage: parse / recall / chat；operation: embed / sparse / rerank / vision / table / generate。
-    # 对话侧由 Java 消费 ChatTurnMessage 落库时补 stage='chat'、operation='generate'；
-    # parse / recall 侧由 Python 通过扩展后的 UsageReportMessage 上报填入。可空以兼容存量行。
+    # 全部阶段（chat generate / parse embed·vision·table / recall embed·rerank）的用量统一由
+    # Python 通过 TokenUsageMessage 上报、Java 消费落库（LINK-191）。可空以兼容存量行。
     stage: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     operation: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
@@ -241,8 +235,6 @@ class UsageLogDB(Base):
     __table_args__ = (
         Index("idx_user_date", "user_id", "created_at"),
         Index("idx_config_date", "config_id", "created_at"),
-        Index("idx_conversation_id", "conversation_id"),
-        Index("idx_usage_message_id", "message_id"),
         # 用量分析常按「用户 × 阶段 × 时间」聚合，复合索引覆盖该访问路径。
         Index("idx_user_stage_date", "user_id", "stage", "created_at"),
     )
