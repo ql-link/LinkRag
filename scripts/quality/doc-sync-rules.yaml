@@ -66,6 +66,18 @@ rules:
       reviewer 临时跳过本规则：pre-commit 用 `SKIP=docs-sync git commit ...`，
       CI 在 commit message 里加 `[skip docs-sync]` 令牌即可放行（见 check_docs_sync.py）。
 
+  - id: init-sql-current-snapshot
+    description: Alembic 迁移变更必须同步当前完整结构快照
+    when_changed:
+      - migrations/versions/*.py
+    must_update:
+      - scripts/db/init.sql
+    severity: error
+    rationale: |
+      scripts/db/init.sql 是 baseline + 全部已应用 migration 后的当前完整结构快照。
+      它不是部署入口，但开发者、DBA 与联调方会据此查阅最新结构；迁移链变更后若不
+      同步该快照，会形成 schema drift 并误导跨端落库契约判断。
+
   # ---- 对外契约 ----
   - id: mq-contracts
     description: MQ 消息载荷或类型变更

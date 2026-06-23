@@ -294,7 +294,11 @@ class StructuredSemanticChunker:
         coarse_set = self.stage_one_router.run(split_input)
         self.validator.validate(coarse_set, split_input)
         final_set = await self.stage_two_router.run(coarse_set)
-        self.final_validator.validate(final_set, coarse_set)
+        self.final_validator.validate(
+            final_set,
+            coarse_set,
+            enforce_hard_max=final_set.stage2_strategy != NoopStageTwoAlgorithm.name,
+        )
         chunks = self.exporter.export(final_set)
         return self._apply_neighbor_context(chunks)
 

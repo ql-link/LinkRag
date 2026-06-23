@@ -8,7 +8,7 @@
 --   - schema 演进的唯一权威源是 src/models/**.py + migrations/versions/*.py；
 --   - 修改字段必须先改 ORM 模型并新增 migration，再同步本文件。
 -- 同步时机：每条会改动表结构的 migration 落库时一并更新本文件。
--- 末次同步：migration 0020_20260619_drop_conversation_title_unique
+-- 末次同步：migration 0023_20260623_chat_message_resilient_fields
 -- ===============================================
 
 CREATE DATABASE IF NOT EXISTS tolink_rag_db DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -136,19 +136,25 @@ CREATE TABLE IF NOT EXISTS chat_conversation (
     INDEX idx_chat_conversation_dataset_updated (dataset_id, updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '对话表';
 
--- 6. 对话消息表
+-- 6. 对话消息表（一行一轮：query + answer 同行；migration 0021 收缩、0023 加韧性字段）
 CREATE TABLE IF NOT EXISTS chat_message (
     id                  BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '消息唯一标识',
     conversation_id     BIGINT UNSIGNED NOT NULL COMMENT '所属对话 ID',
     config_id           BIGINT UNSIGNED COMMENT '产生该消息所使用的 LLM 配置 ID',
     model_name          VARCHAR(128)    COMMENT '模型名快照',
-    role                VARCHAR(16)     NOT NULL COMMENT '角色：user/assistant/system',
-    content             MEDIUMTEXT      NOT NULL COMMENT '消息内容',
-    token_count         INT             DEFAULT 0 COMMENT '该条消息消耗的 Token 数',
+    query               MEDIUMTEXT      COMMENT '用户提问',
+    answer              MEDIUMTEXT      NOT NULL COMMENT 'LLM 回答',
+    `references`        JSON            COMMENT '召回 chunk_id 列表，不含正文',
+    request_id          VARCHAR(64)     COMMENT '请求追踪 ID（不再充当幂等键）',
+    turn_id             VARCHAR(64)     COMMENT '轮次幂等键：前端每轮稳定 UUID，Java 据此 upsert（migration 0023）',
+    status              VARCHAR(16)     NOT NULL DEFAULT 'success' COMMENT '轮次状态：GENERATING/COMPLETED/FAILED（行数据由 Java 写；DDL 默认沿用旧 success）',
+    error_code          VARCHAR(64)     COMMENT '失败码 RECALL_*/GENERATION_TIMEOUT，仅 FAILED（migration 0023）',
+    error_message       VARCHAR(512)    COMMENT '失败原因，不含堆栈，仅 FAILED（migration 0023）',
     created_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    INDEX idx_conversation_created (conversation_id, created_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '对话消息表';
+    INDEX idx_conversation_created (conversation_id, created_at),
+    UNIQUE KEY uk_chat_message_turn_id (turn_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '对话消息表（一行一轮）';
 
 -- 7. LLM 调用用量日志表
 CREATE TABLE IF NOT EXISTS llm_usage_log (
@@ -412,6 +418,8 @@ CREATE TABLE IF NOT EXISTS dataset_parse_config (
 -- 自增起始值统一为 10000
 ALTER TABLE sys_user AUTO_INCREMENT = 10000;
 ALTER TABLE llm_system_provider AUTO_INCREMENT = 10000;
+ALTER TABLE llm_provider_model AUTO_INCREMENT = 10000;
+ALTER TABLE llm_system_preset AUTO_INCREMENT = 10000;
 ALTER TABLE llm_user_config AUTO_INCREMENT = 10000;
 ALTER TABLE dataset AUTO_INCREMENT = 10000;
 ALTER TABLE chat_conversation AUTO_INCREMENT = 10000;

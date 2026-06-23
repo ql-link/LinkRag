@@ -65,11 +65,11 @@ async def _resolve_provider(
     config_id: Optional[str] = None,
     override_model: Optional[str] = None,
 ) -> BaseProvider:
-    """按用户解析指定能力的 Provider，未命中（含系统兜底）→ 404。
+    """按用户解析指定能力的 Provider，未命中 → 422。
 
-    统一走 :func:`aresolve_user_model`（``/llm`` 路由保留系统兜底）：config_id 指定优先，
-    否则取用户该能力默认配置，仍无则系统环境兜底；都没有抛 ``UserModelConfigMissingError``
-    在此翻成 404，保持原有对外行为。``user_id`` / ``config_id`` 在边界归一成 int。
+    统一走 :func:`aresolve_user_model`：config_id 指定优先，否则取用户该能力默认配置。
+    直调 ``/llm`` 路由不启用系统兜底，用户缺对应能力配置时直接返回明确错误。
+    ``user_id`` / ``config_id`` 在边界归一成 int。
     """
     uid = _coerce_int(user_id, "X-User-Id")
     cid = _coerce_int(config_id, "config_id") if config_id is not None else None
@@ -78,13 +78,22 @@ async def _resolve_provider(
             user_id=uid,
             capability=capability,
             config_id=cid,
-            allow_system_fallback=True,
+            allow_system_fallback=False,
             override_model=override_model,
             db=db,
         )
     except UserModelConfigMissingError as exc:
         raise HTTPException(
-            status_code=404, detail=f"{capability} configuration not found"
+            status_code=422,
+            detail={
+                "code": "LLM_CONFIG_MISSING",
+                "message": (
+                    f"user LLM config missing for capability {capability}; "
+                    "please configure the model before calling this API"
+                ),
+                "capability": capability,
+                "user_id": uid,
+            },
         ) from exc
     return resolved.provider
 

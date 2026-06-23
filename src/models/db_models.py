@@ -306,10 +306,21 @@ class ChatMessageDB(Base):
     answer: Mapped[str] = mapped_column(MEDIUMTEXT, nullable=False)
     references: Mapped[Optional[list]] = mapped_column(JSON, nullable=True)
     request_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    status: Mapped[str] = mapped_column(String(16), default="success", nullable=False)
+    # turn_id：前端每轮稳定 UUID，落库幂等键。Java 据此 upsert 同一行——起点 GENERATING 行
+    # 与终态 COMPLETED/FAILED 行同 turn_id，断连续跑/重连不重复插入。唯一索引允许多 NULL，
+    # 既有历史行（turn_id 为 NULL）不受约束（chat-stream-resilient-persist）。
+    turn_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # 轮次状态：GENERATING（起点）/COMPLETED（成功或空命中占位）/FAILED（任意失败）。
+    # 旧 success/partial/failed 已退役；default 仅作 ORM 层兜底，行数据由 Java 写。
+    status: Mapped[str] = mapped_column(String(16), default="GENERATING", nullable=False)
+    error_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
 
-    __table_args__ = (Index("idx_conversation_created", "conversation_id", "created_at"),)
+    __table_args__ = (
+        Index("idx_conversation_created", "conversation_id", "created_at"),
+        Index("uk_chat_message_turn_id", "turn_id", unique=True),
+    )
 
 
 class BlogPostDB(Base):

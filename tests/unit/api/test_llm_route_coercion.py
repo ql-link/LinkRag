@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""/llm 路由边界行为：user_id / config_id 归一（M2/M3）+ 缺配置 → 404。
+"""/llm 路由边界行为：user_id / config_id 归一（M2/M3）+ 缺配置 → 422。
 
 锁定 M2/M3 修复：弱类型 ID 不再下沉到 SQL 靠驱动隐式转换，路由层显式校验；
-并验证统一解析未命中（含系统兜底）时翻成 HTTP 404，保持原有对外契约。
+并验证直调 LLM 缺用户模型配置时翻成 HTTP 422，不走系统模型兜底。
 """
 from __future__ import annotations
 
@@ -35,17 +35,51 @@ def test_coerce_int_rejects_empty():
 
 
 @pytest.mark.asyncio
-async def test_resolve_provider_missing_config_maps_to_404(monkeypatch):
-    """统一解析未命中（含系统兜底）抛 UserModelConfigMissingError → HTTP 404，
-    保持 /llm 端点原有对外行为。"""
+async def test_resolve_provider_missing_config_maps_to_clear_422(monkeypatch):
+    """统一解析未命中抛 UserModelConfigMissingError → HTTP 422，返回可读缺配置原因。"""
     async def _raise(**kwargs):
         raise UserModelConfigMissingError("EMBEDDING", 123)
 
     monkeypatch.setattr("src.api.routes.llm.aresolve_user_model", _raise)
     with pytest.raises(HTTPException) as exc:
         await _resolve_provider(db=AsyncMock(), user_id="123", capability="EMBEDDING")
-    assert exc.value.status_code == 404
-    assert "EMBEDDING" in exc.value.detail
+    assert exc.value.status_code == 422
+    assert exc.value.detail == {
+        "code": "LLM_CONFIG_MISSING",
+        "message": (
+            "user LLM config missing for capability EMBEDDING; "
+            "please configure the model before calling this API"
+        ),
+        "capability": "EMBEDDING",
+        "user_id": 123,
+    }
+
+
+@pytest.mark.asyncio
+async def test_resolve_provider_disables_system_fallback(monkeypatch):
+    captured = {}
+    provider = object()
+
+    async def _resolve(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(provider=provider)
+
+    monkeypatch.setattr("src.api.routes.llm.aresolve_user_model", _resolve)
+
+    resolved = await _resolve_provider(
+        db=AsyncMock(),
+        user_id="123",
+        capability="CHAT",
+        config_id="456",
+        override_model="gpt-test",
+    )
+
+    assert resolved is provider
+    assert captured["user_id"] == 123
+    assert captured["capability"] == "CHAT"
+    assert captured["config_id"] == 456
+    assert captured["allow_system_fallback"] is False
+    assert captured["override_model"] == "gpt-test"
 
 
 @pytest.mark.asyncio

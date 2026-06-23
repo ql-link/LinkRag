@@ -252,13 +252,16 @@ ORM：[`ChatMessageDB`](../../../src/models/db_models.py)
 | `config_id` | BIGINT UNSIGNED | 产生该消息所使用的 LLM 配置 |
 | `model_name` | VARCHAR(128) | 模型名快照 |
 | `query` | MEDIUMTEXT | 用户提问 |
-| `answer` | MEDIUMTEXT | LLM 回答（partial 为半截，failed 可空） |
+| `answer` | MEDIUMTEXT | LLM 回答（`GENERATING`/`FAILED` 可空或半截） |
 | `references` | JSON | 召回片段 `chunk_id` 列表（仅标识，不含正文） |
-| `request_id` | VARCHAR(64) | 请求追踪 ID / 幂等键，与 `llm_usage_log` 对应 |
-| `status` | VARCHAR(16) | `success` / `partial` / `failed` |
+| `request_id` | VARCHAR(64) | 请求追踪 ID（每 HTTP 请求级，不再作幂等键） |
+| `turn_id` | VARCHAR(64) | 轮次幂等键：前端每轮稳定 UUID，Java 据此 upsert 同一行（唯一索引，既有行为 NULL）（migration 0023 新增） |
+| `status` | VARCHAR(16) | `GENERATING` / `COMPLETED` / `FAILED`（旧 `success`/`partial`/`failed` 退役） |
+| `error_code` | VARCHAR(64) | 失败码 `RECALL_*`/`GENERATION_TIMEOUT`，仅 `FAILED`（migration 0023 新增） |
+| `error_message` | VARCHAR(512) | 失败原因，不含堆栈，仅 `FAILED`（migration 0023 新增） |
 | `created_at` | DATETIME | 创建时间 |
 
-索引：`idx_conversation_created(conversation_id, created_at)`。
+索引：`idx_conversation_created(conversation_id, created_at)`、`uk_chat_message_turn_id(turn_id) UNIQUE`（migration 0023）。
 
 > 所有权：表结构由 Python 侧 Alembic 迁移管理（含 `chat_conversation`）；**行数据的增删改由 Java 侧负责**——Java 消费 Python 发出的 `tolink.rag.chat_turn` 消息后，单事务写入 `chat_message` 行、`llm_usage_log` 行并更新 `chat_conversation`。Python 侧不写这三张表的行数据。详见 [mq_contracts.md](../mq_contracts.md#对话轮次上报pythonjava)。
 
