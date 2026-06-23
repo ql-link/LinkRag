@@ -457,13 +457,20 @@ class FinalChunkSetValidator:
         self.tokenizer = tokenizer
         self.hard_max_tokens = hard_max_tokens
 
-    def validate(self, final_set: FinalChunkSet, coarse_set: CoarseChunkSet) -> None:
+    def validate(
+        self,
+        final_set: FinalChunkSet,
+        coarse_set: CoarseChunkSet,
+        *,
+        enforce_hard_max: bool = True,
+    ) -> None:
         """
         校验 FinalChunkSet。
 
         Args:
             final_set: 第二阶段输出集合。
             coarse_set: 第一阶段输出集合，用于无损切片对账。
+            enforce_hard_max: 是否校验 mixed final 的 token 硬上限。
 
         Returns:
             None.
@@ -488,7 +495,8 @@ class FinalChunkSetValidator:
             self._validate_lossless(coarse, finals)
 
         self._validate_anchors(final_set)
-        self._validate_hard_max(final_set)
+        if enforce_hard_max:
+            self._validate_hard_max(final_set)
 
     @staticmethod
     def _validate_lossless(coarse: CoarseChunk, finals: list) -> None:

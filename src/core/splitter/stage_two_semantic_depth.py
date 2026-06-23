@@ -492,7 +492,7 @@ class _CohesionScorer:
 
 
 class _SegmentPacker:
-    """token 窗口打包 + 合法 gap + depth 选点 + 碎片合并；保证段 ≤ max（不可拆 atom 例外）。"""
+    """token 窗口打包 + 合法 gap + depth 选点 + 碎片合并；保证段不超过 hard max。"""
 
     def __init__(self, max_chunk_tokens: int, hard_max_tokens: int, min_chunk_tokens: int) -> None:
         self.max_chunk_tokens = max_chunk_tokens
@@ -528,7 +528,7 @@ class _SegmentPacker:
                 start = cut + 1
         segments = self._merge_headings(segments)
         segments = self._merge_fragments(atoms, scores, segments)
-        return segments
+        return self._enforce_hard_max(segments)
 
     def _fit_limit(self, atoms: list[_Atom], start: int, end: int, nxt: _Atom) -> int:
         """计算把 nxt 加入当前 [start,end] segment 的 token 上限。
@@ -656,6 +656,44 @@ class _SegmentPacker:
             return "next"
         return None
 
+    def _enforce_hard_max(self, segments: list[list[_Atom]]) -> list[list[_Atom]]:
+        """在所有标题/短碎片合并后，按 atom 边界保证 segment 不超过 hard max。
+
+        普通文本 atom 已由 ``_AtomBuilder`` 按行/句/token-safe 边界切到 soft max 内；
+        protected atom 不在元素内部切分，若单 atom 超过 hard max，保留为单独 segment，
+        交由 ``_FinalChunkAssembler`` 按行边界截断并写诊断 metadata。
+        """
+        result: list[list[_Atom]] = []
+        for segment in segments:
+            result.extend(self._split_segment_by_hard_max(segment))
+        return result
+
+    def _split_segment_by_hard_max(self, segment: list[_Atom]) -> list[list[_Atom]]:
+        split: list[list[_Atom]] = []
+        current: list[_Atom] = []
+        current_tokens = 0
+
+        for atom in segment:
+            if not current:
+                current = [atom]
+                current_tokens = atom.token_count
+                continue
+            if current_tokens > self.hard_max_tokens:
+                split.append(current)
+                current = [atom]
+                current_tokens = atom.token_count
+            elif current_tokens + atom.token_count <= self.hard_max_tokens:
+                current.append(atom)
+                current_tokens += atom.token_count
+            else:
+                split.append(current)
+                current = [atom]
+                current_tokens = atom.token_count
+
+        if current:
+            split.append(current)
+        return split
+
 
 class _FinalChunkAssembler:
     """把一个 segment 组装为 FinalChunk（content 切片 / 行号 / 锚点 / oversized·truncated 诊断）。"""
@@ -753,10 +791,10 @@ class _FinalChunkAssembler:
         kept = ""
         for line in lines:
             candidate = kept + line
-            if self._count(candidate) > self.hard_max_tokens and kept:
+            if self._count(candidate) > self.hard_max_tokens:
                 break
             kept = candidate
-        if not kept:  # 单行即超 hard_max：退回字符级 token-safe 前缀
+        if not kept:  # 无完整行可保留时，退回 token-safe 前缀以维持 hard max 防线。
             truncated, _ = self.tokenizer.truncate_text(content, self.hard_max_tokens)
             kept = truncated
         return kept, original

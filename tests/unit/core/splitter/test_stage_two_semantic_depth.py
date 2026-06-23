@@ -373,6 +373,26 @@ async def test_table_over_hard_max_uses_table_truncated_reason_and_no_embedding(
     assert embedder.calls == []
 
 
+async def test_single_line_protected_over_hard_max_falls_back_to_token_safe_truncation() -> None:
+    algorithm = _algorithm()
+    over_hard_code = _coarse_from_parts(
+        [
+            {
+                "content": " ".join(f"c{index}" for index in range(12)),
+                "element_type": ElementType.CODE_BLOCK.value,
+            }
+        ]
+    )
+
+    final_set = await algorithm.run(_coarse_set(over_hard_code))
+
+    final = final_set.chunks[0]
+    assert _count(final.content) <= 10
+    assert final.metadata[MD_TRUNCATED] is True
+    assert final.metadata[MD_TRUNCATED_REASON] == TRUNCATED_CODE_OVER_HARD_MAX
+    assert final.metadata[MD_ORIGINAL_TOKEN_COUNT] == 12
+
+
 async def test_consecutive_headings_merge_with_following_body_within_hard_max() -> None:
     algorithm = _algorithm()
     coarse = _coarse_from_parts(
@@ -399,6 +419,70 @@ async def test_consecutive_headings_merge_with_following_body_within_hard_max() 
     assert mixed[0].content == coarse.content
     assert mixed[0].metadata[MD_OVERSIZED] is True
     assert mixed[0].metadata[MD_OVERSIZED_REASON] == OVERSIZED_TOKEN_SAFE_RESIDUAL
+
+
+async def test_consecutive_heading_only_segments_are_split_back_under_hard_max() -> None:
+    algorithm = _algorithm()
+    coarse = _coarse_from_parts(
+        [
+            {
+                "content": "### h1 a b c",
+                "element_type": ElementType.HEADING.value,
+            },
+            {
+                "content": "#### h2 a b c",
+                "element_type": ElementType.HEADING.value,
+            },
+            {
+                "content": "##### h3 a b c",
+                "element_type": ElementType.HEADING.value,
+            },
+        ]
+    )
+
+    final_set = await algorithm.run(_coarse_set(coarse))
+
+    mixed = [chunk for chunk in final_set.chunks if chunk.role == "mixed"]
+    assert "".join(chunk.content for chunk in mixed) == coarse.content
+    assert all(_count(chunk.content) <= 10 for chunk in mixed)
+    FinalChunkSetValidator(WordTokenizer(), hard_max_tokens=10).validate(
+        final_set,
+        _coarse_set(coarse),
+    )
+
+
+async def test_instanceklass_like_structure_splits_to_hard_max_without_truncation() -> None:
+    algorithm = _algorithm()
+    coarse = _coarse_from_parts(
+        [
+            {
+                "content": "## C++ 层的 InstanceKlass",
+                "element_type": ElementType.HEADING.value,
+            },
+            {"content": "类 元数据 不在 mirror 而在 InstanceKlass 结构里"},
+            {
+                "content": " ".join(f"klass_a_{index}" for index in range(8)),
+                "element_type": ElementType.CODE_BLOCK.value,
+            },
+            {
+                "content": " ".join(f"klass_b_{index}" for index in range(8)),
+                "element_type": ElementType.CODE_BLOCK.value,
+            },
+            {"content": "核心 模块 包括 常量池 和 虚方法表"},
+        ]
+    )
+
+    final_set = await algorithm.run(_coarse_set(coarse))
+
+    mixed = [chunk for chunk in final_set.chunks if chunk.role == "mixed"]
+    assert len(mixed) > 1
+    assert "".join(chunk.content for chunk in mixed) == coarse.content
+    assert all(_count(chunk.content) <= 10 for chunk in mixed)
+    assert all(not chunk.metadata.get(MD_TRUNCATED) for chunk in mixed)
+    FinalChunkSetValidator(WordTokenizer(), hard_max_tokens=10).validate(
+        final_set,
+        _coarse_set(coarse),
+    )
 
 
 async def test_repeated_text_segments_remain_lossless_without_find_based_drift() -> None:

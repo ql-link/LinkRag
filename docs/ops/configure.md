@@ -63,7 +63,7 @@
 | `CHUNKING_STAGE_ONE_ALGORITHM` | `candidate_boundary` | splitter 第一阶段算法名；当前支持 `candidate_boundary`，未知值启动失败 |
 | `CHUNKING_STAGE_TWO_ALGORITHM` | `noop` | splitter 第二阶段算法名；支持 `noop` / `semantic_depth_window`，未知值启动失败 |
 
-> splitter 不再保留 `CHUNKING_ENABLE_ADVANCED_PIPELINE` 布尔开关，也不再回退到旧规则分片器。第二阶段默认使用 `noop`；如需启用 TextTiling depth valley 语义细分，显式配置 `CHUNKING_STAGE_TWO_ALGORITHM=semantic_depth_window`。
+> splitter 不再保留 `CHUNKING_ENABLE_ADVANCED_PIPELINE` 布尔开关，也不再回退到旧规则分片器。第二阶段默认使用 `noop`；`noop` 只做结构透传，不保证 final chunk token 数不超过 `CHUNKING_HARD_MAX_TOKENS`。如需启用 TextTiling depth valley 语义细分与 hard max 保障，显式配置 `CHUNKING_STAGE_TWO_ALGORITHM=semantic_depth_window`。
 
 > 注：ES 入库失败即终态，无 ES 内部自动重试配置。原 `ES_INDEXING_MAX_RETRY` 已移除（用户侧重试由 `document_parse_pipeline.retry_count` 记录，触发路径待后续需求接线）。
 
@@ -144,7 +144,7 @@ logs/
 | --- | --- | --- |
 | `CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` | 128 | 第一阶段候选边界粗分片软下限，范围 `128..256`；调大可减少短 chunk |
 | `CHUNKING_MAX_CHUNK_TOKENS` | 512 | `semantic_depth_window` 普通 final chunk 软目标，范围 `256..2048`；必须 `>= CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` |
-| `CHUNKING_HARD_MAX_TOKENS` | 1024 | `semantic_depth_window` 绝对硬上限，范围 `512..8192`；必须 `>= CHUNKING_MAX_CHUNK_TOKENS`，不可拆 protected 超过时按完整行截断并标记 |
+| `CHUNKING_HARD_MAX_TOKENS` | 1024 | `semantic_depth_window` 绝对硬上限，范围 `512..8192`；必须 `>= CHUNKING_MAX_CHUNK_TOKENS`；`noop` 不保证该上限；不可拆 protected 超过时优先按完整行截断并标记 |
 | `CHUNKING_OVERLAP_TOKENS` | 64 | overlap token 数，范围 `0..64`；`0` 表示关闭 |
 | `CHUNKING_PROTECTED_NEIGHBOR_OVERLAP` | false | 含 protected 元素的 final chunk 是否参与后置 neighbor overlap；默认关闭，避免 overlap 进入表格/代码等结构块 |
 | `CHUNKING_HEADING_BREAK_LEVEL` | 5 | heading trail 与动态标题边界保护的最大层级；最多保护到 5 级 |
