@@ -279,6 +279,11 @@ class Settings(BaseSettings):
         return self
 
     # ==========================================
+    # 轻量流程编排引擎配置 (Workflow Engine)
+    # ==========================================
+    WORKFLOW_MAX_CONCURRENCY: int = 8
+
+    # ==========================================
     # 向量数据库配置 (Vector Store)
     # ==========================================
     # 可选值: qdrant / elasticsearch
