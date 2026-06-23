@@ -252,13 +252,14 @@ class TestChatTurnMessage:
         kwargs = dict(
             conversation_id=10086,
             request_id="req-1",
+            turn_id="turn-1",
             user_id=42,
             query="什么是RAG",
             answer="RAG 是检索增强生成",
             config_id=7,
             provider_type="openai",
             model_name="gpt-x",
-            status="success",
+            status="COMPLETED",
             prompt_tokens=120,
             completion_tokens=80,
             total_tokens=200,
@@ -269,14 +270,15 @@ class TestChatTurnMessage:
         return ChatTurnMessage.build(**kwargs)
 
     def test_build_fields_and_constants(self):
-        # Scenario: 问答正常结束后上报一轮对话数据
+        # Scenario: 生成成功时发出 COMPLETED 含完整 content 与 token 用量与召回引用
         msg = self._build()
         assert msg.get_mq_name() == "tolink.rag.chat_turn"
         assert msg.get_mq_type() == "CHAT_TURN"
         payload = msg.get_payload()
         assert payload.query == "什么是RAG"
         assert payload.answer == "RAG 是检索增强生成"
-        assert payload.status == "success"
+        assert payload.status == "COMPLETED"
+        assert payload.turn_id == "turn-1"
         assert payload.prompt_tokens == 120
         assert payload.completion_tokens == 80
         assert payload.total_tokens == 200
@@ -288,31 +290,41 @@ class TestChatTurnMessage:
         assert msg.get_routing_key() == "12345"
 
     def test_roundtrip(self):
-        msg = self._build(status="partial", answer="半截")
+        # Scenario: 失败终态 FAILED 携带 error_code/error_message 往返一致
+        msg = self._build(
+            status="FAILED",
+            answer="半截",
+            error_code="RECALL_GENERATION_FAILED",
+            error_message="boom",
+        )
         parsed = ChatTurnMessage.parse_msg(msg.serialize())
         assert isinstance(parsed, ChatTurnPayload)
-        assert parsed.status == "partial"
+        assert parsed.status == "FAILED"
         assert parsed.answer == "半截"
+        assert parsed.turn_id == "turn-1"
+        assert parsed.error_code == "RECALL_GENERATION_FAILED"
+        assert parsed.error_message == "boom"
         assert parsed.conversation_id == 10086
 
     def test_usage_defaults_to_zero(self):
-        # Scenario: 用量字段缺省时按 0 上报
+        # Scenario: 用量字段缺省时按 0 上报；GENERATING 起点 provider 可缺省
         msg = ChatTurnMessage.build(
             conversation_id=1,
             request_id="r",
+            turn_id="t",
             user_id=1,
             query="q",
-            answer="a",
+            answer="",
             config_id=1,
-            provider_type="openai",
-            model_name="m",
-            status="success",
+            status="GENERATING",
         )
         payload = msg.get_payload()
         assert payload.prompt_tokens == 0
         assert payload.completion_tokens == 0
         assert payload.total_tokens == 0
         assert payload.references == []
+        assert payload.provider_type == ""
+        assert payload.error_code is None
 
 
 class TestDeserialization:

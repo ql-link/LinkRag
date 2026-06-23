@@ -19,19 +19,28 @@ class ChatTurnPayload(MessagePayload):
     """对话轮次完成载荷。"""
 
     conversation_id: int = Field(..., title="所属对话ID")
-    request_id: str = Field(..., title="请求追踪ID/幂等键")
+    request_id: str = Field(..., title="请求追踪ID（仅追踪，不再充当幂等键）")
+    turn_id: str = Field(..., title="轮次幂等键：前端每轮稳定 UUID，Java 据此 upsert 同一行")
     user_id: int = Field(..., title="用户ID")
     query: str = Field(..., title="用户提问")
-    answer: str = Field("", title="LLM回答（partial 为半截，failed 可空）")
+    answer: str = Field("", title="LLM回答（GENERATING/FAILED 可空或半截）")
     config_id: int = Field(..., title="本轮所用 LLM 配置ID")
-    provider_type: str = Field(..., title="LLM厂商类型")
+    # provider_type 放宽默认空：GENERATING 起点与前置失败（模型未解析）时无厂商信息，
+    # 由终态消息补齐（chat-stream-resilient-persist）。
+    provider_type: str = Field("", title="LLM厂商类型")
     model_name: str = Field("", title="模型名快照")
     prompt_tokens: int = Field(0, title="输入Token数", ge=0)
     completion_tokens: int = Field(0, title="输出Token数", ge=0)
     total_tokens: int = Field(0, title="总Token数", ge=0)
     references: List[str] = Field(default_factory=list, title="召回片段 chunk_id 列表（不含正文）")
     latency_ms: Optional[int] = Field(None, title="生成延迟(毫秒)")
-    status: str = Field(..., title="轮次状态：success/partial/failed")
+    status: str = Field(
+        ..., title="轮次状态：GENERATING（起点）/COMPLETED（成功或空命中）/FAILED（任意失败）"
+    )
+    error_code: Optional[str] = Field(
+        None, title="失败码：RECALL_*/GENERATION_TIMEOUT（仅 FAILED）"
+    )
+    error_message: Optional[str] = Field(None, title="失败原因，不含堆栈（仅 FAILED）")
 
     model_config = {"title": "对话轮次完成载荷"}
 
@@ -66,23 +75,27 @@ class ChatTurnMessage(AbstractMessage):
         *,
         conversation_id: int,
         request_id: str,
+        turn_id: str,
         user_id: int,
         query: str,
         answer: str,
         config_id: int,
-        provider_type: str,
-        model_name: str,
         status: str,
+        provider_type: str = "",
+        model_name: str = "",
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
         total_tokens: int = 0,
         references: Optional[List[str]] = None,
         latency_ms: Optional[int] = None,
+        error_code: Optional[str] = None,
+        error_message: Optional[str] = None,
     ) -> "ChatTurnMessage":
         return cls(
             payload=ChatTurnPayload(
                 conversation_id=conversation_id,
                 request_id=request_id,
+                turn_id=turn_id,
                 user_id=user_id,
                 query=query,
                 answer=answer,
@@ -95,6 +108,8 @@ class ChatTurnMessage(AbstractMessage):
                 total_tokens=total_tokens,
                 references=references or [],
                 latency_ms=latency_ms,
+                error_code=error_code,
+                error_message=error_message,
             )
         )
 

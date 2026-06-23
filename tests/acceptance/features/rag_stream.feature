@@ -276,14 +276,9 @@ Feature: 对外 RAG 问答流 SSE
     And 不调用 RecallPipeline
 
   # ==== 断连与资源释放 ====
-
-  Scenario: 前端断开 SSE 时 Python 停止发送事件、取消召回任务并释放并发名额
-    Given session token claims sub=123 dataset_ids=[1] 合法未过期
-    And recall 正在执行中
-    When 前端主动断开到 Python 的 SSE 连接
-    Then Python 停止继续发送 SSE 事件
-    And Python 尽力取消正在执行的召回任务
-    And 该流不再计入用户 123 的并发流数
+  # 注：原「断连即取消召回任务 + 释放名额」场景已被 chat-stream-resilient-persist 反转
+  # （断连不取消、生成后台续跑、名额绑任务释放），相应断连/续跑/落库场景迁移至该 feature 的
+  # acceptance（promote 后落 tests/acceptance/features/）。此处不再保留旧语义场景。
 
   # ==== 旧路径已删除 ====
 
