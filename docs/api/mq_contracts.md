@@ -175,7 +175,9 @@ Java 管理端                          toLink-Rag (Python)
 
 ## 对话轮次上报（Python→Java）
 
-RAG 问答在 Python 端（`/api/v1/rag/stream`）流式生成结束后，发送一条 `ChatTurnMessage`，由 **Java 消费并落库**：在单事务里写入 `chat_message` 一行（一行一轮：query + answer 同行）、`llm_usage_log` 一行，并更新 `chat_conversation` 的 `last_config_id` / `last_model_name` / `updated_at`。Python 侧不写这三张表。
+RAG 问答在 Python 端（`/api/v1/rag/stream`）以**后台任务**执行，生成起点与终态各发一条 `ChatTurnMessage`，由 **Java 消费并落库**：在单事务里 upsert `chat_message` 一行（一行一轮：query + answer 同行）、写 `llm_usage_log` 一行，并更新 `chat_conversation` 的 `last_config_id` / `last_model_name` / `updated_at`。Python 侧不写这三张表。
+
+落库时序（chat-stream-resilient-persist）：生成任务**起点**先发 `status=GENERATING`（`answer` 空），**终态**再发 `COMPLETED`/`FAILED`，两条消息携带同一 `turn_id`，Java 据 `turn_id` **upsert 同一行**（起点插「生成中」行，终态更新该行）。客户端断连不取消任务，生成续跑到终态并落库。
 
 ### Topic
 
@@ -186,28 +188,33 @@ RAG 问答在 Python 端（`/api/v1/rag/stream`）流式生成结束后，发送
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `conversation_id` | int | ✅ | 所属对话 ID（前端请求 `/rag/stream` 时传入，由 Java 预先创建） |
-| `request_id` | string | ✅ | 请求追踪 ID / 幂等键；Java 据此去重，写入 `chat_message.request_id` 与 `llm_usage_log.request_id` |
+| `request_id` | string | ✅ | 请求追踪 ID（每 HTTP 请求级，**不再充当幂等键**；幂等键改用 `turn_id`） |
+| `turn_id` | string | ✅ | 轮次幂等键：前端每轮生成的稳定 UUID（断连重连不变），Java 据此 **upsert 同一行** → `chat_message.turn_id`（唯一） |
 | `user_id` | int | ✅ | 用户 ID |
 | `query` | string | ✅ | 用户提问 → `chat_message.query` |
-| `answer` | string | ✅ | LLM 回答 → `chat_message.answer`（`partial` 为半截，`failed` 可空串） |
+| `answer` | string | ✅ | LLM 回答 → `chat_message.answer`（`GENERATING`/`FAILED` 可空或半截串） |
 | `config_id` | int | ✅ | 本轮所用 LLM 配置 ID |
-| `provider_type` | string | ✅ | LLM 厂商类型 |
-| `model_name` | string | ✅ | 模型名快照（可空时为空串） |
+| `provider_type` | string | ⬜ | LLM 厂商类型（`GENERATING` 起点与模型未解析的前置失败时为空串，终态补齐） |
+| `model_name` | string | ⬜ | 模型名快照（可空时为空串） |
 | `prompt_tokens` | int | ✅ | 输入 Token 数（流式未返回 usage 时为 0） |
 | `completion_tokens` | int | ✅ | 输出 Token 数 |
 | `total_tokens` | int | ✅ | 总 Token 数 |
 | `references` | string[] | ⬜ | 召回片段 `chunk_id` 列表（仅标识，不含正文）→ `chat_message.references` |
 | `latency_ms` | int | ⬜ | 生成延迟（毫秒） |
-| `status` | string | ✅ | `success`（正常结束）/ `partial`（客户端断连，保留半截）/ `failed`（生成异常） |
+| `status` | string | ✅ | `GENERATING`（生成起点占位）/ `COMPLETED`（成功或空命中占位）/ `FAILED`（任意失败，含生成超时） |
+| `error_code` | string | ⬜ | 失败码（仅 `FAILED`）：`RECALL_*`（前置/生成失败）或 `GENERATION_TIMEOUT`（生成超时）→ `chat_message.error_code` |
+| `error_message` | string | ⬜ | 失败原因（仅 `FAILED`），不含堆栈 → `chat_message.error_message` |
 
 > 公共信封字段 `message_id` / `timestamp` 由消息基类自动附带（见 [§协议要点](#协议要点)）。
+> 旧值 `success`/`partial`/`failed` 已退役；`partial` 取消——断连不再产生半截终态（任务续跑到 `COMPLETED`），唯一半截场景为生成超时 → `FAILED` + `GENERATION_TIMEOUT`（保留已生成文本）。
 
 ### 路由键与语义
 
-- 路由键：`conversation_id`，保证同一对话的轮次有序投递。
-- **空召回不发消息**：0 命中或全部片段缺正文时只回 `recall_done`，不产生对话轮次。
-- **缺 `conversation_id` 不发消息**：`/rag/stream` 缺该字段直接 422，不进入召回生成。
-- **最终一致**：Python 端发送失败仅告警、不影响已返回答案；建议 Java 侧以 `request_id` 幂等去重，配合对账补偿。
+- 路由键：`conversation_id`，保证同一对话的起点与终态有序投递；Java upsert 以 `turn_id` 为准、按 `status` 不回退。
+- **每轮至少两条**：起点 `GENERATING` + 终态（`COMPLETED`/`FAILED`），同 `turn_id`。
+- **空召回也落库**：0 命中或全部片段缺正文时回 `recall_done`，并发 `COMPLETED`（`answer` 空占位），不再「不产生对话轮次」。
+- **缺 `conversation_id` / `turn_id` 不发消息**：`/rag/stream` 缺任一直接 422，不进入召回生成。
+- **最终一致**：Python 端发送失败仅告警、不影响已返回答案；Java 侧以 `turn_id` 幂等 upsert，配合对账补偿。
 - **归属校验（Java 必做）**：`conversation_id` 来自前端请求体，`user_id` 取自 session token claims，Python 仅透传、不校验二者归属关系。Java 落库前**必须**校验 `conversation_id` 属于该 `user_id`（不匹配则丢弃/告警），否则存在跨用户写入他人对话的风险。
 
 ## 用量上报（Python→Java/统计侧）

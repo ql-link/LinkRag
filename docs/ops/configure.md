@@ -176,7 +176,8 @@ logs/
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `RECALL_STREAM_TIMEOUT_MS` | `60000` | 单次召回最大执行时间（毫秒）；超时 RAG 流以 SSE `error` RECALL_TIMEOUT 终止，纯召回 JSON 返回 `504` RECALL_TIMEOUT |
+| `RECALL_STREAM_TIMEOUT_MS` | `60000` | 召回 + rerank 阶段最大执行时间（毫秒）；超时 RAG 流以 SSE `error` RECALL_TIMEOUT 终止，纯召回 JSON 返回 `504` RECALL_TIMEOUT。**不含 LLM 生成阶段**（见 `RECALL_GENERATION_TIMEOUT_MS`） |
+| `RECALL_GENERATION_TIMEOUT_MS` | `300000` | LLM 生成阶段最大执行时间（毫秒），与召回超时解耦。RAG 生成跑在独立后台任务、断连不取消，需独立超时防孤儿任务无限烧 token；超时落 `FAILED` + `GENERATION_TIMEOUT`（保留半截答案）。取值远大于召回超时以容纳长回答 |
 | `RECALL_STRICT_DEFAULT` | `false` | pipeline 严格模式默认；false=宽松，允许单路失败降级 |
 | `RECALL_RESULT_LIMIT` | `20` | 服务端固定返回候选上限（同时作为各路执行期 `top_k`）|
 | `RECALL_ENABLED_SOURCES` | `bm25,sparse,dense` | 启用的召回路（逗号分隔）。本期默认开启三路；运维侧可显式 set `bm25,sparse` 暂时回退到 dev 旧行为；未登记的 source 出现在配置中装配期 `ValueError` |
@@ -205,8 +206,9 @@ logs/
 | `CORS_ORIGINS` | `["*"]` | **生产对外环境必须收敛为前端可信域名清单**（不可用 `*`，否则带 `Authorization` 头的跨域预检失败）|
 
 > token 短期可复用：Python 只校验 `exp`（建议 Java 签发 30s，仅够建连），不做一次性 /
-> 防重放 / 撤销；连上后流的存活由 `RECALL_STREAM_TIMEOUT_MS` 控制。并发计数依赖 Redis，
-> Redis 不可用时 fail-open（放行，因限流是资源保护非鉴权）。
+> 防重放 / 撤销。RAG 生成跑在独立后台任务、断连不取消，并发名额绑任务生命周期释放（非连接）；
+> 任务存活由召回超时 `RECALL_STREAM_TIMEOUT_MS` + 生成超时 `RECALL_GENERATION_TIMEOUT_MS` 共同约束，
+> 名额安全 TTL 取二者较大值兜底。并发计数依赖 Redis，Redis 不可用时 fail-open（放行，因限流是资源保护非鉴权）。
 
 ## 配置加载与覆盖
 

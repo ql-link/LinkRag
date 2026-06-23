@@ -19,11 +19,14 @@ session token 直连，绕过 Java 中转。承接完整 RAG 行为：召回 →
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass, field
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from src.api.recall_session_auth import (
@@ -66,6 +69,9 @@ class RagStreamRequest(BaseModel):
     query: str
     config_id: int
     conversation_id: int
+    # turn_id：前端每轮生成的稳定 UUID，断连重连不变，作落库幂等键（贯穿 GENERATING 起点与
+    # 终态，Java 据此 upsert 同一行）。必填——缺失 → 422 RECALL_INVALID_REQUEST。
+    turn_id: str
     dataset_ids: list[int] | None = None
 
 
@@ -87,7 +93,26 @@ async def _parse_and_validate_body(request: Request) -> RagStreamRequest:
     return body
 
 
-async def _guarded_stream(
+# 在途生产者任务的强引用注册表：asyncio 只持弱引用，无此集合任务可能被 GC 中断。
+# 任务结束（含异常/超时）由 done_callback 移除。
+_INFLIGHT_TASKS: set[asyncio.Task] = set()
+
+
+@dataclass
+class _StreamChannel:
+    """生产者后台任务与消费者 SSE 响应之间的解耦载体。
+
+    生产者把 SSE 事件 ``put`` 进 ``queue``，``None`` 为关流哨兵；消费者从中读取转发。
+    客户端断连时消费者置位 ``consumer_gone``，生产者据此停止入队（但**继续生成与落库**），
+    避免无人读取时队列无限增长——这是「断连不取消、后台续跑」的内存兜底。
+    """
+
+    queue: asyncio.Queue = field(default_factory=asyncio.Queue)
+    consumer_gone: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+async def _run_chat_turn_producer(
+    channel: _StreamChannel,
     pipeline: RecallPipeline,
     reranker: PostRecallReranker,
     recall_req: RecallRequest,
@@ -95,13 +120,14 @@ async def _guarded_stream(
     user_id: int,
     config_id: int,
     conversation_id: int,
+    turn_id: str,
     token_budget: int,
     rerank_top_n: int,
-) -> AsyncGenerator[str, None]:
-    """包裹召回事件流，确保并发名额在任何收尾路径都被释放。
+) -> None:
+    """后台生产者任务：跑完整召回+生成+落库，独立于 HTTP 连接生命周期。
 
-    ``finally`` 覆盖正常关流、SSE error、以及前端断连触发的 ``CancelledError``
-    （Starlette 会对响应体生成器调用 ``aclose``），避免名额泄漏。
+    客户端断连只取消消费者，本任务不受影响（R1）。名额在此任务 ``finally`` 释放（R6）——
+    绑任务而非连接，避免断连即还名额、任务仍在烧 token 却不计数。
     """
     try:
         async for event in recall_event_stream(
@@ -110,13 +136,41 @@ async def _guarded_stream(
             request_id,
             config_id=config_id,
             conversation_id=conversation_id,
+            turn_id=turn_id,
             reranker=reranker,
             token_budget=token_budget,
             rerank_top_n=rerank_top_n,
         ):
+            # 消费者尚在则入队；已断连则跳过入队，但生成与落库继续跑完。
+            if not channel.consumer_gone.is_set():
+                await channel.queue.put(event)
+    except asyncio.CancelledError:
+        # 仅进程关闭等会取消本任务；客户端断连不会。向上传播，finally 仍释放名额。
+        logger.info("[rag-stream] producer cancelled request_id={}", request_id)
+        raise
+    except Exception:  # noqa: BLE001 - runtime 内部已收敛各失败为终态落库，这里兜底防任务静默死亡
+        logger.exception("[rag-stream] producer crashed request_id={}", request_id)
+    finally:
+        await channel.queue.put(None)  # 关流哨兵：消费者在场时正常结束
+        await release_stream_slot(user_id)
+
+
+async def _sse_consumer(channel: _StreamChannel) -> AsyncGenerator[str, None]:
+    """SSE 响应体：从 channel 读事件转发给前端，**不驱动生成**。
+
+    客户端断连时 Starlette 取消响应协程，``CancelledError`` 打到下面的 ``await get()``。
+    用 ``finally`` 置位 ``consumer_gone``（覆盖取消 / GeneratorExit / 正常关流三条退出路径，
+    不依赖具体异常类型）让生产者停止入队，随后停止转发——但**不取消生产者任务**，
+    生成在后台续跑到落库。正常关流时置位为 no-op（生产者已结束）。
+    """
+    try:
+        while True:
+            event = await channel.queue.get()
+            if event is None:  # 生产者关流哨兵
+                break
             yield event
     finally:
-        await release_stream_slot(user_id)
+        channel.consumer_gone.set()
 
 
 @router.post("/stream")
@@ -150,18 +204,34 @@ async def rag_stream(
         strict_override=recall_cfg.recall_strict,
     )
 
+    # 解耦：生成跑在独立后台任务（生产者），SSE 响应只是观察通道（消费者）。客户端断连
+    # 取消消费者但不取消生产者——任务续跑到完成并落库（R1）。名额由生产者 finally 释放（R6）。
+    channel = _StreamChannel()
+    try:
+        task = asyncio.create_task(
+            _run_chat_turn_producer(
+                channel,
+                pipeline,
+                reranker,
+                recall_req,
+                ctx.request_id,
+                ctx.user_id,
+                body.config_id,
+                body.conversation_id,
+                body.turn_id,
+                recall_cfg.recall_context_token_budget,
+                recall_cfg.rerank_top_n,
+            )
+        )
+    except Exception:
+        # 建任务失败：回退已占用的名额，避免泄漏。
+        await release_stream_slot(ctx.user_id)
+        raise
+    _INFLIGHT_TASKS.add(task)
+    task.add_done_callback(_INFLIGHT_TASKS.discard)
+
     return StreamingResponse(
-        _guarded_stream(
-            pipeline,
-            reranker,
-            recall_req,
-            ctx.request_id,
-            ctx.user_id,
-            body.config_id,
-            body.conversation_id,
-            recall_cfg.recall_context_token_budget,
-            recall_cfg.rerank_top_n,
-        ),
+        _sse_consumer(channel),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache",
