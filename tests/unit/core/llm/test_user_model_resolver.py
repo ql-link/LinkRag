@@ -237,12 +237,40 @@ async def test_resolve_sparse_embedding_uses_sparse_capability(monkeypatch):
 async def test_resolve_by_config_id(monkeypatch):
     _patch_factory(monkeypatch)
     svc = _FakeConfigService(
-        by_id={"provider_type": "qwen", "protocol": "openai", "api_key": "ENC", "model_name": "by-id"}
+        by_id={
+            "provider_type": "qwen",
+            "protocol": "openai",
+            "capability": "CHAT",
+            "api_key": "ENC",
+            "model_name": "by-id",
+        }
     )
     rm = await aresolve_user_model(
         user_id=7, capability="CHAT", config_id="cfg-1", config_service=svc
     )
     assert rm.model_name == "by-id"
+
+
+@pytest.mark.asyncio
+async def test_resolve_by_config_id_rejects_capability_mismatch(monkeypatch):
+    _patch_factory(monkeypatch)
+    svc = _FakeConfigService(
+        by_id={
+            "provider_type": "qwen",
+            "protocol": "openai",
+            "capability": "EMBEDDING",
+            "api_key": "ENC",
+            "model_name": "embedding-model",
+        }
+    )
+
+    with pytest.raises(UserModelConfigMissingError) as ei:
+        await aresolve_user_model(
+            user_id=7, capability="CHAT", config_id="cfg-1", config_service=svc
+        )
+
+    assert ei.value.capability == "CHAT"
+    assert ei.value.user_id == 7
 
 
 @pytest.mark.asyncio
