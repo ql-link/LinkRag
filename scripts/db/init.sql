@@ -8,7 +8,7 @@
 --   - schema 演进的唯一权威源是 src/models/**.py + migrations/versions/*.py；
 --   - 修改字段必须先改 ORM 模型并新增 migration，再同步本文件。
 -- 同步时机：每条会改动表结构的 migration 落库时一并更新本文件。
--- 末次同步：migration 0020_20260619_drop_conversation_title_unique
+-- 末次同步：migration 0024_20260624_add_workflow_tables
 -- ===============================================
 
 CREATE DATABASE IF NOT EXISTS tolink_rag_db DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -136,19 +136,25 @@ CREATE TABLE IF NOT EXISTS chat_conversation (
     INDEX idx_chat_conversation_dataset_updated (dataset_id, updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '对话表';
 
--- 6. 对话消息表
+-- 6. 对话消息表（一行一轮：query + answer 同行；migration 0021 收缩、0023 加韧性字段）
 CREATE TABLE IF NOT EXISTS chat_message (
     id                  BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '消息唯一标识',
     conversation_id     BIGINT UNSIGNED NOT NULL COMMENT '所属对话 ID',
     config_id           BIGINT UNSIGNED COMMENT '产生该消息所使用的 LLM 配置 ID',
     model_name          VARCHAR(128)    COMMENT '模型名快照',
-    role                VARCHAR(16)     NOT NULL COMMENT '角色：user/assistant/system',
-    content             MEDIUMTEXT      NOT NULL COMMENT '消息内容',
-    token_count         INT             DEFAULT 0 COMMENT '该条消息消耗的 Token 数',
+    query               MEDIUMTEXT      COMMENT '用户提问',
+    answer              MEDIUMTEXT      NOT NULL COMMENT 'LLM 回答',
+    `references`        JSON            COMMENT '召回 chunk_id 列表，不含正文',
+    request_id          VARCHAR(64)     COMMENT '请求追踪 ID（不再充当幂等键）',
+    turn_id             VARCHAR(64)     COMMENT '轮次幂等键：前端每轮稳定 UUID，Java 据此 upsert（migration 0023）',
+    status              VARCHAR(16)     NOT NULL DEFAULT 'success' COMMENT '轮次状态：GENERATING/COMPLETED/FAILED（行数据由 Java 写；DDL 默认沿用旧 success）',
+    error_code          VARCHAR(64)     COMMENT '失败码 RECALL_*/GENERATION_TIMEOUT，仅 FAILED（migration 0023）',
+    error_message       VARCHAR(512)    COMMENT '失败原因，不含堆栈，仅 FAILED（migration 0023）',
     created_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
-    INDEX idx_conversation_created (conversation_id, created_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '对话消息表';
+    INDEX idx_conversation_created (conversation_id, created_at),
+    UNIQUE KEY uk_chat_message_turn_id (turn_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '对话消息表（一行一轮）';
 
 -- 7. LLM 调用用量日志表
 CREATE TABLE IF NOT EXISTS llm_usage_log (
@@ -403,9 +409,59 @@ CREATE TABLE IF NOT EXISTS dataset_parse_config (
     KEY idx_dataset_parse_config_dataset (dataset_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '数据集解析/检索参数配置';
 
+-- 17. 通用流程编排运行记录表（migration 0024 引入，LINK-102）
+-- 仅记录 workflow engine 的 run 级状态；不替代 document_parse_pipeline。
+CREATE TABLE IF NOT EXISTS workflow_run (
+    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '物理主键ID',
+    run_id          VARCHAR(36)  NOT NULL COMMENT 'workflow run UUID',
+    definition_name VARCHAR(64)  NOT NULL COMMENT 'workflow 定义名',
+    biz_key         VARCHAR(128) DEFAULT NULL COMMENT '业务关联键',
+    previous_run_id VARCHAR(36)  DEFAULT NULL COMMENT '断点续跑上一轮 run_id',
+    status          VARCHAR(16)  NOT NULL COMMENT '运行状态: CREATED/RUNNING/SUCCESS/FAILED',
+    failure_phase   VARCHAR(16)  DEFAULT NULL COMMENT '失败阶段: RUN/RESTORE/SCHEDULE',
+    failure_reason  VARCHAR(512) DEFAULT NULL COMMENT '失败原因摘要',
+    started_at      DATETIME     DEFAULT NULL COMMENT '开始时间',
+    finished_at     DATETIME     DEFAULT NULL COMMENT '结束时间',
+    created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+
+    UNIQUE KEY uk_workflow_run_id (run_id),
+    KEY idx_workflow_run_biz_key (biz_key),
+    KEY idx_workflow_run_previous (previous_run_id),
+    KEY idx_workflow_run_definition_status (definition_name, status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '通用流程编排运行记录表';
+
+-- 18. 通用流程编排节点运行记录表（migration 0024 引入，LINK-102）
+-- 仅记录 workflow engine 的 node 级状态；产物引用 output_ref 由节点自行定义。
+CREATE TABLE IF NOT EXISTS workflow_node_run (
+    id                    BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '物理主键ID',
+    run_id                VARCHAR(36)  NOT NULL COMMENT 'workflow run UUID',
+    node_key              VARCHAR(64)  NOT NULL COMMENT '节点 key',
+    status                VARCHAR(16)  NOT NULL COMMENT '节点状态: PENDING/RUNNING/SUCCESS/SKIPPED/FAILED',
+    requires              JSON         NOT NULL COMMENT '输入产物 key 列表',
+    provides              JSON         NOT NULL COMMENT '输出产物 key 列表',
+    output_ref            JSON         DEFAULT NULL COMMENT '可恢复产物引用',
+    allow_failure         BOOLEAN      NOT NULL DEFAULT FALSE COMMENT '失败是否可容忍',
+    tolerated             BOOLEAN      NOT NULL DEFAULT FALSE COMMENT '本次失败是否已容忍',
+    failure_phase         VARCHAR(16)  DEFAULT NULL COMMENT '失败阶段: RUN/RESTORE/SCHEDULE',
+    failure_reason        VARCHAR(512) DEFAULT NULL COMMENT '失败原因摘要',
+    inherited_from_run_id VARCHAR(36)  DEFAULT NULL COMMENT '继承自哪一轮 run',
+    started_at            DATETIME     DEFAULT NULL COMMENT '开始时间',
+    finished_at           DATETIME     DEFAULT NULL COMMENT '结束时间',
+    created_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+
+    UNIQUE KEY uk_workflow_node_run (run_id, node_key),
+    KEY idx_workflow_node_run_run (run_id),
+    KEY idx_workflow_node_run_status (status, updated_at),
+    KEY idx_workflow_node_run_inherited (inherited_from_run_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '通用流程编排节点运行记录表';
+
 -- 自增起始值统一为 10000
 ALTER TABLE sys_user AUTO_INCREMENT = 10000;
 ALTER TABLE llm_system_provider AUTO_INCREMENT = 10000;
+ALTER TABLE llm_provider_model AUTO_INCREMENT = 10000;
+ALTER TABLE llm_system_preset AUTO_INCREMENT = 10000;
 ALTER TABLE llm_user_config AUTO_INCREMENT = 10000;
 ALTER TABLE dataset AUTO_INCREMENT = 10000;
 ALTER TABLE chat_conversation AUTO_INCREMENT = 10000;
@@ -420,3 +476,5 @@ ALTER TABLE blog_asset AUTO_INCREMENT = 10000;
 ALTER TABLE user_feedback AUTO_INCREMENT = 10000;
 ALTER TABLE kb_document_chunk AUTO_INCREMENT = 10000;
 ALTER TABLE dataset_parse_config AUTO_INCREMENT = 10000;
+ALTER TABLE workflow_run AUTO_INCREMENT = 10000;
+ALTER TABLE workflow_node_run AUTO_INCREMENT = 10000;

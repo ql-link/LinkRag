@@ -66,6 +66,7 @@ async def recall_event_stream(
     request_id: str,
     config_id: int,
     conversation_id: int,
+    turn_id: str,
     reranker: PostRecallReranker,
     token_budget: int,
     rerank_top_n: int,
@@ -87,8 +88,33 @@ async def recall_event_stream(
     通用失败终态：必备前置缺失（用户无默认 EMBEDDING 配置）→ ``error`` EMBEDDING_CONFIG_MISSING；
     全路失败 → ``error`` ALL_SOURCES_FAILED；超时 → ``error`` TIMEOUT；客户端断连 → 停止发送并向上
     传播取消；未预期异常 → ``error`` INTERNAL_ERROR。message 不含内部堆栈。
+
+    落库（chat-stream-resilient-persist）：入口先发 ``GENERATING`` 起点轮次消息（``turn_id``
+    幂等键贯穿起点与终态，Java 据此 upsert 同一行）；**每个失败终态都补发一条 ``FAILED``
+    轮次消息**（带 ``error_code``），而非只发 SSE error——保证后台续跑后状态可落库可判定。
+    成功 / 空命中的 ``COMPLETED`` 由 ``_generate_answer`` 发出。
     """
     timeout_seconds = settings.RECALL_STREAM_TIMEOUT_MS / 1000
+    started = time.perf_counter()
+
+    def _elapsed_ms() -> int:
+        return int((time.perf_counter() - started) * 1000)
+
+    # 起点：发 GENERATING（answer 空、模型未解析）。任一后续失败终态会补发 FAILED 关闭该行。
+    resolved = None
+    await _emit_chat_turn(
+        recall_req=recall_req,
+        request_id=request_id,
+        turn_id=turn_id,
+        conversation_id=conversation_id,
+        config_id=config_id,
+        resolved=None,
+        answer="",
+        usage=UsageInfo(),
+        references=[],
+        latency_ms=0,
+        status="GENERATING",
+    )
     try:
         # 召回前置校验用户模型；不可用即硬失败、不进入召回。
         try:
@@ -111,6 +137,21 @@ async def recall_event_stream(
                     "code": CODE_MODEL_CONFIG_MISSING,
                     "message": "selected model is not configured or unavailable",
                 },
+            )
+            await _emit_chat_turn(
+                recall_req=recall_req,
+                request_id=request_id,
+                turn_id=turn_id,
+                conversation_id=conversation_id,
+                config_id=config_id,
+                resolved=None,
+                answer="",
+                usage=UsageInfo(),
+                references=[],
+                latency_ms=_elapsed_ms(),
+                status="FAILED",
+                error_code=CODE_MODEL_CONFIG_MISSING,
+                error_message="selected model is not configured or unavailable",
             )
             return
 
@@ -141,6 +182,7 @@ async def recall_event_stream(
             response.failed_sources,
             recall_req,
             request_id,
+            turn_id,
             token_budget,
             conversation_id,
             config_id,
@@ -150,6 +192,17 @@ async def recall_event_stream(
         # 正常已在握手前拦截；此处为 pipeline 自身安全网的兜底。
         logger.info("[recall] validation error request_id={}: {}", request_id, exc)
         yield recall_event("error", {"code": CODE_INVALID_REQUEST, "message": str(exc)})
+        await _emit_failed_turn(
+            recall_req,
+            request_id,
+            turn_id,
+            conversation_id,
+            config_id,
+            resolved,
+            _elapsed_ms(),
+            CODE_INVALID_REQUEST,
+            "invalid recall request",
+        )
     except RecallFatalError as exc:
         # 必备前置缺失（当前：发起用户无默认 EMBEDDING 配置，dense 路无法编码 query）。
         # 须置于 RecallError 之前——RecallFatalError 是其子类。整请求硬失败，不做宽松降级。
@@ -158,21 +211,66 @@ async def recall_event_stream(
             "error",
             {"code": CODE_EMBEDDING_CONFIG_MISSING, "message": "user embedding config missing"},
         )
+        await _emit_failed_turn(
+            recall_req,
+            request_id,
+            turn_id,
+            conversation_id,
+            config_id,
+            resolved,
+            _elapsed_ms(),
+            CODE_EMBEDDING_CONFIG_MISSING,
+            "user embedding config missing",
+        )
     except RecallError as exc:
         logger.warning("[recall] all sources failed request_id={}: {}", request_id, exc)
         yield recall_event(
             "error", {"code": CODE_ALL_SOURCES_FAILED, "message": "all retrievers failed"}
         )
+        await _emit_failed_turn(
+            recall_req,
+            request_id,
+            turn_id,
+            conversation_id,
+            config_id,
+            resolved,
+            _elapsed_ms(),
+            CODE_ALL_SOURCES_FAILED,
+            "all retrievers failed",
+        )
     except asyncio.TimeoutError:
         logger.warning("[recall] timeout request_id={}", request_id)
         yield recall_event("error", {"code": CODE_TIMEOUT, "message": "recall timeout"})
+        await _emit_failed_turn(
+            recall_req,
+            request_id,
+            turn_id,
+            conversation_id,
+            config_id,
+            resolved,
+            _elapsed_ms(),
+            CODE_TIMEOUT,
+            "recall timeout",
+        )
     except asyncio.CancelledError:
-        # 客户端断连：停止发送事件，向上传播取消，让 pipeline 协程随之结束。
-        logger.info("[recall] client disconnected, cancelling request_id={}", request_id)
+        # 后台生产者任务被取消（仅进程关闭等）；客户端断连不再取消本协程（消费者已解耦）。
+        # 任务未完成，不补发终态，向上传播取消。
+        logger.info("[recall] generation task cancelled request_id={}", request_id)
         raise
     except Exception:  # noqa: BLE001 - 兜底，避免未预期异常泄露堆栈给调用方
         logger.exception("[recall] unexpected error request_id={}", request_id)
         yield recall_event("error", {"code": CODE_INTERNAL_ERROR, "message": "internal error"})
+        await _emit_failed_turn(
+            recall_req,
+            request_id,
+            turn_id,
+            conversation_id,
+            config_id,
+            resolved,
+            _elapsed_ms(),
+            CODE_INTERNAL_ERROR,
+            "internal error",
+        )
 
 
 async def _rerank_hits(
@@ -248,6 +346,7 @@ async def _generate_answer(
     failed_sources: list[str],
     recall_req: RecallRequest,
     request_id: str,
+    turn_id: str,
     token_budget: int,
     conversation_id: int,
     config_id: int,
@@ -258,19 +357,34 @@ async def _generate_answer(
     回填的正文（rerank 与生成共用，不在此重复查库）。上下文拼装与 ``answer_done`` /
     ``recall_done`` 回报均以 ``hits`` 为准；``rerank_applied`` 原样透出。
 
-    - 0 命中 / 全部片段缺正文 → ``recall_done``（不发起生成、**不发对话轮次消息**）；
-    - 否则用已解析的用户模型流式生成：逐 token ``answer_delta``、结束 ``answer_done``（附 usage）；
-    - 生成阶段任何异常 → ``error`` GENERATION_FAILED（整请求失败，不返回部分召回片段为成功终态）。
+    落库终态（chat-stream-resilient-persist，均携起点同一 ``turn_id``，Java upsert 同一行）：
+    - 0 命中 / 全部片段缺正文 → ``recall_done`` + ``COMPLETED``（空 answer 占位）；
+    - 正常结束 → ``answer_done`` + ``COMPLETED``（完整 answer/usage/references）；
+    - 生成异常 → ``error`` GENERATION_FAILED + ``FAILED``（``error_code=RECALL_GENERATION_FAILED``）；
+    - 生成超时 → ``error`` + ``FAILED``（``error_code=GENERATION_TIMEOUT``，保留半截 answer）。
 
-    三种生成终态各发一条 ``ChatTurnMessage`` 供 Java 落库（chat-message-persistence）：
-    正常结束 ``success``、生成异常 ``failed``、客户端断连（``CancelledError``）``partial``
-    （保留半截答案后向上传播取消）。发送均置于 SSE 终态之后、且失败仅告警，不阻塞用户流。
+    生成阶段独立超时（``RECALL_GENERATION_TIMEOUT_MS``）：后台续跑下连接断开不再兜底，
+    需独立超时防孤儿任务无限烧 token。按 deadline 在帧间检查（帧内卡死由 provider httpx
+    超时兜底）。``partial`` 状态已退役——断连不取消任务，正常跑到 COMPLETED。
     """
-    # 空命中：不进入生成。
+    # 空命中：不生成，但仍落 COMPLETED 占位行（前端按空内容展示占位）。
     if not hits:
         yield recall_event(
             "recall_done",
             {"hits": [], "rerank_applied": rerank_applied, "failed_sources": failed_sources},
+        )
+        await _emit_chat_turn(
+            recall_req=recall_req,
+            request_id=request_id,
+            turn_id=turn_id,
+            conversation_id=conversation_id,
+            config_id=config_id,
+            resolved=resolved,
+            answer="",
+            usage=UsageInfo(),
+            references=[],
+            latency_ms=0,
+            status="COMPLETED",
         )
         return
 
@@ -287,7 +401,7 @@ async def _generate_answer(
         assembled.truncated,
     )
 
-    # 全部片段缺正文：按空命中处理，不生成。
+    # 全部片段缺正文：按空命中处理，不生成，同样落 COMPLETED 占位。
     if not assembled.blocks:
         yield recall_event(
             "recall_done",
@@ -297,15 +411,29 @@ async def _generate_answer(
                 "failed_sources": failed_sources,
             },
         )
+        await _emit_chat_turn(
+            recall_req=recall_req,
+            request_id=request_id,
+            turn_id=turn_id,
+            conversation_id=conversation_id,
+            config_id=config_id,
+            resolved=resolved,
+            answer="",
+            usage=UsageInfo(),
+            references=[],
+            latency_ms=0,
+            status="COMPLETED",
+        )
         return
 
     # 流式生成：生成阶段失败即整请求失败。
     # references 取 rerank 后最终候选的 chunk_id（仅标识，不含正文），随各终态一起上报。
     user_prompt = build_rag_user_prompt(recall_req.query, assembled.context_text)
     answer_parts: list[str] = []
-    usage = UsageInfo()  # 流式 usage 通常挂在末帧；断连未收到时维持 0
+    usage = UsageInfo()  # 流式 usage 通常挂在末帧；超时未收到时维持 0
     references = [h.chunk_id for h in hits]
     gen_started = time.perf_counter()
+    gen_deadline = time.monotonic() + settings.RECALL_GENERATION_TIMEOUT_MS / 1000
 
     def _elapsed_ms() -> int:
         return int((time.perf_counter() - gen_started) * 1000)
@@ -315,16 +443,25 @@ async def _generate_answer(
             prompt=user_prompt,
             system_prompt=RAG_GENERATION_SYSTEM_PROMPT,
         ):
+            # 生成阶段独立超时：帧间检查 deadline，超过即终止落 FAILED+GENERATION_TIMEOUT。
+            if time.monotonic() > gen_deadline:
+                raise asyncio.TimeoutError
             if chunk.delta:
                 answer_parts.append(chunk.delta)
                 yield recall_event("answer_delta", {"text": chunk.delta})
             if chunk.usage is not None:
                 usage = chunk.usage
-    except asyncio.CancelledError:
-        # 客户端断连：保留半截答案按 partial 上报，再向上传播取消。
+    except asyncio.TimeoutError:
+        # 生成超时：保留半截答案，落 FAILED + GENERATION_TIMEOUT。
+        logger.warning("[recall] generation timeout request_id={}", request_id)
+        yield recall_event(
+            "error",
+            {"code": CODE_GENERATION_FAILED, "message": "answer generation timeout"},
+        )
         await _emit_chat_turn(
             recall_req=recall_req,
             request_id=request_id,
+            turn_id=turn_id,
             conversation_id=conversation_id,
             config_id=config_id,
             resolved=resolved,
@@ -332,9 +469,11 @@ async def _generate_answer(
             usage=usage,
             references=references,
             latency_ms=_elapsed_ms(),
-            status="partial",
+            status="FAILED",
+            error_code="GENERATION_TIMEOUT",
+            error_message="answer generation timeout",
         )
-        raise
+        return
     except Exception as exc:  # noqa: BLE001 - 生成失败统一收敛为 GENERATION_FAILED
         logger.warning("[recall] generation failed request_id={}: {}", request_id, exc)
         yield recall_event(
@@ -344,6 +483,7 @@ async def _generate_answer(
         await _emit_chat_turn(
             recall_req=recall_req,
             request_id=request_id,
+            turn_id=turn_id,
             conversation_id=conversation_id,
             config_id=config_id,
             resolved=resolved,
@@ -351,11 +491,13 @@ async def _generate_answer(
             usage=usage,
             references=references,
             latency_ms=_elapsed_ms(),
-            status="failed",
+            status="FAILED",
+            error_code=CODE_GENERATION_FAILED,
+            error_message="answer generation failed",
         )
         return
 
-    # 正常结束：answer_done 附 usage，随后发 success 轮次消息（在 SSE 终态之后）。
+    # 正常结束：answer_done 附 usage，随后发 COMPLETED 轮次消息（在 SSE 终态之后）。
     yield recall_event(
         "answer_done",
         {
@@ -369,6 +511,7 @@ async def _generate_answer(
     await _emit_chat_turn(
         recall_req=recall_req,
         request_id=request_id,
+        turn_id=turn_id,
         conversation_id=conversation_id,
         config_id=config_id,
         resolved=resolved,
@@ -376,7 +519,36 @@ async def _generate_answer(
         usage=usage,
         references=references,
         latency_ms=_elapsed_ms(),
-        status="success",
+        status="COMPLETED",
+    )
+
+
+async def _emit_failed_turn(
+    recall_req: RecallRequest,
+    request_id: str,
+    turn_id: str,
+    conversation_id: int,
+    config_id: int,
+    resolved,
+    latency_ms: int,
+    error_code: str,
+    error_message: str,
+) -> None:
+    """前置失败终态的 FAILED 落库便捷封装（answer/usage/references 均空）。"""
+    await _emit_chat_turn(
+        recall_req=recall_req,
+        request_id=request_id,
+        turn_id=turn_id,
+        conversation_id=conversation_id,
+        config_id=config_id,
+        resolved=resolved,
+        answer="",
+        usage=UsageInfo(),
+        references=[],
+        latency_ms=latency_ms,
+        status="FAILED",
+        error_code=error_code,
+        error_message=error_message,
     )
 
 
@@ -384,6 +556,7 @@ async def _emit_chat_turn(
     *,
     recall_req: RecallRequest,
     request_id: str,
+    turn_id: str,
     conversation_id: int,
     config_id: int,
     resolved,
@@ -392,40 +565,47 @@ async def _emit_chat_turn(
     references: list[str],
     latency_ms: int,
     status: str,
+    error_code: str | None = None,
+    error_message: str | None = None,
 ) -> None:
-    """发送对话轮次完成消息 + generate token 用量（两者解耦，LINK-191）。
+    """构造并发送对话轮次消息 + generate token 用量（两者解耦，LINK-191）。
 
-    置于 SSE 终态之后调用：
-    - ``chat_turn`` 只携带对话内容（query/answer/references/status）供 Java 落 chat_message；
-    - 本轮 generate 的 token 用量另走统一的 ``TokenUsageMessage``（stage='chat'、
-      operation='generate'），不再挂在携带大文本的对话消息上。
-
-    两者均为最终一致、不进用户关键路径：chat_turn 发送失败仅告警；用量上报旁路 fire-and-forget。
+    起点 GENERATING / 各终态均经此发送，``turn_id`` 贯穿同一轮供 Java upsert 同一行。
+    ``resolved`` 可为 None（起点与模型未解析的前置失败）——此时 provider/model 留空，由
+    后续终态补齐。chat_turn 只承载对话内容（**不含 token**）；本轮 generate 的 token 用量另走
+    统一 ``TokenUsageMessage``（stage='chat'、operation='generate'）。两者均最终一致、不进关键
+    路径：chat_turn 发送失败仅告警，用量上报旁路 fire-and-forget。
     """
     try:
         msg = ChatTurnMessage.build(
             conversation_id=conversation_id,
             request_id=request_id,
+            turn_id=turn_id,
             user_id=recall_req.user_id,
             query=recall_req.query,
             answer=answer,
             config_id=config_id,
-            model_name=resolved.model_name or "",
+            provider_type=resolved.provider_type if resolved is not None else "",
+            model_name=(resolved.model_name or "") if resolved is not None else "",
             status=status,
             references=references,
+            latency_ms=latency_ms,
+            error_code=error_code,
+            error_message=error_message,
         )
         await MQService().send(msg)
     except Exception as exc:  # noqa: BLE001 - 落库通知失败不影响问答主流程
         logger.warning(
-            "[recall] chat_turn emit failed request_id={} status={}: {}",
+            "[recall] chat_turn emit failed request_id={} turn_id={} status={}: {}",
             request_id,
+            turn_id,
             status,
             exc,
         )
 
     # generate token 用量统一上报（旁路、非阻塞）：与 chat_turn 解耦，发送独立于上面的落库通知。
-    # 断连/失败可能 0 token（usage 维持初值），无意义则跳过，避免落空行。
-    if usage.total_tokens > 0:
+    # GENERATING 起点与各失败前置态 usage 维持 0（且 resolved 可能为 None），跳过避免落空行。
+    if usage.total_tokens > 0 and resolved is not None:
         report_usage_nowait(
             user_id=recall_req.user_id,
             provider_type=resolved.provider_type,
@@ -437,5 +617,6 @@ async def _emit_chat_turn(
             total_tokens=usage.total_tokens,
             config_id=config_id,
             latency_ms=latency_ms,
-            status=status,
+            # chat_turn 的 GENERATING/COMPLETED/FAILED 映射到用量口径的 success/failed。
+            status="failed" if status == "FAILED" else "success",
         )

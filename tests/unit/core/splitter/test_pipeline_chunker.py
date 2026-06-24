@@ -11,6 +11,7 @@ from src.core.splitter import (
     CoarseChunk,
     CoarseChunkSet,
     ElementView,
+    FinalChunkSetValidator,
     NoopStageTwoAlgorithm,
     ProtectedRange,
     SplitterOutputValidationError,
@@ -387,6 +388,52 @@ async def test_achunk_should_fail_fast_when_mixed_chunk_misses_element_views():
 
     with pytest.raises(SplitterOutputValidationError, match="element_views"):
         await chunker.achunk([_paragraph("visible", 0)])
+
+
+async def test_noop_stage_two_allows_final_chunk_over_hard_max_in_pipeline() -> None:
+    content = "one two three four five"
+    coarse_set = CoarseChunkSet(
+        strategy="candidate_boundary",
+        chunks=[
+            CoarseChunk(
+                id="coarse_1",
+                content=content,
+                start_line=0,
+                end_line=0,
+                token_count=5,
+                source_element_indexes=[0],
+                element_types=["paragraph"],
+                protected_ranges=[],
+                heading_trail=[],
+                heading_trails=[],
+                role="mixed",
+                strategy="candidate_boundary",
+                element_views=[
+                    _element_view(
+                        element_index=0,
+                        content_start=0,
+                        content_end=len(content),
+                    )
+                ],
+            )
+        ],
+    )
+    chunker = StructuredSemanticChunker(
+        stage_one_router=StageOneRouter(
+            algorithm_name="candidate_boundary",
+            algorithms=[StaticStageOneAlgorithm(coarse_set)],
+        ),
+        stage_two_router=StageTwoRouter(
+            algorithm_name="noop",
+            algorithms=[NoopStageTwoAlgorithm()],
+        ),
+        final_validator=FinalChunkSetValidator(MockWordTokenizer(), hard_max_tokens=4),
+    )
+
+    chunks = await chunker.achunk([_paragraph(content, 0)])
+
+    assert [chunk.content for chunk in chunks] == [content]
+    assert chunks[0].metadata["split_strategy"] == "candidate_boundary + noop"
 
 
 async def test_achunk_should_fail_fast_when_protected_ranges_do_not_match_views():

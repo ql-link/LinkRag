@@ -131,6 +131,13 @@ parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权�
 | --- | --- |
 | `X-User-Id` | 用户 ID，用于读取用户 LLM 配置 |
 
+配置解析规则：
+
+- `config_id` 为空时，按 `X-User-Id + capability` 读取该用户默认配置。
+- `config_id` 非空时，只读取该用户名下对应配置；配置不存在、不属于该用户、已停用或能力不匹配均视为用户模型配置缺失。
+- 直调 LLM 接口不使用系统模型兜底；用户缺少对应能力配置时不会读取 `SYSTEM_LLM_*` 环境变量。
+- 缺配置返回 HTTP `422`，响应体 `detail.code` 为 `LLM_CONFIG_MISSING`，`detail.message` 会说明缺少的能力（如 `CHAT` / `EMBEDDING` / `RERANK` / `VISION`）。
+
 | Method | Path | 用途 | 请求 |
 | --- | --- | --- | --- |
 | `POST` | `/generate` | 非流式文本生成 | `GenerateRequest` |
@@ -216,9 +223,10 @@ session token 由 Java 签发、Python 用**独立专用密钥**验签；claims�
 | `query` | string | 是 | 用户问题，不能为空或纯空白 |
 | `config_id` | int | 是 | 本次生成所用 CHAT 模型配置 id（前端选中、用户已配置）。缺失 `422`；不属本用户 / 非 CHAT / 已停用 / 不存在 → 召回前置失败 `RECALL_MODEL_CONFIG_MISSING` |
 | `conversation_id` | int | 是 | 本轮所属对话 id（Java 预先创建），作为对话落库挂载锚点。缺失 `422`，不进入召回生成、不发对话轮次消息 |
+| `turn_id` | string | 是 | 本轮落库幂等键：前端每轮生成的稳定 UUID（断连重连不变）。缺失 `422`。Java 据此 upsert 同一行，断连续跑/重连不重复落库 |
 | `dataset_ids` | list[int] | 否 | 本次查询的数据集**子集选择**，必须 ⊆ token 授权范围（超出 `403`）；省略/空 = 用 token 全量授权范围 |
 
-> 问答正常结束 / 生成失败 / 客户端断连时，Python 端发一条 `tolink.rag.chat_turn` 消息供 Java 落库对话内容（空召回不发）；本轮 generate 的 token 用量另走 `tolink.rag.usage_report`（LINK-191）。契约见 [mq_contracts.md §对话轮次上报](mq_contracts.md#对话轮次上报pythonjava)。
+> 生成跑在**独立后台任务**（断连不取消）：任务起点发一条 `tolink.rag.chat_turn`（`status=GENERATING`），终态再发 `COMPLETED`/`FAILED`，同 `turn_id`，供 Java upsert 落库对话内容（空召回也发 `COMPLETED` 占位）。客户端断连只停 SSE 转发、生成续跑到落库；本轮 generate 的 token 用量另走 `tolink.rag.usage_report`（LINK-191）。契约见 [mq_contracts.md §对话轮次上报](mq_contracts.md#对话轮次上报pythonjava)。
 
 **身份只取 token claims**——body 不含 `user_id`，前端自报一律不信任。`top_k` / 召回分数阈值 /
 召回路 / 容错模式 / rerank 条数均由服务端**按数据集配置**控制（`dataset_parse_config.recall_config`：

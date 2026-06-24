@@ -89,3 +89,6 @@ docker-compose.override.yml
 /.specs/
 /.kiro/
 /blog/
+
+# 本地临时产物（草稿、DB 备份等），不入 Git
+/tmp/

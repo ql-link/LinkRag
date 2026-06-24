@@ -263,6 +263,11 @@ CoarseChunkSet -> NoopStageTwoAlgorithm -> FinalChunkSet
 
 这样所有链路统一经过第二阶段，不存在“绕过第二阶段直接导出”的分支。
 
+`noop` 的契约是结构透传，不保证 final chunk token 数不超过
+`CHUNKING_HARD_MAX_TOKENS`。pipeline 在 `noop` 路径保留无损切片与 derived 锚点校验，
+但跳过 hard max token 校验；生产环境如果需要 final chunk 硬上限保障，应显式配置
+`CHUNKING_STAGE_TWO_ALGORITHM=semantic_depth_window`。
+
 ### 6.3 semantic_depth_window
 
 `semantic_depth_window` 是 Stage 2 语义细分算法，目标是对超过软上限的 `mixed` coarse chunk 做结构感知切分：
@@ -285,7 +290,13 @@ CoarseChunkSet -> SemanticDepthWindowStageTwo -> FinalChunkSet
 
 - `CHUNKING_MAX_CHUNK_TOKENS` 是普通打包软目标。普通文本 final 应尽量不超过该值。
 - `CHUNKING_MAX_CHUNK_TOKENS < tokens <= CHUNKING_HARD_MAX_TOKENS` 是 protected 容忍带。不可拆 protected 或 protected 加引导文本可整块保留，并在 metadata 写入 `oversized=true` 与原因。
-- `tokens > CHUNKING_HARD_MAX_TOKENS` 是绝对硬上限。超过 hard_max 的单个不可拆 atom 按 hard_max 内最后完整行截断，并写入 `truncated=true`、`truncated_reason`、`original_token_count`；FinalChunkSetValidator 会校验所有 mixed final 不超过 hard_max。
+- `tokens > CHUNKING_HARD_MAX_TOKENS` 是绝对硬上限。算法在 atom 合并、
+  heading-only 合并、短碎片合并之后会再次按 atom 边界收口，普通文本 atom 已在构建阶段
+  按段落、行、句、token-safe 边界切分；超过 hard_max 的单个不可拆 protected atom
+  按 hard_max 内最后完整行截断，若没有任何完整行可落入 hard max，则退回 token-safe
+  前缀，并写入 `truncated=true`、`truncated_reason`、`original_token_count`。
+  `FinalChunkSetValidator` 会校验 `semantic_depth_window` 输出的所有 mixed final 不超过
+  hard_max。
 
 embedding 失败语义：
 

@@ -230,6 +230,7 @@ pytest --run-integration -m real_env        # 真实环境
 
 - 改 `src/models/**.py` → PR 必须包含新的 `migrations/versions/*.py`（同步规则 `db-migration-required`，error 拦截）。
 - `migrations/db.sql` 是 **0001 baseline 冻结快照**，**禁止改动**（同步规则 `baseline-sql-frozen`，error 拦截）。
+- 改 `migrations/versions/*.py` → 必须同步 [scripts/db/init.sql](../scripts/db/init.sql) 当前完整结构快照（同步规则 `init-sql-current-snapshot`，error 拦截）。
 
 ### 4.2 心智模型
 
@@ -306,6 +307,7 @@ NNNN_YYYYMMDD_slug.py
 - DB URL 优先级：`ALEMBIC_DATABASE_URL` 环境变量 > `src.config.settings.DATABASE_URL`。
 - `server_default="0"` 才会落到 DDL（`default=0` 只在 ORM 层，不进表）。
 - migrations/db.sql 是 0001 baseline，不是"最新 schema 文档"；想看最新完整结构看 `scripts/db/init.sql`，或跑 `alembic upgrade head` 后 mysqldump。
+- 每条会改表结构、索引或列注释的 migration 落库时，同步更新 `scripts/db/init.sql` 的对应 `CREATE TABLE`、索引、表注释和头部"末次同步"标记。
 
 ### 4.7 常见坑
 
@@ -333,6 +335,7 @@ NNNN_YYYYMMDD_slug.py
 | `src/models/**.py` | [docs/api/schemas/mysql.md](api/schemas/mysql.md) | ❌ error |
 | `src/models/**.py` | 新增 `migrations/versions/*.py` | ❌ error |
 | `migrations/db.sql` | **禁止改动** | ❌ error |
+| `migrations/versions/*.py` | [scripts/db/init.sql](../scripts/db/init.sql) | ❌ error |
 | `src/core/mq/messages/**` | [docs/api/mq_contracts.md](api/mq_contracts.md) + [docs/internals/mq.md](internals/mq.md) | ❌ error |
 | `src/core/pipeline/parse_task/**` | [docs/internals/parse_task_pipeline.md](internals/parse_task_pipeline.md) | ❌ error |
 

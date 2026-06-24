@@ -81,7 +81,12 @@ class Settings(BaseSettings):
     # ==========================================
     # 召回融合 pipeline 的通用执行参数，两条召回链路共用。
     # 单次召回最大执行时间（毫秒）；超过即以 SSE error RECALL_TIMEOUT 终止。
+    # 仅覆盖召回 + rerank 阶段；LLM 生成阶段另由 RECALL_GENERATION_TIMEOUT_MS 约束。
     RECALL_STREAM_TIMEOUT_MS: int = 60000
+    # LLM 生成阶段最大执行时间（毫秒），与召回超时解耦（chat-stream-resilient-persist R6）。
+    # 后台续跑场景下生成不再被连接断开兜底，需独立超时防孤儿任务无限烧 token；
+    # 取值远大于召回超时以容纳长回答，超时即落 FAILED + GENERATION_TIMEOUT。
+    RECALL_GENERATION_TIMEOUT_MS: int = 300000
     # pipeline 严格模式默认值：False=宽松，允许单路失败降级。
     RECALL_STRICT_DEFAULT: bool = False
     # 服务端固定返回候选数上限（同时作为各路执行期 top_k）。
@@ -272,6 +277,11 @@ class Settings(BaseSettings):
         if self.CHUNKING_HARD_MAX_TOKENS < self.CHUNKING_MAX_CHUNK_TOKENS:
             raise ValueError("CHUNKING_HARD_MAX_TOKENS must be >= CHUNKING_MAX_CHUNK_TOKENS")
         return self
+
+    # ==========================================
+    # 轻量流程编排引擎配置 (Workflow Engine)
+    # ==========================================
+    WORKFLOW_MAX_CONCURRENCY: int = 8
 
     # ==========================================
     # 向量数据库配置 (Vector Store)

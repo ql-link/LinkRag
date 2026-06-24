@@ -15,6 +15,7 @@
 | 系统级 LLM | `SYSTEM_LLM_*` | 始终（兜底 LLM 调用） |
 | Markdown 增强 | `MARKDOWN_PARSER_*` | 调整解析增强行为时 |
 | 分块策略 | `CHUNKING_*` | 调整分块参数时 |
+| 流程编排 | `WORKFLOW_*` | 使用轻量流程编排引擎时 |
 | 向量存储 | `VECTOR_STORE_TYPE`, `QDRANT_*`, `ES_*`, `CHUNK_INDEX_*`, `SPARSE_VECTOR_*` | 始终（选择 Qdrant 或 ES，并配置稀疏向量） |
 | 对象存储 | `STORAGE_TYPE`, `MINIO_*`, `LOCAL_DOCS_PATH` | 始终 |
 | 解析临时目录 | `PARSE_TEMP_DIR` | 始终（流式下载落盘目录） |
@@ -62,8 +63,9 @@
 | `MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET` | `8192` | 后续真实 LLM 标题生成器单次输入 token 预算；当前框架阶段不触发真实 LLM 调用 |
 | `CHUNKING_STAGE_ONE_ALGORITHM` | `candidate_boundary` | splitter 第一阶段算法名；当前支持 `candidate_boundary`，未知值启动失败 |
 | `CHUNKING_STAGE_TWO_ALGORITHM` | `noop` | splitter 第二阶段算法名；支持 `noop` / `semantic_depth_window`，未知值启动失败 |
+| `WORKFLOW_MAX_CONCURRENCY` | `8` | 轻量流程编排引擎单轮 run 中同时运行的节点数上限 |
 
-> splitter 不再保留 `CHUNKING_ENABLE_ADVANCED_PIPELINE` 布尔开关，也不再回退到旧规则分片器。第二阶段默认使用 `noop`；如需启用 TextTiling depth valley 语义细分，显式配置 `CHUNKING_STAGE_TWO_ALGORITHM=semantic_depth_window`。
+> splitter 不再保留 `CHUNKING_ENABLE_ADVANCED_PIPELINE` 布尔开关，也不再回退到旧规则分片器。第二阶段默认使用 `noop`；`noop` 只做结构透传，不保证 final chunk token 数不超过 `CHUNKING_HARD_MAX_TOKENS`。如需启用 TextTiling depth valley 语义细分与 hard max 保障，显式配置 `CHUNKING_STAGE_TWO_ALGORITHM=semantic_depth_window`。
 
 > 注：ES 入库失败即终态，无 ES 内部自动重试配置。原 `ES_INDEXING_MAX_RETRY` 已移除（用户侧重试由 `document_parse_pipeline.retry_count` 记录，触发路径待后续需求接线）。
 
@@ -144,7 +146,7 @@ logs/
 | --- | --- | --- |
 | `CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` | 128 | 第一阶段候选边界粗分片软下限，范围 `128..256`；调大可减少短 chunk |
 | `CHUNKING_MAX_CHUNK_TOKENS` | 512 | `semantic_depth_window` 普通 final chunk 软目标，范围 `256..2048`；必须 `>= CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` |
-| `CHUNKING_HARD_MAX_TOKENS` | 1024 | `semantic_depth_window` 绝对硬上限，范围 `512..8192`；必须 `>= CHUNKING_MAX_CHUNK_TOKENS`，不可拆 protected 超过时按完整行截断并标记 |
+| `CHUNKING_HARD_MAX_TOKENS` | 1024 | `semantic_depth_window` 绝对硬上限，范围 `512..8192`；必须 `>= CHUNKING_MAX_CHUNK_TOKENS`；`noop` 不保证该上限；不可拆 protected 超过时优先按完整行截断并标记 |
 | `CHUNKING_OVERLAP_TOKENS` | 64 | overlap token 数，范围 `0..64`；`0` 表示关闭 |
 | `CHUNKING_PROTECTED_NEIGHBOR_OVERLAP` | false | 含 protected 元素的 final chunk 是否参与后置 neighbor overlap；默认关闭，避免 overlap 进入表格/代码等结构块 |
 | `CHUNKING_HEADING_BREAK_LEVEL` | 5 | heading trail 与动态标题边界保护的最大层级；最多保护到 5 级 |
@@ -176,7 +178,8 @@ logs/
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `RECALL_STREAM_TIMEOUT_MS` | `60000` | 单次召回最大执行时间（毫秒）；超时 RAG 流以 SSE `error` RECALL_TIMEOUT 终止，纯召回 JSON 返回 `504` RECALL_TIMEOUT |
+| `RECALL_STREAM_TIMEOUT_MS` | `60000` | 召回 + rerank 阶段最大执行时间（毫秒）；超时 RAG 流以 SSE `error` RECALL_TIMEOUT 终止，纯召回 JSON 返回 `504` RECALL_TIMEOUT。**不含 LLM 生成阶段**（见 `RECALL_GENERATION_TIMEOUT_MS`） |
+| `RECALL_GENERATION_TIMEOUT_MS` | `300000` | LLM 生成阶段最大执行时间（毫秒），与召回超时解耦。RAG 生成跑在独立后台任务、断连不取消，需独立超时防孤儿任务无限烧 token；超时落 `FAILED` + `GENERATION_TIMEOUT`（保留半截答案）。取值远大于召回超时以容纳长回答 |
 | `RECALL_STRICT_DEFAULT` | `false` | pipeline 严格模式默认；false=宽松，允许单路失败降级 |
 | `RECALL_RESULT_LIMIT` | `20` | 服务端固定返回候选上限（同时作为各路执行期 `top_k`）|
 | `RECALL_ENABLED_SOURCES` | `bm25,sparse,dense` | 启用的召回路（逗号分隔）。本期默认开启三路；运维侧可显式 set `bm25,sparse` 暂时回退到 dev 旧行为；未登记的 source 出现在配置中装配期 `ValueError` |
@@ -205,8 +208,9 @@ logs/
 | `CORS_ORIGINS` | `["*"]` | **生产对外环境必须收敛为前端可信域名清单**（不可用 `*`，否则带 `Authorization` 头的跨域预检失败）|
 
 > token 短期可复用：Python 只校验 `exp`（建议 Java 签发 30s，仅够建连），不做一次性 /
-> 防重放 / 撤销；连上后流的存活由 `RECALL_STREAM_TIMEOUT_MS` 控制。并发计数依赖 Redis，
-> Redis 不可用时 fail-open（放行，因限流是资源保护非鉴权）。
+> 防重放 / 撤销。RAG 生成跑在独立后台任务、断连不取消，并发名额绑任务生命周期释放（非连接）；
+> 任务存活由召回超时 `RECALL_STREAM_TIMEOUT_MS` + 生成超时 `RECALL_GENERATION_TIMEOUT_MS` 共同约束，
+> 名额安全 TTL 取二者较大值兜底。并发计数依赖 Redis，Redis 不可用时 fail-open（放行，因限流是资源保护非鉴权）。
 
 ## 配置加载与覆盖
 

@@ -140,3 +140,14 @@ def test_validator_rejects_final_over_hard_max() -> None:
             final_set,
             CoarseChunkSet(chunks=[coarse], strategy="candidate_boundary"),
         )
+
+
+def test_validator_can_skip_hard_max_for_noop_pipeline_contract() -> None:
+    coarse = _coarse("a b c d e")
+    final_set = _set(_final("a b c d e"))
+
+    FinalChunkSetValidator(WordTokenizer(), hard_max_tokens=4).validate(
+        final_set,
+        CoarseChunkSet(chunks=[coarse], strategy="candidate_boundary"),
+        enforce_hard_max=False,
+    )

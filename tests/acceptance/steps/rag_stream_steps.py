@@ -24,9 +24,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 from pytest_bdd import given, parsers, then, when
 
+from src.api.routes import rag
 from src.application import recall_stream_runtime
 from src.application.recall_pipeline_provider import get_recall_pipeline, get_reranker
-from src.api.routes import rag
 from src.cache.redis_client import redis_client
 from src.config import settings
 from src.core.llm.exceptions import UserModelConfigMissingError
@@ -42,6 +42,8 @@ URL = "/api/v1/rag/stream"
 CONFIG_ID = 77
 # conversation_id 必填（对话落库锚点，chat-message-persistence）；同样注入确定性替身 id。
 CONVERSATION_ID = 9001
+# turn_id 必填（轮次幂等键，chat-stream-resilient-persist）；注入确定性替身值。
+TURN_ID = "t-acc"
 
 
 class _FakeProvider:
@@ -153,7 +155,6 @@ class _State:
     cors_origins: list[str] = field(default_factory=list)
     response: object = None
     events: list[tuple[str, str]] = field(default_factory=list)
-    cancel_raised: bool = False
     # 生成替身控制
     model_available: bool = True
     generation_raises: bool = False
@@ -310,11 +311,17 @@ def _fire(state: _State, *, with_token: bool) -> None:
                 "query": state.body["query"],
                 "config_id": CONFIG_ID,
                 "conversation_id": CONVERSATION_ID,
+                "turn_id": TURN_ID,
             },
             headers=headers,
         )
     else:
-        body = {"config_id": CONFIG_ID, "conversation_id": CONVERSATION_ID, **state.body}
+        body = {
+            "config_id": CONFIG_ID,
+            "conversation_id": CONVERSATION_ID,
+            "turn_id": TURN_ID,
+            **state.body,
+        }
         resp = client.post(URL, json=body, headers=headers)
     state.response = resp
     if resp.headers.get("content-type", "").startswith("text/event-stream"):
@@ -488,11 +495,6 @@ def _runtime_timeout(rag_acc_state):
     rag_acc_state.fake.delay = 0.5
 
 
-@given(parsers.parse("recall 正在执行中"))
-def _recall_running(rag_acc_state):
-    rag_acc_state.fake.delay = 10.0
-
-
 @given(parsers.parse("已用该 token 成功建连且召回正在执行"))
 def _connected_running(rag_acc_state):
     pass
@@ -641,27 +643,6 @@ def _w_cors(rag_acc_state, origin, query, ds):
         URL,
         headers={"Origin": origin, "Access-Control-Request-Method": "POST"},
     )
-
-
-@when(parsers.parse("前端主动断开到 Python 的 SSE 连接"))
-def _w_disconnect(rag_acc_state):
-    rag_acc_state.redis.store["recall:concurrent:123"] = 1
-    req = RecallRequest(query="q", user_id=123, dataset_ids=[1], top_k=20)
-    gen = rag._guarded_stream(
-        rag_acc_state.fake, _FakeReranker(), req, "rid", 123, CONFIG_ID, CONVERSATION_ID, 4000, 8
-    )
-
-    async def _drive() -> None:
-        task = asyncio.ensure_future(gen.__anext__())
-        await asyncio.sleep(0.02)
-        task.cancel()
-        try:
-            await task
-        except asyncio.CancelledError:
-            rag_acc_state.cancel_raised = True
-        await gen.aclose()
-
-    asyncio.run(_drive())
 
 
 @when(parsers.re(r"前端携带该 token 调用已删除路径 POST (?P<url>\S+)"))
@@ -869,18 +850,3 @@ def _stream_terminal(rag_acc_state):
 @then(parsers.parse("流的最大执行时间仍由 RECALL_STREAM_TIMEOUT_MS 控制"))
 def _stream_timeout_governed(rag_acc_state):
     assert any(n == "answer_done" for n, _ in rag_acc_state.events)
-
-
-@then(parsers.parse("Python 停止继续发送 SSE 事件"))
-def _stopped(rag_acc_state):
-    assert rag_acc_state.cancel_raised
-
-
-@then(parsers.parse("Python 尽力取消正在执行的召回任务"))
-def _cancelled(rag_acc_state):
-    assert rag_acc_state.cancel_raised
-
-
-@then(parsers.parse("该流不再计入用户 123 的并发流数"))
-def _slot_released(rag_acc_state):
-    assert rag_acc_state.redis.store.get("recall:concurrent:123", 0) == 0

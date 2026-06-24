@@ -155,7 +155,11 @@ async def acquire_stream_slot(user_id: int) -> bool:
     承载安全语义，短暂失去并发限流好于阻断全部召回。
     """
     key = _concurrent_key(user_id)
-    safety_ttl = max(1, settings.RECALL_STREAM_TIMEOUT_MS // 1000 * 2)
+    # 安全 TTL 兜底进程异常退出未 release 的名额泄漏。名额绑后台任务生命周期
+    # （chat-stream-resilient-persist R6），任务最长存活由生成超时主导，故 TTL 取
+    # 召回超时与生成超时的较大值再 ×2，避免任务仍在跑时名额被提前回收、超并发保护失效。
+    max_task_ms = max(settings.RECALL_STREAM_TIMEOUT_MS, settings.RECALL_GENERATION_TIMEOUT_MS)
+    safety_ttl = max(1, max_task_ms // 1000 * 2)
     try:
         count = await redis_client.incr(key)
         await redis_client.expire(key, safety_ttl)

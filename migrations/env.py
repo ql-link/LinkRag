@@ -41,6 +41,7 @@ try:
     from src.models import chunk_record  # noqa: F401
     from src.models import parse_task  # noqa: F401
     from src.models import dataset_parse_config  # noqa: F401
+    from src.models import workflow  # noqa: F401
     from src.models.db_models import Base as CoreBase
     from src.models.parse_task import Base as ParseTaskBase
     from src.models.dataset_parse_config import Base as DatasetParseConfigBase

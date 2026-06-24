@@ -8,7 +8,6 @@
 两个入口：
 
 - :func:`build_provider_from_config`：纯函数，给定配置 dict → 构造 Provider（不碰 DB）。
-  ``/llm`` 路由已自行取到 config dict，直接用本函数即可。
 - :func:`aresolve_user_model`：按 ``(user_id, capability)``（或 ``config_id``）读配置后构造。
 
 缓存策略：本期不启用 Redis 配置缓存，读配置统一 ``use_cache=False`` 直读 DB。
@@ -167,8 +166,9 @@ async def aresolve_user_model(
         user_id: 发起用户 ID。
         capability: 能力字符串（CHAT/EMBEDDING/SPARSE_EMBEDDING/RERANK/VISION）。
         config_id: 可选，指定具体配置 ID（``/llm`` 路由按 ID 调用场景）。
-        allow_system_fallback: 用户无配置时是否回退系统环境兜底（``/llm`` 路由为真；
-            解析写入 / 召回链路为假——必配不兜底）。
+        allow_system_fallback: 用户无配置时是否回退系统环境兜底。解析写入、召回链路与
+            ``/llm`` 直调路由均按用户必配处理，不启用系统兜底；保留该开关给显式需要
+            系统兜底的内部调用点或测试。
         fallback_model: 配置未带 ``model_name`` 时的回退模型名。
         db: 可选注入的 AsyncSession；未注入时自开一次（DB 访问只此一处）。
         config_service: 可选注入的 ConfigReaderService（主要便于测试）。
@@ -185,6 +185,8 @@ async def aresolve_user_model(
     async def _resolve(svc: "ConfigReaderService") -> ResolvedModel:
         if config_id is not None:
             config = await svc.get_user_config_by_id(user_id, config_id, use_cache=False)
+            if config and (config.get("capability") or "").upper() != capability.upper():
+                raise UserModelConfigMissingError(capability, user_id)
         else:
             config = await svc.get_user_default_config_by_capability(
                 user_id=user_id, capability=capability, use_cache=False

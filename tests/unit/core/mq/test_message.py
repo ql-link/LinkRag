@@ -273,31 +273,33 @@ class TestChatTurnMessage:
         kwargs = dict(
             conversation_id=10086,
             request_id="req-1",
+            turn_id="turn-1",
             user_id=42,
             query="什么是RAG",
             answer="RAG 是检索增强生成",
             config_id=7,
             model_name="gpt-x",
-            status="success",
+            status="COMPLETED",
             references=["1001", "1002"],
         )
         kwargs.update(overrides)
         return ChatTurnMessage.build(**kwargs)
 
     def test_build_fields_and_constants(self):
-        # Scenario: 问答正常结束后上报一轮对话内容（不含 token，LINK-191）
+        # Scenario: 问答正常结束发出 COMPLETED，承载对话内容与召回引用（不含 token，LINK-191）
         msg = self._build()
         assert msg.get_mq_name() == "tolink.rag.chat_turn"
         assert msg.get_mq_type() == "CHAT_TURN"
         payload = msg.get_payload()
         assert payload.query == "什么是RAG"
         assert payload.answer == "RAG 是检索增强生成"
-        assert payload.status == "success"
+        assert payload.status == "COMPLETED"
+        assert payload.turn_id == "turn-1"
         assert payload.references == ["1001", "1002"]
-        # token 已从对话消息剥离，改走 TokenUsageMessage。
+        # token 已从对话消息剥离，改走 TokenUsageMessage（provider_type 仍保留供 Java 落库快照）。
         assert not any(
             f in ChatTurnPayload.model_fields
-            for f in ("prompt_tokens", "completion_tokens", "total_tokens", "provider_type")
+            for f in ("prompt_tokens", "completion_tokens", "total_tokens")
         )
 
     def test_routing_key_is_conversation_id(self):
@@ -306,26 +308,38 @@ class TestChatTurnMessage:
         assert msg.get_routing_key() == "12345"
 
     def test_roundtrip(self):
-        msg = self._build(status="partial", answer="半截")
+        # Scenario: 失败终态 FAILED 携带 error_code/error_message 往返一致
+        msg = self._build(
+            status="FAILED",
+            answer="半截",
+            error_code="RECALL_GENERATION_FAILED",
+            error_message="boom",
+        )
         parsed = ChatTurnMessage.parse_msg(msg.serialize())
         assert isinstance(parsed, ChatTurnPayload)
-        assert parsed.status == "partial"
+        assert parsed.status == "FAILED"
         assert parsed.answer == "半截"
+        assert parsed.turn_id == "turn-1"
+        assert parsed.error_code == "RECALL_GENERATION_FAILED"
+        assert parsed.error_message == "boom"
         assert parsed.conversation_id == 10086
 
-    def test_references_defaults_to_empty(self):
-        # Scenario: references 缺省时为空列表
+    def test_defaults_for_generating_start(self):
+        # Scenario: GENERATING 起点 references 为空、provider 可缺省、无失败码
         msg = ChatTurnMessage.build(
             conversation_id=1,
             request_id="r",
+            turn_id="t",
             user_id=1,
             query="q",
-            answer="a",
+            answer="",
             config_id=1,
-            model_name="m",
-            status="success",
+            status="GENERATING",
         )
-        assert msg.get_payload().references == []
+        payload = msg.get_payload()
+        assert payload.references == []
+        assert payload.provider_type == ""
+        assert payload.error_code is None
 
 
 class TestDeserialization:

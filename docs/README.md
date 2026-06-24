@@ -21,7 +21,7 @@
 | [http_contracts.md](api/http_contracts.md) | REST API 接口契约 |
 | [mq_contracts.md](api/mq_contracts.md) | MQ 消息载荷与对接说明 |
 | [error_codes.md](api/error_codes.md) | 业务错误码 |
-| [schemas/mysql.md](api/schemas/mysql.md) | MySQL 表结构（共 12 张表） |
+| [schemas/mysql.md](api/schemas/mysql.md) | MySQL 表结构（共 20 张表） |
 | [schemas/qdrant.md](api/schemas/qdrant.md) | Qdrant collection 与 payload |
 | [schemas/elasticsearch.md](api/schemas/elasticsearch.md) | ES 索引结构 |
 
@@ -32,6 +32,7 @@
 | [project_structure.md](internals/project_structure.md) | 项目目录结构 |
 | [pipeline_architecture.md](internals/pipeline_architecture.md) | 解析 Pipeline 架构 |
 | [parse_task_pipeline.md](internals/parse_task_pipeline.md) | 解析任务流水线状态机 |
+| [workflow_engine.md](internals/workflow_engine.md) | 轻量流程编排引擎 |
 | [recall_pipeline.md](internals/recall_pipeline.md) | 召回 Pipeline 架构 |
 | [recall_generation.md](internals/recall_generation.md) | 召回后 RAG 答案生成（正文回填/上下文拼装/流式生成） |
 | [recall_http_api.md](internals/recall_http_api.md) | 召回 HTTP 入口与会话/鉴权 |

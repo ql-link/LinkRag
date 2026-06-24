@@ -10,7 +10,7 @@ ORM 与 migration 不一致时，以 migration 为准并修正 ORM；scripts/db/
 
 ## 表清单
 
-按业务域共 18 张表：
+按业务域共 20 张表：
 
 | 业务域 | 表 | 主键 ID 起始 |
 | --- | --- | --- |
@@ -21,6 +21,7 @@ ORM 与 migration 不一致时，以 migration 为准并修正 ORM；scripts/db/
 | [博客](#5-博客) | `blog_post`, `blog_asset` | 10000 |
 | [用户反馈](#6-用户反馈) | `user_feedback` | 10000 |
 | [知识索引](#7-知识索引) | `kb_document_chunk` | 10000 |
+| [Workflow 运行记录](#8-workflow-运行记录) | `workflow_run`, `workflow_node_run` | 10000 |
 
 所有表统一：`InnoDB` / `utf8mb4_unicode_ci`，主键自增从 `10000` 起。
 
@@ -250,13 +251,16 @@ ORM：[`ChatMessageDB`](../../../src/models/db_models.py)
 | `config_id` | BIGINT UNSIGNED | 产生该消息所使用的 LLM 配置 |
 | `model_name` | VARCHAR(128) | 模型名快照 |
 | `query` | MEDIUMTEXT | 用户提问 |
-| `answer` | MEDIUMTEXT | LLM 回答（partial 为半截，failed 可空） |
+| `answer` | MEDIUMTEXT | LLM 回答（`GENERATING`/`FAILED` 可空或半截） |
 | `references` | JSON | 召回片段 `chunk_id` 列表（仅标识，不含正文） |
-| `request_id` | VARCHAR(64) | 请求追踪 ID / 幂等键，Java 据此去重落库本行 |
-| `status` | VARCHAR(16) | `success` / `partial` / `failed` |
+| `request_id` | VARCHAR(64) | 请求追踪 ID（每 HTTP 请求级，不再作幂等键） |
+| `turn_id` | VARCHAR(64) | 轮次幂等键：前端每轮稳定 UUID，Java 据此 upsert 同一行（唯一索引，既有行为 NULL） |
+| `status` | VARCHAR(16) | `GENERATING` / `COMPLETED` / `FAILED`（旧 `success`/`partial`/`failed` 退役） |
+| `error_code` | VARCHAR(64) | 失败码 `RECALL_*`/`GENERATION_TIMEOUT`，仅 `FAILED` |
+| `error_message` | VARCHAR(512) | 失败原因，不含堆栈，仅 `FAILED` |
 | `created_at` | DATETIME | 创建时间 |
 
-索引：`idx_conversation_created(conversation_id, created_at)`。
+索引：`idx_conversation_created(conversation_id, created_at)`、`uk_chat_message_turn_id(turn_id) UNIQUE`（migration 0023）。
 
 > 所有权：表结构由 Python 侧 Alembic 迁移管理（含 `chat_conversation`）；**行数据的增删改由 Java 侧负责**——Java 消费 Python 发出的 `tolink.rag.chat_turn` 消息后，写入 `chat_message` 行并更新 `chat_conversation`。本轮 `generate` 的 `llm_usage_log` 行改由 `tolink.rag.usage_report`（`TokenUsageMessage`）承载，不再随 `chat_turn` 落库（LINK-191）。Python 侧不写这些表的行数据。详见 [mq_contracts.md](../mq_contracts.md#对话轮次上报pythonjava)。
 
@@ -522,6 +526,62 @@ ORM：[`ChunkRecordDB`](../../../src/models/chunk_record.py)
 - `idx_doc_es_status(doc_id, es_status)`
 - `idx_doc_lifecycle_status(doc_id, lifecycle_status)`
 - `idx_lifecycle_update_time(lifecycle_status, update_time)`
+
+---
+
+## 8. Workflow 运行记录
+
+通用 workflow engine 的运行记录表。它们只记录 demo / 后续显式接入的 workflow run 与 node run，不替代现有 `document_parse_pipeline`、`document_parsed_log` 或 `kb_document_chunk`。
+
+### `workflow_run` — Workflow Run 记录表
+
+ORM：[`WorkflowRunDB`](../../../src/models/workflow.py)
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | BIGINT UNSIGNED PK | 物理主键 |
+| `run_id` | VARCHAR(36) UNIQUE | workflow run UUID |
+| `definition_name` | VARCHAR(64) | workflow 定义名，例如 `parse_task_demo` |
+| `biz_key` | VARCHAR(128) NULL | 业务关联键；parse demo 可使用 `task_id` |
+| `previous_run_id` | VARCHAR(36) NULL | 断点续跑时指向上一轮 run |
+| `status` | VARCHAR(16) | `CREATED` / `RUNNING` / `SUCCESS` / `FAILED` |
+| `failure_phase` | VARCHAR(16) NULL | `RUN` / `RESTORE` / `SCHEDULE` |
+| `failure_reason` | VARCHAR(512) NULL | run 级失败原因摘要 |
+| `started_at` / `finished_at` | DATETIME | 开始 / 结束时间 |
+| `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
+
+索引：
+- `uk_workflow_run_id(run_id)`
+- `idx_workflow_run_biz_key(biz_key)`
+- `idx_workflow_run_previous(previous_run_id)`
+- `idx_workflow_run_definition_status(definition_name, status, updated_at)`
+
+### `workflow_node_run` — Workflow Node Run 记录表
+
+ORM：[`WorkflowNodeRunDB`](../../../src/models/workflow.py)
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | BIGINT UNSIGNED PK | 物理主键 |
+| `run_id` | VARCHAR(36) | workflow run UUID |
+| `node_key` | VARCHAR(64) | 节点 key |
+| `status` | VARCHAR(16) | `PENDING` / `RUNNING` / `SUCCESS` / `SKIPPED` / `FAILED` |
+| `requires` | JSON | 节点声明的输入产物 key 列表 |
+| `provides` | JSON | 节点声明的输出产物 key 列表 |
+| `output_ref` | JSON NULL | 节点可恢复产物引用；框架不解释其结构 |
+| `allow_failure` | BOOLEAN | 失败是否可容忍 |
+| `tolerated` | BOOLEAN | 本次失败是否已按可容忍处理 |
+| `failure_phase` | VARCHAR(16) NULL | `RUN` / `RESTORE` / `SCHEDULE` |
+| `failure_reason` | VARCHAR(512) NULL | node 级失败原因摘要 |
+| `inherited_from_run_id` | VARCHAR(36) NULL | 断点续跑跳过节点时继承自哪一轮 run |
+| `started_at` / `finished_at` | DATETIME | 开始 / 结束时间 |
+| `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
+
+索引：
+- `uk_workflow_node_run(run_id, node_key)`
+- `idx_workflow_node_run_run(run_id)`
+- `idx_workflow_node_run_status(status, updated_at)`
+- `idx_workflow_node_run_inherited(inherited_from_run_id)`
 
 ---
 
