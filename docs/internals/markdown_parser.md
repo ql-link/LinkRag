@@ -90,8 +90,9 @@ ParseResult
 - `MARKDOWN_PARSER_HEADING_FLAT_MIN_HEADINGS`
 - `MARKDOWN_PARSER_HEADING_SPARSE_TOKENS_PER_HEADING`
 - `MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET`
+- `MARKDOWN_PARSER_HEADING_LLM_MAX_OUTPUT_TOKENS`
 
-表格增强使用文本能力；图片增强使用视觉能力。Provider 默认来自系统级 LLM 配置：
+表格增强使用文本能力；图片增强使用视觉能力。有 `user_id` 的生产解析路径统一读取发起用户对应能力的默认配置：表格增强使用默认 `CHAT`，图片增强使用默认 `VISION`。无 `user_id` 的调试入口才回退系统级 LLM 配置：
 
 - `SYSTEM_LLM_PROVIDER`
 - `SYSTEM_LLM_API_KEY`
@@ -104,7 +105,7 @@ PDF 解析阶段如果提供了 `image_bytes_by_url`，图片增强会优先使�
 图片增强通过 `ProviderVisionClient` 对同一批图片执行受控并发调用，最大并发数由
 `MARKDOWN_PARSER_VISION_CONCURRENCY` 控制，默认值为 `24`。单张图片加载或视觉模型调用失败时只跳过该图片描述，不阻断基础 Markdown 解析。非内存图片读取会通过线程执行，避免同步文件/URL 读取阻塞事件循环。
 
-标题层级后处理是可选增强，默认关闭。配置关闭时行为与普通 `MarkdownParser.parse()` 等价，不执行门禁，也不调用标题计划生成器。当前实现只提供门禁、标题插入计划校验与写回框架，默认生成器为 no-op，不调用真实 LLM；后续接入 LLM 时必须显式配置可用模型，并继续只返回标题插入计划而不是整篇 Markdown。
+标题层级后处理是可选增强，默认关闭。配置关闭时行为与普通 `MarkdownParser.parse()` 等价，不执行门禁，也不读取模型配置。配置开启且门禁命中时，标题生成器读取发起用户默认 `CHAT` 模型生成标题插入计划；无 `user_id` 的调试入口使用系统级 `CHAT` 配置。该模块不新增标题专用模型选择参数，也不允许 LLM 返回整篇 Markdown。
 
 门禁命中场景：
 
@@ -112,9 +113,9 @@ PDF 解析阶段如果提供了 `image_bytes_by_url`，图片增强会优先使�
 - 全篇只有同级 heading，heading 数达到 `MARKDOWN_PARSER_HEADING_FLAT_MIN_HEADINGS`（默认/下限 `5`），且存在章节编号或常见章节短语等层级线索。
 - 已有多级 heading，但 `total_tokens / heading_count` 达到 `MARKDOWN_PARSER_HEADING_SPARSE_TOKENS_PER_HEADING`（默认 `1536`，下限 `1024`）。
 
-标题写回只支持插入新 heading，等级限制为 `#` 到 `#####`。插入计划的 `line` 始终是原始 Markdown 行号，写回时先按原始行号分组，再一次性重建 Markdown，避免前序插入导致后续行号漂移。写回后必须重新走 `MarkdownParser.parse()`，因此对外最终 Markdown 与 `ParseResult` 来自同一份处理后的文本；splitter 不需要感知标题来源，仍按 `heading_level` / `heading_text` / `heading_trail` 消费。
+标题写回只支持插入新 heading，等级限制为 `#` 到 `#####`。插入计划的 `line` 始终是原始 Markdown 行号，写回时先按原始行号分组，再一次性重建 Markdown，避免前序插入导致后续行号漂移。写回后必须重新走 `MarkdownParser.parse()`，因此对外最终 Markdown 与 `ParseResult` 来自同一份处理后的文本；splitter 不需要感知标题来源，仍按 `heading_level` / `heading_text` / `heading_trail` 消费。标题生成是显式开启能力：开启后如果门禁命中但默认 `CHAT` 配置缺失、LLM 调用失败、响应无法解析或计划校验失败，解析任务失败，不静默降级。
 
-未来真实 LLM 生成器的单次输入受 `MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET` 控制（默认 `8192`，下限 `2048`）：预算内优先发送全文 Markdown；超预算时应构造压缩结构摘要，再要求 LLM 输出标题插入计划。当前阶段仅保留该配置和接口约束。
+标题生成器的单次输入受 `MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET` 控制（默认 `65536`，允许范围 `2048` - `262144`）：预算内优先发送带原始行号的全文 Markdown；超预算时构造压缩结构摘要，保留门禁原因、标题指标、已有标题树、候选插入位置、protected block 边界和元素 preview，再要求 LLM 输出标题插入计划。输出插入计划的上限由 `MARKDOWN_PARSER_HEADING_LLM_MAX_OUTPUT_TOKENS` 控制（默认 `4096`，允许范围 `512` - `65536`）。默认值按系统默认 `qwen3.5-flash` 的百万级上下文能力放宽，但仍保留应用侧上限，避免标题后处理在长文上无限扩大成本和延迟。
 
 ## 5. 使用方式
 
