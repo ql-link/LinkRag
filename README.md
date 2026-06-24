@@ -1,10 +1,6 @@
 <div align="center">
 
-<table border="0" cellspacing="0" cellpadding="0"><tr>
-  <td width="60" align="right" valign="middle"><img alt="LinkRag" src="./docs/assets/logo.png" width="46"></td>
-  <td valign="middle"><h1>LinkRag</h1></td>
-  <td width="60" valign="middle">&nbsp;</td>
-</tr></table>
+# LinkRag
 
 人人可用的企业级 RAG 系统——把复杂文档，变成可以对话的知识。
 
@@ -48,8 +44,11 @@
 企业文档从来不规整：版式错综的 PDF、带合并单元格的表格、嵌着图片和广告的网页。LinkRag 把 PDF、Word、HTML 统一解析为结构化 Markdown，并按格式选用专用引擎——PDF 可在 MinerU 精准解析、OpenDataLoader、PyMuPDF 之间按可配置的回退链择优；HTML 先用 trafilatura 定位正文、剥离导航和样板，再由自研渲染器把表格、图片、列表保真还原，合并单元格、嵌套表这类复杂结构降级为"记录式 Markdown"而不是直接丢掉；图片落对象存储后还能接视觉模型做内容增强。大文件解析全程流式落盘，不会把整个源文件读进内存。
 
 <p align="center">
-  <img alt="文件解析：异构格式统一为 Markdown" src="./docs/assets/sketches/sketch-file-parse.png" width="46%">
-  <img alt="Markdown 解析与增强" src="./docs/assets/sketches/sketch-markdown.png" width="46%">
+  <img alt="文件解析：异构格式统一为 Markdown" src="./docs/assets/sketches/sketch-file-parse.png" width="680">
+</p>
+
+<p align="center">
+  <img alt="Markdown 解析与增强" src="./docs/assets/sketches/sketch-markdown.png" width="680">
 </p>
 
 **2. 切得准，才检得到——结构感知的层次化分片**
