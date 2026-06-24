@@ -1,8 +1,6 @@
 <div align="center">
 
-<h1>
-  <img alt="LinkRag" src="./docs/assets/logo.png" width="42" align="middle">&nbsp; LinkRag
-</h1>
+# LinkRag
 
 人人可用的企业级 RAG 系统——把复杂文档，变成可以对话的知识。
 

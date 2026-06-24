@@ -1,8 +1,6 @@
 <div align="center">
 
-<h1>
-  <img alt="LinkRag" src="./docs/assets/logo.png" width="42" align="middle">&nbsp; LinkRag
-</h1>
+# LinkRag
 
 An enterprise-grade RAG system for everyone — turn complex documents into knowledge you can talk to.
 
