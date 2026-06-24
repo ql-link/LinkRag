@@ -1,10 +1,8 @@
 <div align="center">
 
-<table border="0" cellspacing="0" cellpadding="0"><tr>
-  <td width="60" align="right" valign="middle"><img alt="LinkRag" src="./docs/assets/logo.png" width="46"></td>
-  <td valign="middle"><h1>LinkRag</h1></td>
-  <td width="60" valign="middle">&nbsp;</td>
-</tr></table>
+<img alt="LinkRag" src="./docs/assets/logo.png" width="80">
+
+# LinkRag
 
 An enterprise-grade RAG system for everyone — turn complex documents into knowledge you can talk to.
 

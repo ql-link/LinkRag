@@ -1,10 +1,8 @@
 <div align="center">
 
-<table border="0" cellspacing="0" cellpadding="0"><tr>
-  <td width="60" align="right" valign="middle"><img alt="LinkRag" src="./docs/assets/logo.png" width="46"></td>
-  <td valign="middle"><h1>LinkRag</h1></td>
-  <td width="60" valign="middle">&nbsp;</td>
-</tr></table>
+<img alt="LinkRag" src="./docs/assets/logo.png" width="80">
+
+# LinkRag
 
 人人可用的企业级 RAG 系统——把复杂文档，变成可以对话的知识。
 
