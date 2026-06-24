@@ -28,10 +28,13 @@ from .heading_hierarchy import (
     HeadingHierarchyResult,
     HeadingInsertion,
     HeadingPlan,
+    HeadingPlanGenerationError,
     HeadingPlanGenerator,
     HeadingPlanValidationError,
+    LLMHeadingPlanGenerator,
     NoopHeadingPlanGenerator,
     apply_heading_plan,
+    parse_heading_plan_response,
     validate_heading_plan,
 )
 from .image_extractor import ImageExtractor
@@ -79,9 +82,12 @@ __all__ = [
     "HeadingHierarchyResult",
     "HeadingInsertion",
     "HeadingPlan",
+    "HeadingPlanGenerationError",
     "HeadingPlanGenerator",
     "HeadingPlanValidationError",
+    "LLMHeadingPlanGenerator",
     "NoopHeadingPlanGenerator",
     "apply_heading_plan",
+    "parse_heading_plan_response",
     "validate_heading_plan",
 ]

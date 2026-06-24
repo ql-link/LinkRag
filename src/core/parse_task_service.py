@@ -76,6 +76,7 @@ class ParseTaskService:
         heading_result = await HeadingHierarchyProcessor().aprocess(
             final_markdown,
             source_file=source_file,
+            user_id=user_id,
         )
         final_markdown = heading_result.markdown
         final_parse_result = heading_result.parse_result

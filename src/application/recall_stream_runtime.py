@@ -52,6 +52,7 @@ from src.core.pipeline.rerank import (
 )
 from src.core.prompts import RAG_GENERATION_SYSTEM_PROMPT, build_rag_user_prompt
 from src.services.mq_service import MQService
+from src.services.usage_reporter import report_usage_nowait
 
 
 def recall_event(name: str, payload: dict) -> str:
@@ -567,11 +568,13 @@ async def _emit_chat_turn(
     error_code: str | None = None,
     error_message: str | None = None,
 ) -> None:
-    """构造并发送对话轮次消息（chat-message-persistence）。
+    """构造并发送对话轮次消息 + generate token 用量（两者解耦，LINK-191）。
 
     起点 GENERATING / 各终态均经此发送，``turn_id`` 贯穿同一轮供 Java upsert 同一行。
     ``resolved`` 可为 None（起点与模型未解析的前置失败）——此时 provider/model 留空，由
-    后续终态补齐。发送失败仅告警，绝不影响已返回答案或异常传播——落库最终一致，不进关键路径。
+    后续终态补齐。chat_turn 只承载对话内容（**不含 token**）；本轮 generate 的 token 用量另走
+    统一 ``TokenUsageMessage``（stage='chat'、operation='generate'）。两者均最终一致、不进关键
+    路径：chat_turn 发送失败仅告警，用量上报旁路 fire-and-forget。
     """
     try:
         msg = ChatTurnMessage.build(
@@ -585,9 +588,6 @@ async def _emit_chat_turn(
             provider_type=resolved.provider_type if resolved is not None else "",
             model_name=(resolved.model_name or "") if resolved is not None else "",
             status=status,
-            prompt_tokens=usage.prompt_tokens,
-            completion_tokens=usage.completion_tokens,
-            total_tokens=usage.total_tokens,
             references=references,
             latency_ms=latency_ms,
             error_code=error_code,
@@ -601,4 +601,22 @@ async def _emit_chat_turn(
             turn_id,
             status,
             exc,
+        )
+
+    # generate token 用量统一上报（旁路、非阻塞）：与 chat_turn 解耦，发送独立于上面的落库通知。
+    # GENERATING 起点与各失败前置态 usage 维持 0（且 resolved 可能为 None），跳过避免落空行。
+    if usage.total_tokens > 0 and resolved is not None:
+        report_usage_nowait(
+            user_id=recall_req.user_id,
+            provider_type=resolved.provider_type,
+            model_name=resolved.model_name or "",
+            stage="chat",
+            operation="generate",
+            prompt_tokens=usage.prompt_tokens,
+            completion_tokens=usage.completion_tokens,
+            total_tokens=usage.total_tokens,
+            config_id=config_id,
+            latency_ms=latency_ms,
+            # chat_turn 的 GENERATING/COMPLETED/FAILED 映射到用量口径的 success/failed。
+            status="failed" if status == "FAILED" else "success",
         )

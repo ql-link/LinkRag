@@ -8,7 +8,7 @@
 --   - schema 演进的唯一权威源是 src/models/**.py + migrations/versions/*.py；
 --   - 修改字段必须先改 ORM 模型并新增 migration，再同步本文件。
 -- 同步时机：每条会改动表结构的 migration 落库时一并更新本文件。
--- 末次同步：migration 0023_20260623_chat_message_resilient_fields
+-- 末次同步：migration 0024_20260624_add_workflow_tables
 -- ===============================================
 
 CREATE DATABASE IF NOT EXISTS tolink_rag_db DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -169,18 +169,12 @@ CREATE TABLE IF NOT EXISTS llm_usage_log (
     latency_ms          INT             COMMENT '响应延迟(毫秒)',
     status              VARCHAR(16)     NOT NULL COMMENT '调用状态：success/failed/partial',
     error_message       VARCHAR(512)    COMMENT '错误信息',
-    fallback_config_id  BIGINT UNSIGNED COMMENT '触发 Fallback 时记录原配置 ID',
-    conversation_id     BIGINT UNSIGNED COMMENT '关联对话 ID',
-    message_id          BIGINT UNSIGNED COMMENT '关联产生该用量的 chat_message 行（Java 写入）',
-    request_id          VARCHAR(64)     COMMENT '与 chat_message 同一把 key，串联一轮问答',
     stage               VARCHAR(16)     COMMENT '阶段：parse/recall/chat',
     operation           VARCHAR(16)     COMMENT '操作：embed/sparse/rerank/vision/table/generate',
     created_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
 
     INDEX idx_user_date (user_id, created_at),
     INDEX idx_config_date (config_id, created_at),
-    INDEX idx_conversation_id (conversation_id),
-    INDEX idx_usage_message_id (message_id),
     INDEX idx_user_stage_date (user_id, stage, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT 'LLM 调用用量日志表';
 
@@ -415,6 +409,54 @@ CREATE TABLE IF NOT EXISTS dataset_parse_config (
     KEY idx_dataset_parse_config_dataset (dataset_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '数据集解析/检索参数配置';
 
+-- 17. 通用流程编排运行记录表（migration 0024 引入，LINK-102）
+-- 仅记录 workflow engine 的 run 级状态；不替代 document_parse_pipeline。
+CREATE TABLE IF NOT EXISTS workflow_run (
+    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '物理主键ID',
+    run_id          VARCHAR(36)  NOT NULL COMMENT 'workflow run UUID',
+    definition_name VARCHAR(64)  NOT NULL COMMENT 'workflow 定义名',
+    biz_key         VARCHAR(128) DEFAULT NULL COMMENT '业务关联键',
+    previous_run_id VARCHAR(36)  DEFAULT NULL COMMENT '断点续跑上一轮 run_id',
+    status          VARCHAR(16)  NOT NULL COMMENT '运行状态: CREATED/RUNNING/SUCCESS/FAILED',
+    failure_phase   VARCHAR(16)  DEFAULT NULL COMMENT '失败阶段: RUN/RESTORE/SCHEDULE',
+    failure_reason  VARCHAR(512) DEFAULT NULL COMMENT '失败原因摘要',
+    started_at      DATETIME     DEFAULT NULL COMMENT '开始时间',
+    finished_at     DATETIME     DEFAULT NULL COMMENT '结束时间',
+    created_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at      DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+
+    UNIQUE KEY uk_workflow_run_id (run_id),
+    KEY idx_workflow_run_biz_key (biz_key),
+    KEY idx_workflow_run_previous (previous_run_id),
+    KEY idx_workflow_run_definition_status (definition_name, status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '通用流程编排运行记录表';
+
+-- 18. 通用流程编排节点运行记录表（migration 0024 引入，LINK-102）
+-- 仅记录 workflow engine 的 node 级状态；产物引用 output_ref 由节点自行定义。
+CREATE TABLE IF NOT EXISTS workflow_node_run (
+    id                    BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '物理主键ID',
+    run_id                VARCHAR(36)  NOT NULL COMMENT 'workflow run UUID',
+    node_key              VARCHAR(64)  NOT NULL COMMENT '节点 key',
+    status                VARCHAR(16)  NOT NULL COMMENT '节点状态: PENDING/RUNNING/SUCCESS/SKIPPED/FAILED',
+    requires              JSON         NOT NULL COMMENT '输入产物 key 列表',
+    provides              JSON         NOT NULL COMMENT '输出产物 key 列表',
+    output_ref            JSON         DEFAULT NULL COMMENT '可恢复产物引用',
+    allow_failure         BOOLEAN      NOT NULL DEFAULT FALSE COMMENT '失败是否可容忍',
+    tolerated             BOOLEAN      NOT NULL DEFAULT FALSE COMMENT '本次失败是否已容忍',
+    failure_phase         VARCHAR(16)  DEFAULT NULL COMMENT '失败阶段: RUN/RESTORE/SCHEDULE',
+    failure_reason        VARCHAR(512) DEFAULT NULL COMMENT '失败原因摘要',
+    inherited_from_run_id VARCHAR(36)  DEFAULT NULL COMMENT '继承自哪一轮 run',
+    started_at            DATETIME     DEFAULT NULL COMMENT '开始时间',
+    finished_at           DATETIME     DEFAULT NULL COMMENT '结束时间',
+    created_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at            DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+
+    UNIQUE KEY uk_workflow_node_run (run_id, node_key),
+    KEY idx_workflow_node_run_run (run_id),
+    KEY idx_workflow_node_run_status (status, updated_at),
+    KEY idx_workflow_node_run_inherited (inherited_from_run_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '通用流程编排节点运行记录表';
+
 -- 自增起始值统一为 10000
 ALTER TABLE sys_user AUTO_INCREMENT = 10000;
 ALTER TABLE llm_system_provider AUTO_INCREMENT = 10000;
@@ -434,3 +476,5 @@ ALTER TABLE blog_asset AUTO_INCREMENT = 10000;
 ALTER TABLE user_feedback AUTO_INCREMENT = 10000;
 ALTER TABLE kb_document_chunk AUTO_INCREMENT = 10000;
 ALTER TABLE dataset_parse_config AUTO_INCREMENT = 10000;
+ALTER TABLE workflow_run AUTO_INCREMENT = 10000;
+ALTER TABLE workflow_node_run AUTO_INCREMENT = 10000;

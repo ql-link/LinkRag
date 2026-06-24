@@ -76,6 +76,7 @@
 | skill | 职责 | 边界 / 转交 |
 | --- | --- | --- |
 | `skill-creator` | 创建/改进/评估 skill，含 eval 与 description 优化（官方） | 英文；自带 `scripts/` 评估工具 |
+| `component-skill-author` | 把现有内部组件（MQ/pipeline 等）按五要素原型抽象成「项目自有 skill」，落盘+登记+校验 | 从零创建/eval 转 skill-creator；只补文档转 doc-maintenance-sync |
 
 ## 周期复审清单
 

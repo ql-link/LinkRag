@@ -5,6 +5,10 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SUPPORTED_CHUNKING_STAGE_TWO_ALGORITHMS = frozenset({"noop", "semantic_depth_window"})
+MARKDOWN_HEADING_LLM_CONTEXT_TOKEN_MIN = 2048
+MARKDOWN_HEADING_LLM_CONTEXT_TOKEN_MAX = 262144
+MARKDOWN_HEADING_LLM_MAX_OUTPUT_TOKEN_MIN = 512
+MARKDOWN_HEADING_LLM_MAX_OUTPUT_TOKEN_MAX = 65536
 
 
 class Settings(BaseSettings):
@@ -154,7 +158,8 @@ class Settings(BaseSettings):
     MARKDOWN_PARSER_HEADING_NO_HEADING_MIN_TOKENS: int = 512
     MARKDOWN_PARSER_HEADING_FLAT_MIN_HEADINGS: int = 5
     MARKDOWN_PARSER_HEADING_SPARSE_TOKENS_PER_HEADING: int = 1536
-    MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET: int = 8192
+    MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET: int = 65536
+    MARKDOWN_PARSER_HEADING_LLM_MAX_OUTPUT_TOKENS: int = 4096
     CHUNKING_STAGE_ONE_ALGORITHM: str = "candidate_boundary"
     CHUNKING_STAGE_TWO_ALGORITHM: str = "noop"
     CHUNKING_HEADING_BREAK_LEVEL: int = 5
@@ -211,8 +216,26 @@ class Settings(BaseSettings):
     @field_validator("MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET")
     @classmethod
     def validate_markdown_heading_llm_context_token_budget(cls, v: int) -> int:
-        if v < 2048:
-            raise ValueError("MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET must be >= 2048")
+        if v < MARKDOWN_HEADING_LLM_CONTEXT_TOKEN_MIN or v > MARKDOWN_HEADING_LLM_CONTEXT_TOKEN_MAX:
+            raise ValueError(
+                "MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET must be between "
+                f"{MARKDOWN_HEADING_LLM_CONTEXT_TOKEN_MIN} and "
+                f"{MARKDOWN_HEADING_LLM_CONTEXT_TOKEN_MAX}"
+            )
+        return v
+
+    @field_validator("MARKDOWN_PARSER_HEADING_LLM_MAX_OUTPUT_TOKENS")
+    @classmethod
+    def validate_markdown_heading_llm_max_output_tokens(cls, v: int) -> int:
+        if (
+            v < MARKDOWN_HEADING_LLM_MAX_OUTPUT_TOKEN_MIN
+            or v > MARKDOWN_HEADING_LLM_MAX_OUTPUT_TOKEN_MAX
+        ):
+            raise ValueError(
+                "MARKDOWN_PARSER_HEADING_LLM_MAX_OUTPUT_TOKENS must be between "
+                f"{MARKDOWN_HEADING_LLM_MAX_OUTPUT_TOKEN_MIN} and "
+                f"{MARKDOWN_HEADING_LLM_MAX_OUTPUT_TOKEN_MAX}"
+            )
         return v
 
     @field_validator("CHUNKING_OVERLAP_TOKENS")
@@ -277,6 +300,11 @@ class Settings(BaseSettings):
         if self.CHUNKING_HARD_MAX_TOKENS < self.CHUNKING_MAX_CHUNK_TOKENS:
             raise ValueError("CHUNKING_HARD_MAX_TOKENS must be >= CHUNKING_MAX_CHUNK_TOKENS")
         return self
+
+    # ==========================================
+    # 轻量流程编排引擎配置 (Workflow Engine)
+    # ==========================================
+    WORKFLOW_MAX_CONCURRENCY: int = 8
 
     # ==========================================
     # 向量数据库配置 (Vector Store)

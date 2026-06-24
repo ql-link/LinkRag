@@ -15,6 +15,7 @@
 | 系统级 LLM | `SYSTEM_LLM_*` | 始终（兜底 LLM 调用） |
 | Markdown 增强 | `MARKDOWN_PARSER_*` | 调整解析增强行为时 |
 | 分块策略 | `CHUNKING_*` | 调整分块参数时 |
+| 流程编排 | `WORKFLOW_*` | 使用轻量流程编排引擎时 |
 | 向量存储 | `VECTOR_STORE_TYPE`, `QDRANT_*`, `ES_*`, `CHUNK_INDEX_*`, `SPARSE_VECTOR_*` | 始终（选择 Qdrant 或 ES，并配置稀疏向量） |
 | 对象存储 | `STORAGE_TYPE`, `MINIO_*`, `LOCAL_DOCS_PATH` | 始终 |
 | 解析临时目录 | `PARSE_TEMP_DIR` | 始终（流式下载落盘目录） |
@@ -55,13 +56,15 @@
 | `MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT` | `true` | 是否启用表格 LLM 增强 |
 | `MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT` | `true` | 是否启用图片 LLM 增强 |
 | `MARKDOWN_PARSER_VISION_CONCURRENCY` | `24` | 图片视觉增强最大并发数，可降为 `16` / `8` / `1` 控制限流风险 |
-| `MARKDOWN_PARSER_ENABLE_HEADING_HIERARCHY` | `false` | 是否启用 Markdown 标题层级后处理；默认关闭，关闭时行为与普通 parser 等价 |
+| `MARKDOWN_PARSER_ENABLE_HEADING_HIERARCHY` | `false` | 是否启用 Markdown 标题层级后处理；默认关闭，关闭时行为与普通 parser 等价；开启且门禁命中时使用发起用户默认 `CHAT` 模型 |
 | `MARKDOWN_PARSER_HEADING_NO_HEADING_MIN_TOKENS` | `512` | 全文无 heading 时进入标题生成门禁的最小 token 数 |
 | `MARKDOWN_PARSER_HEADING_FLAT_MIN_HEADINGS` | `5` | 全篇只有同级 heading 时进入扁平标题门禁的最小 heading 数；下限为 `5` |
 | `MARKDOWN_PARSER_HEADING_SPARSE_TOKENS_PER_HEADING` | `1536` | 多级 heading 但数量太少时的密度阈值；下限为 `1024` |
-| `MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET` | `8192` | 后续真实 LLM 标题生成器单次输入 token 预算；当前框架阶段不触发真实 LLM 调用 |
+| `MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET` | `65536` | 标题生成器单次输入 token 预算；预算内发送带行号全文，超预算时发送压缩结构摘要；允许范围 `2048` - `262144` |
+| `MARKDOWN_PARSER_HEADING_LLM_MAX_OUTPUT_TOKENS` | `4096` | 标题生成器输出插入计划的 token 上限；允许范围 `512` - `65536` |
 | `CHUNKING_STAGE_ONE_ALGORITHM` | `candidate_boundary` | splitter 第一阶段算法名；当前支持 `candidate_boundary`，未知值启动失败 |
 | `CHUNKING_STAGE_TWO_ALGORITHM` | `noop` | splitter 第二阶段算法名；支持 `noop` / `semantic_depth_window`，未知值启动失败 |
+| `WORKFLOW_MAX_CONCURRENCY` | `8` | 轻量流程编排引擎单轮 run 中同时运行的节点数上限 |
 
 > splitter 不再保留 `CHUNKING_ENABLE_ADVANCED_PIPELINE` 布尔开关，也不再回退到旧规则分片器。第二阶段默认使用 `noop`；`noop` 只做结构透传，不保证 final chunk token 数不超过 `CHUNKING_HARD_MAX_TOKENS`。如需启用 TextTiling depth valley 语义细分与 hard max 保障，显式配置 `CHUNKING_STAGE_TWO_ALGORITHM=semantic_depth_window`。
 

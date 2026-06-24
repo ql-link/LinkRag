@@ -103,6 +103,7 @@ toLink-Rag/                         # 仓库根目录
 │   │   └── cache_manager.py      # CacheManager + 后端抽象（Redis / Null）
 │   ├── core/                     # 核心能力与基础设施
 │   │   ├── parse_task_service.py # 解析 + Markdown 增强编排服务（ParseTaskService）
+│   │   ├── workflow/             # 轻量流程编排引擎（业务零耦合）
 │   │   ├── llm/                  # LLM 抽象、工厂与厂商适配
 │   │   │   ├── factory.py
 │   │   │   ├── interfaces.py
@@ -124,7 +125,8 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   │   ├── log_repository.py / source.py / validator.py / temp_workspace.py / _utils.py
 │   │   │   │   ├── stages/         # 类化阶段编排（base/context/services + cleaning/chunking/
 │   │   │   │   │                   #   vectorizing/sparse_vectorizing/pretokenize/es_indexing）
-│   │   │   │   └── post_process/   # 文件级后处理状态机（constants/models/repository）
+│   │   │   │   ├── post_process/   # 文件级后处理状态机（constants/models/repository）
+│   │   │   │   └── workflow_demo/   # Workflow Engine 并行 demo DAG（不接管现网 ParseTaskPipeline）
 │   │   │   └── recall/            # 多路召回 Pipeline（pipeline/models/protocols/fusion/exceptions）+ generation.py（召回后正文回填/上下文拼装）
 │   │   ├── preprocessor/         # ES 预分词：RAGFlow 分词 → FilePostIndexPlan
 │   │   │   ├── service.py         # Preprocessor：读 chunk 构建预分词计划
@@ -250,6 +252,7 @@ toLink-Rag/                         # 仓库根目录
 │   │   ├── parse_task.py
 │   │   ├── system_provider.py
 │   │   ├── usage_log.py
+│   │   ├── workflow.py
 │   │   └── user_llm_config.py
 │   ├── services/                 # 服务层
 │   │   ├── mq_service.py

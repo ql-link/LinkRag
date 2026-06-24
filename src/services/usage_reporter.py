@@ -1,8 +1,8 @@
 """全链路用量上报 helper。
 
-把一次（或 task 级聚合后的）模型调用用量经 ``UsageReportMessage`` 发往 MQ，由 Java 落
-``llm_usage_log``。覆盖解析侧 embed/vision/table、召回侧 embed/rerank 等非对话型调用；
-对话最终 generate 仍走 ``ChatTurnMessage``，不经此处。
+把一次（或 task 级聚合后的）模型调用用量经统一的 ``TokenUsageMessage`` 发往 MQ，由 Java
+落 ``llm_usage_log``。覆盖**全部**模型调用：对话 chat generate、解析 embed/vision/table、
+召回 embed/rerank。对话轮次内容（query/answer）另走 ``ChatTurnMessage``，与本用量解耦。
 
 两条设计约束：
 
@@ -19,7 +19,7 @@ from typing import Optional, Set
 
 from loguru import logger
 
-from src.core.mq.messages.usage_report import UsageReportMessage
+from src.core.mq.messages.token_usage import TokenUsageMessage
 from src.services.mq_service import MQService
 
 # 后台上报 task 的强引用集合。asyncio 只持弱引用，若不在别处留引用，task 可能在跑完前被
@@ -39,8 +39,6 @@ async def report_usage(
     total_tokens: int = 0,
     config_id: Optional[int] = None,
     task_id: Optional[str] = None,
-    conversation_id: Optional[int] = None,
-    request_id: Optional[str] = None,
     latency_ms: Optional[int] = None,
     status: str = "success",
 ) -> None:
@@ -53,7 +51,7 @@ async def report_usage(
         其余为 token 计量与业务锚点，能拿到则带，缺失留空由 Java 落 NULL。
     """
     try:
-        msg = UsageReportMessage.build(
+        msg = TokenUsageMessage.build(
             user_id=str(user_id),
             provider_type=provider_type,
             model_name=model_name,
@@ -64,8 +62,6 @@ async def report_usage(
             total_tokens=total_tokens,
             config_id=config_id,
             task_id=task_id,
-            conversation_id=conversation_id,
-            request_id=request_id,
             latency_ms=latency_ms,
             status=status,
         )
