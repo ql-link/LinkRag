@@ -24,7 +24,6 @@ class UsageLog(BaseModel):
     latency_ms: Optional[int] = Field(None, description="响应延迟(毫秒)")
     status: str = Field("success", description="调用状态：success/failed/partial")
     error_message: Optional[str] = Field(None, description="错误信息")
-    fallback_config_id: Optional[str] = Field(None, description="触发 Fallback 时记录原配置 ID")
     created_at: datetime = Field(default_factory=datetime.now)
 
     model_config = {"from_attributes": True}

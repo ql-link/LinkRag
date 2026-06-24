@@ -106,7 +106,7 @@
 | CacheSync | `tolink.rag.cache_sync` | 缓存同步 |
 | UsageReport | `tolink.rag.usage_report` | 用量上报 |
 
-> `SendUsageReportRequest`（用量上报全链路归属）：必填 `user_id` / `provider_type` / `model_name` / `stage`(`parse`/`recall`/`chat`) / `operation`(`embed`/`sparse`/`rerank`/`vision`/`table`/`generate`) / `prompt_tokens` / `completion_tokens` / `total_tokens`；可选 `config_id` / `task_id` / `conversation_id` / `request_id` / `latency_ms` / `status`。字段语义与 MQ 载荷一致，见 [mq_contracts.md §用量上报](mq_contracts.md#用量上报pythonjava统计侧)。
+> `SendUsageReportRequest`（用量上报全链路归属）：必填 `user_id` / `provider_type` / `model_name` / `stage`(`parse`/`recall`/`chat`) / `operation`(`embed`/`sparse`/`rerank`/`vision`/`table`/`generate`) / `prompt_tokens` / `completion_tokens` / `total_tokens`；可选 `config_id` / `task_id` / `latency_ms` / `status`（`conversation_id` / `request_id` 已随 `llm_usage_log` 瘦身下线）。字段语义与 MQ 载荷一致，见 [mq_contracts.md §用量上报](mq_contracts.md#用量上报pythonjava统计侧)。
 
 > parse_result 终态回传 topic（Python→Java 解析终态通知）已下线（LINK-166）：终态只写 DB，前端轮询 Java 查询读取，见下方「解析终态读取」。
 
@@ -226,7 +226,7 @@ session token 由 Java 签发、Python 用**独立专用密钥**验签；claims�
 | `turn_id` | string | 是 | 本轮落库幂等键：前端每轮生成的稳定 UUID（断连重连不变）。缺失 `422`。Java 据此 upsert 同一行，断连续跑/重连不重复落库 |
 | `dataset_ids` | list[int] | 否 | 本次查询的数据集**子集选择**，必须 ⊆ token 授权范围（超出 `403`）；省略/空 = 用 token 全量授权范围 |
 
-> 生成跑在**独立后台任务**（断连不取消）：任务起点发一条 `tolink.rag.chat_turn`（`status=GENERATING`），终态再发 `COMPLETED`/`FAILED`，同 `turn_id`，供 Java upsert 落库对话与用量（空召回也发 `COMPLETED` 占位）。客户端断连只停 SSE 转发、生成续跑到落库。契约见 [mq_contracts.md §对话轮次上报](mq_contracts.md#对话轮次上报pythonjava)。
+> 生成跑在**独立后台任务**（断连不取消）：任务起点发一条 `tolink.rag.chat_turn`（`status=GENERATING`），终态再发 `COMPLETED`/`FAILED`，同 `turn_id`，供 Java upsert 落库对话内容（空召回也发 `COMPLETED` 占位）。客户端断连只停 SSE 转发、生成续跑到落库；本轮 generate 的 token 用量另走 `tolink.rag.usage_report`（LINK-191）。契约见 [mq_contracts.md §对话轮次上报](mq_contracts.md#对话轮次上报pythonjava)。
 
 **身份只取 token claims**——body 不含 `user_id`，前端自报一律不信任。`top_k` / 召回分数阈值 /
 召回路 / 容错模式 / rerank 条数均由服务端**按数据集配置**控制（`dataset_parse_config.recall_config`：

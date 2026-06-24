@@ -63,6 +63,7 @@ class ResolvedModel:
     provider_type: str
     source: str  # "user" | "system"
     protocol: Optional[str] = None  # 实际分发用的协议（可追溯）
+    config_id: Optional[int] = None  # 命中的用户配置 ID；系统兜底配置无 per-user 行时为 None
 
 
 def build_provider_from_config(
@@ -139,6 +140,7 @@ def build_provider_from_config(
         provider_type=provider_type,
         source=source,
         protocol=protocol,
+        config_id=config.get("id"),
     )
 
 

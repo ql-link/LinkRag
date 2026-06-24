@@ -151,14 +151,14 @@ VALUES
 -- ===============================================
 INSERT INTO llm_usage_log
     (id, user_id, config_id, provider_type, model_name, prompt_tokens, completion_tokens, total_tokens,
-     latency_ms, status, error_message, fallback_config_id, conversation_id, created_at)
+     latency_ms, status, error_message, created_at)
 VALUES
-    (10001, 10002, 10001, 'openai', 'gpt-4o',     157, 96, 253, 1840, 'success', NULL, NULL, 10001, '2026-05-20 09:01:10'),
-    (10002, 10002, 10001, 'openai', 'gpt-4o',     203, 72, 275, 1620, 'success', NULL, NULL, 10001, '2026-05-20 09:18:00'),
-    (10003, 10002, 10001, 'openai', 'gpt-4o',     188, 118, 306, 2210, 'success', NULL, NULL, 10002, '2026-05-25 14:42:00'),
-    -- 一条触发 fallback 的记录：主配置超时，回落到 Claude 兜底
-    (10004, 10002, 10003, 'claude', 'claude-sonnet-4-6', 188, 0, 188, 90000, 'failed', 'Upstream request timeout after 90000ms', 10001, 10002, '2026-05-25 14:40:30'),
-    (10005, 10003, 10004, 'glm',    'glm-4-plus', 142, 88, 230, 1370, 'success', NULL, NULL, 10003, '2026-05-28 10:09:00');
+    (10001, 10002, 10001, 'openai', 'gpt-4o',     157, 96, 253, 1840, 'success', NULL, '2026-05-20 09:01:10'),
+    (10002, 10002, 10001, 'openai', 'gpt-4o',     203, 72, 275, 1620, 'success', NULL, '2026-05-20 09:18:00'),
+    (10003, 10002, 10001, 'openai', 'gpt-4o',     188, 118, 306, 2210, 'success', NULL, '2026-05-25 14:42:00'),
+    -- 一条失败记录：主配置超时
+    (10004, 10002, 10003, 'claude', 'claude-sonnet-4-6', 188, 0, 188, 90000, 'failed', 'Upstream request timeout after 90000ms', '2026-05-25 14:40:30'),
+    (10005, 10003, 10004, 'glm',    'glm-4-plus', 142, 88, 230, 1370, 'success', NULL, '2026-05-28 10:09:00');
 
 -- ===============================================
 -- 8. 原始文档上传 document_original_file（含软删列）
