@@ -1,8 +1,8 @@
 <div align="center">
 
-<img alt="LinkRag" src="./docs/assets/logo.png" width="80">
-
-# LinkRag
+<h1>
+  <img alt="LinkRag" src="./docs/assets/logo.png" width="42" align="middle">&nbsp; LinkRag
+</h1>
 
 An enterprise-grade RAG system for everyone — turn complex documents into knowledge you can talk to.
 
@@ -46,8 +46,11 @@ From parsing to Q&A, every stage is built in-house, with extensive engineering t
 Enterprise documents are never tidy: PDFs with tangled layouts, tables with merged cells, web pages stuffed with images and ads. LinkRag parses PDF, Word, and HTML uniformly into structured Markdown, picking a dedicated engine per format — PDFs choose among MinerU (precise parsing), OpenDataLoader, and PyMuPDF along a configurable fallback chain; HTML first uses trafilatura to locate the main content and strip navigation and boilerplate, then an in-house renderer faithfully restores tables, images, and lists, degrading complex structures like merged cells and nested tables into "record-style Markdown" rather than dropping them. Images are stored in object storage and can be further enriched by a vision model. Large files are streamed to disk throughout parsing, never loading the whole source into memory.
 
 <p align="center">
-  <img alt="File parsing: heterogeneous formats unified into Markdown" src="./docs/assets/sketches/sketch-file-parse.png" width="46%">
-  <img alt="Markdown parsing and enhancement" src="./docs/assets/sketches/sketch-markdown.png" width="46%">
+  <img alt="File parsing: heterogeneous formats unified into Markdown" src="./docs/assets/sketches/sketch-file-parse.png" width="680">
+</p>
+
+<p align="center">
+  <img alt="Markdown parsing and enhancement" src="./docs/assets/sketches/sketch-markdown.png" width="680">
 </p>
 
 **2. Chunk it right, or you'll never retrieve it — structure-aware hierarchical chunking**
