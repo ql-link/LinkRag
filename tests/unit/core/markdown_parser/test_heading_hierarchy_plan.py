@@ -5,16 +5,29 @@ import pytest
 
 from src.core.markdown_parser import MarkdownParser
 from src.core.markdown_parser.heading_hierarchy import (
+    HeadingHierarchyConfig,
+    HeadingHierarchyGate,
     HeadingInsertion,
     HeadingPlan,
+    HeadingPlanGenerationError,
     HeadingPlanValidationError,
     apply_heading_plan,
+    build_heading_plan_prompt,
+    parse_heading_plan_response,
     validate_heading_plan,
 )
 
 
 def _parse(markdown: str):
     return MarkdownParser().parse(markdown, source_file="x.md")
+
+
+class _TokenCounter:
+    def __init__(self, tokens: int) -> None:
+        self.tokens = tokens
+
+    def count_tokens(self, text: str) -> int:
+        return self.tokens
 
 
 def test_valid_plan_is_accepted():
@@ -112,3 +125,44 @@ def test_apply_plan_allows_end_of_document_insertion():
 
     assert result_lines[-1] == "## 附录"
     assert result_lines[:-1] == markdown.split("\n")
+
+
+def test_parse_heading_plan_response_accepts_json_object_and_code_fence():
+    plan = parse_heading_plan_response(
+        '```json\n{"insertions":[{"line":1,"level":2,"text":"背景"}]}\n```'
+    )
+
+    assert plan.insertions == (HeadingInsertion(line=1, level=2, text="背景"),)
+
+
+def test_parse_heading_plan_response_rejects_invalid_json():
+    with pytest.raises(HeadingPlanGenerationError):
+        parse_heading_plan_response("不是 JSON")
+
+
+def test_build_heading_plan_prompt_uses_compressed_context_when_over_budget():
+    markdown = "# A\n\n" + "\n".join(f"正文 {idx}" for idx in range(20))
+    parse_result = _parse(markdown)
+    config = HeadingHierarchyConfig(
+        enabled=True,
+        no_heading_min_tokens=512,
+        flat_min_headings=5,
+        sparse_tokens_per_heading=1024,
+        llm_context_token_budget=8,
+    )
+    decision = HeadingHierarchyGate(
+        config=config,
+        tokenizer=_TokenCounter(2048),
+    ).evaluate(markdown, parse_result)
+
+    prompt = build_heading_plan_prompt(
+        markdown,
+        parse_result=parse_result,
+        decision=decision,
+        token_budget=config.llm_context_token_budget,
+        tokenizer=_TokenCounter(2048),
+    )
+
+    assert '"mode": "compressed_structure"' in prompt
+    assert "markdown_with_line_numbers" not in prompt
+    assert '"elements"' in prompt
