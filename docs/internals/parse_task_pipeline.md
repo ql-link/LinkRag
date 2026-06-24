@@ -29,6 +29,7 @@ src/core/pipeline/
 │   │   ├── pretokenize.py       # PretokenizeStage（内存 plan，文件级 all-or-nothing）
 │   │   ├── es_indexing.py       # EsIndexingStage（plan 缺失先重建；文档级全量重建）
 │   │   └── sparse_vectorizing.py# SparseVectorizingStage（最后一段，唯一翻转 pipeline_status=SUCCESS）
+│   ├── workflow_demo/           # Workflow Engine 并行 demo DAG（LINK-102）：不接管现网 ParseTaskPipeline
 │   └── post_process/            # 文件级后处理子状态机（cleaning → chunking → vectorizing → pretokenize → es_indexing → sparse_vectorizing）
 │       ├── constants.py         # PIPELINE_STATUS_* / STAGE_STATUS_*
 │       ├── models.py            # PostProcessStageResult / PostProcessResult
@@ -133,6 +134,19 @@ StagePipeline.run（唯一的 6 阶段编排）
 | `StageServices` | 底层操作集合 | 解析 / 分片 / dense 向量化 / 预分词 / ES 写入 / 稀疏向量化 / chunk 反查等；**只做底层操作、不写阶段状态**（副作用边界清晰） |
 
 `StageContext` 在阶段间传递可变产物（`parse_result` / `chunks` / `plan` / `vector_result`）并收敛最终 `ParsePipelineResult`；`StageOutcome` 是单阶段成败结果（`finalized=True` 表示该阶段已自行写终态，模板不重复处理）。
+
+### Workflow Engine demo 边界（LINK-102）
+
+`src/core/pipeline/parse_task/workflow_demo/` 是用于验证通用 Workflow Engine 的并行 demo DAG，入口为 `build_parse_task_demo_workflow()`。它复用 `StageServices` 的底层操作，把 cleaning / chunking / dense vectorizing / pretokenize / ES indexing / sparse vectorizing 包装成 workflow node，但**不会被 `ParseTaskConsumer` 或 `ParseTaskPipeline.execute()` 自动调用**。
+
+现网解析任务仍以本文描述的 `ParseTaskPipeline → StagePipeline` 六阶段状态机为准：
+
+- 不改变 `document_parse_pipeline` 的 `pipeline_status` / `*_status` 成功失败语义。
+- 不改变 Java 侧读取 DB 终态的规则，也不恢复 parse_result MQ 回调。
+- 不删除、不替代 `document_parse_pipeline`、`document_parsed_log`、`kb_document_chunk` 等既有表。
+- demo DAG 的运行记录只写新增的 `workflow_run` / `workflow_node_run`，且必须由调用方显式构造 `ParseWorkflowRuntime` 后启动。
+
+demo DAG 当前依赖关系为：`cleaning → chunking`；`chunking` 后分为 `dense_vectorizing → sparse_vectorizing` 与 `pretokenize → es_indexing` 两支。`sparse_vectorizing` 依赖 dense 完成，因为现有 `StageServices.run_sparse_vectorizing()` 会重新加载 chunk 并过滤 `dense_vector_status == SUCCESS` 的记录。
 
 各阶段的特例（均封装在对应 Stage 子类内，对编排循环透明）：
 
