@@ -1,6 +1,9 @@
 # -*- coding: utf-8 -*-
 """HeadingHierarchyProcessor integration-level unit tests."""
 
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 
 from src.core.markdown_parser.heading_hierarchy import (
@@ -8,8 +11,11 @@ from src.core.markdown_parser.heading_hierarchy import (
     HeadingHierarchyProcessor,
     HeadingInsertion,
     HeadingPlan,
+    HeadingPlanValidationError,
+    LLMHeadingPlanGenerator,
 )
 from src.core.markdown_parser.models import ElementType
+from src.core.markdown_parser.provider_clients import LLMConfigMissingError
 
 
 class _TokenCounter:
@@ -45,7 +51,8 @@ def _config(enabled: bool = True) -> HeadingHierarchyConfig:
         no_heading_min_tokens=512,
         flat_min_headings=5,
         sparse_tokens_per_heading=1536,
-        llm_context_token_budget=8192,
+        llm_context_token_budget=65536,
+        llm_max_output_tokens=4096,
     )
 
 
@@ -87,7 +94,7 @@ async def test_successful_insertion_updates_markdown_and_parse_result_together()
 
 
 @pytest.mark.asyncio
-async def test_generator_failure_degrades_to_original_markdown():
+async def test_generator_failure_raises_when_gate_matches():
     generator = _FakeGenerator(exc=RuntimeError("boom"))
     processor = HeadingHierarchyProcessor(
         config=_config(),
@@ -95,15 +102,12 @@ async def test_generator_failure_degrades_to_original_markdown():
         generator=generator,
     )
 
-    result = await processor.aprocess("正文第一段\n\n正文第二段", source_file="x.md")
-
-    assert result.applied is False
-    assert result.markdown == "正文第一段\n\n正文第二段"
-    assert all(element.type != ElementType.HEADING for element in result.parse_result.elements)
+    with pytest.raises(RuntimeError, match="boom"):
+        await processor.aprocess("正文第一段\n\n正文第二段", source_file="x.md")
 
 
 @pytest.mark.asyncio
-async def test_invalid_plan_degrades_to_original_markdown():
+async def test_invalid_plan_raises_when_gate_matches():
     generator = _FakeGenerator(HeadingPlan((HeadingInsertion(line=0, level=6, text="非法标题"),)))
     processor = HeadingHierarchyProcessor(
         config=_config(),
@@ -111,10 +115,129 @@ async def test_invalid_plan_degrades_to_original_markdown():
         generator=generator,
     )
 
-    result = await processor.aprocess("正文第一段\n\n正文第二段", source_file="x.md")
+    with pytest.raises(HeadingPlanValidationError):
+        await processor.aprocess("正文第一段\n\n正文第二段", source_file="x.md")
+
+
+@pytest.mark.asyncio
+async def test_gate_miss_does_not_build_default_chat_generator(monkeypatch):
+    import src.core.markdown_parser.heading_hierarchy as hierarchy
+
+    build = AsyncMock(side_effect=AssertionError("should not resolve CHAT model"))
+    monkeypatch.setattr(hierarchy, "build_default_heading_plan_generator", build)
+    processor = HeadingHierarchyProcessor(
+        config=_config(),
+        tokenizer=_TokenCounter(511),
+    )
+
+    result = await processor.aprocess("正文第一段\n\n正文第二段", source_file="x.md", user_id=7)
 
     assert result.applied is False
-    assert result.markdown == "正文第一段\n\n正文第二段"
+    build.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_gate_match_uses_user_default_chat_model(monkeypatch):
+    import src.core.llm.user_model_resolver as resolver
+
+    provider = SimpleNamespace()
+    provider.generate = AsyncMock(
+        return_value=SimpleNamespace(
+            content='{"insertions":[{"line":0,"level":1,"text":"文档概览"}]}',
+            model="qwen-max",
+            usage=SimpleNamespace(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+        )
+    )
+    resolve = AsyncMock(
+        return_value=SimpleNamespace(
+            provider=provider,
+            model_name="qwen-max",
+            provider_type="qwen",
+            config_id=99,
+        )
+    )
+    monkeypatch.setattr(resolver, "aresolve_user_model", resolve)
+    processor = HeadingHierarchyProcessor(
+        config=_config(),
+        tokenizer=_TokenCounter(512),
+    )
+
+    result = await processor.aprocess("正文第一段\n\n正文第二段", source_file="x.md", user_id=7)
+
+    assert result.applied is True
+    assert result.markdown.startswith("# 文档概览\n")
+    resolve.assert_awaited_once_with(user_id=7, capability="CHAT")
+    provider.generate.assert_awaited_once()
+    assert provider.generate.await_args.kwargs["max_tokens"] == 4096
+
+
+@pytest.mark.asyncio
+async def test_missing_user_default_chat_model_raises_llm_config_missing(monkeypatch):
+    import src.core.llm.user_model_resolver as resolver
+    from src.core.llm.exceptions import UserModelConfigMissingError
+
+    monkeypatch.setattr(
+        resolver,
+        "aresolve_user_model",
+        AsyncMock(side_effect=UserModelConfigMissingError("CHAT", 7)),
+    )
+    processor = HeadingHierarchyProcessor(
+        config=_config(),
+        tokenizer=_TokenCounter(512),
+    )
+
+    with pytest.raises(LLMConfigMissingError):
+        await processor.aprocess("正文第一段\n\n正文第二段", source_file="x.md", user_id=7)
+
+
+@pytest.mark.asyncio
+async def test_llm_heading_generator_parses_json_plan():
+    provider = SimpleNamespace()
+    provider.generate = AsyncMock(
+        return_value=SimpleNamespace(
+            content='```json\n{"insertions":[{"line":1,"level":2,"text":"背景"}]}\n```',
+            model="qwen-max",
+            usage=SimpleNamespace(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+        )
+    )
+    generator = LLMHeadingPlanGenerator(provider, model_name="qwen-max")
+    processor = HeadingHierarchyProcessor(
+        config=_config(),
+        tokenizer=_TokenCounter(512),
+        generator=generator,
+    )
+
+    result = await processor.aprocess("第一段\n第二段", source_file="x.md")
+
+    assert result.applied is True
+    assert "## 背景" in result.markdown
+
+
+@pytest.mark.asyncio
+async def test_llm_heading_generator_uses_configured_max_output_tokens():
+    provider = SimpleNamespace()
+    provider.generate = AsyncMock(
+        return_value=SimpleNamespace(
+            content='{"insertions":[]}',
+            model="qwen-max",
+            usage=None,
+        )
+    )
+    generator = LLMHeadingPlanGenerator(
+        provider,
+        model_name="qwen-max",
+        context_token_budget=65536,
+        max_tokens=8192,
+    )
+    processor = HeadingHierarchyProcessor(
+        config=_config(),
+        tokenizer=_TokenCounter(512),
+        generator=generator,
+    )
+
+    await processor.aprocess("第一段\n第二段", source_file="x.md")
+
+    assert provider.generate.await_args.kwargs["max_tokens"] == 8192
 
 
 @pytest.mark.asyncio

@@ -91,6 +91,62 @@ def test_should_reject_invalid_min_candidate_chunk_tokens():
             raise AssertionError("expected ValueError")
 
 
+def test_should_default_heading_llm_token_limits_for_default_chat_model():
+    settings = Settings(_env_file=None)
+
+    assert settings.MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET == 65536
+    assert settings.MARKDOWN_PARSER_HEADING_LLM_MAX_OUTPUT_TOKENS == 4096
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET", 2048),
+        ("MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET", 262144),
+        ("MARKDOWN_PARSER_HEADING_LLM_MAX_OUTPUT_TOKENS", 512),
+        ("MARKDOWN_PARSER_HEADING_LLM_MAX_OUTPUT_TOKENS", 65536),
+    ],
+)
+def test_should_allow_heading_llm_token_bounds(field: str, value: int):
+    settings = Settings(_env_file=None, **{field: value})
+
+    assert getattr(settings, field) == value
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        (
+            "MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET",
+            2047,
+            "between 2048 and 262144",
+        ),
+        (
+            "MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET",
+            262145,
+            "between 2048 and 262144",
+        ),
+        (
+            "MARKDOWN_PARSER_HEADING_LLM_MAX_OUTPUT_TOKENS",
+            511,
+            "between 512 and 65536",
+        ),
+        (
+            "MARKDOWN_PARSER_HEADING_LLM_MAX_OUTPUT_TOKENS",
+            65537,
+            "between 512 and 65536",
+        ),
+    ],
+)
+def test_should_reject_invalid_heading_llm_token_bounds(
+    field: str,
+    value: int,
+    message: str,
+):
+    with pytest.raises(ValueError, match=message):
+        Settings(_env_file=None, **{field: value})
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

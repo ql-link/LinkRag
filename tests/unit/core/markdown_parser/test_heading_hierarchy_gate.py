@@ -31,7 +31,8 @@ def _enabled_config(**overrides) -> HeadingHierarchyConfig:
         "no_heading_min_tokens": 512,
         "flat_min_headings": 5,
         "sparse_tokens_per_heading": 1536,
-        "llm_context_token_budget": 8192,
+        "llm_context_token_budget": 65536,
+        "llm_max_output_tokens": 4096,
     }
     values.update(overrides)
     return HeadingHierarchyConfig(**values)

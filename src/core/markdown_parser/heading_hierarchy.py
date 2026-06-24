@@ -1,25 +1,18 @@
 # -*- coding: utf-8 -*-
-"""Markdown heading hierarchy gate and insertion-plan application.
-
-This module is intentionally LLM-provider agnostic.  It builds the deterministic
-gate/context and applies validated heading insertion plans; a future LLM-backed
-generator only needs to implement :class:`HeadingPlanGenerator`.
-"""
+"""Markdown heading hierarchy gate, LLM plan generation, and safe application."""
 
 from __future__ import annotations
 
-import logging
+import json
 import re
 from dataclasses import dataclass
 from enum import Enum
-from typing import Protocol
+from typing import Any, Protocol
 
 from src.core.llm.tokenizer import Tokenizer
 
 from .models import ElementType, MarkdownElement, ParseResult
 from .parser import MarkdownParser
-
-logger = logging.getLogger(__name__)
 
 MAX_HEADING_LEVEL = 5
 PROTECTED_ELEMENT_TYPES = {
@@ -47,6 +40,20 @@ _CHAPTER_RE = re.compile(r"^第[一二三四五六七八九十百千万\d]+[章�
 _CHINESE_LIST_RE = re.compile(r"^[一二三四五六七八九十]+、\s*\S+")
 _PAREN_LIST_RE = re.compile(r"^（[一二三四五六七八九十\d]+）\s*\S+")
 _DIGIT_PAREN_RE = re.compile(r"^\d+[）)]\s*\S+")
+HEADING_PLAN_SYSTEM_PROMPT = """你是面向 RAG 文档解析的 Markdown 标题规划助手。
+
+你的任务是阅读 Markdown 结构上下文，只判断哪里需要插入新的标题。你必须遵守：
+1. 只输出 JSON，不要输出解释、Markdown 或代码块。
+2. JSON 格式固定为 {"insertions":[{"line":0,"level":1,"text":"标题"}]}。
+3. line 是原始 Markdown 的 0-based 行号，表示在该行之前插入标题；允许 line 等于总行数表示文末。
+4. level 只能是 1 到 5。
+5. text 只能是标题文本，不要包含 #、代码围栏或换行。
+6. 不要修改、删除或重写任何原文，不要调整已有标题。
+7. 信息不足时返回 {"insertions":[]}。
+"""
+HEADING_PLAN_MAX_OUTPUT_TOKENS = 4096
+COMPRESSED_CONTEXT_ELEMENT_LIMIT = 180
+COMPRESSED_CONTEXT_CANDIDATE_LIMIT = 240
 
 
 class HeadingGateReason(str, Enum):
@@ -128,7 +135,8 @@ class HeadingHierarchyConfig:
     no_heading_min_tokens: int = 512
     flat_min_headings: int = 5
     sparse_tokens_per_heading: int = 1536
-    llm_context_token_budget: int = 8192
+    llm_context_token_budget: int = 65536
+    llm_max_output_tokens: int = HEADING_PLAN_MAX_OUTPUT_TOKENS
 
     @classmethod
     def from_settings(cls) -> "HeadingHierarchyConfig":
@@ -141,6 +149,7 @@ class HeadingHierarchyConfig:
             flat_min_headings=settings.MARKDOWN_PARSER_HEADING_FLAT_MIN_HEADINGS,
             sparse_tokens_per_heading=(settings.MARKDOWN_PARSER_HEADING_SPARSE_TOKENS_PER_HEADING),
             llm_context_token_budget=settings.MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET,
+            llm_max_output_tokens=settings.MARKDOWN_PARSER_HEADING_LLM_MAX_OUTPUT_TOKENS,
         )
 
 
@@ -157,6 +166,10 @@ class HeadingHierarchyResult:
 
 class HeadingPlanValidationError(ValueError):
     """Raised when a heading insertion plan cannot be safely applied."""
+
+
+class HeadingPlanGenerationError(RuntimeError):
+    """Raised when an LLM heading plan response cannot be parsed."""
 
 
 class HeadingPlanGenerator(Protocol):
@@ -182,6 +195,73 @@ class NoopHeadingPlanGenerator:
         decision: GateDecision,
     ) -> HeadingPlan:
         return HeadingPlan()
+
+
+class _TextProvider(Protocol):
+    async def generate(
+        self,
+        prompt: str,
+        system_prompt: str | None = None,
+        temperature: float = 0.7,
+        max_tokens: int | None = None,
+        **kwargs: Any,
+    ) -> Any: ...
+
+
+class LLMHeadingPlanGenerator:
+    """Generate heading insertion plans with a resolved CHAT provider."""
+
+    def __init__(
+        self,
+        provider: _TextProvider,
+        *,
+        model_name: str | None = None,
+        user_id: int | None = None,
+        provider_type: str | None = None,
+        config_id: int | None = None,
+        tokenizer: _TokenCounter | None = None,
+        context_token_budget: int = 65536,
+        max_tokens: int = HEADING_PLAN_MAX_OUTPUT_TOKENS,
+    ) -> None:
+        self._provider = provider
+        self._model_name = model_name
+        self._user_id = user_id
+        self._provider_type = provider_type
+        self._config_id = config_id
+        self._tokenizer = tokenizer or Tokenizer()
+        self._context_token_budget = context_token_budget
+        self._max_tokens = max_tokens
+
+    async def agenerate(
+        self,
+        *,
+        markdown: str,
+        parse_result: ParseResult,
+        decision: GateDecision,
+    ) -> HeadingPlan:
+        prompt = build_heading_plan_prompt(
+            markdown,
+            parse_result=parse_result,
+            decision=decision,
+            token_budget=self._context_token_budget,
+            tokenizer=self._tokenizer,
+        )
+        response = await self._provider.generate(
+            prompt=prompt,
+            system_prompt=HEADING_PLAN_SYSTEM_PROMPT,
+            temperature=0.1,
+            max_tokens=self._max_tokens,
+        )
+        usage = getattr(response, "usage", None)
+        resolved_model = getattr(response, "model", None) or self._model_name
+        _report_heading_usage(
+            user_id=self._user_id,
+            provider_type=self._provider_type,
+            model_name=resolved_model,
+            config_id=self._config_id,
+            usage=usage,
+        )
+        return parse_heading_plan_response(getattr(response, "content", "") if response else "")
 
 
 class _TokenCounter(Protocol):
@@ -413,7 +493,7 @@ class HeadingHierarchyProcessor:
         self.parser = parser or MarkdownParser()
         self.config = config or HeadingHierarchyConfig.from_settings()
         self.tokenizer = tokenizer or Tokenizer()
-        self.generator = generator or NoopHeadingPlanGenerator()
+        self.generator = generator
         self.gate = HeadingHierarchyGate(config=self.config, tokenizer=self.tokenizer)
 
     async def aprocess(
@@ -421,6 +501,7 @@ class HeadingHierarchyProcessor:
         markdown: str,
         *,
         source_file: str | None = None,
+        user_id: int | None = None,
     ) -> HeadingHierarchyResult:
         parse_result = self.parser.parse(markdown, source_file=source_file)
         if not self.config.enabled:
@@ -440,20 +521,16 @@ class HeadingHierarchyProcessor:
                 applied=False,
             )
 
-        try:
-            plan = await self.generator.agenerate(
-                markdown=markdown,
-                parse_result=parse_result,
-                decision=decision,
-            )
-        except Exception as exc:
-            logger.warning("Heading hierarchy generator failed, skip enhancement: %s", exc)
-            return HeadingHierarchyResult(
-                markdown=markdown,
-                parse_result=parse_result,
-                decision=decision,
-                applied=False,
-            )
+        generator = self.generator or await build_default_heading_plan_generator(
+            user_id,
+            context_token_budget=self.config.llm_context_token_budget,
+            max_output_tokens=self.config.llm_max_output_tokens,
+        )
+        plan = await generator.agenerate(
+            markdown=markdown,
+            parse_result=parse_result,
+            decision=decision,
+        )
 
         if not plan.insertions:
             return HeadingHierarchyResult(
@@ -463,18 +540,9 @@ class HeadingHierarchyProcessor:
                 applied=False,
             )
 
-        try:
-            validate_heading_plan(plan, markdown, parse_result)
-            updated_markdown = apply_heading_plan(markdown, plan)
-            updated_parse_result = self.parser.parse(updated_markdown, source_file=source_file)
-        except Exception as exc:
-            logger.warning("Heading hierarchy plan rejected, skip enhancement: %s", exc)
-            return HeadingHierarchyResult(
-                markdown=markdown,
-                parse_result=parse_result,
-                decision=decision,
-                applied=False,
-            )
+        validate_heading_plan(plan, markdown, parse_result)
+        updated_markdown = apply_heading_plan(markdown, plan)
+        updated_parse_result = self.parser.parse(updated_markdown, source_file=source_file)
 
         return HeadingHierarchyResult(
             markdown=updated_markdown,
@@ -483,6 +551,101 @@ class HeadingHierarchyProcessor:
             applied=True,
             insertion_count=len(plan.insertions),
         )
+
+
+async def build_default_heading_plan_generator(
+    user_id: int | None,
+    *,
+    context_token_budget: int,
+    max_output_tokens: int,
+) -> LLMHeadingPlanGenerator:
+    """Build the production heading generator from the default CHAT model."""
+    if user_id is None:
+        from src.core.llm.user_model_resolver import build_provider_from_config
+        from src.services.config_reader_service import ConfigReaderService
+
+        config = ConfigReaderService().get_system_fallback_config_by_capability("CHAT")
+        if not config:
+            raise HeadingPlanGenerationError("system default CHAT model is not configured")
+        resolved = build_provider_from_config(config, capability="CHAT")
+    else:
+        from src.core.llm.exceptions import UserModelConfigMissingError
+        from src.core.llm.user_model_resolver import aresolve_user_model
+        from src.core.markdown_parser.provider_clients import LLMConfigMissingError
+
+        try:
+            resolved = await aresolve_user_model(user_id=user_id, capability="CHAT")
+        except UserModelConfigMissingError as exc:
+            raise LLMConfigMissingError("CHAT", user_id) from exc
+
+    return LLMHeadingPlanGenerator(
+        provider=resolved.provider,
+        model_name=resolved.model_name,
+        user_id=user_id,
+        provider_type=getattr(resolved, "provider_type", None),
+        config_id=getattr(resolved, "config_id", None),
+        context_token_budget=context_token_budget,
+        max_tokens=max_output_tokens,
+    )
+
+
+def build_heading_plan_prompt(
+    markdown: str,
+    *,
+    parse_result: ParseResult,
+    decision: GateDecision,
+    token_budget: int,
+    tokenizer: _TokenCounter | None = None,
+) -> str:
+    """Build the prompt context; use compressed structure when full text is too large."""
+    counter = tokenizer or Tokenizer()
+    context = _base_prompt_context(markdown, parse_result, decision)
+    markdown_tokens = counter.count_tokens(markdown)
+    if markdown_tokens <= token_budget:
+        context["mode"] = "full_markdown"
+        context["markdown_with_line_numbers"] = _line_numbered_markdown(markdown)
+    else:
+        context["mode"] = "compressed_structure"
+        context["elements"] = _compressed_elements(parse_result)
+
+    return (
+        "请根据以下 Markdown 结构上下文生成标题插入计划。\n"
+        "注意：只能建议新增标题，不能改写原文；line 必须引用原始 Markdown 行号。\n\n"
+        f"{json.dumps(context, ensure_ascii=False, indent=2)}"
+    )
+
+
+def parse_heading_plan_response(text: str) -> HeadingPlan:
+    """Parse an LLM JSON response into a heading plan."""
+    payload = _extract_json_payload(text)
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise HeadingPlanGenerationError("heading plan response is not valid JSON") from exc
+
+    if isinstance(data, dict):
+        raw_insertions = data.get("insertions", [])
+    elif isinstance(data, list):
+        raw_insertions = data
+    else:
+        raise HeadingPlanGenerationError("heading plan JSON must be an object or list")
+
+    if not isinstance(raw_insertions, list):
+        raise HeadingPlanGenerationError("heading plan insertions must be a list")
+
+    insertions: list[HeadingInsertion] = []
+    for raw in raw_insertions:
+        if not isinstance(raw, dict):
+            raise HeadingPlanGenerationError("each heading insertion must be an object")
+        try:
+            line = int(raw["line"])
+            level = int(raw["level"])
+            title = str(raw["text"]).strip()
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HeadingPlanGenerationError("heading insertion has invalid fields") from exc
+        insertions.append(HeadingInsertion(line=line, level=level, text=title))
+
+    return HeadingPlan(tuple(insertions))
 
 
 def validate_heading_plan(
@@ -559,6 +722,109 @@ def _preview(text: str, limit: int = 120) -> str:
     if len(cleaned) <= limit:
         return cleaned
     return cleaned[: limit - 3].rstrip() + "..."
+
+
+def _base_prompt_context(
+    markdown: str,
+    parse_result: ParseResult,
+    decision: GateDecision,
+) -> dict[str, Any]:
+    return {
+        "line_count": len(markdown.split("\n")),
+        "gate_reason": decision.reason.value,
+        "metrics": {
+            "total_tokens": decision.metrics.total_tokens,
+            "heading_count": decision.metrics.heading_count,
+            "distinct_heading_levels": list(decision.metrics.distinct_heading_levels),
+            "tokens_per_heading": decision.metrics.tokens_per_heading,
+            "hierarchy_clue_count": decision.metrics.hierarchy_clue_count,
+        },
+        "existing_headings": [
+            {"line": item.line, "level": item.level, "text": item.text}
+            for item in decision.existing_headings
+        ],
+        "candidate_insert_positions": [
+            {
+                "line": item.line,
+                "element_type": item.element_type,
+                "preview": item.preview,
+            }
+            for item in decision.candidate_insert_positions[:COMPRESSED_CONTEXT_CANDIDATE_LIMIT]
+        ],
+        "protected_ranges": [
+            {"start_line": start, "end_line": end} for start, end in _protected_ranges(parse_result)
+        ],
+        "output_schema": {
+            "insertions": [{"line": "int", "level": "int 1..5", "text": "single-line title"}]
+        },
+    }
+
+
+def _compressed_elements(parse_result: ParseResult) -> list[dict[str, Any]]:
+    elements: list[dict[str, Any]] = []
+    protected = set(_protected_ranges(parse_result))
+    for element in parse_result.elements[:COMPRESSED_CONTEXT_ELEMENT_LIMIT]:
+        elements.append(
+            {
+                "start_line": element.start_line,
+                "end_line": element.end_line,
+                "type": element.type.value,
+                "protected": (element.start_line, element.end_line) in protected,
+                "preview": _preview(element.content, limit=180),
+            }
+        )
+    return elements
+
+
+def _line_numbered_markdown(markdown: str) -> str:
+    return "\n".join(f"{index}: {line}" for index, line in enumerate(markdown.split("\n")))
+
+
+def _extract_json_payload(text: str) -> str:
+    cleaned = (text or "").strip()
+    if cleaned.startswith("```"):
+        lines = cleaned.splitlines()
+        if len(lines) >= 3 and lines[-1].strip() == "```":
+            cleaned = "\n".join(lines[1:-1]).strip()
+
+    if cleaned.startswith("{") or cleaned.startswith("["):
+        return cleaned
+
+    object_start = cleaned.find("{")
+    object_end = cleaned.rfind("}")
+    if object_start >= 0 and object_end > object_start:
+        return cleaned[object_start : object_end + 1]
+
+    list_start = cleaned.find("[")
+    list_end = cleaned.rfind("]")
+    if list_start >= 0 and list_end > list_start:
+        return cleaned[list_start : list_end + 1]
+
+    raise HeadingPlanGenerationError("heading plan response does not contain JSON")
+
+
+def _report_heading_usage(
+    *,
+    user_id: int | None,
+    provider_type: str | None,
+    model_name: str | None,
+    config_id: int | None,
+    usage: Any,
+) -> None:
+    if usage is None:
+        return
+    from src.core.markdown_parser.provider_clients import _report_enhancement_usage
+
+    _report_enhancement_usage(
+        user_id=user_id,
+        provider_type=provider_type,
+        model_name=model_name,
+        config_id=config_id,
+        operation="heading",
+        prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+        completion_tokens=int(getattr(usage, "completion_tokens", 0) or 0),
+        total_tokens=int(getattr(usage, "total_tokens", 0) or 0),
+    )
 
 
 def _disabled_decision() -> GateDecision:
