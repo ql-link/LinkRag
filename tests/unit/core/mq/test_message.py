@@ -18,8 +18,8 @@ from src.core.mq.messages import (
     ParseTaskPayload,
     CacheSyncMessage,
     CacheSyncPayload,
-    UsageReportMessage,
-    UsageReportPayload,
+    TokenUsageMessage,
+    TokenUsagePayload,
     ChatTurnMessage,
     ChatTurnPayload,
 )
@@ -205,11 +205,11 @@ class TestCacheSyncMessage:
         assert parsed.action == "warmup"
 
 
-class TestUsageReportMessage:
-    """用量上报消息测试"""
+class TestTokenUsageMessage:
+    """统一 Token 用量上报消息测试（覆盖 chat/parse/recall 全部调用）"""
 
     def test_build(self):
-        msg = UsageReportMessage.build(
+        msg = TokenUsageMessage.build(
             user_id="u-500",
             provider_type="qwen",
             model_name="qwen-turbo",
@@ -225,9 +225,12 @@ class TestUsageReportMessage:
         assert payload.stage == "recall"
         assert payload.operation == "rerank"
         assert msg.get_routing_key() == "u-500"
+        # topic / type 沿用历史值，避免 Java 重新绑定 queue（LINK-191）。
+        assert msg.get_mq_name() == "tolink.rag.usage_report"
+        assert msg.get_mq_type() == "USAGE_REPORT"
 
     def test_roundtrip(self):
-        msg = UsageReportMessage.build(
+        msg = TokenUsageMessage.build(
             user_id="u-600",
             provider_type="openai",
             model_name="text-embedding-3-small",
@@ -236,13 +239,31 @@ class TestUsageReportMessage:
             total_tokens=200,
             task_id="task-9",
         )
-        parsed = UsageReportMessage.parse_msg(msg.serialize())
+        parsed = TokenUsageMessage.parse_msg(msg.serialize())
         assert parsed.provider_type == "openai"
         assert parsed.model_name == "text-embedding-3-small"
         assert parsed.total_tokens == 200
         assert parsed.stage == "parse"
         assert parsed.operation == "embed"
         assert parsed.task_id == "task-9"
+
+    def test_chat_generate_usage(self):
+        # Scenario: 对话 generate 用量也走统一消息（completion_tokens > 0）
+        msg = TokenUsageMessage.build(
+            user_id="u-700",
+            provider_type="openai",
+            model_name="gpt-x",
+            stage="chat",
+            operation="generate",
+            prompt_tokens=120,
+            completion_tokens=80,
+            total_tokens=200,
+            config_id=7,
+        )
+        payload = msg.get_payload()
+        assert payload.stage == "chat"
+        assert payload.operation == "generate"
+        assert payload.completion_tokens == 80
 
 
 class TestChatTurnMessage:
@@ -257,20 +278,15 @@ class TestChatTurnMessage:
             query="什么是RAG",
             answer="RAG 是检索增强生成",
             config_id=7,
-            provider_type="openai",
             model_name="gpt-x",
             status="COMPLETED",
-            prompt_tokens=120,
-            completion_tokens=80,
-            total_tokens=200,
             references=["1001", "1002"],
-            latency_ms=350,
         )
         kwargs.update(overrides)
         return ChatTurnMessage.build(**kwargs)
 
     def test_build_fields_and_constants(self):
-        # Scenario: 生成成功时发出 COMPLETED 含完整 content 与 token 用量与召回引用
+        # Scenario: 问答正常结束发出 COMPLETED，承载对话内容与召回引用（不含 token，LINK-191）
         msg = self._build()
         assert msg.get_mq_name() == "tolink.rag.chat_turn"
         assert msg.get_mq_type() == "CHAT_TURN"
@@ -279,10 +295,12 @@ class TestChatTurnMessage:
         assert payload.answer == "RAG 是检索增强生成"
         assert payload.status == "COMPLETED"
         assert payload.turn_id == "turn-1"
-        assert payload.prompt_tokens == 120
-        assert payload.completion_tokens == 80
-        assert payload.total_tokens == 200
         assert payload.references == ["1001", "1002"]
+        # token 已从对话消息剥离，改走 TokenUsageMessage（provider_type 仍保留供 Java 落库快照）。
+        assert not any(
+            f in ChatTurnPayload.model_fields
+            for f in ("prompt_tokens", "completion_tokens", "total_tokens")
+        )
 
     def test_routing_key_is_conversation_id(self):
         # Scenario: 消息以 conversation_id 作为路由键
@@ -306,8 +324,8 @@ class TestChatTurnMessage:
         assert parsed.error_message == "boom"
         assert parsed.conversation_id == 10086
 
-    def test_usage_defaults_to_zero(self):
-        # Scenario: 用量字段缺省时按 0 上报；GENERATING 起点 provider 可缺省
+    def test_defaults_for_generating_start(self):
+        # Scenario: GENERATING 起点 references 为空、provider 可缺省、无失败码
         msg = ChatTurnMessage.build(
             conversation_id=1,
             request_id="r",
@@ -319,9 +337,6 @@ class TestChatTurnMessage:
             status="GENERATING",
         )
         payload = msg.get_payload()
-        assert payload.prompt_tokens == 0
-        assert payload.completion_tokens == 0
-        assert payload.total_tokens == 0
         assert payload.references == []
         assert payload.provider_type == ""
         assert payload.error_code is None

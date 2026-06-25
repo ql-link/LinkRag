@@ -19,8 +19,8 @@ src/core/mq/
 │   ├── parse_task.py          # Java -> Python 解析任务消息
 │   ├── document_delete.py     # Java -> Python 删除通知（LINK-55，扁平裸 JSON 无信封）
 │   ├── cache_sync.py          # 用户 LLM 配置缓存同步
-│   ├── usage_report.py        # LLM 用量上报
-│   └── chat_turn.py           # 对话轮次完成上报（Python -> Java 落库）
+│   ├── token_usage.py         # 统一 Token 用量上报（全部模型调用）
+│   └── chat_turn.py           # 对话内容持久化上报（Python -> Java 落库，不含 token）
 │   # parse_result.py 已删除（LINK-166：终态回传 MQ 下线，终态只写 DB）
 └── vendors/
     ├── rabbitmq_adapter.py    # 启动声明 DLX/DLT；手动 ack/reject 走 retry 编排
@@ -69,12 +69,12 @@ FastAPI lifespan（src/main.py 组合根装配 _start_mq_consumers）
 | `ParseTaskMessage` | `tolink.rag.parse_task` | Java -> Python | 触发文档解析任务（含首次解析与重试，由 `is_retry` + `previous_task_id` 区分；详见 [mq_integration.md §ParseTaskPayload](../api/mq_contracts.md)） |
 | `DocumentDeleteMessage` | `tolink.rag.document_delete` | Java -> Python | 删除通知：按 `delete_type`（dataset/file）清理解析域衍生产物，不碰原文件（详见 [mq_contracts.md §删除通知](../api/mq_contracts.md)） |
 | `CacheSyncMessage` | `tolink.rag.cache_sync` | Java -> Python | 失效或刷新用户 LLM 配置缓存 |
-| `UsageReportMessage` | `tolink.rag.usage_report` | Python -> Java/统计侧 | 上报全链路非对话型模型调用用量（解析 embed/vision/table、召回 embed/rerank），含 `stage`/`operation` 归属（详见 [mq_contracts.md §用量上报](../api/mq_contracts.md#用量上报pythonjava统计侧)） |
-| `ChatTurnMessage` | `tolink.rag.chat_turn` | Python -> Java | 上报一轮 RAG 问答（query/answer/usage/references/`turn_id`/三态 `status`/error/首轮 `title`），起点 `GENERATING` + 终态 `COMPLETED`/`FAILED` 同 `turn_id`，供 Java upsert 落库 `chat_message` + `llm_usage_log` + 更新 `chat_conversation`（首轮 `title` 在标题空/默认时落 `chat_conversation.title`；详见 [mq_contracts.md](../api/mq_contracts.md)） |
+| `TokenUsageMessage` | `tolink.rag.usage_report` | Python -> Java/统计侧 | 统一上报**全部**模型调用用量（对话 generate、解析 embed/vision/table、召回 embed/rerank），含 `stage`/`operation` 归属。topic/mq_type 沿用历史值，Java 无需重绑 queue（详见 [mq_contracts.md §用量上报](../api/mq_contracts.md#用量上报pythonjava统计侧)） |
+| `ChatTurnMessage` | `tolink.rag.chat_turn` | Python -> Java | 上报一轮 RAG 问答的**对话内容**（query/answer/references/`turn_id`/三态 `status`/error/首轮 `title`，**不含 token**），起点 `GENERATING` + 终态 `COMPLETED`/`FAILED` 同 `turn_id`，供 Java upsert 落库 `chat_message` + 更新 `chat_conversation`（token 改走 `TokenUsageMessage`；首轮 `title` 在标题空/默认时落 `chat_conversation.title`，详见 [mq_contracts.md](../api/mq_contracts.md)） |
 
 `ParseTaskMessage` 中的 `md_bucket` 为历史兼容字段；Python 侧非 `md`/`markdown` 解析产物实际写入 `MINIO_PRIVATE_BUCKET` 配置桶，`md_object_key` 仍来自消息。`md`/`markdown` 透传文件的产物坐标沿用源文件上传位置。
 
-> 当前 `consumers/` 下有 `parse_task_consumer.py` 与 `document_delete_consumer.py` 两个消费入口。`CacheSyncMessage` / `UsageReportMessage` / `ChatTurnMessage` 在本服务侧均不消费——消费在 Java 侧。`ChatTurnMessage` 由 RAG 生成的**后台任务**生产（`recall_stream_runtime`）：起点发 `GENERATING`、终态发 `COMPLETED`/`FAILED`，客户端断连不取消任务（生成跑在独立 asyncio 任务、SSE 仅作观察通道，见 `routes/rag.py`）；`UsageReportMessage` 由全链路埋点经 `src/services/usage_reporter.py` 生产（解析 `VectorizingStage`/增强 provider client、召回 facade/reranker），旁路 fire-and-forget，发送失败仅告警不阻断主链路。
+> 当前 `consumers/` 下有 `parse_task_consumer.py` 与 `document_delete_consumer.py` 两个消费入口。`CacheSyncMessage` / `TokenUsageMessage` / `ChatTurnMessage` 在本服务侧均不消费——消费在 Java 侧。`ChatTurnMessage` 由 RAG 生成的**后台任务**生产（`recall_stream_runtime`）：起点发 `GENERATING`、终态发 `COMPLETED`/`FAILED`，客户端断连不取消任务（生成跑在独立 asyncio 任务、SSE 仅作观察通道，见 `routes/rag.py`）；`TokenUsageMessage` 由全链路埋点经 `src/services/usage_reporter.py` 生产（对话 generate 经 `recall_stream_runtime`、解析 `VectorizingStage`/增强 provider client、召回 facade/reranker），旁路 fire-and-forget，发送失败仅告警不阻断主链路。
 >
 > 收发 topic 名由各消息类的 `MQ_NAME` 常量固定，`PARSE_TASK_TOPIC` 等环境变量仅用于 §4.1 的 Kafka topic 自动创建，不改变实际收发 topic。
 

@@ -168,17 +168,15 @@ ORM：[`UsageLogDB`](../../../src/models/db_models.py)
 | `latency_ms` | INT | 响应延迟（毫秒） |
 | `status` | VARCHAR(16) | `success` / `failed` / `partial` |
 | `error_message` | VARCHAR(512) | 错误信息 |
-| `fallback_config_id` | BIGINT UNSIGNED | 触发 Fallback 时记录原配置 ID |
-| `conversation_id` | BIGINT UNSIGNED | 关联对话 ID（由 Java 消费 `chat_turn` 消息时写入） |
-| `message_id` | BIGINT UNSIGNED | 关联产生该用量的 `chat_message` 行 |
-| `request_id` | VARCHAR(64) | 与 `chat_message` 同一把 key，串联一轮问答 |
 | `stage` | VARCHAR(16) NULL | 阶段：`parse` / `recall` / `chat`；归属一条用量出自哪个阶段 |
 | `operation` | VARCHAR(16) NULL | 操作：`embed` / `sparse` / `rerank` / `vision` / `table` / `generate`；`sparse` 本期预留不写入 |
 | `created_at` | DATETIME | 创建时间 |
 
-索引：`idx_user_date`, `idx_config_date`, `idx_conversation_id`, `idx_usage_message_id`, `idx_user_stage_date`。
+索引：`idx_user_date`, `idx_config_date`, `idx_user_stage_date`。
 
-> 全链路归属（0022）：本表从「对话账本」升级为「全链路模型调用账本」。对话最终 `generate` 的行仍由 Java 消费 `chat_turn` 落库（Java 补 `stage='chat'`、`operation='generate'`）；解析侧 embed/vision/table、召回侧 embed/rerank 的行由 Python 通过 `tolink.rag.usage_report` 上报、Java 消费落库。token 一律由模型返回（不自算），向量类 `completion_tokens=0`。`sparse` 因模型不返回 token 本期预留不上报，仅在 `operation` 枚举占位。详见 [mq_contracts.md](../mq_contracts.md#用量上报pythonjava统计侧)。
+> 全链路归属（0022 + LINK-191）：本表是「全链路模型调用账本」。**全部**用量行（对话 `generate`、解析 embed/vision/table、召回 embed/rerank）均由 Python 通过统一的 `tolink.rag.usage_report` 上报、Java 消费落库——`generate` 不再由 `chat_turn` 触发落库。token 一律由模型返回（不自算），向量类 `completion_tokens=0`。`sparse` 因模型不返回 token 本期预留不上报，仅在 `operation` 枚举占位。详见 [mq_contracts.md](../mq_contracts.md#用量上报pythonjava统计侧)。
+>
+> 瘦身（0023）：删除 `fallback_config_id`（项目无兜底配置，死字段）与对话关联键 `conversation_id` / `message_id` / `request_id`（及 `idx_conversation_id`、`idx_usage_message_id` 索引）。本表不再保留对话级归溯；用户级用量统计由 `UsageLogService.get_usage_summary` 直接对本表按时间窗 `SUM` 得出。
 
 ---
 
@@ -256,15 +254,15 @@ ORM：[`ChatMessageDB`](../../../src/models/db_models.py)
 | `answer` | MEDIUMTEXT | LLM 回答（`GENERATING`/`FAILED` 可空或半截） |
 | `references` | JSON | 召回片段 `chunk_id` 列表（仅标识，不含正文） |
 | `request_id` | VARCHAR(64) | 请求追踪 ID（每 HTTP 请求级，不再作幂等键） |
-| `turn_id` | VARCHAR(64) | 轮次幂等键：前端每轮稳定 UUID，Java 据此 upsert 同一行（唯一索引，既有行为 NULL）（migration 0023 新增） |
+| `turn_id` | VARCHAR(64) | 轮次幂等键：前端每轮稳定 UUID，Java 据此 upsert 同一行（唯一索引，既有行为 NULL） |
 | `status` | VARCHAR(16) | `GENERATING` / `COMPLETED` / `FAILED`（旧 `success`/`partial`/`failed` 退役） |
-| `error_code` | VARCHAR(64) | 失败码 `RECALL_*`/`GENERATION_TIMEOUT`，仅 `FAILED`（migration 0023 新增） |
-| `error_message` | VARCHAR(512) | 失败原因，不含堆栈，仅 `FAILED`（migration 0023 新增） |
+| `error_code` | VARCHAR(64) | 失败码 `RECALL_*`/`GENERATION_TIMEOUT`，仅 `FAILED` |
+| `error_message` | VARCHAR(512) | 失败原因，不含堆栈，仅 `FAILED` |
 | `created_at` | DATETIME | 创建时间 |
 
 索引：`idx_conversation_created(conversation_id, created_at)`、`uk_chat_message_turn_id(turn_id) UNIQUE`（migration 0023）。
 
-> 所有权：表结构由 Python 侧 Alembic 迁移管理（含 `chat_conversation`）；**行数据的增删改由 Java 侧负责**——Java 消费 Python 发出的 `tolink.rag.chat_turn` 消息后，单事务写入 `chat_message` 行、`llm_usage_log` 行并更新 `chat_conversation`。Python 侧不写这三张表的行数据。详见 [mq_contracts.md](../mq_contracts.md#对话轮次上报pythonjava)。
+> 所有权：表结构由 Python 侧 Alembic 迁移管理（含 `chat_conversation`）；**行数据的增删改由 Java 侧负责**——Java 消费 Python 发出的 `tolink.rag.chat_turn` 消息后，写入 `chat_message` 行并更新 `chat_conversation`。本轮 `generate` 的 `llm_usage_log` 行改由 `tolink.rag.usage_report`（`TokenUsageMessage`）承载，不再随 `chat_turn` 落库（LINK-191）。Python 侧不写这些表的行数据。详见 [mq_contracts.md](../mq_contracts.md#对话轮次上报pythonjava)。
 
 ---
 

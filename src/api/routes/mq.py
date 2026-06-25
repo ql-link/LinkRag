@@ -14,7 +14,7 @@ from src.core.mq.factory import MQFactory
 from src.core.mq.messages import (
     ParseTaskMessage,
     CacheSyncMessage,
-    UsageReportMessage,
+    TokenUsageMessage,
 )
 from src.api.schemas.mq import (
     SendParseTaskRequest,
@@ -103,7 +103,7 @@ async def send_usage_report(request: SendUsageReportRequest):
     """发送用量上报消息到 MQ"""
     try:
         mq_service = MQService()
-        msg = UsageReportMessage.build(
+        msg = TokenUsageMessage.build(
             user_id=request.user_id,
             provider_type=request.provider_type,
             model_name=request.model_name,
@@ -114,8 +114,6 @@ async def send_usage_report(request: SendUsageReportRequest):
             total_tokens=request.total_tokens,
             config_id=request.config_id,
             task_id=request.task_id,
-            conversation_id=request.conversation_id,
-            request_id=request.request_id,
             latency_ms=request.latency_ms,
             status=request.status,
         )
