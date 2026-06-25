@@ -46,11 +46,11 @@ class _FakePipeline:
 
 
 class _FakeReranker:
-    """假 reranker：把 RRF 候选原样回显为重排候选，不查 DB / 不调模型。
+    """假 reranker：把融合候选原样回显为重排候选，不查 DB / 不调模型。
 
     - ``applied=True``：按入参顺序编号、给出递减 rerank_score，``rerank_applied=True``；
     - ``applied=False``：模拟软降级，rerank 字段置空、``rerank_applied=False``；
-    - ``exc`` 不为空：模拟硬失败 / 调用异常，直接抛出（由 runtime 兜底降级 RRF）。
+    - ``exc`` 不为空：模拟硬失败 / 调用异常，直接抛出（由 runtime 兜底降级为当前融合顺序）。
 
     ``top_n`` 不为空时截断输出，模拟 reranker 的 top_n 截断。
     """
@@ -101,6 +101,14 @@ class _FakeProvider:
 
 def _hits(*chunk_ids):
     return [RecallHit(cid, 10, 1, 0.9, {"bm25": 1.0}) for cid in chunk_ids]
+
+
+def _weighted_hits():
+    return [
+        RecallHit("cDense", 10, 1, 0.5, {"dense": 0.9, "sparse": None, "bm25": None}),
+        RecallHit("cSparse", 11, 1, 0.3, {"dense": None, "sparse": 7.0, "bm25": None}),
+        RecallHit("cBm25", 12, 1, 0.2, {"dense": None, "sparse": None, "bm25": 10.0}),
+    ]
 
 
 def _response(hits):
@@ -196,8 +204,37 @@ async def test_rerank_applied_carries_rerank_fields(stub_generation):
     assert done["rerank_applied"] is True
     assert [h["rerank_rank"] for h in done["hits"]] == [1, 2]
     assert all(h["rerank_score"] is not None for h in done["hits"])
-    # RRF 解释字段原样保留。
+    # 融合解释字段原样保留。
     assert all("fused_score" in h and "scores" in h for h in done["hits"])
+
+
+@pytest.mark.asyncio
+async def test_rerank_receives_weighted_score_fusion_order_and_fields(stub_generation):
+    """rerank 生效时消费当前融合策略产出的 RecallHit 顺序与字段。"""
+    reranker = _FakeReranker(applied=True)
+    pipe = _FakePipeline(_response(_weighted_hits()))
+
+    await _collect(
+        rt.recall_event_stream(
+            pipe,
+            _req(),
+            "rid",
+            config_id=77,
+            conversation_id=1,
+            turn_id="t-gen",
+            reranker=reranker,
+            token_budget=4000,
+            rerank_top_n=8,
+        )
+    )
+
+    assert [h.chunk_id for h in reranker.last_request.hits] == [
+        "cDense",
+        "cSparse",
+        "cBm25",
+    ]
+    assert reranker.last_request.hits[0].fused_score == 0.5
+    assert reranker.last_request.hits[0].scores["dense"] == 0.9
 
 
 @pytest.mark.asyncio
@@ -223,8 +260,8 @@ async def test_rerank_soft_degrade_passes_through(stub_generation):
 
 
 @pytest.mark.asyncio
-async def test_rerank_hard_fail_falls_back_to_rrf_truncated(stub_generation):
-    """硬失败（未配 RERANK 模型，reranker 抛错）：降级 RRF 顺序，截断到 top_n，不报错。"""
+async def test_rerank_hard_fail_falls_back_to_fusion_order_truncated(stub_generation):
+    """硬失败（未配 RERANK 模型，reranker 抛错）：降级当前融合顺序，截断到 top_n，不报错。"""
     n = settings.RERANK_DEFAULT_TOP_N + 3
     pipe = _FakePipeline(_response(_hits(*[f"c{i}" for i in range(n)])))
     reranker = _FakeReranker(exc=UserModelConfigMissingError("RERANK", 123))
@@ -247,6 +284,32 @@ async def test_rerank_hard_fail_falls_back_to_rrf_truncated(stub_generation):
     assert done["rerank_applied"] is False
     assert len(done["hits"]) == settings.RERANK_DEFAULT_TOP_N  # 截断到 top_n
     assert all(h["rerank_score"] is None for h in done["hits"])
+
+
+@pytest.mark.asyncio
+async def test_rerank_unavailable_falls_back_to_weighted_score_order(stub_generation):
+    """rerank 不可用时按当前 weighted_score 融合顺序降级。"""
+    pipe = _FakePipeline(_response(_weighted_hits()))
+    reranker = _FakeReranker(exc=UserModelConfigMissingError("RERANK", 123))
+
+    events = await _collect(
+        rt.recall_event_stream(
+            pipe,
+            _req(),
+            "rid",
+            config_id=77,
+            conversation_id=1,
+            turn_id="t-gen",
+            reranker=reranker,
+            token_budget=4000,
+            rerank_top_n=8,
+        )
+    )
+
+    done = events[-1][1]
+    assert done["rerank_applied"] is False
+    assert [h["chunk_id"] for h in done["hits"]] == ["cDense", "cSparse", "cBm25"]
+    assert all(h["rerank_score"] is None and h["rerank_rank"] is None for h in done["hits"])
 
 
 @pytest.mark.asyncio

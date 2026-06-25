@@ -2,11 +2,14 @@
 
 - parse_task: 解析任务主编排
 - post_process: 解析后处理子状态机（chunking → vectorizing → es_indexing）
-- recall: 多路召回 pipeline（编排 + RRF 粗融合）
+- recall: 多路召回 pipeline（编排 + 可配置粗融合）
 """
 
 from src.core.pipeline.parse_task import ParsePipelineResult, ParseTaskPipeline, PipelineStatus
 from src.core.pipeline.recall import (
+    SOURCE_BM25,
+    SOURCE_DENSE,
+    SOURCE_SPARSE,
     RecallError,
     RecallHit,
     RecallPipeline,
@@ -16,10 +19,9 @@ from src.core.pipeline.recall import (
     RecallValidationError,
     Retriever,
     RetrieverHit,
-    SOURCE_BM25,
-    SOURCE_DENSE,
-    SOURCE_SPARSE,
+    fuse_hits,
     fuse_with_rrf,
+    fuse_with_weighted_score,
 )
 
 __all__ = [
@@ -38,5 +40,7 @@ __all__ = [
     "SOURCE_BM25",
     "SOURCE_DENSE",
     "SOURCE_SPARSE",
+    "fuse_hits",
     "fuse_with_rrf",
+    "fuse_with_weighted_score",
 ]

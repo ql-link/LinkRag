@@ -1,8 +1,8 @@
 """对外 RAG 问答流 SSE 路由（LINK-131）。
 
 端点：``POST /api/v1/rag/stream``（面向**浏览器前端**）。前端凭 Java 签发的短期
-session token 直连，绕过 Java 中转。承接完整 RAG 行为：召回 → RRF 融合 → rerank 精排
-（不可用即降级 RRF 顺序）→ 正文回填 → 上下文组装 → CHAT 模型流式生成。
+session token 直连，绕过 Java 中转。承接完整 RAG 行为：召回 → 候选融合 → rerank 精排
+（不可用即降级当前融合顺序）→ 正文回填 → 上下文组装 → CHAT 模型流式生成。
 
 由旧端点 ``POST /api/v1/recall/stream``（``routes/recall_direct.py``）改名搬迁而来：
 「召回 = stream」的旧契约语义不再扩散，SSE 的合理性来自 LLM 生成阶段。
@@ -14,7 +14,7 @@ session token 直连，绕过 Java 中转。承接完整 RAG 行为：召回 →
 4. 并发 acquire：按 ``user_id`` 限并发流数，超限 → 429。
 
 通过后建流，SSE 执行复用 ``recall_stream_runtime``。
-身份只取 claims，前端自报一律不信任；``top_k`` / ``sources`` / ``strict`` 由服务端配置控制。
+身份只取 claims，前端自报一律不信任；``top_k`` / ``sources`` / ``strict`` / 融合策略由服务端配置控制。
 """
 
 from __future__ import annotations
@@ -59,9 +59,10 @@ class RagStreamRequest(BaseModel):
     接受 ``query``（必填）、``config_id``（必填，本次生成所用 CHAT 模型配置 id）、
     ``conversation_id``（必填，本轮所属对话 id，作为落库挂载锚点）与可选
     ``dataset_ids``（本人授权范围内的子集选择）。**不含 ``user_id``**——身份只取 token
-    claims；body 出现 ``user_id`` / ``top_k`` / ``sources`` / ``strict`` / ``doc_ids``
-    等任何未知字段，``extra=forbid`` 触发 422；缺 ``config_id`` / ``conversation_id``
-    同样触发 422（缺会话 id 不进入召回生成、不发对话轮次消息）。
+    claims；body 出现 ``user_id`` / ``top_k`` / ``sources`` / ``strict`` / ``doc_ids`` /
+    ``fusion_strategy`` / ``fusion_weights`` 等任何未知字段，``extra=forbid`` 触发 422；
+    缺 ``config_id`` / ``conversation_id`` 同样触发 422（缺会话 id 不进入召回生成、不发
+    对话轮次消息）。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -202,6 +203,10 @@ async def rag_stream(
         dense_score_threshold_override=recall_cfg.dense_score_threshold,
         enabled_sources=recall_cfg.recall_enabled_sources,
         strict_override=recall_cfg.recall_strict,
+        fusion_strategy_override=recall_cfg.recall_fusion_strategy,
+        fusion_bm25_weight_override=recall_cfg.fusion_bm25_weight,
+        fusion_sparse_weight_override=recall_cfg.fusion_sparse_weight,
+        fusion_dense_weight_override=recall_cfg.fusion_dense_weight,
     )
 
     # 解耦：生成跑在独立后台任务（生产者），SSE 响应只是观察通道（消费者）。客户端断连

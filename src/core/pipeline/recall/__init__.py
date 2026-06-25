@@ -5,8 +5,10 @@ from src.core.pipeline.recall.exceptions import (
     RecallFatalError,
     RecallValidationError,
 )
-from src.core.pipeline.recall.fusion import fuse_with_rrf
+from src.core.pipeline.recall.fusion import fuse_hits, fuse_with_rrf, fuse_with_weighted_score
 from src.core.pipeline.recall.models import (
+    FUSION_STRATEGY_RRF,
+    FUSION_STRATEGY_WEIGHTED_SCORE,
     RecallHit,
     RecallPipelineConfig,
     RecallRequest,
@@ -24,6 +26,8 @@ from src.core.pipeline.recall.protocols import (
 __all__ = [
     "RecallError",
     "RecallFatalError",
+    "FUSION_STRATEGY_RRF",
+    "FUSION_STRATEGY_WEIGHTED_SCORE",
     "RecallHit",
     "RecallPipeline",
     "RecallPipelineConfig",
@@ -35,5 +39,7 @@ __all__ = [
     "SOURCE_BM25",
     "SOURCE_DENSE",
     "SOURCE_SPARSE",
+    "fuse_hits",
     "fuse_with_rrf",
+    "fuse_with_weighted_score",
 ]

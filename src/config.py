@@ -1,3 +1,4 @@
+import math
 import os
 from typing import List, Optional, Union
 
@@ -5,6 +6,7 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SUPPORTED_CHUNKING_STAGE_TWO_ALGORITHMS = frozenset({"noop", "semantic_depth_window"})
+SUPPORTED_RECALL_FUSION_STRATEGIES = frozenset({"rrf", "weighted_score"})
 MARKDOWN_HEADING_LLM_CONTEXT_TOKEN_MIN = 2048
 MARKDOWN_HEADING_LLM_CONTEXT_TOKEN_MAX = 262144
 MARKDOWN_HEADING_LLM_MAX_OUTPUT_TOKEN_MIN = 512
@@ -100,6 +102,32 @@ class Settings(BaseSettings):
     # 升级影响：未显式 set env 的部署在升级后自动开启 dense 召回，system embedding
     # HTTP 流量增加；如需暂时回退，运维侧 set RECALL_ENABLED_SOURCES=bm25,sparse 重启。
     RECALL_ENABLED_SOURCES: str = "bm25,sparse,dense"
+    # 召回融合策略：默认 RRF，weighted_score 作为可选策略在三路召回后、rerank 前生效。
+    RECALL_FUSION_STRATEGY: str = "rrf"
+    # weighted_score 三路权重。单项允许为 0；active source 权重和为 0 在运行期拒绝。
+    RECALL_FUSION_BM25_WEIGHT: float = 0.2
+    RECALL_FUSION_SPARSE_WEIGHT: float = 0.3
+    RECALL_FUSION_DENSE_WEIGHT: float = 0.5
+
+    @field_validator("RECALL_FUSION_STRATEGY")
+    @classmethod
+    def validate_recall_fusion_strategy(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if normalized not in SUPPORTED_RECALL_FUSION_STRATEGIES:
+            supported = ", ".join(sorted(SUPPORTED_RECALL_FUSION_STRATEGIES))
+            raise ValueError(f"RECALL_FUSION_STRATEGY must be one of: {supported}")
+        return normalized
+
+    @field_validator(
+        "RECALL_FUSION_BM25_WEIGHT",
+        "RECALL_FUSION_SPARSE_WEIGHT",
+        "RECALL_FUSION_DENSE_WEIGHT",
+    )
+    @classmethod
+    def validate_recall_fusion_weight(cls, v: float) -> float:
+        if not math.isfinite(v) or v < 0:
+            raise ValueError("recall fusion weights must be finite floats >= 0")
+        return v
 
     # ==========================================
     # 对外会话鉴权配置 (RAG 流 / 纯召回 JSON / LINK-40, LINK-131)

@@ -211,7 +211,7 @@ ORM：[`UsageLogDB`](../../../src/models/db_models.py)
 | `chunking_config` | JSON | 分块配置（3 项：heading_break_level / min_candidate_chunk_tokens / overlap_tokens；旧 percentile 语义切片参数已随 splitter 重写移除） |
 | `enhancement_config` | JSON | Markdown 增强配置（2 项：enable_table_enhancement / enable_image_enhancement）。仅控制是否开启表格/图片增强；增强模型不在此选择，统一用发起用户对应能力（CHAT/VISION）的默认模型。历史数据残留的 table_model / vision_model 键被忽略 |
 | `pdf_config` | JSON | PDF 解析配置（1 项：pdf_parser_backend，null 表示用系统默认） |
-| `recall_config` | JSON | 召回检索配置（9 项：recall_result_limit / recall_context_token_budget / sparse_top_k / sparse_score_threshold / dense_top_k / dense_score_threshold / recall_enabled_sources / rerank_top_n / recall_strict）。其中 recall_enabled_sources 为启用的召回路数组（bm25/sparse/dense，**仅能在系统已装配的召回路集合内收窄**，列出的未装配路被忽略、交集为空时回退全部已装配路）；rerank_top_n 为重排返回条数上限；recall_strict 为召回容错模式（true=任一路失败即整体失败，false=允许单路失败降级） |
+| `recall_config` | JSON | 召回检索配置（13 项：recall_result_limit / recall_context_token_budget / sparse_top_k / sparse_score_threshold / dense_top_k / dense_score_threshold / recall_enabled_sources / recall_fusion_strategy / fusion_bm25_weight / fusion_sparse_weight / fusion_dense_weight / rerank_top_n / recall_strict）。其中 recall_enabled_sources 为启用的召回路数组（bm25/sparse/dense，**仅能在系统已装配的召回路集合内收窄**，列出的未装配路被忽略、交集为空时回退全部已装配路）；recall_fusion_strategy 可选 rrf / weighted_score，三路 fusion 权重仅用于 weighted_score 且允许单项为 0；rerank_top_n 为重排返回条数上限；recall_strict 为召回容错模式（true=任一路失败即整体失败，false=允许单路失败降级） |
 | `is_active` | BOOLEAN | 是否启用，默认 `TRUE` |
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
 

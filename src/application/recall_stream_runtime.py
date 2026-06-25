@@ -8,7 +8,7 @@ LLM 流式生成执行与事件序列化的**单一来源**。
 
 hits 序列化抽至 ``recall_serialization``：本 runtime 用 ``serialize_reranked_hits``
 （含 rerank 字段与 chunk 正文，供前端展示召回片段），纯召回 JSON 端点用
-``serialize_hits``（仅 RRF 字段、不回填正文）。
+``serialize_hits``（仅融合字段、不回填正文）。
 """
 
 from __future__ import annotations
@@ -48,7 +48,7 @@ from src.core.pipeline.rerank import (
     PostRecallReranker,
     RerankedHit,
     RerankRequest,
-    degrade_to_rrf_order,
+    degrade_to_fusion_order,
 )
 from src.core.prompts import RAG_GENERATION_SYSTEM_PROMPT, build_rag_user_prompt
 from src.services.mq_service import MQService
@@ -79,7 +79,7 @@ async def recall_event_stream(
 
     先按 ``(user_id, CHAT, config_id)`` 前置校验用户模型——不可用即 ``error``
     MODEL_CONFIG_MISSING、**不进入召回**；通过后执行召回融合，一次性回填片段正文（供
-    rerank 与生成共用），对 RRF 候选做 rerank 精排（不可用即降级为 RRF 顺序，见
+    rerank 与生成共用），对融合候选做 rerank 精排（不可用即降级为当前融合顺序，见
     ``_rerank_hits``；与召回共享同一条流超时预算），用重排后的最终候选按 token 预算拼装
     上下文，用该模型流式生成——逐 token ``answer_delta``、结束 ``answer_done``（附最终候选
     元信息与 ``rerank_applied``）。生成阶段失败 → ``error`` GENERATION_FAILED（整请求失败）。
@@ -165,7 +165,7 @@ async def recall_event_stream(
             else {}
         )
 
-        # RRF 候选 → rerank 精排（不可用即降级为 RRF 顺序，截断 top_n）。
+        # 融合候选 → rerank 精排（不可用即降级为当前融合顺序，截断 top_n）。
         # rerank 与召回共享同一条流超时预算：只把剩余预算交给 rerank，不让两段各占满整窗。
         rerank_budget = timeout_seconds - (time.monotonic() - recall_started)
         reranked_hits, rerank_applied = await _rerank_hits(
@@ -276,24 +276,24 @@ async def recall_event_stream(
 async def _rerank_hits(
     reranker: PostRecallReranker,
     recall_req: RecallRequest,
-    rrf_hits: list[RecallHit],
+    fusion_hits: list[RecallHit],
     contents: dict[str, str],
     timeout_s: float,
     request_id: str,
     top_n: int,
 ) -> tuple[list[RerankedHit], bool]:
-    """对 RRF 候选执行 rerank 精排，返回 ``(最终候选, rerank_applied)``。
+    """对融合候选执行 rerank 精排，返回 ``(最终候选, rerank_applied)``。
 
     ``top_n`` 为重排后返回条数上限，来自数据集级 ``recall_config.rerank_top_n``
     （无数据集配置时为系统默认 ``RERANK_DEFAULT_TOP_N``）。
 
-    rerank 是 best-effort 增强：**已知不可用情形降级为 RRF 顺序**，保证 ``rag/stream``
-    不因 rerank 不可用而整条失败——「没有 rerank 就用 RRF」。降级口径与 reranker 软降级
-    一致：复用 ``degrade_to_rrf_order`` 对**有正文候选**截断到 ``top_n``，
+    rerank 是 best-effort 增强：**已知不可用情形降级为当前融合顺序**，保证 ``rag/stream``
+    不因 rerank 不可用而整条失败。降级口径与 reranker 软降级
+    一致：复用 ``degrade_to_fusion_order`` 对**有正文候选**截断到 ``top_n``，
     确保无论走哪条降级路，喂给下游的片段集合与数量一致。
 
     降级覆盖：
-    - 软降级（模型调用失败 / 返回不可用）：reranker 内部已返回 RRF 顺序候选且
+    - 软降级（模型调用失败 / 返回不可用）：reranker 内部已返回当前融合顺序候选且
       ``rerank_applied=False``，原样透出；
     - 硬失败（未配 RERANK 模型 → ``UserModelConfigMissingError`` / provider 不支持 →
       ``ValueError``）、rerank 超时、预算耗尽：此处兜底降级。
@@ -303,13 +303,14 @@ async def _rerank_hits(
     """
 
     def _degrade() -> tuple[list[RerankedHit], bool]:
-        scored = [h for h in rrf_hits if contents.get(h.chunk_id)]
-        return degrade_to_rrf_order(scored, top_n), False
+        scored = [h for h in fusion_hits if contents.get(h.chunk_id)]
+        return degrade_to_fusion_order(scored, top_n), False
 
     # 预算（共享流超时的剩余部分）已耗尽：不再发起 rerank，直接降级。
     if timeout_s <= 0:
         logger.info(
-            "[recall] no budget left for rerank, fallback to RRF order request_id={}", request_id
+            "[recall] no budget left for rerank, fallback to fusion order request_id={}",
+            request_id,
         )
         return _degrade()
 
@@ -319,7 +320,7 @@ async def _rerank_hits(
                 RerankRequest(
                     query=recall_req.query,
                     user_id=recall_req.user_id,
-                    hits=rrf_hits,
+                    hits=fusion_hits,
                     top_n=top_n,
                     contents=contents,
                 )
@@ -331,7 +332,7 @@ async def _rerank_hits(
         raise
     except (UserModelConfigMissingError, ValueError, asyncio.TimeoutError) as exc:
         logger.info(
-            "[recall] rerank unavailable, fallback to RRF order request_id={}: {}",
+            "[recall] rerank unavailable, fallback to fusion order request_id={}: {}",
             request_id,
             exc,
         )
@@ -353,7 +354,7 @@ async def _generate_answer(
 ) -> AsyncGenerator[str, None]:
     """生成模式后续：空命中判定 → 上下文拼装 → 流式生成 → 对话轮次落库通知。
 
-    入参 ``hits`` 是 rerank 后的最终候选（降级时为 RRF 顺序），``contents`` 是上游一次性
+    入参 ``hits`` 是 rerank 后的最终候选（降级时为当前融合顺序），``contents`` 是上游一次性
     回填的正文（rerank 与生成共用，不在此重复查库）。上下文拼装与 ``answer_done`` /
     ``recall_done`` 回报均以 ``hits`` 为准；``rerank_applied`` 原样透出。
 

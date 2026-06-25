@@ -15,19 +15,19 @@ from functools import lru_cache
 
 from src.config import settings
 from src.core.dataset_config import DatasetConfigService, RecallConfig
-from src.core.storage.es import Bm25Retriever, EsBm25Retriever
 from src.core.pipeline.recall import RecallPipeline, RecallPipelineConfig
-from src.core.pipeline.rerank import PostRecallReranker
 from src.core.pipeline.recall.protocols import (
     SOURCE_BM25,
     SOURCE_DENSE,
     SOURCE_SPARSE,
     Retriever,
 )
+from src.core.pipeline.rerank import PostRecallReranker
 from src.core.preprocessor.ragflow_tokenizer import RagFlowTokenizer
-from src.core.storage.vector.sparse_retriever import SparseRetriever
+from src.core.storage.es import Bm25Retriever, EsBm25Retriever
 from src.core.storage.vector import compose_vector_storage_facade
 from src.core.storage.vector.dense_retriever import DenseRetriever
+from src.core.storage.vector.sparse_retriever import SparseRetriever
 
 
 def _build_bm25_retriever() -> Retriever:
@@ -95,7 +95,13 @@ def _build_pipeline() -> RecallPipeline:
 
     return RecallPipeline(
         retrievers,
-        RecallPipelineConfig(strict=settings.RECALL_STRICT_DEFAULT),
+        RecallPipelineConfig(
+            strict=settings.RECALL_STRICT_DEFAULT,
+            fusion_strategy=settings.RECALL_FUSION_STRATEGY,
+            fusion_bm25_weight=settings.RECALL_FUSION_BM25_WEIGHT,
+            fusion_sparse_weight=settings.RECALL_FUSION_SPARSE_WEIGHT,
+            fusion_dense_weight=settings.RECALL_FUSION_DENSE_WEIGHT,
+        ),
     )
 
 

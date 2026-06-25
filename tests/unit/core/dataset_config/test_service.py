@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import math
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -143,6 +144,10 @@ async def test_recall_new_fields_default_from_settings(monkeypatch):
     from src.config import settings
 
     monkeypatch.setattr(settings, "RECALL_ENABLED_SOURCES", "bm25,sparse,dense")
+    monkeypatch.setattr(settings, "RECALL_FUSION_STRATEGY", "weighted_score")
+    monkeypatch.setattr(settings, "RECALL_FUSION_BM25_WEIGHT", 0.2)
+    monkeypatch.setattr(settings, "RECALL_FUSION_SPARSE_WEIGHT", 0.3)
+    monkeypatch.setattr(settings, "RECALL_FUSION_DENSE_WEIGHT", 0.5)
     monkeypatch.setattr(settings, "RERANK_DEFAULT_TOP_N", 8)
     monkeypatch.setattr(settings, "RECALL_STRICT_DEFAULT", False)
 
@@ -150,17 +155,25 @@ async def test_recall_new_fields_default_from_settings(monkeypatch):
     bundle = await DatasetConfigService().get_config(user_id=1, dataset_id=2, db=db)
 
     assert bundle.recall.recall_enabled_sources == ["bm25", "sparse", "dense"]
+    assert bundle.recall.recall_fusion_strategy == "weighted_score"
+    assert bundle.recall.fusion_bm25_weight == 0.2
+    assert bundle.recall.fusion_sparse_weight == 0.3
+    assert bundle.recall.fusion_dense_weight == 0.5
     assert bundle.recall.rerank_top_n == 8
     assert bundle.recall.recall_strict is False
 
 
 @pytest.mark.asyncio
 async def test_recall_new_fields_dataset_override():
-    """数据集 JSON 覆盖三项新字段。"""
+    """数据集 JSON 覆盖召回 source、fusion、rerank 与 strict 字段。"""
     db = _fake_db(
         row=_row(
             recall={
                 "recall_enabled_sources": ["bm25", "sparse"],
+                "recall_fusion_strategy": "weighted_score",
+                "fusion_bm25_weight": 0.1,
+                "fusion_sparse_weight": 0.2,
+                "fusion_dense_weight": 0.7,
                 "rerank_top_n": 3,
                 "recall_strict": True,
             }
@@ -169,6 +182,10 @@ async def test_recall_new_fields_dataset_override():
     bundle = await DatasetConfigService().get_config(user_id=1, dataset_id=2, db=db)
 
     assert bundle.recall.recall_enabled_sources == ["bm25", "sparse"]
+    assert bundle.recall.recall_fusion_strategy == "weighted_score"
+    assert bundle.recall.fusion_bm25_weight == 0.1
+    assert bundle.recall.fusion_sparse_weight == 0.2
+    assert bundle.recall.fusion_dense_weight == 0.7
     assert bundle.recall.rerank_top_n == 3
     assert bundle.recall.recall_strict is True
 
@@ -180,6 +197,10 @@ async def test_recall_new_fields_l1_fallback(monkeypatch):
     from src.config import settings
 
     monkeypatch.setattr(settings, "RECALL_ENABLED_SOURCES", "bm25,sparse")
+    monkeypatch.setattr(settings, "RECALL_FUSION_STRATEGY", "rrf")
+    monkeypatch.setattr(settings, "RECALL_FUSION_BM25_WEIGHT", 0.4)
+    monkeypatch.setattr(settings, "RECALL_FUSION_SPARSE_WEIGHT", 0.6)
+    monkeypatch.setattr(settings, "RECALL_FUSION_DENSE_WEIGHT", 0.0)
     monkeypatch.setattr(settings, "RERANK_DEFAULT_TOP_N", 5)
     monkeypatch.setattr(settings, "RECALL_STRICT_DEFAULT", True)
 
@@ -187,6 +208,10 @@ async def test_recall_new_fields_l1_fallback(monkeypatch):
     bundle = await DatasetConfigService().get_config(user_id=1, dataset_id=2, db=db)
 
     assert bundle.recall.recall_enabled_sources == ["bm25", "sparse"]
+    assert bundle.recall.recall_fusion_strategy == "rrf"
+    assert bundle.recall.fusion_bm25_weight == 0.4
+    assert bundle.recall.fusion_sparse_weight == 0.6
+    assert bundle.recall.fusion_dense_weight == 0.0
     assert bundle.recall.rerank_top_n == 5
     assert bundle.recall.recall_strict is True
 
@@ -199,3 +224,19 @@ async def test_recall_rerank_top_n_non_positive_propagates():
         await DatasetConfigService().get_config(user_id=1, dataset_id=2, db=db)
 
     assert "rerank_top_n" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_recall_fusion_invalid_dataset_config_propagates():
+    """dataset recall_config 中 fusion 配置非法 → ValidationError 向上传播。"""
+    db = _fake_db(row=_row(recall={"recall_fusion_strategy": "unknown"}))
+    with pytest.raises(ValidationError) as exc_info:
+        await DatasetConfigService().get_config(user_id=1, dataset_id=2, db=db)
+
+    assert "recall_fusion_strategy" in str(exc_info.value)
+
+    db = _fake_db(row=_row(recall={"fusion_dense_weight": math.inf}))
+    with pytest.raises(ValidationError) as exc_info:
+        await DatasetConfigService().get_config(user_id=1, dataset_id=2, db=db)
+
+    assert "fusion_dense_weight" in str(exc_info.value)
