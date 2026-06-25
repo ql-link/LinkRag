@@ -400,7 +400,7 @@ CREATE TABLE IF NOT EXISTS dataset_parse_config (
     chunking_config     JSON NOT NULL COMMENT '分块配置（3 项：heading_break_level / min_candidate_chunk_tokens / overlap_tokens）',
     enhancement_config  JSON NOT NULL COMMENT 'Markdown 增强配置（2 项：enable_table_enhancement / enable_image_enhancement）',
     pdf_config          JSON NOT NULL COMMENT 'PDF 解析配置（1 项：pdf_parser_backend）',
-    recall_config       JSON NOT NULL COMMENT '召回检索配置（9 项：recall_result_limit / recall_context_token_budget / sparse_top_k / sparse_score_threshold / dense_top_k / dense_score_threshold / recall_enabled_sources / rerank_top_n / recall_strict）',
+    recall_config       JSON NOT NULL COMMENT '召回检索配置（10 项：recall_result_limit / recall_context_token_budget / bm25_top_k / sparse_top_k / sparse_score_threshold / dense_top_k / dense_score_threshold / recall_enabled_sources / rerank_top_n / recall_strict）',
     is_active           TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用',
     created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
     updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',

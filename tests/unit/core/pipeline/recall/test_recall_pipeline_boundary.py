@@ -3,26 +3,29 @@
 import pytest
 
 from src.core.pipeline.recall import (
-    RecallPipeline,
-    RecallRequest,
-    RetrieverHit,
     SOURCE_BM25,
     SOURCE_DENSE,
     SOURCE_SPARSE,
+    RecallPipeline,
+    RecallRequest,
+    RetrieverHit,
 )
 from tests.unit.core.pipeline.recall.conftest import FakeRetriever
 
 
 def _hit(chunk_id, source, score=1.0, doc_id=100, dataset_id=10):
     return RetrieverHit(
-        chunk_id=chunk_id, doc_id=doc_id, dataset_id=dataset_id,
-        score=score, source=source,
+        chunk_id=chunk_id,
+        doc_id=doc_id,
+        dataset_id=dataset_id,
+        score=score,
+        source=source,
     )
 
 
 @pytest.mark.asyncio
-async def test_fused_hits_truncated_to_request_top_k():
-    """融合结果按 request.top_k 截断，并把 user_id/top_k 透传给各路。"""
+async def test_fused_hits_truncated_to_rrf_limit():
+    """融合结果按 request.top_k（RRF 候选池窗口）截断，各路 top_k 独立。"""
     bm25_hits = [_hit(f"c{i}", SOURCE_BM25, score=10.0 - i) for i in range(5)]
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=bm25_hits)
     pipeline = RecallPipeline([bm25])
@@ -33,7 +36,107 @@ async def test_fused_hits_truncated_to_request_top_k():
 
     assert len(response.hits) == 2
     assert bm25.user_ids == [99]
-    assert bm25.top_ks == [2]
+    assert bm25.top_ks == [100]
+
+
+@pytest.mark.asyncio
+async def test_route_top_k_dispatched_per_source():
+    """三路执行期 top_k 按 source 分发，不再统一使用 RRF 候选池窗口。"""
+    bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("b1", SOURCE_BM25)])
+    sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[_hit("s1", SOURCE_SPARSE)])
+    dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("d1", SOURCE_DENSE)])
+    pipeline = RecallPipeline([bm25, sparse, dense])
+
+    await pipeline.execute(
+        RecallRequest(
+            user_id=7,
+            query="q",
+            dataset_ids=[10],
+            top_k=64,
+            bm25_top_k=100,
+            sparse_top_k=50,
+            dense_top_k=100,
+        )
+    )
+
+    assert bm25.top_ks == [100]
+    assert sparse.top_ks == [50]
+    assert dense.top_ks == [100]
+
+
+@pytest.mark.asyncio
+async def test_fused_hits_truncated_to_rrf_limit_not_route_top_k():
+    """深召回后 RRF 只保留候选池窗口，per_source_counts 仍反映各路深度。"""
+    bm25 = FakeRetriever(
+        source=SOURCE_BM25,
+        hits=[_hit(f"b{i}", SOURCE_BM25, score=100.0 - i) for i in range(100)],
+    )
+    sparse = FakeRetriever(
+        source=SOURCE_SPARSE,
+        hits=[_hit(f"s{i}", SOURCE_SPARSE, score=50.0 - i) for i in range(50)],
+    )
+    dense = FakeRetriever(
+        source=SOURCE_DENSE,
+        hits=[_hit(f"d{i}", SOURCE_DENSE, score=100.0 - i) for i in range(100)],
+    )
+    pipeline = RecallPipeline([bm25, sparse, dense])
+
+    response = await pipeline.execute(
+        RecallRequest(
+            user_id=7,
+            query="q",
+            dataset_ids=[10],
+            top_k=64,
+            bm25_top_k=100,
+            sparse_top_k=50,
+            dense_top_k=100,
+        )
+    )
+
+    assert len(response.hits) == 64
+    assert response.per_source_counts == {
+        SOURCE_BM25: 100,
+        SOURCE_SPARSE: 50,
+        SOURCE_DENSE: 100,
+    }
+
+
+@pytest.mark.asyncio
+async def test_enabled_sources_uses_route_top_k_only_for_active_sources():
+    """enabled_sources 收窄后只触发生效路，并各自使用对应 top_k。"""
+    bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("b1", SOURCE_BM25)])
+    sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[_hit("s1", SOURCE_SPARSE)])
+    dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("d1", SOURCE_DENSE)])
+    pipeline = RecallPipeline([bm25, sparse, dense])
+
+    response = await pipeline.execute(
+        RecallRequest(
+            user_id=7,
+            query="q",
+            dataset_ids=[10],
+            top_k=64,
+            bm25_top_k=100,
+            sparse_top_k=50,
+            dense_top_k=100,
+            enabled_sources=[SOURCE_BM25, SOURCE_DENSE],
+        )
+    )
+
+    assert bm25.top_ks == [100]
+    assert dense.top_ks == [100]
+    assert sparse.calls == []
+    assert len(response.hits) <= 64
+
+
+@pytest.mark.asyncio
+async def test_unknown_source_uses_rrf_limit_as_fallback_top_k():
+    """新增未知召回路没有专属 top_k 字段时，回退使用 RRF 候选池窗口。"""
+    graph = FakeRetriever(source="graph", hits=[_hit("g1", "graph")])
+    pipeline = RecallPipeline([graph])
+
+    await pipeline.execute(RecallRequest(user_id=7, query="q", dataset_ids=[10], top_k=64))
+
+    assert graph.top_ks == [64]
 
 
 @pytest.mark.asyncio
@@ -67,9 +170,7 @@ async def test_score_threshold_override_absent_passes_none():
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("c2", SOURCE_DENSE)])
     pipeline = RecallPipeline([sparse, dense])
 
-    await pipeline.execute(
-        RecallRequest(user_id=7, query="q", dataset_ids=[10], top_k=5)
-    )
+    await pipeline.execute(RecallRequest(user_id=7, query="q", dataset_ids=[10], top_k=5))
 
     assert sparse.score_threshold_overrides == [None]
     assert dense.score_threshold_overrides == [None]
@@ -86,7 +187,9 @@ async def test_all_empty_returns_empty():
     response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
     assert response.hits == []
     assert response.per_source_counts == {
-        SOURCE_DENSE: 0, SOURCE_SPARSE: 0, SOURCE_BM25: 0,
+        SOURCE_DENSE: 0,
+        SOURCE_SPARSE: 0,
+        SOURCE_BM25: 0,
     }
     assert response.failed_sources == []
 
@@ -98,10 +201,13 @@ async def test_trust_declared_order():
     故意造一个"声明降序但 score 是 0.3 < 0.9"的反直觉例子：pipeline 按下标
     取 rank，不按 score 重排——cA 仍 rank=1、cB 仍 rank=2。
     """
-    dense = FakeRetriever(source=SOURCE_DENSE, hits=[
-        _hit("cA", SOURCE_DENSE, 0.3),
-        _hit("cB", SOURCE_DENSE, 0.9),
-    ])
+    dense = FakeRetriever(
+        source=SOURCE_DENSE,
+        hits=[
+            _hit("cA", SOURCE_DENSE, 0.3),
+            _hit("cB", SOURCE_DENSE, 0.9),
+        ],
+    )
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[])
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[])
     pipeline = RecallPipeline([dense, sparse, bm25])
@@ -129,12 +235,18 @@ async def test_four_retrievers():
         assert len(r.calls) == 1
     assert {h.chunk_id for h in response.hits} == {"c1", "c2", "c3", "c4"}
     assert set(response.per_source_counts.keys()) == {
-        SOURCE_DENSE, SOURCE_SPARSE, SOURCE_BM25, "graph",
+        SOURCE_DENSE,
+        SOURCE_SPARSE,
+        SOURCE_BM25,
+        "graph",
     }
     # 每条 hit 的 scores 也含全部 4 个键
     for hit in response.hits:
         assert set(hit.scores.keys()) == {
-            SOURCE_DENSE, SOURCE_SPARSE, SOURCE_BM25, "graph",
+            SOURCE_DENSE,
+            SOURCE_SPARSE,
+            SOURCE_BM25,
+            "graph",
         }
 
 
@@ -149,7 +261,9 @@ async def test_empty_list_not_failed_source():
     response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
     assert response.failed_sources == []
     assert response.per_source_counts == {
-        SOURCE_DENSE: 0, SOURCE_SPARSE: 1, SOURCE_BM25: 0,
+        SOURCE_DENSE: 0,
+        SOURCE_SPARSE: 1,
+        SOURCE_BM25: 0,
     }
 
 

@@ -5,6 +5,7 @@
   resolver 抛 DenseEmbeddingConfigMissingError → 翻成 VectorRetrievalUserConfigMissingError。
 - DenseRetriever 捕获该异常 → 抛 RecallFatalError（供 pipeline 硬失败）。
 """
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock
@@ -37,6 +38,27 @@ async def test_facade_missing_user_embedding_config_translates():
     facade = _facade_with_resolver(_resolver)
     with pytest.raises(VectorRetrievalUserConfigMissingError):
         await facade.search_dense_chunks(query="q", user_id=7, set_id=1, top_k=3)
+
+
+@pytest.mark.asyncio
+async def test_facade_default_top_k_uses_dense_retrieval_not_recall(monkeypatch):
+    """dense facade 直调未传 top_k 时只读 DENSE_RETRIEVAL_TOP_K，不读 RECALL_DENSE_TOP_K。"""
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "DENSE_RETRIEVAL_TOP_K", 3)
+    monkeypatch.setattr(settings, "RECALL_DENSE_TOP_K", 100)
+    facade = VectorStorageFacade(
+        storage_service=MagicMock(),
+        management_service=MagicMock(),
+        compensation_service=MagicMock(),
+        qdrant_store=MagicMock(),
+        embedding_pipeline=None,
+        query_embedding_resolver=None,
+    )
+
+    result = await facade.search_dense_chunks(query="   ", user_id=7, set_id=1)
+
+    assert result.top_k == 3
 
 
 class _FakeBackend:

@@ -6,7 +6,7 @@
     底层 ``EsBm25Retriever.recall_topk_chunks(Bm25RecallRequest)``
 
 不重新实现任何检索 / 分词 / 打分逻辑。``tokenizer`` 在装配期一次性注入；
-``user_id`` 与 ``top_k`` 改为**执行期**由 pipeline 透传（来自 ``RecallRequest``），
+``user_id`` 与本路 ``top_k`` 改为**执行期**由 pipeline 透传（来自 ``RecallRequest.bm25_top_k``），
 使适配器与 pipeline 可单例复用。
 """
 
@@ -63,7 +63,8 @@ class Bm25Retriever:
     ) -> list[RetrieverHit]:
         """按 BM25 召回一组候选 chunk。
 
-        ``user_id`` / ``top_k`` 由 pipeline 执行期透传。``score_threshold_override`` 接受但
+        ``user_id`` / ``top_k`` 由 pipeline 执行期透传（来自 ``RecallRequest.bm25_top_k``）。
+        ``score_threshold_override`` 接受但
         忽略——BM25 路无分数阈值概念（ES 原始分无统一量纲），仅为满足 ``Retriever`` 协议。策略：
         - ``dataset_ids`` 为空 → 直接返空。BM25 路依赖 dataset routing，
           没有数据集范围时不下发 ES（pipeline 协议允许"全库"，但本路放弃）。

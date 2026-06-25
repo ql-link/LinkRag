@@ -152,7 +152,7 @@ class PDFConfig(BaseModel):
 
 
 class RecallConfig(BaseModel):
-    """召回检索配置（9 项），消费点见 ``routes/rag.py`` / ``routes/recall.py`` 与各 retriever。
+    """召回检索配置（10 项），消费点见 ``routes/rag.py`` / ``routes/recall.py`` 与各 retriever。
 
     其中三项为 pipeline / rerank 级旋钮：
 
@@ -164,21 +164,28 @@ class RecallConfig(BaseModel):
       失败即整体抛错，``False`` 时允许单路失败降级。
     """
 
-    recall_result_limit: int = 20
+    recall_result_limit: int = 64
     recall_context_token_budget: int = 4000
-    sparse_top_k: int = 10
+    bm25_top_k: int = 100
+    sparse_top_k: int = 50
     sparse_score_threshold: float = 0.0
-    dense_top_k: int = 10
+    dense_top_k: int = 100
     dense_score_threshold: float = 0.0
     recall_enabled_sources: list[str] = ["bm25", "sparse", "dense"]
     rerank_top_n: int = 8
     recall_strict: bool = False
 
-    @field_validator("rerank_top_n")
+    @field_validator(
+        "recall_result_limit",
+        "bm25_top_k",
+        "sparse_top_k",
+        "dense_top_k",
+        "rerank_top_n",
+    )
     @classmethod
-    def _validate_rerank_top_n(cls, v: int) -> int:
+    def _validate_positive_int(cls, v: int) -> int:
         if v <= 0:
-            raise ValueError("rerank_top_n must be a positive int")
+            raise ValueError("must be a positive int")
         return v
 
     @field_validator("recall_enabled_sources")
@@ -195,9 +202,10 @@ class RecallConfig(BaseModel):
         return cls(
             recall_result_limit=s.RECALL_RESULT_LIMIT,
             recall_context_token_budget=s.RECALL_GENERATION_CONTEXT_TOKEN_BUDGET,
-            sparse_top_k=s.SPARSE_RETRIEVAL_TOP_K,
+            bm25_top_k=s.RECALL_BM25_TOP_K,
+            sparse_top_k=s.RECALL_SPARSE_TOP_K,
             sparse_score_threshold=s.SPARSE_RETRIEVAL_SCORE_THRESHOLD,
-            dense_top_k=s.DENSE_RETRIEVAL_TOP_K,
+            dense_top_k=s.RECALL_DENSE_TOP_K,
             dense_score_threshold=s.DENSE_RETRIEVAL_SCORE_THRESHOLD,
             recall_enabled_sources=[
                 src.strip() for src in (s.RECALL_ENABLED_SOURCES or "").split(",") if src.strip()

@@ -53,13 +53,13 @@ src/core/pipeline/recall/
 ## 3. 核心流程
 
 ```text
-RecallRequest(query, user_id, dataset_ids, doc_ids, top_k)
+RecallRequest(query, user_id, dataset_ids, doc_ids, top_k, bm25_top_k, sparse_top_k, dense_top_k)
   -> RecallPipeline.execute()
-       -> validate query / user_id / top_k
-       -> run retrievers in parallel / serial（透传 user_id / top_k）
+       -> validate query / user_id / RRF limit / per-route top_k
+       -> run retrievers in parallel / serial（透传 user_id 与各路 top_k）
        -> check failures by strict / loose policy
        -> fuse successful hits with RRF
-       -> truncate fused hits to top_k
+       -> truncate fused hits to top_k（RRF 候选池 / rerank 输入窗口）
        -> build RecallResponse
 ```
 
@@ -112,7 +112,7 @@ class Retriever(Protocol):
 - 合法但无命中时返回 `[]`，不要抛异常。
 - 模型不可达、ES 超时、存储异常等不可恢复失败可抛任意 Exception，由 Pipeline 根据容错配置处理。
 - `RetrieverHit.chunk_id` 必须锚定 MySQL `kb_document_chunk.chunk_id`，下游 reranker / 上下文拼装阶段用它反查正文。
-- `user_id` / `top_k` 在**执行期**由 Pipeline 透传（来自 `RecallRequest`），retriever 不在装配期持有它们——这样 Pipeline 与 retriever 可单例复用，HTTP 入口按请求注入用户上下文。召回 HTTP 入口见 [recall_http_api.md](recall_http_api.md)。
+- `user_id` / 本路 `top_k` 在**执行期**由 Pipeline 透传（来自 `RecallRequest` 的 `bm25_top_k` / `sparse_top_k` / `dense_top_k`），retriever 不在装配期持有它们——这样 Pipeline 与 retriever 可单例复用，HTTP 入口按请求注入用户上下文。召回 HTTP 入口见 [recall_http_api.md](recall_http_api.md)。
 
 ---
 
@@ -120,7 +120,7 @@ class Retriever(Protocol):
 
 | 模型 | 方向 | 说明 |
 | --- | --- | --- |
-| `RecallRequest` | 入参 | `query` 必须非空；`user_id` 必须为正（HTTP 入口从凭证 claims 注入）；`dataset_ids` 允许空列表，表示不限数据集；`doc_ids` 可选；`top_k` 为正，由服务端配置 `RECALL_RESULT_LIMIT` 决定，同时是融合结果截断上限 |
+| `RecallRequest` | 入参 | `query` 必须非空；`user_id` 必须为正（HTTP 入口从凭证 claims 注入）；`dataset_ids` 允许空列表，表示不限数据集；`doc_ids` 可选；`top_k` 为正，表示 RRF 融合后候选池上限 / rerank 输入窗口，由数据集级 `recall_result_limit` 或系统 `RECALL_RESULT_LIMIT` 决定；`bm25_top_k` / `sparse_top_k` / `dense_top_k` 分别控制三路执行期召回深度 |
 | `RetrieverHit` | 单路内部结果 | 单路返回的原始候选，包含 `chunk_id`、`doc_id`、`dataset_id`、`score`、`source` |
 | `RecallHit` | 融合结果 | RRF 融合后的候选，包含 `fused_score` 和每路原始 `scores` |
 | `RecallResponse` | 出参 | 回显 query、融合候选、各路命中数、失败路、整体耗时 |
@@ -222,9 +222,31 @@ RecallPipelineConfig(
 - Pipeline 只消费 `RetrieverHit`，只输出 `RecallHit`，不携带 chunk 正文。
 - 不做跨路原始分归一化；需要更精细排序时放到 reranker 阶段。
 
+## 11. top_k 配置边界（LINK-136）
+
+LINK-136 后，`RecallRequest.top_k` 不再是三路共同的执行期 top_k，而是 RRF 融合后的候选池窗口。三路深召回分别由 `bm25_top_k` / `sparse_top_k` / `dense_top_k` 控制：
+
+```text
+dataset_parse_config.recall_config 或系统 Settings
+  -> recall_result_limit        -> RecallRequest.top_k        -> RRF 后截断 / rerank 输入池
+  -> bm25_top_k / sparse_top_k / dense_top_k
+                                -> Retriever.recall(top_k=...) -> 单路召回深度
+```
+
+系统默认值：
+
+| 字段 | 默认 | 说明 |
+| --- | ---: | --- |
+| `RECALL_RESULT_LIMIT` | 64 | RRF 候选池窗口，作为 rerank 输入池 |
+| `RECALL_BM25_TOP_K` | 100 | BM25 路执行期召回深度 |
+| `RECALL_SPARSE_TOP_K` | 50 | sparse 路执行期召回深度 |
+| `RECALL_DENSE_TOP_K` | 100 | dense 路执行期召回深度 |
+
+`DENSE_RETRIEVAL_TOP_K` / `SPARSE_RETRIEVAL_TOP_K` 只作为 `VectorStorageFacade.search_dense_chunks()` / `search_sparse_chunks()` 直调时的兜底默认。完整 RAG pipeline 会显式传入三路 top_k，因此不会读取这两个 facade 默认作为召回深度。
+
 ---
 
-## 11. 召回后重排模块（独立下游，LINK-130）
+## 12. 召回后重排模块（独立下游，LINK-130）
 
 `RecallPipeline` 只到 RRF 粗融合为止。RRF 之后的精排由一个**独立模块**承接，与纯召回解耦：
 
@@ -246,8 +268,8 @@ src/core/pipeline/
 - **不触碰召回边界**：`RecallPipeline` 仍只返回 RRF 后 `RecallResponse`，不查正文、不调 rerank。
 - **输出保留 RRF 解释信息**：`RerankedHit` 在 chunk 元信息上保留 `fused_score` 与各路 `scores`，新增 `rerank_score` / `rerank_rank`。
 - **失败语义**：用户未配置 RERANK 模型 → 硬失败（异常上抛，不降级）；rerank 调用失败 / 返回不可用 → 降级返回 RRF 顺序候选并标记 `rerank_applied=False`。
-- **top_n**：调用方传入，缺省取 `RERANK_DEFAULT_TOP_N`（默认 8）。
-- **本期独立交付**：模块不接入对外直连生成链路（`recall_stream_runtime`），编排接入与召回候选池放大（`RECALL_RESULT_LIMIT` 20→64，LINK-136）为后续 issue。
+- **top_n**：调用方传入，缺省取数据集级 `recall_config.rerank_top_n`，无数据集配置时回退 `RERANK_DEFAULT_TOP_N`（默认 8）。
+- **LINK-136 配套**：RRF 候选池默认放大为 64，并与三路 per-route top_k 解耦，使 rerank 有足够候选可筛。
 - 测试：`tests/unit/core/pipeline/rerank/`，以替身注入正文回填与模型解析，不连真实 DB / LLM。
 
 > 注：当前 LLM provider 尚无具体 RERANK 实现（各 provider `rerank()` 为 `NotImplementedError`、未声明 `CapabilityType.RERANK`）。本模块按 `IReranker` 接口契约实现并以替身单测，接入真实 rerank-capable provider 后即可端到端生效。

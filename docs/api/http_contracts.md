@@ -228,12 +228,13 @@ session token 由 Java 签发、Python 用**独立专用密钥**验签；claims�
 
 > 生成跑在**独立后台任务**（断连不取消）：任务起点发一条 `tolink.rag.chat_turn`（`status=GENERATING`），终态再发 `COMPLETED`/`FAILED`，同 `turn_id`，供 Java upsert 落库对话内容（空召回也发 `COMPLETED` 占位）。客户端断连只停 SSE 转发、生成续跑到落库；本轮 generate 的 token 用量另走 `tolink.rag.usage_report`（LINK-191）。契约见 [mq_contracts.md §对话轮次上报](mq_contracts.md#对话轮次上报pythonjava)。
 
-**身份只取 token claims**——body 不含 `user_id`，前端自报一律不信任。`top_k` / 召回分数阈值 /
+**身份只取 token claims**——body 不含 `user_id`，前端自报一律不信任。RRF 候选池窗口 / 三路执行期 top_k / 召回分数阈值 /
 召回路 / 容错模式 / rerank 条数均由服务端**按数据集配置**控制（`dataset_parse_config.recall_config`：
-`recall_result_limit` / `sparse_score_threshold` / `dense_score_threshold` / `recall_enabled_sources` /
+`recall_result_limit` / `bm25_top_k` / `sparse_top_k` / `dense_top_k` / `sparse_score_threshold` / `dense_score_threshold` / `recall_enabled_sources` /
 `recall_strict` / `rerank_top_n`；多数据集混合取首个 dataset，无数据集配置回退
-`RECALL_RESULT_LIMIT` / `SPARSE_RETRIEVAL_SCORE_THRESHOLD` / `DENSE_RETRIEVAL_SCORE_THRESHOLD` /
-`RECALL_ENABLED_SOURCES` / `RECALL_STRICT_DEFAULT` / `RERANK_DEFAULT_TOP_N` 等系统默认）；均不接受
+`RECALL_RESULT_LIMIT` / `RECALL_BM25_TOP_K` / `RECALL_SPARSE_TOP_K` / `RECALL_DENSE_TOP_K` /
+`SPARSE_RETRIEVAL_SCORE_THRESHOLD` / `DENSE_RETRIEVAL_SCORE_THRESHOLD` / `RECALL_ENABLED_SOURCES` /
+`RECALL_STRICT_DEFAULT` / `RERANK_DEFAULT_TOP_N` 等系统默认）；均不接受
 请求覆盖。其中 `recall_enabled_sources` **只能在系统已装配的召回路集合内收窄**（不能启用系统未
 装配的路）。模型按 `(user_id, config_id)` 解析、不回退系统配置。
 
@@ -308,7 +309,7 @@ data: {"answer": "<完整答案>", "hits": [...], "rerank_applied": true, "faile
 ```
 
 `hits` 按 `fused_score` 降序、不含正文，长度 ≤ 数据集 `recall_config.recall_result_limit`（无数据集
-配置回退 `RECALL_RESULT_LIMIT`）；`failed_sources` 表达降级。召回 `top_k` / 分数阈值的数据集级
+配置回退 `RECALL_RESULT_LIMIT`）；`failed_sources` 表达降级。三路执行期 top_k / 分数阈值的数据集级
 解析与 `/api/v1/rag/stream` 完全一致（LINK-148）。
 执行期错误走 **HTTP 状态码**（区别于 SSE error 帧）：无默认 EMBEDDING 配置 `422`、全路失败 `500`、
 召回超时 `504`、未预期异常 `500`，错误体为 `{code, message, data}`，`message` 不含内部堆栈。错误码见

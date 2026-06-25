@@ -43,6 +43,7 @@ from src.application.recall_errors import (
 )
 from src.application.recall_pipeline_provider import (
     aresolve_recall_config,
+    build_recall_request_from_config,
     get_recall_pipeline,
     get_reranker,
 )
@@ -184,24 +185,19 @@ async def rag_stream(
     body = await _parse_and_validate_body(request)
     dataset_ids = resolve_dataset_scope(body.dataset_ids, ctx)
 
-    # 数据集级 recall 配置在建流前读出（短 session），把 top_k / 阈值 / token 预算固化为
-    # 普通值带进流，避免 SSE 生成器执行期再触 DB。
+    # 数据集级 recall 配置在建流前读出（短 session），把 RRF 候选池 / per-route top_k /
+    # 阈值 / token 预算固化为普通值带进流，避免 SSE 生成器执行期再触 DB。
     recall_cfg = await aresolve_recall_config(ctx.user_id, dataset_ids)
 
     # 并发 acquire 在建流前：超限直接 429（握手前 JSON），不建流、不触发 pipeline。
     if not await acquire_stream_slot(ctx.user_id):
         raise RecallApiError(429, CODE_RATE_LIMITED, "too many concurrent recall streams")
 
-    recall_req = RecallRequest(
+    recall_req = build_recall_request_from_config(
         query=body.query,
         user_id=ctx.user_id,  # 身份以凭证 claims 为准，不信任 body
         dataset_ids=dataset_ids,
-        doc_ids=None,
-        top_k=recall_cfg.recall_result_limit,
-        sparse_score_threshold_override=recall_cfg.sparse_score_threshold,
-        dense_score_threshold_override=recall_cfg.dense_score_threshold,
-        enabled_sources=recall_cfg.recall_enabled_sources,
-        strict_override=recall_cfg.recall_strict,
+        recall_cfg=recall_cfg,
     )
 
     # 解耦：生成跑在独立后台任务（生产者），SSE 响应只是观察通道（消费者）。客户端断连

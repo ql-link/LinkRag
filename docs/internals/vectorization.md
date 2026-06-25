@@ -390,9 +390,9 @@ chunk_id_to_content = {
 - `ES_USER`
 - `ES_PASSWORD`
 - `ES_INDEX_NAME`
-- `SPARSE_RETRIEVAL_TOP_K`（默认 10；sparse 召回默认值，调用方可 per-call 覆盖）
+- `SPARSE_RETRIEVAL_TOP_K`（默认 10；sparse facade 直调未传 `top_k` 时的兜底默认，调用方可 per-call 覆盖）
 - `SPARSE_RETRIEVAL_SCORE_THRESHOLD`（默认 0.0；默认不过滤，见 §9 调研依据）
-- `DENSE_RETRIEVAL_TOP_K`（默认 10；dense 召回默认值；pipeline 路径下被 `RECALL_RESULT_LIMIT` 覆盖）
+- `DENSE_RETRIEVAL_TOP_K`（默认 10；dense facade 直调未传 `top_k` 时的兜底默认，调用方可 per-call 覆盖）
 - `DENSE_RETRIEVAL_SCORE_THRESHOLD`（默认 0.0；cosine 上界 [0, 1]，facade 入口校验早死）
 - `RECALL_ENABLED_SOURCES`（默认 `bm25,sparse,dense`；运维侧通过 env 显式设置可暂时回退）
 
@@ -606,13 +606,13 @@ SparseVectorService(encoder)
 
 | 配置项 | 默认值 | 依据 |
 | --- | --- | --- |
-| `SPARSE_RETRIEVAL_TOP_K` | 10 | 业界主流 RAG 框架（Dify UI 默认上限 10、Qdrant 官方 hybrid + reranking 教程"先广召回后精排"）；10 在覆盖率与上下文成本之间是常见折中 |
+| `SPARSE_RETRIEVAL_TOP_K` | 10 | 仅作 sparse facade 直调兜底。业界主流 RAG 框架（Dify UI 默认上限 10、Qdrant 官方 hybrid + reranking 教程"先广召回后精排"）；10 在覆盖率与上下文成本之间是常见折中 |
 | `SPARSE_RETRIEVAL_SCORE_THRESHOLD` | 0.0（不过滤） | Dify 公开文档明示"score threshold disabled = 0.0"；稀疏 score 必须基于所选稀疏模型自身语料分布手工校准，盲设阈值会让 top_k cutoff 也救不回来；本项目暂无评测 harness，采取保守默认 |
-| `DENSE_RETRIEVAL_TOP_K` | 10 | 与 sparse 对仗，hybrid 融合时两路覆盖范围一致；对齐 Dify 主流上界。注意：**pipeline 路径下实际 top_k 由 `RECALL_RESULT_LIMIT` 在执行期透传覆盖**；`DENSE_RETRIEVAL_TOP_K` 仅作 facade 直调（脚本 / 评测 harness）的兜底默认 |
+| `DENSE_RETRIEVAL_TOP_K` | 10 | 仅作 dense facade 直调（脚本 / 评测 harness）兜底；完整 RAG pipeline 另用 `RECALL_DENSE_TOP_K` 控制 dense 执行期召回深度 |
 | `DENSE_RETRIEVAL_SCORE_THRESHOLD` | 0.0（不过滤） | 与 sparse 对仗保守策略；cosine 物理范围 [0, 1]，facade 入口加上界校验早死。本项目暂无评测 harness，盲设阈值不可追溯——评测 harness follow-up 落地后基于实证数据回头校准 |
 | `RECALL_ENABLED_SOURCES` | `bm25,sparse,dense` | 默认开启三路召回；运维侧通过 env 显式 set `bm25,sparse` 可暂时回退到 dev 旧默认 |
 
-调用方可任意 per-call 覆盖（`top_k=20, score_threshold=0.6`）；运维可改 `.env` 全局收紧。后续 follow-up issue「dense + sparse 召回评测 harness」落地后，基于实证数据回头校准两路阈值。
+调用方直调 facade 时可任意 per-call 覆盖（`top_k=20, score_threshold=0.6`）；运维可改 `.env` 全局收紧。完整 RAG pipeline 会显式传入数据集级或系统级 `RECALL_DENSE_TOP_K` / `RECALL_SPARSE_TOP_K`，因此不会把上述 facade 兜底值当作 pipeline 召回深度。后续 follow-up issue「dense + sparse 召回评测 harness」落地后，基于实证数据回头校准两路阈值。
 
 ### 9.5 对外暴露面
 
