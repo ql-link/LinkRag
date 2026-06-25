@@ -14,6 +14,11 @@ TITLE_MAX_CHARS = 30
 # 标题生成时携带的 query 最大字符数，避免超长提问占用过多输入 token。
 TITLE_QUERY_INPUT_MAX_CHARS = 500
 
+# 标题生成的最大输出 token。标题本身仅几十 token，但本轮对话模型可能是**推理模型**
+# （如 mimo-v2.5：先思考数百~上千 token 才吐正文）；给太小（如 32）会在思考阶段就被截断、
+# 可见正文为空 → 标题回落首问截断。故留足思考预算；超出仍回落兜底。
+TITLE_MAX_OUTPUT_TOKENS = 2048
+
 # 包裹型引号/书名号：清洗时若标题被这些成对符号整体包裹则剥除。
 _WRAPPING_PAIRS = (
     ('"', '"'),
