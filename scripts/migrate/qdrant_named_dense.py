@@ -66,7 +66,7 @@ EVAL_COLLECTION = "eval_kb_bucket_9"
 TMP_SUFFIX = "__named_tmp"
 SCROLL_BATCH = 256
 UPSERT_BATCH = 256
-RETRY_ATTEMPTS = 4
+RETRY_ATTEMPTS = 6
 RETRY_BACKOFF = 0.5
 
 # 迁移前点 vector dict 里 dense 所在的 key：匿名默认 dense 读出为空串 key。
@@ -102,21 +102,39 @@ def _client(timeout: int = 60):
     )
 
 
+_TRANSIENT_MARKERS = ("502", "503", "504", "bad gateway", "timeout", "timed out", "unavailable")
+# 传输层异常往往 str(exc) 为空，只能靠类名兜底（与 qdrant_store._is_transient_error 对齐）。
+_TRANSIENT_TYPES = (
+    "timeout", "connecterror", "connecttimeout", "readtimeout", "writetimeout",
+    "remoteprotocolerror", "responsehandlingexception", "readerror", "writeerror",
+    "remotedisconnected", "pooltimeout", "networkerror", "protocolerror",
+)
+
+
+def _is_transient(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    if any(m in msg for m in _TRANSIENT_MARKERS):
+        return True
+    type_name = type(exc).__name__.lower()
+    if any(t in type_name for t in _TRANSIENT_TYPES):
+        return True
+    # 空消息的裸传输错误：幂等写 + 末尾计数校验下，宽松重试是安全的。
+    return msg.strip() == ""
+
+
 async def _with_retry(op_name: str, thunk):
-    """对幂等 Qdrant 操作做瞬时故障（502/503/504/超时）重试。"""
-    markers = ("502", "503", "504", "bad gateway", "timeout", "timed out", "unavailable")
+    """对幂等 Qdrant 操作做瞬时故障（502/503/504/超时/裸传输错误）重试。"""
     attempt = 0
     while True:
         try:
             return await thunk()
         except Exception as exc:  # noqa: BLE001
             attempt += 1
-            transient = any(m in str(exc).lower() for m in markers)
-            if attempt >= RETRY_ATTEMPTS or not transient:
+            if attempt >= RETRY_ATTEMPTS or not _is_transient(exc):
                 raise
             delay = RETRY_BACKOFF * (2 ** (attempt - 1))
-            print(f"    · transient failure on {op_name}; retry {attempt}/{RETRY_ATTEMPTS - 1} "
-                  f"after {delay:.1f}s: {exc}")
+            print(f"    · transient failure on {op_name} ({type(exc).__name__}); "
+                  f"retry {attempt}/{RETRY_ATTEMPTS - 1} after {delay:.1f}s: {exc!r}")
             await asyncio.sleep(delay)
 
 
@@ -218,7 +236,7 @@ async def _migrate_one(client, plan: CollPlan, report: MigrationReport) -> None:
     print(f"  → migrating {name} ({plan.points} pts)")
 
     # 0. 临时表残留检查（上次中断）。
-    if await client.collection_exists(collection_name=tmp):
+    if await _exists(client, tmp):
         raise RuntimeError(f"temp collection {tmp} already exists (前次迁移未清理？先手动处理)")
 
     # 1. 快照（可恢复）。
@@ -227,7 +245,7 @@ async def _migrate_one(client, plan: CollPlan, report: MigrationReport) -> None:
     print(f"    · snapshot: {snap_name}")
 
     # 2. 读出全部点（重命名后）。
-    info = await client.get_collection(collection_name=name)
+    info = await _get_collection(client, name)
     _, dense_size = _dense_kind(info)
     dense_size = dense_size or settings.DENSE_VECTOR_DIMENSION
     points = await _scroll_all(client, name)
@@ -266,10 +284,22 @@ async def _recreate_empty(client, plan: CollPlan, report: MigrationReport) -> No
     print(f"    ✓ {name} recreated with named schema")
 
 
+async def _exists(client, name: str) -> bool:
+    return await _with_retry(
+        f"collection_exists({name})", lambda: client.collection_exists(collection_name=name)
+    )
+
+
+async def _get_collection(client, name: str):
+    return await _with_retry(
+        f"get_collection({name})", lambda: client.get_collection(collection_name=name)
+    )
+
+
 async def _resolve_targets(client, args) -> list[str]:
     if args.collections:
         return [c.strip() for c in args.collections.split(",") if c.strip()]
-    cols = (await client.get_collections()).collections
+    cols = (await _with_retry("get_collections", lambda: client.get_collections())).collections
     names = [c.name for c in cols if c.name.startswith(DEFAULT_PREFIX)]
     if args.include_eval or EVAL_COLLECTION in (args.collections or ""):
         if EVAL_COLLECTION not in names:
@@ -280,10 +310,10 @@ async def _resolve_targets(client, args) -> list[str]:
 async def build_plan(client, args) -> list[CollPlan]:
     plans: list[CollPlan] = []
     for name in await _resolve_targets(client, args):
-        if not await client.collection_exists(collection_name=name):
+        if not await _exists(client, name):
             plans.append(CollPlan(name=name, points=0, dense_kind="missing", action="skip-missing"))
             continue
-        info = await client.get_collection(collection_name=name)
+        info = await _get_collection(client, name)
         kind, _ = _dense_kind(info)
         pts = await _count(client, name)
         plan = CollPlan(name=name, points=pts, dense_kind=kind)
