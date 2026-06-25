@@ -10,7 +10,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# opencv-python-headless 等需要的系统库
+# opencv-python-headless 等需要的系统库；OpenDataLoader PDF 后端需要 Java 11+
 # 换国内 apt 镜像（清华），避免 deb.debian.org 在国内龟速
 RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true; \
     sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list 2>/dev/null || true; \
@@ -19,6 +19,7 @@ RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.li
         curl \
         libgl1 \
         libglib2.0-0 \
+        openjdk-21-jre-headless \
         tzdata \
     && rm -rf /var/lib/apt/lists/*
 
