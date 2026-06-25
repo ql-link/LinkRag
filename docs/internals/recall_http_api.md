@@ -97,6 +97,8 @@ scope 校验。RAG 流额外要求 `config_id`（缺失 → 422）并在建流�
 - 生成阶段失败 → `error RECALL_GENERATION_FAILED`（整请求失败）。
 - 客户端断连（`CancelledError`）→ 停止发送事件并向上传播取消，pipeline 协程随之结束。
 
+**会话标题（LINK-209）**：请求体可选 `is_first_turn: bool`（默认 `false`）。为 `true` 时（会话首条用户消息），在 `resolved` 后起一个**与召回 + 生成并行**的标题任务：用本轮对话模型基于 `query` 生成短标题（独立超时 `TITLE_GENERATION_TIMEOUT_MS`，失败/超时回落首问截断，见 [conversation_title.py](../../src/core/prompts/conversation_title.py)）。标题一旦算好即在吐字间隙插发 SSE `conversation_title`（`{"title": "..."}`）让前端即时刷新侧栏；若 LLM 比答案慢则在 `answer_done` 后补发。标题随首轮**任一终态**的 `chat_turn.title` 落库（成功用 LLM 标题或兜底、失败用截断兜底——保证首轮一定命名会话）；标题任务失败绝不影响答案与落库，也不发 SSE `error`。非首轮无 `conversation_title` 事件、`title` 为 `null`。
+
 ### 5.2 纯召回 JSON
 
 执行用 [src/application/recall_json_runtime.py](../../src/application/recall_json_runtime.py) 的 `run_recall_json`：
