@@ -531,18 +531,66 @@ class StageServices:
 
         sparse_pipeline = self._sparse_indexing_pipeline or SparseIndexingPipeline()
 
+        # sparse 与 dense 解耦：不再要求 dense=SUCCESS，只挑还没成功的 sparse chunk。
         fresh_chunks = await self._reload_chunks_from_db(payload, db)
         sparse_chunks = [
             c
             for c in fresh_chunks
-            if c.dense_vector_status == CHUNK_STATUS_INDEXED
-            and c.sparse_vector_status != SPARSE_VECTOR_STATUS_INDEXED
+            if c.sparse_vector_status != SPARSE_VECTOR_STATUS_INDEXED
         ]
         await sparse_pipeline.run(
             chunks=sparse_chunks,
             task_id=payload.task_id,
             db=db,
         )
+
+    # ------------------------------------------------------------------
+    # ensure points（dense/sparse 解耦的前置建点）
+    # ------------------------------------------------------------------
+
+    async def ensure_chunk_points(
+        self,
+        chunks: list[ChunkRecordDB],
+        payload: ParseTaskPayload,
+        db: AsyncSession,
+    ) -> None:
+        """为给定 chunk 在 Qdrant 预建 point（只写 payload，不写向量）。
+
+        dense/sparse 解耦后，point 不再由 dense 创建：此步在 dense/sparse 扇出前，
+        按 bucket 建好 collection（维度取系统强制的 ``DENSE_VECTOR_DIMENSION``）与空点，
+        之后 dense / sparse 各自 ``update_vectors`` 独立写入、可并行，互不覆盖。
+        """
+        from src.core.storage.qdrant.models import IndexedPoint
+        from src.core.storage.qdrant.qdrant_store import QdrantIndexStore
+
+        if not chunks:
+            return
+
+        dim = getattr(settings, "DENSE_VECTOR_DIMENSION", 1024)
+        store = QdrantIndexStore()
+        by_bucket: dict[int, list[ChunkRecordDB]] = {}
+        for chunk in chunks:
+            if chunk.bucket_id is None:
+                raise ValueError(f"chunk {chunk.chunk_id} missing bucket_id for ensure_points")
+            by_bucket.setdefault(int(chunk.bucket_id), []).append(chunk)
+
+        for bucket_id, records in by_bucket.items():
+            await store.ensure_collection(bucket_id=bucket_id, vector_size=dim)
+            points = [
+                IndexedPoint(
+                    chunk_id=record.chunk_id,
+                    bucket_id=bucket_id,
+                    vector=[],  # ensure_points 只用 chunk_id + payload，忽略 vector
+                    payload={
+                        "chunk_id": record.chunk_id,
+                        "user_id": int(record.user_id),
+                        "set_id": int(record.set_id),
+                        "doc_id": int(record.doc_id),
+                    },
+                )
+                for record in records
+            ]
+            await store.ensure_points(bucket_id=bucket_id, points=points)
 
     # ------------------------------------------------------------------
     # 懒加载装配

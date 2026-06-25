@@ -93,11 +93,11 @@ class Preprocessor:
         # ES 文档级全量重建（Issue #57）：plan 必须覆盖该文档全部有效 chunk，
         # 不再按 es_status 过滤。已 SUCCESS 的 chunk 也要重新进入 plan，使下游
         # ES 阶段在"删干净 + 全量重写"时拿到完整 chunk 集，而非只补失败子集。
-        # 仍保留 dense 已就绪（INDEXED）前置依赖与删除保护态排除。
+        # ES 与 dense 解耦后不再要求 dense 已就绪：chunk 的有效性由 lifecycle=ACTIVE
+        # 决定，ES 是独立存储、不依赖 dense 向量，故 pretokenize 只按 ACTIVE 取全集。
         stmt = (
             select(ChunkRecordDB)
             .where(ChunkRecordDB.doc_id == doc_id)
-            .where(ChunkRecordDB.dense_vector_status == CHUNK_STATUS_INDEXED)
             .where(ChunkRecordDB.lifecycle_status == CHUNK_LIFECYCLE_ACTIVE)
             .order_by(ChunkRecordDB.chunk_index.asc())
         )

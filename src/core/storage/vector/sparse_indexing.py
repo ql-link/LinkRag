@@ -110,14 +110,9 @@ class SparseIndexingPipeline:
             )
             return
 
-        # ② 前置断言（fail-fast）：dense=SUCCESS 是 sparse 运行的硬性前置条件。
-        # 多值 CAS 只能保护 sparse_vector_status 维度，拦不住"dense 还没成功就跑 sparse"。
-        invalid = [r for r in records if r.dense_vector_status != CHUNK_STATUS_INDEXED]
-        if invalid:
-            raise SparseIndexingError(
-                "SPARSE_VECTORIZING_FAILED:dense_not_success;"
-                f"count={len(invalid)},sample_chunk_id={invalid[0].chunk_id}"
-            )
+        # ② sparse 与 dense 解耦后不再要求 dense 已就绪：Qdrant point 由 ensure_points
+        # 独立建出（或 dense/sparse 任一方按需建），sparse 用 update_vectors 只写自己的
+        # named 向量。dense/sparse 的"共存"不再是硬前置，允许 sparse 先于 / 独立于 dense。
 
         # ③ bucket_id 从 chunks 自带字段取（同文档下由写入路径保证一致），不再外部入参。
         # 下游 Qdrant 按 bucket_id 路由 collection；不一致属于上游 bug，直接 fail-fast。
