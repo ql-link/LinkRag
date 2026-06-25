@@ -71,8 +71,6 @@ class SendUsageReportRequest(BaseModel):
     total_tokens: int = Field(0, ge=0, title="总Token数")
     config_id: Optional[int] = Field(None, title="LLM 用户配置ID")
     task_id: Optional[str] = Field(None, title="解析任务锚点")
-    conversation_id: Optional[int] = Field(None, title="对话ID")
-    request_id: Optional[str] = Field(None, title="请求追踪ID")
     latency_ms: Optional[int] = Field(None, title="调用耗时(毫秒)")
     status: str = Field("success", title="调用状态", description="success/partial/failed")
 

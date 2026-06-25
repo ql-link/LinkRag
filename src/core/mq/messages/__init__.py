@@ -2,7 +2,7 @@
 
 from src.core.mq.messages.parse_task import ParseTaskPayload, ParseTaskMessage
 from src.core.mq.messages.cache_sync import CacheSyncPayload, CacheSyncMessage
-from src.core.mq.messages.usage_report import UsageReportPayload, UsageReportMessage
+from src.core.mq.messages.token_usage import TokenUsagePayload, TokenUsageMessage
 from src.core.mq.messages.chat_turn import ChatTurnPayload, ChatTurnMessage
 from src.core.mq.messages.document_delete import (
     DocumentDeletePayload,
@@ -14,8 +14,8 @@ __all__ = [
     "ParseTaskMessage",
     "CacheSyncPayload",
     "CacheSyncMessage",
-    "UsageReportPayload",
-    "UsageReportMessage",
+    "TokenUsagePayload",
+    "TokenUsageMessage",
     "ChatTurnPayload",
     "ChatTurnMessage",
     "DocumentDeletePayload",

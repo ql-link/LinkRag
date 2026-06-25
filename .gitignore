@@ -33,6 +33,7 @@ venv/
 # IDE
 .idea/
 .vscode/
+.obsidian/
 *.swp
 *.swo
 *~

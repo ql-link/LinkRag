@@ -24,17 +24,28 @@ from src.core.pipeline.rerank import RerankedHit
 
 
 class _FakeProvider:
-    """假 provider：按给定脚本 yield StreamChunk，可在中途抛异常。"""
+    """假 provider：按给定脚本 yield StreamChunk，可在中途抛异常。
 
-    def __init__(self, chunks, raise_exc=None):
+    ``title_text`` / ``title_exc`` 控制 ``generate``（标题生成）的返回或抛错；默认返回一个
+    可被清洗的标题，便于首轮标题场景断言。
+    """
+
+    def __init__(self, chunks, raise_exc=None, title_text="RAG 科普", title_exc=None):
         self._chunks = chunks
         self._raise_exc = raise_exc
+        self._title_text = title_text
+        self._title_exc = title_exc
 
     async def stream(self, *, prompt, system_prompt):  # noqa: D401 - 测试桩
         for chunk in self._chunks:
             yield chunk
         if self._raise_exc is not None:
             raise self._raise_exc
+
+    async def generate(self, *, prompt, system_prompt, temperature=0.7, max_tokens=None):
+        if self._title_exc is not None:
+            raise self._title_exc
+        return SimpleNamespace(content=self._title_text)
 
 
 def _resolved(provider):
@@ -54,10 +65,17 @@ class _CapturingMQ:
         _CapturingMQ.sent.append(msg)
 
 
+# generate token 用量改走 report_usage_nowait（与 chat_turn 解耦，LINK-191）；
+# 捕获其调用以单独断言用量上报。
+_USAGE_REPORTS: list[dict] = []
+
+
 @pytest.fixture(autouse=True)
 def _patch_mq(monkeypatch):
     _CapturingMQ.sent = []
+    _USAGE_REPORTS.clear()
     monkeypatch.setattr(rt, "MQService", _CapturingMQ)
+    monkeypatch.setattr(rt, "report_usage_nowait", lambda **kw: _USAGE_REPORTS.append(kw))
     yield
 
 
@@ -103,8 +121,14 @@ def _gen(
     turn_id="turn-x",
     conversation_id=1,
     config_id=1,
+    title_task=None,
+    fallback_title=None,
 ):
-    """构造 _generate_answer 生成器，统一注入 turn_id（落库幂等键）。"""
+    """构造 _generate_answer 生成器，统一注入 turn_id（落库幂等键）。
+
+    ``title_task`` / ``fallback_title`` 默认 None（非首轮，无标题分支）；首轮场景由
+    :func:`_first_turn_title_task` 构造并传入。
+    """
     return rt._generate_answer(
         resolved,
         hits,
@@ -117,7 +141,22 @@ def _gen(
         4096,
         conversation_id,
         config_id,
+        title_task,
+        fallback_title,
     )
+
+
+def _first_turn_title_task(resolved, recall_req, request_id="req-title"):
+    """构造与生产路径一致的首轮标题任务（LLM 优先、回落首问截断）。"""
+    fallback = rt.fallback_title_from_query(recall_req.query)
+    task = asyncio.ensure_future(
+        rt._resolve_title(resolved, recall_req.query, fallback, request_id)
+    )
+    return task, fallback
+
+
+def _title_events(events):
+    return [e for e in events if e.startswith("event: conversation_title")]
 
 
 async def _drain(gen):
@@ -158,6 +197,7 @@ async def test_success_emits_chat_turn_with_usage_and_references():
     data = json.loads(done[0].split("data: ", 1)[1])
     assert data["usage"]["total_tokens"] == 200
 
+    # chat_turn 只承载对话内容，不再带 token（LINK-191）
     assert len(_CapturingMQ.sent) == 1
     p = _payloads()[0]
     assert p.status == "COMPLETED"
@@ -165,14 +205,21 @@ async def test_success_emits_chat_turn_with_usage_and_references():
     assert p.conversation_id == 10086
     assert p.query == "什么是RAG"
     assert p.answer == "RAG 是检索增强生成"
-    assert p.prompt_tokens == 120 and p.completion_tokens == 80 and p.total_tokens == 200
     assert p.references == ["1001", "1002"]
     assert p.request_id == "req-1"
     assert p.error_code is None
+    assert not hasattr(p, "prompt_tokens")  # token 已剥离（LINK-191）
+
+    # generate 用量改走统一消息：stage=chat / operation=generate
+    assert len(_USAGE_REPORTS) == 1
+    u = _USAGE_REPORTS[0]
+    assert u["stage"] == "chat" and u["operation"] == "generate"
+    assert (u["prompt_tokens"], u["completion_tokens"], u["total_tokens"]) == (120, 80, 200)
+    assert u["provider_type"] == "openai" and u["model_name"] == "gpt-x" and u["config_id"] == 7
 
 
-async def test_usage_absent_defaults_to_zero():
-    # Scenario: 用量字段缺省时按 0 上报
+async def test_usage_absent_skips_usage_report():
+    # Scenario: 流式未返回 usage（0 token）时对话轮次照常 COMPLETED，但不发 token 用量消息
     gen = _gen(
         _resolved(_FakeProvider([StreamChunk(delta="答案")])),
         _hits(),
@@ -183,8 +230,8 @@ async def test_usage_absent_defaults_to_zero():
     )
     await _drain(gen)
     p = _payloads()[0]
-    assert (p.prompt_tokens, p.completion_tokens, p.total_tokens) == (0, 0, 0)
     assert p.status == "COMPLETED"
+    assert _USAGE_REPORTS == []  # 0 token 不落空用量行
 
 
 async def test_generation_failure_emits_failed():
@@ -243,6 +290,122 @@ async def test_empty_hits_emits_completed_placeholder():
     assert p.status == "COMPLETED"
     assert p.turn_id == "t-5"
     assert p.answer == ""
+
+
+async def test_non_first_turn_has_no_title():
+    # 非首轮：不发 conversation_title 事件，落库 title 为 None
+    gen = _gen(
+        _resolved(_FakeProvider([StreamChunk(delta="答案")])),
+        _hits(),
+        True,
+        _contents(),
+        _recall_req(),
+        "req-nt",
+    )
+    events = await _drain(gen)
+    assert _title_events(events) == []
+    assert _payloads()[0].title is None
+
+
+async def test_first_turn_success_emits_title_and_persists():
+    # 首轮成功：发 conversation_title（LLM 标题），COMPLETED 落库同一标题
+    recall_req = _recall_req()
+    resolved = _resolved(_FakeProvider([StreamChunk(delta="RAG 是检索增强生成")], title_text="什么是 RAG"))
+    title_task, fallback = _first_turn_title_task(resolved, recall_req)
+    gen = _gen(
+        resolved,
+        _hits(),
+        True,
+        _contents(),
+        recall_req,
+        "req-ft1",
+        title_task=title_task,
+        fallback_title=fallback,
+    )
+    events = await _drain(gen)
+
+    title_events = _title_events(events)
+    assert len(title_events) == 1
+    assert json.loads(title_events[0].split("data: ", 1)[1])["title"] == "什么是 RAG"
+
+    p = _payloads()[0]
+    assert p.status == "COMPLETED"
+    assert p.title == "什么是 RAG"
+
+
+async def test_first_turn_llm_failure_falls_back_to_truncation():
+    # 首轮但标题 LLM 调用失败：回落首问截断兜底（事件与落库均为兜底，非空）
+    recall_req = _recall_req()
+    resolved = _resolved(
+        _FakeProvider([StreamChunk(delta="答案")], title_exc=RuntimeError("title model down"))
+    )
+    title_task, fallback = _first_turn_title_task(resolved, recall_req)
+    gen = _gen(
+        resolved,
+        _hits(),
+        True,
+        _contents(),
+        recall_req,
+        "req-ft2",
+        title_task=title_task,
+        fallback_title=fallback,
+    )
+    events = await _drain(gen)
+
+    title_events = _title_events(events)
+    assert len(title_events) == 1
+    assert json.loads(title_events[0].split("data: ", 1)[1])["title"] == fallback
+    assert fallback  # 兜底必非空
+    assert _payloads()[0].title == fallback
+
+
+async def test_first_turn_empty_hits_emits_title():
+    # 首轮空命中：仍发 conversation_title + COMPLETED 占位带标题
+    recall_req = _recall_req()
+    resolved = _resolved(_FakeProvider([], title_text="空召回话题"))
+    title_task, fallback = _first_turn_title_task(resolved, recall_req)
+    gen = _gen(
+        resolved,
+        [],
+        False,
+        {},
+        recall_req,
+        "req-ft3",
+        turn_id="t-ft3",
+        title_task=title_task,
+        fallback_title=fallback,
+    )
+    events = await _drain(gen)
+
+    assert any(e.startswith("event: recall_done") for e in events)
+    assert len(_title_events(events)) == 1
+    p = _payloads()[0]
+    assert p.status == "COMPLETED"
+    assert p.title == "空召回话题"
+
+
+async def test_first_turn_generation_failure_persists_fallback_title():
+    # 首轮但答案生成在吐字前就失败：不发 conversation_title，FAILED 仍落库截断兜底标题（方案 A）
+    recall_req = _recall_req()
+    resolved = _resolved(_FakeProvider([], raise_exc=RuntimeError("boom")))
+    title_task, fallback = _first_turn_title_task(resolved, recall_req)
+    gen = _gen(
+        resolved,
+        _hits(),
+        True,
+        _contents(),
+        recall_req,
+        "req-ft4",
+        title_task=title_task,
+        fallback_title=fallback,
+    )
+    events = await _drain(gen)
+
+    assert _title_events(events) == []
+    p = _payloads()[0]
+    assert p.status == "FAILED"
+    assert p.error_code == "RECALL_GENERATION_FAILED"
+    assert p.title == fallback and fallback
 
 
 async def test_send_failure_does_not_break_stream():

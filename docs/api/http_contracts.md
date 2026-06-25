@@ -106,7 +106,7 @@
 | CacheSync | `tolink.rag.cache_sync` | 缓存同步 |
 | UsageReport | `tolink.rag.usage_report` | 用量上报 |
 
-> `SendUsageReportRequest`（用量上报全链路归属）：必填 `user_id` / `provider_type` / `model_name` / `stage`(`parse`/`recall`/`chat`) / `operation`(`embed`/`sparse`/`rerank`/`vision`/`table`/`generate`) / `prompt_tokens` / `completion_tokens` / `total_tokens`；可选 `config_id` / `task_id` / `conversation_id` / `request_id` / `latency_ms` / `status`。字段语义与 MQ 载荷一致，见 [mq_contracts.md §用量上报](mq_contracts.md#用量上报pythonjava统计侧)。
+> `SendUsageReportRequest`（用量上报全链路归属）：必填 `user_id` / `provider_type` / `model_name` / `stage`(`parse`/`recall`/`chat`) / `operation`(`embed`/`sparse`/`rerank`/`vision`/`table`/`generate`) / `prompt_tokens` / `completion_tokens` / `total_tokens`；可选 `config_id` / `task_id` / `latency_ms` / `status`（`conversation_id` / `request_id` 已随 `llm_usage_log` 瘦身下线）。字段语义与 MQ 载荷一致，见 [mq_contracts.md §用量上报](mq_contracts.md#用量上报pythonjava统计侧)。
 
 > parse_result 终态回传 topic（Python→Java 解析终态通知）已下线（LINK-166）：终态只写 DB，前端轮询 Java 查询读取，见下方「解析终态读取」。
 
@@ -224,9 +224,10 @@ session token 由 Java 签发、Python 用**独立专用密钥**验签；claims�
 | `config_id` | int | 是 | 本次生成所用 CHAT 模型配置 id（前端选中、用户已配置）。缺失 `422`；不属本用户 / 非 CHAT / 已停用 / 不存在 → 召回前置失败 `RECALL_MODEL_CONFIG_MISSING` |
 | `conversation_id` | int | 是 | 本轮所属对话 id（Java 预先创建），作为对话落库挂载锚点。缺失 `422`，不进入召回生成、不发对话轮次消息 |
 | `turn_id` | string | 是 | 本轮落库幂等键：前端每轮生成的稳定 UUID（断连重连不变）。缺失 `422`。Java 据此 upsert 同一行，断连续跑/重连不重复落库 |
+| `is_first_turn` | bool | 否 | 是否会话首条用户消息，默认 `false`。为 `true` 时触发服务端基于 `query` 生成会话标题（SSE `conversation_title` 即时回前端 + `chat_turn.title` 落库），见下文 |
 | `dataset_ids` | list[int] | 否 | 本次查询的数据集**子集选择**，必须 ⊆ token 授权范围（超出 `403`）；省略/空 = 用 token 全量授权范围 |
 
-> 生成跑在**独立后台任务**（断连不取消）：任务起点发一条 `tolink.rag.chat_turn`（`status=GENERATING`），终态再发 `COMPLETED`/`FAILED`，同 `turn_id`，供 Java upsert 落库对话与用量（空召回也发 `COMPLETED` 占位）。客户端断连只停 SSE 转发、生成续跑到落库。契约见 [mq_contracts.md §对话轮次上报](mq_contracts.md#对话轮次上报pythonjava)。
+> 生成跑在**独立后台任务**（断连不取消）：任务起点发一条 `tolink.rag.chat_turn`（`status=GENERATING`），终态再发 `COMPLETED`/`FAILED`，同 `turn_id`，供 Java upsert 落库对话内容（空召回也发 `COMPLETED` 占位）。客户端断连只停 SSE 转发、生成续跑到落库；本轮 generate 的 token 用量另走 `tolink.rag.usage_report`（LINK-191）。契约见 [mq_contracts.md §对话轮次上报](mq_contracts.md#对话轮次上报pythonjava)。
 
 **身份只取 token claims**——body 不含 `user_id`，前端自报一律不信任。`top_k` / 召回分数阈值 /
 召回路 / 容错模式 / rerank 条数均由服务端**按数据集配置**控制（`dataset_parse_config.recall_config`：
@@ -256,6 +257,15 @@ data: {"answer": "<完整答案>", "hits": [...], "rerank_applied": true, "faile
 - `answer_done`：生成结束终态，`hits` 为 **rerank 精排后**的最终候选（含正文 `content`），发送后关闭流；
 - **空命中 / 全部片段缺正文**：不生成，发 `recall_done`（`hits` 可空，同带 `rerank_applied`；全部缺正文时各 hit `content` 为空串）；
 - **生成阶段失败**：整请求失败，发 `error` `RECALL_GENERATION_FAILED`，不返回部分召回片段。
+
+**会话标题事件 `conversation_title`**（仅 `is_first_turn=true` 的会话首轮）：
+
+```
+event: conversation_title
+data: {"title": "<会话标题>"}
+```
+
+服务端用本轮对话模型基于 `query` 生成短标题，标题任务**与召回 + 答案生成并行**，不串行增加问答耗时；一旦算好即在 `answer_delta` 间隙插发本事件（LLM 比答案慢时在 `answer_done` 后补发），前端据此即时刷新侧栏/会话头标题，无需轮询。同一标题随首轮终态的 `chat_turn.title` 上报落库（标题为空/默认「新对话」时由 Java 写入 `chat_conversation.title`，不覆盖用户手改）。标题生成失败/超时回落首问截断兜底（首轮一定命名会话），不影响答案与落库；**生成失败（FAILED）的首轮**仅落库截断标题、不发本事件。非首轮无本事件。
 
 终态 `hits` 单项在 RRF 字段基础上补 rerank 字段与 chunk 正文 `content`：
 

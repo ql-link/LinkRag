@@ -2,14 +2,12 @@
 UsageLogService 用量日志服务
 异步记录 LLM 调用用量，用于计费和统计
 """
-import uuid
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.llm.response import UsageInfo
 from src.models.db_models import UsageLogDB
 
 
@@ -33,43 +31,6 @@ class UsageLogService:
     def set_db(self, db: AsyncSession) -> None:
         """设置数据库 Session"""
         self._db = db
-
-    async def log_usage(self, record: Dict[str, Any]) -> None:
-        """记录一次 LLM 调用用量
-
-        Args:
-            record: 用量记录，包含：
-                - user_id: 用户 ID
-                - config_id: 配置 ID
-                - provider_type: 厂商类型
-                - model_name: 模型名称
-                - usage: UsageInfo
-                - latency_ms: 延迟
-                - status: success/failed/partial
-                - error_message: 错误信息（可选）
-                - fallback_config_id: 触发 fallback 的原配置 ID（可选）
-        """
-        if self._db is None:
-            return
-
-        usage: UsageInfo = record.get("usage", UsageInfo())
-        log_entry = UsageLogDB(
-            id=str(uuid.uuid4()),
-            user_id=record["user_id"],
-            config_id=record["config_id"],
-            provider_type=record.get("provider_type", "unknown"),
-            model_name=record.get("model_name", "unknown"),
-            prompt_tokens=usage.prompt_tokens or 0,
-            completion_tokens=usage.completion_tokens or 0,
-            total_tokens=usage.total_tokens or 0,
-            latency_ms=record.get("latency_ms"),
-            status=record.get("status", "success"),
-            error_message=record.get("error_message"),
-            fallback_config_id=record.get("fallback_config_id"),
-            created_at=datetime.now(),
-        )
-        self._db.add(log_entry)
-        # 由调用方负责 commit
 
     async def get_user_usage(
         self,
@@ -120,7 +81,6 @@ class UsageLogService:
                 "latency_ms": log.latency_ms,
                 "status": log.status,
                 "error_message": log.error_message,
-                "fallback_config_id": log.fallback_config_id,
                 "created_at": log.created_at.isoformat() if log.created_at else None,
             }
             for log in logs
@@ -172,8 +132,7 @@ class UsageLogService:
             func.sum(UsageLogDB.prompt_tokens).label("prompt_tokens"),
             func.sum(UsageLogDB.completion_tokens).label("completion_tokens"),
         ).where(*base_filter)
-        count_result = await self._db.execute(count_stmt)
-        count_row = count_result.one()
+        count_row = (await self._db.execute(count_stmt)).one()
 
         total_calls = count_row.total_calls or 0
         total_tokens = count_row.total_tokens or 0
@@ -191,8 +150,7 @@ class UsageLogService:
             .group_by(func.date(UsageLogDB.created_at))
             .order_by(func.date(UsageLogDB.created_at).desc())
         )
-        daily_result = await self._db.execute(daily_stmt)
-        daily_rows = daily_result.all()
+        daily_rows = (await self._db.execute(daily_stmt)).all()
 
         daily_stats = [
             {
