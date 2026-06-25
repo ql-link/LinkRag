@@ -58,6 +58,7 @@ from src.core.prompts import (
     clean_title,
     fallback_title_from_query,
 )
+from src.core.prompts.conversation_title import TITLE_MAX_OUTPUT_TOKENS
 from src.services.mq_service import MQService
 from src.services.usage_reporter import report_usage_nowait
 
@@ -79,7 +80,8 @@ async def _try_llm_title(resolved, query: str, request_id: str) -> str | None:
                 prompt=build_title_user_prompt(query),
                 system_prompt=CONVERSATION_TITLE_SYSTEM_PROMPT,
                 temperature=0.2,
-                max_tokens=32,
+                # 推理模型需留足思考预算，否则正文被截空（见 TITLE_MAX_OUTPUT_TOKENS 说明）。
+                max_tokens=TITLE_MAX_OUTPUT_TOKENS,
             ),
             timeout=settings.TITLE_GENERATION_TIMEOUT_MS / 1000,
         )
