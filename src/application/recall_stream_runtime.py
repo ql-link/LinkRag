@@ -50,13 +50,84 @@ from src.core.pipeline.rerank import (
     RerankRequest,
     degrade_to_rrf_order,
 )
-from src.core.prompts import RAG_GENERATION_SYSTEM_PROMPT, build_rag_user_prompt
+from src.core.prompts import (
+    CONVERSATION_TITLE_SYSTEM_PROMPT,
+    RAG_GENERATION_SYSTEM_PROMPT,
+    build_rag_user_prompt,
+    build_title_user_prompt,
+    clean_title,
+    fallback_title_from_query,
+)
 from src.services.mq_service import MQService
 
 
 def recall_event(name: str, payload: dict) -> str:
     """序列化为单帧 SSE 事件（``data`` 为单行 JSON）。"""
     return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+async def _try_llm_title(resolved, query: str, request_id: str) -> str | None:
+    """用本轮对话模型基于 ``query`` 生成标题（best-effort）。
+
+    失败/超时/清洗后为空一律返回 ``None``，由调用方回落首问截断兜底——标题是增强项，
+    任何异常都不得影响答案与落库。``CancelledError`` 向上传播（进程关闭取消任务）。
+    """
+    try:
+        result = await asyncio.wait_for(
+            resolved.provider.generate(
+                prompt=build_title_user_prompt(query),
+                system_prompt=CONVERSATION_TITLE_SYSTEM_PROMPT,
+                temperature=0.2,
+                max_tokens=32,
+            ),
+            timeout=settings.TITLE_GENERATION_TIMEOUT_MS / 1000,
+        )
+        return clean_title(result.content)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 标题为增强项，失败回落兜底
+        logger.warning("[recall] title generation failed request_id={}: {}", request_id, exc)
+        return None
+
+
+async def _resolve_title(resolved, query: str, fallback_title: str, request_id: str) -> str:
+    """首轮标题任务体：LLM 标题优先，不可用即回落首问截断（必返回非空）。
+
+    作为独立 ``asyncio.Task`` 与召回 + 生成并行起跑，标题调用延迟被答案流式输出与模型
+    思考过程掩盖，不串行增加问答耗时。
+    """
+    llm_title = await _try_llm_title(resolved, query, request_id)
+    return llm_title or fallback_title
+
+
+async def _await_title_result(title_task: asyncio.Task | None, fallback_title: str | None) -> str | None:
+    """终态取回首轮标题：await 已并行起跑的任务（LLM 优先、必非空）。
+
+    非首轮（``title_task is None``）返回 ``None``。任务体已自兜底，正常返回非空标题；
+    防御性异常回落 ``fallback_title``。
+    """
+    if title_task is None:
+        return None
+    try:
+        return await title_task
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - 任务体已兜底，这里仅防御
+        return fallback_title
+
+
+async def _drain_title_task(title_task: asyncio.Task | None) -> None:
+    """失败终态回收标题任务：取消并等待，避免孤儿/未消费告警。
+
+    失败首轮的会话标题用首问截断兜底即可（方案 A），不值得为失败请求多等一次 LLM。
+    """
+    if title_task is None or title_task.done():
+        return
+    title_task.cancel()
+    try:
+        await title_task
+    except (asyncio.CancelledError, Exception):  # noqa: BLE001 - 主动取消，吞掉本任务异常
+        pass
 
 
 async def recall_event_stream(
@@ -69,6 +140,7 @@ async def recall_event_stream(
     reranker: PostRecallReranker,
     token_budget: int,
     rerank_top_n: int,
+    is_first_turn: bool = False,
 ) -> AsyncGenerator[str, None]:
     """流内执行召回 + 重排 + 生成，把结果/异常映射为 SSE 终态事件。
 
@@ -100,7 +172,13 @@ async def recall_event_stream(
         return int((time.perf_counter() - started) * 1000)
 
     # 起点：发 GENERATING（answer 空、模型未解析）。任一后续失败终态会补发 FAILED 关闭该行。
+    # GENERATING 不带 title——若起点先写截断标题，Java 视其为非默认值，后续 LLM 标题就被
+    # 「空/默认才写」挡掉而落不进库；标题只在终态携带。
     resolved = None
+    # 首轮才生成标题：fallback_title 是首问截断兜底（必非空），title_task 是与召回+生成
+    # 并行的标题任务（resolved 成功后才起）。非首轮二者分别为 None。
+    fallback_title = fallback_title_from_query(recall_req.query) if is_first_turn else None
+    title_task: asyncio.Task | None = None
     await _emit_chat_turn(
         recall_req=recall_req,
         request_id=request_id,
@@ -151,8 +229,15 @@ async def recall_event_stream(
                 status="FAILED",
                 error_code=CODE_MODEL_CONFIG_MISSING,
                 error_message="selected model is not configured or unavailable",
+                title=fallback_title,  # 模型未解析无法调 LLM，首轮直接用首问截断兜底
             )
             return
+
+        # 模型解析成功：首轮起并行标题任务，与下面的召回 + rerank + 流式生成全程重叠。
+        if is_first_turn:
+            title_task = asyncio.create_task(
+                _resolve_title(resolved, recall_req.query, fallback_title, request_id)
+            )
 
         recall_started = time.monotonic()
         response = await asyncio.wait_for(pipeline.execute(recall_req), timeout=timeout_seconds)
@@ -185,12 +270,15 @@ async def recall_event_stream(
             token_budget,
             conversation_id,
             config_id,
+            title_task,
+            fallback_title,
         ):
             yield event
     except RecallValidationError as exc:
         # 正常已在握手前拦截；此处为 pipeline 自身安全网的兜底。
         logger.info("[recall] validation error request_id={}: {}", request_id, exc)
         yield recall_event("error", {"code": CODE_INVALID_REQUEST, "message": str(exc)})
+        await _drain_title_task(title_task)
         await _emit_failed_turn(
             recall_req,
             request_id,
@@ -201,6 +289,7 @@ async def recall_event_stream(
             _elapsed_ms(),
             CODE_INVALID_REQUEST,
             "invalid recall request",
+            fallback_title,
         )
     except RecallFatalError as exc:
         # 必备前置缺失（当前：发起用户无默认 EMBEDDING 配置，dense 路无法编码 query）。
@@ -210,6 +299,7 @@ async def recall_event_stream(
             "error",
             {"code": CODE_EMBEDDING_CONFIG_MISSING, "message": "user embedding config missing"},
         )
+        await _drain_title_task(title_task)
         await _emit_failed_turn(
             recall_req,
             request_id,
@@ -220,12 +310,14 @@ async def recall_event_stream(
             _elapsed_ms(),
             CODE_EMBEDDING_CONFIG_MISSING,
             "user embedding config missing",
+            fallback_title,
         )
     except RecallError as exc:
         logger.warning("[recall] all sources failed request_id={}: {}", request_id, exc)
         yield recall_event(
             "error", {"code": CODE_ALL_SOURCES_FAILED, "message": "all retrievers failed"}
         )
+        await _drain_title_task(title_task)
         await _emit_failed_turn(
             recall_req,
             request_id,
@@ -236,10 +328,12 @@ async def recall_event_stream(
             _elapsed_ms(),
             CODE_ALL_SOURCES_FAILED,
             "all retrievers failed",
+            fallback_title,
         )
     except asyncio.TimeoutError:
         logger.warning("[recall] timeout request_id={}", request_id)
         yield recall_event("error", {"code": CODE_TIMEOUT, "message": "recall timeout"})
+        await _drain_title_task(title_task)
         await _emit_failed_turn(
             recall_req,
             request_id,
@@ -250,15 +344,19 @@ async def recall_event_stream(
             _elapsed_ms(),
             CODE_TIMEOUT,
             "recall timeout",
+            fallback_title,
         )
     except asyncio.CancelledError:
         # 后台生产者任务被取消（仅进程关闭等）；客户端断连不再取消本协程（消费者已解耦）。
-        # 任务未完成，不补发终态，向上传播取消。
+        # 任务未完成，不补发终态，向上传播取消；并取消并行标题任务，避免孤儿。
         logger.info("[recall] generation task cancelled request_id={}", request_id)
+        if title_task is not None and not title_task.done():
+            title_task.cancel()
         raise
     except Exception:  # noqa: BLE001 - 兜底，避免未预期异常泄露堆栈给调用方
         logger.exception("[recall] unexpected error request_id={}", request_id)
         yield recall_event("error", {"code": CODE_INTERNAL_ERROR, "message": "internal error"})
+        await _drain_title_task(title_task)
         await _emit_failed_turn(
             recall_req,
             request_id,
@@ -269,6 +367,7 @@ async def recall_event_stream(
             _elapsed_ms(),
             CODE_INTERNAL_ERROR,
             "internal error",
+            fallback_title,
         )
 
 
@@ -349,12 +448,20 @@ async def _generate_answer(
     token_budget: int,
     conversation_id: int,
     config_id: int,
+    title_task: asyncio.Task | None,
+    fallback_title: str | None,
 ) -> AsyncGenerator[str, None]:
     """生成模式后续：空命中判定 → 上下文拼装 → 流式生成 → 对话轮次落库通知。
 
     入参 ``hits`` 是 rerank 后的最终候选（降级时为 RRF 顺序），``contents`` 是上游一次性
     回填的正文（rerank 与生成共用，不在此重复查库）。上下文拼装与 ``answer_done`` /
     ``recall_done`` 回报均以 ``hits`` 为准；``rerank_applied`` 原样透出。
+
+    首轮标题（``title_task is not None`` 即首轮）：标题任务已在上游与召回+生成并行起跑。
+    本函数在流式吐字过程中一旦发现任务完成即插发 ``conversation_title`` 事件（不等答案结束），
+    成功终态再补发未发出的标题；标题随 COMPLETED 的 ``chat_turn.title`` 落库。生成失败终态
+    用首问截断 ``fallback_title`` 落库（方案 A：失败首轮也命名会话），不发 SSE 标题事件。
+    非首轮 ``title_task`` / ``fallback_title`` 均为 None，标题相关分支全部跳过。
 
     落库终态（chat-stream-resilient-persist，均携起点同一 ``turn_id``，Java upsert 同一行）：
     - 0 命中 / 全部片段缺正文 → ``recall_done`` + ``COMPLETED``（空 answer 占位）；
@@ -372,6 +479,9 @@ async def _generate_answer(
             "recall_done",
             {"hits": [], "rerank_applied": rerank_applied, "failed_sources": failed_sources},
         )
+        title = await _await_title_result(title_task, fallback_title)
+        if title:
+            yield recall_event("conversation_title", {"title": title})
         await _emit_chat_turn(
             recall_req=recall_req,
             request_id=request_id,
@@ -384,6 +494,7 @@ async def _generate_answer(
             references=[],
             latency_ms=0,
             status="COMPLETED",
+            title=title,
         )
         return
 
@@ -410,6 +521,9 @@ async def _generate_answer(
                 "failed_sources": failed_sources,
             },
         )
+        title = await _await_title_result(title_task, fallback_title)
+        if title:
+            yield recall_event("conversation_title", {"title": title})
         await _emit_chat_turn(
             recall_req=recall_req,
             request_id=request_id,
@@ -422,6 +536,7 @@ async def _generate_answer(
             references=[],
             latency_ms=0,
             status="COMPLETED",
+            title=title,
         )
         return
 
@@ -433,6 +548,8 @@ async def _generate_answer(
     references = [h.chunk_id for h in hits]
     gen_started = time.perf_counter()
     gen_deadline = time.monotonic() + settings.RECALL_GENERATION_TIMEOUT_MS / 1000
+    # 首轮标题：并行任务完成即在吐字间隙插发，记下已发标题供终态落库与失败兜底复用。
+    sent_title: str | None = None
 
     def _elapsed_ms() -> int:
         return int((time.perf_counter() - gen_started) * 1000)
@@ -450,6 +567,14 @@ async def _generate_answer(
                 yield recall_event("answer_delta", {"text": chunk.delta})
             if chunk.usage is not None:
                 usage = chunk.usage
+            # 标题已并行算好则尽早插发（不等答案结束），让侧栏在吐字过程中即时刷新。
+            if title_task is not None and sent_title is None and title_task.done():
+                try:
+                    sent_title = title_task.result() or fallback_title
+                except Exception:  # noqa: BLE001 - 任务体已兜底，防御
+                    sent_title = fallback_title
+                if sent_title:
+                    yield recall_event("conversation_title", {"title": sent_title})
     except asyncio.TimeoutError:
         # 生成超时：保留半截答案，落 FAILED + GENERATION_TIMEOUT。
         logger.warning("[recall] generation timeout request_id={}", request_id)
@@ -457,6 +582,7 @@ async def _generate_answer(
             "error",
             {"code": CODE_GENERATION_FAILED, "message": "answer generation timeout"},
         )
+        await _drain_title_task(title_task)
         await _emit_chat_turn(
             recall_req=recall_req,
             request_id=request_id,
@@ -471,6 +597,7 @@ async def _generate_answer(
             status="FAILED",
             error_code="GENERATION_TIMEOUT",
             error_message="answer generation timeout",
+            title=sent_title or fallback_title,
         )
         return
     except Exception as exc:  # noqa: BLE001 - 生成失败统一收敛为 GENERATION_FAILED
@@ -479,6 +606,7 @@ async def _generate_answer(
             "error",
             {"code": CODE_GENERATION_FAILED, "message": "answer generation failed"},
         )
+        await _drain_title_task(title_task)
         await _emit_chat_turn(
             recall_req=recall_req,
             request_id=request_id,
@@ -493,6 +621,7 @@ async def _generate_answer(
             status="FAILED",
             error_code=CODE_GENERATION_FAILED,
             error_message="answer generation failed",
+            title=sent_title or fallback_title,
         )
         return
 
@@ -507,6 +636,12 @@ async def _generate_answer(
             "failed_sources": failed_sources,
         },
     )
+    # 首轮标题：吐字期间已发则复用 sent_title；否则（LLM 比答案慢）此处 await 后补发。
+    title = sent_title
+    if title_task is not None and title is None:
+        title = await _await_title_result(title_task, fallback_title)
+        if title:
+            yield recall_event("conversation_title", {"title": title})
     await _emit_chat_turn(
         recall_req=recall_req,
         request_id=request_id,
@@ -519,6 +654,7 @@ async def _generate_answer(
         references=references,
         latency_ms=_elapsed_ms(),
         status="COMPLETED",
+        title=title,
     )
 
 
@@ -532,8 +668,12 @@ async def _emit_failed_turn(
     latency_ms: int,
     error_code: str,
     error_message: str,
+    title: str | None = None,
 ) -> None:
-    """前置失败终态的 FAILED 落库便捷封装（answer/usage/references 均空）。"""
+    """前置失败终态的 FAILED 落库便捷封装（answer/usage/references 均空）。
+
+    ``title`` 仅首轮非空（首问截断兜底），让失败首轮也命名会话；非首轮为 None。
+    """
     await _emit_chat_turn(
         recall_req=recall_req,
         request_id=request_id,
@@ -548,6 +688,7 @@ async def _emit_failed_turn(
         status="FAILED",
         error_code=error_code,
         error_message=error_message,
+        title=title,
     )
 
 
@@ -566,12 +707,15 @@ async def _emit_chat_turn(
     status: str,
     error_code: str | None = None,
     error_message: str | None = None,
+    title: str | None = None,
 ) -> None:
     """构造并发送对话轮次消息（chat-message-persistence）。
 
     起点 GENERATING / 各终态均经此发送，``turn_id`` 贯穿同一轮供 Java upsert 同一行。
     ``resolved`` 可为 None（起点与模型未解析的前置失败）——此时 provider/model 留空，由
-    后续终态补齐。发送失败仅告警，绝不影响已返回答案或异常传播——落库最终一致，不进关键路径。
+    后续终态补齐。``title`` 仅会话首轮终态非空（Python 基于 query 生成或首问截断兜底），
+    GENERATING / 非首轮为 None；Java 仅在标题空/默认时落库。发送失败仅告警，绝不影响已返回
+    答案或异常传播——落库最终一致，不进关键路径。
     """
     try:
         msg = ChatTurnMessage.build(
@@ -592,6 +736,7 @@ async def _emit_chat_turn(
             latency_ms=latency_ms,
             error_code=error_code,
             error_message=error_message,
+            title=title,
         )
         await MQService().send(msg)
     except Exception as exc:  # noqa: BLE001 - 落库通知失败不影响问答主流程

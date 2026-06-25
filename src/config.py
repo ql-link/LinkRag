@@ -91,6 +91,9 @@ class Settings(BaseSettings):
     # 后台续跑场景下生成不再被连接断开兜底，需独立超时防孤儿任务无限烧 token；
     # 取值远大于召回超时以容纳长回答，超时即落 FAILED + GENERATION_TIMEOUT。
     RECALL_GENERATION_TIMEOUT_MS: int = 300000
+    # 会话首轮标题生成的独立超时（毫秒）。标题任务与召回+生成并行起跑、用本轮对话模型，
+    # 取值小（标题输出仅几十 token）；超时即回落首问截断标题，绝不阻塞答案与落库。
+    TITLE_GENERATION_TIMEOUT_MS: int = 5000
     # pipeline 严格模式默认值：False=宽松，允许单路失败降级。
     RECALL_STRICT_DEFAULT: bool = False
     # 服务端固定返回候选数上限（同时作为各路执行期 top_k）。
