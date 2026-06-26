@@ -34,6 +34,7 @@ from src.core.pipeline.parse_task.workflow_demo import (
     build_parse_task_serial_workflow,
 )
 from src.core.storage.chunks.repository import ChunkRepository
+from src.core.storage.qdrant.bucket_router import BucketRouter
 from src.core.workflow import InMemoryWorkflowStore, NodeStatus, RunStatus
 from src.config import settings
 from src.database import get_async_session_factory
@@ -243,6 +244,68 @@ async def _count_chunks(doc_id: int) -> int:
         return int(result.scalar_one())
 
 
+async def _point_vector_names(doc_id: int) -> dict[str, set[str]]:
+    """返回 ``{chunk_id: 该 Qdrant point 上存在的命名向量名集合}``。
+
+    用于校验 named-dense 解耦的核心不变量：dense 与 sparse 落在**同一个 point** 的两个
+    命名向量上（``dense`` / ``sparse_text``），谁先写都不互相覆盖。读 MySQL 取每个
+    chunk 的 bucket_id，按 bucket 路由到隔离 collection，``retrieve`` 出向量字典，
+    其 key 即命名向量名。空 dict / list 形态都归一化处理。
+    """
+    from collections import defaultdict
+
+    from qdrant_client import AsyncQdrantClient
+
+    factory = get_async_session_factory()
+    async with factory() as db:
+        rows = (
+            await db.execute(
+                select(ChunkRecordDB.chunk_id, ChunkRecordDB.bucket_id).where(
+                    ChunkRecordDB.doc_id == doc_id
+                )
+            )
+        ).all()
+
+    by_bucket: dict[int, list[str]] = defaultdict(list)
+    for chunk_id, bucket_id in rows:
+        assert bucket_id is not None, f"chunk {chunk_id} missing bucket_id"
+        by_bucket[int(bucket_id)].append(chunk_id)
+
+    router = BucketRouter(
+        bucket_count=getattr(settings, "CHUNK_INDEX_BUCKET_COUNT", 128),
+        prefix=settings.CHUNK_INDEX_COLLECTION_PREFIX,
+    )
+    host = str(settings.QDRANT_HOST)
+    url = host if host.startswith("http") else f"http://{host}:{settings.QDRANT_PORT}"
+    client = AsyncQdrantClient(url=url, timeout=60)
+    out: dict[str, set[str]] = {}
+    try:
+        for bucket_id, ids in by_bucket.items():
+            records = await client.retrieve(
+                collection_name=router.collection_name(bucket_id),
+                ids=ids,
+                with_payload=False,
+                with_vectors=True,
+            )
+            for rec in records:
+                vec = rec.vector or {}
+                out[str(rec.id)] = set(vec.keys()) if isinstance(vec, dict) else {"<unnamed>"}
+    finally:
+        await client.close()
+    return out
+
+
+def _assert_dense_sparse_coexist(point_vectors: dict[str, set[str]], dense_name: str) -> None:
+    """每个 point 必须同时带 dense 命名向量与 sparse_text 命名向量。"""
+    assert point_vectors, "no points found for doc"
+    bad = {
+        cid: names
+        for cid, names in point_vectors.items()
+        if dense_name not in names or "sparse_text" not in names
+    }
+    assert not bad, f"points missing dense/sparse coexistence: {bad}"
+
+
 class _FailOnceServices:
     """包装真实 StageServices，让指定方法在首次调用时抛错、之后正常委托。
 
@@ -385,3 +448,131 @@ async def test_retry_after_dense_failure(parse_case, build_definition, max_concu
     # dense 在上一轮失败，本轮真正重跑（非继承）。
     assert second.nodes["dense_vectorizing"].inherited_from_run_id is None
     assert await _count_chunks(doc_id) > 0
+
+    # 关键不变量：并行拓扑下 sparse 首跑就已成功（它只依赖 POINTS_READY，不依赖
+    # dense）；续跑重写 dense 时用 update_vectors 只动 dense 命名向量，绝不能覆盖
+    # 同一 point 上已存在的 sparse。校验每个 point 仍 dense + sparse 共存。
+    dense_name = settings.DENSE_VECTOR_QDRANT_VECTOR_NAME
+    _assert_dense_sparse_coexist(await _point_vector_names(doc_id), dense_name)
+
+
+# ----------------------------------------------------------------------------
+# 4. 核心不变量：dense 与 sparse 共存于同一 point（解耦后不互相覆盖）
+# ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "build_definition, max_concurrency",
+    [
+        (build_parse_task_serial_workflow, 1),
+        (build_parse_task_demo_workflow, 4),
+    ],
+    ids=["serial", "parallel"],
+)
+async def test_dense_sparse_coexist_on_same_point(
+    parse_case, build_definition, max_concurrency
+):
+    payload, doc_id = parse_case
+    runner = ParseWorkflowRunner(store=InMemoryWorkflowStore())
+
+    run = await runner.run(
+        payload,
+        definition=build_definition(biz_key=payload.task_id),
+        max_concurrency=max_concurrency,
+    )
+    _assert_run_ok(run)
+
+    dense_name = settings.DENSE_VECTOR_QDRANT_VECTOR_NAME
+    _assert_dense_sparse_coexist(await _point_vector_names(doc_id), dense_name)
+
+
+# ----------------------------------------------------------------------------
+# 5. sparse 首跑失败 → 续跑只补 sparse；dense（已成功）不被覆盖
+# ----------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "build_definition, max_concurrency",
+    [
+        (build_parse_task_serial_workflow, 1),
+        (build_parse_task_demo_workflow, 4),
+    ],
+    ids=["serial", "parallel"],
+)
+async def test_retry_after_sparse_failure(parse_case, build_definition, max_concurrency):
+    payload, doc_id = parse_case
+    store = InMemoryWorkflowStore()
+
+    base = ParseWorkflowRunner(store=store)
+    injected = _FailOnceServices(base._services, fail_method="run_sparse_vectorizing")
+    runner = ParseWorkflowRunner(store=store, services=injected)
+    definition = build_definition(biz_key=payload.task_id)
+
+    # 首跑：sparse 阶段抛错；dense 不依赖 sparse，应已成功。
+    first = await runner.run(payload, definition=definition, max_concurrency=max_concurrency)
+    assert first.status == RunStatus.FAILED
+    assert first.nodes["sparse_vectorizing"].status == NodeStatus.FAILED
+    assert injected.tripped
+    assert first.nodes["dense_vectorizing"].status == NodeStatus.SUCCESS
+    assert first.nodes["ensure_points"].status == NodeStatus.SUCCESS
+
+    # 续跑：跳过已成功节点，只重跑 sparse。
+    second = await runner.run(
+        payload,
+        definition=definition,
+        previous_run_id=first.run_id,
+        max_concurrency=max_concurrency,
+    )
+    _assert_run_ok(second)
+    assert second.nodes["dense_vectorizing"].status == NodeStatus.SKIPPED
+    assert second.nodes["dense_vectorizing"].inherited_from_run_id == first.run_id
+    # sparse 上一轮失败，本轮真正重跑（非继承）。
+    assert second.nodes["sparse_vectorizing"].inherited_from_run_id is None
+
+    # sparse 补写后，dense（首跑写入）必须仍在：两者共存于同一 point。
+    dense_name = settings.DENSE_VECTOR_QDRANT_VECTOR_NAME
+    _assert_dense_sparse_coexist(await _point_vector_names(doc_id), dense_name)
+
+
+# ----------------------------------------------------------------------------
+# 6. ensure_points 首跑失败 → dense 与 sparse 双双阻断；续跑补建点后两路成功
+# ----------------------------------------------------------------------------
+
+
+async def test_retry_after_ensure_points_failure(parse_case):
+    """ensure_points 是 dense/sparse 解耦的单写者前置。它失败时两路都不应推进；
+    续跑补建点后，dense / sparse 各自写入，最终共存。仅测并行拓扑（解耦的关键路径）。
+    """
+    payload, doc_id = parse_case
+    store = InMemoryWorkflowStore()
+
+    base = ParseWorkflowRunner(store=store)
+    injected = _FailOnceServices(base._services, fail_method="ensure_chunk_points")
+    runner = ParseWorkflowRunner(store=store, services=injected)
+    definition = build_parse_task_demo_workflow(biz_key=payload.task_id)
+
+    # 首跑：ensure_points 抛错 → dense / sparse 因 POINTS_READY 缺失而不被调度。
+    first = await runner.run(payload, definition=definition, max_concurrency=4)
+    assert first.status == RunStatus.FAILED
+    assert first.nodes["ensure_points"].status == NodeStatus.FAILED
+    assert injected.tripped
+    # 两路向量节点都没成功（被前置阻断，保持 PENDING / 未进入完成态）。
+    assert first.nodes["dense_vectorizing"].status != NodeStatus.SUCCESS
+    assert first.nodes["sparse_vectorizing"].status != NodeStatus.SUCCESS
+    # chunking 在 ensure_points 之前，必定成功；pretokenize→es 不经 ensure_points，可成功。
+    assert first.nodes["chunking"].status == NodeStatus.SUCCESS
+
+    # 续跑：ensure_points 重跑（chunking 被 restore 提供 CHUNKS），dense/sparse 跟上。
+    second = await runner.run(
+        payload,
+        definition=definition,
+        previous_run_id=first.run_id,
+        max_concurrency=4,
+    )
+    _assert_run_ok(second)
+    assert second.nodes["chunking"].status == NodeStatus.SKIPPED
+    assert second.nodes["ensure_points"].inherited_from_run_id is None
+    assert await _count_chunks(doc_id) > 0
+
+    dense_name = settings.DENSE_VECTOR_QDRANT_VECTOR_NAME
+    _assert_dense_sparse_coexist(await _point_vector_names(doc_id), dense_name)
