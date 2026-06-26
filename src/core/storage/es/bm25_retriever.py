@@ -17,8 +17,7 @@ from typing import Protocol
 from src.core.pipeline.recall.models import RetrieverHit
 from src.core.pipeline.recall.protocols import SOURCE_BM25
 
-from .retrieval import EsBm25Retriever
-from .retrieval_models import Bm25RecallRequest
+from .retrieval_models import Bm25ChunkHit, Bm25RecallRequest
 
 
 class _QueryTokenizer(Protocol):
@@ -33,6 +32,18 @@ class _QueryTokenizer(Protocol):
     def tokenize(self, text: str): ...  # noqa: ANN201
 
 
+class _Bm25RecallBackend(Protocol):
+    """召回侧 BM25 后端的最小契约：ES 与 qdrant 两实现都满足。
+
+    适配器只依赖这一个方法，不绑定具体后端，由 ``build_bm25_recall_backend`` 工厂
+    按 ``BM25_BACKEND`` 注入 ``EsBm25Retriever`` 或 ``QdrantBm25Retriever``。
+    """
+
+    async def recall_topk_chunks(
+        self, request: Bm25RecallRequest
+    ) -> list[Bm25ChunkHit]: ...
+
+
 class Bm25Retriever:
     """实现 ``Retriever`` 协议的 BM25 召回适配器。
 
@@ -45,7 +56,7 @@ class Bm25Retriever:
 
     def __init__(
         self,
-        es_retriever: EsBm25Retriever,
+        es_retriever: _Bm25RecallBackend,
         tokenizer: _QueryTokenizer,
     ) -> None:
         self._es_retriever = es_retriever

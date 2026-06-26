@@ -26,8 +26,9 @@ from src.core.storage.chunks.constants import (
     CHUNK_STATUS_INDEXED,
     SPARSE_VECTOR_STATUS_INDEXED,
 )
+from src.core.storage.bm25_backend import build_indexing_pipeline
 from src.core.storage.chunks.repository import ChunkRepository
-from src.core.storage.es import EsIndexingPipeline, EsIndexingResult
+from src.core.storage.es import EsIndexingResult
 from src.core.markdown_parser import ParseResult
 from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.core.preprocessor.models import FilePostIndexPlan
@@ -614,7 +615,8 @@ class StageServices:
 
     def _get_es_indexing_pipeline(self):
         if self._es_indexing_pipeline is None:
-            self._es_indexing_pipeline = EsIndexingPipeline(
+            # BM25 写入后端按 BM25_BACKEND 选择（es / qdrant），两者鸭子兼容同签名。
+            self._es_indexing_pipeline = build_indexing_pipeline(
                 chunk_repository=self._chunk_repository,
             )
         return self._es_indexing_pipeline

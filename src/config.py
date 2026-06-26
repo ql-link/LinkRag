@@ -425,6 +425,43 @@ class Settings(BaseSettings):
     ES_SMOKE_ENABLED: bool = False
     TOLINK_RUN_REAL_ES_INDEX_TESTS: bool = False
 
+    # BM25 全文检索后端选择：es / qdrant。默认 es 保持现状；qdrant 复用向量库进程，
+    # 用 sparse vector + Modifier.IDF 实现真 BM25。开关只影响 BM25 一路，dense / sparse
+    # 召回不受影响，可一键回退（BM25_BACKEND=es）。详见 docs/internals/parse_task_pipeline.md。
+    BM25_BACKEND: str = "es"
+
+    # chunk_type 类型加权（仅 BM25_BACKEND=es 生效）：对命中的 chunk 按其种类额外加固定分
+    # （const_score 加法升权，主 BM25 分之上叠加）。数据源是 kb_document_chunk.chunk_type
+    # （heading/paragraph/table/list/code_block/... 见 markdown_parser.ElementType）。
+    # 只列需要升权的类型，未列出的默认 +0（基准）；分数与 BM25 主分同量纲，按召回评测调。
+    BM25_TYPE_BOOST: dict[str, float] = Field(
+        default_factory=lambda: {"heading": 3.0, "table": 1.5, "list": 1.0}
+    )
+
+    # ---- Qdrant BM25 后端（仅 BM25_BACKEND=qdrant 时生效）----
+    # 以 sparse vector + Modifier.IDF 实现真 BM25（路 A：客户端补算 TF 部分，IDF 服务端补），
+    # 召回用 Formula Query 表达「BM25 主分 × chunk_type 乘数」的乘法类型加权。
+    # BM25 独立 collection（单 collection + payload filter 隔离租户，对称 ES 单 index）。
+    QDRANT_BM25_COLLECTION: str = "tolink_rag_bm25"
+    # BM25 专用 named sparse vector 名（带 Modifier.IDF），与 BGE-M3 sparse_text 并存。
+    QDRANT_BM25_VECTOR_NAME: str = "bm25_coarse"
+    # Formula 重排前先用 BM25 sparse 召回的候选数（prefetch）。需 > 最终 top_k，
+    # 以便类型乘法能把候选内的 heading/table 抬进最终结果；过大增加重排开销。
+    BM25_PREFETCH_LIMIT: int = 200
+    # BM25 参数（对齐 Lucene 默认）。k1 控词频饱和强度，b 控长度归一强度。
+    BM25_K1: float = 1.2
+    BM25_B: float = 0.75
+    # 长度归一所需的全库平均文档长度（coarse token 数）。增量写入用常数起步，
+    # 接受「avgdl 写入时冻结、与动态 IDF 之间轻微漂移」的 caveat；按典型 chunk 预设，
+    # 后续可用召回评测 / 统计校准。
+    BM25_AVGDL: float = 200.0
+    # 乘法类型权重（Qdrant Formula 用）：命中该 chunk_type 时 BM25 主分 ×倍数。
+    # 注意：与加法 BM25_TYPE_BOOST 语义不同，**不要复用**。温和起步（1.2~1.5），
+    # 再用召回评测扫参；别从 ×3 开始（会变成「类型碾压相关性」）。
+    BM25_TYPE_MULT: dict[str, float] = Field(
+        default_factory=lambda: {"heading": 1.3, "table": 1.2, "list": 1.05}
+    )
+
     # ==========================================
     # 存储 & 资源配置 (Storage & Resources)
     # ==========================================

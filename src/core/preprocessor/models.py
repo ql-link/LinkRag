@@ -23,6 +23,8 @@ class ChunkWithTokens:
     chunk_index: int
     coarse_tokens: str
     fine_tokens: str
+    # chunk 种类（heading/paragraph/table/...），供 BM25 类型加权用；缺省 text 基准。
+    chunk_type: str = "text"
 
 
 @dataclass(frozen=True, slots=True)

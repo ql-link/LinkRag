@@ -2,6 +2,18 @@
 
 本文说明 `src/core/pipeline/parse_task/pipeline.py` 解析任务业务流水线的端到端职责、状态边界和失败语义。
 
+> **BM25 写入后端可切换（ES / qdrant）**：下文「ES 入库 / Elasticsearch」描述的是
+> `es_indexing` 阶段的 BM25 关键词写入步骤，其底层后端由 `settings.BM25_BACKEND` 决定：
+> `es`（默认，Elasticsearch）或 `qdrant`（复用向量库进程，sparse vector + `Modifier.IDF`
+> 真 BM25，独立 collection，见 `src/core/storage/qdrant_bm25/`）。两后端鸭子兼容同一接口
+> （`write_es_index` / `delete_document_index` / `recall_topk_chunks`），
+> **状态机与终态语义完全一致**——阶段顺序、文档级全量重建编排、`es_status` 回写均不变。
+> 差异：① 失败前缀——qdrant 用 `QDRANT_BM25_INDEXING_FAILED:`（与 `ES_INDEXING_FAILED:`
+> 对称）；② 类型加权机制——es 用 `constant_score` 加法（`BM25_TYPE_BOOST`），qdrant 用
+> Formula Query 乘法（`BM25_TYPE_MULT`，命中 chunk_type 时 BM25 主分 ×倍数；实测乘法重塑
+> 排序的能力显著强于加法）。切换经 `src/core/storage/bm25_backend.py` 工厂分发，回退到 `es`
+> 零代码改动。
+
 ## 1. 模块框架
 
 `pipeline/` 顶层按概念分两个子包：

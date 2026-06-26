@@ -82,20 +82,31 @@ class EsBm25Retriever:
         if request.doc_id is not None:
             filters.append({"term": {"doc_id": request.doc_id}})
 
-        return {
-            "bool": {
-                "filter": filters,
-                "must": [
-                    {
-                        "multi_match": {
-                            "fields": ["coarse_tokens^2", "fine_tokens"],
-                            "query": " ".join(tokens),
-                            "type": "best_fields",
-                        }
+        bool_query: dict[str, Any] = {
+            "filter": filters,
+            "must": [
+                {
+                    "multi_match": {
+                        "fields": ["coarse_tokens^2", "fine_tokens"],
+                        "query": " ".join(tokens),
+                        "type": "best_fields",
                     }
-                ],
-            }
+                }
+            ],
         }
+        # chunk_type 类型加权：命中某类型固定加分（constant_score should，不影响过滤命中集）。
+        type_boosts = settings.BM25_TYPE_BOOST or {}
+        if type_boosts:
+            bool_query["should"] = [
+                {
+                    "constant_score": {
+                        "filter": {"term": {"chunk_type": chunk_type}},
+                        "boost": float(weight),
+                    }
+                }
+                for chunk_type, weight in type_boosts.items()
+            ]
+        return {"bool": bool_query}
 
     @staticmethod
     def _extract_hits(response: dict[str, Any]) -> list[Bm25ChunkHit]:
