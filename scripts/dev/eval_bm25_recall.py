@@ -11,8 +11,10 @@
 - **es-vs-qdrant overlap@k**（--with-es）：两后端 top-k 结果重合度，"能否替代"的最直接证据。
 
 数据源：
-  默认       自带合成中文语料 + query（可复现，不依赖外部数据 / CI 可跑）
-  --from-db  连 MySQL 读真实 chunk，对每条做 self-retrieval（抽特征词作 query）
+  默认           自带合成中文语料 + query（可复现，不依赖外部数据 / CI 可跑）
+  --from-db      连 MySQL 读真实 chunk，对每条做 self-retrieval（抽特征词作 query）
+  --from-beir D  BEIR 格式集（corpus.jsonl/queries.jsonl/qrels/test.tsv），用人工分级
+                 qrels 算 nDCG@k / recall@k（非 self-retrieval，最有说服力）
 
 安全：只连本地（Qdrant 默认 localhost:36333、ES 默认 localhost:9200），用独立 eval
 collection / index，跑完即删；绝不连生产，绝不动 kb_bucket_* / 业务 index。
@@ -22,11 +24,13 @@ collection / index，跑完即删；绝不连生产，绝不动 kb_bucket_* / �
   python scripts/dev/eval_bm25_recall.py --with-es --es-password ***
   python scripts/dev/eval_bm25_recall.py --from-db --db-password *** --with-es --es-password ***
   python scripts/dev/eval_bm25_recall.py --avgdl-coarse 175 --avgdl-fine 181   # 校准后复评
+  python scripts/dev/eval_bm25_recall.py --from-beir ./nfcorpus --k 10 --with-es --es-password ***
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import math
 import sys
 import uuid
@@ -72,6 +76,7 @@ class EvalDoc:
     cid: str
     idx: int
     text: str
+    ext: str = ""  # 外部 id（BEIR corpus _id，用于对齐 qrels）；合成 / db 模式不用
     coarse: list[str] = field(default_factory=list)
     fine: list[str] = field(default_factory=list)
 
@@ -146,19 +151,20 @@ async def run_qdrant(docs: list[EvalDoc], queries: list[list[str]], enc, host, p
 
     try:
         await store.ensure_collection()
-        await store.upsert_chunks(
-            [
-                Bm25Point(
-                    chunk_id=d.cid,
-                    doc_id=d.idx,
-                    user_id=1,
-                    dataset_id=1,
-                    chunk_type="paragraph",
-                    sparse_vector=enc.encode_document(d.coarse, d.fine),
-                )
-                for d in docs
-            ]
-        )
+        points = [
+            Bm25Point(
+                chunk_id=d.cid,
+                doc_id=d.idx,
+                user_id=1,
+                dataset_id=1,
+                chunk_type="paragraph",
+                sparse_vector=enc.encode_document(d.coarse, d.fine),
+            )
+            for d in docs
+        ]
+        # 分批 upsert：一次性灌大语料（万级）会让单请求体过大触发 ReadError。
+        for j in range(0, len(points), 1000):
+            await store.upsert_chunks(points[j : j + 1000])
         rankings = []
         for qterms in queries:
             qvec = enc.encode_query(qterms)
@@ -276,6 +282,104 @@ def build_db_queries(docs: list[EvalDoc]) -> list[str]:
     return uniq
 
 
+def ndcg_graded(ranked_ext: list[str], rel_map: dict[str, int], k: int) -> float:
+    """分级 nDCG@k：gain 用 qrels 相关性分（线性 gain，log2(i+2) 折扣）。"""
+    dcg = sum(rel_map.get(c, 0) / math.log2(i + 2) for i, c in enumerate(ranked_ext[:k]))
+    ideal = sorted(rel_map.values(), reverse=True)[:k]
+    idcg = sum(g / math.log2(i + 2) for i, g in enumerate(ideal))
+    return dcg / idcg if idcg else float("nan")
+
+
+def load_beir(beir_dir: str, tok: RagFlowTokenizer, doc_limit: int = 0):
+    """读 BEIR 格式（corpus.jsonl / queries.jsonl / qrels/test.tsv）。
+
+    返回 (docs, cid2ext, queries, qrels)：
+      docs    : list[EvalDoc]（cid=内部 uuid 作 Qdrant/ES point id，ext=corpus _id）
+      cid2ext : {内部 cid: corpus _id}
+      queries : list[(qid, coarse_terms)]，只取 test qrels 涉及、分词非空的 query
+      qrels   : {qid: {corpus_id: 相关性分}}（只保留语料内、score>0 的文档）
+    """
+    root = Path(beir_dir)
+    docs: list[EvalDoc] = []
+    ext2cid: dict[str, str] = {}
+    with open(root / "corpus.jsonl", encoding="utf-8") as f:
+        for line in f:
+            o = json.loads(line)
+            text = f"{o.get('title', '')} {o.get('text', '')}".strip()
+            tk = tok.tokenize(text)
+            cid = str(uuid.uuid4())
+            ext2cid[o["_id"]] = cid
+            docs.append(
+                EvalDoc(
+                    cid=cid, idx=len(docs), text=text, ext=o["_id"],
+                    coarse=tk.coarse_tokens.split(), fine=tk.fine_tokens.split(),
+                )
+            )
+            if doc_limit and len(docs) >= doc_limit:
+                break
+    cid2ext = {c: e for e, c in ext2cid.items()}
+
+    qrels: dict[str, dict[str, int]] = {}
+    with open(root / "qrels" / "test.tsv", encoding="utf-8") as f:
+        next(f, None)  # 跳过 header 行
+        for line in f:
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) < 3:
+                continue
+            qid, did, score = parts[0], parts[1], int(float(parts[2]))
+            if score > 0 and did in ext2cid:
+                qrels.setdefault(qid, {})[did] = score
+
+    qtexts: dict[str, str] = {}
+    with open(root / "queries.jsonl", encoding="utf-8") as f:
+        for line in f:
+            o = json.loads(line)
+            if o["_id"] in qrels:
+                qtexts[o["_id"]] = o.get("text", "")
+    queries = []
+    for qid in qrels:
+        qt = query_terms(tok, qtexts.get(qid, ""))
+        if qt:
+            queries.append((qid, qt))
+    return docs, cid2ext, queries, qrels
+
+
+def run_beir(args, tok: RagFlowTokenizer, enc: Bm25SparseEncoder) -> None:
+    """BEIR 评测：用人工分级 qrels 算 nDCG@k / recall@k，并对比 ES。"""
+    import asyncio
+
+    docs, cid2ext, queries, qrels = load_beir(args.from_beir, tok, args.doc_limit)
+    print(f"BEIR 语料：{len(docs)} 文档，{len(queries)} 个 test query（人工分级 qrels）\n")
+    qts = [qt for _, qt in queries]
+    q_rank = asyncio.run(run_qdrant(docs, qts, enc, args.qdrant_host, args.qdrant_port))
+    es_rank = (
+        run_es(docs, qts, args.es_url, args.es_user, args.es_password) if args.with_es else None
+    )
+
+    q_rec, q_ndcg, e_rec, e_ndcg, ov = [], [], [], [], []
+    for i, (qid, _) in enumerate(queries):
+        rel_map = qrels[qid]
+        gold = set(rel_map)
+        r_ext = [cid2ext[c] for c in q_rank[i]]
+        q_rec.append(recall_at_k(r_ext, gold, K))
+        q_ndcg.append(ndcg_graded(r_ext, rel_map, K))
+        if es_rank is not None:
+            e_ext = [cid2ext[c] for c in es_rank[i]]
+            e_rec.append(recall_at_k(e_ext, gold, K))
+            e_ndcg.append(ndcg_graded(e_ext, rel_map, K))
+            ov.append(overlap_at_k(r_ext, e_ext, K))
+
+    def _avg(xs):
+        v = [x for x in xs if not math.isnan(x)]
+        return sum(v) / len(v) if v else float("nan")
+
+    print(f"汇总（k={K}，{len(queries)} 个 test query，人工分级 qrels）：")
+    print(f"  Qdrant  recall@{K}={_avg(q_rec):.3f}  nDCG@{K}={_avg(q_ndcg):.3f}")
+    if es_rank is not None:
+        print(f"  ES      recall@{K}={_avg(e_rec):.3f}  nDCG@{K}={_avg(e_ndcg):.3f}")
+        print(f"  es-vs-qdrant overlap@{K}={_avg(ov):.3f}（top-{K} 结果重合度，越高越接近 ES）")
+
+
 def main() -> None:
     import asyncio
 
@@ -295,21 +399,14 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--avgdl-coarse", type=float, default=None, help="覆盖 avgdl_coarse（默认走 settings）")
     ap.add_argument("--avgdl-fine", type=float, default=None, help="覆盖 avgdl_fine（默认走 settings）")
+    ap.add_argument("--from-beir", metavar="DIR", help="BEIR 格式数据集目录（用人工 qrels 评测）")
+    ap.add_argument("--k", type=int, default=5, help="评测 top-k（BEIR 惯例用 10）")
+    ap.add_argument("--doc-limit", type=int, default=0, help="BEIR：最多灌多少文档（0=全部）")
     args = ap.parse_args()
 
+    global K
+    K = args.k
     tok = RagFlowTokenizer()
-
-    if args.from_db:
-        texts, _ = load_db_corpus(args)
-        docs = tokenize_docs(tok, texts)
-        raw_queries = build_db_queries(docs)
-        print(f"语料：真实 MySQL chunk {len(docs)} 条；self-retrieval query {len(raw_queries)} 个")
-    else:
-        docs = tokenize_docs(tok, SYNTHETIC_DOCS)
-        raw_queries = SYNTHETIC_QUERIES
-        print(f"语料：合成 {len(docs)} 条；query {len(raw_queries)} 个")
-
-    queries = [query_terms(tok, q) for q in raw_queries]
 
     from src.config import settings
 
@@ -322,6 +419,22 @@ def main() -> None:
     )
     print(f"encoder: k1={enc._k1} b={enc._b} avgdl_coarse={enc._avgdl_coarse} "
           f"avgdl_fine={enc._avgdl_fine} coarse_boost={enc._coarse_boost}\n")
+
+    if args.from_beir:
+        run_beir(args, tok, enc)
+        return
+
+    if args.from_db:
+        texts, _ = load_db_corpus(args)
+        docs = tokenize_docs(tok, texts)
+        raw_queries = build_db_queries(docs)
+        print(f"语料：真实 MySQL chunk {len(docs)} 条；self-retrieval query {len(raw_queries)} 个")
+    else:
+        docs = tokenize_docs(tok, SYNTHETIC_DOCS)
+        raw_queries = SYNTHETIC_QUERIES
+        print(f"语料：合成 {len(docs)} 条；query {len(raw_queries)} 个")
+
+    queries = [query_terms(tok, q) for q in raw_queries]
 
     q_rank = asyncio.run(run_qdrant(docs, queries, enc, args.qdrant_host, args.qdrant_port))
     es_rank = run_es(docs, queries, args.es_url, args.es_user, args.es_password) if args.with_es else None
