@@ -34,7 +34,7 @@ class _FakeStore:
 
 def _retriever(hits: list[Bm25ScoredPoint]) -> tuple[QdrantBm25Retriever, _FakeStore]:
     store = _FakeStore(hits)
-    enc = Bm25SparseEncoder(k1=1.2, b=0.75, avgdl=5.0)
+    enc = Bm25SparseEncoder(k1=1.2, b=0.75, avgdl_coarse=5.0, avgdl_fine=5.0)
     return QdrantBm25Retriever(store=store, encoder=enc), store
 
 

@@ -64,7 +64,9 @@ def _pipeline():
     store = _FakeStore()
     repo = _FakeRepo()
     pipe = QdrantBm25IndexingPipeline(
-        store=store, chunk_repository=repo, encoder=Bm25SparseEncoder(k1=1.2, b=0.75, avgdl=5.0)
+        store=store,
+        chunk_repository=repo,
+        encoder=Bm25SparseEncoder(k1=1.2, b=0.75, avgdl_coarse=5.0, avgdl_fine=5.0),
     )
     return pipe, store, repo
 

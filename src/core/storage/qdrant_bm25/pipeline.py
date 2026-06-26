@@ -8,9 +8,10 @@
 
 与 ES 入库管线的差异（均已对齐外层语义）：
 
-- **写入侧只用 coarse**：先做 coarse 单路（BM25 named vector ``bm25_coarse``）；
-  fine 作为第二步可再加 ``bm25_fine``。chunk 校验仍要求 coarse+fine 均非空，
-  与 ES 灌入规则一致（便于两后端对照评测）。
+- **coarse + fine 双段编码**：coarse 与 fine 两套 token 编进同一个 sparse 向量的
+  隔离 hash 维度空间（named vector ``bm25_text``），单次点积即 coarse+fine 双路真
+  BM25，对齐 ES ``multi_match(["coarse_tokens^2", "fine_tokens"])`` 的双字段召回。
+  chunk 校验要求 coarse+fine 均非空，与 ES 灌入规则一致。
 - **文档级全量重建**：与 ES 一致，由外层先 ``delete_document_index`` 再
   ``write_es_index`` 编排；Qdrant upsert 按 chunk_id 幂等覆盖。
 """
@@ -65,7 +66,9 @@ class QdrantBm25IndexingPipeline:
         # 2. 编码 BM25 sparse 向量；分词后为空向量的 chunk 归为 failed。
         points: list[Bm25Point] = []
         for chunk in valid_chunks:
-            vector = self._encoder.encode_document(chunk.coarse_tokens.split())
+            vector = self._encoder.encode_document(
+                chunk.coarse_tokens.split(), chunk.fine_tokens.split()
+            )
             if not vector.indices:
                 failed_errors.append(
                     (chunk.chunk_id, "validation: empty sparse vector after tokenization")

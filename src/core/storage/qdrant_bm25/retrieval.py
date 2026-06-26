@@ -5,8 +5,9 @@
 
 查询语义：
 
-- **BM25 主分**：query token → :class:`Bm25SparseEncoder` 编码（每维 value=1），
-  Qdrant ``Modifier.IDF`` 服务端补 IDF，得真 BM25 分（与 ES 对齐）。
+- **BM25 主分（coarse+fine 双路）**：query 的 coarse 词经 :class:`Bm25SparseEncoder`
+  同时点亮 coarse 段(value=coarse_boost)与 fine 段(value=1)，Qdrant ``Modifier.IDF``
+  服务端按各维度补 IDF，得 coarse+fine 双路真 BM25 分（对齐 ES 双字段召回）。
 - **乘法类型权重**：``settings.BM25_TYPE_MULT`` 非空时，store 用 Formula Query 对
   prefetch 候选重打分（``$score × 类型乘数``）。每次 recall 现读 settings，便于
   评测切换 plain / typeboost（对齐 run_eval_e2e 直接改 settings 单例的模式）。

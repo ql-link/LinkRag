@@ -444,17 +444,23 @@ class Settings(BaseSettings):
     # BM25 独立 collection（单 collection + payload filter 隔离租户，对称 ES 单 index）。
     QDRANT_BM25_COLLECTION: str = "tolink_rag_bm25"
     # BM25 专用 named sparse vector 名（带 Modifier.IDF），与 BGE-M3 sparse_text 并存。
-    QDRANT_BM25_VECTOR_NAME: str = "bm25_coarse"
+    # 装 coarse + fine 双段 token（各占隔离 hash 维度空间，单向量单次点积即双路 BM25）。
+    QDRANT_BM25_VECTOR_NAME: str = "bm25_text"
     # Formula 重排前先用 BM25 sparse 召回的候选数（prefetch）。需 > 最终 top_k，
     # 以便类型乘法能把候选内的 heading/table 抬进最终结果；过大增加重排开销。
     BM25_PREFETCH_LIMIT: int = 200
     # BM25 参数（对齐 Lucene 默认）。k1 控词频饱和强度，b 控长度归一强度。
     BM25_K1: float = 1.2
     BM25_B: float = 0.75
-    # 长度归一所需的全库平均文档长度（coarse token 数）。增量写入用常数起步，
-    # 接受「avgdl 写入时冻结、与动态 IDF 之间轻微漂移」的 caveat；按典型 chunk 预设，
-    # 后续可用召回评测 / 统计校准。
+    # 长度归一所需的全库平均文档长度。coarse / fine 两段各自归一，故分开配。默认值仅为
+    # 占位，**务必**用 scripts/dev/calibrate_bm25_avgdl.py 按真实语料校准（实测中文技术
+    # 文档 fine 仅略大于 coarse，并非数量级差异）。avgdl 写入时冻结，变更只对之后写入的
+    # chunk 生效，存量需重灌才完全对齐——见 docs/internals/parse_task_pipeline.md。
     BM25_AVGDL: float = 200.0
+    BM25_AVGDL_FINE: float = 220.0
+    # query 侧 coarse 段权重，对齐 ES multi_match 的 "coarse_tokens^2"：query 词在
+    # coarse 段 value=该值、fine 段 value=1，点积即 coarse_boost×coarse_BM25 + fine_BM25。
+    BM25_COARSE_BOOST: float = 2.0
     # 乘法类型权重（Qdrant Formula 用）：命中该 chunk_type 时 BM25 主分 ×倍数。
     # 注意：与加法 BM25_TYPE_BOOST 语义不同，**不要复用**。温和起步（1.2~1.5），
     # 再用召回评测扫参；别从 ×3 开始（会变成「类型碾压相关性」）。
