@@ -117,7 +117,9 @@ async def test_empty_chunks_is_noop_success():
 
 
 @pytest.mark.asyncio
-async def test_dense_not_success_raises_fail_fast():
+async def test_dense_not_success_does_not_block_sparse():
+    # 解耦后：sparse 不再要求 dense=SUCCESS。Qdrant point 由 ensure_points 独立建出，
+    # sparse 用 update_vectors 只写自己的 named 向量，dense 未就绪也照常处理。
     repo = _RecordingRepo()
     pipeline = SparseIndexingPipeline(
         chunk_repository=repo,
@@ -126,11 +128,9 @@ async def test_dense_not_success_raises_fail_fast():
     )
 
     rows = [_row(chunk_id="c1", dense_vector_status=CHUNK_STATUS_PENDING)]
-    with pytest.raises(SparseIndexingError) as exc:
-        await pipeline.run(chunks=rows, task_id="t1", db=_FakeDB())
-
-    assert "dense_not_success" in exc.value.reason
-    assert repo.sparse_indexing_calls == []
+    # 不再 fail-fast：dense 未就绪不抛错，sparse 正常推进。
+    await pipeline.run(chunks=rows, task_id="t1", db=_FakeDB())
+    assert repo.sparse_indexing_calls != []
 
 
 @pytest.mark.asyncio

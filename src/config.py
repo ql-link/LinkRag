@@ -343,6 +343,11 @@ class Settings(BaseSettings):
     SPARSE_VECTOR_ENABLED: bool = True
     # Qdrant named sparse vector 字段名；写入与召回共用。
     SPARSE_VECTOR_QDRANT_VECTOR_NAME: str = "sparse_text"
+    # Qdrant named dense vector 字段名；写入与召回共用。
+    # dense 从匿名默认向量改为 named 向量后，point 的创建不再绑定 dense（可先建只含
+    # payload 的空点），dense 与 sparse 各自 update_vectors 独立写入、可并行。
+    # 旧 collection（匿名默认向量）需迁移后才能被新代码召回，详见迁移脚本。
+    DENSE_VECTOR_QDRANT_VECTOR_NAME: str = "dense"
     # 全局清洗规则（各 provider 复用，保证召回侧表现一致）。
     SPARSE_VECTOR_TOP_K: int = 256
     SPARSE_VECTOR_MIN_WEIGHT: float = 0.0
