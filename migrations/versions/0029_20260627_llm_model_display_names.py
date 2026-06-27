@@ -1,7 +1,7 @@
 """llm model display names
 
-Revision ID: 0027
-Revises: 0026
+Revision ID: 0029
+Revises: 0028
 Create Date: 2026-06-27
 """
 
@@ -12,8 +12,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0027"
-down_revision: Union[str, None] = "0026"
+revision: str = "0029"
+down_revision: Union[str, None] = "0028"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

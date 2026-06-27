@@ -7,8 +7,8 @@ default runtime config per capability. Runtime resolution is now:
 2. active LinkRag system preset with ``is_default = true``;
 3. no default config.
 
-Revision ID: 0026
-Revises: 0025
+Revision ID: 0028
+Revises: 0027
 Create Date: 2026-06-27
 """
 
@@ -19,8 +19,8 @@ from typing import Sequence, Union
 import sqlalchemy as sa
 from alembic import op
 
-revision: str = "0026"
-down_revision: Union[str, None] = "0025"
+revision: str = "0028"
+down_revision: Union[str, None] = "0027"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
