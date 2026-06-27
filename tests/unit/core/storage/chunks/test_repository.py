@@ -190,7 +190,13 @@ async def test_should_record_es_pending_when_mark_es_retrying():
 
 
 @pytest.mark.asyncio
-async def test_should_record_vector_pending_when_mark_indexing():
+async def test_should_only_set_dense_dimension_when_mark_indexing():
+    """mark_indexing 只写 dense 维度，不越界重置 sparse / es。
+
+    named-dense 解耦后 dense / sparse / es 三路独立可并行；dense 认领 chunk 若连带把
+    sparse / es 重置为 PENDING，并行 DAG 下会与并发跑完的 es / sparse 抢同一行、冲掉其
+    SUCCESS（写写竞争）。串行下 dense 排在两者之前、此重置本是 no-op，故安全移除。
+    """
     repository = ChunkRepository()
     session = CapturingSession()
 
@@ -198,8 +204,10 @@ async def test_should_record_vector_pending_when_mark_indexing():
 
     values = _values_by_key(session)
     assert values["dense_vector_status"] == CHUNK_STATUS_INDEXING
-    assert values["es_status"] == ES_STATUS_PENDING
     assert values["dense_vector_model"] == "embed-v1"
+    # 关键：不再连带重置 sparse / es。
+    assert "es_status" not in values
+    assert "sparse_vector_status" not in values
 
 
 @pytest.mark.asyncio

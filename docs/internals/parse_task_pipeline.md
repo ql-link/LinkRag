@@ -116,11 +116,15 @@ any classified failure
 ```text
 ParseTaskPipeline._run
  ├── is_retry=True  → _handle_retry_branch（校验 + CAS supersede + 继承式新建）
- │                     → _build_stage_pipeline().run(ctx, is_retry=True)
+ │                     → _execute_stages(ctx)
  └── is_retry=False → create log + 幂等/上下文校验
-                       → _build_stage_pipeline().run(ctx)  （外层保留一层兜底 except）
+                       → _execute_stages(ctx)  （外层保留一层兜底 except）
 
-StagePipeline.run（唯一的 6 阶段编排）
+_execute_stages（阶段执行引擎二选一，settings.PARSE_USE_WORKFLOW_DAG）
+ ├── True（默认）→ _run_via_dag(ctx) → ParseWorkflowRunner # 并行 DAG
+ └── False        → StagePipeline.run(ctx)               # 串行，保留作稳定回退
+
+StagePipeline.run（串行 6 阶段编排）
  CleaningStage → ChunkingStage → VectorizingStage
    → PretokenizeStage → EsIndexingStage → SparseVectorizingStage
 ```
@@ -135,16 +139,29 @@ StagePipeline.run（唯一的 6 阶段编排）
 
 `StageContext` 在阶段间传递可变产物（`parse_result` / `chunks` / `plan` / `vector_result`）并收敛最终 `ParsePipelineResult`；`StageOutcome` 是单阶段成败结果（`finalized=True` 表示该阶段已自行写终态，模板不重复处理）。
 
-### Workflow Engine demo 边界（LINK-102）
+### 并行 DAG 引擎（生产默认引擎）
 
-`src/core/pipeline/parse_task/workflow_demo/` 是用于验证通用 Workflow Engine 的 demo DAG，提供两个入口：`build_parse_task_demo_workflow()`（并行）与 `build_parse_task_serial_workflow()`（穿行，在并行 DAG 上叠加定序边串成一条线）；独立可运行 runner 为 `ParseWorkflowRunner`。它复用 `StageServices` 的底层操作，把 cleaning / chunking / ensure_points / dense vectorizing / pretokenize / ES indexing / sparse vectorizing 包装成 workflow node，但**不会被 `ParseTaskConsumer` 或 `ParseTaskPipeline.execute()` 自动调用**。
+`src/core/pipeline/parse_task/workflow_demo/` 把 6 阶段包成通用 Workflow Engine 的节点，提供两个拓扑入口：`build_parse_task_demo_workflow()`（并行）与 `build_parse_task_serial_workflow()`（穿行，在并行 DAG 上叠加定序边串成一条线）；runner 为 `ParseWorkflowRunner`。
 
-现网解析任务仍以本文描述的 `ParseTaskPipeline → StagePipeline` 六阶段状态机为准：
+**接入方式（开关二选一，不改既有串行逻辑）**：`ParseTaskPipeline._execute_stages` 按 `settings.PARSE_USE_WORKFLOW_DAG` 选引擎——`True`（默认）走并行 `_run_via_dag`，`False` 走串行 `StagePipeline`（保留作回退，代码不删，出问题置 `False` 秒回滚）。消费者 `ParseTaskConsumer` 与生命周期外壳（幂等/校验/重试 CAS/兜底 except）两条引擎共用，不感知差异。
 
-- 不改变 `document_parse_pipeline` 的 `pipeline_status` / `*_status` 成功失败语义。
-- 不改变 Java 侧读取 DB 终态的规则，也不恢复 parse_result MQ 回调。
+**节点委托 + 状态机拆层**（让并行行为与串行等价、且并发安全）：
+
+- **业务复用**：每个 DAG 节点（cleaning/chunking/dense/pretokenize/es/sparse）**委托对应串行 `Stage.run()`**，原样复用解析/分块/向量化等业务 **与错误码分类**（`LLM_CONFIG_MISSING` / `EMBEDDING_DIMENSION_UNSUPPORTED` / `SPARSE_VECTORIZING_FAILED` 等）及 run 内旁路（dense embed 用量上报）。`ensure_points` 无对应串行 Stage（解耦新增），直接调 `StageServices.ensure_chunk_points`。
+- **每阶段状态**：节点不调串行 `mark_*`（那会改共享 ORM 的聚合字段、仅串行安全），改用 `ParsePipelineRepository.mark_stage_processing/success/failed`——**定向单列 UPDATE**（`<stage>_status` [+ `<stage>_duration_ms`]），各节点用自己的 session，并发互不串字段。
+- **聚合终态**：`pipeline_status` / `failed_stage` / `failure_reason` / `started_at` / `finished_at` / `total_duration_ms` 由编排器 `_run_via_dag` **单写者**收敛——开跑前 `begin_pipeline` 翻 PROCESSING，跑完按 `RunRecord` 调 `finalize_pipeline_success` 或 `finalize_pipeline_failed`（失败阶段按 `POST_PROCESS_STAGE_ORDER` 取最靠前者，对齐串行"首个失败即终态"）。
+- **cleaning 的 log 元数据**：串行在 `mark_started`/`mark_success`/`mark_failed` 写 `document_parsed_log`（`parse_started_at` / `mark_parsed` / `mark_parse_finished`）；DAG 把这几处搬进 `CleaningNode`（cleaning 为根节点、无并发；按 id 在本节点 session 内取出 log 行再写，避免跨 session 改 ORM）。
+
+**权威源与表边界**：
+
+- 权威状态源仍是 `document_parse_pipeline`；`pipeline_status` / `*_status` 成功失败语义、Java 侧读 DB 终态规则、不恢复 parse_result MQ 回调——均不变。
 - 不删除、不替代 `document_parse_pipeline`、`document_parsed_log`、`kb_document_chunk` 等既有表。
-- demo DAG 的运行记录只写新增的 `workflow_run` / `workflow_node_run`，且必须由调用方显式构造 `ParseWorkflowRuntime` 后启动。
+- **不使用** workflow 专属表：runner 固定 `InMemoryWorkflowStore`，引擎 run 记录仅进程内临时记账、零 DB 写；`workflow_run` / `workflow_node_run`（`MySQLWorkflowStore`）在生产解析路径**不引用**。
+- **续跑/重试不走引擎 `previous_run_id`**：节点按 `document_parse_pipeline` 继承状态快照（`inherited_status`，由 `_run_via_dag` 开跑前从继承式新 pipeline 行一次性读出）自跳过已 SUCCESS 阶段，依据同串行 `Stage.should_run`，权威源同为生产表。自跳过节点经 `restore()` 从 DB/payload 回放产物给下游（cleaning 读回 markdown、chunking 反查 chunk、pretokenize 重建 plan；dense/es/sparse 为叶子，回放为 noop）。几处并行重试要点：① chunking 自跳过反查 chunk 为空=状态不一致，抛 `_StageNodeError` 由编排器收敛 FAILED（对齐串行 `on_skip`）；② sparse 自跳过**无需**翻 `pipeline_status=SUCCESS`（串行靠 sparse.on_skip 翻，DAG 由编排器 `finalize_pipeline_success` 统一收敛，全跳过的重试也照样置 SUCCESS）；③ chunking 重试从 CHUNKING 恢复要读 `log_record` 的 markdown 坐标——节点在自己 session 内按 id 取 live 行，避免跨 session 访问 `begin_pipeline` commit 后已 expire 的 ORM。
+
+**状态层解耦（并行正确性必需）**：dense 的 chunk 级状态写入 `mark_indexing` / `mark_indexed` / `mark_failed` 原先会**连带把 `es_status` / `sparse_vector_status` 重置为 PENDING**（假设 dense 串行排在 es/sparse 之前）。并行 DAG 下 dense∥es∥sparse，dense 的这个越界重置会与并发跑完的 es/sparse 抢同一行、把其 `SUCCESS` 冲回 `PENDING`（写写竞争）。现已改为**每个维度只写自己那列**（与 `mark_sparse_indexing` 对称）：dense 标记只动 `dense_vector_status`（+ model）。串行链路里 dense 未成功时 es/sparse 本就是 PENDING，故移除该重置对串行是 no-op；内容变更触发的 reindex 仍由 `update_chunk_for_reindex` 自行重置下游。
+
+> **失败颗粒度差异（并行固有，非逻辑变更）**：串行遇首个失败即停、后续阶段保持 PENDING；并行下 dense/es/sparse 同时在跑，某个失败时另外两个可能已落 SUCCESS。最终 `pipeline_status=FAILED` 与重试语义一致，仅"失败那一刻已完成的子阶段更多"。
 
 demo DAG 当前依赖关系为：`cleaning → chunking`；`chunking → ensure_points`；之后 **dense / sparse / es 三路并行**——`ensure_points → dense_vectorizing`、`ensure_points → sparse_vectorizing`、`chunking → pretokenize → es_indexing`。dense 额外声明 `CHUNKS`（向量化文本）依赖，故并行 DAG 中其上游为 `{chunking, ensure_points}`；ensure_points 本就在 chunking 之后，这条边不损失并行度，但**节点 `run()` 从 ctx 读的每个 product 都必须进 `requires`，否则续跑（resume）按声明回放上游产物时会漏 restore 导致 `KeyError`**。
 
