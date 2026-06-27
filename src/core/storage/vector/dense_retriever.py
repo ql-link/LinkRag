@@ -7,8 +7,8 @@
         ↓
     facade search_dense_chunks(query, user_id, set_id, doc_id, top_k, ...)
 
-不重新实现编码 / Qdrant 查询逻辑。``user_id`` 与 ``top_k`` 改为**执行期**由
-pipeline 透传（来自 ``RecallRequest``）；``score_threshold`` 非用户上下文，
+不重新实现编码 / Qdrant 查询逻辑。``user_id`` 与本路 ``top_k`` 改为**执行期**由
+pipeline 透传（来自 ``RecallRequest.dense_top_k``）；``score_threshold`` 非用户上下文，
 仍装配期注入。
 
 与同包 ``sparse_retriever.py`` 严格对仗——修改本模块时
@@ -98,7 +98,7 @@ class DenseRetriever:
         """按稠密向量召回一组候选 chunk。
 
         与 ``SparseRetriever`` / ``Bm25Retriever`` 严格对仗的策略：
-        - ``user_id`` / ``top_k`` 由 pipeline 执行期透传（来自 ``RecallRequest``）；
+        - ``user_id`` / ``top_k`` 由 pipeline 执行期透传（来自 ``RecallRequest.dense_top_k``）；
           retriever 装配期不持有它们。``score_threshold_override`` 非 ``None`` 时替代装配期
           注入的默认阈值（来自数据集级 ``recall_config.dense_score_threshold``）。
         - ``dataset_ids`` 为空 → 直接返空。底层 facade 的 ``set_id`` 是单值，

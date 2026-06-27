@@ -78,9 +78,12 @@ JWT 推荐 claims：
 scope 校验。RAG 流额外要求 `config_id`（缺失 → 422）并在建流前做并发 acquire；纯召回请求体出现
 `config_id` 即视为未知字段 → 422，且不限流。任一握手前失败走 HTTP JSON 错误。
 
-通过后组装 `RecallRequest`：`query` ← body；`user_id` ← claims `sub`；`dataset_ids` ← scope 解析结果；
-`doc_ids` = None；`top_k`、分数阈值、启用 source、strict、fusion 策略与权重均来自数据集级
-`recall_config`（无数据集配置时回退系统默认），不接受请求覆盖。
+通过后读取数据集级 `recall_config`（多数据集混合取首个 dataset，空数据集回退系统默认）并组装
+`RecallRequest`：`query` ← body；`user_id` ← claims `sub`；`dataset_ids` ← scope 解析结果；
+`doc_ids` = None；`top_k` ← `recall_result_limit`（融合候选池 / rerank 输入窗口）；
+`bm25_top_k` / `sparse_top_k` / `dense_top_k` ← 对应 per-route 配置；
+`fusion_strategy_override` 与三路 `fusion_*_weight_override` ← 对应融合配置。上述策略字段均由服务端配置决定，
+不接受请求覆盖。
 
 ### 5.1 RAG 流（建流在前）
 
@@ -88,7 +91,8 @@ scope 校验。RAG 流额外要求 `config_id`（缺失 → 422）并在建流�
 的 `recall_event_stream`（`config_id` 来自 body）：先按 `(user_id, CHAT, config_id)` 前置校验
 用户模型——不可用即 `error RECALL_MODEL_CONFIG_MISSING`、**不进入召回**；通过后在流内
 `asyncio.wait_for(pipeline.execute(req), RECALL_STREAM_TIMEOUT_MS)`，对融合候选做 rerank 精排
-（`_rerank_hits`：不可用一律降级当前融合顺序、截断 `RERANK_DEFAULT_TOP_N`），再按 token 预算拼装上下文
+（`_rerank_hits`：不可用一律降级当前融合顺序、截断数据集级 `rerank_top_n`，无数据集配置时回退
+`RERANK_DEFAULT_TOP_N`），再按 token 预算拼装上下文
 流式生成：
 
 - 命中 → 流式 `answer_delta` + 终态 `answer_done`（`hits` 为 rerank 后最终候选、不含正文，附顶层 `rerank_applied`；`failed_sources` 表达降级）。
@@ -97,6 +101,8 @@ scope 校验。RAG 流额外要求 `config_id`（缺失 → 422）并在建流�
 - 全路失败 `RecallError` → `error RECALL_ALL_SOURCES_FAILED`；超时 → `error RECALL_TIMEOUT`。
 - 生成阶段失败 → `error RECALL_GENERATION_FAILED`（整请求失败）。
 - 客户端断连（`CancelledError`）→ 停止发送事件并向上传播取消，pipeline 协程随之结束。
+
+**会话标题（LINK-209）**：请求体可选 `is_first_turn: bool`（默认 `false`）。为 `true` 时（会话首条用户消息），在 `resolved` 后起一个**与召回 + 生成并行**的标题任务：用本轮对话模型基于 `query` 生成短标题（独立超时 `TITLE_GENERATION_TIMEOUT_MS`，失败/超时回落首问截断，见 [conversation_title.py](../../src/core/prompts/conversation_title.py)）。标题一旦算好即在吐字间隙插发 SSE `conversation_title`（`{"title": "..."}`）让前端即时刷新侧栏；若 LLM 比答案慢则在 `answer_done` 后补发。标题随首轮**任一终态**的 `chat_turn.title` 落库（成功用 LLM 标题或兜底、失败用截断兜底——保证首轮一定命名会话）；标题任务失败绝不影响答案与落库，也不发 SSE `error`。非首轮无 `conversation_title` 事件、`title` 为 `null`。
 
 ### 5.2 纯召回 JSON
 
@@ -111,8 +117,8 @@ scope 校验。RAG 流额外要求 `config_id`（缺失 → 422）并在建流�
 **映射**则按载体各实现一份（SSE 帧 vs HTTP 状态码），用同一套 `CODE_*` 常量保证两端错误码一致。
 `dataset_ids` scope 授权校验亦抽为单一来源 `recall_session_auth.resolve_dataset_scope`，两端点共用。
 
-`top_k` / `sources` / `strict` 由配置而非请求决定，因此 pipeline 与各路 retriever 都是
-无用户态的长期实例。
+`top_k`（融合候选池）、三路 per-route top_k、`sources` / `strict` 由配置而非请求决定，因此
+pipeline 与各路 retriever 都是无用户态的长期实例。
 
 ## 6. 并发限流
 
@@ -141,6 +147,6 @@ sparse 底座的稀疏编码模型不在装配期加载，而是执行期按发�
 走远程 system embedding HTTP。两者装配期都不加载本地模型，单例化主要是为了与
 `recall_pipeline` 单例对齐——所有 retriever 在 pipeline 单例之内只构造一次。
 
-`user_id` / `top_k` 不在装配期注入，而是执行期由 pipeline 透传给
+`user_id` / 各路执行期 `top_k` 不在装配期注入，而是执行期由 pipeline 透传给
 `Retriever.recall(query, dataset_ids, doc_ids, *, user_id, top_k)`——这是相对 LINK-6
 的契约调整（见 [recall_pipeline.md](recall_pipeline.md)），使单例化成立。

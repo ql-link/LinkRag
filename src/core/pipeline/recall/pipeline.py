@@ -85,12 +85,13 @@ class RecallPipeline:
 
         # 入口日志：不记 query 原文（可能含用户敏感内容），只记可观测的元信息。
         logger.info(
-            "[RecallPipeline] start user={} datasets={} docs={} top_k={} sources={} "
-            "strict={} fusion={} mode={}",
+            "[RecallPipeline] start user={} datasets={} docs={} fusion_limit={} "
+            "route_top_k={} sources={} strict={} fusion={} mode={}",
             request.user_id,
             len(request.dataset_ids or []),
             len(request.doc_ids or []),
             request.top_k,
+            {s: self._top_k_for_source(s, request) for s in effective_sources},
             effective_sources,
             strict,
             fusion_strategy,
@@ -112,7 +113,7 @@ class RecallPipeline:
             rrf_k=self._config.rrf_k,
             weights=fusion_weights,
         )
-        # 服务端固定返回候选上限：融合后按 top_k 截断（fuse 已按 fused_score 降序）。
+        # 融合候选池窗口：融合后按 request.top_k 截断，作为下游 rerank 输入池。
         fused_hits = fused_hits[: request.top_k]
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
 
@@ -194,7 +195,7 @@ class RecallPipeline:
         return effective
 
     def _validate(self, request: RecallRequest) -> None:
-        """入参校验：query 非空非空白；user_id 为正；top_k 为正。
+        """入参校验：query 非空非空白；user_id 为正；RRF 窗口与各路 top_k 为正。
 
         dataset_ids 允许空（=全库召回）。HTTP 入口已在握手前做同等校验，这里是
         pipeline 自身的安全网，保证任何调用方都不能绕过。
@@ -203,8 +204,15 @@ class RecallPipeline:
             raise RecallValidationError("query is empty or blank")
         if request.user_id is None or request.user_id <= 0:
             raise RecallValidationError("user_id must be a positive int")
-        if request.top_k is None or request.top_k <= 0:
-            raise RecallValidationError("top_k must be a positive int")
+        positive_int_fields = {
+            "top_k": request.top_k,
+            "bm25_top_k": request.bm25_top_k,
+            "sparse_top_k": request.sparse_top_k,
+            "dense_top_k": request.dense_top_k,
+        }
+        for field, value in positive_int_fields.items():
+            if value is None or value <= 0:
+                raise RecallValidationError(f"{field} must be a positive int")
 
     @staticmethod
     def _score_threshold_override_for(source: str, request: RecallRequest) -> float | None:
@@ -218,6 +226,21 @@ class RecallPipeline:
         if source == SOURCE_DENSE:
             return request.dense_score_threshold_override
         return None
+
+    @staticmethod
+    def _top_k_for_source(source: str, request: RecallRequest) -> int:
+        """按 source 取本路执行期 top_k；未知新路回退到融合候选池窗口。
+
+        回退语义让未来新增召回路在尚未增加专属 top_k 配置前也能运行，而不会因
+        缺少 ``graph_top_k`` 之类字段直接失败。
+        """
+        if source == SOURCE_BM25:
+            return request.bm25_top_k
+        if source == SOURCE_SPARSE:
+            return request.sparse_top_k
+        if source == SOURCE_DENSE:
+            return request.dense_top_k
+        return request.top_k
 
     async def _run_parallel(
         self,
@@ -235,7 +258,7 @@ class RecallPipeline:
                 request.dataset_ids,
                 request.doc_ids,
                 user_id=request.user_id,
-                top_k=request.top_k,
+                top_k=self._top_k_for_source(r.source, request),
                 score_threshold_override=self._score_threshold_override_for(r.source, request),
             )
             for r in retrievers
@@ -264,7 +287,7 @@ class RecallPipeline:
                     request.dataset_ids,
                     request.doc_ids,
                     user_id=request.user_id,
-                    top_k=request.top_k,
+                    top_k=self._top_k_for_source(retriever.source, request),
                     score_threshold_override=self._score_threshold_override_for(
                         retriever.source, request
                     ),

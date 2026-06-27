@@ -72,6 +72,9 @@ async def test_recall_json_maps_dataset_fusion_config_to_internal_request(monkey
     async def _recall_config(user_id, dataset_ids):
         return SimpleNamespace(
             recall_result_limit=20,
+            bm25_top_k=100,
+            sparse_top_k=50,
+            dense_top_k=100,
             sparse_score_threshold=0.1,
             dense_score_threshold=0.2,
             recall_enabled_sources=["bm25", "sparse", "dense"],
@@ -97,6 +100,10 @@ async def test_recall_json_maps_dataset_fusion_config_to_internal_request(monkey
 
     assert response.status_code == 200
     recall_req = captured["request"]
+    assert recall_req.top_k == 20
+    assert recall_req.bm25_top_k == 100
+    assert recall_req.sparse_top_k == 50
+    assert recall_req.dense_top_k == 100
     assert recall_req.fusion_strategy_override == "weighted_score"
     assert recall_req.fusion_bm25_weight_override == 0.1
     assert recall_req.fusion_sparse_weight_override == 0.2

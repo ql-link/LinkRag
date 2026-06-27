@@ -86,9 +86,12 @@ class RecallRequest:
         dataset_ids: 数据集范围，**允许空列表**（表示不限数据集做全库召回，
             调用方自行保证身份合法）。
         doc_ids: 可选文档过滤；不传或 ``None`` 表示不限。
-        top_k: 各路执行期召回规模上限，同时作为融合后结果的截断上限；必须为正整数。
-            由服务端配置决定（数据集级 ``recall_result_limit``，无数据集配置时回退
-            ``RECALL_RESULT_LIMIT``），不作为外部请求字段。
+        top_k: 融合后候选池上限，即 rerank 输入窗口；必须为正整数。由服务端配置决定
+            （数据集级 ``recall_result_limit``，无数据集配置时回退 ``RECALL_RESULT_LIMIT``），
+            不作为外部请求字段。本字段不再作为各路执行期 top_k。
+        bm25_top_k: BM25 路执行期召回规模上限；来自数据集级 ``recall_config.bm25_top_k``。
+        sparse_top_k: 稀疏路执行期召回规模上限；来自数据集级 ``recall_config.sparse_top_k``。
+        dense_top_k: 稠密路执行期召回规模上限；来自数据集级 ``recall_config.dense_top_k``。
         sparse_score_threshold_override: 可选稀疏路分数阈值覆盖；``None`` 时 sparse 路沿用
             装配期注入的默认阈值。来自数据集级 ``recall_config.sparse_score_threshold``。
         dense_score_threshold_override: 可选稠密路分数阈值覆盖；``None`` 时 dense 路沿用
@@ -109,7 +112,10 @@ class RecallRequest:
     user_id: int
     dataset_ids: list[int]
     doc_ids: list[int] | None = None
-    top_k: int = 20
+    top_k: int = 64
+    bm25_top_k: int = 100
+    sparse_top_k: int = 50
+    dense_top_k: int = 100
     sparse_score_threshold_override: float | None = None
     dense_score_threshold_override: float | None = None
     enabled_sources: list[str] | None = None

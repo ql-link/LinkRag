@@ -181,6 +181,8 @@ RAG 问答在 Python 端（`/api/v1/rag/stream`）以**后台任务**执行，�
 
 落库时序（chat-stream-resilient-persist）：生成任务**起点**先发 `status=GENERATING`（`answer` 空），**终态**再发 `COMPLETED`/`FAILED`，两条消息携带同一 `turn_id`，Java 据 `turn_id` **upsert 同一行**（起点插「生成中」行，终态更新该行）。客户端断连不取消任务，生成续跑到终态并落库。
 
+会话标题（LINK-209）：标题**生成职责完全在 Python**——首轮（前端在 `/rag/stream` 传 `is_first_turn=true`）基于 `query` 调用本轮对话模型生成短标题，随终态 `chat_turn.title` 上报，并通过 SSE `conversation_title` 事件即时回前端。Java 不再发起任何标题 LLM 调用、也不再用首问截断造临时标题，仅作条件落库：当 `chat_conversation.title` 为空或仍为默认「新对话」时写入上游 `title`，否则跳过（不覆盖用户手改）。
+
 ### Topic
 
 - 实际收发 topic：`tolink.rag.chat_turn`（由 `ChatTurnMessage.MQ_NAME` 固定）。
@@ -203,6 +205,7 @@ RAG 问答在 Python 端（`/api/v1/rag/stream`）以**后台任务**执行，�
 | `status` | string | ✅ | `GENERATING`（生成起点占位）/ `COMPLETED`（成功或空命中占位）/ `FAILED`（任意失败，含生成超时） |
 | `error_code` | string | ⬜ | 失败码（仅 `FAILED`）：`RECALL_*`（前置/生成失败）或 `GENERATION_TIMEOUT`（生成超时）→ `chat_message.error_code` |
 | `error_message` | string | ⬜ | 失败原因（仅 `FAILED`），不含堆栈 → `chat_message.error_message` |
+| `title` | string | ⬜ | 会话标题，**仅会话首轮终态携带**（Python 基于 `query` 生成，LLM 不可用/失败时回落首问截断）→ `chat_conversation.title`。Java 仅在当前标题为空或仍为默认「新对话」时写入并按列宽（255）截断，**不覆盖用户手动改过的标题**；`GENERATING` 起点与非首轮一律为 `null` |
 
 > `prompt_tokens` / `completion_tokens` / `total_tokens` 已从本消息**移除**（LINK-191），改由统一用量消息承载；`provider_type` / `latency_ms` 仍保留供 Java 落库快照。
 

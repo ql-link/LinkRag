@@ -129,8 +129,10 @@ async def test_run_sparse_vectorizing_reloads_and_filters_before_dispatch(monkey
         _row("c1", dense=CHUNK_STATUS_INDEXED, sparse=SPARSE_VECTOR_STATUS_PENDING),
         _row(
             "c2", dense=CHUNK_STATUS_INDEXED, sparse=SPARSE_VECTOR_STATUS_INDEXED
-        ),  # sparse 已成功
-        _row("c3", dense=CHUNK_STATUS_PENDING, sparse=SPARSE_VECTOR_STATUS_PENDING),  # dense 未成功
+        ),  # sparse 已成功 → 过滤掉
+        _row(
+            "c3", dense=CHUNK_STATUS_PENDING, sparse=SPARSE_VECTOR_STATUS_PENDING
+        ),  # dense 未成功，但解耦后 sparse 不再依赖 dense → 仍进 sparse
     ]
 
     async def _fake_reload(payload, db):
@@ -142,5 +144,6 @@ async def test_run_sparse_vectorizing_reloads_and_filters_before_dispatch(monkey
 
     assert len(sparse.run_calls) == 1
     passed_ids = [c.chunk_id for c in sparse.run_calls[0]]
-    # 仅 dense=SUCCESS AND sparse != SUCCESS 进 sparse。
-    assert passed_ids == ["c1"]
+    # sparse 与 dense 解耦：唯一过滤条件是 sparse != SUCCESS（point 由 ensure_points
+    # 独立建出，sparse 用 update_vectors 只写自己的 named 向量，不再要求 dense 已就绪）。
+    assert passed_ids == ["c1", "c3"]

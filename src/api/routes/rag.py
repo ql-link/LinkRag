@@ -43,6 +43,7 @@ from src.application.recall_errors import (
 )
 from src.application.recall_pipeline_provider import (
     aresolve_recall_config,
+    build_recall_request_from_config,
     get_recall_pipeline,
     get_reranker,
 )
@@ -57,7 +58,8 @@ class RagStreamRequest(BaseModel):
     """RAG 问答流请求体。
 
     接受 ``query``（必填）、``config_id``（必填，本次生成所用 CHAT 模型配置 id）、
-    ``conversation_id``（必填，本轮所属对话 id，作为落库挂载锚点）与可选
+    ``conversation_id``（必填，本轮所属对话 id，作为落库挂载锚点）、可选
+    ``is_first_turn``（会话首条用户消息标记，触发基于 query 的标题生成）与可选
     ``dataset_ids``（本人授权范围内的子集选择）。**不含 ``user_id``**——身份只取 token
     claims；body 出现 ``user_id`` / ``top_k`` / ``sources`` / ``strict`` / ``doc_ids`` /
     ``fusion_strategy`` / ``fusion_weights`` 等任何未知字段，``extra=forbid`` 触发 422；
@@ -73,6 +75,10 @@ class RagStreamRequest(BaseModel):
     # turn_id：前端每轮生成的稳定 UUID，断连重连不变，作落库幂等键（贯穿 GENERATING 起点与
     # 终态，Java 据此 upsert 同一行）。必填——缺失 → 422 RECALL_INVALID_REQUEST。
     turn_id: str
+    # is_first_turn：是否会话首条用户消息。前端在新建会话首问时置 true，触发 Python 基于
+    # query 生成会话标题（随 chat_turn.title 上报 + SSE conversation_title 即时回前端）。
+    # 仅作生成开关；省不省钱由它决定，正确性由 Java「空/默认才写」兜底。默认 false 兼容老前端。
+    is_first_turn: bool = False
     dataset_ids: list[int] | None = None
 
 
@@ -122,6 +128,7 @@ async def _run_chat_turn_producer(
     config_id: int,
     conversation_id: int,
     turn_id: str,
+    is_first_turn: bool,
     token_budget: int,
     rerank_top_n: int,
 ) -> None:
@@ -138,6 +145,7 @@ async def _run_chat_turn_producer(
             config_id=config_id,
             conversation_id=conversation_id,
             turn_id=turn_id,
+            is_first_turn=is_first_turn,
             reranker=reranker,
             token_budget=token_budget,
             rerank_top_n=rerank_top_n,
@@ -185,28 +193,19 @@ async def rag_stream(
     body = await _parse_and_validate_body(request)
     dataset_ids = resolve_dataset_scope(body.dataset_ids, ctx)
 
-    # 数据集级 recall 配置在建流前读出（短 session），把 top_k / 阈值 / token 预算固化为
-    # 普通值带进流，避免 SSE 生成器执行期再触 DB。
+    # 数据集级 recall 配置在建流前读出（短 session），把融合候选池 / per-route top_k /
+    # 阈值 / 融合策略 / token 预算固化为普通值带进流，避免 SSE 生成器执行期再触 DB。
     recall_cfg = await aresolve_recall_config(ctx.user_id, dataset_ids)
 
     # 并发 acquire 在建流前：超限直接 429（握手前 JSON），不建流、不触发 pipeline。
     if not await acquire_stream_slot(ctx.user_id):
         raise RecallApiError(429, CODE_RATE_LIMITED, "too many concurrent recall streams")
 
-    recall_req = RecallRequest(
+    recall_req = build_recall_request_from_config(
         query=body.query,
         user_id=ctx.user_id,  # 身份以凭证 claims 为准，不信任 body
         dataset_ids=dataset_ids,
-        doc_ids=None,
-        top_k=recall_cfg.recall_result_limit,
-        sparse_score_threshold_override=recall_cfg.sparse_score_threshold,
-        dense_score_threshold_override=recall_cfg.dense_score_threshold,
-        enabled_sources=recall_cfg.recall_enabled_sources,
-        strict_override=recall_cfg.recall_strict,
-        fusion_strategy_override=recall_cfg.recall_fusion_strategy,
-        fusion_bm25_weight_override=recall_cfg.fusion_bm25_weight,
-        fusion_sparse_weight_override=recall_cfg.fusion_sparse_weight,
-        fusion_dense_weight_override=recall_cfg.fusion_dense_weight,
+        recall_cfg=recall_cfg,
     )
 
     # 解耦：生成跑在独立后台任务（生产者），SSE 响应只是观察通道（消费者）。客户端断连
@@ -224,6 +223,7 @@ async def rag_stream(
                 body.config_id,
                 body.conversation_id,
                 body.turn_id,
+                body.is_first_turn,
                 recall_cfg.recall_context_token_budget,
                 recall_cfg.rerank_top_n,
             )

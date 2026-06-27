@@ -349,6 +349,41 @@ async def test_content_fetched_once_and_injected_into_reranker(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_reranker_receives_expanded_rrf_candidate_pool(monkeypatch):
+    """LINK-136：融合候选池放大后，reranker 输入不应被旧 20 条窗口截断。"""
+    candidate_ids = [f"c{i}" for i in range(64)]
+
+    async def _resolve(*a, **k):
+        return SimpleNamespace(
+            provider=_FakeProvider(), model_name="m", provider_type="openai", source="user"
+        )
+
+    async def _contents(chunk_ids, user_id):
+        return {cid: f"正文-{cid}" for cid in chunk_ids}
+
+    monkeypatch.setattr(rt, "aresolve_user_model", _resolve)
+    monkeypatch.setattr(rt, "fetch_chunk_contents", _contents)
+
+    reranker = _FakeReranker()
+    pipe = _FakePipeline(_response(_hits(*candidate_ids)))
+    await _collect(
+        rt.recall_event_stream(
+            pipe,
+            RecallRequest(query="问题", user_id=123, dataset_ids=[1], top_k=64),
+            "rid",
+            config_id=77,
+            conversation_id=1,
+            turn_id="t-gen",
+            reranker=reranker,
+            token_budget=4000,
+            rerank_top_n=8,
+        )
+    )
+
+    assert len(reranker.last_request.hits) == 64
+
+
+@pytest.mark.asyncio
 async def test_hard_fail_degrade_drops_no_content_hits(monkeypatch):
     """硬失败降级与软降级同口径：只保留有正文候选，再截断 top_n。"""
 
