@@ -121,8 +121,8 @@ ParseTaskPipeline._run
                        → _execute_stages(ctx)  （外层保留一层兜底 except）
 
 _execute_stages（阶段执行引擎二选一，settings.PARSE_USE_WORKFLOW_DAG）
- ├── False（默认）→ StagePipeline.run(ctx)              # 串行，稳定可回滚
- └── True         → _run_via_dag(ctx) → ParseWorkflowRunner # 并行 DAG
+ ├── True（默认）→ _run_via_dag(ctx) → ParseWorkflowRunner # 并行 DAG
+ └── False        → StagePipeline.run(ctx)               # 串行，保留作稳定回退
 
 StagePipeline.run（串行 6 阶段编排）
  CleaningStage → ChunkingStage → VectorizingStage
@@ -139,11 +139,11 @@ StagePipeline.run（串行 6 阶段编排）
 
 `StageContext` 在阶段间传递可变产物（`parse_result` / `chunks` / `plan` / `vector_result`）并收敛最终 `ParsePipelineResult`；`StageOutcome` 是单阶段成败结果（`finalized=True` 表示该阶段已自行写终态，模板不重复处理）。
 
-### 并行 DAG 引擎（可灰度接入生产，第一段）
+### 并行 DAG 引擎（生产默认引擎）
 
 `src/core/pipeline/parse_task/workflow_demo/` 把 6 阶段包成通用 Workflow Engine 的节点，提供两个拓扑入口：`build_parse_task_demo_workflow()`（并行）与 `build_parse_task_serial_workflow()`（穿行，在并行 DAG 上叠加定序边串成一条线）；runner 为 `ParseWorkflowRunner`。
 
-**接入方式（开关二选一，不改既有串行逻辑）**：`ParseTaskPipeline._execute_stages` 按 `settings.PARSE_USE_WORKFLOW_DAG` 选引擎——`False`（默认）走串行 `StagePipeline`，`True` 走 `_run_via_dag`。消费者 `ParseTaskConsumer` 与生命周期外壳（幂等/校验/重试 CAS/兜底 except）两条引擎共用，不感知差异。
+**接入方式（开关二选一，不改既有串行逻辑）**：`ParseTaskPipeline._execute_stages` 按 `settings.PARSE_USE_WORKFLOW_DAG` 选引擎——`True`（默认）走并行 `_run_via_dag`，`False` 走串行 `StagePipeline`（保留作回退，代码不删，出问题置 `False` 秒回滚）。消费者 `ParseTaskConsumer` 与生命周期外壳（幂等/校验/重试 CAS/兜底 except）两条引擎共用，不感知差异。
 
 **节点委托 + 状态机拆层**（让并行行为与串行等价、且并发安全）：
 

@@ -309,10 +309,10 @@ class Settings(BaseSettings):
     # 轻量流程编排引擎配置 (Workflow Engine)
     # ==========================================
     WORKFLOW_MAX_CONCURRENCY: int = 8
-    # 解析任务编排引擎选择：False=串行 StagePipeline（默认，稳定回退）；
-    # True=并行 DAG（dense∥sparse∥es）。两者复用同一套 StageServices 业务，
-    # 权威状态源都是 document_parse_pipeline。灰度切换用，出问题秒回滚。
-    PARSE_USE_WORKFLOW_DAG: bool = False
+    # 解析任务编排引擎选择：True=并行 DAG（dense∥sparse∥es，默认）；
+    # False=串行 StagePipeline（保留作稳定回退，代码不删）。两者复用同一套
+    # StageServices 业务，权威状态源都是 document_parse_pipeline。出问题置 False 秒回滚。
+    PARSE_USE_WORKFLOW_DAG: bool = True
 
     # ==========================================
     # 向量数据库配置 (Vector Store)
