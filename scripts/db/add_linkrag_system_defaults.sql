@@ -12,27 +12,30 @@
 SET NAMES utf8mb4;
 
 -- ===== 上线前按环境修改这些值 =====
-SET @linkrag_api_base = 'https://api.linkrag.local/v1';
+SET @linkrag_api_base = 'https://api.siliconflow.cn/v1';
 SET @linkrag_default_protocol = 'openai';
-SET @linkrag_encrypted_api_key = 'CHANGE_ME_ENCRYPTED_LINKRAG_KEY';
+SET @linkrag_encrypted_api_key = 'CHANGE_ME_ENCRYPTED_SILICONFLOW_KEY';
 
-SET @linkrag_chat_model = 'linkrag-chat';
+SET @linkrag_chat_model = 'Qwen/Qwen3.6-35B-A3B';
 SET @linkrag_chat_protocol = 'openai';
 SET @linkrag_chat_url = CONCAT(@linkrag_api_base, '/chat/completions');
 
-SET @linkrag_embedding_model = 'linkrag-embedding';
+SET @linkrag_embedding_model = 'BAAI/bge-m3';
 SET @linkrag_embedding_protocol = 'openai';
 SET @linkrag_embedding_url = CONCAT(@linkrag_api_base, '/embeddings');
 
-SET @linkrag_sparse_embedding_model = 'linkrag-sparse-embedding';
-SET @linkrag_sparse_embedding_protocol = 'openai';
-SET @linkrag_sparse_embedding_url = CONCAT(@linkrag_api_base, '/embeddings');
+-- 稀疏向量链路需要 token_id -> weight 的 sparse lexical weights。
+-- 硅基流动 OpenAI-compatible embeddings 不能直接替代当前 protocol=bge_m3 的响应结构，
+-- 因此 SPARSE_EMBEDDING 仍指向 LinkRag 自部署 bge-m3-service；它不需要额外外部 API Key。
+SET @linkrag_sparse_embedding_model = 'bge-m3';
+SET @linkrag_sparse_embedding_protocol = 'bge_m3';
+SET @linkrag_sparse_embedding_url = 'http://103.205.254.30:37997/encode';
 
-SET @linkrag_rerank_model = 'linkrag-rerank';
+SET @linkrag_rerank_model = 'BAAI/bge-reranker-v2-m3';
 SET @linkrag_rerank_protocol = 'jina';
 SET @linkrag_rerank_url = CONCAT(@linkrag_api_base, '/rerank');
 
-SET @linkrag_vision_model = 'linkrag-vision';
+SET @linkrag_vision_model = 'zai-org/GLM-4.5V';
 SET @linkrag_vision_protocol = 'openai';
 SET @linkrag_vision_url = CONCAT(@linkrag_api_base, '/chat/completions');
 
@@ -103,6 +106,14 @@ ON DUPLICATE KEY UPDATE
     api_base_url = VALUES(api_base_url),
     is_active = TRUE,
     updated_at = CURRENT_TIMESTAMP;
+
+-- BGE-M3 是 LinkRag 自部署能力，不再挂在第三方厂商下。
+DELETE pm
+FROM llm_provider_model pm
+JOIN llm_system_provider sp ON sp.id = pm.provider_id
+WHERE pm.model_name = @linkrag_sparse_embedding_model
+  AND pm.capability = 'SPARSE_EMBEDDING'
+  AND sp.provider_type <> 'linkrag';
 
 -- 4. 同能力下 LinkRag 默认预设唯一：先清理，再写入本脚本指定的默认项
 UPDATE llm_system_preset
