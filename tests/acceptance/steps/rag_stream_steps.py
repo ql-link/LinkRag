@@ -88,11 +88,11 @@ class FakePipeline:
 class _FakeReranker:
     """确定性 rerank 替身：不查 DB、不调模型，隔离 RERANK 模型解析与正文回填。
 
-    - 默认（``unavailable=False``）：把 RRF 候选**按相关性反序**后逐条编号、给出递减
+    - 默认（``unavailable=False``）：把融合候选**按相关性反序**后逐条编号、给出递减
       ``rerank_score``，``rerank_applied=True``——反序是为了让最终顺序明显区别于
       ``fused_score`` 降序，证明终态排序由 rerank 决定；
     - ``unavailable=True``：模拟用户未配 RERANK 模型，抛 ``UserModelConfigMissingError``，
-      由 runtime 兜底降级为 RRF 顺序（``rerank_applied=False``、rerank 字段为 null）；
+      由 runtime 兜底降级为当前融合顺序（``rerank_applied=False``、rerank 字段为 null）；
     - 空候选：与真实 reranker 一致，不调模型、``rerank_applied=False``。
     """
 

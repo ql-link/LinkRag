@@ -25,7 +25,7 @@ def serialize_hits(response: RecallResponse) -> list[dict]:
 
 
 def serialize_reranked_hits(hits: list[RerankedHit], contents: dict[str, str]) -> list[dict]:
-    """把重排后命中裁剪为最小候选；在 RRF 字段基础上补 rerank 分与名次与 chunk 正文。
+    """把重排后命中裁剪为最小候选；在融合字段基础上补 rerank 分与名次与 chunk 正文。
 
     ``rerank_score`` / ``rerank_rank`` 在 rerank 未生效（降级）或某候选未拿到 rerank
     分时为 ``None``——降级与「rerank 生效但该候选落入无分 tail」都用 ``None`` 表达，

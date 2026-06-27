@@ -28,7 +28,8 @@ class Retriever(Protocol):
     - 合法但无命中应返回 ``[]``，不要抛异常。
     - 不可恢复的查询失败（模型不可达、ES 超时等）应抛任意 Exception，由 pipeline
       按严格 / 宽松策略处理。
-    - ``user_id`` 与 ``top_k`` 在**执行期**由 pipeline 透传（来自 ``RecallRequest``），
+    - ``user_id`` 与 ``top_k`` 在**执行期**由 pipeline 透传（top_k 按 source 来自
+      ``RecallRequest`` 的 ``bm25_top_k`` / ``sparse_top_k`` / ``dense_top_k`` 等字段），
       retriever 不在装配期持有它们——这样 pipeline 与 retriever 可单例复用。
     - ``score_threshold_override`` 在执行期由 pipeline 按 source 透传（来自数据集级 recall
       配置）：``None`` 表示沿用装配期默认阈值。无分数阈值概念的路（如 bm25）应接受但忽略。
@@ -45,5 +46,4 @@ class Retriever(Protocol):
         user_id: int,
         top_k: int,
         score_threshold_override: float | None = None,
-    ) -> list[RetrieverHit]:
-        ...
+    ) -> list[RetrieverHit]: ...

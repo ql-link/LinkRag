@@ -1,3 +1,4 @@
+import math
 import os
 from typing import List, Optional, Union
 
@@ -5,6 +6,7 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SUPPORTED_CHUNKING_STAGE_TWO_ALGORITHMS = frozenset({"noop", "semantic_depth_window"})
+SUPPORTED_RECALL_FUSION_STRATEGIES = frozenset({"rrf", "weighted_score"})
 MARKDOWN_HEADING_LLM_CONTEXT_TOKEN_MIN = 2048
 MARKDOWN_HEADING_LLM_CONTEXT_TOKEN_MAX = 262144
 MARKDOWN_HEADING_LLM_MAX_OUTPUT_TOKEN_MIN = 512
@@ -97,13 +99,46 @@ class Settings(BaseSettings):
     TITLE_GENERATION_TIMEOUT_MS: int = 25000
     # pipeline 严格模式默认值：False=宽松，允许单路失败降级。
     RECALL_STRICT_DEFAULT: bool = False
-    # 服务端固定返回候选数上限（同时作为各路执行期 top_k）。
-    RECALL_RESULT_LIMIT: int = 20
+    # 融合后候选池窗口，作为 rerank 输入池；参考 RAGFlow _rerank_window ~64。
+    RECALL_RESULT_LIMIT: int = 64
+    # RAG pipeline 三路执行期召回深度。来源简述：
+    # dense=100: Sentence Transformers retrieve-and-rerank top-100；
+    # sparse=50: Elasticsearch RRF/ELSER 与 Azure semantic ranker 50-candidate；
+    # bm25=100: BEIR BM25 top-100 rerank。
+    RECALL_DENSE_TOP_K: int = 100
+    RECALL_SPARSE_TOP_K: int = 50
+    RECALL_BM25_TOP_K: int = 100
     # 启用的召回路（逗号分隔）。dense 是远程 system embedding HTTP 调用，与 sparse
     # 本地 BGE-M3 推理路径互补；本期默认开启 dense（GitHub issue ql-link/LinkRag#53）。
     # 升级影响：未显式 set env 的部署在升级后自动开启 dense 召回，system embedding
     # HTTP 流量增加；如需暂时回退，运维侧 set RECALL_ENABLED_SOURCES=bm25,sparse 重启。
     RECALL_ENABLED_SOURCES: str = "bm25,sparse,dense"
+    # 召回融合策略：默认 RRF，weighted_score 作为可选策略在三路召回后、rerank 前生效。
+    RECALL_FUSION_STRATEGY: str = "rrf"
+    # weighted_score 三路权重。单项允许为 0；active source 权重和为 0 在运行期拒绝。
+    RECALL_FUSION_BM25_WEIGHT: float = 0.2
+    RECALL_FUSION_SPARSE_WEIGHT: float = 0.3
+    RECALL_FUSION_DENSE_WEIGHT: float = 0.5
+
+    @field_validator("RECALL_FUSION_STRATEGY")
+    @classmethod
+    def validate_recall_fusion_strategy(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if normalized not in SUPPORTED_RECALL_FUSION_STRATEGIES:
+            supported = ", ".join(sorted(SUPPORTED_RECALL_FUSION_STRATEGIES))
+            raise ValueError(f"RECALL_FUSION_STRATEGY must be one of: {supported}")
+        return normalized
+
+    @field_validator(
+        "RECALL_FUSION_BM25_WEIGHT",
+        "RECALL_FUSION_SPARSE_WEIGHT",
+        "RECALL_FUSION_DENSE_WEIGHT",
+    )
+    @classmethod
+    def validate_recall_fusion_weight(cls, v: float) -> float:
+        if not math.isfinite(v) or v < 0:
+            raise ValueError("recall fusion weights must be finite floats >= 0")
+        return v
 
     # ==========================================
     # 对外会话鉴权配置 (RAG 流 / 纯召回 JSON / LINK-40, LINK-131)
@@ -364,16 +399,15 @@ class Settings(BaseSettings):
     # Sparse retrieval defaults (called by VectorStorageFacade.search_sparse_chunks).
     # 默认值依据：业界保守占位（Dify "score threshold disabled = 0.0"、
     # Qdrant "先广召回后精排"），本项目无评测 harness 时不盲设阈值。
-    # 调用方可任意 per-call 覆盖；运维可改 .env 全局收紧。完整调研依据见
-    # docs/internals/vectorization.md §9 与 PR 描述。
+    # 仅作 facade 直调兜底；RAG pipeline 使用 RECALL_SPARSE_TOP_K。
+    # 调用方可任意 per-call 覆盖；运维可改 .env 全局收紧。
     SPARSE_RETRIEVAL_TOP_K: int = 10
     SPARSE_RETRIEVAL_SCORE_THRESHOLD: float = 0.0
 
     # Dense retrieval defaults (called by VectorStorageFacade.search_dense_chunks).
     # 与 SPARSE_RETRIEVAL_* 严格对仗：top_k=10（先广召回后精排），threshold=0.0
     # （cosine 上界 [0, 1]，不过滤、由 top_k 兜底）；阈值校准待评测 harness follow-up。
-    # 注意：pipeline 路径下实际生效的 top_k 是 RECALL_RESULT_LIMIT；
-    # DENSE_RETRIEVAL_TOP_K 仅作 facade 直调（脚本 / 评测 harness）的兜底默认。
+    # 仅作 facade 直调（脚本 / 评测 harness）兜底；RAG pipeline 使用 RECALL_DENSE_TOP_K。
     DENSE_RETRIEVAL_TOP_K: int = 10
     DENSE_RETRIEVAL_SCORE_THRESHOLD: float = 0.0
 
@@ -432,6 +466,9 @@ class Settings(BaseSettings):
     KAFKA_SASL_PASSWORD: Optional[str] = None
     KAFKA_SECURITY_PROTOCOL: str = "PLAINTEXT"
     KAFKA_MAX_POLL_INTERVAL_MS: int = 900000
+    # 公网/跨机房部署时建议调大这两个值（broker 端 group.max.session.timeout.ms 须 ≥ 此值）
+    KAFKA_SESSION_TIMEOUT_MS: int = 45000
+    KAFKA_HEARTBEAT_INTERVAL_MS: int = 15000
     INIT_KAFKA_TOPICS_ON_STARTUP: bool = False
 
     # --- RabbitMQ 配置 ---
