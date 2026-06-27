@@ -1,6 +1,6 @@
 # 召回 Pipeline 架构
 
-本文说明 `src/core/pipeline/recall/` 的多路召回 Pipeline。它与解析 Pipeline 独立：解析 Pipeline 负责文档入库和索引构建，召回 Pipeline 负责在查询时触发多路 Retriever、收敛异常、做 RRF 粗融合并返回候选 chunk。
+本文说明 `src/core/pipeline/recall/` 的多路召回 Pipeline。它与解析 Pipeline 独立：解析 Pipeline 负责文档入库和索引构建，召回 Pipeline 负责在查询时触发多路 Retriever、收敛异常、按配置做粗融合并返回候选 chunk。
 
 解析链路见 [pipeline_architecture.md](pipeline_architecture.md) 和 [parse_task_pipeline.md](parse_task_pipeline.md)。
 
@@ -12,13 +12,13 @@
 
 1. 按配置并行或串行触发已装配的全部召回路。
 2. 按严格或宽松容错策略收敛单路异常。
-3. 对成功路结果做 RRF 粗融合，返回稳定结构的候选列表。
+3. 对成功路结果按配置做粗融合，返回稳定结构的候选列表。
 
 它明确不做这些事情：
 
 - query 预处理、embedding、稀疏化、分词。
 - 直接访问 Qdrant、Elasticsearch、MySQL 等存储。
-- 跨路原始分数归一化。
+- 非融合策略所需的复杂排序或评测调参。
 - reranker 精排、上下文拼装、答案生成。
 
 这些能力归属各路 Retriever 自己或下游 RAG 阶段。其中"召回后生成准备"（按 chunk_id 回填 MySQL 正文、按 token 预算拼装上下文）由同包的 `generation.py` 承担，它独立于 `RecallPipeline`、不属于召回编排本身；`generation.py` 同样不调用 LLM，最终生成调用在 runtime 编排层。完整的生成阶段（含流式作答与 SSE 终态事件）见 [recall_generation.md](recall_generation.md)。
@@ -33,7 +33,7 @@ src/core/pipeline/recall/
 ├── pipeline.py       # RecallPipeline：多路触发、容错、融合和响应组装
 ├── models.py         # RecallRequest / RetrieverHit / RecallHit / RecallResponse / Config
 ├── protocols.py      # Retriever 协议 + SOURCE_DENSE / SOURCE_SPARSE / SOURCE_BM25
-├── fusion.py         # RRF 粗融合
+├── fusion.py         # RRF / weighted_score 粗融合
 ├── generation.py     # 召回后生成准备：正文回填 + 按 token 预算拼装上下文（独立于 RecallPipeline，见 §1 说明）
 └── exceptions.py     # RecallError / RecallValidationError / RecallFatalError
 ```
@@ -55,11 +55,11 @@ src/core/pipeline/recall/
 ```text
 RecallRequest(query, user_id, dataset_ids, doc_ids, top_k, bm25_top_k, sparse_top_k, dense_top_k)
   -> RecallPipeline.execute()
-       -> validate query / user_id / RRF limit / per-route top_k
+       -> validate query / user_id / fusion limit / per-route top_k
        -> run retrievers in parallel / serial（透传 user_id 与各路 top_k）
        -> check failures by strict / loose policy
-       -> fuse successful hits with RRF
-       -> truncate fused hits to top_k（RRF 候选池 / rerank 输入窗口）
+       -> fuse successful hits with configured strategy
+       -> truncate fused hits to top_k（融合候选池 / rerank 输入窗口）
        -> build RecallResponse
 ```
 
@@ -120,11 +120,11 @@ class Retriever(Protocol):
 
 | 模型 | 方向 | 说明 |
 | --- | --- | --- |
-| `RecallRequest` | 入参 | `query` 必须非空；`user_id` 必须为正（HTTP 入口从凭证 claims 注入）；`dataset_ids` 允许空列表，表示不限数据集；`doc_ids` 可选；`top_k` 为正，表示 RRF 融合后候选池上限 / rerank 输入窗口，由数据集级 `recall_result_limit` 或系统 `RECALL_RESULT_LIMIT` 决定；`bm25_top_k` / `sparse_top_k` / `dense_top_k` 分别控制三路执行期召回深度 |
+| `RecallRequest` | 入参 | `query` 必须非空；`user_id` 必须为正（HTTP 入口从凭证 claims 注入）；`dataset_ids` 允许空列表，表示不限数据集；`doc_ids` 可选；`top_k` 为正，表示融合候选池上限 / rerank 输入窗口，由数据集级 `recall_result_limit` 或系统 `RECALL_RESULT_LIMIT` 决定；`bm25_top_k` / `sparse_top_k` / `dense_top_k` 分别控制三路执行期召回深度；融合策略/权重 override 来自数据集级 `recall_config`，不来自 HTTP 请求体 |
 | `RetrieverHit` | 单路内部结果 | 单路返回的原始候选，包含 `chunk_id`、`doc_id`、`dataset_id`、`score`、`source` |
-| `RecallHit` | 融合结果 | RRF 融合后的候选，包含 `fused_score` 和每路原始 `scores` |
+| `RecallHit` | 融合结果 | 当前融合策略产出的候选，包含 `fused_score` 和每路原始 `scores` |
 | `RecallResponse` | 出参 | 回显 query、融合候选、各路命中数、失败路、整体耗时 |
-| `RecallPipelineConfig` | 装配配置 | `parallel`、`strict`、`rrf_k` |
+| `RecallPipelineConfig` | 装配配置 | `parallel`、`strict`、`rrf_k`、`fusion_strategy`、三路 `fusion_*_weight` |
 
 召回阶段不返回 chunk 正文字段。正文获取属于 reranker 或上下文拼装阶段，避免召回层把存储读取、权限补偿和内容裁剪混在一起。
 
@@ -154,7 +154,11 @@ class Retriever(Protocol):
 
 ---
 
-## 7. RRF 融合
+## 7. 融合策略
+
+融合逻辑在 `fusion.py`。`fused_score` 表示当前策略产出的融合分；`RecallHit.scores` 始终保留各路原始分。默认策略是 `rrf`，可通过系统配置 `RECALL_FUSION_STRATEGY` 或数据集级 `recall_config.recall_fusion_strategy` 切换为 `weighted_score`。
+
+### 7.1 RRF
 
 融合逻辑在 `fusion.py::fuse_with_rrf()`：
 
@@ -169,7 +173,20 @@ fused_score = sum(contribution for every source where chunk_id appears)
 - RRF 只依赖各路排名，对不同分数尺度更稳定。
 - 同一个 `chunk_id` 被多路命中时贡献累加，只被一路命中时也保留。
 
-融合结果按 `fused_score` 降序返回。`RecallHit.scores` 会为所有已装配 source 保留键；未命中的路填 `None`，方便上层稳定消费。
+融合结果按 `fused_score` 降序返回。RRF 函数保持历史排序语义，默认配置下行为不变。
+
+### 7.2 weighted_score
+
+`weighted_score` 只支持当前内置三路 source：`bm25` / `sparse` / `dense`。算法：
+
+- BM25、sparse：先对 raw score 做 `log1p(raw_score)`；dense：直接使用 raw score。
+- 每一路独立做 min-max 归一化；某一路只有一个命中或 `max == min` 时，该路命中项 normalized score 为 `1.0`。
+- 某一路无命中时不进入 active source 权重归一；某个 chunk 未命中某一路时该路贡献为 `0`。
+- 权重按 active sources 归一，但不按单个 chunk 命中的 source 重分配。
+- 单项权重允许为 `0`；若本次 active source 权重和为 `0`，抛 `RecallValidationError`，不静默回退 RRF。
+- 结果按 `fused_score` 降序；仅分数完全相同时按 `chunk_id` 升序稳定排序。
+
+`scores` 字典键集合等于本次生效 source；未命中的路填 `None`，不输出 normalized score。
 
 ---
 
@@ -207,6 +224,7 @@ RecallPipelineConfig(
 | --- | --- |
 | 主流程、并行/串行触发 | `tests/unit/core/pipeline/recall/test_recall_pipeline_main_flow.py` |
 | RRF 融合 | `tests/unit/core/pipeline/recall/test_recall_pipeline_rrf.py` |
+| weighted_score 融合 | `tests/unit/core/pipeline/recall/test_recall_pipeline_weighted_score.py` |
 | 容错语义 | `tests/unit/core/pipeline/recall/test_recall_pipeline_fault.py` |
 | 入参与构造边界 | `tests/unit/core/pipeline/recall/test_recall_pipeline_validation.py`、`test_recall_pipeline_boundary.py` |
 | 单路适配器 | `tests/unit/core/storage/vector/test_sparse_retriever.py`、`tests/unit/core/storage/es/test_bm25_retriever.py` |
@@ -220,15 +238,15 @@ RecallPipelineConfig(
 - `src/core/pipeline/recall/` 保持编排层纯度，不直接读写存储。
 - 单路查询、预处理、过滤和打分逻辑放在各自 Retriever 内。
 - Pipeline 只消费 `RetrieverHit`，只输出 `RecallHit`，不携带 chunk 正文。
-- 不做跨路原始分归一化；需要更精细排序时放到 reranker 阶段。
+- 不在召回层接入 rerank score；rerank 永远消费融合后的 `RecallHit`。
 
 ## 11. top_k 配置边界（LINK-136）
 
-LINK-136 后，`RecallRequest.top_k` 不再是三路共同的执行期 top_k，而是 RRF 融合后的候选池窗口。三路深召回分别由 `bm25_top_k` / `sparse_top_k` / `dense_top_k` 控制：
+LINK-136 后，`RecallRequest.top_k` 不再是三路共同的执行期 top_k，而是融合后的候选池窗口。三路深召回分别由 `bm25_top_k` / `sparse_top_k` / `dense_top_k` 控制：
 
 ```text
 dataset_parse_config.recall_config 或系统 Settings
-  -> recall_result_limit        -> RecallRequest.top_k        -> RRF 后截断 / rerank 输入池
+  -> recall_result_limit        -> RecallRequest.top_k        -> 融合后截断 / rerank 输入池
   -> bm25_top_k / sparse_top_k / dense_top_k
                                 -> Retriever.recall(top_k=...) -> 单路召回深度
 ```
@@ -237,7 +255,7 @@ dataset_parse_config.recall_config 或系统 Settings
 
 | 字段 | 默认 | 说明 |
 | --- | ---: | --- |
-| `RECALL_RESULT_LIMIT` | 64 | RRF 候选池窗口，作为 rerank 输入池 |
+| `RECALL_RESULT_LIMIT` | 64 | 融合候选池窗口，作为 rerank 输入池 |
 | `RECALL_BM25_TOP_K` | 100 | BM25 路执行期召回深度 |
 | `RECALL_SPARSE_TOP_K` | 50 | sparse 路执行期召回深度 |
 | `RECALL_DENSE_TOP_K` | 100 | dense 路执行期召回深度 |
@@ -248,7 +266,7 @@ dataset_parse_config.recall_config 或系统 Settings
 
 ## 12. 召回后重排模块（独立下游，LINK-130）
 
-`RecallPipeline` 只到 RRF 粗融合为止。RRF 之后的精排由一个**独立模块**承接，与纯召回解耦：
+`RecallPipeline` 只到粗融合为止。融合之后的精排由一个**独立模块**承接，与纯召回解耦：
 
 ```text
 src/core/pipeline/
@@ -260,16 +278,16 @@ src/core/pipeline/
     └── reranker.py      # PostRecallReranker：回填正文 → 解析用户 RERANK 模型 → 调用 → 映射/降级
 ```
 
-流程：`RecallHit 列表 → 回表取正文 → 按 RRF 顺序构造 documents → 调用用户 RERANK 模型 →
+流程：`RecallHit 列表 → 回表取正文 → 按当前融合顺序构造 documents → 调用用户 RERANK 模型 →
 按返回 index/score 映射回候选、补 rerank_score/rerank_rank → 截断 top_n`。
 
 边界与语义：
 
-- **不触碰召回边界**：`RecallPipeline` 仍只返回 RRF 后 `RecallResponse`，不查正文、不调 rerank。
-- **输出保留 RRF 解释信息**：`RerankedHit` 在 chunk 元信息上保留 `fused_score` 与各路 `scores`，新增 `rerank_score` / `rerank_rank`。
-- **失败语义**：用户未配置 RERANK 模型 → 硬失败（异常上抛，不降级）；rerank 调用失败 / 返回不可用 → 降级返回 RRF 顺序候选并标记 `rerank_applied=False`。
+- **不触碰召回边界**：`RecallPipeline` 仍只返回融合后的 `RecallResponse`，不查正文、不调 rerank。
+- **输出保留融合解释信息**：`RerankedHit` 在 chunk 元信息上保留 `fused_score` 与各路 `scores`，新增 `rerank_score` / `rerank_rank`。
+- **失败语义**：用户未配置 RERANK 模型 → 硬失败（异常上抛，不降级）；rerank 调用失败 / 返回不可用 → 降级返回当前融合顺序候选并标记 `rerank_applied=False`。
 - **top_n**：调用方传入，缺省取数据集级 `recall_config.rerank_top_n`，无数据集配置时回退 `RERANK_DEFAULT_TOP_N`（默认 8）。
-- **LINK-136 配套**：RRF 候选池默认放大为 64，并与三路 per-route top_k 解耦，使 rerank 有足够候选可筛。
+- **LINK-136 配套**：融合候选池默认放大为 64，并与三路 per-route top_k 解耦，使 rerank 有足够候选可筛。
 - 测试：`tests/unit/core/pipeline/rerank/`，以替身注入正文回填与模型解析，不连真实 DB / LLM。
 
 > 注：当前 LLM provider 尚无具体 RERANK 实现（各 provider `rerank()` 为 `NotImplementedError`、未声明 `CapabilityType.RERANK`）。本模块按 `IReranker` 接口契约实现并以替身单测，接入真实 rerank-capable provider 后即可端到端生效。

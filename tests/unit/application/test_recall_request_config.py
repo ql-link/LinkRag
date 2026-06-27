@@ -10,7 +10,7 @@ from src.application.recall_pipeline_provider import build_recall_request_from_c
 from src.core.dataset_config import RecallConfig
 
 
-def test_build_recall_request_maps_rrf_limit_and_route_top_k():
+def test_build_recall_request_maps_fusion_limit_and_route_top_k():
     recall_cfg = RecallConfig(
         recall_result_limit=64,
         recall_context_token_budget=4000,
@@ -20,6 +20,10 @@ def test_build_recall_request_maps_rrf_limit_and_route_top_k():
         dense_top_k=99,
         dense_score_threshold=0.7,
         recall_enabled_sources=["bm25", "dense"],
+        recall_fusion_strategy="weighted_score",
+        fusion_bm25_weight=0.1,
+        fusion_sparse_weight=0.2,
+        fusion_dense_weight=0.7,
         rerank_top_n=6,
         recall_strict=True,
     )
@@ -44,3 +48,7 @@ def test_build_recall_request_maps_rrf_limit_and_route_top_k():
     assert request.dense_score_threshold_override == 0.7
     assert request.enabled_sources == ["bm25", "dense"]
     assert request.strict_override is True
+    assert request.fusion_strategy_override == "weighted_score"
+    assert request.fusion_bm25_weight_override == 0.1
+    assert request.fusion_sparse_weight_override == 0.2
+    assert request.fusion_dense_weight_override == 0.7

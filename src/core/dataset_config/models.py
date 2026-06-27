@@ -12,7 +12,11 @@
 
 from __future__ import annotations
 
+import math
+
 from pydantic import BaseModel, field_validator, model_validator
+
+SUPPORTED_RECALL_FUSION_STRATEGIES = frozenset({"rrf", "weighted_score"})
 
 
 def _settings():
@@ -152,13 +156,16 @@ class PDFConfig(BaseModel):
 
 
 class RecallConfig(BaseModel):
-    """召回检索配置（10 项），消费点见 ``routes/rag.py`` / ``routes/recall.py`` 与各 retriever。
+    """召回检索配置（14 项），消费点见 ``routes/rag.py`` / ``routes/recall.py`` 与各 retriever。
 
-    其中三项为 pipeline / rerank 级旋钮：
+    其中多项为 pipeline / rerank 级旋钮：
 
     - ``recall_enabled_sources``：启用哪几条召回路并参与融合（``bm25`` / ``sparse`` / ``dense``）。
       **只能在系统已装配的召回路（``RECALL_ENABLED_SOURCES``）子集内收窄**：列出的路里凡未被
       系统装配的会被忽略；若交集为空则回退到系统全部已装配路（见 ``RecallPipeline`` 执行期处理）。
+    - ``recall_fusion_strategy``：候选融合策略，默认 ``rrf``，可选 ``weighted_score``。
+    - ``fusion_*_weight``：``weighted_score`` 三路权重，单项允许为 0；active source 权重和为 0
+      在运行期拒绝。
     - ``rerank_top_n``：重排后返回候选条数上限（透传给 ``RerankRequest.top_n``）。
     - ``recall_strict``：召回容错模式（透传给 ``RecallRequest.strict_override``）。``True`` 时任一路
       失败即整体抛错，``False`` 时允许单路失败降级。
@@ -172,6 +179,10 @@ class RecallConfig(BaseModel):
     dense_top_k: int = 100
     dense_score_threshold: float = 0.0
     recall_enabled_sources: list[str] = ["bm25", "sparse", "dense"]
+    recall_fusion_strategy: str = "rrf"
+    fusion_bm25_weight: float = 0.2
+    fusion_sparse_weight: float = 0.3
+    fusion_dense_weight: float = 0.5
     rerank_top_n: int = 8
     recall_strict: bool = False
 
@@ -195,6 +206,22 @@ class RecallConfig(BaseModel):
         cleaned = [s.strip() for s in v if s and s.strip()]
         return cleaned
 
+    @field_validator("recall_fusion_strategy")
+    @classmethod
+    def _validate_recall_fusion_strategy(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if normalized not in SUPPORTED_RECALL_FUSION_STRATEGIES:
+            supported = ", ".join(sorted(SUPPORTED_RECALL_FUSION_STRATEGIES))
+            raise ValueError(f"recall_fusion_strategy must be one of: {supported}")
+        return normalized
+
+    @field_validator("fusion_bm25_weight", "fusion_sparse_weight", "fusion_dense_weight")
+    @classmethod
+    def _validate_recall_fusion_weight(cls, v: float) -> float:
+        if not math.isfinite(v) or v < 0:
+            raise ValueError("fusion weights must be finite floats >= 0")
+        return v
+
     @classmethod
     def from_settings(cls) -> "RecallConfig":
         """以运行期系统 ``Settings`` 为 L1 基线构造。"""
@@ -210,6 +237,10 @@ class RecallConfig(BaseModel):
             recall_enabled_sources=[
                 src.strip() for src in (s.RECALL_ENABLED_SOURCES or "").split(",") if src.strip()
             ],
+            recall_fusion_strategy=s.RECALL_FUSION_STRATEGY,
+            fusion_bm25_weight=s.RECALL_FUSION_BM25_WEIGHT,
+            fusion_sparse_weight=s.RECALL_FUSION_SPARSE_WEIGHT,
+            fusion_dense_weight=s.RECALL_FUSION_DENSE_WEIGHT,
             rerank_top_n=s.RERANK_DEFAULT_TOP_N,
             recall_strict=s.RECALL_STRICT_DEFAULT,
         )

@@ -1,8 +1,8 @@
 """对外 RAG 问答流 SSE 路由（LINK-131）。
 
 端点：``POST /api/v1/rag/stream``（面向**浏览器前端**）。前端凭 Java 签发的短期
-session token 直连，绕过 Java 中转。承接完整 RAG 行为：召回 → RRF 融合 → rerank 精排
-（不可用即降级 RRF 顺序）→ 正文回填 → 上下文组装 → CHAT 模型流式生成。
+session token 直连，绕过 Java 中转。承接完整 RAG 行为：召回 → 候选融合 → rerank 精排
+（不可用即降级当前融合顺序）→ 正文回填 → 上下文组装 → CHAT 模型流式生成。
 
 由旧端点 ``POST /api/v1/recall/stream``（``routes/recall_direct.py``）改名搬迁而来：
 「召回 = stream」的旧契约语义不再扩散，SSE 的合理性来自 LLM 生成阶段。
@@ -14,7 +14,7 @@ session token 直连，绕过 Java 中转。承接完整 RAG 行为：召回 →
 4. 并发 acquire：按 ``user_id`` 限并发流数，超限 → 429。
 
 通过后建流，SSE 执行复用 ``recall_stream_runtime``。
-身份只取 claims，前端自报一律不信任；``top_k`` / ``sources`` / ``strict`` 由服务端配置控制。
+身份只取 claims，前端自报一律不信任；``top_k`` / ``sources`` / ``strict`` / 融合策略由服务端配置控制。
 """
 
 from __future__ import annotations
@@ -61,9 +61,10 @@ class RagStreamRequest(BaseModel):
     ``conversation_id``（必填，本轮所属对话 id，作为落库挂载锚点）、可选
     ``is_first_turn``（会话首条用户消息标记，触发基于 query 的标题生成）与可选
     ``dataset_ids``（本人授权范围内的子集选择）。**不含 ``user_id``**——身份只取 token
-    claims；body 出现 ``user_id`` / ``top_k`` / ``sources`` / ``strict`` / ``doc_ids``
-    等任何未知字段，``extra=forbid`` 触发 422；缺 ``config_id`` / ``conversation_id``
-    同样触发 422（缺会话 id 不进入召回生成、不发对话轮次消息）。
+    claims；body 出现 ``user_id`` / ``top_k`` / ``sources`` / ``strict`` / ``doc_ids`` /
+    ``fusion_strategy`` / ``fusion_weights`` 等任何未知字段，``extra=forbid`` 触发 422；
+    缺 ``config_id`` / ``conversation_id`` 同样触发 422（缺会话 id 不进入召回生成、不发
+    对话轮次消息）。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -192,8 +193,8 @@ async def rag_stream(
     body = await _parse_and_validate_body(request)
     dataset_ids = resolve_dataset_scope(body.dataset_ids, ctx)
 
-    # 数据集级 recall 配置在建流前读出（短 session），把 RRF 候选池 / per-route top_k /
-    # 阈值 / token 预算固化为普通值带进流，避免 SSE 生成器执行期再触 DB。
+    # 数据集级 recall 配置在建流前读出（短 session），把融合候选池 / per-route top_k /
+    # 阈值 / 融合策略 / token 预算固化为普通值带进流，避免 SSE 生成器执行期再触 DB。
     recall_cfg = await aresolve_recall_config(ctx.user_id, dataset_ids)
 
     # 并发 acquire 在建流前：超限直接 429（握手前 JSON），不建流、不触发 pipeline。

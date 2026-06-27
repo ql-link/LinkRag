@@ -3,9 +3,9 @@
 只做三件事：
 1. 按配置（并行 / 串行）触发已装配的全部召回路；
 2. 按容错策略（宽松 / 严格）收敛单路异常；
-3. 对成功路结果做 RRF 粗融合并打包返回。
+3. 对成功路结果做配置指定的粗融合并打包返回。
 
-不做：query 预处理、向量化、分词、查存储、读 MySQL、跨路打分归一化、reranker
+不做：query 预处理、向量化、分词、查存储、读 MySQL、reranker
 精排。这些要么在各路自己的实现里，要么留给下游。
 """
 
@@ -19,12 +19,14 @@ from src.core.pipeline.recall.exceptions import (
     RecallFatalError,
     RecallValidationError,
 )
-from src.core.pipeline.recall.fusion import fuse_with_rrf
+from src.core.pipeline.recall.fusion import fuse_hits
 from src.core.pipeline.recall.models import (
     RecallPipelineConfig,
     RecallRequest,
     RecallResponse,
     RetrieverHit,
+    normalize_fusion_strategy,
+    validate_fusion_weight,
 )
 from src.core.pipeline.recall.protocols import (
     SOURCE_BM25,
@@ -75,6 +77,7 @@ class RecallPipeline:
 
         # 本次生效的召回路：按数据集级 enabled_sources 在已装配路集合内收窄（见 _effective_sources）。
         effective_sources = self._effective_sources(request)
+        fusion_strategy, fusion_weights = self._effective_fusion_config(request)
         # 容错模式：请求级覆盖优先，未指定时沿用装配期默认。
         strict = (
             request.strict_override if request.strict_override is not None else self._config.strict
@@ -82,7 +85,8 @@ class RecallPipeline:
 
         # 入口日志：不记 query 原文（可能含用户敏感内容），只记可观测的元信息。
         logger.info(
-            "[RecallPipeline] start user={} datasets={} docs={} rrf_limit={} route_top_k={} sources={} strict={} mode={}",
+            "[RecallPipeline] start user={} datasets={} docs={} fusion_limit={} "
+            "route_top_k={} sources={} strict={} fusion={} mode={}",
             request.user_id,
             len(request.dataset_ids or []),
             len(request.doc_ids or []),
@@ -90,6 +94,7 @@ class RecallPipeline:
             {s: self._top_k_for_source(s, request) for s in effective_sources},
             effective_sources,
             strict,
+            fusion_strategy,
             "parallel" if self._config.parallel else "serial",
         )
 
@@ -101,12 +106,14 @@ class RecallPipeline:
         success_hits, failed_sources = self._check_failures(
             per_source_results, effective_sources, strict
         )
-        fused_hits = fuse_with_rrf(
+        fused_hits = fuse_hits(
             per_source_hits=success_hits,
             all_sources=effective_sources,
-            k=self._config.rrf_k,
+            strategy=fusion_strategy,
+            rrf_k=self._config.rrf_k,
+            weights=fusion_weights,
         )
-        # RRF 候选池窗口：融合后按 request.top_k 截断，作为下游 rerank 输入池。
+        # 融合候选池窗口：融合后按 request.top_k 截断，作为下游 rerank 输入池。
         fused_hits = fused_hits[: request.top_k]
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
 
@@ -127,6 +134,42 @@ class RecallPipeline:
             elapsed_ms=elapsed_ms,
             sources=effective_sources,
         )
+
+    def _effective_fusion_config(self, request: RecallRequest) -> tuple[str, dict[str, float]]:
+        """合并装配期默认与请求级覆盖，得到本次生效的融合策略与三路权重。"""
+        try:
+            strategy = normalize_fusion_strategy(
+                request.fusion_strategy_override or self._config.fusion_strategy
+            )
+            weights = {
+                SOURCE_BM25: validate_fusion_weight(
+                    (
+                        request.fusion_bm25_weight_override
+                        if request.fusion_bm25_weight_override is not None
+                        else self._config.fusion_bm25_weight
+                    ),
+                    field_name="fusion_bm25_weight",
+                ),
+                SOURCE_SPARSE: validate_fusion_weight(
+                    (
+                        request.fusion_sparse_weight_override
+                        if request.fusion_sparse_weight_override is not None
+                        else self._config.fusion_sparse_weight
+                    ),
+                    field_name="fusion_sparse_weight",
+                ),
+                SOURCE_DENSE: validate_fusion_weight(
+                    (
+                        request.fusion_dense_weight_override
+                        if request.fusion_dense_weight_override is not None
+                        else self._config.fusion_dense_weight
+                    ),
+                    field_name="fusion_dense_weight",
+                ),
+            }
+        except ValueError as exc:
+            raise RecallValidationError(str(exc)) from exc
+        return strategy, weights
 
     def _effective_sources(self, request: RecallRequest) -> list[str]:
         """求本次实际触发的召回路：在已装配路集合内按 ``request.enabled_sources`` 收窄。
@@ -186,7 +229,7 @@ class RecallPipeline:
 
     @staticmethod
     def _top_k_for_source(source: str, request: RecallRequest) -> int:
-        """按 source 取本路执行期 top_k；未知新路回退到 RRF 候选池窗口。
+        """按 source 取本路执行期 top_k；未知新路回退到融合候选池窗口。
 
         回退语义让未来新增召回路在尚未增加专属 top_k 配置前也能运行，而不会因
         缺少 ``graph_top_k`` 之类字段直接失败。

@@ -229,19 +229,21 @@ session token 由 Java 签发、Python 用**独立专用密钥**验签；claims�
 
 > 生成跑在**独立后台任务**（断连不取消）：任务起点发一条 `tolink.rag.chat_turn`（`status=GENERATING`），终态再发 `COMPLETED`/`FAILED`，同 `turn_id`，供 Java upsert 落库对话内容（空召回也发 `COMPLETED` 占位）。客户端断连只停 SSE 转发、生成续跑到落库；本轮 generate 的 token 用量另走 `tolink.rag.usage_report`（LINK-191）。契约见 [mq_contracts.md §对话轮次上报](mq_contracts.md#对话轮次上报pythonjava)。
 
-**身份只取 token claims**——body 不含 `user_id`，前端自报一律不信任。RRF 候选池窗口 / 三路执行期 top_k / 召回分数阈值 /
-召回路 / 容错模式 / rerank 条数均由服务端**按数据集配置**控制（`dataset_parse_config.recall_config`：
+**身份只取 token claims**——body 不含 `user_id`，前端自报一律不信任。融合候选池窗口 / 三路执行期 top_k / 召回分数阈值 /
+召回路 / 融合策略与权重 / 容错模式 / rerank 条数均由服务端**按数据集配置**控制（`dataset_parse_config.recall_config`：
 `recall_result_limit` / `bm25_top_k` / `sparse_top_k` / `dense_top_k` / `sparse_score_threshold` / `dense_score_threshold` / `recall_enabled_sources` /
+`recall_fusion_strategy` / `fusion_bm25_weight` / `fusion_sparse_weight` / `fusion_dense_weight` /
 `recall_strict` / `rerank_top_n`；多数据集混合取首个 dataset，无数据集配置回退
 `RECALL_RESULT_LIMIT` / `RECALL_BM25_TOP_K` / `RECALL_SPARSE_TOP_K` / `RECALL_DENSE_TOP_K` /
 `SPARSE_RETRIEVAL_SCORE_THRESHOLD` / `DENSE_RETRIEVAL_SCORE_THRESHOLD` / `RECALL_ENABLED_SOURCES` /
+`RECALL_FUSION_STRATEGY` / `RECALL_FUSION_*_WEIGHT` /
 `RECALL_STRICT_DEFAULT` / `RERANK_DEFAULT_TOP_N` 等系统默认）；均不接受
 请求覆盖。其中 `recall_enabled_sources` **只能在系统已装配的召回路集合内收窄**（不能启用系统未
 装配的路）。模型按 `(user_id, config_id)` 解析、不回退系统配置。
 
 并发：按 `user_id` 限并发流数（`RECALL_SESSION_MAX_CONCURRENT`），超限返回 `429`。
 
-**召回即包含 rerank 精排 + LLM 答案生成**：召回前置先校验模型，RRF 融合命中后做
+**召回即包含 rerank 精排 + LLM 答案生成**：召回前置先校验模型，召回融合命中后做
 **rerank 精排**，再回填片段正文、按 token 预算（数据集 `recall_config.recall_context_token_budget`，
 无数据集配置回退 `RECALL_GENERATION_CONTEXT_TOKEN_BUDGET`）拼装上下文，用所选模型
 流式生成答案。SSE 事件：
@@ -268,7 +270,7 @@ data: {"title": "<会话标题>"}
 
 服务端用本轮对话模型基于 `query` 生成短标题，标题任务**与召回 + 答案生成并行**，不串行增加问答耗时；一旦算好即在 `answer_delta` 间隙插发本事件（LLM 比答案慢时在 `answer_done` 后补发），前端据此即时刷新侧栏/会话头标题，无需轮询。同一标题随首轮终态的 `chat_turn.title` 上报落库（标题为空/默认「新对话」时由 Java 写入 `chat_conversation.title`，不覆盖用户手改）。标题生成失败/超时回落首问截断兜底（首轮一定命名会话），不影响答案与落库；**生成失败（FAILED）的首轮**仅落库截断标题、不发本事件。非首轮无本事件。
 
-终态 `hits` 单项在 RRF 字段基础上补 rerank 字段与 chunk 正文 `content`：
+终态 `hits` 单项在融合字段基础上补 rerank 字段与 chunk 正文 `content`：
 
 ```json
 {"chunk_id": "...", "doc_id": 10, "dataset_id": 1, "fused_score": 0.033,
@@ -277,14 +279,14 @@ data: {"title": "<会话标题>"}
 ```
 
 - `rerank_applied`（顶层 bool）：rerank 是否实际生效。**未配置 RERANK 模型 / 调用失败 / 返回不可用
-  一律降级**为 RRF 顺序候选（best-effort：rag/stream 不因 rerank 不可用而整条失败），此时该字段为
+  一律降级**为当前融合顺序候选（best-effort：rag/stream 不因 rerank 不可用而整条失败），此时该字段为
   `false`，每个 hit 的 `rerank_score` / `rerank_rank` 为 `null`；
 - rerank **生效**时（`rerank_applied=true`）：`hits` 按 `rerank_rank` 升序（即 rerank 相关性降序），
   长度 ≤ `rerank_top_n`（数据集 `recall_config.rerank_top_n`，无数据集配置回退 `RERANK_DEFAULT_TOP_N`）；
   个别未被模型打分的候选 `rerank_score` / `rerank_rank` 可为 `null`，排在已打分候选之后；
-- rerank **降级**时（`rerank_applied=false`）：`hits` 为 RRF 顺序（按 `fused_score` 降序），
+- rerank **降级**时（`rerank_applied=false`）：`hits` 为当前融合顺序（按 `fused_score` 降序），
   截断到 `rerank_top_n`；
-- `fused_score` / `scores` 为 RRF 解释信息，原样保留；`scores` 键集合等于本次生效的召回路
+- `fused_score` / `scores` 为当前融合策略解释信息，原样保留；`scores` 键集合等于本次生效的召回路
   （即数据集 `recall_enabled_sources` 在已装配路集合内收窄后的结果）。
 - `content` 为该 chunk 的正文（与生成阶段上下文同源、一次性回填，无需另起反查）；某候选正文缺失
   时为空串。仅 rag/stream 终态 `hits` 含此字段，纯召回 JSON 端点（下文 `/api/v1/recall`）不含。
@@ -303,14 +305,15 @@ data: {"title": "<会话标题>"}
 `Content-Type: application/json`、可选 `Origin`（CORS）、`X-Request-Id`。
 
 会话鉴权与 `dataset_ids` scope 校验同 `/api/v1/rag/stream`。请求体（仅以下字段；出现 `config_id` /
-`user_id` / `top_k` / `sources` / `strict` / `doc_ids` 等任何未知字段返回 `422`）：
+`user_id` / `top_k` / `sources` / `strict` / `doc_ids` / `fusion_strategy` / `fusion_weights` /
+`recall_fusion_strategy` / `fusion_*_weight` 等任何未知字段返回 `422`）：
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `query` | string | 是 | 检索词，不能为空或纯空白 |
 | `dataset_ids` | list[int] | 否 | 数据集**子集选择**，必须 ⊆ token 授权范围（超出 `403`）；省略/空 = 用 token 全量授权范围 |
 
-**不要求 `config_id`**（纯召回不生成）。成功返回 `200`。**纯召回不经 rerank**，`hits` 为 RRF
+**不要求 `config_id`**（纯召回不生成）。成功返回 `200`。**纯召回不经 rerank**，`hits` 为当前融合策略
 融合候选、**不含** `rerank_score` / `rerank_rank` 字段，也无顶层 `rerank_applied`（与 RAG 流的
 终态 `hits` 区别在此）：
 
@@ -319,7 +322,7 @@ data: {"title": "<会话标题>"}
 ```
 
 `hits` 按 `fused_score` 降序、不含正文，长度 ≤ 数据集 `recall_config.recall_result_limit`（无数据集
-配置回退 `RECALL_RESULT_LIMIT`）；`failed_sources` 表达降级。三路执行期 top_k / 分数阈值的数据集级
+配置回退 `RECALL_RESULT_LIMIT`）；`failed_sources` 表达降级。三路执行期 top_k / 分数阈值 / 融合策略的数据集级
 解析与 `/api/v1/rag/stream` 完全一致（LINK-148）。
 执行期错误走 **HTTP 状态码**（区别于 SSE error 帧）：无默认 EMBEDDING 配置 `422`、全路失败 `500`、
 召回超时 `504`、未预期异常 `500`，错误体为 `{code, message, data}`，`message` 不含内部堆栈。错误码见

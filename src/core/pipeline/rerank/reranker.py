@@ -1,12 +1,12 @@
 """召回后重排核心：回填正文 → 解析用户 RERANK 模型 → 调用 rerank → 映射输出 / 降级。
 
 职责边界（brief：本期独立交付、不接入召回/生成链路）：
-- 上游产出 RRF 候选、下游消费重排结果，均不在本模块——它是一个可独立调用、独立测试的单元。
+- 上游产出融合候选、下游消费重排结果，均不在本模块——它是一个可独立调用、独立测试的单元。
 - 不碰向量化、不碰 LLM 文本生成、不触 ``RecallPipeline`` 纯召回边界。
 
 失败语义（brief Q1）：
 - **未配置 RERANK 模型 → 硬失败**：解析模型的异常直接上抛，不降级（rerank 是本模块核心职责）。
-- **调用失败 / 返回不可用 → 降级**：返回 RRF 顺序候选并标记 ``rerank_applied=False``。
+- **调用失败 / 返回不可用 → 降级**：返回当前融合顺序候选并标记 ``rerank_applied=False``。
 
 依赖通过构造注入（``content_fetcher`` / ``model_resolver``），便于单测以替身替换 DB 与 LLM。
 """
@@ -55,8 +55,8 @@ def reranked_from_recall(
     )
 
 
-def degrade_to_rrf_order(content_present_hits: list[RecallHit], top_n: int) -> list[RerankedHit]:
-    """降级：按 RRF 顺序输出候选（rerank 字段置空），截断 ``top_n``。
+def degrade_to_fusion_order(content_present_hits: list[RecallHit], top_n: int) -> list[RerankedHit]:
+    """降级：按当前融合顺序输出候选（rerank 字段置空），截断 ``top_n``。
 
     入参须为**已过滤掉无正文**的命中——这是降级口径的单一来源：reranker 软降级与
     调用方（runtime）的硬失败兜底都调用本函数，保证不同降级路径产出同一"有正文候选"
@@ -65,8 +65,13 @@ def degrade_to_rrf_order(content_present_hits: list[RecallHit], top_n: int) -> l
     return [reranked_from_recall(h) for h in content_present_hits[:top_n]]
 
 
+def degrade_to_rrf_order(content_present_hits: list[RecallHit], top_n: int) -> list[RerankedHit]:
+    """兼容旧导出名；实际语义是按输入的当前融合顺序降级。"""
+    return degrade_to_fusion_order(content_present_hits, top_n)
+
+
 class PostRecallReranker:
-    """承接 RRF 后候选，回表取正文并调用用户 RERANK 模型重排。"""
+    """承接融合后候选，回表取正文并调用用户 RERANK 模型重排。"""
 
     def __init__(
         self,
@@ -78,7 +83,7 @@ class PostRecallReranker:
         self._resolve = model_resolver
 
     async def rerank(self, request: RerankRequest) -> RerankResponse:
-        """对 RRF 后候选执行重排，返回重排后候选列表。
+        """对融合后候选执行重排，返回重排后候选列表。
 
         步骤：空候选 → 回填正文 → 缺正文过滤（只记日志）→ 全空短路 →
         解析 RERANK 模型（硬失败点）→ 调用 rerank（降级点）→ index 映射 → 截断 top_n。
@@ -110,7 +115,8 @@ class PostRecallReranker:
             # 剔除只记日志，不进返回结构（brief Q5）。
             logger.info(
                 "[rerank] skipped {} chunk(s) without content user_id={}",
-                skipped, request.user_id,
+                skipped,
+                request.user_id,
             )
 
         # 全部缺正文：等同空命中，不调模型。
@@ -125,7 +131,7 @@ class PostRecallReranker:
             allow_system_fallback=False,
         )
 
-        # 按 RRF 顺序构造 rerank documents；top_n 传 None 取回全部打分项，
+        # 按当前融合顺序构造 rerank documents；top_n 传 None 取回全部打分项，
         # 由本模块自行映射、排序、编号、截断，保证 rerank_rank 连续可控。
         documents = [contents[h.chunk_id] for h in scored_hits]
         try:
@@ -137,10 +143,11 @@ class PostRecallReranker:
             )
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 - 调用失败统一降级为 RRF 顺序
+        except Exception as exc:  # noqa: BLE001 - 调用失败统一降级为当前融合顺序
             logger.warning(
-                "[rerank] model call failed, degrade to RRF order user_id={}: {}",
-                request.user_id, exc,
+                "[rerank] model call failed, degrade to fusion order user_id={}: {}",
+                request.user_id,
+                exc,
             )
             return _resp(self._degrade(scored_hits, top_n), False)
 
@@ -163,7 +170,7 @@ class PostRecallReranker:
         if ranked is None:
             # 返回不完整（无任一合法 index）→ 降级。
             logger.warning(
-                "[rerank] unusable rerank indices, degrade to RRF order user_id={}",
+                "[rerank] unusable rerank indices, degrade to fusion order user_id={}",
                 request.user_id,
             )
             return _resp(self._degrade(scored_hits, top_n), False)
@@ -176,7 +183,7 @@ class PostRecallReranker:
         - 过滤越界 index、去重重复 index（保留首次出现）。
         - 无任一合法 index → 返回 None（触发降级）。
         - 合法项按 rerank_score 降序编号；未被任何合法 index 命中的有正文候选，
-          按 RRF 顺序追加为「无分 tail」（rerank_score=None），不丢候选。
+          按当前融合顺序追加为「无分 tail」（rerank_score=None），不丢候选。
         """
         n = len(scored_hits)
         seen: set[int] = set()
@@ -199,7 +206,7 @@ class PostRecallReranker:
         for idx, score in scored:
             ranked.append(self._to_hit(scored_hits[idx], score, rank))
             rank += 1
-        # 无分 tail：未返回的有正文候选按 RRF 顺序追加，rerank_score=None。
+        # 无分 tail：未返回的有正文候选按当前融合顺序追加，rerank_score=None。
         for i, hit in enumerate(scored_hits):
             if i not in seen:
                 ranked.append(self._to_hit(hit, None, rank))
@@ -207,12 +214,10 @@ class PostRecallReranker:
         return ranked
 
     def _degrade(self, scored_hits: list[RecallHit], top_n: int) -> list[RerankedHit]:
-        """降级：按 RRF 顺序（scored_hits 已是 RRF 序）输出，rerank 字段置空，截断 top_n。"""
-        return degrade_to_rrf_order(scored_hits, top_n)
+        """降级：按当前融合顺序输出，rerank 字段置空，截断 top_n。"""
+        return degrade_to_fusion_order(scored_hits, top_n)
 
     @staticmethod
-    def _to_hit(
-        hit: RecallHit, rerank_score: float | None, rerank_rank: int | None
-    ) -> RerankedHit:
+    def _to_hit(hit: RecallHit, rerank_score: float | None, rerank_rank: int | None) -> RerankedHit:
         """在 RecallHit 元信息上补 rerank 字段（委托 ``reranked_from_recall``，单一来源）。"""
         return reranked_from_recall(hit, rerank_score=rerank_score, rerank_rank=rerank_rank)

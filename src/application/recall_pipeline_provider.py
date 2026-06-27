@@ -95,7 +95,13 @@ def _build_pipeline() -> RecallPipeline:
 
     return RecallPipeline(
         retrievers,
-        RecallPipelineConfig(strict=settings.RECALL_STRICT_DEFAULT),
+        RecallPipelineConfig(
+            strict=settings.RECALL_STRICT_DEFAULT,
+            fusion_strategy=settings.RECALL_FUSION_STRATEGY,
+            fusion_bm25_weight=settings.RECALL_FUSION_BM25_WEIGHT,
+            fusion_sparse_weight=settings.RECALL_FUSION_SPARSE_WEIGHT,
+            fusion_dense_weight=settings.RECALL_FUSION_DENSE_WEIGHT,
+        ),
     )
 
 
@@ -104,7 +110,7 @@ async def aresolve_recall_config(user_id: int, dataset_ids: list[int]) -> Recall
 
     多数据集混合召回时取 **第一个** dataset_id 的配置（各数据集召回深度/阈值无法同时生效，
     取首个是确定性且可解释的选择）；``dataset_ids`` 为空（全库召回）时返回系统默认
-    ``RecallConfig.from_settings()``——使 enabled_sources / strict / RRF 窗口 / 三路 top_k 等跟随运行期
+    ``RecallConfig.from_settings()``——使 enabled_sources / strict / 融合候选池窗口 / 三路 top_k 等跟随运行期
     系统配置，而非被静态默认锁死。
     配置读取经独立短生命周期 session 完成——召回入口可能在请求处理函数返回后才执行（SSE 流），
     不依赖请求级 session。
@@ -130,8 +136,9 @@ def build_recall_request_from_config(
     """把数据集级召回配置映射为 pipeline 入参。
 
     RAG 流与纯召回 JSON 共用此映射，避免新增召回配置字段时两个入口失同步。
-    ``top_k`` 在 ``RecallRequest`` 中表示 RRF 候选池窗口；三路执行期召回深度由
-    ``bm25_top_k`` / ``sparse_top_k`` / ``dense_top_k`` 分别控制。
+    ``top_k`` 在 ``RecallRequest`` 中表示融合候选池窗口；三路执行期召回深度由
+    ``bm25_top_k`` / ``sparse_top_k`` / ``dense_top_k`` 分别控制。融合策略与权重同样
+    在这里统一映射，避免 RAG 流与纯召回 JSON 入口失同步。
     """
     return RecallRequest(
         query=query,
@@ -146,6 +153,10 @@ def build_recall_request_from_config(
         dense_score_threshold_override=recall_cfg.dense_score_threshold,
         enabled_sources=recall_cfg.recall_enabled_sources,
         strict_override=recall_cfg.recall_strict,
+        fusion_strategy_override=recall_cfg.recall_fusion_strategy,
+        fusion_bm25_weight_override=recall_cfg.fusion_bm25_weight,
+        fusion_sparse_weight_override=recall_cfg.fusion_sparse_weight,
+        fusion_dense_weight_override=recall_cfg.fusion_dense_weight,
     )
 
 

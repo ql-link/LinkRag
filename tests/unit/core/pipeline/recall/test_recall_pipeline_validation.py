@@ -58,8 +58,8 @@ async def test_empty_dataset_ids_allowed():
 
 @pytest.mark.parametrize("field", ["top_k", "bm25_top_k", "sparse_top_k", "dense_top_k"])
 @pytest.mark.asyncio
-async def test_non_positive_rrf_limit_or_route_top_k_raises(field: str):
-    """RRF 候选池窗口与三路执行期 top_k 均必须为正，错误信息包含字段名。"""
+async def test_non_positive_fusion_limit_or_route_top_k_raises(field: str):
+    """融合候选池窗口与三路执行期 top_k 均必须为正，错误信息包含字段名。"""
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[])
     pipeline = RecallPipeline([bm25])
     kwargs = {

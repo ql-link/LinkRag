@@ -27,12 +27,12 @@ Python **不接受前端 Sa-Token，也不信任请求体里自报的 `user_id`*
 两个对外端点共用会话鉴权与 scope 校验（§3、§4），差异在执行与返回载体：
 
 - **RAG 问答流**：`POST /api/v1/rag/stream`（[src/api/routes/rag.py](../../src/api/routes/rag.py)），
-  返回 `text/event-stream`。RRF 融合后做 rerank 精排（不可用即降级 RRF 顺序），再基于最终片段调用用户
+  返回 `text/event-stream`。召回融合后做 rerank 精排（不可用即降级当前融合顺序），再基于最终片段调用用户
   CHAT 模型流式生成答案：逐 token `answer_delta`、结束 `answer_done`（附 rerank 后片段元信息与
   `rerank_applied`）；0 命中 / 全部片段缺正文 → `recall_done`（不生成）；失败 → SSE `error` 帧。请求体需
   `config_id`（CHAT 模型）。按 `user_id` 并发限流。
 - **纯召回 JSON**：`POST /api/v1/recall`（[src/api/routes/recall.py](../../src/api/routes/recall.py)），
-  返回 `application/json`，一次性 `{hits, failed_sources}`（**RRF 候选，不经 rerank**，hits 不含 rerank
+  返回 `application/json`，一次性 `{hits, failed_sources}`（**融合候选，不经 rerank**，hits 不含 rerank
   字段）。**不调 CHAT 模型、不回填正文、不建 SSE、不限流**。请求体仅 `query` + 可选 `dataset_ids`，出现 `config_id` → 422。
   执行期错误走 HTTP 状态码（见错误码）。当前为接口预留实现。
 
@@ -80,8 +80,9 @@ scope 校验。RAG 流额外要求 `config_id`（缺失 → 422）并在建流�
 
 通过后读取数据集级 `recall_config`（多数据集混合取首个 dataset，空数据集回退系统默认）并组装
 `RecallRequest`：`query` ← body；`user_id` ← claims `sub`；`dataset_ids` ← scope 解析结果；
-`doc_ids` = None；`top_k` ← `recall_result_limit`（RRF 候选池 / rerank 输入窗口）；
-`bm25_top_k` / `sparse_top_k` / `dense_top_k` ← 对应 per-route 配置。上述策略字段均由服务端配置决定，
+`doc_ids` = None；`top_k` ← `recall_result_limit`（融合候选池 / rerank 输入窗口）；
+`bm25_top_k` / `sparse_top_k` / `dense_top_k` ← 对应 per-route 配置；
+`fusion_strategy_override` 与三路 `fusion_*_weight_override` ← 对应融合配置。上述策略字段均由服务端配置决定，
 不接受请求覆盖。
 
 ### 5.1 RAG 流（建流在前）
@@ -89,8 +90,8 @@ scope 校验。RAG 流额外要求 `config_id`（缺失 → 422）并在建流�
 建立 SSE 流，执行复用 [src/application/recall_stream_runtime.py](../../src/application/recall_stream_runtime.py)
 的 `recall_event_stream`（`config_id` 来自 body）：先按 `(user_id, CHAT, config_id)` 前置校验
 用户模型——不可用即 `error RECALL_MODEL_CONFIG_MISSING`、**不进入召回**；通过后在流内
-`asyncio.wait_for(pipeline.execute(req), RECALL_STREAM_TIMEOUT_MS)`，对 RRF 候选做 rerank 精排
-（`_rerank_hits`：不可用一律降级 RRF 顺序、截断数据集级 `rerank_top_n`，无数据集配置时回退
+`asyncio.wait_for(pipeline.execute(req), RECALL_STREAM_TIMEOUT_MS)`，对融合候选做 rerank 精排
+（`_rerank_hits`：不可用一律降级当前融合顺序、截断数据集级 `rerank_top_n`，无数据集配置时回退
 `RERANK_DEFAULT_TOP_N`），再按 token 预算拼装上下文
 流式生成：
 
@@ -107,7 +108,7 @@ scope 校验。RAG 流额外要求 `config_id`（缺失 → 422）并在建流�
 
 执行用 [src/application/recall_json_runtime.py](../../src/application/recall_json_runtime.py) 的 `run_recall_json`：
 `asyncio.wait_for(pipeline.execute(req), RECALL_STREAM_TIMEOUT_MS)` 后用
-[recall_serialization.py](../../src/application/recall_serialization.py) 的 `serialize_hits`（仅 RRF 字段，
+[recall_serialization.py](../../src/application/recall_serialization.py) 的 `serialize_hits`（仅融合字段，
 不含 rerank 字段——RAG 流改用同模块的 `serialize_reranked_hits`）组装 `{hits, failed_sources}` JSON。
 执行期异常映射为 `RecallApiError` 经全局 handler 转 HTTP 状态码：
 无默认 EMBEDDING 配置 → `422`、全路失败 → `500`、超时 → `504`、未预期异常 → `500`（错误码同 RAG 流，
@@ -116,7 +117,7 @@ scope 校验。RAG 流额外要求 `config_id`（缺失 → 422）并在建流�
 **映射**则按载体各实现一份（SSE 帧 vs HTTP 状态码），用同一套 `CODE_*` 常量保证两端错误码一致。
 `dataset_ids` scope 授权校验亦抽为单一来源 `recall_session_auth.resolve_dataset_scope`，两端点共用。
 
-`top_k`（RRF 候选池）、三路 per-route top_k、`sources` / `strict` 由配置而非请求决定，因此
+`top_k`（融合候选池）、三路 per-route top_k、`sources` / `strict` 由配置而非请求决定，因此
 pipeline 与各路 retriever 都是无用户态的长期实例。
 
 ## 6. 并发限流
@@ -139,6 +140,7 @@ CORS 复用全局 `CORSMiddleware`；对外环境必须把 `CORS_ORIGINS` 由 `*
 - `sparse` → `SparseRetriever(compose_vector_storage_facade(), score_threshold=...)`；
 - `dense` → `DenseRetriever(compose_vector_storage_facade(), score_threshold=...)`；
 - 配置中出现未登记 source → 装配期 `ValueError`，不静默跳过。
+- `RECALL_FUSION_STRATEGY` 与三路 `RECALL_FUSION_*_WEIGHT` 注入 `RecallPipelineConfig`，作为无数据集覆盖时的融合默认值。
 
 sparse 底座的稀疏编码模型不在装配期加载，而是执行期按发起用户的默认 `SPARSE_EMBEDDING`
 配置经 adapter 解析（per-user，当前 provider 为 `doubao_vision` / `bge_m3`）；dense 底座

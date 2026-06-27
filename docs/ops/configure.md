@@ -187,6 +187,10 @@ logs/
 | `RECALL_SPARSE_TOP_K` | `50` | RAG pipeline sparse 路执行期召回深度；数据集级 `recall_config.sparse_top_k` 未配置时使用 |
 | `RECALL_BM25_TOP_K` | `100` | RAG pipeline bm25 路执行期召回深度；数据集级 `recall_config.bm25_top_k` 未配置时使用 |
 | `RECALL_ENABLED_SOURCES` | `bm25,sparse,dense` | 启用的召回路（逗号分隔）。本期默认开启三路；运维侧可显式 set `bm25,sparse` 暂时回退到 dev 旧行为；未登记的 source 出现在配置中装配期 `ValueError` |
+| `RECALL_FUSION_STRATEGY` | `rrf` | 召回融合策略，可选 `rrf` / `weighted_score`。默认保持 RRF；`weighted_score` 仅在 BM25/sparse/dense 召回后、rerank 前生效 |
+| `RECALL_FUSION_BM25_WEIGHT` | `0.2` | `weighted_score` 下 BM25 路权重；允许为 0，active source 权重和为 0 时本次融合失败 |
+| `RECALL_FUSION_SPARSE_WEIGHT` | `0.3` | `weighted_score` 下 sparse 路权重；允许为 0，active source 权重和为 0 时本次融合失败 |
+| `RECALL_FUSION_DENSE_WEIGHT` | `0.5` | `weighted_score` 下 dense 路权重；允许为 0，active source 权重和为 0 时本次融合失败 |
 | `SPARSE_RETRIEVAL_TOP_K` | `10` | sparse 召回 facade 直调时调用方未传 `top_k` 的兜底值；完整 RAG pipeline 不读取它作为 sparse 深召回默认 |
 | `SPARSE_RETRIEVAL_SCORE_THRESHOLD` | `0.0` | sparse 召回默认 score 阈值（0.0 = 不过滤；详见 [vectorization.md §9.4](../internals/vectorization.md)） |
 | `DENSE_RETRIEVAL_TOP_K` | `10` | dense 召回 facade 直调时调用方未传 `top_k` 的兜底值；完整 RAG pipeline 不读取它作为 dense 深召回默认 |

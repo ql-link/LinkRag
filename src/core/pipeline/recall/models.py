@@ -2,13 +2,38 @@
 
 包含两类 hit：
 - ``RetrieverHit``：单路返回的原始候选，pipeline 内部消费；
-- ``RecallHit``：RRF 融合后对外输出的候选，含融合分与每路原始分。
+- ``RecallHit``：融合后对外输出的候选，含融合分与每路原始分。
 
 不包含 chunk 正文字段（content/text/body）——召回阶段只返回 chunk_id 与元信息，
 正文留给下游 reranker / 上下文拼装阶段按需反查 MySQL。
 """
 
+import math
 from dataclasses import dataclass
+
+FUSION_STRATEGY_RRF = "rrf"
+FUSION_STRATEGY_WEIGHTED_SCORE = "weighted_score"
+SUPPORTED_FUSION_STRATEGIES = frozenset({FUSION_STRATEGY_RRF, FUSION_STRATEGY_WEIGHTED_SCORE})
+
+
+def normalize_fusion_strategy(value: str, *, field_name: str = "fusion_strategy") -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string")
+    normalized = value.strip().lower()
+    if normalized not in SUPPORTED_FUSION_STRATEGIES:
+        supported = ", ".join(sorted(SUPPORTED_FUSION_STRATEGIES))
+        raise ValueError(f"{field_name} must be one of: {supported}")
+    return normalized
+
+
+def validate_fusion_weight(value: float, *, field_name: str) -> float:
+    try:
+        normalized = float(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a finite float >= 0") from exc
+    if not math.isfinite(normalized) or normalized < 0:
+        raise ValueError(f"{field_name} must be a finite float >= 0")
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -38,8 +63,8 @@ class RecallHit:
         chunk_id: chunk 唯一标识。
         doc_id: chunk 所属文档 id。
         dataset_id: chunk 所属数据集 id。
-        fused_score: RRF 融合得分（已装配的所有命中路 ``1/(k+rank)`` 之和）。
-        scores: 每一路原始打分；未命中的路填 ``None``，键集合等于已装配的全部 source 名。
+        fused_score: 当前融合策略产出的融合得分。
+        scores: 每一路原始打分；未命中的路填 ``None``，键集合等于本次生效的 source 名。
     """
 
     chunk_id: str
@@ -61,7 +86,7 @@ class RecallRequest:
         dataset_ids: 数据集范围，**允许空列表**（表示不限数据集做全库召回，
             调用方自行保证身份合法）。
         doc_ids: 可选文档过滤；不传或 ``None`` 表示不限。
-        top_k: RRF 融合后候选池上限，即 rerank 输入窗口；必须为正整数。由服务端配置决定
+        top_k: 融合后候选池上限，即 rerank 输入窗口；必须为正整数。由服务端配置决定
             （数据集级 ``recall_result_limit``，无数据集配置时回退 ``RECALL_RESULT_LIMIT``），
             不作为外部请求字段。本字段不再作为各路执行期 top_k。
         bm25_top_k: BM25 路执行期召回规模上限；来自数据集级 ``recall_config.bm25_top_k``。
@@ -76,6 +101,11 @@ class RecallRequest:
             来自数据集级 ``recall_config.recall_enabled_sources``。
         strict_override: 可选容错模式覆盖；``None`` 时沿用 pipeline 装配期 ``RecallPipelineConfig.strict``。
             来自数据集级 ``recall_config.recall_strict``。
+        fusion_strategy_override: 可选融合策略覆盖；``None`` 时沿用 pipeline 装配期
+            ``RecallPipelineConfig.fusion_strategy``。来自数据集级
+            ``recall_config.recall_fusion_strategy``，不来自 HTTP 请求体。
+        fusion_*_weight_override: 可选三路融合权重覆盖；``None`` 时沿用 pipeline 装配期默认值。
+            仅 ``weighted_score`` 使用，来自数据集级 ``recall_config``。
     """
 
     query: str
@@ -90,6 +120,10 @@ class RecallRequest:
     dense_score_threshold_override: float | None = None
     enabled_sources: list[str] | None = None
     strict_override: bool | None = None
+    fusion_strategy_override: str | None = None
+    fusion_bm25_weight_override: float | None = None
+    fusion_sparse_weight_override: float | None = None
+    fusion_dense_weight_override: float | None = None
 
 
 @dataclass
@@ -98,7 +132,7 @@ class RecallResponse:
 
     Attributes:
         query: 回显原始 query。
-        hits: RRF 融合后的候选列表，按 ``fused_score`` 降序。
+        hits: 融合后的候选列表，按 ``fused_score`` 降序。
         per_source_counts: 各路返回的命中数；键集合 = 已装配的全部 source 名；
             失败路与返回空列表的路都计 0。
         failed_sources: 抛异常的路（按构造顺序）；返回空列表的路不入此名单。
@@ -120,8 +154,31 @@ class RecallPipelineConfig:
         parallel: 是否并行触发各路；默认 True；False 时按 retrievers 构造顺序串行。
         strict: 严格容错；True 时任一路异常立即抛 ``RecallError``。
         rrf_k: RRF 平滑常数；业界默认 60。
+        fusion_strategy: 融合策略；默认 ``rrf``。
+        fusion_*_weight: ``weighted_score`` 三路权重；单项允许为 0。
     """
 
     parallel: bool = True
     strict: bool = False
     rrf_k: int = 60
+    fusion_strategy: str = FUSION_STRATEGY_RRF
+    fusion_bm25_weight: float = 0.2
+    fusion_sparse_weight: float = 0.3
+    fusion_dense_weight: float = 0.5
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "fusion_strategy",
+            normalize_fusion_strategy(self.fusion_strategy),
+        )
+        for field_name in (
+            "fusion_bm25_weight",
+            "fusion_sparse_weight",
+            "fusion_dense_weight",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                validate_fusion_weight(getattr(self, field_name), field_name=field_name),
+            )

@@ -24,8 +24,8 @@ def _hit(chunk_id, source, score=1.0, doc_id=100, dataset_id=10):
 
 
 @pytest.mark.asyncio
-async def test_fused_hits_truncated_to_rrf_limit():
-    """融合结果按 request.top_k（RRF 候选池窗口）截断，各路 top_k 独立。"""
+async def test_fused_hits_truncated_to_fusion_limit():
+    """融合结果按 request.top_k（融合候选池窗口）截断，各路 top_k 独立。"""
     bm25_hits = [_hit(f"c{i}", SOURCE_BM25, score=10.0 - i) for i in range(5)]
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=bm25_hits)
     pipeline = RecallPipeline([bm25])
@@ -41,7 +41,7 @@ async def test_fused_hits_truncated_to_rrf_limit():
 
 @pytest.mark.asyncio
 async def test_route_top_k_dispatched_per_source():
-    """三路执行期 top_k 按 source 分发，不再统一使用 RRF 候选池窗口。"""
+    """三路执行期 top_k 按 source 分发，不再统一使用融合候选池窗口。"""
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("b1", SOURCE_BM25)])
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[_hit("s1", SOURCE_SPARSE)])
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("d1", SOURCE_DENSE)])
@@ -65,8 +65,8 @@ async def test_route_top_k_dispatched_per_source():
 
 
 @pytest.mark.asyncio
-async def test_fused_hits_truncated_to_rrf_limit_not_route_top_k():
-    """深召回后 RRF 只保留候选池窗口，per_source_counts 仍反映各路深度。"""
+async def test_fused_hits_truncated_to_fusion_limit_not_route_top_k():
+    """深召回后只保留融合候选池窗口，per_source_counts 仍反映各路深度。"""
     bm25 = FakeRetriever(
         source=SOURCE_BM25,
         hits=[_hit(f"b{i}", SOURCE_BM25, score=100.0 - i) for i in range(100)],
@@ -129,8 +129,8 @@ async def test_enabled_sources_uses_route_top_k_only_for_active_sources():
 
 
 @pytest.mark.asyncio
-async def test_unknown_source_uses_rrf_limit_as_fallback_top_k():
-    """新增未知召回路没有专属 top_k 字段时，回退使用 RRF 候选池窗口。"""
+async def test_unknown_source_uses_fusion_limit_as_fallback_top_k():
+    """新增未知召回路没有专属 top_k 字段时，回退使用融合候选池窗口。"""
     graph = FakeRetriever(source="graph", hits=[_hit("g1", "graph")])
     pipeline = RecallPipeline([graph])
 
