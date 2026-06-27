@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -479,6 +479,165 @@ class ParsePipelineRepository:
         pipeline.finished_at = finished_at
         pipeline.total_duration_ms = self._duration_ms(pipeline.started_at, finished_at)
         await db.commit()
+
+    # ------------------------------------------------------------------
+    # 并行 DAG 专用：并发安全的单列状态写入 + 聚合终态汇总
+    #
+    # 与上面串行版 mark_* 的关键区别：阶段写入只 UPDATE 自己那一列
+    # （``<stage>_status`` [+ ``<stage>_duration_ms``]），绝不触碰
+    # ``pipeline_status`` / ``failed_stage`` / ``failure_reason`` /
+    # ``started_at`` / ``finished_at`` 等聚合字段。并行节点各用自己的 session
+    # 调用，定向单列 UPDATE 互不串字段；聚合终态由编排器在 DAG 跑完后用
+    # ``begin_pipeline`` / ``finalize_pipeline_*`` 单写者收敛。
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def stage_status_snapshot(pipeline: DocumentParsePipeline) -> dict[str, str]:
+        """读出各阶段当前状态快照（stage → status）。
+
+        供并行 DAG 在开跑前一次性读出继承状态（重试自跳过依据），避免并发节点共享
+        ORM 对象。只读已加载的列属性，不触发新查询。
+        """
+        return {stage: getattr(pipeline, fld) for stage, fld in _STAGE_STATUS_FIELD.items()}
+
+    async def _update_pipeline(
+        self,
+        db: AsyncSession,
+        *,
+        pipeline_id: int,
+        values: dict,
+    ) -> None:
+        await db.execute(
+            update(self.model_cls).where(self.model_cls.id == pipeline_id).values(**values)
+        )
+        await db.commit()
+
+    async def mark_stage_processing(
+        self,
+        db: AsyncSession,
+        *,
+        pipeline_id: int,
+        stage: str,
+    ) -> None:
+        """并发安全：仅把本阶段列翻 PROCESSING，不动聚合字段。"""
+        await self._update_pipeline(
+            db,
+            pipeline_id=pipeline_id,
+            values={_STAGE_STATUS_FIELD[stage]: STAGE_STATUS_PROCESSING},
+        )
+
+    async def mark_stage_success(
+        self,
+        db: AsyncSession,
+        *,
+        pipeline_id: int,
+        stage: str,
+        duration_ms: int | None,
+    ) -> None:
+        """并发安全：仅写本阶段 SUCCESS + 耗时；pipeline_status 由编排器收敛。"""
+        await self._update_pipeline(
+            db,
+            pipeline_id=pipeline_id,
+            values={
+                _STAGE_STATUS_FIELD[stage]: STAGE_STATUS_SUCCESS,
+                _STAGE_DURATION_FIELD[stage]: duration_ms,
+            },
+        )
+
+    async def mark_stage_failed(
+        self,
+        db: AsyncSession,
+        *,
+        pipeline_id: int,
+        stage: str,
+        duration_ms: int | None,
+    ) -> None:
+        """并发安全：仅写本阶段 FAILED + 耗时；终态由编排器收敛。"""
+        await self._update_pipeline(
+            db,
+            pipeline_id=pipeline_id,
+            values={
+                _STAGE_STATUS_FIELD[stage]: STAGE_STATUS_FAILED,
+                _STAGE_DURATION_FIELD[stage]: duration_ms,
+            },
+        )
+
+    async def begin_pipeline(
+        self,
+        db: AsyncSession,
+        *,
+        pipeline_id: int,
+        started_at: datetime,
+    ) -> None:
+        """DAG 开跑前由编排器单写者调用：``pipeline_status`` → PROCESSING。
+
+        ``started_at`` 仅在为 NULL 时写入（COALESCE），保持整体起点稳定（重试继承
+        场景起点不被覆盖）；清空上一轮失败标记与 ``finished_at``。等价串行
+        ``_mark_started`` 的聚合部分，但只调一次、无并发。
+        """
+        await self._update_pipeline(
+            db,
+            pipeline_id=pipeline_id,
+            values={
+                "pipeline_status": PIPELINE_STATUS_PROCESSING,
+                "started_at": func.coalesce(self.model_cls.started_at, started_at),
+                "finished_at": None,
+                "failed_stage": None,
+                "recover_from_stage": None,
+                "failure_reason": None,
+            },
+        )
+
+    async def finalize_pipeline_success(
+        self,
+        db: AsyncSession,
+        *,
+        pipeline_id: int,
+        total_duration_ms: int | None,
+        finished_at: datetime,
+    ) -> None:
+        """DAG 全阶段成功后由编排器单写者翻 ``pipeline_status=SUCCESS``。"""
+        await self._update_pipeline(
+            db,
+            pipeline_id=pipeline_id,
+            values={
+                "pipeline_status": PIPELINE_STATUS_SUCCESS,
+                "total_duration_ms": total_duration_ms,
+                "finished_at": finished_at,
+                "failed_stage": None,
+                "recover_from_stage": None,
+                "failure_reason": None,
+            },
+        )
+
+    async def finalize_pipeline_failed(
+        self,
+        db: AsyncSession,
+        *,
+        pipeline_id: int,
+        failed_stage: str,
+        reason: str,
+        total_duration_ms: int | None,
+        finished_at: datetime,
+    ) -> None:
+        """DAG 有阶段失败后由编排器单写者翻 ``pipeline_status=FAILED``。
+
+        ``failed_stage`` 由编排器按 ``POST_PROCESS_STAGE_ORDER`` 选最靠前的失败
+        阶段，与串行"首个失败即终态"的 ``recover_from_stage`` 语义对齐（重试从该
+        阶段恢复）。
+        """
+        await self._update_pipeline(
+            db,
+            pipeline_id=pipeline_id,
+            values={
+                "pipeline_status": PIPELINE_STATUS_FAILED,
+                "failed_stage": failed_stage,
+                "recover_from_stage": failed_stage,
+                "failure_reason": (reason or "")[:MAX_FAILURE_REASON_LENGTH],
+                "total_duration_ms": total_duration_ms,
+                "finished_at": finished_at,
+            },
+        )
 
     # ------------------------------------------------------------------
     # 重试链路相关：CAS 抢占、继承式新建、校验失败终态行

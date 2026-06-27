@@ -162,9 +162,12 @@ class ChunkRepository:
         if not chunk_ids:
             return 0
 
+        # 只 SET dense 维度：dense 成功不再越界把 es 重置为 PENDING（与 mark_indexing
+        # 同款解耦修复）。并行 DAG 下 dense 成功若重置 es，会把并发跑完的 es SUCCESS 冲回
+        # PENDING（写写竞争）；串行下 es 排在 dense 之后、dense 成功时 es 本就是 PENDING，
+        # 故移除对串行是 no-op。内容变更触发的 reindex 由 update_chunk_for_reindex 自行重置。
         values: dict[str, object] = {
             "dense_vector_status": CHUNK_STATUS_INDEXED,
-            "es_status": ES_STATUS_PENDING,
         }
         if embedding_model is not None:
             values["dense_vector_model"] = embedding_model
@@ -188,12 +191,12 @@ class ChunkRepository:
         if not chunk_ids:
             return 0
 
+        # 同上：dense 失败只写自己那列，不越界重置 es。
         return await self._execute_status_update(
             db,
             chunk_ids,
             values={
                 "dense_vector_status": CHUNK_STATUS_FAILED,
-                "es_status": ES_STATUS_PENDING,
             },
             expected_status=expected_status,
             protect_delete_statuses=True,
@@ -217,14 +220,17 @@ class ChunkRepository:
           防止 pipeline 现场过滤口径错误时把已 SUCCESS chunk 重新拉回 INDEXING。
         - ``expected_status`` 仅在 ``allowed_statuses`` 为 ``None`` / 空时生效，单值 CAS。
 
-        SET 子句进入 dense INDEXING 时把 sparse / es 状态都重置为 PENDING；CAS WHERE
-        拦下时整条 UPDATE 不生效，副作用也不会发生。``_active_predicate`` 始终兜底，
-        不会改到非 ACTIVE（已删除）的 chunk。
+        **只 SET dense 维度**（与 :meth:`mark_sparse_indexing` 只写 sparse 对称）：不再
+        连带把 sparse / es 重置为 PENDING。named-dense 解耦后 dense / sparse / es 三路
+        独立、可并行，dense 认领 chunk 不应越界改写另外两路状态——并行 DAG 下该越界
+        重置会与并发跑完的 es / sparse 抢同一行、把其 SUCCESS 冲回 PENDING（写写竞争）。
+        串行链路里 dense 排在 es / sparse 之前、dense 未成功时两者本就是 PENDING，故移除
+        此重置对串行是 no-op；内容变更触发的 reindex 另由
+        :meth:`update_chunk_for_reindex` 自行重置下游，不依赖本方法。``_active_predicate``
+        始终兜底，不会改到非 ACTIVE（已删除）的 chunk。
         """
         values: dict[str, object] = {
             "dense_vector_status": CHUNK_STATUS_INDEXING,
-            "sparse_vector_status": SPARSE_VECTOR_STATUS_PENDING,
-            "es_status": ES_STATUS_PENDING,
         }
         if embedding_model is not None:
             values["dense_vector_model"] = embedding_model
