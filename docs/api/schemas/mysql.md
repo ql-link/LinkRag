@@ -55,7 +55,7 @@ ORM：（未在 `src/models/` 中映射，由业务侧管理）
 
 > **协议（protocol）与入口（api_base_url）三层语义**（LINK-123）：LLM 调用拆成两个正交维度——`protocol`（API 家族，决定 HTTP 怎么拼）× `capability`（用途，决定调哪个端点）。`protocol` 枚举：`openai` / `anthropic` / `google` / `jina` / `dashscope` / `doubao_vision` / `bge_m3`（小写、大小写敏感；后两个为稀疏向量专用）。同一厂商不同能力可走不同协议（如千问 chat 走 `openai`、rerank 走 `dashscope`），故 `protocol` ≠ `provider_type`。
 >
-> 三层定位：**厂商层**（`llm_system_provider`）= 默认模板，不参与运行决策；**模型能力层**（`llm_provider_model`）= 协议与入口的事实来源；**用户配置层**（`llm_user_config`）= 运行快照，从模型能力层复制，Python 下游按 `(protocol, capability)` 选 adapter，绝不 fallback 厂商默认。`api_base_url` 在厂商层保存协议基地址，仅用于管理端预填；在模型能力层和用户配置层保存**完整端点 URL**，Python adapter 直接请求该 URL，不再拼 capability 后缀。`google` 协议例外，保存到 `/v1beta` 为止，由 Python 按模型和流式模式补全 Gemini 原生路径。
+> 三层定位：**厂商层**（`llm_system_provider`）= 默认模板，不参与运行决策；**模型能力层**（`llm_provider_model`）= 协议与入口的事实来源；**用户配置层**（`llm_user_config`）= 用户自配运行快照，从模型能力层复制，Python 下游按 `(protocol, capability)` 选 adapter，绝不 fallback 厂商默认。用户某能力没有自配默认时，Python 回退到 `llm_system_preset` 中 `provider_type='linkrag' AND is_default=true AND is_active=true` 的系统默认预设。`api_base_url` 在厂商层保存协议基地址，仅用于管理端预填；在模型能力层、系统预设层和用户配置层保存**完整端点 URL**，Python adapter 直接请求该 URL，不再拼 capability 后缀。`google` 协议例外，保存到 `/v1beta` 为止，由 Python 按模型和流式模式补全 Gemini 原生路径。
 
 ### `llm_system_provider` — LLM 系统级厂商配置
 
@@ -108,11 +108,14 @@ ORM：[`SystemPresetDB`](../../../src/models/db_models.py)
 | `api_base_url` | VARCHAR(512) | 调用入口完整端点 URL（复制自模型能力层） |
 | `api_key` | VARCHAR(512) | 平台 Key，**加密存储** |
 | `is_active` | BOOLEAN | 是否对新用户下发 |
+| `is_default` | BOOLEAN | 是否为该能力当前生效的 LinkRag 系统默认预设，默认 `false` |
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
 
-索引：`uk_preset_provider_model_cap(provider_id, model_name, capability)`。
+索引：
+- `uk_preset_provider_model_cap(provider_id, model_name, capability)`
+- `idx_preset_provider_cap_default(provider_type, capability, is_active, is_default)`
 
-说明：Python 运行时不直接读取本表决定生效配置；Java 注册时会将 active 预设复制进 `llm_user_config`。
+说明：LinkRag 作为系统服务厂商时，Python 会读取本表中的 LinkRag 默认预设作为用户无自配默认时的兜底。管理端应保证同一 `capability` 下最多一个 `provider_type='linkrag' AND is_active=true AND is_default=true`。
 
 ### `llm_user_config` — 用户级 LLM 配置
 
@@ -142,9 +145,20 @@ ORM：[`UserLLMConfigDB`](../../../src/models/db_models.py)
 运行时读取生效配置：
 
 ```sql
+-- 1. 用户自配默认
 SELECT *
 FROM llm_user_config
 WHERE user_id = :user_id
+  AND capability = :capability
+  AND is_default = TRUE
+  AND is_active = TRUE
+  AND is_system_preset = FALSE
+LIMIT 1;
+
+-- 2. 用户未配置时，回退 LinkRag 系统默认
+SELECT *
+FROM llm_system_preset
+WHERE provider_type = 'linkrag'
   AND capability = :capability
   AND is_default = TRUE
   AND is_active = TRUE

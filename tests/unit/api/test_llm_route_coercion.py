@@ -4,6 +4,7 @@
 锁定 M2/M3 修复：弱类型 ID 不再下沉到 SQL 靠驱动隐式转换，路由层显式校验；
 并验证直调 LLM 缺用户模型配置时翻成 HTTP 422，不走系统模型兜底。
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -37,6 +38,7 @@ def test_coerce_int_rejects_empty():
 @pytest.mark.asyncio
 async def test_resolve_provider_missing_config_maps_to_clear_422(monkeypatch):
     """统一解析未命中抛 UserModelConfigMissingError → HTTP 422，返回可读缺配置原因。"""
+
     async def _raise(**kwargs):
         raise UserModelConfigMissingError("EMBEDDING", 123)
 
@@ -78,6 +80,7 @@ async def test_resolve_provider_disables_system_fallback(monkeypatch):
     assert captured["user_id"] == 123
     assert captured["capability"] == "CHAT"
     assert captured["config_id"] == 456
+    assert captured["config_source"] == "USER"
     assert captured["allow_system_fallback"] is False
     assert captured["override_model"] == "gpt-test"
 
@@ -88,12 +91,15 @@ async def test_legacy_ocr_endpoint_resolves_vision_capability(monkeypatch):
     provider = AsyncMock()
     provider.analyze_image.return_value = SimpleNamespace(model_dump=lambda: {"content": "text"})
 
-    async def _resolve(db, user_id, capability, *, config_id=None, override_model=None):
+    async def _resolve(
+        db, user_id, capability, *, config_id=None, config_source=None, override_model=None
+    ):
         captured.update(
             {
                 "user_id": user_id,
                 "capability": capability,
                 "config_id": config_id,
+                "config_source": config_source,
                 "override_model": override_model,
             }
         )
@@ -112,6 +118,7 @@ async def test_legacy_ocr_endpoint_resolves_vision_capability(monkeypatch):
         "user_id": "123",
         "capability": "VISION",
         "config_id": "77",
+        "config_source": "USER",
         "override_model": None,
     }
     # OCR 统一走 VISION：调 analyze_image，prompt 透传、media_type 由 base64 嗅探（"abc" 无法解码 → 回退 jpeg）

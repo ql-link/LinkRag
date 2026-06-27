@@ -1,7 +1,7 @@
 """ConfigReaderService 配置读取服务。
 
 Java 管理端负责写入 LLM 配置，Python 只读取运行时生效配置：
-``llm_user_config`` 中 ``user_id + capability + is_default + is_active`` 命中的记录。
+先读用户自己的 ``llm_user_config`` 默认配置；未命中时读 LinkRag 系统默认预设。
 """
 
 from typing import Any, Dict, List, Optional
@@ -12,7 +12,7 @@ from sqlalchemy.orm import selectinload
 
 from src.cache.cache_manager import CacheManager, cache_manager
 from src.core.llm.encryption import decrypt_api_key as decrypt_api_key_util
-from src.models.db_models import SystemProviderDB, UserLLMConfigDB
+from src.models.db_models import SystemPresetDB, SystemProviderDB, UserLLMConfigDB
 
 
 def _user_config_to_dict(cfg: UserLLMConfigDB) -> Dict[str, Any]:
@@ -30,6 +30,28 @@ def _user_config_to_dict(cfg: UserLLMConfigDB) -> Dict[str, Any]:
         "is_active": cfg.is_active,
         "is_default": cfg.is_default,
         "is_system_preset": cfg.is_system_preset,
+        "config_source": "USER",
+        "source": "USER",
+    }
+
+
+def _system_preset_to_dict(cfg: SystemPresetDB) -> Dict[str, Any]:
+    """将 ORM 系统预设行转换为运行时配置字典。"""
+    return {
+        "id": cfg.id,
+        "user_id": "system",
+        "provider_id": cfg.provider_id,
+        "provider_type": cfg.provider_type,
+        "protocol": cfg.protocol,
+        "api_key": cfg.api_key,
+        "api_base_url": cfg.api_base_url,
+        "model_name": cfg.model_name,
+        "capability": cfg.capability,
+        "is_active": cfg.is_active,
+        "is_default": cfg.is_default,
+        "is_system_preset": True,
+        "config_source": "SYSTEM",
+        "source": "SYSTEM",
     }
 
 
@@ -38,6 +60,7 @@ class ConfigReaderService:
 
     职责：
     - 从 MySQL 读取 llm_user_config 表
+    - 从 MySQL 读取 llm_system_preset 表中 LinkRag 默认预设
     - 从 MySQL 读取 llm_system_provider 表
     - 维护 Redis 缓存
     - 配置变更时主动失效缓存
@@ -91,6 +114,7 @@ class ConfigReaderService:
             select(UserLLMConfigDB)
             .where(UserLLMConfigDB.user_id == user_id)
             .where(UserLLMConfigDB.is_active == True)
+            .where(UserLLMConfigDB.is_system_preset == False)
             .order_by(UserLLMConfigDB.id.desc())
         )
         result = await self._db.execute(stmt)
@@ -111,7 +135,11 @@ class ConfigReaderService:
         provider_type: Optional[str] = None,
         use_cache: bool = True,
     ) -> Optional[Dict[str, Any]]:
-        """获取用户指定能力的默认 LLM 配置
+        """获取用户指定能力的生效默认 LLM 配置
+
+        读取顺序：
+        1. 用户自己的 ``llm_user_config`` 默认配置；
+        2. 未命中且未指定 ``provider_type`` 时，回退到 LinkRag 系统默认预设。
 
         Args:
             user_id: 用户 ID
@@ -120,7 +148,7 @@ class ConfigReaderService:
             use_cache: 是否使用缓存
 
         Returns:
-            该能力的默认配置，未设置则返回 None
+            该能力的生效默认配置，未设置则返回 None
         """
         capability_upper = capability.upper()
         cache_key = f"llm:user:{user_id}:default:{capability_upper}"
@@ -146,6 +174,7 @@ class ConfigReaderService:
             .where(UserLLMConfigDB.capability == capability_upper)
             .where(UserLLMConfigDB.is_default == True)
             .where(UserLLMConfigDB.is_active == True)
+            .where(UserLLMConfigDB.is_system_preset == False)
         )
         if provider_type:
             stmt = stmt.where(UserLLMConfigDB.provider_type == provider_type)
@@ -154,13 +183,21 @@ class ConfigReaderService:
         result = await self._db.execute(stmt)
         cfg = result.scalars().first()
 
+        cache_user_default = cfg is not None
         if cfg is None:
-            return None
+            if provider_type:
+                return None
+            config = await self.get_default_linkrag_system_preset_by_capability(
+                capability_upper, use_cache=use_cache
+            )
+            if config is None:
+                return None
+        else:
+            config = _user_config_to_dict(cfg)
 
-        config = _user_config_to_dict(cfg)
-
-        # 回填缓存
-        if use_cache:
+        # 用户默认缓存只保存用户表命中结果；LinkRag 预设走 system cache，避免系统默认切换后
+        # 用户 key 中残留旧预设。
+        if use_cache and cache_user_default:
             await self._cache.set(cache_key, config)
 
         return config
@@ -195,6 +232,7 @@ class ConfigReaderService:
             .where(UserLLMConfigDB.id == config_id)
             .where(UserLLMConfigDB.user_id == user_id)
             .where(UserLLMConfigDB.is_active == True)
+            .where(UserLLMConfigDB.is_system_preset == False)
         )
         result = await self._db.execute(stmt)
         cfg = result.scalar_one_or_none()
@@ -241,6 +279,7 @@ class ConfigReaderService:
             .where(UserLLMConfigDB.user_id == user_id)
             .where(UserLLMConfigDB.capability == capability_upper)
             .where(UserLLMConfigDB.is_active == True)
+            .where(UserLLMConfigDB.is_system_preset == False)
             .order_by(UserLLMConfigDB.id.desc())
         )
         result = await self._db.execute(stmt)
@@ -334,6 +373,76 @@ class ConfigReaderService:
             provider_type=provider_type, use_cache=use_cache
         )
         return providers[0] if providers else None
+
+    async def get_system_preset_by_id(
+        self, config_id: int, use_cache: bool = True
+    ) -> Optional[Dict[str, Any]]:
+        """根据 ID 获取系统预设配置。
+
+        仅供 Java 返回 ``source=SYSTEM`` 时按 ``source + configId`` 精确定位。
+        """
+        cache_key = f"llm:system:preset:{config_id}"
+
+        if use_cache:
+            cached = await self._cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+        if self._db is None:
+            return None
+
+        stmt = (
+            select(SystemPresetDB)
+            .where(SystemPresetDB.id == config_id)
+            .where(SystemPresetDB.is_active == True)
+            .where(SystemPresetDB.provider_type == "linkrag")
+            .limit(1)
+        )
+        result = await self._db.execute(stmt)
+        cfg = result.scalars().first()
+
+        if cfg is None:
+            return None
+
+        config = _system_preset_to_dict(cfg)
+        if use_cache:
+            await self._cache.set(cache_key, config)
+        return config
+
+    async def get_default_linkrag_system_preset_by_capability(
+        self, capability: str, use_cache: bool = True
+    ) -> Optional[Dict[str, Any]]:
+        """获取指定能力的 LinkRag 系统默认预设。"""
+        capability_upper = capability.upper()
+        cache_key = f"llm:system:linkrag:default:{capability_upper}"
+
+        if use_cache:
+            cached = await self._cache.get(cache_key)
+            if cached is not None:
+                return cached
+
+        if self._db is None:
+            return None
+
+        stmt = (
+            select(SystemPresetDB)
+            .where(SystemPresetDB.provider_type == "linkrag")
+            .where(SystemPresetDB.capability == capability_upper)
+            .where(SystemPresetDB.is_default == True)
+            .where(SystemPresetDB.is_active == True)
+            .order_by(SystemPresetDB.id.desc())
+            .limit(1)
+        )
+        result = await self._db.execute(stmt)
+        cfg = result.scalars().first()
+
+        if cfg is None:
+            return None
+
+        config = _system_preset_to_dict(cfg)
+        if use_cache:
+            await self._cache.set(cache_key, config)
+        return config
 
     async def clear_cache(self, user_id: Optional[str] = None) -> None:
         """清除缓存

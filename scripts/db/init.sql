@@ -76,10 +76,12 @@ CREATE TABLE IF NOT EXISTS llm_system_preset (
     api_base_url    VARCHAR(512)    COMMENT '调用入口完整端点 URL（复制自模型能力层）',
     api_key         VARCHAR(512)    NOT NULL COMMENT '平台 Key（加密）',
     is_active       BOOLEAN         NOT NULL DEFAULT TRUE COMMENT '是否对新用户下发',
+    is_default      BOOLEAN         NOT NULL DEFAULT FALSE COMMENT '是否为该能力当前生效的 LinkRag 系统默认预设',
     created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-    UNIQUE KEY uk_preset_provider_model_cap (provider_id, model_name, capability)
+    UNIQUE KEY uk_preset_provider_model_cap (provider_id, model_name, capability),
+    INDEX idx_preset_provider_cap_default (provider_type, capability, is_active, is_default)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '系统预设表';
 
 -- 3. 用户级 LLM 配置表（下游唯一生效源）

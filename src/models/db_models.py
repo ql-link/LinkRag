@@ -125,6 +125,7 @@ class SystemPresetDB(Base):
     api_base_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
     api_key: Mapped[str] = mapped_column(String(512), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=func.now(), onupdate=func.now(), nullable=False
@@ -141,6 +142,13 @@ class SystemPresetDB(Base):
             "capability",
             name="uk_preset_provider_model_cap",
         ),
+        Index(
+            "idx_preset_provider_cap_default",
+            "provider_type",
+            "capability",
+            "is_active",
+            "is_default",
+        ),
     )
 
 
@@ -149,8 +157,8 @@ class UserLLMConfigDB(Base):
 
     表：llm_user_config
 
-    系统预设与用户自配统一汇入本表，Python 按
-    (user_id, capability, is_default, is_active) 读取生效配置。
+    本表仅保存用户自己的配置。历史系统预设镜像行通过 is_system_preset 保留兼容，
+    Python 读取用户默认配置时排除该类历史行。
     """
 
     __tablename__ = "llm_user_config"
