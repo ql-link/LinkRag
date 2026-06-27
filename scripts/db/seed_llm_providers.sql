@@ -245,6 +245,8 @@ WHERE (
 UPDATE llm_provider_model pm
 JOIN llm_system_provider sp ON sp.id = pm.provider_id
 SET pm.display_name = CASE
+    WHEN pm.model_name = 'qwen3-asr-flash' AND pm.capability = 'ASR'
+        THEN 'Qwen ASR Flash'
     WHEN pm.model_name = 'deepseek-ai/DeepSeek-V4-Flash' AND pm.capability = 'CHAT'
         THEN 'DeepSeek V4 Flash'
     WHEN pm.model_name = 'BAAI/bge-m3' AND pm.capability = 'EMBEDDING'

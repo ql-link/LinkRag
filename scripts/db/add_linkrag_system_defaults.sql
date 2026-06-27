@@ -17,6 +17,9 @@ SET @linkrag_default_protocol = 'openai';
 SET @linkrag_encrypted_api_key = 'CHANGE_ME_ENCRYPTED_SILICONFLOW_KEY';
 SET @linkrag_volcengine_encrypted_api_key = 'CHANGE_ME_ENCRYPTED_VOLCENGINE_KEY';
 
+SET @linkrag_asr_model = 'qwen3-asr-flash';
+SET @linkrag_asr_display_name = 'Qwen ASR Flash';
+
 SET @linkrag_chat_model = 'deepseek-ai/DeepSeek-V4-Flash';
 SET @linkrag_chat_display_name = 'DeepSeek V4 Flash';
 SET @linkrag_chat_protocol = 'openai';
@@ -182,6 +185,22 @@ ON DUPLICATE KEY UPDATE
     is_active = TRUE,
     is_default = TRUE,
     updated_at = CURRENT_TIMESTAMP;
+
+-- 兼容历史已有 ASR 系统默认行：ASR 模型保持不变，只补短展示名。
+UPDATE llm_provider_model pm
+JOIN llm_system_provider sp ON sp.id = pm.provider_id
+SET pm.display_name = @linkrag_asr_display_name,
+    pm.updated_at = CURRENT_TIMESTAMP
+WHERE sp.provider_type = 'linkrag'
+  AND pm.capability = 'ASR'
+  AND pm.model_name = @linkrag_asr_model;
+
+UPDATE llm_system_preset
+SET display_name = @linkrag_asr_display_name,
+    updated_at = CURRENT_TIMESTAMP
+WHERE provider_type = 'linkrag'
+  AND capability = 'ASR'
+  AND model_name = @linkrag_asr_model;
 
 -- 清理上一版 LinkRag 系统预设，避免前端看到已废弃的只读配置。
 DELETE p
