@@ -195,13 +195,13 @@ UNION ALL
 UNION ALL
     SELECT id, 'jina-reranker-v3', 'RERANK', 'jina', 'https://api.jina.ai/v1/rerank', TRUE FROM llm_system_provider WHERE provider_type = 'jina'
 UNION ALL
-    SELECT id, 'Qwen/Qwen3.6-35B-A3B', 'CHAT', 'openai', 'https://api.siliconflow.cn/v1/chat/completions', TRUE FROM llm_system_provider WHERE provider_type = 'linkrag'
+    SELECT id, 'deepseek-ai/DeepSeek-V4-Flash', 'CHAT', 'openai', 'https://api.siliconflow.cn/v1/chat/completions', TRUE FROM llm_system_provider WHERE provider_type = 'linkrag'
 UNION ALL
     SELECT id, 'BAAI/bge-m3', 'EMBEDDING', 'openai', 'https://api.siliconflow.cn/v1/embeddings', TRUE FROM llm_system_provider WHERE provider_type = 'linkrag'
 UNION ALL
     SELECT id, 'BAAI/bge-reranker-v2-m3', 'RERANK', 'jina', 'https://api.siliconflow.cn/v1/rerank', TRUE FROM llm_system_provider WHERE provider_type = 'linkrag'
 UNION ALL
-    SELECT id, 'zai-org/GLM-4.5V', 'VISION', 'openai', 'https://api.siliconflow.cn/v1/chat/completions', TRUE FROM llm_system_provider WHERE provider_type = 'linkrag'
+    SELECT id, 'Qwen/Qwen3.6-27B', 'VISION', 'openai', 'https://api.siliconflow.cn/v1/chat/completions', TRUE FROM llm_system_provider WHERE provider_type = 'linkrag'
 UNION ALL
     SELECT id, 'mimo-v2.5-asr', 'ASR', 'openai', 'https://token-plan-cn.xiaomimimo.com/v1/chat/completions', TRUE FROM llm_system_provider WHERE provider_type = 'mimo'
 UNION ALL
@@ -217,22 +217,26 @@ UNION ALL
 UNION ALL
     SELECT id, 'doubao-embedding-vision-251215', 'SPARSE_EMBEDDING', 'doubao_vision', 'https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal', TRUE FROM llm_system_provider WHERE provider_type = 'volcengine'
 UNION ALL
-    -- bge-m3 稀疏：LinkRag 自部署 bge-m3-service；protocol=bge_m3，无需外部 API Key。
-    -- 注意：硅基流动 BAAI/bge-m3 走 OpenAI-compatible embeddings，当前不能直接替代 sparse lexical weights。
+    -- 稀疏向量默认走火山引擎多模态 embedding sparse 输出。
     -- 用户配置复制本目录的模型 url（无手填入口），故此处直接落完整端点；与 doubao 一致：api_base_url 即完整 url，adapter 直打不拼接。
-    SELECT id, 'bge-m3', 'SPARSE_EMBEDDING', 'bge_m3', 'http://103.205.254.30:37997/encode', TRUE FROM llm_system_provider WHERE provider_type = 'linkrag'
+    SELECT id, 'doubao-embedding-vision-251215', 'SPARSE_EMBEDDING', 'doubao_vision', 'https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal', TRUE FROM llm_system_provider WHERE provider_type = 'linkrag'
 ON DUPLICATE KEY UPDATE
     protocol     = VALUES(protocol),
     api_base_url = VALUES(api_base_url),
     is_active    = VALUES(is_active),
     updated_at   = CURRENT_TIMESTAMP;
 
--- BGE-M3 已迁移为 LinkRag 自部署能力，清理历史上挂在第三方厂商下的目录行。
+-- 清理历史 LinkRag 目录行。
 DELETE pm
 FROM llm_provider_model pm
 JOIN llm_system_provider sp ON sp.id = pm.provider_id
-WHERE pm.model_name = 'bge-m3'
-  AND pm.capability = 'SPARSE_EMBEDDING'
-  AND sp.provider_type <> 'linkrag';
+WHERE (
+    (pm.model_name = 'qwen-flash' AND pm.capability = 'CHAT')
+    OR (pm.model_name = 'qwen3-vl-plus' AND pm.capability = 'VISION')
+    OR (pm.model_name = 'Qwen/Qwen3.6-35B-A3B' AND pm.capability = 'CHAT')
+    OR (pm.model_name = 'zai-org/GLM-4.5V' AND pm.capability = 'VISION')
+    OR (pm.model_name = 'bge-m3' AND pm.capability = 'SPARSE_EMBEDDING')
+  )
+  AND sp.provider_type = 'linkrag';
 
 COMMIT;

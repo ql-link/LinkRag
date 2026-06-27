@@ -15,8 +15,9 @@ SET NAMES utf8mb4;
 SET @linkrag_api_base = 'https://api.siliconflow.cn/v1';
 SET @linkrag_default_protocol = 'openai';
 SET @linkrag_encrypted_api_key = 'CHANGE_ME_ENCRYPTED_SILICONFLOW_KEY';
+SET @linkrag_volcengine_encrypted_api_key = 'CHANGE_ME_ENCRYPTED_VOLCENGINE_KEY';
 
-SET @linkrag_chat_model = 'Qwen/Qwen3.6-35B-A3B';
+SET @linkrag_chat_model = 'deepseek-ai/DeepSeek-V4-Flash';
 SET @linkrag_chat_protocol = 'openai';
 SET @linkrag_chat_url = CONCAT(@linkrag_api_base, '/chat/completions');
 
@@ -24,18 +25,15 @@ SET @linkrag_embedding_model = 'BAAI/bge-m3';
 SET @linkrag_embedding_protocol = 'openai';
 SET @linkrag_embedding_url = CONCAT(@linkrag_api_base, '/embeddings');
 
--- 稀疏向量链路需要 token_id -> weight 的 sparse lexical weights。
--- 硅基流动 OpenAI-compatible embeddings 不能直接替代当前 protocol=bge_m3 的响应结构，
--- 因此 SPARSE_EMBEDDING 仍指向 LinkRag 自部署 bge-m3-service；它不需要额外外部 API Key。
-SET @linkrag_sparse_embedding_model = 'bge-m3';
-SET @linkrag_sparse_embedding_protocol = 'bge_m3';
-SET @linkrag_sparse_embedding_url = 'http://103.205.254.30:37997/encode';
+SET @linkrag_sparse_embedding_model = 'doubao-embedding-vision-251215';
+SET @linkrag_sparse_embedding_protocol = 'doubao_vision';
+SET @linkrag_sparse_embedding_url = 'https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal';
 
 SET @linkrag_rerank_model = 'BAAI/bge-reranker-v2-m3';
 SET @linkrag_rerank_protocol = 'jina';
 SET @linkrag_rerank_url = CONCAT(@linkrag_api_base, '/rerank');
 
-SET @linkrag_vision_model = 'zai-org/GLM-4.5V';
+SET @linkrag_vision_model = 'Qwen/Qwen3.6-27B';
 SET @linkrag_vision_protocol = 'openai';
 SET @linkrag_vision_url = CONCAT(@linkrag_api_base, '/chat/completions');
 
@@ -107,13 +105,18 @@ ON DUPLICATE KEY UPDATE
     is_active = TRUE,
     updated_at = CURRENT_TIMESTAMP;
 
--- BGE-M3 是 LinkRag 自部署能力，不再挂在第三方厂商下。
+-- 清理上一版脚本留下的 LinkRag 目录行。
 DELETE pm
 FROM llm_provider_model pm
 JOIN llm_system_provider sp ON sp.id = pm.provider_id
-WHERE pm.model_name = @linkrag_sparse_embedding_model
-  AND pm.capability = 'SPARSE_EMBEDDING'
-  AND sp.provider_type <> 'linkrag';
+WHERE (
+    (pm.model_name = 'qwen-flash' AND pm.capability = 'CHAT')
+    OR (pm.model_name = 'qwen3-vl-plus' AND pm.capability = 'VISION')
+    OR (pm.model_name = 'Qwen/Qwen3.6-35B-A3B' AND pm.capability = 'CHAT')
+    OR (pm.model_name = 'bge-m3' AND pm.capability = 'SPARSE_EMBEDDING')
+    OR (pm.model_name = 'zai-org/GLM-4.5V' AND pm.capability = 'VISION')
+  )
+  AND sp.provider_type = 'linkrag';
 
 -- 4. 同能力下 LinkRag 默认预设唯一：先清理，再写入本脚本指定的默认项
 UPDATE llm_system_preset
@@ -131,7 +134,7 @@ VALUES
     (@linkrag_provider_id, @linkrag_embedding_model, 'EMBEDDING', 'linkrag',
      @linkrag_embedding_protocol, @linkrag_embedding_url, @linkrag_encrypted_api_key, TRUE, TRUE),
     (@linkrag_provider_id, @linkrag_sparse_embedding_model, 'SPARSE_EMBEDDING', 'linkrag',
-     @linkrag_sparse_embedding_protocol, @linkrag_sparse_embedding_url, @linkrag_encrypted_api_key, TRUE, TRUE),
+     @linkrag_sparse_embedding_protocol, @linkrag_sparse_embedding_url, @linkrag_volcengine_encrypted_api_key, TRUE, TRUE),
     (@linkrag_provider_id, @linkrag_rerank_model, 'RERANK', 'linkrag',
      @linkrag_rerank_protocol, @linkrag_rerank_url, @linkrag_encrypted_api_key, TRUE, TRUE),
     (@linkrag_provider_id, @linkrag_vision_model, 'VISION', 'linkrag',
@@ -144,6 +147,19 @@ ON DUPLICATE KEY UPDATE
     is_active = TRUE,
     is_default = TRUE,
     updated_at = CURRENT_TIMESTAMP;
+
+-- 清理上一版 LinkRag 系统预设，避免前端看到已废弃的只读配置。
+DELETE p
+FROM llm_system_preset p
+JOIN llm_system_provider sp ON sp.id = p.provider_id
+WHERE (
+    (p.model_name = 'qwen-flash' AND p.capability = 'CHAT')
+    OR (p.model_name = 'qwen3-vl-plus' AND p.capability = 'VISION')
+    OR (p.model_name = 'Qwen/Qwen3.6-35B-A3B' AND p.capability = 'CHAT')
+    OR (p.model_name = 'bge-m3' AND p.capability = 'SPARSE_EMBEDDING')
+    OR (p.model_name = 'zai-org/GLM-4.5V' AND p.capability = 'VISION')
+  )
+  AND sp.provider_type = 'linkrag';
 
 -- 5. 核对：每个能力应返回且仅返回一条默认 LinkRag 预设
 SELECT capability, COUNT(*) AS default_count
