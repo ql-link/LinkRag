@@ -130,6 +130,7 @@ class Preprocessor:
             chunk_index=int(record.chunk_index),
             coarse_tokens=coarse_tokens,
             fine_tokens=fine_tokens,
+            chunk_type=record.chunk_type or "text",
         )
 
     @staticmethod

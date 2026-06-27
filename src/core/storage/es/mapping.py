@@ -35,6 +35,7 @@ def build_es_index_body(*, shards: int, replicas: int) -> dict[str, object]:
                 "doc_id": {"type": "long"},
                 "task_id": {"type": "keyword"},
                 "chunk_index": {"type": "integer"},
+                "chunk_type": {"type": "keyword"},
                 "coarse_tokens": {
                     "type": "text",
                     "analyzer": "chunk_index_analyzer",

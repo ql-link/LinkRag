@@ -43,6 +43,7 @@
 | [sparse_vector.md](internals/sparse_vector.md) | 稀疏向量编码与索引 |
 | [preprocessor.md](internals/preprocessor.md) | ES 预分词（RAGFlow） |
 | [es_index_storage.md](internals/es_index_storage.md) | ES 索引与 BM25 检索 |
+| [bm25_eval.md](internals/bm25_eval.md) | BM25 召回评测（es/qdrant 对齐验证）与工具 |
 | [chunk_fact_storage.md](internals/chunk_fact_storage.md) | Chunk SQL 事实存储（真值源/状态机） |
 | [mq.md](internals/mq.md) | MQ 中间件实现 |
 | [llm.md](internals/llm.md) | LLM 调用模块 |

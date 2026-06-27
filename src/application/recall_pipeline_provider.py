@@ -24,15 +24,17 @@ from src.core.pipeline.recall.protocols import (
 )
 from src.core.pipeline.rerank import PostRecallReranker
 from src.core.preprocessor.ragflow_tokenizer import RagFlowTokenizer
-from src.core.storage.es import Bm25Retriever, EsBm25Retriever
+from src.core.storage.bm25_backend import build_bm25_recall_backend
+from src.core.storage.es import Bm25Retriever
 from src.core.storage.vector import compose_vector_storage_facade
 from src.core.storage.vector.dense_retriever import DenseRetriever
 from src.core.storage.vector.sparse_retriever import SparseRetriever
 
 
 def _build_bm25_retriever() -> Retriever:
+    # BM25 召回后端按 BM25_BACKEND 选择（es / qdrant）；适配器只依赖 recall_topk_chunks。
     return Bm25Retriever(
-        es_retriever=EsBm25Retriever(),
+        es_retriever=build_bm25_recall_backend(),
         tokenizer=RagFlowTokenizer(),
     )
 
