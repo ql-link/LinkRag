@@ -57,7 +57,8 @@ class RagStreamRequest(BaseModel):
     """RAG 问答流请求体。
 
     接受 ``query``（必填）、``config_id``（必填，本次生成所用 CHAT 模型配置 id）、
-    ``conversation_id``（必填，本轮所属对话 id，作为落库挂载锚点）与可选
+    ``conversation_id``（必填，本轮所属对话 id，作为落库挂载锚点）、可选
+    ``is_first_turn``（会话首条用户消息标记，触发基于 query 的标题生成）与可选
     ``dataset_ids``（本人授权范围内的子集选择）。**不含 ``user_id``**——身份只取 token
     claims；body 出现 ``user_id`` / ``top_k`` / ``sources`` / ``strict`` / ``doc_ids``
     等任何未知字段，``extra=forbid`` 触发 422；缺 ``config_id`` / ``conversation_id``
@@ -72,6 +73,10 @@ class RagStreamRequest(BaseModel):
     # turn_id：前端每轮生成的稳定 UUID，断连重连不变，作落库幂等键（贯穿 GENERATING 起点与
     # 终态，Java 据此 upsert 同一行）。必填——缺失 → 422 RECALL_INVALID_REQUEST。
     turn_id: str
+    # is_first_turn：是否会话首条用户消息。前端在新建会话首问时置 true，触发 Python 基于
+    # query 生成会话标题（随 chat_turn.title 上报 + SSE conversation_title 即时回前端）。
+    # 仅作生成开关；省不省钱由它决定，正确性由 Java「空/默认才写」兜底。默认 false 兼容老前端。
+    is_first_turn: bool = False
     dataset_ids: list[int] | None = None
 
 
@@ -121,6 +126,7 @@ async def _run_chat_turn_producer(
     config_id: int,
     conversation_id: int,
     turn_id: str,
+    is_first_turn: bool,
     token_budget: int,
     rerank_top_n: int,
 ) -> None:
@@ -137,6 +143,7 @@ async def _run_chat_turn_producer(
             config_id=config_id,
             conversation_id=conversation_id,
             turn_id=turn_id,
+            is_first_turn=is_first_turn,
             reranker=reranker,
             token_budget=token_budget,
             rerank_top_n=rerank_top_n,
@@ -219,6 +226,7 @@ async def rag_stream(
                 body.config_id,
                 body.conversation_id,
                 body.turn_id,
+                body.is_first_turn,
                 recall_cfg.recall_context_token_budget,
                 recall_cfg.rerank_top_n,
             )

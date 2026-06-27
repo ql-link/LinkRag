@@ -91,6 +91,10 @@ class Settings(BaseSettings):
     # 后台续跑场景下生成不再被连接断开兜底，需独立超时防孤儿任务无限烧 token；
     # 取值远大于召回超时以容纳长回答，超时即落 FAILED + GENERATION_TIMEOUT。
     RECALL_GENERATION_TIMEOUT_MS: int = 300000
+    # 会话首轮标题生成的独立超时（毫秒）。标题任务与召回+生成并行起跑、用本轮对话模型。
+    # 取值需覆盖**推理模型**（如 mimo：先思考十余秒才吐标题）的耗时，否则超时回落首问截断；
+    # 因与答案生成并行、且答案同模型同样耗时，终态 await 通常不额外增加感知延迟。超时即回落兜底。
+    TITLE_GENERATION_TIMEOUT_MS: int = 25000
     # pipeline 严格模式默认值：False=宽松，允许单路失败降级。
     RECALL_STRICT_DEFAULT: bool = False
     # 服务端固定返回候选数上限（同时作为各路执行期 top_k）。
@@ -339,6 +343,11 @@ class Settings(BaseSettings):
     SPARSE_VECTOR_ENABLED: bool = True
     # Qdrant named sparse vector 字段名；写入与召回共用。
     SPARSE_VECTOR_QDRANT_VECTOR_NAME: str = "sparse_text"
+    # Qdrant named dense vector 字段名；写入与召回共用。
+    # dense 从匿名默认向量改为 named 向量后，point 的创建不再绑定 dense（可先建只含
+    # payload 的空点），dense 与 sparse 各自 update_vectors 独立写入、可并行。
+    # 旧 collection（匿名默认向量）需迁移后才能被新代码召回，详见迁移脚本。
+    DENSE_VECTOR_QDRANT_VECTOR_NAME: str = "dense"
     # 全局清洗规则（各 provider 复用，保证召回侧表现一致）。
     SPARSE_VECTOR_TOP_K: int = 256
     SPARSE_VECTOR_MIN_WEIGHT: float = 0.0

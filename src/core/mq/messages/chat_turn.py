@@ -39,6 +39,10 @@ class ChatTurnPayload(MessagePayload):
         None, title="失败码：RECALL_*/GENERATION_TIMEOUT（仅 FAILED）"
     )
     error_message: Optional[str] = Field(None, title="失败原因，不含堆栈（仅 FAILED）")
+    # 会话标题：仅会话首轮携带（Python 基于 query 生成，LLM 不可用时回落首问截断）。
+    # Java 仅在当前标题为空或仍为默认「新对话」时写入并按列宽截断，不覆盖用户手改标题；
+    # 非首轮、GENERATING 起点一律为 None。
+    title: Optional[str] = Field(None, title="首轮会话标题（Python 生成，供 Java 条件落库）")
 
     # token 已从对话消息剥离（LINK-191）：generate 用量改走统一 TokenUsageMessage。
 
@@ -87,6 +91,7 @@ class ChatTurnMessage(AbstractMessage):
         latency_ms: Optional[int] = None,
         error_code: Optional[str] = None,
         error_message: Optional[str] = None,
+        title: Optional[str] = None,
     ) -> "ChatTurnMessage":
         return cls(
             payload=ChatTurnPayload(
@@ -104,6 +109,7 @@ class ChatTurnMessage(AbstractMessage):
                 latency_ms=latency_ms,
                 error_code=error_code,
                 error_message=error_message,
+                title=title,
             )
         )
 
