@@ -134,16 +134,18 @@ class TestConfigReaderServiceIntegration:
                 cursor.execute(
                     """
                     INSERT INTO llm_provider_model
-                    (provider_id, model_name, capability, is_active)
-                    VALUES (%s, %s, %s, %s), (%s, %s, %s, %s)
+                    (provider_id, model_name, display_name, capability, is_active)
+                    VALUES (%s, %s, %s, %s, %s), (%s, %s, %s, %s, %s)
                 """,
                     (
                         test_ids["provider_id"],
                         "gpt-4",
+                        "GPT-4",
                         "CHAT",
                         1,
                         test_ids["provider_id"],
                         "gpt-4",
+                        "GPT-4",
                         "SPARSE_EMBEDDING",
                         1,
                     ),
@@ -391,6 +393,14 @@ class TestConfigReaderServiceIntegration:
         assert "CHAT" in models["gpt-4"]
         assert "SPARSE_EMBEDDING" in models["gpt-4"]
 
+        model_options = test_provider["model_options"]
+        assert isinstance(model_options, list)
+        gpt4_option = next((m for m in model_options if m["model_name"] == "gpt-4"), None)
+        assert gpt4_option is not None
+        assert gpt4_option["display_name"] == "GPT-4"
+        assert "CHAT" in gpt4_option["capabilities"]
+        assert "SPARSE_EMBEDDING" in gpt4_option["capabilities"]
+
     @pytest.mark.asyncio
     async def test_GetSystemProviderByType_Should_Return_Single_Provider(
         self, service: ConfigReaderService, setup_test_data
@@ -524,14 +534,17 @@ class TestConfigReaderServiceIntegration:
         )
 
     @pytest.mark.asyncio
-    async def test_GetUserDefaultConfigByCapability_NonExistent_Should_Return_None(
+    async def test_GetUserDefaultConfigByCapability_NoUserConfig_Should_Return_System_Fallback(
         self, service: ConfigReaderService, setup_multi_capability_test_data: dict
     ):
-        """get_user_default_config_by_capability 查询不存在的能力应返回 None"""
+        """get_user_default_config_by_capability 无用户配置时应返回 LinkRag 系统默认"""
         user_id = setup_multi_capability_test_data["user_id"]
 
         config = await service.get_user_default_config_by_capability(user_id, "VISION")
-        assert config is None
+        assert config is not None
+        assert config["config_source"] == "SYSTEM"
+        assert config["provider_type"] == "linkrag"
+        assert config["display_name"] == "Qwen 3.6 27B"
 
     @pytest.mark.asyncio
     async def test_GetUserConfigsByCapability_Should_Return_All_Matching_Configs(

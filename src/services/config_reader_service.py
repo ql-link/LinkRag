@@ -26,6 +26,7 @@ def _user_config_to_dict(cfg: UserLLMConfigDB) -> Dict[str, Any]:
         "api_key": cfg.api_key,
         "api_base_url": cfg.api_base_url,
         "model_name": cfg.model_name,
+        "display_name": cfg.model_name,
         "capability": cfg.capability,
         "is_active": cfg.is_active,
         "is_default": cfg.is_default,
@@ -46,6 +47,7 @@ def _system_preset_to_dict(cfg: SystemPresetDB) -> Dict[str, Any]:
         "api_key": cfg.api_key,
         "api_base_url": cfg.api_base_url,
         "model_name": cfg.model_name,
+        "display_name": cfg.display_name or cfg.model_name,
         "capability": cfg.capability,
         "is_active": cfg.is_active,
         "is_default": cfg.is_default,
@@ -335,10 +337,22 @@ class ConfigReaderService:
         providers = []
         for p in providers_db:
             models: Dict[str, List[str]] = {}
+            model_options_by_name: Dict[str, Dict[str, Any]] = {}
             for model in p.provider_models:
                 if not model.is_active:
                     continue
                 models.setdefault(model.model_name, []).append(model.capability)
+                option = model_options_by_name.setdefault(
+                    model.model_name,
+                    {
+                        "model_name": model.model_name,
+                        "display_name": model.display_name or model.model_name,
+                        "capabilities": [],
+                        "protocol": model.protocol,
+                        "api_base_url": model.api_base_url,
+                    },
+                )
+                option["capabilities"].append(model.capability)
             providers.append(
                 {
                     "id": p.id,
@@ -346,6 +360,7 @@ class ConfigReaderService:
                     "provider_name": p.provider_name,
                     "api_base_url": p.api_base_url,
                     "models": models,
+                    "model_options": list(model_options_by_name.values()),
                     "is_active": p.is_active,
                     "priority": p.priority,
                 }

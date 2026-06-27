@@ -18,22 +18,27 @@ SET @linkrag_encrypted_api_key = 'CHANGE_ME_ENCRYPTED_SILICONFLOW_KEY';
 SET @linkrag_volcengine_encrypted_api_key = 'CHANGE_ME_ENCRYPTED_VOLCENGINE_KEY';
 
 SET @linkrag_chat_model = 'deepseek-ai/DeepSeek-V4-Flash';
+SET @linkrag_chat_display_name = 'DeepSeek V4 Flash';
 SET @linkrag_chat_protocol = 'openai';
 SET @linkrag_chat_url = CONCAT(@linkrag_api_base, '/chat/completions');
 
 SET @linkrag_embedding_model = 'BAAI/bge-m3';
+SET @linkrag_embedding_display_name = 'BGE-M3';
 SET @linkrag_embedding_protocol = 'openai';
 SET @linkrag_embedding_url = CONCAT(@linkrag_api_base, '/embeddings');
 
 SET @linkrag_sparse_embedding_model = 'doubao-embedding-vision-251215';
+SET @linkrag_sparse_embedding_display_name = 'Doubao Sparse';
 SET @linkrag_sparse_embedding_protocol = 'doubao_vision';
 SET @linkrag_sparse_embedding_url = 'https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal';
 
 SET @linkrag_rerank_model = 'BAAI/bge-reranker-v2-m3';
+SET @linkrag_rerank_display_name = 'BGE Reranker M3';
 SET @linkrag_rerank_protocol = 'jina';
 SET @linkrag_rerank_url = CONCAT(@linkrag_api_base, '/rerank');
 
 SET @linkrag_vision_model = 'Qwen/Qwen3.6-27B';
+SET @linkrag_vision_display_name = 'Qwen 3.6 27B';
 SET @linkrag_vision_protocol = 'openai';
 SET @linkrag_vision_url = CONCAT(@linkrag_api_base, '/chat/completions');
 
@@ -54,6 +59,32 @@ BEGIN
             ADD COLUMN is_default BOOLEAN NOT NULL DEFAULT FALSE
             COMMENT '是否为该能力当前生效的 LinkRag 系统默认预设'
             AFTER is_active;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'llm_provider_model'
+          AND COLUMN_NAME = 'display_name'
+    ) THEN
+        ALTER TABLE llm_provider_model
+            ADD COLUMN display_name VARCHAR(64) NULL
+            COMMENT '模型展示名'
+            AFTER model_name;
+    END IF;
+
+    IF NOT EXISTS (
+        SELECT 1
+        FROM INFORMATION_SCHEMA.COLUMNS
+        WHERE TABLE_SCHEMA = DATABASE()
+          AND TABLE_NAME = 'llm_system_preset'
+          AND COLUMN_NAME = 'display_name'
+    ) THEN
+        ALTER TABLE llm_system_preset
+            ADD COLUMN display_name VARCHAR(64) NULL
+            COMMENT '模型展示名'
+            AFTER model_name;
     END IF;
 
     IF NOT EXISTS (
@@ -92,14 +123,15 @@ SET @linkrag_provider_id = (
 
 -- 3. LinkRag 模型能力目录
 INSERT INTO llm_provider_model
-    (provider_id, model_name, capability, protocol, api_base_url, is_active)
+    (provider_id, model_name, display_name, capability, protocol, api_base_url, is_active)
 VALUES
-    (@linkrag_provider_id, @linkrag_chat_model, 'CHAT', @linkrag_chat_protocol, @linkrag_chat_url, TRUE),
-    (@linkrag_provider_id, @linkrag_embedding_model, 'EMBEDDING', @linkrag_embedding_protocol, @linkrag_embedding_url, TRUE),
-    (@linkrag_provider_id, @linkrag_sparse_embedding_model, 'SPARSE_EMBEDDING', @linkrag_sparse_embedding_protocol, @linkrag_sparse_embedding_url, TRUE),
-    (@linkrag_provider_id, @linkrag_rerank_model, 'RERANK', @linkrag_rerank_protocol, @linkrag_rerank_url, TRUE),
-    (@linkrag_provider_id, @linkrag_vision_model, 'VISION', @linkrag_vision_protocol, @linkrag_vision_url, TRUE)
+    (@linkrag_provider_id, @linkrag_chat_model, @linkrag_chat_display_name, 'CHAT', @linkrag_chat_protocol, @linkrag_chat_url, TRUE),
+    (@linkrag_provider_id, @linkrag_embedding_model, @linkrag_embedding_display_name, 'EMBEDDING', @linkrag_embedding_protocol, @linkrag_embedding_url, TRUE),
+    (@linkrag_provider_id, @linkrag_sparse_embedding_model, @linkrag_sparse_embedding_display_name, 'SPARSE_EMBEDDING', @linkrag_sparse_embedding_protocol, @linkrag_sparse_embedding_url, TRUE),
+    (@linkrag_provider_id, @linkrag_rerank_model, @linkrag_rerank_display_name, 'RERANK', @linkrag_rerank_protocol, @linkrag_rerank_url, TRUE),
+    (@linkrag_provider_id, @linkrag_vision_model, @linkrag_vision_display_name, 'VISION', @linkrag_vision_protocol, @linkrag_vision_url, TRUE)
 ON DUPLICATE KEY UPDATE
+    display_name = VALUES(display_name),
     protocol = VALUES(protocol),
     api_base_url = VALUES(api_base_url),
     is_active = TRUE,
@@ -113,6 +145,8 @@ WHERE (
     (pm.model_name = 'qwen-flash' AND pm.capability = 'CHAT')
     OR (pm.model_name = 'qwen3-vl-plus' AND pm.capability = 'VISION')
     OR (pm.model_name = 'Qwen/Qwen3.6-35B-A3B' AND pm.capability = 'CHAT')
+    OR (pm.model_name = 'text-embedding-v3' AND pm.capability = 'EMBEDDING')
+    OR (pm.model_name = 'gte-rerank' AND pm.capability = 'RERANK')
     OR (pm.model_name = 'bge-m3' AND pm.capability = 'SPARSE_EMBEDDING')
     OR (pm.model_name = 'zai-org/GLM-4.5V' AND pm.capability = 'VISION')
   )
@@ -126,20 +160,21 @@ WHERE provider_type = 'linkrag'
   AND capability IN ('CHAT', 'EMBEDDING', 'SPARSE_EMBEDDING', 'RERANK', 'VISION');
 
 INSERT INTO llm_system_preset
-    (provider_id, model_name, capability, provider_type, protocol, api_base_url,
+    (provider_id, model_name, display_name, capability, provider_type, protocol, api_base_url,
      api_key, is_active, is_default)
 VALUES
-    (@linkrag_provider_id, @linkrag_chat_model, 'CHAT', 'linkrag', @linkrag_chat_protocol,
+    (@linkrag_provider_id, @linkrag_chat_model, @linkrag_chat_display_name, 'CHAT', 'linkrag', @linkrag_chat_protocol,
      @linkrag_chat_url, @linkrag_encrypted_api_key, TRUE, TRUE),
-    (@linkrag_provider_id, @linkrag_embedding_model, 'EMBEDDING', 'linkrag',
+    (@linkrag_provider_id, @linkrag_embedding_model, @linkrag_embedding_display_name, 'EMBEDDING', 'linkrag',
      @linkrag_embedding_protocol, @linkrag_embedding_url, @linkrag_encrypted_api_key, TRUE, TRUE),
-    (@linkrag_provider_id, @linkrag_sparse_embedding_model, 'SPARSE_EMBEDDING', 'linkrag',
+    (@linkrag_provider_id, @linkrag_sparse_embedding_model, @linkrag_sparse_embedding_display_name, 'SPARSE_EMBEDDING', 'linkrag',
      @linkrag_sparse_embedding_protocol, @linkrag_sparse_embedding_url, @linkrag_volcengine_encrypted_api_key, TRUE, TRUE),
-    (@linkrag_provider_id, @linkrag_rerank_model, 'RERANK', 'linkrag',
+    (@linkrag_provider_id, @linkrag_rerank_model, @linkrag_rerank_display_name, 'RERANK', 'linkrag',
      @linkrag_rerank_protocol, @linkrag_rerank_url, @linkrag_encrypted_api_key, TRUE, TRUE),
-    (@linkrag_provider_id, @linkrag_vision_model, 'VISION', 'linkrag',
+    (@linkrag_provider_id, @linkrag_vision_model, @linkrag_vision_display_name, 'VISION', 'linkrag',
      @linkrag_vision_protocol, @linkrag_vision_url, @linkrag_encrypted_api_key, TRUE, TRUE)
 ON DUPLICATE KEY UPDATE
+    display_name = VALUES(display_name),
     provider_type = VALUES(provider_type),
     protocol = VALUES(protocol),
     api_base_url = VALUES(api_base_url),
@@ -156,6 +191,8 @@ WHERE (
     (p.model_name = 'qwen-flash' AND p.capability = 'CHAT')
     OR (p.model_name = 'qwen3-vl-plus' AND p.capability = 'VISION')
     OR (p.model_name = 'Qwen/Qwen3.6-35B-A3B' AND p.capability = 'CHAT')
+    OR (p.model_name = 'text-embedding-v3' AND p.capability = 'EMBEDDING')
+    OR (p.model_name = 'gte-rerank' AND p.capability = 'RERANK')
     OR (p.model_name = 'bge-m3' AND p.capability = 'SPARSE_EMBEDDING')
     OR (p.model_name = 'zai-org/GLM-4.5V' AND p.capability = 'VISION')
   )

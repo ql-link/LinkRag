@@ -192,6 +192,10 @@ parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权�
 
 日期参数格式：`YYYY-MM-DD`。
 
+`GET /providers` 兼容保留 `models: { [model_name]: capability[] }`。新管理端展示模型时优先使用
+`model_options[]`：每项包含 `model_name`（真实调用 ID）、`display_name`（短展示名）、
+`capabilities`、`protocol`、`api_base_url`；提交配置仍应使用 `model_name`。
+
 ## 6. RAG / Recall API（对外）
 
 **面向浏览器前端**：前端凭 Java 签发的**短期 session token** 直连，绕过 Java 中转。

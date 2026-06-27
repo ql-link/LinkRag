@@ -83,6 +83,7 @@ ORM：[`ProviderModelDB`](../../../src/models/db_models.py)
 | `id` | BIGINT UNSIGNED PK | 主键 |
 | `provider_id` | BIGINT UNSIGNED | 关联 `llm_system_provider.id` |
 | `model_name` | VARCHAR(128) | 模型名 |
+| `display_name` | VARCHAR(64) NULL | 模型展示名；为空时展示层回退 `model_name` |
 | `capability` | VARCHAR(32) | 单能力；一模型多能力拆成多行 |
 | `protocol` | VARCHAR(32) | 调用协议（**事实来源**）；当前 nullable，由 Java 服务层保证非空，待回填后收紧 |
 | `api_base_url` | VARCHAR(512) | 调用入口完整端点 URL（**事实来源**；`google` 例外保存 `/v1beta` base） |
@@ -102,6 +103,7 @@ ORM：[`SystemPresetDB`](../../../src/models/db_models.py)
 | `id` | BIGINT UNSIGNED PK | 主键 |
 | `provider_id` | BIGINT UNSIGNED | 关联 `llm_system_provider.id` |
 | `model_name` | VARCHAR(128) | 模型名 |
+| `display_name` | VARCHAR(64) NULL | 模型展示名；为空时展示层回退 `model_name` |
 | `capability` | VARCHAR(32) | 能力标识 |
 | `provider_type` | VARCHAR(32) | 厂商类型（与用户配置对齐，镜像免 join） |
 | `protocol` | VARCHAR(32) | 调用协议（创建预设时复制自模型能力层） |

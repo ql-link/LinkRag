@@ -77,6 +77,7 @@ class ProviderModelDB(Base):
         BigInteger, ForeignKey("llm_system_provider.id"), nullable=False
     )
     model_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    display_name: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     capability: Mapped[str] = mapped_column(String(32), nullable=False)
     # 调用协议（事实来源；Java 服务层保证非空，待历史数据回填后收紧 NOT NULL）
     protocol: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
@@ -116,6 +117,7 @@ class SystemPresetDB(Base):
         BigInteger, ForeignKey("llm_system_provider.id"), nullable=False
     )
     model_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    display_name: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     capability: Mapped[str] = mapped_column(String(32), nullable=False)
     # 厂商类型（与用户配置对齐，镜像免 join）
     provider_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
