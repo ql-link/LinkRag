@@ -428,6 +428,9 @@ class Settings(BaseSettings):
     KAFKA_SASL_PASSWORD: Optional[str] = None
     KAFKA_SECURITY_PROTOCOL: str = "PLAINTEXT"
     KAFKA_MAX_POLL_INTERVAL_MS: int = 900000
+    # 公网/跨机房部署时建议调大这两个值（broker 端 group.max.session.timeout.ms 须 ≥ 此值）
+    KAFKA_SESSION_TIMEOUT_MS: int = 45000
+    KAFKA_HEARTBEAT_INTERVAL_MS: int = 15000
     INIT_KAFKA_TOPICS_ON_STARTUP: bool = False
 
     # --- RabbitMQ 配置 ---
