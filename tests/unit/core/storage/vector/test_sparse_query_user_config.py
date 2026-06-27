@@ -6,6 +6,7 @@
 - 解析出的 service 真正用于 query 编码，且 resolver 按发起 user_id 调用。
 - SparseRetriever 捕获该异常 → 抛 RecallFatalError（供 pipeline 硬失败，不静默降级）。
 """
+
 from __future__ import annotations
 
 from types import SimpleNamespace
@@ -44,6 +45,27 @@ async def test_facade_missing_user_sparse_config_translates(monkeypatch):
     facade = _facade_with_resolver(_resolver)
     with pytest.raises(VectorRetrievalUserConfigMissingError):
         await facade.search_sparse_chunks(query="q", user_id=7, set_id=1, top_k=3)
+
+
+@pytest.mark.asyncio
+async def test_facade_default_top_k_uses_sparse_retrieval_not_recall(monkeypatch):
+    """sparse facade 直调未传 top_k 时只读 SPARSE_RETRIEVAL_TOP_K，不读 RECALL_SPARSE_TOP_K。"""
+    monkeypatch.setattr(settings, "SPARSE_VECTOR_ENABLED", True)
+    monkeypatch.setattr(settings, "SPARSE_RETRIEVAL_TOP_K", 4)
+    monkeypatch.setattr(settings, "RECALL_SPARSE_TOP_K", 50)
+
+    facade = VectorStorageFacade(
+        storage_service=MagicMock(),
+        management_service=MagicMock(),
+        compensation_service=MagicMock(),
+        qdrant_store=MagicMock(),
+        sparse_vector_service=None,
+        query_sparse_resolver=None,
+    )
+
+    result = await facade.search_sparse_chunks(query="   ", user_id=7, set_id=1)
+
+    assert result.top_k == 4
 
 
 @pytest.mark.asyncio

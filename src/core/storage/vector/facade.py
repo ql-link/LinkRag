@@ -289,15 +289,15 @@ class VectorStorageFacade:
         # 延迟运行时 import：sparse_vector 子包的异常类只在 facade 内部出现，
         # 调用方不需要 import；放到方法内可避免 facade 模块加载时强依赖
         # sparse_vector，方便 mypy / unit test 隔离。
+        from src.core.encoding.sparse import (
+            SparseVectorConfigurationError,
+            SparseVectorError,
+        )
         from src.core.storage.qdrant.exceptions import (
             QdrantStoreError,
             QdrantVectorStorageConfigurationError,
         )
         from src.core.storage.qdrant.models import SparseQueryVectorSpec
-        from src.core.encoding.sparse import (
-            SparseVectorConfigurationError,
-            SparseVectorError,
-        )
 
         # ───────────────────── ① 参数越界校验（acceptance: 参数 Outline）─────────
         # 越界优先于"空 query 短路"——传错参数应当显式抛错，不该被静默吞掉。
@@ -471,8 +471,8 @@ class VectorStorageFacade:
             doc_id: 可选 ``list[int]``。``None`` 或空列表不加 ``doc_id`` filter；
                 非空列表用 Qdrant ``MatchAny`` 构造，支持"在若干文档内召回"。
             top_k: 可选；不传走 ``settings.DENSE_RETRIEVAL_TOP_K``（默认 10）。
-                合并后必须 ``> 0``，否则抛 ``ValueError``。注意：pipeline 路径下
-                实际 ``top_k`` 由 ``RECALL_RESULT_LIMIT`` 透传覆盖；
+                合并后必须 ``> 0``，否则抛 ``ValueError``。完整 RAG pipeline 会显式
+                传入 ``RECALL_DENSE_TOP_K`` / 数据集级 ``dense_top_k``，因此
                 ``DENSE_RETRIEVAL_TOP_K`` 仅作 facade 直调兜底。
             score_threshold: 可选；不传走
                 ``settings.DENSE_RETRIEVAL_SCORE_THRESHOLD``（默认 0.0）。
