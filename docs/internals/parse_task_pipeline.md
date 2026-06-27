@@ -157,7 +157,7 @@ StagePipeline.run（串行 6 阶段编排）
 - 权威状态源仍是 `document_parse_pipeline`；`pipeline_status` / `*_status` 成功失败语义、Java 侧读 DB 终态规则、不恢复 parse_result MQ 回调——均不变。
 - 不删除、不替代 `document_parse_pipeline`、`document_parsed_log`、`kb_document_chunk` 等既有表。
 - **不使用** workflow 专属表：runner 固定 `InMemoryWorkflowStore`，引擎 run 记录仅进程内临时记账、零 DB 写；`workflow_run` / `workflow_node_run`（`MySQLWorkflowStore`）在生产解析路径**不引用**。
-- **续跑/重试不走引擎 `previous_run_id`**：节点按 `document_parse_pipeline` 继承状态快照（`inherited_status`）自跳过已 SUCCESS 阶段，依据同串行 `Stage.should_run`，权威源同为生产表（第二段细化 chunking `on_skip`/sparse 终态翻转等并行重试语义）。
+- **续跑/重试不走引擎 `previous_run_id`**：节点按 `document_parse_pipeline` 继承状态快照（`inherited_status`，由 `_run_via_dag` 开跑前从继承式新 pipeline 行一次性读出）自跳过已 SUCCESS 阶段，依据同串行 `Stage.should_run`，权威源同为生产表。自跳过节点经 `restore()` 从 DB/payload 回放产物给下游（cleaning 读回 markdown、chunking 反查 chunk、pretokenize 重建 plan；dense/es/sparse 为叶子，回放为 noop）。几处并行重试要点：① chunking 自跳过反查 chunk 为空=状态不一致，抛 `_StageNodeError` 由编排器收敛 FAILED（对齐串行 `on_skip`）；② sparse 自跳过**无需**翻 `pipeline_status=SUCCESS`（串行靠 sparse.on_skip 翻，DAG 由编排器 `finalize_pipeline_success` 统一收敛，全跳过的重试也照样置 SUCCESS）；③ chunking 重试从 CHUNKING 恢复要读 `log_record` 的 markdown 坐标——节点在自己 session 内按 id 取 live 行，避免跨 session 访问 `begin_pipeline` commit 后已 expire 的 ORM。
 
 **状态层解耦（并行正确性必需）**：dense 的 chunk 级状态写入 `mark_indexing` / `mark_indexed` / `mark_failed` 原先会**连带把 `es_status` / `sparse_vector_status` 重置为 PENDING**（假设 dense 串行排在 es/sparse 之前）。并行 DAG 下 dense∥es∥sparse，dense 的这个越界重置会与并发跑完的 es/sparse 抢同一行、把其 `SUCCESS` 冲回 `PENDING`（写写竞争）。现已改为**每个维度只写自己那列**（与 `mark_sparse_indexing` 对称）：dense 标记只动 `dense_vector_status`（+ model）。串行链路里 dense 未成功时 es/sparse 本就是 PENDING，故移除该重置对串行是 no-op；内容变更触发的 reindex 仍由 `update_chunk_for_reindex` 自行重置下游。
 

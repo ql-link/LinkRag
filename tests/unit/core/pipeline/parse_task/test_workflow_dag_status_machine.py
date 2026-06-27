@@ -147,6 +147,42 @@ async def test_template_inherited_success_self_skips_without_status_write():
     assert out == {"skipped": True, "stage": POST_PROCESS_STAGE_VECTORIZING}
 
 
+class _FakeSkipFailNode(StatusTrackedParseNode):
+    """继承 SUCCESS 自跳过，但 restore 抛 _StageNodeError（如 chunking 反查为空）。"""
+
+    stage = POST_PROCESS_STAGE_VECTORIZING
+
+    def __init__(self):
+        super().__init__(key="dense_vectorizing", requires=(products.SOURCE,),
+                         provides=(products.DENSE_VECTORS,))
+        self.executed = False
+
+    async def _execute(self, ctx):
+        self.executed = True
+        return {}
+
+    async def restore(self, ctx, output_ref):
+        raise _StageNodeError(StageOutcome.failure("CHUNK_STATE_INCONSISTENT: empty"))
+
+
+@pytest.mark.asyncio
+async def test_template_skip_path_failure_records_reason():
+    repo = _RecordingStatusRepo()
+    runtime = _runtime(
+        status_repo=repo,
+        inherited={POST_PROCESS_STAGE_VECTORIZING: STAGE_STATUS_SUCCESS},
+    )
+    node = _FakeSkipFailNode()
+
+    with pytest.raises(_StageNodeError):
+        await node.run(_ctx(runtime))
+
+    # 跳过路径 restore 失败：不执行业务、不写阶段状态，但把原因回填 failures 供编排器收敛。
+    assert node.executed is False
+    assert repo.calls == []
+    assert runtime.failures == {POST_PROCESS_STAGE_VECTORIZING: "CHUNK_STATE_INCONSISTENT: empty"}
+
+
 @pytest.mark.asyncio
 async def test_template_status_disabled_runs_business_only():
     runtime = _runtime(status_repo=None, pipeline_id=None)

@@ -132,7 +132,16 @@ class StatusTrackedParseNode(WorkflowNode):
         if self._status_enabled(runtime) and self.stage is not None:
             if runtime.inherited_status.get(self.stage) == STAGE_STATUS_SUCCESS:
                 # 重试继承的已成功阶段：回放产物供下游用，不重跑、不重写状态。
-                await self.restore(ctx, None)
+                # restore 失败（如 chunking 反查 chunk 为空=状态不一致）也要把原因回填
+                # failures，让编排器据此收敛 FAILED 终态（与 run 路径失败处理对齐）。
+                try:
+                    await self.restore(ctx, None)
+                except _StageNodeError as exc:
+                    self._record_failure(runtime, exc.outcome.failure_reason)
+                    raise
+                except Exception as exc:
+                    self._record_failure(runtime, str(exc))
+                    raise
                 return {"skipped": True, "stage": self.stage}
 
         started = time.monotonic()
@@ -164,6 +173,17 @@ class StatusTrackedParseNode(WorkflowNode):
     def _record_failure(self, runtime: ParseWorkflowRuntime, reason: str | None) -> None:
         if self.stage is not None:
             runtime.failures.setdefault(self.stage, reason or "")
+
+    async def _load_log_record(self, runtime: ParseWorkflowRuntime, db: AsyncSession):
+        """在本节点 session 内按 id 取 log 行，避免跨 session 改/读过期 ORM。
+
+        重试链路里 ``log_record`` 由编排器在 ``ctx.db`` 创建、且 ``begin_pipeline``
+        commit 后已 expire；节点(cleaning 写元数据 / chunking 读 retry markdown 坐标)
+        必须在自己的 session 内取一份 live 行,否则 async 下访问其属性触发隐式懒加载。
+        """
+        if runtime.log_record is None:
+            return None
+        return await db.get(DocumentParsedLog, runtime.log_record.id)
 
     def _make_stage_ctx(self, runtime: ParseWorkflowRuntime, db: AsyncSession, *, log_record=None) -> StageContext:
         """构建本节点会话的 StageContext，复用串行 Stage.run() 的产物读写约定。
@@ -224,12 +244,6 @@ class CleaningNode(StatusTrackedParseNode):
         ctx.set(products.MARKDOWN, stage_ctx.parse_result["markdown"])
         return _markdown_ref(runtime.payload, stage_ctx.parse_result)
 
-    async def _load_log_record(self, runtime: ParseWorkflowRuntime, db: AsyncSession):
-        """在本节点 session 内按 id 取出 log 行，避免跨 session 改 ORM 提交。"""
-        if runtime.log_record is None:
-            return None
-        return await db.get(DocumentParsedLog, runtime.log_record.id)
-
     async def restore(self, ctx: WorkflowContext, output_ref: Any) -> None:
         runtime = _runtime(ctx)
         markdown = await runtime.services.load_markdown(runtime.payload)
@@ -258,7 +272,11 @@ class ChunkingNode(StatusTrackedParseNode):
         # LLM_CONFIG_MISSING / PARSE_ENGINE_FAILED 分类。
         stage = ChunkingStage(runtime.services, runtime.status_repo)
         async with runtime.session() as db:
-            stage_ctx = self._make_stage_ctx(runtime, db)
+            # 重试从 CHUNKING 恢复时 ChunkingStage.run 读 log_record 的 markdown 坐标
+            # （parsed_bucket_name/object_key）；必须在本 session 取 live 行避免跨 session
+            # 访问过期 ORM 触发隐式懒加载。
+            log_record = await self._load_log_record(runtime, db)
+            stage_ctx = self._make_stage_ctx(runtime, db, log_record=log_record)
             outcome = await stage.run(stage_ctx)
             if not outcome.ok:
                 raise _StageNodeError(outcome)
@@ -271,7 +289,14 @@ class ChunkingNode(StatusTrackedParseNode):
         async with runtime.session() as db:
             chunks = await runtime.services.load_all_chunks_from_db(runtime.payload, db)
         if not chunks:
-            raise RuntimeError("workflow demo restore failed: chunk set is empty")
+            # chunking 继承 SUCCESS 却反查不到 chunk = 状态不一致（对齐串行
+            # ChunkingStage.on_skip 的语义）。抛 _StageNodeError 让编排器收敛 FAILED
+            # 终态，failure_reason 含可读归因。
+            raise _StageNodeError(
+                StageOutcome.failure(
+                    "CHUNK_STATE_INCONSISTENT: chunking 继承 SUCCESS 但反查 chunk 为空"
+                )
+            )
         runtime.chunks = chunks
         ctx.set(products.CHUNKS, chunks)
 
