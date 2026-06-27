@@ -133,9 +133,9 @@ parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权�
 
 配置解析规则：
 
-- `config_id` 为空时，按 `X-User-Id + capability` 读取该用户默认配置。
-- `config_id` 非空时，只读取该用户名下对应配置；配置不存在、不属于该用户、已停用或能力不匹配均视为用户模型配置缺失。
-- 直调 LLM 接口不使用系统模型兜底；用户缺少对应能力配置时不会读取 `SYSTEM_LLM_*` 环境变量。
+- `config_id` 为空时，按 `X-User-Id + capability` 读取该用户默认配置；用户没有自配默认时，回退 LinkRag 系统默认预设。
+- `config_id` 非空时，按 `config_source + config_id` 精确读取配置：`USER` 指向 `llm_user_config.id`，`SYSTEM` 指向 `llm_system_preset.id`。
+- 直调 LLM 接口不使用旧环境变量兜底；用户缺少对应能力配置且没有 LinkRag 系统默认预设时，不会读取 `SYSTEM_LLM_*` 环境变量。
 - 缺配置返回 HTTP `422`，响应体 `detail.code` 为 `LLM_CONFIG_MISSING`，`detail.message` 会说明缺少的能力（如 `CHAT` / `EMBEDDING` / `RERANK` / `VISION`）。
 
 | Method | Path | 用途 | 请求 |
@@ -148,7 +148,8 @@ parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权�
 
 `GenerateRequest`：
 
-- `config_id`: 可选用户配置 ID。
+- `config_id`: 可选配置 ID；与 `config_source` 配合定位。
+- `config_source`: 可选，`USER` 或 `SYSTEM`，默认 `USER`。
 - `prompt`: 必填提示词。
 - `model`: 可选模型覆盖。
 - `temperature`: 默认 `0.7`，范围 `0-2`。
@@ -158,13 +159,15 @@ parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权�
 
 `EmbedRequest`：
 
-- `config_id`: 可选。
+- `config_id`: 可选；与 `config_source` 配合定位。
+- `config_source`: 可选，`USER` 或 `SYSTEM`，默认 `USER`。
 - `input`: string 或 string 列表。
 - `model`: 可选。
 
 `RerankRequest`：
 
-- `config_id`: 可选。
+- `config_id`: 可选；与 `config_source` 配合定位。
+- `config_source`: 可选，`USER` 或 `SYSTEM`，默认 `USER`。
 - `query`: 检索查询。
 - `documents`: 待重排文档列表。
 - `model`: 可选。
@@ -172,7 +175,8 @@ parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权�
 
 `OcrRequest`：
 
-- `config_id`: 可选。
+- `config_id`: 可选；与 `config_source` 配合定位。
+- `config_source`: 可选，`USER` 或 `SYSTEM`，默认 `USER`。
 - `image_base64`: 图片 base64。
 - `prompt`: 可选提示词。
 
@@ -187,6 +191,10 @@ parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权�
 | `GET` | `/usage` | 查询用户用量统计 | Header `X-User-Id`，`start_date/end_date` 可选 |
 
 日期参数格式：`YYYY-MM-DD`。
+
+`GET /providers` 兼容保留 `models: { [model_name]: capability[] }`。新管理端展示模型时优先使用
+`model_options[]`：每项包含 `model_name`（真实调用 ID）、`display_name`（短展示名）、
+`capabilities`、`protocol`、`api_base_url`；提交配置仍应使用 `model_name`。
 
 ## 6. RAG / Recall API（对外）
 
@@ -221,7 +229,8 @@ session token 由 Java 签发、Python 用**独立专用密钥**验签；claims�
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `query` | string | 是 | 用户问题，不能为空或纯空白 |
-| `config_id` | int | 是 | 本次生成所用 CHAT 模型配置 id（前端选中、用户已配置）。缺失 `422`；不属本用户 / 非 CHAT / 已停用 / 不存在 → 召回前置失败 `RECALL_MODEL_CONFIG_MISSING` |
+| `config_id` | int | 是 | 本次生成所用 CHAT 模型配置 id。缺失 `422`；按 `config_source` 定位后非 CHAT / 已停用 / 不存在 / 不属本用户（仅 `USER`）→ 召回前置失败 `RECALL_MODEL_CONFIG_MISSING` |
+| `config_source` | string | 否 | 配置来源：`USER` 指向 `llm_user_config.id`，`SYSTEM` 指向 LinkRag `llm_system_preset.id`；默认 `USER` |
 | `conversation_id` | int | 是 | 本轮所属对话 id（Java 预先创建），作为对话落库挂载锚点。缺失 `422`，不进入召回生成、不发对话轮次消息 |
 | `turn_id` | string | 是 | 本轮落库幂等键：前端每轮生成的稳定 UUID（断连重连不变）。缺失 `422`。Java 据此 upsert 同一行，断连续跑/重连不重复落库 |
 | `is_first_turn` | bool | 否 | 是否会话首条用户消息，默认 `false`。为 `true` 时触发服务端基于 `query` 生成会话标题（SSE `conversation_title` 即时回前端 + `chat_turn.title` 落库），见下文 |
@@ -239,7 +248,7 @@ session token 由 Java 签发、Python 用**独立专用密钥**验签；claims�
 `RECALL_FUSION_STRATEGY` / `RECALL_FUSION_*_WEIGHT` /
 `RECALL_STRICT_DEFAULT` / `RERANK_DEFAULT_TOP_N` 等系统默认）；均不接受
 请求覆盖。其中 `recall_enabled_sources` **只能在系统已装配的召回路集合内收窄**（不能启用系统未
-装配的路）。模型按 `(user_id, config_id)` 解析、不回退系统配置。
+装配的路）。模型按 `(user_id, config_source, config_id)` 解析；`config_source=SYSTEM` 时只读取 LinkRag 系统预设。
 
 并发：按 `user_id` 限并发流数（`RECALL_SESSION_MAX_CONCURRENT`），超限返回 `429`。
 

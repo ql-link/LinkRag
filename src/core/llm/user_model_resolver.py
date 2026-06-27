@@ -63,7 +63,7 @@ class ResolvedModel:
     provider_type: str
     source: str  # "user" | "system"
     protocol: Optional[str] = None  # 实际分发用的协议（可追溯）
-    config_id: Optional[int] = None  # 命中的用户配置 ID；系统兜底配置无 per-user 行时为 None
+    config_id: Optional[int] = None  # 命中的配置 ID；source=system 时指向 llm_system_preset.id
 
 
 def build_provider_from_config(
@@ -133,7 +133,12 @@ def build_provider_from_config(
             config_id=config.get("id"),
             supported_combinations=sorted(supported),
         )
-    source = "system" if config.get("is_system_fallback") else "user"
+    source = (
+        "system"
+        if config.get("is_system_fallback")
+        or str(config.get("config_source") or "").upper() == "SYSTEM"
+        else "user"
+    )
     return ResolvedModel(
         provider=provider,
         model_name=model_name,
@@ -149,6 +154,7 @@ async def aresolve_user_model(
     user_id: int,
     capability: str,
     config_id: int | None = None,
+    config_source: str = "USER",
     allow_system_fallback: bool = False,
     fallback_model: str | None = None,
     override_model: str | None = None,
@@ -157,8 +163,9 @@ async def aresolve_user_model(
 ) -> ResolvedModel:
     """按发起用户解析指定能力的可用模型。
 
-    解析顺序：``config_id`` 指定 → 该配置；否则取用户该能力的默认配置；仍未命中且
-    ``allow_system_fallback`` 为真 → 系统环境兜底配置。全部未命中抛
+    解析顺序：``config_id`` 指定 → 按 ``config_source + config_id`` 精确读配置；
+    否则取用户该能力默认配置，未命中时回退 LinkRag 系统默认预设；仍未命中且
+    ``allow_system_fallback`` 为真 → 旧系统环境兜底配置。全部未命中抛
     :class:`UserModelConfigMissingError`。配置读取本身失败（DB/序列化异常）按原样向上传播，
     便于上层区分「未配置」与「读取失败(可重试)」。
 
@@ -166,9 +173,11 @@ async def aresolve_user_model(
         user_id: 发起用户 ID。
         capability: 能力字符串（CHAT/EMBEDDING/SPARSE_EMBEDDING/RERANK/VISION）。
         config_id: 可选，指定具体配置 ID（``/llm`` 路由按 ID 调用场景）。
-        allow_system_fallback: 用户无配置时是否回退系统环境兜底。解析写入、召回链路与
-            ``/llm`` 直调路由均按用户必配处理，不启用系统兜底；保留该开关给显式需要
-            系统兜底的内部调用点或测试。
+        config_source: ``USER`` 或 ``SYSTEM``。``SYSTEM`` 时 ``config_id`` 指向
+            ``llm_system_preset.id``；默认 ``USER`` 兼容旧调用。
+        allow_system_fallback: LinkRag DB 预设仍未命中时是否回退旧系统环境兜底。解析写入、
+            召回链路与 ``/llm`` 直调路由默认不启用旧 env 兜底；保留该开关给显式需要
+            env 兜底的内部调用点或测试。
         fallback_model: 配置未带 ``model_name`` 时的回退模型名。
         db: 可选注入的 AsyncSession；未注入时自开一次（DB 访问只此一处）。
         config_service: 可选注入的 ConfigReaderService（主要便于测试）。
@@ -184,7 +193,13 @@ async def aresolve_user_model(
 
     async def _resolve(svc: "ConfigReaderService") -> ResolvedModel:
         if config_id is not None:
-            config = await svc.get_user_config_by_id(user_id, config_id, use_cache=False)
+            source_upper = (config_source or "USER").upper()
+            if source_upper == "SYSTEM":
+                config = await svc.get_system_preset_by_id(config_id, use_cache=False)
+            elif source_upper == "USER":
+                config = await svc.get_user_config_by_id(user_id, config_id, use_cache=False)
+            else:
+                raise ValueError(f"Unknown config_source {config_source!r}")
             if config and (config.get("capability") or "").upper() != capability.upper():
                 raise UserModelConfigMissingError(capability, user_id)
         else:

@@ -50,9 +50,10 @@ def _patch_factory(monkeypatch, *, supports=True):
 
 
 class _FakeConfigService:
-    def __init__(self, *, default=None, by_id=None, fallback=None):
+    def __init__(self, *, default=None, by_id=None, system_by_id=None, fallback=None):
         self._default = default
         self._by_id = by_id
+        self._system_by_id = system_by_id
         self._fallback = fallback
 
     async def get_user_default_config_by_capability(self, *, user_id, capability, use_cache=True):
@@ -60,6 +61,9 @@ class _FakeConfigService:
 
     async def get_user_config_by_id(self, user_id, config_id, use_cache=True):
         return self._by_id
+
+    async def get_system_preset_by_id(self, config_id, use_cache=True):
+        return self._system_by_id
 
     def get_system_fallback_config_by_capability(self, capability):
         return self._fallback
@@ -151,7 +155,12 @@ def test_build_provider_from_config_system_fallback_skips_decrypt(monkeypatch):
 def test_build_provider_override_model_wins(monkeypatch):
     captured, _ = _patch_factory(monkeypatch)
     build_provider_from_config(
-        {"provider_type": "qwen", "protocol": "openai", "api_key": "ENC", "model_name": "cfg-model"},
+        {
+            "provider_type": "qwen",
+            "protocol": "openai",
+            "api_key": "ENC",
+            "model_name": "cfg-model",
+        },
         capability="CHAT",
         fallback_model="fb",
         override_model="override",
@@ -208,7 +217,12 @@ def test_build_provider_capability_unsupported(monkeypatch):
 async def test_resolve_user_default_hit(monkeypatch):
     captured, _ = _patch_factory(monkeypatch)
     svc = _FakeConfigService(
-        default={"provider_type": "qwen", "protocol": "openai", "api_key": "ENC", "model_name": "m-user"}
+        default={
+            "provider_type": "qwen",
+            "protocol": "openai",
+            "api_key": "ENC",
+            "model_name": "m-user",
+        }
     )
     rm = await aresolve_user_model(user_id=7, capability="EMBEDDING", config_service=svc)
     assert rm.source == "user"
@@ -249,6 +263,47 @@ async def test_resolve_by_config_id(monkeypatch):
         user_id=7, capability="CHAT", config_id="cfg-1", config_service=svc
     )
     assert rm.model_name == "by-id"
+
+
+@pytest.mark.asyncio
+async def test_resolve_by_system_config_id(monkeypatch):
+    _patch_factory(monkeypatch)
+    svc = _FakeConfigService(
+        system_by_id={
+            "id": 88,
+            "provider_type": "linkrag",
+            "protocol": "openai",
+            "capability": "CHAT",
+            "api_key": "ENC-SYS",
+            "model_name": "linkrag-chat",
+            "config_source": "SYSTEM",
+        }
+    )
+    rm = await aresolve_user_model(
+        user_id=7,
+        capability="CHAT",
+        config_id=88,
+        config_source="SYSTEM",
+        config_service=svc,
+    )
+    assert rm.source == "system"
+    assert rm.config_id == 88
+    assert rm.model_name == "linkrag-chat"
+
+
+@pytest.mark.asyncio
+async def test_resolve_rejects_unknown_config_source(monkeypatch):
+    _patch_factory(monkeypatch)
+    svc = _FakeConfigService(by_id=None)
+
+    with pytest.raises(ValueError, match="Unknown config_source"):
+        await aresolve_user_model(
+            user_id=7,
+            capability="CHAT",
+            config_id=1,
+            config_source="NOPE",
+            config_service=svc,
+        )
 
 
 @pytest.mark.asyncio

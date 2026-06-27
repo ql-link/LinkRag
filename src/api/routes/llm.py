@@ -2,6 +2,7 @@
 LLM API 路由
 提供 LLM 调用接口：文本生成、向量化、重排等
 """
+
 from typing import Optional, List
 
 from fastapi import APIRouter, Header, HTTPException, Depends
@@ -18,7 +19,9 @@ from src.database import get_db
 router = APIRouter(prefix="/api/v1/llm", tags=["llm"])
 
 # OCR 不是独立能力：图片文字提取 = VISION + 文字提取 prompt。/ocr 未带 prompt 时用此默认值。
-_DEFAULT_OCR_PROMPT = "请提取这张图片中的所有文字，按原始排版尽量还原；若图中无文字，则简要描述图片内容。"
+_DEFAULT_OCR_PROMPT = (
+    "请提取这张图片中的所有文字，按原始排版尽量还原；若图中无文字，则简要描述图片内容。"
+)
 
 
 def _sniff_image_media_type(image_base64: str) -> str:
@@ -57,12 +60,21 @@ def _coerce_int(value: str, field: str) -> int:
         raise HTTPException(status_code=422, detail=f"invalid {field}") from exc
 
 
+def _coerce_config_source(value: Optional[str]) -> str:
+    """归一化配置来源，非法值 → 422。"""
+    source = (value or "USER").upper()
+    if source not in {"USER", "SYSTEM"}:
+        raise HTTPException(status_code=422, detail="invalid config_source")
+    return source
+
+
 async def _resolve_provider(
     db: AsyncSession,
     user_id: str,
     capability: str,
     *,
     config_id: Optional[str] = None,
+    config_source: Optional[str] = None,
     override_model: Optional[str] = None,
 ) -> BaseProvider:
     """按用户解析指定能力的 Provider，未命中 → 422。
@@ -73,11 +85,13 @@ async def _resolve_provider(
     """
     uid = _coerce_int(user_id, "X-User-Id")
     cid = _coerce_int(config_id, "config_id") if config_id is not None else None
+    source = _coerce_config_source(config_source)
     try:
         resolved = await aresolve_user_model(
             user_id=uid,
             capability=capability,
             config_id=cid,
+            config_source=source,
             allow_system_fallback=False,
             override_model=override_model,
             db=db,
@@ -100,9 +114,12 @@ async def _resolve_provider(
 
 # ============ 请求模型 ============
 
+
 class GenerateRequest(BaseModel):
     """生成文本请求"""
+
     config_id: Optional[str] = None
+    config_source: Optional[str] = Field("USER", description="配置来源：USER 或 SYSTEM")
     prompt: str = Field(..., description="输入提示词")
     model: Optional[str] = Field(None, description="模型名称（覆盖配置）")
     temperature: float = Field(0.7, ge=0, le=2, description="采样温度")
@@ -113,14 +130,18 @@ class GenerateRequest(BaseModel):
 
 class EmbedRequest(BaseModel):
     """向量化请求"""
+
     config_id: Optional[str] = None
+    config_source: Optional[str] = Field("USER", description="配置来源：USER 或 SYSTEM")
     input: str | List[str] = Field(..., description="待向量化的文本")
     model: Optional[str] = Field(None, description="指定模型")
 
 
 class RerankRequest(BaseModel):
     """重排请求"""
+
     config_id: Optional[str] = None
+    config_source: Optional[str] = Field("USER", description="配置来源：USER 或 SYSTEM")
     query: str = Field(..., description="检索查询")
     documents: List[str] = Field(..., description="待重排的文档")
     model: Optional[str] = None
@@ -129,12 +150,15 @@ class RerankRequest(BaseModel):
 
 class OcrRequest(BaseModel):
     """OCR 请求"""
+
     config_id: Optional[str] = None
+    config_source: Optional[str] = Field("USER", description="配置来源：USER 或 SYSTEM")
     image_base64: str = Field(..., description="图像 base64 编码")
     prompt: Optional[str] = Field(None, description="分析提示词")
 
 
 # ============ 路由实现 ============
+
 
 @router.post("/generate")
 async def generate_text(
@@ -154,8 +178,12 @@ async def generate_text(
     """
     try:
         client = await _resolve_provider(
-            db, x_user_id, "CHAT",
-            config_id=request.config_id, override_model=request.model,
+            db,
+            x_user_id,
+            "CHAT",
+            config_id=request.config_id,
+            config_source=request.config_source,
+            override_model=request.model,
         )
 
         # 调用生成
@@ -198,8 +226,12 @@ async def generate_text_stream(
 
     try:
         client = await _resolve_provider(
-            db, x_user_id, "CHAT",
-            config_id=request.config_id, override_model=request.model,
+            db,
+            x_user_id,
+            "CHAT",
+            config_id=request.config_id,
+            config_source=request.config_source,
+            override_model=request.model,
         )
 
         async def event_generator():
@@ -210,7 +242,7 @@ async def generate_text_stream(
                 max_tokens=request.max_tokens,
             ):
                 yield f"data: {chunk.model_dump_json()}\n\n"
-            yield "data: {\"is_end\": true}\n\n"
+            yield 'data: {"is_end": true}\n\n'
 
         return StreamingResponse(
             event_generator(),
@@ -237,8 +269,12 @@ async def embed_text(
     """
     try:
         client = await _resolve_provider(
-            db, x_user_id, "EMBEDDING",
-            config_id=request.config_id, override_model=request.model,
+            db,
+            x_user_id,
+            "EMBEDDING",
+            config_id=request.config_id,
+            config_source=request.config_source,
+            override_model=request.model,
         )
 
         result = await client.embed(texts=request.input, model=request.model)
@@ -269,8 +305,12 @@ async def rerank_documents(
     """
     try:
         client = await _resolve_provider(
-            db, x_user_id, "RERANK",
-            config_id=request.config_id, override_model=request.model,
+            db,
+            x_user_id,
+            "RERANK",
+            config_id=request.config_id,
+            config_source=request.config_source,
+            override_model=request.model,
         )
 
         result = await client.rerank(
@@ -309,7 +349,11 @@ async def extract_text_from_image(
     """
     try:
         client = await _resolve_provider(
-            db, x_user_id, "VISION", config_id=request.config_id,
+            db,
+            x_user_id,
+            "VISION",
+            config_id=request.config_id,
+            config_source=request.config_source,
         )
 
         result = await client.analyze_image(

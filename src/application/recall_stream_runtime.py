@@ -103,7 +103,9 @@ async def _resolve_title(resolved, query: str, fallback_title: str, request_id: 
     return llm_title or fallback_title
 
 
-async def _await_title_result(title_task: asyncio.Task | None, fallback_title: str | None) -> str | None:
+async def _await_title_result(
+    title_task: asyncio.Task | None, fallback_title: str | None
+) -> str | None:
     """终态取回首轮标题：await 已并行起跑的任务（LLM 优先、必非空）。
 
     非首轮（``title_task is None``）返回 ``None``。任务体已自兜底，正常返回非空标题；
@@ -144,6 +146,7 @@ async def recall_event_stream(
     token_budget: int,
     rerank_top_n: int,
     is_first_turn: bool = False,
+    config_source: str = "USER",
 ) -> AsyncGenerator[str, None]:
     """流内执行召回 + 重排 + 生成，把结果/异常映射为 SSE 终态事件。
 
@@ -151,7 +154,7 @@ async def recall_event_stream(
     上限，二者均来自数据集级 ``recall_config``（分别为 ``recall_context_token_budget`` /
     ``rerank_top_n``，无数据集配置时为系统默认）。
 
-    先按 ``(user_id, CHAT, config_id)`` 前置校验用户模型——不可用即 ``error``
+    先按 ``(user_id, CHAT, config_source, config_id)`` 前置校验模型——不可用即 ``error``
     MODEL_CONFIG_MISSING、**不进入召回**；通过后执行召回融合，一次性回填片段正文（供
     rerank 与生成共用），对融合候选做 rerank 精排（不可用即降级为当前融合顺序，见
     ``_rerank_hits``；与召回共享同一条流超时预算），用重排后的最终候选按 token 预算拼装
@@ -202,6 +205,7 @@ async def recall_event_stream(
                 user_id=recall_req.user_id,
                 capability="CHAT",
                 config_id=config_id,
+                config_source=config_source,
                 allow_system_fallback=False,
             )
         except (UserModelConfigMissingError, ValueError) as exc:
