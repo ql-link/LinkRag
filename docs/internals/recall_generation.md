@@ -114,7 +114,7 @@
 
 - **上游**：[recall_pipeline.md](recall_pipeline.md) 产出不含正文的融合候选；本阶段消费 `RecallResponse.hits`。
 - **正文来源**：[chunk_fact_storage.md](chunk_fact_storage.md) —— `fetch_chunk_contents` 按 ACTIVE 回读正文。
-- **模型一致性**：dense 召回 query 编码按发起用户的 EMBEDDING 配置解析（读写同源），生成则用用户选定的 CHAT 模型；二者都不回落系统模型。背景见错误码文档对 `RECALL_EMBEDDING_CONFIG_MISSING` 的说明。
+- **模型一致性**：dense / sparse 召回 query 编码按数据集绑定的 `dense_embedding_config_id` / `sparse_embedding_config_id` 解析（读写同源），生成则用用户选定的 CHAT 模型；二者都不回落系统模型。
 
 ---
 

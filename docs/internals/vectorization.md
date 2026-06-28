@@ -73,7 +73,7 @@ ParseTaskPipeline
 | 组件 | 文件 | 职责 |
 | --- | --- | --- |
 | `ChunkEmbeddingPipeline` | `splitter/embedding_pipeline.py` | 批量生成 Chunk embedding，支持缓存和统计 |
-| `SparseVectorService` | `sparse_vector/pipeline.py` | 按用户 `SPARSE_EMBEDDING` 配置经 adapter 对 chunk 原文生成稀疏向量；`vectorize_query` 供召回侧使用 |
+| `SparseVectorService` | `sparse_vector/pipeline.py` | 按数据集绑定的 `sparse_embedding_config_id` 经 adapter 对 chunk 原文生成稀疏向量；`vectorize_query` 供召回侧使用 |
 | `VectorStorageFacade` | `vector_storage/facade.py` | 向上游暴露统一入口；含写入、管理、补偿与**召回**（`search_sparse_chunks` / `search_dense_chunks`） |
 | `VectorStoragePipeline` | `vector_storage/pipeline.py` | 消费 SQL chunk 真值，写 dense Qdrant 索引副本并回写状态 |
 | `VectorStorageManagementPipeline` | `vector_storage/management_pipeline.py` | Chunk 修改、删除 |
@@ -320,7 +320,7 @@ await facade.reindex_failed_chunks(chunk_ids)
 召回链路通过 `VectorStorageFacade` 暴露**两个对仗入口**：
 
 - `search_sparse_chunks`（稀疏向量召回）
-- `search_dense_chunks`（system embedding 稠密向量召回）
+- `search_dense_chunks`（数据集绑定 EMBEDDING 稠密向量召回）
 
 两路是**唯一对外召回入口**，调用方只需 import `vector_storage` 包。详细链路 / 失败模式 / 默认值依据 / 鬼影 hit 边界 / 模型升级 SOP 见 [§9 召回链路](#9-召回链路)。
 
@@ -396,7 +396,7 @@ chunk_id_to_content = {
 - `DENSE_RETRIEVAL_SCORE_THRESHOLD`（默认 0.0；cosine 上界 [0, 1]，facade 入口校验早死）
 - `RECALL_ENABLED_SOURCES`（默认 `bm25,sparse,dense`；运维侧通过 env 显式设置可暂时回退）
 
-稀疏向量推理（dense embedding 与之独立，见下表）。稀疏编码模型不再由系统级配置项指定，而是按**发起用户的默认 SPARSE_EMBEDDING 配置**经统一 adapter 解析（必配、无系统级兜底），详见 §6.6 与 [sparse_vector.md](sparse_vector.md)。保留的系统级配置项只剩与具体 provider 无关的全局开关与清洗 / 命名规则：
+稀疏向量推理（dense embedding 与之独立，见下表）。稀疏编码模型不再由系统级配置项或用户当前默认配置指定，而是按**数据集绑定的 `sparse_embedding_config_id`** 经统一 adapter 解析（必配、无系统级兜底），详见 §6.6 与 [sparse_vector.md](sparse_vector.md)。保留的系统级配置项只剩与具体 provider 无关的全局开关与清洗 / 命名规则：
 
 - `SPARSE_VECTOR_ENABLED`（默认 `true`）：稀疏向量总开关；关闭后保持旧 dense-only 语义。
 - `SPARSE_VECTOR_TOP_K` / `SPARSE_VECTOR_MIN_WEIGHT`：全局输出清洗规则，各 provider 复用，保证产出经过同一套清洗。
@@ -456,17 +456,17 @@ Embedding 客户端由 `ModelFactory` 创建，必须支持 `CapabilityType.EMBE
 
 ES 阶段只返回文件级 `EsIndexingResult`，不直接维护 `kb_document_chunk.es_status`；Chunk 级 ES 状态字段保留给更细粒度索引状态扩展。
 
-### 6.6 稀疏向量 provider 的 per-user 解析
+### 6.6 稀疏向量 provider 的 dataset-bound 解析
 
-稀疏向量的编码模型按**发起用户的默认 SPARSE_EMBEDDING 配置**解析，不再由系统级
-`SPARSE_VECTOR_PROVIDER` 切换（该机制及其本地 / HTTP / 远程 BGE-M3 实现已移除）。
-运行时唯一装配入口是
-`sparse_vector/factory.py::aresolve_user_sparse_vector_service(user_id)`，**写入与召回共用**：
+稀疏向量的编码模型按**数据集绑定的 `dataset_parse_config.sparse_embedding_config_id`**
+解析，不再由系统级 `SPARSE_VECTOR_PROVIDER` 或用户当前默认配置切换（该机制及其本地 /
+HTTP / 远程 BGE-M3 实现已移除）。解析建库与召回共用
+`sparse_vector/factory.py::aresolve_dataset_sparse_vector_service(user_id, dataset_id)`：
 
 ```text
-aresolve_user_sparse_vector_service(user_id)
-    ↓ 读用户默认 SPARSE_EMBEDDING 配置
-aresolve_user_model(user_id, capability="SPARSE_EMBEDDING")   # (protocol, capability) 门禁
+aresolve_dataset_sparse_vector_service(user_id, dataset_id)
+    ↓ 读 dataset_parse_config.sparse_embedding_config_id
+aresolve_user_model(user_id, capability="SPARSE_EMBEDDING", config_id=...)   # (protocol, capability) 门禁
     ↓ 解析 provider（必配，无配置抛 SparseEmbeddingConfigMissingError）
 AdapterSparseVectorEncoder(provider)   # sparse_vector/adapter_encoder.py
     ↓
@@ -543,8 +543,8 @@ SparseVectorService(encoder)
 
 召回链路是写入链路的**只读镜像**。本期同时支持两种向量召回：
 
-- **稀疏召回**（`search_sparse_chunks`）：query 走稀疏 adapter 编码（按发起用户 `SPARSE_EMBEDDING` 配置） → Qdrant **named** sparse vector（默认 `sparse_text`）
-- **稠密召回**（`search_dense_chunks`）：query 走 system embedding HTTP（默认 `text-embedding-v4`） → Qdrant **unnamed** dense vector（cosine 距离）
+- **稀疏召回**（`search_sparse_chunks`）：query 走数据集绑定的 `sparse_embedding_config_id` 编码 → Qdrant **named** sparse vector（默认 `sparse_text`）
+- **稠密召回**（`search_dense_chunks`）：query 走数据集绑定的 `dense_embedding_config_id` 编码 → Qdrant dense vector（cosine 距离）
 
 两路共用 bucket 路由、payload filter 构造、`VectorSearchHit` / `VectorSearchResult` 中性 dataclass、召回侧异常族（`VectorRetrievalError` 系列）。差异仅在 query 向量化路径与 Qdrant `query_points` 调用形态。
 
@@ -555,6 +555,7 @@ SparseVectorService(encoder)
        -> 空 query 短路：直接返空 VectorSearchResult，不调 encoder / Qdrant
        -> 配置检查：
             - sparse: SPARSE_VECTOR_ENABLED=False → 抛 VectorRetrievalConfigurationError
+            - dense/sparse: 数据集模型绑定缺失或无效 → 抛 VectorRetrievalUserConfigMissingError
             - dense: embedding_pipeline 未注入 → 抛 VectorRetrievalConfigurationError
        -> query 向量化
             - sparse: SparseVectorService.vectorize_query(query) → SparseVector(indices, values)
@@ -583,8 +584,8 @@ SparseVectorService(encoder)
 | bucket 路由 | `BucketRouter.route_user(user_id)`，写入 / sparse 召回 / dense 召回共用同一路由算法（按 user_id CRC32 哈希 → bucket_id → collection 名） |
 | sparse vector 命名 | `settings.SPARSE_VECTOR_QDRANT_VECTOR_NAME`（默认 `sparse_text`），写入 `upsert_sparse_vectors` 与召回 sparse 分支都从该 setting 读取，不分叉 |
 | dense vector 形态 | unnamed vector，写入 `ensure_collection` 用 `vectors_config=VectorParams(size=1024, distance=COSINE)`，`PointStruct(vector=[...])` 裸传；召回 `query_points(using=None)` 与之对齐——不引入 `DENSE_RETRIEVAL_VECTOR_NAME` 配置避免分叉风险 |
-| 稀疏编码器配置 | 写入与召回都经 `aresolve_user_sparse_vector_service(user_id)` 按发起用户解析同一份 `SPARSE_EMBEDDING` 配置，保证两侧落在同一 token 权重空间 |
-| system embedding 实例 | `ChunkEmbeddingPipeline` 在工厂构造一次后，`aembed_chunks`（写入）与 `aembed_query`（召回）共用同一个 `self.embedder` + `self.embedding_model` 字段——编译期保证写入 / 召回 model 不分叉 |
+| 稀疏编码器配置 | 写入与召回都经 `aresolve_dataset_sparse_vector_service(user_id, dataset_id)` 按 `dataset_parse_config.sparse_embedding_config_id` 解析同一份配置，保证两侧落在同一 token 权重空间 |
+| 稠密编码器配置 | 写入与召回都经 `aresolve_dataset_chunk_embedding_pipeline(user_id, dataset_id)` 按 `dataset_parse_config.dense_embedding_config_id` 解析同一份配置，保证 query 与 chunk dense 向量空间一致 |
 | payload 字段 | `point_factory._payload()` 写入 `{chunk_id, user_id, set_id, doc_id}`；两路召回 filter 命中同名字段（`facade._build_payload_filter` 是 staticmethod，sparse / dense 共用） |
 | `chunk_id` | MySQL UK + Qdrant Point ID + 召回 `hit.chunk_id`，三处一致 |
 
@@ -598,7 +599,7 @@ SparseVectorService(encoder)
 | collection 存在但目标 named vector 未配置 | 返空 hits，不抛；warn 日志带 `bucket_id` + `vector_name`（**仅 sparse 触发**——dense 是 collection 创建时一并配齐的 unnamed vector，无中间状态） | sparse 写入侧 `ensure_sparse_vector_schema` 是首次写入时延迟挂载 |
 | Qdrant 网络故障 / 超时 / 服务不可用 | 抛 `VectorRetrievalBackendError` | 底层故障，由调用方决定降级或重试 |
 | `SPARSE_VECTOR_ENABLED=False` / dense `embedding_pipeline` 未注入 / 依赖缺失 / Qdrant URL 无效 | 抛 `VectorRetrievalConfigurationError` | 部署侧配置错误，不是常态 |
-| 编码器（稀疏 adapter / system embedding HTTP）推理失败 | 抛 `VectorRetrievalEncodingError` | 编码失败不是召回的常态 |
+| 编码器（稀疏 adapter / 数据集绑定 embedding HTTP）推理失败 | 抛 `VectorRetrievalEncodingError` | 编码失败不是召回的常态 |
 
 **一句话原则**：业务上等价于"没数据"的状况返空；环境 / 配置 / 底层故障一律抛。
 

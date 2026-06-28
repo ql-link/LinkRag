@@ -187,8 +187,8 @@ async def test_should_reindex_failed_chunks_when_explicitly_requested(
 
     result = await chunk_compensation_service.reindex_failed_chunks(["chunk-failed-1"])
 
-    # 解析器按 chunk 所属用户（failed_chunk_record.user_id=300）调用
-    comp_module.aresolve_user_chunk_embedding_pipeline.assert_awaited_once_with(300)
+    # 解析器按 chunk 所属用户 + 数据集调用
+    comp_module.aresolve_user_chunk_embedding_pipeline.assert_awaited_once_with(300, 200)
     assert result.total_chunks == 1
     assert result.indexed_chunks == 1
     assert result.failed_chunk_ids == []
@@ -291,8 +291,8 @@ async def test_reindex_resolves_sparse_service_per_user(
 
     result = await chunk_compensation_service.reindex_failed_chunks(["chunk-failed-1"])
 
-    # 关键：sparse 服务按 chunk 所属用户（user_id=300）解析，并真正用它编码 + 写 Qdrant。
-    sparse_resolver.assert_awaited_once_with(300)
+    # 关键：sparse 服务按 chunk 所属用户 + 数据集解析，并真正用它编码 + 写 Qdrant。
+    sparse_resolver.assert_awaited_once_with(300, 200)
     fake_sparse_service.vectorize_chunk.assert_awaited_once()
     mock_qdrant_store.upsert_sparse_vectors.assert_awaited_once()
     assert result.indexed_chunks == 1

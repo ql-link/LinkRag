@@ -175,7 +175,7 @@ ORM：[`UsageLogDB`](../../../src/models/db_models.py)
 | --- | --- | --- |
 | `id` | BIGINT UNSIGNED PK | 记录唯一标识 |
 | `user_id` | BIGINT UNSIGNED | 用户 ID |
-| `config_id` | BIGINT UNSIGNED NULL | 用户配置 ID；走系统配置的调用（如召回 query 编码）无 per-user 配置，可空 |
+| `config_id` | BIGINT UNSIGNED NULL | 用户配置 ID；走系统配置的调用可空。解析/召回向量编码使用数据集绑定的 `llm_user_config.id` 时必须上报实际绑定 ID |
 | `provider_type` | VARCHAR(32) | 厂商类型 |
 | `model_name` | VARCHAR(128) | 模型名称 |
 | `prompt_tokens` | INT | 输入 Token 数；向量类调用（embed/sparse/rerank）即此列 |
@@ -190,7 +190,7 @@ ORM：[`UsageLogDB`](../../../src/models/db_models.py)
 
 索引：`idx_user_date`, `idx_config_date`, `idx_user_stage_date`。
 
-> 全链路归属（0022 + LINK-191）：本表是「全链路模型调用账本」。**全部**用量行（对话 `generate`、解析 embed/vision/table、召回 embed/rerank）均由 Python 通过统一的 `tolink.rag.usage_report` 上报、Java 消费落库——`generate` 不再由 `chat_turn` 触发落库。token 一律由模型返回（不自算），向量类 `completion_tokens=0`。`sparse` 因模型不返回 token 本期预留不上报，仅在 `operation` 枚举占位。详见 [mq_contracts.md](../mq_contracts.md#用量上报pythonjava统计侧)。
+> 全链路归属（0022 + LINK-191）：本表是「全链路模型调用账本」。**全部**用量行（对话 `generate`、解析 embed/vision/table/sparse、召回 embed/sparse/rerank）均由 Python 通过统一的 `tolink.rag.usage_report` 上报、Java 消费落库——`generate` 不再由 `chat_turn` 触发落库。token 一律由模型返回（不自算），向量类 `completion_tokens=0`；稀疏 provider 未返回 token 时跳过上报。详见 [mq_contracts.md](../mq_contracts.md#用量上报pythonjava统计侧)。
 >
 > 瘦身（0023）：删除 `fallback_config_id`（项目无兜底配置，死字段）与对话关联键 `conversation_id` / `message_id` / `request_id`（及 `idx_conversation_id`、`idx_usage_message_id` 索引）。本表不再保留对话级归溯；用户级用量统计由 `UsageLogService.get_usage_summary` 直接对本表按时间窗 `SUM` 得出。
 
@@ -228,14 +228,18 @@ ORM：[`UsageLogDB`](../../../src/models/db_models.py)
 | `enhancement_config` | JSON | Markdown 增强配置（2 项：enable_table_enhancement / enable_image_enhancement）。仅控制是否开启表格/图片增强；增强模型不在此选择，统一用发起用户对应能力（CHAT/VISION）的默认模型。历史数据残留的 table_model / vision_model 键被忽略 |
 | `pdf_config` | JSON | PDF 解析配置（1 项：pdf_parser_backend，null 表示用系统默认） |
 | `recall_config` | JSON | 召回检索配置（14 项：recall_result_limit / recall_context_token_budget / bm25_top_k / sparse_top_k / sparse_score_threshold / dense_top_k / dense_score_threshold / recall_enabled_sources / recall_fusion_strategy / fusion_bm25_weight / fusion_sparse_weight / fusion_dense_weight / rerank_top_n / recall_strict；数据库列 COMMENT 由 Alembic 迁移同步维护）。其中 recall_result_limit 为融合后候选池窗口；bm25_top_k / sparse_top_k / dense_top_k 分别控制三路执行期召回深度；recall_enabled_sources 为启用的召回路数组（bm25/sparse/dense，**仅能在系统已装配的召回路集合内收窄**，列出的未装配路被忽略、交集为空时回退全部已装配路）；recall_fusion_strategy 可选 rrf / weighted_score，三路 fusion 权重仅用于 weighted_score 且允许单项为 0；rerank_top_n 为重排返回条数上限；recall_strict 为召回容错模式（true=任一路失败即整体失败，false=允许单路失败降级） |
+| `sparse_embedding_config_id` | BIGINT UNSIGNED NULL | 数据集绑定的稀疏向量模型配置 ID，指向 `llm_user_config.id`，要求属于当前用户、启用中、`is_system_preset=false`、`capability='SPARSE_EMBEDDING'` |
+| `dense_embedding_config_id` | BIGINT UNSIGNED NULL | 数据集绑定的稠密向量模型配置 ID，指向 `llm_user_config.id`，要求属于当前用户、启用中、`is_system_preset=false`、`capability='EMBEDDING'` |
 | `is_active` | BOOLEAN | 是否启用，默认 `TRUE` |
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
 
 索引：
 - `uk_user_dataset(user_id, dataset_id)`
 - `idx_dataset_parse_config_dataset(dataset_id)`
+- `idx_dataset_parse_sparse_config(sparse_embedding_config_id)`
+- `idx_dataset_parse_dense_config(dense_embedding_config_id)`
 
-> 所有权：表结构由 Python 侧 Alembic 迁移管理；**行数据的增删改由 Java 侧负责**，Python 侧只读，无配置行时使用内存默认。
+> 所有权：表结构由 Python 侧 Alembic 迁移管理；**行数据的增删改由 Java 侧负责**，Python 侧只读。JSON 配置无行时使用内存默认；向量模型绑定不做默认模型回退，`sparse_embedding_config_id` / `dense_embedding_config_id` 缺失或无效时解析建向量与召回会明确失败，历史数据集需先回填。
 
 ### `chat_conversation` — 对话表
 

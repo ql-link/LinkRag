@@ -55,8 +55,8 @@ class VectorStorageFacade:
         qdrant_store: Any | None = None,
         sparse_vector_service: "SparseVectorService | None" = None,
         embedding_pipeline: "ChunkEmbeddingPipeline | None" = None,
-        query_embedding_resolver: "Callable[[int], Awaitable[ChunkEmbeddingPipeline]] | None" = None,
-        query_sparse_resolver: "Callable[[int], Awaitable[SparseVectorService]] | None" = None,
+        query_embedding_resolver: "Callable[..., Awaitable[ChunkEmbeddingPipeline]] | None" = None,
+        query_sparse_resolver: "Callable[..., Awaitable[SparseVectorService]] | None" = None,
     ) -> None:
         """
         初始化统一入口，并注入已经装配好的底层服务。
@@ -72,15 +72,15 @@ class VectorStorageFacade:
             embedding_pipeline: 可选的 chunk embedding 管线；进程级系统 embedder，
                 作为 ``search_dense_chunks`` 在**未注入** ``query_embedding_resolver`` 时的
                 回退（写入 / management / 单测路径）。
-            query_embedding_resolver: 可选的「按发起 user_id 解析 query embedding pipeline」回调。
+            query_embedding_resolver: 可选的「按 user_id + dataset_id 解析 query embedding pipeline」回调。
                 召回装配（``recall_pipeline_provider``）注入
-                ``aresolve_user_chunk_embedding_pipeline``，使 dense 召回 query 编码与写入侧
-                同源、按用户模型解析；注入后 ``search_dense_chunks`` 优先用它而非进程级
+                ``aresolve_dataset_chunk_embedding_pipeline``，使 dense 召回 query 编码与写入侧
+                同源、按数据集绑定模型解析；注入后 ``search_dense_chunks`` 优先用它而非进程级
                 ``embedding_pipeline``。
-            query_sparse_resolver: 可选的「按发起 user_id 解析 sparse 向量服务」回调（sparse 侧
+            query_sparse_resolver: 可选的「按 user_id + dataset_id 解析 sparse 向量服务」回调（sparse 侧
                 与 ``query_embedding_resolver`` 对偶）。召回装配注入
-                ``aresolve_user_sparse_vector_service``，使 sparse 召回 query 编码与写入侧
-                同源、按用户模型解析；注入后 ``search_sparse_chunks`` 优先用它而非进程级
+                ``aresolve_dataset_sparse_vector_service``，使 sparse 召回 query 编码与写入侧
+                同源、按数据集绑定模型解析；注入后 ``search_sparse_chunks`` 优先用它而非进程级
                 ``sparse_vector_service``。
 
         Returns:
@@ -361,14 +361,14 @@ class VectorStorageFacade:
             score_threshold=effective_threshold,
         )
 
-        # 按发起用户解析 sparse 向量服务（与写入侧同源），缺默认 SPARSE_EMBEDDING 配置 →
+        # 按数据集绑定解析 sparse 向量服务（与写入侧同源），绑定缺失 / 无效 →
         # 翻成 VectorRetrievalUserConfigMissingError（上层据此硬失败，不做宽松降级，
         # 与 dense 的 DenseEmbeddingConfigMissingError 翻译对偶）。
         if self._query_sparse_resolver is not None:
             from src.core.encoding.sparse.factory import SparseEmbeddingConfigMissingError
 
             try:
-                service = await self._query_sparse_resolver(user_id)
+                service = await self._call_sparse_resolver(user_id, set_id)
             except SparseEmbeddingConfigMissingError as exc:
                 raise VectorRetrievalUserConfigMissingError(str(exc)) from exc
         else:
@@ -383,6 +383,8 @@ class VectorStorageFacade:
             raise VectorRetrievalConfigurationError(str(exc)) from exc
         except SparseVectorError as exc:  # 含 SparseVectorEncodingError / OutputError
             raise VectorRetrievalEncodingError(str(exc)) from exc
+
+        self._report_sparse_query_usage(service=service, user_id=user_id)
 
         if self.qdrant_store is None:
             # 工厂始终注入 qdrant_store；这里是防御性 invariant，避免 None.x。
@@ -439,13 +441,11 @@ class VectorStorageFacade:
         top_k: int | None = None,
         score_threshold: float | None = None,
     ) -> VectorSearchResult:
-        """基于 system embedding 稠密向量在用户 / 知识集范围内召回最多 top-k 个 chunk。
+        """基于数据集绑定的稠密向量模型在用户 / 知识集范围内召回最多 top-k 个 chunk。
 
         本方法是稠密向量召回的**唯一对外入口**——内部把 query 走与写入链路同一份
-        ``ChunkEmbeddingPipeline`` 向量化（model 取 ``settings.SYSTEM_LLM_MODEL_EMBEDDING``，
-        当前 ``text-embedding-v4``），再到对应 bucket collection 上做 unnamed
-        dense vector search（写入侧 ``ensure_collection`` 用 ``vectors_config=
-        VectorParams(size=1024, distance=COSINE)``，``PointStruct(vector=[...])`` 裸传），
+        ``ChunkEmbeddingPipeline`` 向量化（按 ``dataset_parse_config.dense_embedding_config_id``
+        精确解析），再到对应 bucket collection 上做 dense vector search，
         命中通过 payload filter 限定到当前 user / set。
 
         **完全只读**：不动 MySQL ``dense_vector_status``、不调 Qdrant
@@ -492,7 +492,7 @@ class VectorStorageFacade:
                 ``score_threshold``）。
             VectorRetrievalConfigurationError: ``embedding_pipeline`` 或
                 ``qdrant_store`` 未注入等部署侧问题。
-            VectorRetrievalEncodingError: system embedding HTTP 推理失败。
+            VectorRetrievalEncodingError: 数据集绑定 embedding HTTP 推理失败。
             VectorRetrievalBackendError: Qdrant 网络故障 / 超时 / 服务不可用。
         """
 
@@ -570,13 +570,13 @@ class VectorStorageFacade:
             score_threshold=effective_threshold,
         )
 
-        # 按发起用户解析 query embedding pipeline（与写入侧同源），缺默认 EMBEDDING 配置 →
+        # 按数据集绑定解析 query embedding pipeline（与写入侧同源），绑定缺失 / 无效 →
         # 翻成 VectorRetrievalUserConfigMissingError（上层据此硬失败，不做宽松降级）。
         if self._query_embedding_resolver is not None:
             from src.core.splitter.factory import DenseEmbeddingConfigMissingError
 
             try:
-                embedding_pipeline = await self._query_embedding_resolver(user_id)
+                embedding_pipeline = await self._call_embedding_resolver(user_id, set_id)
             except DenseEmbeddingConfigMissingError as exc:
                 raise VectorRetrievalUserConfigMissingError(str(exc)) from exc
         else:
@@ -607,6 +607,7 @@ class VectorStorageFacade:
                 prompt_tokens=int(getattr(_q_usage, "prompt_tokens", 0) or 0),
                 completion_tokens=0,
                 total_tokens=int(getattr(_q_usage, "total_tokens", 0) or 0),
+                config_id=getattr(getattr(embedding_pipeline, "embedder", None), "config_id", None),
             )
 
         # ───────────────────── ⑤ bucket 路由（与写入侧共用 BucketRouter）────────
@@ -646,6 +647,47 @@ class VectorStorageFacade:
             score_threshold=effective_threshold,
             model_name=embedding_pipeline.embedding_model,
             vector_kind="dense",
+        )
+
+    async def _call_embedding_resolver(self, user_id: int, set_id: int):
+        """调用 query embedding resolver。
+
+        生产 resolver 接受 ``(user_id, dataset_id)``；保留一参 fallback 兼容单测和旧显式注入。
+        """
+        try:
+            return await self._query_embedding_resolver(user_id, set_id)
+        except TypeError as exc:
+            try:
+                return await self._query_embedding_resolver(user_id)
+            except TypeError:
+                raise exc
+
+    async def _call_sparse_resolver(self, user_id: int, set_id: int):
+        """调用 query sparse resolver，兼容旧的一参测试替身。"""
+        try:
+            return await self._query_sparse_resolver(user_id, set_id)
+        except TypeError as exc:
+            try:
+                return await self._query_sparse_resolver(user_id)
+            except TypeError:
+                raise exc
+
+    @staticmethod
+    def _report_sparse_query_usage(*, service: "SparseVectorService", user_id: int) -> None:
+        usage = getattr(service, "last_usage", None)
+        total_tokens = int(getattr(usage, "total_tokens", 0) or 0) if usage is not None else 0
+        if total_tokens <= 0:
+            return
+        report_usage_nowait(
+            user_id=user_id,
+            provider_type=getattr(service, "provider_type", None) or "",
+            model_name=service.model_name or "",
+            stage="recall",
+            operation="sparse",
+            prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+            completion_tokens=0,
+            total_tokens=total_tokens,
+            config_id=getattr(service, "config_id", None),
         )
 
     def _sparse_vector_name(self) -> str:

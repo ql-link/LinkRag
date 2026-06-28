@@ -28,6 +28,8 @@ class DatasetParseConfig(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "dataset_id", name="uk_user_dataset"),
         Index("idx_dataset_parse_config_dataset", "dataset_id"),
+        Index("idx_dataset_parse_sparse_config", "sparse_embedding_config_id"),
+        Index("idx_dataset_parse_dense_config", "dense_embedding_config_id"),
     )
 
     id = Column(BIGINT(unsigned=True), primary_key=True, autoincrement=True)
@@ -39,6 +41,16 @@ class DatasetParseConfig(Base):
     enhancement_config = Column(JSON, nullable=False, comment="Markdown 增强配置（2 项）")
     pdf_config = Column(JSON, nullable=False, comment="PDF 解析配置（1 项）")
     recall_config = Column(JSON, nullable=False, comment="召回检索配置（14 项）")
+    sparse_embedding_config_id = Column(
+        BIGINT(unsigned=True),
+        nullable=True,
+        comment="稀疏向量模型配置 ID，对应 llm_user_config.id",
+    )
+    dense_embedding_config_id = Column(
+        BIGINT(unsigned=True),
+        nullable=True,
+        comment="稠密向量模型配置 ID，对应 llm_user_config.id",
+    )
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=utc_now, nullable=False)
     updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)

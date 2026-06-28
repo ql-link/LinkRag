@@ -33,6 +33,8 @@ class AdapterSparseVectorEncoder:
         model_name: str | None = None,
         top_k: int = 256,
         min_weight: float = 0.0,
+        provider_type: str | None = None,
+        config_id: int | None = None,
     ) -> None:
         """注入已具备 SPARSE_EMBEDDING 能力的 provider 并记录清洗参数。
 
@@ -44,11 +46,12 @@ class AdapterSparseVectorEncoder:
         """
 
         self._provider = provider
-        self._model_name = (
-            model_name or getattr(provider, "provider_name", "") or "llm_adapter"
-        )
+        self._model_name = model_name or getattr(provider, "provider_name", "") or "llm_adapter"
         self._top_k = top_k
         self._min_weight = min_weight
+        self.provider_type = provider_type or getattr(provider, "provider_type", None)
+        self.config_id = config_id
+        self.last_usage = None
 
     @property
     def model_name(self) -> str:
@@ -76,6 +79,7 @@ class AdapterSparseVectorEncoder:
 
         ordered = list(texts)
         result = await self._provider.embed_sparse(ordered, model=self._model_name)
+        self.last_usage = getattr(result, "usage", None)
         embeddings = getattr(result, "embeddings", None)
         if embeddings is None or len(embeddings) != len(ordered):
             got = "None" if embeddings is None else str(len(embeddings))

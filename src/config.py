@@ -108,10 +108,8 @@ class Settings(BaseSettings):
     RECALL_DENSE_TOP_K: int = 100
     RECALL_SPARSE_TOP_K: int = 50
     RECALL_BM25_TOP_K: int = 100
-    # 启用的召回路（逗号分隔）。dense 是远程 system embedding HTTP 调用，与 sparse
-    # 本地 BGE-M3 推理路径互补；本期默认开启 dense（GitHub issue ql-link/LinkRag#53）。
-    # 升级影响：未显式 set env 的部署在升级后自动开启 dense 召回，system embedding
-    # HTTP 流量增加；如需暂时回退，运维侧 set RECALL_ENABLED_SOURCES=bm25,sparse 重启。
+    # 启用的召回路（逗号分隔）。dense/sparse query 编码按数据集绑定模型配置解析，
+    # 与 bm25 并行后做融合；如需暂时回退，运维侧 set RECALL_ENABLED_SOURCES=bm25,sparse 重启。
     RECALL_ENABLED_SOURCES: str = "bm25,sparse,dense"
     # 召回融合策略：默认 RRF，weighted_score 作为可选策略在三路召回后、rerank 前生效。
     RECALL_FUSION_STRATEGY: str = "rrf"

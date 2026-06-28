@@ -29,7 +29,13 @@ from src.core.encoding.sparse import (
     SparseVector,
     SparseVectorService,
 )
-from src.core.encoding.sparse.factory import aresolve_user_sparse_vector_service
+from src.core.encoding.sparse.factory import (
+    aresolve_dataset_sparse_vector_service as aresolve_user_sparse_vector_service,
+)
+from src.core.splitter.factory import (
+    aresolve_dataset_chunk_embedding_pipeline as aresolve_user_chunk_embedding_pipeline,
+    validate_dense_dimension,
+)
 from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
 from src.core.splitter.models import EmbeddedChunk
 from src.models.chunk_record import ChunkRecordDB
@@ -168,7 +174,10 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
                 )
             sparse_service = None
             if self._sparse_enabled():
-                sparse_service = await self._resolve_sparse_vector_service(record.user_id)
+                sparse_service = await self._resolve_sparse_vector_service(
+                    record.user_id,
+                    record.set_id,
+                )
                 sparse_indexing = await self._mark_sparse_indexing(
                     [record.chunk_id], model_name=sparse_service.model_name
                 )
@@ -534,8 +543,12 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
 
         return bool(getattr(settings, "SPARSE_VECTOR_ENABLED", False))
 
-    async def _resolve_sparse_vector_service(self, user_id: int) -> SparseVectorService:
-        """按发起用户解析稀疏向量服务（必配不兜底）；显式注入的 service 优先（测试 / 复用）。
+    async def _resolve_sparse_vector_service(
+        self,
+        user_id: int,
+        dataset_id: int | None = None,
+    ) -> SparseVectorService:
+        """按数据集绑定解析稀疏向量服务（必配不兜底）；显式注入的 service 优先（测试 / 复用）。
 
         注入的 ``self.sparse_vector_service`` 一旦提供即对所有 user 生效（绕过解析）；生产修改
         路径不注入，按被改 chunk 所属 ``record.user_id`` 解析，保证改后向量与该用户写入侧
@@ -544,7 +557,11 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
 
         if self.sparse_vector_service is not None:
             return self.sparse_vector_service
-        return await aresolve_user_sparse_vector_service(user_id)
+        if dataset_id is None:
+            from src.core.encoding.sparse.factory import aresolve_user_sparse_vector_service as _old
+
+            return await _old(user_id)
+        return await aresolve_user_sparse_vector_service(user_id, dataset_id)
 
     async def _mark_sparse_indexing(
         self,
@@ -627,13 +644,22 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
             end_line=end_line,
             chunk_index=chunk_index,
         )
-        embedded_chunks = await self.embedding_pipeline.aembed_chunks([chunk])
+        embedding_pipeline = await aresolve_user_chunk_embedding_pipeline(
+            record.user_id,
+            record.set_id,
+        )
+        embedded_chunks = await embedding_pipeline.aembed_chunks([chunk])
         if len(embedded_chunks) != 1:
             raise ValueError(
                 f"Expected 1 embedded chunk for {record.chunk_id}, got {len(embedded_chunks)}."
             )
 
         embedded_chunk: EmbeddedChunk = embedded_chunks[0]
+        validate_dense_dimension(
+            [embedded_chunk],
+            user_id=record.user_id,
+            model_name=embedding_pipeline.embedding_model,
+        )
         point = indexed_point_from_record(record, embedded_chunk)
         sparse_vector = None
         if sparse_service is not None:

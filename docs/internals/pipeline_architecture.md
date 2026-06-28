@@ -170,7 +170,7 @@ CLEANING
 | 工厂入口 | 位置 | 用途 |
 | --- | --- | --- |
 | `create_chunking_engine()` | `src/core/splitter/factory.py` | 按 `CHUNKING_*` 配置组装 `ChunkingEngine` |
-| `aresolve_user_embedding_client()` / `ModelBoundEmbedder` | `src/core/splitter/factory.py` | 按发起用户默认 `EMBEDDING` 配置构造二阶段分块 / dense 写入使用的 embedding 客户端 |
+| `aresolve_user_embedding_client()` / `aresolve_dataset_chunk_embedding_pipeline()` / `ModelBoundEmbedder` | `src/core/splitter/factory.py` | 二阶段分块仍按发起用户默认 `EMBEDDING` 构造辅助 embedder；dense 写入和召回 query 编码按数据集绑定的 `dense_embedding_config_id` 构造 embedding pipeline |
 | `create_system_embedding_client()` / `LazyEmbeddingClient` | `src/core/splitter/factory.py` | 遗留系统级 embedding 客户端入口；解析主链路的二阶段分块不再依赖它 |
 | `compose_vector_storage_facade()` | `src/core/storage/vector/factory.py` | 装配 `VectorStorageFacade` |
 | `StorageFactory.get_storage()` | `src/services/storage/factory.py` | 按配置返回对象存储实现 |

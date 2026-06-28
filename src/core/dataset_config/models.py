@@ -246,6 +246,17 @@ class RecallConfig(BaseModel):
         )
 
 
+class VectorModelBindingConfig(BaseModel):
+    """数据集绑定的向量模型配置 ID。
+
+    两个字段指向 Java 库 ``llm_user_config.id``。Python 侧不在此模型中校验配置行有效性，
+    只承载 ID；解析/召回消费点会按能力分别精确读取并校验。
+    """
+
+    sparse_embedding_config_id: int | None = None
+    dense_embedding_config_id: int | None = None
+
+
 class DatasetParseConfigBundle(BaseModel):
     """一个数据集的四类配置聚合。
 
@@ -256,6 +267,7 @@ class DatasetParseConfigBundle(BaseModel):
     enhancement: EnhancementConfig = EnhancementConfig()
     pdf: PDFConfig = PDFConfig()
     recall: RecallConfig = RecallConfig()
+    vector_models: VectorModelBindingConfig = VectorModelBindingConfig()
 
     @classmethod
     def defaults(cls) -> "DatasetParseConfigBundle":
@@ -265,4 +277,5 @@ class DatasetParseConfigBundle(BaseModel):
             enhancement=EnhancementConfig.from_settings(),
             pdf=PDFConfig.from_settings(),
             recall=RecallConfig.from_settings(),
+            vector_models=VectorModelBindingConfig(),
         )

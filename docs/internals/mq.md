@@ -69,7 +69,7 @@ FastAPI lifespan（src/main.py 组合根装配 _start_mq_consumers）
 | `ParseTaskMessage` | `tolink.rag.parse_task` | Java -> Python | 触发文档解析任务（含首次解析与重试，由 `is_retry` + `previous_task_id` 区分；详见 [mq_integration.md §ParseTaskPayload](../api/mq_contracts.md)） |
 | `DocumentDeleteMessage` | `tolink.rag.document_delete` | Java -> Python | 删除通知：按 `delete_type`（dataset/file）清理解析域衍生产物，不碰原文件（详见 [mq_contracts.md §删除通知](../api/mq_contracts.md)） |
 | `CacheSyncMessage` | `tolink.rag.cache_sync` | Java -> Python | 失效或刷新用户 LLM 配置缓存 |
-| `TokenUsageMessage` | `tolink.rag.usage_report` | Python -> Java/统计侧 | 统一上报**全部**模型调用用量（对话 generate、解析 embed/vision/table、召回 embed/rerank），含 `stage`/`operation` 归属。topic/mq_type 沿用历史值，Java 无需重绑 queue（详见 [mq_contracts.md §用量上报](../api/mq_contracts.md#用量上报pythonjava统计侧)） |
+| `TokenUsageMessage` | `tolink.rag.usage_report` | Python -> Java/统计侧 | 统一上报**全部**模型调用用量（对话 generate、解析 embed/sparse/vision/table、召回 embed/sparse/rerank），含 `stage`/`operation` 归属。topic/mq_type 沿用历史值，Java 无需重绑 queue（详见 [mq_contracts.md §用量上报](../api/mq_contracts.md#用量上报pythonjava统计侧)） |
 | `ChatTurnMessage` | `tolink.rag.chat_turn` | Python -> Java | 上报一轮 RAG 问答的**对话内容**（query/answer/references/`turn_id`/三态 `status`/error/首轮 `title`，**不含 token**），起点 `GENERATING` + 终态 `COMPLETED`/`FAILED` 同 `turn_id`，供 Java upsert 落库 `chat_message` + 更新 `chat_conversation`（token 改走 `TokenUsageMessage`；首轮 `title` 在标题空/默认时落 `chat_conversation.title`，详见 [mq_contracts.md](../api/mq_contracts.md)） |
 
 `ParseTaskMessage` 中的 `md_bucket` 为历史兼容字段；Python 侧非 `md`/`markdown` 解析产物实际写入 `MINIO_PRIVATE_BUCKET` 配置桶，`md_object_key` 仍来自消息。`md`/`markdown` 透传文件的产物坐标沿用源文件上传位置。
