@@ -425,10 +425,11 @@ class Settings(BaseSettings):
     ES_SMOKE_ENABLED: bool = False
     TOLINK_RUN_REAL_ES_INDEX_TESTS: bool = False
 
-    # BM25 全文检索后端选择：es / qdrant。默认 es 保持现状；qdrant 复用向量库进程，
-    # 用 sparse vector + Modifier.IDF 实现真 BM25。开关只影响 BM25 一路，dense / sparse
-    # 召回不受影响，可一键回退（BM25_BACKEND=es）。详见 docs/internals/parse_task_pipeline.md。
-    BM25_BACKEND: str = "es"
+    # BM25 全文检索后端选择：es / qdrant。默认 qdrant（2026-06 切换，见迁移脚本
+    # scripts/migrate/es_to_qdrant_bm25.py）；如需临时回退 ES 可设 BM25_BACKEND=es。
+    # 开关只影响 BM25 一路，dense / sparse 召回不受影响。
+    # 详见 docs/internals/parse_task_pipeline.md。
+    BM25_BACKEND: str = "qdrant"
 
     # chunk_type 类型加权（仅 BM25_BACKEND=es 生效）：对命中的 chunk 按其种类额外加固定分
     # （const_score 加法升权，主 BM25 分之上叠加）。数据源是 kb_document_chunk.chunk_type
