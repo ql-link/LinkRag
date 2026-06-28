@@ -35,6 +35,9 @@ async def test_parse_task_service_passes_user_id_to_heading_processor(monkeypatc
             return _FakeEnhancedParseResult()
 
     class _FakeHeadingProcessor:
+        def __init__(self, config=None):
+            pass
+
         async def aprocess(self, markdown, *, source_file=None, user_id=None):
             captured["markdown"] = markdown
             captured["source_file"] = source_file

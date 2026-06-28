@@ -73,7 +73,20 @@ class ParseTaskService:
         )
         final_markdown = TextFormatter.clean(enhanced_parse_result.to_markdown())
         final_parse_started_at = time.monotonic()
-        heading_result = await HeadingHierarchyProcessor().aprocess(
+        heading_config = None
+        if enhancement_config is not None:
+            from src.core.markdown_parser.heading_hierarchy import HeadingHierarchyConfig
+
+            base = HeadingHierarchyConfig.from_settings()
+            heading_config = HeadingHierarchyConfig(
+                enabled=enhancement_config.enable_heading_hierarchy,
+                no_heading_min_tokens=base.no_heading_min_tokens,
+                flat_min_headings=base.flat_min_headings,
+                sparse_tokens_per_heading=base.sparse_tokens_per_heading,
+                llm_context_token_budget=base.llm_context_token_budget,
+                llm_max_output_tokens=base.llm_max_output_tokens,
+            )
+        heading_result = await HeadingHierarchyProcessor(config=heading_config).aprocess(
             final_markdown,
             source_file=source_file,
             user_id=user_id,
