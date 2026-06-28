@@ -17,6 +17,7 @@ import math
 from pydantic import BaseModel, field_validator, model_validator
 
 SUPPORTED_RECALL_FUSION_STRATEGIES = frozenset({"rrf", "weighted_score"})
+SUPPORTED_STAGE_TWO_ALGORITHMS = frozenset({"noop", "semantic_depth_window"})
 
 
 def _settings():
@@ -38,6 +39,8 @@ class ChunkingConfig(BaseModel):
     overlap_tokens: int = 64
     max_chunk_tokens: int = 512
     hard_max_tokens: int = 1024
+    stage_two_algorithm: str = "noop"
+    protected_neighbor_overlap: bool = False
 
     @field_validator("overlap_tokens")
     @classmethod
@@ -66,6 +69,15 @@ class ChunkingConfig(BaseModel):
         if v < 512 or v > 8192:
             raise ValueError("hard_max_tokens must be between 512 and 8192")
         return v
+
+    @field_validator("stage_two_algorithm")
+    @classmethod
+    def _validate_stage_two_algorithm(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if normalized not in SUPPORTED_STAGE_TWO_ALGORITHMS:
+            supported = ", ".join(sorted(SUPPORTED_STAGE_TWO_ALGORITHMS))
+            raise ValueError(f"stage_two_algorithm must be one of: {supported}")
+        return normalized
 
     @model_validator(mode="before")
     @classmethod
@@ -108,6 +120,8 @@ class ChunkingConfig(BaseModel):
             overlap_tokens=s.CHUNKING_OVERLAP_TOKENS,
             max_chunk_tokens=s.CHUNKING_MAX_CHUNK_TOKENS,
             hard_max_tokens=s.CHUNKING_HARD_MAX_TOKENS,
+            stage_two_algorithm=s.CHUNKING_STAGE_TWO_ALGORITHM,
+            protected_neighbor_overlap=s.CHUNKING_PROTECTED_NEIGHBOR_OVERLAP,
         )
 
 
@@ -125,6 +139,7 @@ class EnhancementConfig(BaseModel):
 
     enable_table_enhancement: bool = True
     enable_image_enhancement: bool = True
+    enable_heading_hierarchy: bool = False
 
     @classmethod
     def from_settings(cls) -> "EnhancementConfig":
@@ -133,6 +148,7 @@ class EnhancementConfig(BaseModel):
         return cls(
             enable_table_enhancement=s.MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT,
             enable_image_enhancement=s.MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT,
+            enable_heading_hierarchy=s.MARKDOWN_PARSER_ENABLE_HEADING_HIERARCHY,
         )
 
 

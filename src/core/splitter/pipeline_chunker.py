@@ -48,6 +48,7 @@ class StructuredSemanticChunker:
         exporter: ChunkExporter | None = None,
         overlapper: ChunkOverlapper | None = None,
         final_validator: FinalChunkSetValidator | None = None,
+        protected_neighbor_overlap: bool = False,
     ) -> None:
         """
         初始化 splitter 顶层编排器。
@@ -73,6 +74,7 @@ class StructuredSemanticChunker:
         """
         self.heading_break_level = heading_break_level
         self.min_candidate_chunk_tokens = min_candidate_chunk_tokens
+        self._protected_neighbor_overlap = protected_neighbor_overlap
         self.validator = validator or CoarseChunkSetValidator()
         self.exporter = exporter or ChunkExporter()
         self.final_validator = final_validator or FinalChunkSetValidator()
@@ -130,8 +132,7 @@ class StructuredSemanticChunker:
             "Use await chunker.achunk(...) or await ChunkingEngine.aprocess(...)."
         )
 
-    @staticmethod
-    def _can_apply_neighbor_context(chunk: Chunk) -> bool:
+    def _can_apply_neighbor_context(self, chunk: Chunk) -> bool:
         """
         判断最终 chunk 是否适合参与 neighbor overlap。
 
@@ -144,9 +145,7 @@ class StructuredSemanticChunker:
         if chunk.metadata.get("chunk_role") == "derived_element":
             return False
         if chunk.metadata.get("protected_element_types"):
-            from src.config import settings
-
-            return bool(settings.CHUNKING_PROTECTED_NEIGHBOR_OVERLAP)
+            return self._protected_neighbor_overlap
         return True
 
     @staticmethod

@@ -211,8 +211,14 @@ class StageServices:
         """
         import asyncio
 
+        # stage_two_algorithm 优先取数据集级配置，不存在则回退系统全局设置。
+        stage_two_algorithm = (
+            chunking_config.stage_two_algorithm
+            if chunking_config is not None
+            else settings.CHUNKING_STAGE_TWO_ALGORITHM
+        )
         embedder = None
-        if settings.CHUNKING_STAGE_TWO_ALGORITHM == "semantic_depth_window":
+        if stage_two_algorithm == "semantic_depth_window":
             user_id = coerce_optional_int(payload.user_id)
             if user_id is None:
                 raise RuntimeError("chunking semantic stage requires payload.user_id")
