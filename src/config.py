@@ -479,9 +479,12 @@ class Settings(BaseSettings):
     MINIO_ENDPOINT: str = "localhost:9000"
     MINIO_ACCESS_KEY: str = "minioadmin"
     MINIO_SECRET_KEY: str = "minioadmin"
-    # MinIO 桶与 Java 端（LinkRag-Service）两桶模型对齐：
-    # 私有桶 = RAG 文档 + Python 解析产物；公开桶 = 博客 + 反馈附件（Java 写入，需匿名读）。
+    # MinIO 三桶模型（与 Java 端 LinkRag-Service 对齐）：
+    # · 原文件桶（RAW）  = 用户上传的源文件，由 Java 写入，Python 只读；
+    # · 私有桶（DOCS）   = Python 解析产物（Markdown + 图片），不对外匿名读；
+    # · 公开桶（PUBLIC） = 博客 + 反馈附件，Java 写入，需匿名读。
     # 原博客专用桶 tolink-blog 已并入公开桶，MINIO_BLOG_BUCKET 配置项废弃。
+    MINIO_RAW_BUCKET: str = "tolink-rag-raw"
     MINIO_PRIVATE_BUCKET: str = "tolink-rag-docs"
     MINIO_PUBLIC_BUCKET: str = "tolink-public"
     MINIO_USE_SSL: bool = False

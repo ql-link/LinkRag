@@ -100,6 +100,11 @@ class CleaningStage(Stage):
                     # 「解析为 md」，md 无需任何引擎转换，直接读取源文件文本透传，跳过解析。
                     # 透传不经增强/PDF，无需数据集配置。
                     parse_result = await self._read_markdown_passthrough(source_path)
+                    # 提取 MD 中 base64 内嵌图片并上传到 MinIO，替换为对象 URL；
+                    # 单张失败不阻断整篇（best-effort），修改后的 markdown 用于后续分片。
+                    parse_result["markdown"] = await self._services.upload_md_images(
+                        parse_result["markdown"], payload
+                    )
                 else:
                     # 读取数据集级配置（PDF 后端 + 增强模型/开关）注入解析。get_config 内部已对
                     # DB 故障降级为默认；JSON 内容非法时 ValidationError 在此向上抛，由下方
