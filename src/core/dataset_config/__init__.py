@@ -7,6 +7,7 @@ from .models import (
     EnhancementConfig,
     PDFConfig,
     RecallConfig,
+    VectorModelBindingConfig,
 )
 from .service import DatasetConfigService
 
@@ -15,6 +16,7 @@ __all__ = [
     "EnhancementConfig",
     "PDFConfig",
     "RecallConfig",
+    "VectorModelBindingConfig",
     "DatasetParseConfigBundle",
     "DatasetConfigService",
 ]

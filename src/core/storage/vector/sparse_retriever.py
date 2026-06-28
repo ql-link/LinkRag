@@ -80,7 +80,7 @@ class SparseRetriever:
         协议层的"全库"语义在这一路放弃（与 ``Bm25Retriever`` 行为一致）。
         多个 ``dataset_ids`` → 逐个下发，合并后按 score 降序截断。
 
-        发起用户缺默认 SPARSE_EMBEDDING 配置时，facade 抛
+        数据集缺少有效 SPARSE_EMBEDDING 绑定配置时，facade 抛
         ``VectorRetrievalUserConfigMissingError`` → 本方法翻成 ``RecallFatalError``，
         让 pipeline 绕过宽松降级、整请求硬失败（与 ``DenseRetriever`` 严格对仗）。
         """
@@ -99,7 +99,7 @@ class SparseRetriever:
             else self._score_threshold
         )
 
-        # 发起用户缺默认 SPARSE_EMBEDDING 配置 → sparse 路无法编码 query：翻成 recall 层
+        # 数据集缺少有效 SPARSE_EMBEDDING 绑定配置 → sparse 路无法编码 query：翻成 recall 层
         # RecallFatalError，让 pipeline 绕过宽松降级、整请求硬失败（区别于普通单路失败）。
         from src.core.pipeline.recall.exceptions import RecallFatalError
         from src.core.storage.vector.exceptions import (

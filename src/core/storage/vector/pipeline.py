@@ -31,7 +31,7 @@ from src.core.encoding.sparse import SparseChunkVectorizationRequest, SparseVect
 from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
 from src.core.splitter.factory import (
     DenseEmbeddingDimensionError,
-    aresolve_user_chunk_embedding_pipeline,
+    aresolve_dataset_chunk_embedding_pipeline as aresolve_user_chunk_embedding_pipeline,
     validate_dense_dimension,
 )
 from src.utils.logger import logger
@@ -199,11 +199,11 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         if not records:
             return ChunkIndexingResult(total_chunks=0, indexed_chunks=0)
 
-        # 方案 A：写入链路按发起用户解析稠密 embedder（必配 EMBEDDING、无系统兜底）。
+        # 写入链路按数据集绑定解析稠密 embedder（必配 EMBEDDING、无系统兜底）。
         # 配置缺失（DenseEmbeddingConfigMissingError）在此直接向上抛出，不触碰任何 chunk
         # 状态，由 VectorizingStage 归类为 LLM_CONFIG_MISSING 并通知 Java，而不是被下方
         # batch 失败路径吞成 generic VECTORIZING_FAILED。
-        embedding_pipeline = await aresolve_user_chunk_embedding_pipeline(user_id)
+        embedding_pipeline = await aresolve_user_chunk_embedding_pipeline(user_id, set_id)
 
         embedding_model: str | None = None
         indexed_count = 0
@@ -215,6 +215,7 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         embed_provider_type = getattr(
             getattr(embedding_pipeline, "embedder", None), "provider_type", None
         )
+        embed_config_id = getattr(getattr(embedding_pipeline, "embedder", None), "config_id", None)
 
         # ── 以 batch 为单位逐批处理 ────────────────────────────────────────
         # 每批：mark_indexing → embed → 写 Qdrant → mark_indexed
@@ -373,6 +374,7 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
             embed_prompt_tokens=embed_prompt_tokens,
             embed_total_tokens=embed_total_tokens,
             embed_provider_type=embed_provider_type,
+            embed_config_id=embed_config_id,
         )
 
     async def _index_record_with_retry(self, record: object) -> ChunkIndexingResult:

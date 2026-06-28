@@ -142,10 +142,11 @@ CORS 复用全局 `CORSMiddleware`；对外环境必须把 `CORS_ORIGINS` 由 `*
 - 配置中出现未登记 source → 装配期 `ValueError`，不静默跳过。
 - `RECALL_FUSION_STRATEGY` 与三路 `RECALL_FUSION_*_WEIGHT` 注入 `RecallPipelineConfig`，作为无数据集覆盖时的融合默认值。
 
-sparse 底座的稀疏编码模型不在装配期加载，而是执行期按发起用户的默认 `SPARSE_EMBEDDING`
-配置经 adapter 解析（per-user，当前 provider 为 `doubao_vision` / `bge_m3`）；dense 底座
-走远程 system embedding HTTP。两者装配期都不加载本地模型，单例化主要是为了与
-`recall_pipeline` 单例对齐——所有 retriever 在 pipeline 单例之内只构造一次。
+sparse / dense 底座的编码模型不在装配期加载，而是在执行期按每个 dataset 的
+`dataset_parse_config.sparse_embedding_config_id` / `dense_embedding_config_id` 精确解析。
+一次请求包含多个 dataset 时，dense/sparse retriever 会逐 dataset 编码和检索，再交给
+召回 Pipeline 合并。两者装配期都不加载本地模型，单例化主要是为了与 `recall_pipeline`
+单例对齐——所有 retriever 在 pipeline 单例之内只构造一次。
 
 `user_id` / 各路执行期 `top_k` 不在装配期注入，而是执行期由 pipeline 透传给
 `Retriever.recall(query, dataset_ids, doc_ids, *, user_id, top_k)`——这是相对 LINK-6

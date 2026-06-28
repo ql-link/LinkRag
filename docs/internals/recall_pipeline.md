@@ -150,7 +150,7 @@ class Retriever(Protocol):
 
 `per_source_counts` 的键集合等于已装配的全部 source。失败路与返回空列表的路都计 0；二者通过 `failed_sources` 区分。
 
-`RecallFatalError`（`RecallError` 子类）是宽松模式的例外：当前唯一来源是发起用户无默认 EMBEDDING 配置、dense 路无法编码 query——此时即便宽松模式也不能"降级为其余路继续"，否则会静默返回不完整结果。由 `DenseRetriever` 捕获 `VectorRetrievalUserConfigMissingError` 后抛出（见 [dense_retriever](../../src/core/storage/vector/dense_retriever.py)）。
+`RecallFatalError`（`RecallError` 子类）是宽松模式的例外：当前来源包括数据集缺少有效 `dense_embedding_config_id` / `sparse_embedding_config_id`、对应向量路无法编码 query。此时即便宽松模式也不能"降级为其余路继续"，否则会静默返回与建库模型不一致或不完整的结果。由 dense/sparse retriever 捕获 `VectorRetrievalUserConfigMissingError` 后抛出。
 
 ---
 

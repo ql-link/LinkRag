@@ -86,7 +86,7 @@ async def test_facade_resolves_sparse_per_user_and_uses_it(monkeypatch):
     facade = _facade_with_resolver(resolver, qdrant_store=qdrant_store)
     result = await facade.search_sparse_chunks(query="hello", user_id=7, set_id=1, top_k=3)
 
-    resolver.assert_awaited_once_with(7)  # 按发起用户解析
+    resolver.assert_awaited_once_with(7, 1)  # 按发起用户 + 数据集解析
     service.vectorize_query.assert_awaited_once_with("hello")  # 用解析出的 service 编码
     assert result.model_name == "user-bge-m3"
     assert result.vector_kind == "sparse"

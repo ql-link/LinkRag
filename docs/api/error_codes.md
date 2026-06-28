@@ -156,9 +156,9 @@ CODE: 中文业务原因；底层详情
 缺正文时为 `recall_done`），失败路计入 `failed_sources`。客户端断连不作为业务错误，Python
 停止发送事件并取消召回任务。token **短期可复用**：有效期内重复建连均放行，无重放类错误码。
 
-例外：dense 召回 query 编码按发起用户的 EMBEDDING 配置解析（与写入侧同源）。用户无默认
-EMBEDDING 配置属**必备前置缺失**，走硬失败（`RECALL_EMBEDDING_CONFIG_MISSING`）而非宽松降级——
-即便其余路可用也不返回部分结果，避免"读侧系统模型 / 写侧用户模型"向量空间不一致的误召回。
+例外：dense / sparse 召回 query 编码按数据集绑定的 `dense_embedding_config_id` /
+`sparse_embedding_config_id` 解析（与写入侧同源）。绑定缺失或配置无效属**必备前置缺失**，
+走硬失败而非宽松降级——即便其余路可用也不返回部分结果，避免读写向量空间不一致的误召回。
 
 ## 6. Chunk Status Values
 

@@ -72,10 +72,9 @@ class VectorRetrievalEncodingError(VectorRetrievalError):
 
 
 class VectorRetrievalUserConfigMissingError(VectorRetrievalError):
-    """召回 dense 路：发起用户缺少默认 EMBEDDING 配置。
+    """召回向量路：数据集缺少有效的绑定模型配置。
 
-    dense 召回 query 编码改为按发起用户的 EMBEDDING 配置解析（与写入侧同源）。用户无默认
-    EMBEDDING 配置时，facade 把统一解析层的 ``UserModelConfigMissingError`` /
-    ``DenseEmbeddingConfigMissingError`` 翻译为本异常。区别于一般召回失败：这是**必配缺失**，
-    上层（``DenseRetriever`` → recall pipeline）据此走硬失败、不做宽松降级。
+    dense / sparse 召回 query 编码按 ``dataset_parse_config`` 的绑定 config_id 解析（与写入侧
+    同源）。绑定缺失或无效时，facade 把底层配置异常翻译为本异常。区别于一般召回失败：
+    这是**必配缺失**，上层 retriever → recall pipeline 据此走硬失败、不做宽松降级。
     """

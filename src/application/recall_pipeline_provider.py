@@ -4,9 +4,8 @@
 进程内单例 ``RecallPipeline`` 供路由复用。``user_id`` / 各路执行期 ``top_k`` 在执行期
 透传，因此 pipeline 与各路 retriever 都是无用户态的长期实例，单例安全。
 
-sparse 底座含本地 BGE-M3 编码器，装配较重，必须单例而非每请求构造。
-dense 底座走远程 system embedding HTTP（无本地模型加载），单例化主要是为了与
-``recall_pipeline`` 单例对齐——所有 retriever 在 pipeline 单例之内只构造一次。
+sparse / dense 编码器执行期按 dataset 绑定配置解析；pipeline 装配期只构造无状态
+retriever 与 storage facade，单例化主要是为了与 ``recall_pipeline`` 单例对齐。
 """
 
 from __future__ import annotations
@@ -40,27 +39,25 @@ def _build_bm25_retriever() -> Retriever:
 
 
 def _build_sparse_retriever() -> Retriever:
-    # sparse 召回 query 编码按发起用户的 SPARSE_EMBEDDING 配置解析（与写入侧 sparse_indexing
-    # 同源）：注入 aresolve_user_sparse_vector_service，facade.search_sparse_chunks 据 user_id
-    # 解析。与 dense 的 query_embedding_resolver 对偶，保证「同一用户写入 / 召回走同一份模型」。
-    from src.core.encoding.sparse.factory import aresolve_user_sparse_vector_service
+    # sparse 召回 query 编码按数据集绑定的 SPARSE_EMBEDDING 配置解析（与写入侧
+    # sparse_indexing 同源）。
+    from src.core.encoding.sparse.factory import aresolve_dataset_sparse_vector_service
 
     return SparseRetriever(
         backend=compose_vector_storage_facade(
-            query_sparse_resolver=aresolve_user_sparse_vector_service,
+            query_sparse_resolver=aresolve_dataset_sparse_vector_service,
         ),
         score_threshold=settings.SPARSE_RETRIEVAL_SCORE_THRESHOLD,
     )
 
 
 def _build_dense_retriever() -> Retriever:
-    # dense 召回 query 编码按发起用户的 EMBEDDING 配置解析（与写入侧 index_chunks 同源）：
-    # 注入 aresolve_user_chunk_embedding_pipeline，facade.search_dense_chunks 据 user_id 解析。
-    from src.core.splitter.factory import aresolve_user_chunk_embedding_pipeline
+    # dense 召回 query 编码按数据集绑定的 EMBEDDING 配置解析（与写入侧 index_chunks 同源）。
+    from src.core.splitter.factory import aresolve_dataset_chunk_embedding_pipeline
 
     return DenseRetriever(
         backend=compose_vector_storage_facade(
-            query_embedding_resolver=aresolve_user_chunk_embedding_pipeline,
+            query_embedding_resolver=aresolve_dataset_chunk_embedding_pipeline,
         ),
         score_threshold=settings.DENSE_RETRIEVAL_SCORE_THRESHOLD,
     )

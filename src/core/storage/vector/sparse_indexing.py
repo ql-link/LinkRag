@@ -39,8 +39,11 @@ from src.core.storage.qdrant.point_factory import sparse_indexed_point_from_reco
 from src.models.chunk_record import ChunkRecordDB
 
 from src.core.encoding.sparse.exceptions import SparseVectorError
-from src.core.encoding.sparse.factory import aresolve_user_sparse_vector_service
+from src.core.encoding.sparse.factory import (
+    aresolve_dataset_sparse_vector_service as aresolve_user_sparse_vector_service,
+)
 from src.core.encoding.sparse.pipeline import SparseVectorService
+from src.services.usage_reporter import report_usage_nowait
 
 
 class SparseIndexingError(SparseVectorError):
@@ -133,12 +136,13 @@ class SparseIndexingPipeline:
             )
 
         # ④ 分批编排：encode → Qdrant upsert → mark INDEXED；任一批失败抛文件级异常。
-        # 稀疏 encoder 背后的 provider 按发起用户解析（必配 SPARSE_EMBEDDING、无系统兜底）：
-        # 同一文档的 chunks 必定同 user，故按首条 user_id 一次解析、整篇复用，与 dense 写入侧
-        # per-document 解析同构。vector_name 仍是全局 Qdrant named vector（解析函数取自 settings），
-        # 保证所有用户写进同一个稀疏向量命名空间。
+        # 稀疏 encoder 背后的 provider 按数据集绑定解析（必配 SPARSE_EMBEDDING、无系统兜底）：
+        # 同一文档的 chunks 必定同 user/set，故按首条 user_id + set_id 一次解析、整篇复用，
+        # 与 dense 写入侧 per-document 解析同构。vector_name 仍是全局 Qdrant named vector
+        # （解析函数取自 settings），保证所有用户写进同一个稀疏向量命名空间。
         user_id = int(records[0].user_id)
-        service = await self._resolve_sparse_vector_service(user_id)
+        dataset_id = int(records[0].set_id)
+        service = await self._resolve_sparse_vector_service(user_id, dataset_id, db=db)
         store = self._get_qdrant_store()
         model_name = service.model_name
         vector_name = service.vector_name
@@ -154,6 +158,7 @@ class SparseIndexingPipeline:
                 model_name=model_name,
                 vector_name=vector_name,
                 task_id=task_id,
+                user_id=user_id,
             )
 
         logger.info(
@@ -173,6 +178,7 @@ class SparseIndexingPipeline:
         model_name: str,
         vector_name: str,
         task_id: str,
+        user_id: int,
     ) -> None:
         """处理一批 chunk：encode + 写 Qdrant + 翻 MySQL 状态。
 
@@ -198,6 +204,11 @@ class SparseIndexingPipeline:
 
             # 4.2 调 encoder 生成稀疏向量；BGE-M3 返回顺序与输入对齐，这里再做一次长度校验。
             vectors = await service.vectorize_texts(texts)
+            self._report_sparse_usage(
+                service=service,
+                user_id=user_id,
+                task_id=task_id,
+            )
             if len(vectors) != len(batch):
                 raise SparseIndexingError(
                     "SPARSE_VECTORIZING_FAILED:vectorize_count_mismatch;"
@@ -260,21 +271,51 @@ class SparseIndexingPipeline:
                 bookkeeping_exc,
             )
 
-    async def _resolve_sparse_vector_service(self, user_id: int) -> SparseVectorService:
-        """按发起用户解析稀疏向量服务（必配不兜底）；显式注入的 service 优先（测试 / 复用）。
+    async def _resolve_sparse_vector_service(
+        self,
+        user_id: int,
+        dataset_id: int,
+        *,
+        db: AsyncSession,
+    ) -> SparseVectorService:
+        """按数据集绑定解析稀疏向量服务（必配不兜底）；显式注入的 service 优先（测试 / 复用）。
 
         注入的 ``self._sparse_vector_service`` 一旦提供即对所有 user 生效（绕过解析），服务于
         测试与显式装配；生产路径不注入，每次 run() 按 ``user_id`` 解析一次。**不缓存**到实例
         属性——per-user 解析结果不可跨 user 复用。
 
         Raises:
-            SparseEmbeddingConfigMissingError: 用户无默认 SPARSE_EMBEDDING 配置（由解析函数透传，
+            SparseEmbeddingConfigMissingError: 数据集缺少有效 SPARSE_EMBEDDING 绑定配置（由解析函数透传，
                 上层 ``SparseVectorizingStage`` 据此归类失败）。
         """
 
         if self._sparse_vector_service is not None:
             return self._sparse_vector_service
-        return await aresolve_user_sparse_vector_service(user_id)
+        return await aresolve_user_sparse_vector_service(user_id, dataset_id, db=db)
+
+    @staticmethod
+    def _report_sparse_usage(
+        *,
+        service: SparseVectorService,
+        user_id: int,
+        task_id: str,
+    ) -> None:
+        usage = getattr(service, "last_usage", None)
+        total_tokens = int(getattr(usage, "total_tokens", 0) or 0) if usage is not None else 0
+        if total_tokens <= 0:
+            return
+        report_usage_nowait(
+            user_id=user_id,
+            provider_type=getattr(service, "provider_type", None) or "",
+            model_name=service.model_name or "",
+            stage="parse",
+            operation="sparse",
+            prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+            completion_tokens=0,
+            total_tokens=total_tokens,
+            task_id=task_id,
+            config_id=getattr(service, "config_id", None),
+        )
 
     def _get_qdrant_store(self) -> QdrantIndexStore:
         if self._qdrant_store is None:

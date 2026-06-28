@@ -51,7 +51,7 @@ LLM 调用拆成两个正交维度：
 
 每个 adapter 的 `_capabilities` 集合即"本期 (protocol, capability) 矩阵"的唯一真源。`openai` 吃掉全部 OpenAI 兼容厂商（openai/千问 chat/glm/deepseek/硅基流动…）。**`VISION` 已接入 `openai` / `anthropic` / `google` 三协议**：复用各自 CHAT 通路（chat_completions / messages / generateContent），仅请求体多拼一个图片块，响应解析与 CHAT 一致；其余协议不支持 `VISION`，返回 `UnsupportedProtocolCapabilityError`。`OCR` 仍不作为独立能力，图片文字提取 = `VISION` + prompt（`/ocr` 兼容 endpoint 读 `VISION` 配置）。**ASR 本期不做。**
 
-`SPARSE_EMBEDDING` 已接入 RAG sparse 写入/召回链路：按发起用户的默认 `SPARSE_EMBEDDING` 配置经 `aresolve_user_model` 解析到稀疏 adapter（当前 `doubao_vision` / `bge_m3`），产出框架中性的 `SparseEmbeddingResult`，再由 encoding 层 `AdapterSparseVectorEncoder` 统一清洗成 `SparseVector` 写入 Qdrant named sparse vector（详见 [sparse_vector.md](sparse_vector.md)）。`openai` / `jina` 仍声明 `SPARSE_EMBEDDING`（可解析到 embedding 端点），但 RAG 稀疏链路当前由 `doubao_vision` / `bge_m3` 承载；`google` / `dashscope` / `anthropic` 不支持该能力，返回 `UnsupportedProtocolCapabilityError`。
+`SPARSE_EMBEDDING` 已接入 RAG sparse 写入/召回链路：按数据集绑定的 `dataset_parse_config.sparse_embedding_config_id` 经 `aresolve_user_model(config_id=...)` 精确解析到稀疏 adapter（当前 `doubao_vision` / `bge_m3`），产出框架中性的 `SparseEmbeddingResult`，再由 encoding 层 `AdapterSparseVectorEncoder` 统一清洗成 `SparseVector` 写入 Qdrant named sparse vector（详见 [sparse_vector.md](sparse_vector.md)）。`openai` / `jina` 仍声明 `SPARSE_EMBEDDING`（可解析到 embedding 端点），但 RAG 稀疏链路当前由 `doubao_vision` / `bge_m3` 承载；`google` / `dashscope` / `anthropic` 不支持该能力，返回 `UnsupportedProtocolCapabilityError`。
 
 ### 2.2 URL 接缝：完整 URL 直打
 

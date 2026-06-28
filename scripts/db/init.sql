@@ -405,12 +405,16 @@ CREATE TABLE IF NOT EXISTS dataset_parse_config (
     enhancement_config  JSON NOT NULL COMMENT 'Markdown 增强配置（2 项：enable_table_enhancement / enable_image_enhancement）',
     pdf_config          JSON NOT NULL COMMENT 'PDF 解析配置（1 项：pdf_parser_backend）',
     recall_config       JSON NOT NULL COMMENT '召回检索配置（14 项：recall_result_limit / recall_context_token_budget / bm25_top_k / sparse_top_k / sparse_score_threshold / dense_top_k / dense_score_threshold / recall_enabled_sources / recall_fusion_strategy / fusion_bm25_weight / fusion_sparse_weight / fusion_dense_weight / rerank_top_n / recall_strict）',
+    sparse_embedding_config_id BIGINT UNSIGNED DEFAULT NULL COMMENT '稀疏向量模型配置 ID，对应 llm_user_config.id',
+    dense_embedding_config_id  BIGINT UNSIGNED DEFAULT NULL COMMENT '稠密向量模型配置 ID，对应 llm_user_config.id',
     is_active           TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用',
     created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
     updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
 
     UNIQUE KEY uk_user_dataset (user_id, dataset_id),
-    KEY idx_dataset_parse_config_dataset (dataset_id)
+    KEY idx_dataset_parse_config_dataset (dataset_id),
+    KEY idx_dataset_parse_sparse_config (sparse_embedding_config_id),
+    KEY idx_dataset_parse_dense_config (dense_embedding_config_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '数据集解析/检索参数配置';
 
 -- 17. 通用流程编排运行记录表（migration 0024 引入，LINK-102）
