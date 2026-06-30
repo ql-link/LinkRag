@@ -95,6 +95,7 @@ class QdrantBm25Store:
                 # sparse-only collection：不配 dense vectors_config。
                 await client.create_collection(
                     collection_name=self.collection_name,
+                    vectors_config={},
                     sparse_vectors_config={
                         self.vector_name: models.SparseVectorParams(
                             modifier=models.Modifier.IDF
