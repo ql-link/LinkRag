@@ -20,7 +20,8 @@
 | `kafka-ui` | `provectuslabs/kafka-ui` | 9081 | Kafka 调试 UI | 可选 |
 
 注 1：`STORAGE_TYPE=minio` 使用 MinIO，`STORAGE_TYPE=local` 使用 `LOCAL_DOCS_PATH` 本地目录。
-注 2：`VECTOR_STORE_TYPE` 决定使用 `qdrant` 还是 `elasticsearch`。
+注 2：`VECTOR_STORE_TYPE` 决定向量存储用 `qdrant` 还是 `elasticsearch`。
+注 3：`BM25_BACKEND` 决定 BM25 全文检索后端用 `es`（默认，复用上面的 Elasticsearch）还是 `qdrant`（复用向量库进程，用 sparse vector + `Modifier.IDF` 实现真 BM25，无需独立服务）。设 `qdrant` 时 BM25 一路不依赖 ES；若 `VECTOR_STORE_TYPE` 也不用 ES，则可完全不启动 `elasticsearch` 服务。
 
 ## 启动顺序
 

@@ -59,6 +59,8 @@ services:
       timeout: 20s
       retries: 3
 
+  # BM25 全文检索默认用 ES（BM25_BACKEND=es）。设 BM25_BACKEND=qdrant 时 BM25 复用向量库
+  # 进程（sparse vector + Modifier.IDF），无需此服务；若向量存储（VECTOR_STORE_TYPE）也不用 ES 则可整体省略。
   elasticsearch:
     image: elasticsearch:8.11.3
     container_name: tolink-es

@@ -8,7 +8,7 @@
 --   - schema 演进的唯一权威源是 src/models/**.py + migrations/versions/*.py；
 --   - 修改字段必须先改 ORM 模型并新增 migration，再同步本文件。
 -- 同步时机：每条会改动表结构的 migration 落库时一并更新本文件。
--- 末次同步：migration 0024_20260624_add_workflow_tables
+-- 末次同步：migration 0029_20260627_llm_model_display_names
 -- ===============================================
 
 CREATE DATABASE IF NOT EXISTS tolink_rag_db DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -54,6 +54,7 @@ CREATE TABLE IF NOT EXISTS llm_provider_model (
     id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
     provider_id     BIGINT UNSIGNED NOT NULL COMMENT '关联 llm_system_provider.id',
     model_name      VARCHAR(128)    NOT NULL COMMENT '模型名',
+    display_name    VARCHAR(64)     COMMENT '模型展示名',
     capability      VARCHAR(32)     NOT NULL COMMENT '单能力；一模型多能力=多行',
     protocol        VARCHAR(32)     COMMENT '调用协议（事实来源；服务层保证非空，待回填后收紧 NOT NULL）',
     api_base_url    VARCHAR(512)    COMMENT '调用入口完整端点 URL（事实来源，Python 直打不拼后缀；google 例外存 base 到 /v1beta）',
@@ -70,16 +71,19 @@ CREATE TABLE IF NOT EXISTS llm_system_preset (
     id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
     provider_id     BIGINT UNSIGNED NOT NULL COMMENT '关联 llm_system_provider.id',
     model_name      VARCHAR(128)    NOT NULL COMMENT '模型名',
+    display_name    VARCHAR(64)     COMMENT '模型展示名',
     capability      VARCHAR(32)     NOT NULL COMMENT '能力标识',
     provider_type   VARCHAR(32)     COMMENT '厂商类型（与用户配置对齐，镜像免 join）',
     protocol        VARCHAR(32)     COMMENT '调用协议（创建预设时复制自模型能力层）',
     api_base_url    VARCHAR(512)    COMMENT '调用入口完整端点 URL（复制自模型能力层）',
     api_key         VARCHAR(512)    NOT NULL COMMENT '平台 Key（加密）',
     is_active       BOOLEAN         NOT NULL DEFAULT TRUE COMMENT '是否对新用户下发',
+    is_default      BOOLEAN         NOT NULL DEFAULT FALSE COMMENT '是否为该能力当前生效的 LinkRag 系统默认预设',
     created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-    UNIQUE KEY uk_preset_provider_model_cap (provider_id, model_name, capability)
+    UNIQUE KEY uk_preset_provider_model_cap (provider_id, model_name, capability),
+    INDEX idx_preset_provider_cap_default (provider_type, capability, is_active, is_default)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '系统预设表';
 
 -- 3. 用户级 LLM 配置表（下游唯一生效源）
@@ -400,13 +404,17 @@ CREATE TABLE IF NOT EXISTS dataset_parse_config (
     chunking_config     JSON NOT NULL COMMENT '分块配置（3 项：heading_break_level / min_candidate_chunk_tokens / overlap_tokens）',
     enhancement_config  JSON NOT NULL COMMENT 'Markdown 增强配置（2 项：enable_table_enhancement / enable_image_enhancement）',
     pdf_config          JSON NOT NULL COMMENT 'PDF 解析配置（1 项：pdf_parser_backend）',
-    recall_config       JSON NOT NULL COMMENT '召回检索配置（9 项：recall_result_limit / recall_context_token_budget / sparse_top_k / sparse_score_threshold / dense_top_k / dense_score_threshold / recall_enabled_sources / rerank_top_n / recall_strict）',
+    recall_config       JSON NOT NULL COMMENT '召回检索配置（14 项：recall_result_limit / recall_context_token_budget / bm25_top_k / sparse_top_k / sparse_score_threshold / dense_top_k / dense_score_threshold / recall_enabled_sources / recall_fusion_strategy / fusion_bm25_weight / fusion_sparse_weight / fusion_dense_weight / rerank_top_n / recall_strict）',
+    sparse_embedding_config_id BIGINT UNSIGNED DEFAULT NULL COMMENT '稀疏向量模型配置 ID，对应 llm_user_config.id',
+    dense_embedding_config_id  BIGINT UNSIGNED DEFAULT NULL COMMENT '稠密向量模型配置 ID，对应 llm_user_config.id',
     is_active           TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用',
     created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
     updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
 
     UNIQUE KEY uk_user_dataset (user_id, dataset_id),
-    KEY idx_dataset_parse_config_dataset (dataset_id)
+    KEY idx_dataset_parse_config_dataset (dataset_id),
+    KEY idx_dataset_parse_sparse_config (sparse_embedding_config_id),
+    KEY idx_dataset_parse_dense_config (dense_embedding_config_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '数据集解析/检索参数配置';
 
 -- 17. 通用流程编排运行记录表（migration 0024 引入，LINK-102）

@@ -2,7 +2,7 @@
 
 中立的数据访问 helper，供召回后多个下游消费方共享：
 
-- :mod:`src.core.pipeline.rerank`：重排前按 RRF 候选回填正文喂给 rerank 模型；
+- :mod:`src.core.pipeline.rerank`：重排前按融合候选回填正文喂给 rerank 模型；
 - :mod:`src.core.pipeline.recall.generation`：生成阶段拼装上下文前回填正文。
 
 放在 ``pipeline/`` 根下（而非 ``recall/`` 或 ``rerank/`` 内），让两个子包平级引用，

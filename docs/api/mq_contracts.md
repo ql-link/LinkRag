@@ -72,7 +72,7 @@ Java 管理端                          toLink-Rag (Python)
   "user_id": 1001,
   "dataset_id": 2001,
   "file_type": "pdf",
-  "source_bucket": "tolink-rag-docs",
+  "source_bucket": "tolink-rag-raw",
   "source_object_key": "raw/2026/05/16/doc-001.pdf",
   "source_filename": "技术规范.pdf",
   "md_bucket": "tolink-rag-docs",
@@ -94,7 +94,7 @@ Java 管理端                          toLink-Rag (Python)
   "user_id": 1001,
   "dataset_id": 2001,
   "file_type": "pdf",
-  "source_bucket": "tolink-rag-docs",
+  "source_bucket": "tolink-rag-raw",
   "source_object_key": "raw/2026/05/16/doc-001.pdf",
   "source_filename": "技术规范.pdf",
   "md_bucket": "tolink-rag-docs",
@@ -253,7 +253,7 @@ RAG 问答在 Python 端（`/api/v1/rag/stream`）以**后台任务**执行，�
 
 - 路由键：`user_id`，按用户分区。
 - **口径**：token 一律由模型返回，Python 不自算；向量类 `completion_tokens=0`。
-- **token 由模型返回的取舍**：`sparse` 向量模型不返回 token，本期**预留不上报**，仅在 `operation` 枚举占位；启用需 `bge-m3-server` 在响应里返回 `usage`。
+- **token 由模型返回的取舍**：`sparse` 向量模型若返回 `usage`，Python 会按 `operation='sparse'` 上报并带实际绑定的 `config_id`；未返回 token 时跳过上报。
 - **解析侧粒度**：task 级聚合——每个解析任务每 operation 上报一条（token 在任务内累加），不落 chunk 级明细。全缓存命中（token=0）不上报。
 - **旁路、最终一致**：用量是事后算账的旁路记录。Python 上报失败仅告警、不阻断解析/召回主链路，丢一条用量可接受。
 - **Java 落库**：字段直映射 `llm_usage_log`；可空字段缺失落 NULL。对话 `generate` 的行也经本消息上报（`stage='chat'`、`operation='generate'`），不再由 `chat_turn` 落 `llm_usage_log`，使本表口径全链路一致（LINK-191）。

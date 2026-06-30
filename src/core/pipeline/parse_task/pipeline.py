@@ -21,15 +21,19 @@ from src.services.mq_service import MQService
 from src.services.storage.base import BaseObjectStorage
 from src.services.storage.factory import StorageFactory
 
+from src.config import settings
+from src.core.workflow import RunStatus
+
 from ._utils import (
     attach_pipeline_to_log,
+    duration_ms,
     get_pipeline_from_log,
     now,
 )
 from .error_codes import ParseFailureCode, build_failure_reason
 from .log_repository import ParseLogRepository
 from .models import ParsePipelineResult, PipelineStatus
-from .post_process.constants import POST_PROCESS_STAGE_CLEANING
+from .post_process.constants import POST_PROCESS_STAGE_CLEANING, POST_PROCESS_STAGE_ORDER
 from .source import ParseSourceIO
 from .stages import PreprocessorProtocol, StageContext, StageServices, build_stage_pipeline
 from .validator import ParseTaskGuard, RetryValidationError
@@ -112,6 +116,110 @@ class ParseTaskPipeline:
             log_repository=self._log_repository,
         )
 
+    async def _execute_stages(self, ctx: StageContext) -> ParsePipelineResult:
+        """选择阶段执行引擎：并行 DAG 或串行 StagePipeline（默认）。
+
+        两条引擎共用本类的生命周期外壳（幂等/校验/重试 CAS/失败兜底）与同一套
+        ``StageServices`` 业务；权威状态源同为 ``document_parse_pipeline``。由
+        ``settings.PARSE_USE_WORKFLOW_DAG`` 灰度切换，默认 False 走串行可秒回滚。
+        """
+        if settings.PARSE_USE_WORKFLOW_DAG:
+            return await self._run_via_dag(ctx)
+        return await self._build_stage_pipeline().run(ctx)
+
+    async def _run_via_dag(self, ctx: StageContext) -> ParsePipelineResult:
+        """用并行 DAG 执行 6 阶段，状态写回权威表 ``document_parse_pipeline``。
+
+        节点各写自己阶段列（并发安全单列 UPDATE）并委托串行 ``Stage.run()`` 复用
+        业务+错误分类；聚合终态由本方法单写者收敛：开跑前 ``begin_pipeline`` 翻
+        PROCESSING，跑完按 :class:`RunRecord` 汇总 success / failed。
+        """
+        # 延迟导入：避免模块加载期的潜在环依赖，与启动期重依赖隔离。
+        from .workflow_demo.runner import ParseWorkflowRunner
+
+        pipeline = ctx.pipeline_record
+        # 重试分支在 _handle_retry_branch 已 commit，pipeline_record 可能 expire；先
+        # awaited refresh 一次，确保下面读 id / 各阶段状态属性不触发 async 隐式懒加载。
+        await ctx.db.refresh(pipeline)
+        pipeline_id = pipeline.id
+        # 继承状态快照：开跑前一次性读出，供节点自跳过已成功阶段（重试），避免并发共享 ORM。
+        inherited_status = self._pipeline_repository.stage_status_snapshot(pipeline)
+        started_at = now()
+        await self._pipeline_repository.begin_pipeline(
+            ctx.db, pipeline_id=pipeline_id, started_at=started_at
+        )
+
+        failures: dict[str, str] = {}
+        runner = ParseWorkflowRunner(
+            storage=self._storage,
+            session_factory=self._session_factory,
+            services=self._services,
+        )
+        run_record = await runner.run(
+            ctx.payload,
+            pipeline_id=pipeline_id,
+            status_repo=self._pipeline_repository,
+            inherited_status=inherited_status,
+            pipeline_record=pipeline,
+            log_record=ctx.log_record,
+            log_repo=self._log_repository,
+            is_retry=ctx.is_retry,
+            failures=failures,
+        )
+        return await self._finalize_dag_result(ctx, run_record, failures, started_at)
+
+    async def _finalize_dag_result(
+        self,
+        ctx: StageContext,
+        run_record,
+        failures: dict[str, str],
+        started_at,
+    ) -> ParsePipelineResult:
+        """DAG 跑完后单写者收敛聚合终态并构造结果。"""
+        finished_at = now()
+        # begin_pipeline 经 Core UPDATE+commit 后 pipeline_record 已 expire；用 awaited
+        # refresh 显式重载 started_at（读 COALESCE 后的真实起点），避免 async 下访问
+        # 过期属性触发隐式懒加载（MissingGreenlet）。
+        await ctx.db.refresh(ctx.pipeline_record, ["started_at"])
+        effective_start = ctx.pipeline_record.started_at or started_at
+        total_ms = duration_ms(effective_start, finished_at)
+        if run_record.status == RunStatus.SUCCESS:
+            await self._pipeline_repository.finalize_pipeline_success(
+                ctx.db,
+                pipeline_id=ctx.pipeline_record.id,
+                total_duration_ms=total_ms,
+                finished_at=finished_at,
+            )
+            return ctx.success_result()
+
+        failed_stage, reason = self._pick_dag_failure(failures)
+        await self._pipeline_repository.finalize_pipeline_failed(
+            ctx.db,
+            pipeline_id=ctx.pipeline_record.id,
+            failed_stage=failed_stage,
+            reason=reason,
+            total_duration_ms=total_ms,
+            finished_at=finished_at,
+        )
+        return ParsePipelineResult(
+            status=PipelineStatus.FAILED,
+            task_id=ctx.payload.task_id,
+            error=RuntimeError(reason),
+        )
+
+    @staticmethod
+    def _pick_dag_failure(failures: dict[str, str]) -> tuple[str, str]:
+        """按 6 阶段固定顺序选最靠前的失败阶段，与串行"首个失败即终态"语义对齐。
+
+        并行下可能多个阶段同时失败；取顺序最前者作为 ``failed_stage`` /
+        ``recover_from_stage``，使重试从最早失败阶段恢复。``failures`` 为空（理论不应
+        发生，如引擎层异常未归因到阶段）兜底为 cleaning。
+        """
+        for stage in POST_PROCESS_STAGE_ORDER:
+            if stage in failures:
+                return stage, failures[stage]
+        return POST_PROCESS_STAGE_CLEANING, "workflow run failed without stage attribution"
+
     async def execute(self, payload: ParseTaskPayload) -> ParsePipelineResult:
         """执行单条解析任务消息。"""
         async with self._session_factory() as db:
@@ -131,7 +239,7 @@ class ParseTaskPipeline:
             except RetryValidationError as exc:
                 return await self._handle_retry_validation_failure(payload, exc.reason, db)
             ctx = StageContext(payload, log_record, pipeline_record, db, is_retry=True)
-            return await self._build_stage_pipeline().run(ctx)
+            return await self._execute_stages(ctx)
 
         # ---- 首次分支：写 created 日志作为幂等屏障，阻止 Kafka 重投重复解析 ----
         log_record = await self._log_repository.create(payload, db)
@@ -159,7 +267,7 @@ class ParseTaskPipeline:
         # 这里只捕获少数未归类异常，收敛为 cleaning 失败终态（与历史行为一致）。
         try:
             ctx = StageContext(payload, log_record, pipeline_record, db, is_retry=False)
-            return await self._build_stage_pipeline().run(ctx)
+            return await self._execute_stages(ctx)
         except Exception as exc:
             return await self._handle_unclassified_failure(payload, log_record, pipeline_record, exc, db)
 

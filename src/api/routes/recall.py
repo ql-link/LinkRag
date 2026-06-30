@@ -13,7 +13,7 @@
 2. 解析并校验请求体（``extra=forbid``，仅 ``query`` + 可选 ``dataset_ids``）；query 空白 → 400；
 3. scope：body ``dataset_ids`` 必须是 claims 授权范围子集（省略 = 全量授权范围）。
 
-身份只取 claims，前端自报一律不信任；``top_k`` / ``sources`` / ``strict`` 由服务端配置控制。
+身份只取 claims，前端自报一律不信任；``top_k`` / ``sources`` / ``strict`` / 融合策略由服务端配置控制。
 返回 hits 结构与 RAG 流的 ``recall_done`` 帧 payload 同构。
 """
 
@@ -34,9 +34,10 @@ from src.application.recall_errors import CODE_INVALID_REQUEST, RecallApiError
 from src.application.recall_json_runtime import run_recall_json
 from src.application.recall_pipeline_provider import (
     aresolve_recall_config,
+    build_recall_request_from_config,
     get_recall_pipeline,
 )
-from src.core.pipeline.recall import RecallPipeline, RecallRequest
+from src.core.pipeline.recall import RecallPipeline
 
 router = APIRouter(prefix="/api/v1/recall", tags=["recall"])
 
@@ -46,8 +47,8 @@ class RecallJsonRequest(BaseModel):
 
     仅接受 ``query``（必填）与可选 ``dataset_ids``（本人授权范围内的子集选择）。
     **不要求 ``config_id``**——纯召回不调 CHAT 模型；body 出现 ``config_id`` /
-    ``user_id`` / ``top_k`` / ``sources`` / ``strict`` / ``doc_ids`` 等任何未知字段，
-    ``extra=forbid`` 触发 422，避免调用方误以为这些策略生效。
+    ``user_id`` / ``top_k`` / ``sources`` / ``strict`` / ``doc_ids`` / ``fusion_strategy`` /
+    ``fusion_weights`` 等任何未知字段，``extra=forbid`` 触发 422，避免调用方误以为这些策略生效。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -84,19 +85,15 @@ async def recall_json(
     body = await _parse_and_validate_body(request)
     dataset_ids = resolve_dataset_scope(body.dataset_ids, ctx)
 
-    # 与 RAG 流入口一致：top_k / 分数阈值取数据集级 recall 配置（多数据集取首个，空则系统默认）。
+    # 与 RAG 流入口一致：融合候选池 / per-route top_k / 分数阈值 / 融合策略取数据集级
+    # recall 配置（多数据集取首个，空则系统默认）。
     recall_cfg = await aresolve_recall_config(ctx.user_id, dataset_ids)
 
-    recall_req = RecallRequest(
+    recall_req = build_recall_request_from_config(
         query=body.query,
         user_id=ctx.user_id,  # 身份以凭证 claims 为准，不信任 body
         dataset_ids=dataset_ids,
-        doc_ids=None,
-        top_k=recall_cfg.recall_result_limit,
-        sparse_score_threshold_override=recall_cfg.sparse_score_threshold,
-        dense_score_threshold_override=recall_cfg.dense_score_threshold,
-        enabled_sources=recall_cfg.recall_enabled_sources,
-        strict_override=recall_cfg.recall_strict,
+        recall_cfg=recall_cfg,
     )
 
     payload = await run_recall_json(pipeline, recall_req, ctx.request_id)

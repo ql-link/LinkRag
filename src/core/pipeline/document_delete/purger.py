@@ -22,6 +22,7 @@ from src.core.mq.messages.document_delete import (
     DocumentDeletePayload,
 )
 from src.core.pipeline.document_delete.repository import ParseDeleteRepository
+from src.core.storage.bm25_backend import build_indexing_pipeline
 from src.core.storage.chunks.repository import ChunkRepository
 from src.core.storage.es.pipeline import EsIndexingPipeline
 from src.core.storage.qdrant.qdrant_store import QdrantIndexStore
@@ -55,7 +56,7 @@ class DocumentDeletePurger:
         self._chunk_repo = chunk_repository or ChunkRepository()
         self._parse_repo = parse_repository or ParseDeleteRepository()
         self._qdrant_store = qdrant_store or QdrantIndexStore()
-        self._es_pipeline = es_pipeline or EsIndexingPipeline()
+        self._es_pipeline = es_pipeline or build_indexing_pipeline()
         self._storage = storage or StorageFactory.get_storage()
         self._page_size = page_size or settings.DOCUMENT_DELETE_PAGE_SIZE
 

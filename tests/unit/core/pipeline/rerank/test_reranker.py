@@ -16,8 +16,8 @@ from src.core.llm.exceptions import UserModelConfigMissingError
 from src.core.pipeline.recall.models import RecallHit
 from src.core.pipeline.rerank import PostRecallReranker, RerankRequest
 
-
 # ---- 替身 ----
+
 
 class FakeProvider:
     """记录 rerank 调用入参；按预置返回或抛异常。"""
@@ -47,6 +47,7 @@ def make_fetcher(contents, spy=None):
         if spy is not None:
             spy.append((list(chunk_ids), user_id))
         return {cid: contents[cid] for cid in chunk_ids if cid in contents}
+
     return _fetch
 
 
@@ -57,19 +58,25 @@ def make_resolver(provider=None, model_name="rerank-m", error=None, spy=None):
         if error is not None:
             raise error
         return SimpleNamespace(provider=provider, model_name=model_name)
+
     return _resolve
 
 
 def _hit(cid, fused):
-    return RecallHit(chunk_id=cid, doc_id=10, dataset_id=1, fused_score=fused, scores={"dense": fused})
+    return RecallHit(
+        chunk_id=cid, doc_id=10, dataset_id=1, fused_score=fused, scores={"dense": fused}
+    )
 
 
 # ==== 主流程 ====
 
+
 async def test_main_flow_fillback_then_rerank_then_sorted():
     hits = [_hit(f"c{i}", 1.0 - i * 0.1) for i in range(1, 6)]  # c1..c5 降序
     contents = {f"c{i}": f"正文{i}" for i in range(1, 6)}
-    provider = FakeProvider(result=fake_rerank_result([(0, 0.2), (1, 0.9), (2, 0.5), (3, 0.1), (4, 0.7)]))
+    provider = FakeProvider(
+        result=fake_rerank_result([(0, 0.2), (1, 0.9), (2, 0.5), (3, 0.1), (4, 0.7)])
+    )
     reranker = PostRecallReranker(
         content_fetcher=make_fetcher(contents),
         model_resolver=make_resolver(provider=provider),
@@ -77,7 +84,7 @@ async def test_main_flow_fillback_then_rerank_then_sorted():
 
     resp = await reranker.rerank(RerankRequest(query="数据治理流程", user_id=10002, hits=hits))
 
-    # 按 RRF 顺序构造 documents，调用一次，query 透传
+    # 按当前融合顺序构造 documents，调用一次，query 透传
     assert len(provider.calls) == 1
     assert provider.calls[0]["query"] == "数据治理流程"
     assert provider.calls[0]["documents"] == ["正文1", "正文2", "正文3", "正文4", "正文5"]
@@ -104,7 +111,7 @@ async def test_order_determined_by_rerank_not_rrf():
     assert [h.chunk_id for h in resp.hits] == ["c3", "c1", "c2"]
     assert resp.hits[0].chunk_id == "c3"
     assert resp.hits[0].rerank_rank == 1
-    # fused_score / scores 维持原 RRF 取值
+    # fused_score / scores 维持原融合取值
     for h in resp.hits:
         original = next(x for x in hits if x.chunk_id == h.chunk_id)
         assert h.fused_score == original.fused_score
@@ -112,6 +119,7 @@ async def test_order_determined_by_rerank_not_rrf():
 
 
 # ==== top_n 入参与截断 ====
+
 
 async def test_default_top_n_is_8(monkeypatch):
     hits = [_hit(f"c{i}", 1.0 - i * 0.01) for i in range(12)]
@@ -140,9 +148,12 @@ async def test_non_positive_top_n_rejected(bad_top_n):
 
     with pytest.raises(ValueError):
         await reranker.rerank(
-            RerankRequest(query="q", user_id=10002,
-                          hits=[_hit("c1", 0.9), _hit("c2", 0.8), _hit("c3", 0.7)],
-                          top_n=bad_top_n)
+            RerankRequest(
+                query="q",
+                user_id=10002,
+                hits=[_hit("c1", 0.9), _hit("c2", 0.8), _hit("c3", 0.7)],
+                top_n=bad_top_n,
+            )
         )
     # 入参校验在最前，未触达正文回填 / 模型解析 / rerank 调用
     assert resolve_spy == []
@@ -156,7 +167,9 @@ async def test_non_positive_top_n_rejected(bad_top_n):
 async def test_top_n_truncation(n_content, top_n, expected):
     hits = [_hit(f"c{i}", 1.0 - i * 0.001) for i in range(n_content)]
     contents = {f"c{i}": f"t{i}" for i in range(n_content)}
-    provider = FakeProvider(result=fake_rerank_result([(i, 1.0 - i * 0.001) for i in range(n_content)]))
+    provider = FakeProvider(
+        result=fake_rerank_result([(i, 1.0 - i * 0.001) for i in range(n_content)])
+    )
     reranker = PostRecallReranker(
         content_fetcher=make_fetcher(contents),
         model_resolver=make_resolver(provider=provider),
@@ -168,6 +181,7 @@ async def test_top_n_truncation(n_content, top_n, expected):
 
 
 # ==== 正文回填与过滤 ====
+
 
 async def test_only_hits_with_content_participate():
     # 模拟 DB 过滤后仅 c1 有正文（c2 非 ACTIVE / c3 空 / c4 他人，均不在回填结果）
@@ -204,6 +218,7 @@ async def test_partial_missing_content_only_scores_present_ones():
 
 # ==== 空输入与全部缺正文 ====
 
+
 async def test_empty_hits_short_circuits_without_db_or_model():
     fetch_spy: list = []
     resolve_spy: list = []
@@ -216,8 +231,8 @@ async def test_empty_hits_short_circuits_without_db_or_model():
 
     assert resp.hits == []
     assert resp.rerank_applied is False
-    assert fetch_spy == []      # 未访问 DB
-    assert resolve_spy == []    # 未解析模型
+    assert fetch_spy == []  # 未访问 DB
+    assert resolve_spy == []  # 未解析模型
 
 
 async def test_all_missing_content_returns_empty_without_model():
@@ -229,16 +244,19 @@ async def test_all_missing_content_returns_empty_without_model():
     )
 
     resp = await reranker.rerank(
-        RerankRequest(query="q", user_id=1, hits=[_hit("c1", 0.9), _hit("c2", 0.8), _hit("c3", 0.7)])
+        RerankRequest(
+            query="q", user_id=1, hits=[_hit("c1", 0.9), _hit("c2", 0.8), _hit("c3", 0.7)]
+        )
     )
 
     assert resp.hits == []
     assert resp.rerank_applied is False
-    assert resolve_spy == []     # 未解析模型
+    assert resolve_spy == []  # 未解析模型
     assert provider.calls == []  # 未调用 rerank
 
 
 # ==== 失败与降级语义 ====
+
 
 async def test_missing_rerank_config_hard_fails_without_degrade():
     hits = [_hit("c1", 0.9), _hit("c2", 0.8), _hit("c3", 0.7)]
@@ -251,7 +269,7 @@ async def test_missing_rerank_config_hard_fails_without_degrade():
         await reranker.rerank(RerankRequest(query="q", user_id=10002, hits=hits))
 
 
-async def test_rerank_call_error_degrades_to_rrf_order():
+async def test_rerank_call_error_degrades_to_fusion_order():
     hits = [_hit("c1", 0.9), _hit("c2", 0.8), _hit("c3", 0.7), _hit("c4", 0.6)]
     provider = FakeProvider(error=RuntimeError("rerank service 5xx"))
     reranker = PostRecallReranker(
@@ -261,7 +279,7 @@ async def test_rerank_call_error_degrades_to_rrf_order():
 
     resp = await reranker.rerank(RerankRequest(query="q", user_id=1, hits=hits))
 
-    assert [h.chunk_id for h in resp.hits] == ["c1", "c2", "c3", "c4"]  # RRF 顺序
+    assert [h.chunk_id for h in resp.hits] == ["c1", "c2", "c3", "c4"]  # 当前融合顺序
     assert resp.rerank_applied is False
     assert all(h.rerank_score is None and h.rerank_rank is None for h in resp.hits)
 
@@ -269,10 +287,10 @@ async def test_rerank_call_error_degrades_to_rrf_order():
 @pytest.mark.parametrize(
     "indices, applied, scored_ids, tail_ids",
     [
-        ([(0, 0.9), (1, 0.8), (2, 0.7)], True, ["c1", "c2", "c3"], []),     # 正常
-        ([(0, 0.9), (5, 0.8), (2, 0.7)], True, ["c1", "c3"], ["c2"]),       # 过滤越界 5
-        ([(0, 0.9), (0, 0.8), (1, 0.7)], True, ["c1", "c2"], ["c3"]),       # 去重重复 0
-        ([], False, [], []),                                               # 空 -> 降级
+        ([(0, 0.9), (1, 0.8), (2, 0.7)], True, ["c1", "c2", "c3"], []),  # 正常
+        ([(0, 0.9), (5, 0.8), (2, 0.7)], True, ["c1", "c3"], ["c2"]),  # 过滤越界 5
+        ([(0, 0.9), (0, 0.8), (1, 0.7)], True, ["c1", "c2"], ["c3"]),  # 去重重复 0
+        ([], False, [], []),  # 空 -> 降级
     ],
 )
 async def test_unreliable_index_mapping(indices, applied, scored_ids, tail_ids):
@@ -287,7 +305,7 @@ async def test_unreliable_index_mapping(indices, applied, scored_ids, tail_ids):
 
     assert resp.rerank_applied is applied
     if not applied:
-        # 降级：RRF 顺序，rerank 字段全空
+        # 降级：当前融合顺序，rerank 字段全空
         assert [h.chunk_id for h in resp.hits] == ["c1", "c2", "c3"]
         assert all(h.rerank_score is None for h in resp.hits)
         return
@@ -301,6 +319,7 @@ async def test_unreliable_index_mapping(indices, applied, scored_ids, tail_ids):
 
 
 # ==== rerank 模型来源 ====
+
 
 async def test_uses_user_configured_model_no_system_fallback():
     resolve_spy: list = []

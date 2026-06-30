@@ -38,6 +38,7 @@ class EsDocumentFactory:
             "doc_id": file_meta.doc_id,
             "task_id": file_meta.task_id,
             "chunk_index": chunk.chunk_index,
+            "chunk_type": chunk.chunk_type,
             "coarse_tokens": chunk.coarse_tokens,
             "fine_tokens": chunk.fine_tokens,
         }

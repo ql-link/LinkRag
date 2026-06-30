@@ -14,6 +14,7 @@ import src.core.splitter.factory as factory
 from src.core.splitter import StructuredSemanticChunker
 from src.core.splitter.factory import (
     DenseEmbeddingConfigMissingError,
+    aresolve_dataset_embedding_client,
     aresolve_user_chunk_embedding_pipeline,
     aresolve_user_embedding_client,
 )
@@ -88,6 +89,30 @@ async def test_resolve_user_embedding_client_missing_config_raises(monkeypatch):
     with pytest.raises(DenseEmbeddingConfigMissingError) as exc_info:
         await aresolve_user_embedding_client(user_id=7)
     assert exc_info.value.user_id == 7
+
+
+@pytest.mark.asyncio
+async def test_resolve_dataset_embedding_client_missing_binding_raises(monkeypatch):
+    from src.core.dataset_config import VectorModelBindingConfig
+    import src.core.dataset_config as dataset_config_pkg
+
+    class _FakeDatasetConfigService:
+        async def get_vector_model_binding(self, user_id, dataset_id, db):
+            assert (user_id, dataset_id) == (7, 20)
+            return VectorModelBindingConfig()
+
+    monkeypatch.setattr(
+        dataset_config_pkg,
+        "DatasetConfigService",
+        lambda: _FakeDatasetConfigService(),
+    )
+
+    with pytest.raises(DenseEmbeddingConfigMissingError) as exc_info:
+        await aresolve_dataset_embedding_client(user_id=7, dataset_id=20, db=object())
+
+    message = str(exc_info.value)
+    assert "Dataset 20" in message
+    assert "dense_embedding_config_id" in message
 
 
 @pytest.mark.asyncio

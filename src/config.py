@@ -1,3 +1,4 @@
+import math
 import os
 from typing import List, Optional, Union
 
@@ -5,6 +6,7 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SUPPORTED_CHUNKING_STAGE_TWO_ALGORITHMS = frozenset({"noop", "semantic_depth_window"})
+SUPPORTED_RECALL_FUSION_STRATEGIES = frozenset({"rrf", "weighted_score"})
 MARKDOWN_HEADING_LLM_CONTEXT_TOKEN_MIN = 2048
 MARKDOWN_HEADING_LLM_CONTEXT_TOKEN_MAX = 262144
 MARKDOWN_HEADING_LLM_MAX_OUTPUT_TOKEN_MIN = 512
@@ -97,13 +99,44 @@ class Settings(BaseSettings):
     TITLE_GENERATION_TIMEOUT_MS: int = 25000
     # pipeline 严格模式默认值：False=宽松，允许单路失败降级。
     RECALL_STRICT_DEFAULT: bool = False
-    # 服务端固定返回候选数上限（同时作为各路执行期 top_k）。
-    RECALL_RESULT_LIMIT: int = 20
-    # 启用的召回路（逗号分隔）。dense 是远程 system embedding HTTP 调用，与 sparse
-    # 本地 BGE-M3 推理路径互补；本期默认开启 dense（GitHub issue ql-link/LinkRag#53）。
-    # 升级影响：未显式 set env 的部署在升级后自动开启 dense 召回，system embedding
-    # HTTP 流量增加；如需暂时回退，运维侧 set RECALL_ENABLED_SOURCES=bm25,sparse 重启。
+    # 融合后候选池窗口，作为 rerank 输入池；参考 RAGFlow _rerank_window ~64。
+    RECALL_RESULT_LIMIT: int = 64
+    # RAG pipeline 三路执行期召回深度。来源简述：
+    # dense=100: Sentence Transformers retrieve-and-rerank top-100；
+    # sparse=50: Elasticsearch RRF/ELSER 与 Azure semantic ranker 50-candidate；
+    # bm25=100: BEIR BM25 top-100 rerank。
+    RECALL_DENSE_TOP_K: int = 100
+    RECALL_SPARSE_TOP_K: int = 50
+    RECALL_BM25_TOP_K: int = 100
+    # 启用的召回路（逗号分隔）。dense/sparse query 编码按数据集绑定模型配置解析，
+    # 与 bm25 并行后做融合；如需暂时回退，运维侧 set RECALL_ENABLED_SOURCES=bm25,sparse 重启。
     RECALL_ENABLED_SOURCES: str = "bm25,sparse,dense"
+    # 召回融合策略：默认 RRF，weighted_score 作为可选策略在三路召回后、rerank 前生效。
+    RECALL_FUSION_STRATEGY: str = "rrf"
+    # weighted_score 三路权重。单项允许为 0；active source 权重和为 0 在运行期拒绝。
+    RECALL_FUSION_BM25_WEIGHT: float = 0.2
+    RECALL_FUSION_SPARSE_WEIGHT: float = 0.3
+    RECALL_FUSION_DENSE_WEIGHT: float = 0.5
+
+    @field_validator("RECALL_FUSION_STRATEGY")
+    @classmethod
+    def validate_recall_fusion_strategy(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if normalized not in SUPPORTED_RECALL_FUSION_STRATEGIES:
+            supported = ", ".join(sorted(SUPPORTED_RECALL_FUSION_STRATEGIES))
+            raise ValueError(f"RECALL_FUSION_STRATEGY must be one of: {supported}")
+        return normalized
+
+    @field_validator(
+        "RECALL_FUSION_BM25_WEIGHT",
+        "RECALL_FUSION_SPARSE_WEIGHT",
+        "RECALL_FUSION_DENSE_WEIGHT",
+    )
+    @classmethod
+    def validate_recall_fusion_weight(cls, v: float) -> float:
+        if not math.isfinite(v) or v < 0:
+            raise ValueError("recall fusion weights must be finite floats >= 0")
+        return v
 
     # ==========================================
     # 对外会话鉴权配置 (RAG 流 / 纯召回 JSON / LINK-40, LINK-131)
@@ -309,6 +342,10 @@ class Settings(BaseSettings):
     # 轻量流程编排引擎配置 (Workflow Engine)
     # ==========================================
     WORKFLOW_MAX_CONCURRENCY: int = 8
+    # 解析任务编排引擎选择：True=并行 DAG（dense∥sparse∥es，默认）；
+    # False=串行 StagePipeline（保留作稳定回退，代码不删）。两者复用同一套
+    # StageServices 业务，权威状态源都是 document_parse_pipeline。出问题置 False 秒回滚。
+    PARSE_USE_WORKFLOW_DAG: bool = True
 
     # ==========================================
     # 向量数据库配置 (Vector Store)
@@ -360,16 +397,15 @@ class Settings(BaseSettings):
     # Sparse retrieval defaults (called by VectorStorageFacade.search_sparse_chunks).
     # 默认值依据：业界保守占位（Dify "score threshold disabled = 0.0"、
     # Qdrant "先广召回后精排"），本项目无评测 harness 时不盲设阈值。
-    # 调用方可任意 per-call 覆盖；运维可改 .env 全局收紧。完整调研依据见
-    # docs/internals/vectorization.md §9 与 PR 描述。
+    # 仅作 facade 直调兜底；RAG pipeline 使用 RECALL_SPARSE_TOP_K。
+    # 调用方可任意 per-call 覆盖；运维可改 .env 全局收紧。
     SPARSE_RETRIEVAL_TOP_K: int = 10
     SPARSE_RETRIEVAL_SCORE_THRESHOLD: float = 0.0
 
     # Dense retrieval defaults (called by VectorStorageFacade.search_dense_chunks).
     # 与 SPARSE_RETRIEVAL_* 严格对仗：top_k=10（先广召回后精排），threshold=0.0
     # （cosine 上界 [0, 1]，不过滤、由 top_k 兜底）；阈值校准待评测 harness follow-up。
-    # 注意：pipeline 路径下实际生效的 top_k 是 RECALL_RESULT_LIMIT；
-    # DENSE_RETRIEVAL_TOP_K 仅作 facade 直调（脚本 / 评测 harness）的兜底默认。
+    # 仅作 facade 直调（脚本 / 评测 harness）兜底；RAG pipeline 使用 RECALL_DENSE_TOP_K。
     DENSE_RETRIEVAL_TOP_K: int = 10
     DENSE_RETRIEVAL_SCORE_THRESHOLD: float = 0.0
 
@@ -387,6 +423,50 @@ class Settings(BaseSettings):
     ES_SMOKE_ENABLED: bool = False
     TOLINK_RUN_REAL_ES_INDEX_TESTS: bool = False
 
+    # BM25 全文检索后端选择：es / qdrant。默认 qdrant（2026-06 切换，见迁移脚本
+    # scripts/migrate/es_to_qdrant_bm25.py）；如需临时回退 ES 可设 BM25_BACKEND=es。
+    # 开关只影响 BM25 一路，dense / sparse 召回不受影响。
+    # 详见 docs/internals/parse_task_pipeline.md。
+    BM25_BACKEND: str = "qdrant"
+
+    # chunk_type 类型加权（仅 BM25_BACKEND=es 生效）：对命中的 chunk 按其种类额外加固定分
+    # （const_score 加法升权，主 BM25 分之上叠加）。数据源是 kb_document_chunk.chunk_type
+    # （heading/paragraph/table/list/code_block/... 见 markdown_parser.ElementType）。
+    # 只列需要升权的类型，未列出的默认 +0（基准）；分数与 BM25 主分同量纲，按召回评测调。
+    BM25_TYPE_BOOST: dict[str, float] = Field(
+        default_factory=lambda: {"heading": 3.0, "table": 1.5, "list": 1.0}
+    )
+
+    # ---- Qdrant BM25 后端（仅 BM25_BACKEND=qdrant 时生效）----
+    # 以 sparse vector + Modifier.IDF 实现真 BM25（路 A：客户端补算 TF 部分，IDF 服务端补），
+    # 召回用 Formula Query 表达「BM25 主分 × chunk_type 乘数」的乘法类型加权。
+    # BM25 独立 collection（单 collection + payload filter 隔离租户，对称 ES 单 index）。
+    QDRANT_BM25_COLLECTION: str = "tolink_rag_bm25"
+    # BM25 专用 named sparse vector 名（带 Modifier.IDF），与 BGE-M3 sparse_text 并存。
+    # 装 coarse + fine 双段 token（各占隔离 hash 维度空间，单向量单次点积即双路 BM25）。
+    QDRANT_BM25_VECTOR_NAME: str = "bm25_text"
+    # Formula 重排前先用 BM25 sparse 召回的候选数（prefetch）。需 > 最终 top_k，
+    # 以便类型乘法能把候选内的 heading/table 抬进最终结果；过大增加重排开销。
+    BM25_PREFETCH_LIMIT: int = 200
+    # BM25 参数（对齐 Lucene 默认）。k1 控词频饱和强度，b 控长度归一强度。
+    BM25_K1: float = 1.2
+    BM25_B: float = 0.75
+    # 长度归一所需的全库平均文档长度。coarse / fine 两段各自归一，故分开配。默认值仅为
+    # 占位，**务必**用 scripts/dev/calibrate_bm25_avgdl.py 按真实语料校准（实测中文技术
+    # 文档 fine 仅略大于 coarse，并非数量级差异）。avgdl 写入时冻结，变更只对之后写入的
+    # chunk 生效，存量需重灌才完全对齐——见 docs/internals/parse_task_pipeline.md。
+    BM25_AVGDL: float = 200.0
+    BM25_AVGDL_FINE: float = 220.0
+    # query 侧 coarse 段权重，对齐 ES multi_match 的 "coarse_tokens^2"：query 词在
+    # coarse 段 value=该值、fine 段 value=1，点积即 coarse_boost×coarse_BM25 + fine_BM25。
+    BM25_COARSE_BOOST: float = 2.0
+    # 乘法类型权重（Qdrant Formula 用）：命中该 chunk_type 时 BM25 主分 ×倍数。
+    # 注意：与加法 BM25_TYPE_BOOST 语义不同，**不要复用**。温和起步（1.2~1.5），
+    # 再用召回评测扫参；别从 ×3 开始（会变成「类型碾压相关性」）。
+    BM25_TYPE_MULT: dict[str, float] = Field(
+        default_factory=lambda: {"heading": 1.3, "table": 1.2, "list": 1.05}
+    )
+
     # ==========================================
     # 存储 & 资源配置 (Storage & Resources)
     # ==========================================
@@ -398,9 +478,12 @@ class Settings(BaseSettings):
     MINIO_ENDPOINT: str = "localhost:9000"
     MINIO_ACCESS_KEY: str = "minioadmin"
     MINIO_SECRET_KEY: str = "minioadmin"
-    # MinIO 桶与 Java 端（LinkRag-Service）两桶模型对齐：
-    # 私有桶 = RAG 文档 + Python 解析产物；公开桶 = 博客 + 反馈附件（Java 写入，需匿名读）。
+    # MinIO 三桶模型（与 Java 端 LinkRag-Service 对齐）：
+    # · 原文件桶（RAW）  = 用户上传的源文件，由 Java 写入，Python 只读；
+    # · 私有桶（DOCS）   = Python 解析产物（Markdown + 图片），不对外匿名读；
+    # · 公开桶（PUBLIC） = 博客 + 反馈附件，Java 写入，需匿名读。
     # 原博客专用桶 tolink-blog 已并入公开桶，MINIO_BLOG_BUCKET 配置项废弃。
+    MINIO_RAW_BUCKET: str = "tolink-rag-raw"
     MINIO_PRIVATE_BUCKET: str = "tolink-rag-docs"
     MINIO_PUBLIC_BUCKET: str = "tolink-public"
     MINIO_USE_SSL: bool = False
@@ -428,6 +511,9 @@ class Settings(BaseSettings):
     KAFKA_SASL_PASSWORD: Optional[str] = None
     KAFKA_SECURITY_PROTOCOL: str = "PLAINTEXT"
     KAFKA_MAX_POLL_INTERVAL_MS: int = 900000
+    # 公网/跨机房部署时建议调大这两个值（broker 端 group.max.session.timeout.ms 须 ≥ 此值）
+    KAFKA_SESSION_TIMEOUT_MS: int = 45000
+    KAFKA_HEARTBEAT_INTERVAL_MS: int = 15000
     INIT_KAFKA_TOPICS_ON_STARTUP: bool = False
 
     # --- RabbitMQ 配置 ---

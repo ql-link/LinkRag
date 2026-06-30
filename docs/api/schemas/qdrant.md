@@ -144,7 +144,7 @@ response = await client.query_points(
 ```python
 response = await client.query_points(
     collection_name="kb_bucket_42",
-    query=[0.1, 0.2, ...],            # list[float]，长度 = SYSTEM_LLM_MODEL_EMBEDDING 输出维度（1024）
+    query=[0.1, 0.2, ...],            # list[float]，长度 = 数据集绑定 EMBEDDING 模型输出维度（当前要求 1024）
     using=None,                        # dense 是 unnamed vector，**不传 vector name**
     query_filter=models.Filter(
         must=[
@@ -167,7 +167,7 @@ response = await client.query_points(
 | collection 不存在 | 返空 hits，不抛；warn 日志带 `bucket_id`（与 sparse 一致） |
 | named vector 未配置 | **不会触发**——dense 是 collection 创建时配齐的 unnamed vector，无中间状态 |
 | Qdrant 网络故障 / 超时 | 抛 `QdrantStoreError`，由 facade 翻译为 `VectorRetrievalBackendError`（与 sparse 一致） |
-| system embedding HTTP 推理失败 | facade 翻译为 `VectorRetrievalEncodingError` |
+| 数据集绑定 embedding HTTP 推理失败 | facade 翻译为 `VectorRetrievalEncodingError` |
 
 **写读不变量**：bucket 路由、payload 字段、`embedding_model` 字符串、`embedder` 实例写入与召回共用同一套；**不引入 `DENSE_RETRIEVAL_VECTOR_NAME` 配置**——dense 永远 unnamed，避免分叉风险。
 

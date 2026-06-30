@@ -51,7 +51,7 @@ LLM 调用拆成两个正交维度：
 
 每个 adapter 的 `_capabilities` 集合即"本期 (protocol, capability) 矩阵"的唯一真源。`openai` 吃掉全部 OpenAI 兼容厂商（openai/千问 chat/glm/deepseek/硅基流动…）。**`VISION` 已接入 `openai` / `anthropic` / `google` 三协议**：复用各自 CHAT 通路（chat_completions / messages / generateContent），仅请求体多拼一个图片块，响应解析与 CHAT 一致；其余协议不支持 `VISION`，返回 `UnsupportedProtocolCapabilityError`。`OCR` 仍不作为独立能力，图片文字提取 = `VISION` + prompt（`/ocr` 兼容 endpoint 读 `VISION` 配置）。**ASR 本期不做。**
 
-`SPARSE_EMBEDDING` 已接入 RAG sparse 写入/召回链路：按发起用户的默认 `SPARSE_EMBEDDING` 配置经 `aresolve_user_model` 解析到稀疏 adapter（当前 `doubao_vision` / `bge_m3`），产出框架中性的 `SparseEmbeddingResult`，再由 encoding 层 `AdapterSparseVectorEncoder` 统一清洗成 `SparseVector` 写入 Qdrant named sparse vector（详见 [sparse_vector.md](sparse_vector.md)）。`openai` / `jina` 仍声明 `SPARSE_EMBEDDING`（可解析到 embedding 端点），但 RAG 稀疏链路当前由 `doubao_vision` / `bge_m3` 承载；`google` / `dashscope` / `anthropic` 不支持该能力，返回 `UnsupportedProtocolCapabilityError`。
+`SPARSE_EMBEDDING` 已接入 RAG sparse 写入/召回链路：按数据集绑定的 `dataset_parse_config.sparse_embedding_config_id` 经 `aresolve_user_model(config_id=...)` 精确解析到稀疏 adapter（当前 `doubao_vision` / `bge_m3`），产出框架中性的 `SparseEmbeddingResult`，再由 encoding 层 `AdapterSparseVectorEncoder` 统一清洗成 `SparseVector` 写入 Qdrant named sparse vector（详见 [sparse_vector.md](sparse_vector.md)）。`openai` / `jina` 仍声明 `SPARSE_EMBEDDING`（可解析到 embedding 端点），但 RAG 稀疏链路当前由 `doubao_vision` / `bge_m3` 承载；`google` / `dashscope` / `anthropic` 不支持该能力，返回 `UnsupportedProtocolCapabilityError`。
 
 ### 2.2 URL 接缝：完整 URL 直打
 
@@ -85,7 +85,7 @@ Gemini 原生把"是否流式"编码在 URL（而非请求体 `stream` 开关）
 
 ```text
 /api/v1/llm/*  或  系统链路（ChunkEmbeddingPipeline / MarkdownEnhancement / 召回 rerank）
-  -> ConfigReaderService           # 读 llm_user_config（含 protocol）
+  -> ConfigReaderService           # 读用户配置，未命中时读 LinkRag 系统默认预设（含 protocol）
   -> user_model_resolver           # protocol 必填校验 + 能力门禁
   -> ModelFactory.create_client    # 协议分发中台：按 protocol 选 adapter
     -> Provider(adapter)
@@ -99,13 +99,13 @@ Gemini 原生把"是否流式"编码在 URL（而非请求体 `stream` 开关）
 | `CapabilityType` | `interfaces.py` | `TEXT/EMBEDDING/SPARSE_EMBEDDING/RERANK/VISION/TOOL_CALLING` |
 | `BaseProvider` | `base_provider.py` | adapter 公共属性、`_capabilities` 与能力判断 |
 | `ModelFactory` | `factory.py` | **协议分发中台**：按 `protocol` 注册 / 查找 / 创建 adapter |
-| `build_provider_from_config` / `aresolve_user_model` | `user_model_resolver.py` | 查配置 → protocol 必填 → 分发 → 能力门禁 |
-| `ConfigReaderService` | `src/services/config_reader_service.py` | 读用户配置 / 系统兜底配置（含 `protocol`）并管缓存 |
+| `build_provider_from_config` / `aresolve_user_model` | `user_model_resolver.py` | 查配置（支持 `source + configId`）→ protocol 必填 → 分发 → 能力门禁 |
+| `ConfigReaderService` | `src/services/config_reader_service.py` | 读用户配置 / LinkRag 系统默认预设 / 旧 env 兜底配置（含 `protocol`）并管缓存 |
 | adapter 实现 | `providers/*.py` | 各 protocol 的请求构造 / 鉴权 / 响应解析 |
 
 ## 5. 配置来源
 
-运行时配置权威源为 **DB 三层 + Redis 缓存**（`llm_provider_model` 事实源 / `llm_user_config` 运行快照 / `llm_system_preset` 预设），均带 `protocol` / `api_base_url`。
+运行时配置权威源为 **DB 三层 + Redis 缓存**（`llm_provider_model` 事实源 / `llm_user_config` 用户运行快照 / `llm_system_preset` LinkRag 系统默认预设），均带 `protocol` / `api_base_url`。默认配置解析顺序为：先查用户自己的 active default（排除历史 `is_system_preset=true` 行），未命中时查 `provider_type='linkrag' AND is_default=true AND is_active=true` 的系统预设。Java 返回显式配置时，Python 按 `source + configId` 定位：`USER` 读 `llm_user_config.id`，`SYSTEM` 读 `llm_system_preset.id`。
 
 `src/config.py::Settings` 另有一套**系统级 env 配置** `SYSTEM_LLM_*`（embedding / markdown 增强 / `/llm` 兜底用）。它是平行于 DB 的遗留第二事实源，且 env 无 `protocol` 字段——当前由系统三处调用点**写死 `protocol="openai"`** 桥接（系统级只做 embedding+chat，固定 openai 兼容）。收口到 DB 单一事实源见 **issue #191**。
 

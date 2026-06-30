@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 import pytest
 
 from src.config import SUPPORTED_CHUNKING_STAGE_TWO_ALGORITHMS, Settings
@@ -10,6 +12,46 @@ def test_should_enable_sparse_vector_by_default():
     settings = Settings(_env_file=None)
 
     assert settings.SPARSE_VECTOR_ENABLED is True
+
+
+def test_recall_fusion_defaults_and_strategy_normalization():
+    settings = Settings(_env_file=None, RECALL_FUSION_STRATEGY=" Weighted_Score ")
+
+    assert settings.RECALL_FUSION_STRATEGY == "weighted_score"
+    assert settings.RECALL_FUSION_BM25_WEIGHT == 0.2
+    assert settings.RECALL_FUSION_SPARSE_WEIGHT == 0.3
+    assert settings.RECALL_FUSION_DENSE_WEIGHT == 0.5
+
+
+def test_recall_fusion_weights_allow_zero():
+    settings = Settings(
+        _env_file=None,
+        RECALL_FUSION_BM25_WEIGHT=0.0,
+        RECALL_FUSION_SPARSE_WEIGHT=0.0,
+        RECALL_FUSION_DENSE_WEIGHT=1.0,
+    )
+
+    assert settings.RECALL_FUSION_BM25_WEIGHT == 0.0
+    assert settings.RECALL_FUSION_SPARSE_WEIGHT == 0.0
+    assert settings.RECALL_FUSION_DENSE_WEIGHT == 1.0
+
+
+def test_recall_fusion_rejects_unknown_strategy():
+    with pytest.raises(ValueError, match="RECALL_FUSION_STRATEGY"):
+        Settings(_env_file=None, RECALL_FUSION_STRATEGY="unknown")
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("RECALL_FUSION_BM25_WEIGHT", -0.1),
+        ("RECALL_FUSION_SPARSE_WEIGHT", math.nan),
+        ("RECALL_FUSION_DENSE_WEIGHT", math.inf),
+    ],
+)
+def test_recall_fusion_rejects_invalid_weights(field: str, value: float):
+    with pytest.raises(ValueError, match=field):
+        Settings(_env_file=None, **{field: value})
 
 
 def test_should_normalize_chunking_stage_algorithm_names():

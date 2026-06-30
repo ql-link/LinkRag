@@ -83,3 +83,31 @@ async def test_aresolve_user_sparse_vector_service_raises_when_config_missing(mo
 
     with pytest.raises(factory.SparseEmbeddingConfigMissingError):
         await factory.aresolve_user_sparse_vector_service(7)
+
+
+@pytest.mark.asyncio
+async def test_aresolve_dataset_sparse_vector_service_missing_binding_raises(monkeypatch):
+    from src.core.dataset_config import VectorModelBindingConfig
+    import src.core.dataset_config as dataset_config_pkg
+
+    class _FakeDatasetConfigService:
+        async def get_vector_model_binding(self, user_id, dataset_id, db):
+            assert (user_id, dataset_id) == (7, 20)
+            return VectorModelBindingConfig()
+
+    monkeypatch.setattr(
+        dataset_config_pkg,
+        "DatasetConfigService",
+        lambda: _FakeDatasetConfigService(),
+    )
+
+    with pytest.raises(factory.SparseEmbeddingConfigMissingError) as exc_info:
+        await factory.aresolve_dataset_sparse_vector_service(
+            user_id=7,
+            dataset_id=20,
+            db=object(),
+        )
+
+    message = str(exc_info.value)
+    assert "Dataset 20" in message
+    assert "sparse_embedding_config_id" in message

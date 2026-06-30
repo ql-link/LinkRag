@@ -43,6 +43,7 @@ async def get_system_providers(
                 "provider_name": p.get("provider_name"),
                 "api_base_url": p.get("api_base_url"),
                 "models": p.get("models", {}),
+                "model_options": p.get("model_options", []),
                 "is_active": p.get("is_active", True),
             }
             for p in providers
@@ -82,6 +83,7 @@ async def get_user_configs(
                 "id": c.get("id"),
                 "provider_type": c.get("provider_type"),
                 "model_name": c.get("model_name"),
+                "display_name": c.get("display_name") or c.get("model_name"),
                 "capability": c.get("capability"),
                 "api_key_masked": mask_api_key(c.get("api_key", "")),
                 "api_base_url": c.get("api_base_url"),

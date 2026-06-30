@@ -29,6 +29,7 @@ from .models import (
     EnhancementConfig,
     PDFConfig,
     RecallConfig,
+    VectorModelBindingConfig,
 )
 
 logger = logging.getLogger(__name__)
@@ -49,6 +50,28 @@ def _load_json_column(value) -> dict:
 
 class DatasetConfigService:
     """数据集解析/检索配置只读服务。"""
+
+    async def get_vector_model_binding(
+        self, user_id: int, dataset_id: int, db: AsyncSession
+    ) -> VectorModelBindingConfig:
+        """读取数据集绑定的 dense/sparse 向量模型配置 ID。
+
+        与 ``get_config`` 的 JSON 配置不同，向量模型绑定不允许回退到系统默认：
+        无配置行、历史空字段或 DB 读取失败都返回空绑定或向上抛错，由消费点形成
+        包含 ``dataset_id`` 与字段名的明确失败。
+        """
+        stmt = select(DatasetParseConfig).where(
+            DatasetParseConfig.user_id == user_id,
+            DatasetParseConfig.dataset_id == dataset_id,
+        )
+        result = await db.execute(stmt)
+        row = result.scalar_one_or_none()
+        if row is None:
+            return VectorModelBindingConfig()
+        return VectorModelBindingConfig(
+            sparse_embedding_config_id=row.sparse_embedding_config_id,
+            dense_embedding_config_id=row.dense_embedding_config_id,
+        )
 
     async def get_config(
         self, user_id: int, dataset_id: int, db: AsyncSession
@@ -92,7 +115,10 @@ class DatasetConfigService:
         # 向上传播，不静默降级。
         return DatasetParseConfigBundle(
             chunking=ChunkingConfig.model_validate(
-                {**ChunkingConfig.from_settings().model_dump(), **_load_json_column(row.chunking_config)}
+                {
+                    **ChunkingConfig.from_settings().model_dump(),
+                    **_load_json_column(row.chunking_config),
+                }
             ),
             enhancement=EnhancementConfig.model_validate(
                 {
@@ -104,6 +130,13 @@ class DatasetConfigService:
                 {**PDFConfig.from_settings().model_dump(), **_load_json_column(row.pdf_config)}
             ),
             recall=RecallConfig.model_validate(
-                {**RecallConfig.from_settings().model_dump(), **_load_json_column(row.recall_config)}
+                {
+                    **RecallConfig.from_settings().model_dump(),
+                    **_load_json_column(row.recall_config),
+                }
+            ),
+            vector_models=VectorModelBindingConfig(
+                sparse_embedding_config_id=row.sparse_embedding_config_id,
+                dense_embedding_config_id=row.dense_embedding_config_id,
             ),
         )

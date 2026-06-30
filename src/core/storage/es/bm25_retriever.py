@@ -6,7 +6,7 @@
     底层 ``EsBm25Retriever.recall_topk_chunks(Bm25RecallRequest)``
 
 不重新实现任何检索 / 分词 / 打分逻辑。``tokenizer`` 在装配期一次性注入；
-``user_id`` 与 ``top_k`` 改为**执行期**由 pipeline 透传（来自 ``RecallRequest``），
+``user_id`` 与本路 ``top_k`` 改为**执行期**由 pipeline 透传（来自 ``RecallRequest.bm25_top_k``），
 使适配器与 pipeline 可单例复用。
 """
 
@@ -17,8 +17,7 @@ from typing import Protocol
 from src.core.pipeline.recall.models import RetrieverHit
 from src.core.pipeline.recall.protocols import SOURCE_BM25
 
-from .retrieval import EsBm25Retriever
-from .retrieval_models import Bm25RecallRequest
+from .retrieval_models import Bm25ChunkHit, Bm25RecallRequest
 
 
 class _QueryTokenizer(Protocol):
@@ -33,6 +32,18 @@ class _QueryTokenizer(Protocol):
     def tokenize(self, text: str): ...  # noqa: ANN201
 
 
+class _Bm25RecallBackend(Protocol):
+    """召回侧 BM25 后端的最小契约：ES 与 qdrant 两实现都满足。
+
+    适配器只依赖这一个方法，不绑定具体后端，由 ``build_bm25_recall_backend`` 工厂
+    按 ``BM25_BACKEND`` 注入 ``EsBm25Retriever`` 或 ``QdrantBm25Retriever``。
+    """
+
+    async def recall_topk_chunks(
+        self, request: Bm25RecallRequest
+    ) -> list[Bm25ChunkHit]: ...
+
+
 class Bm25Retriever:
     """实现 ``Retriever`` 协议的 BM25 召回适配器。
 
@@ -45,7 +56,7 @@ class Bm25Retriever:
 
     def __init__(
         self,
-        es_retriever: EsBm25Retriever,
+        es_retriever: _Bm25RecallBackend,
         tokenizer: _QueryTokenizer,
     ) -> None:
         self._es_retriever = es_retriever
@@ -63,7 +74,8 @@ class Bm25Retriever:
     ) -> list[RetrieverHit]:
         """按 BM25 召回一组候选 chunk。
 
-        ``user_id`` / ``top_k`` 由 pipeline 执行期透传。``score_threshold_override`` 接受但
+        ``user_id`` / ``top_k`` 由 pipeline 执行期透传（来自 ``RecallRequest.bm25_top_k``）。
+        ``score_threshold_override`` 接受但
         忽略——BM25 路无分数阈值概念（ES 原始分无统一量纲），仅为满足 ``Retriever`` 协议。策略：
         - ``dataset_ids`` 为空 → 直接返空。BM25 路依赖 dataset routing，
           没有数据集范围时不下发 ES（pipeline 协议允许"全库"，但本路放弃）。

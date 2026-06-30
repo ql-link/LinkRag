@@ -15,11 +15,16 @@ class SparseVectorService:
         encoder: SparseVectorEncoderProtocol,
         *,
         vector_name: str = DEFAULT_SPARSE_VECTOR_NAME,
+        provider_type: str | None = None,
+        config_id: int | None = None,
     ) -> None:
         """注入编码器并记录 Qdrant named sparse vector 名称。"""
 
         self._encoder = encoder
         self.vector_name = vector_name
+        self.provider_type = provider_type or getattr(encoder, "provider_type", None)
+        self.config_id = config_id if config_id is not None else getattr(encoder, "config_id", None)
+        self.last_usage = None
 
     @property
     def model_name(self) -> str:
@@ -41,6 +46,7 @@ class SparseVectorService:
         """
 
         vectors = await self._encoder.aencode([request.content])
+        self.last_usage = getattr(self._encoder, "last_usage", None)
         if len(vectors) != 1:
             raise ValueError(
                 f"Expected one sparse vector for chunk {request.chunk_id}, got {len(vectors)}."
@@ -63,10 +69,9 @@ class SparseVectorService:
         if not texts:
             return []
         vectors = await self._encoder.aencode(texts)
+        self.last_usage = getattr(self._encoder, "last_usage", None)
         if len(vectors) != len(texts):
-            raise ValueError(
-                f"Expected {len(texts)} sparse vectors, got {len(vectors)}."
-            )
+            raise ValueError(f"Expected {len(texts)} sparse vectors, got {len(vectors)}.")
         return vectors
 
     async def vectorize_query(self, query: str) -> SparseVector:
@@ -93,8 +98,7 @@ class SparseVectorService:
         """
 
         vectors = await self._encoder.aencode([query])
+        self.last_usage = getattr(self._encoder, "last_usage", None)
         if len(vectors) != 1:
-            raise ValueError(
-                f"Expected one sparse vector for query, got {len(vectors)}."
-            )
+            raise ValueError(f"Expected one sparse vector for query, got {len(vectors)}.")
         return vectors[0]

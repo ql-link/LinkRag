@@ -1,9 +1,10 @@
-"""Standalone runner for the parse-task parallel DAG.
+"""Runner for the parse-task parallel DAG.
 
-This module makes the demo workflow actually executable end-to-end without
-touching the production MQ pipeline (:class:`ParseTaskPipeline` / ``StagePipeline``
-remain the live path). It assembles a :class:`ParseWorkflowRuntime`, picks a
-:class:`WorkflowStore`, and drives :class:`WorkflowEngine`.
+Assembles a :class:`ParseWorkflowRuntime`, picks a :class:`WorkflowStore`
+(default :class:`InMemoryWorkflowStore` — no DB table), and drives
+:class:`WorkflowEngine`. Driven in production by
+``ParseTaskPipeline._run_via_dag`` when ``settings.PARSE_USE_WORKFLOW_DAG`` is on;
+also runnable standalone (without status args) for demos / tests.
 
 First run and resume share one code path; resume is requested by passing
 ``previous_run_id``. The engine then skips nodes that succeeded last round and
@@ -91,6 +92,14 @@ class ParseWorkflowRunner:
         definition: WorkflowDefinition | None = None,
         previous_run_id: str | None = None,
         max_concurrency: int | None = None,
+        pipeline_id: int | None = None,
+        status_repo: Any | None = None,
+        inherited_status: dict[str, str] | None = None,
+        pipeline_record: Any | None = None,
+        log_record: Any | None = None,
+        log_repo: Any | None = None,
+        is_retry: bool = False,
+        failures: dict[str, str] | None = None,
     ) -> RunRecord:
         """Execute a parse DAG for ``payload``.
 
@@ -98,6 +107,11 @@ class ParseWorkflowRunner:
         builder's result. Pass ``previous_run_id`` to resume: nodes that succeeded
         in that run are skipped, and only the products still needed by to-run nodes
         are restored.
+
+        生产接入时由 :class:`ParseTaskPipeline` 注入 ``pipeline_id`` /
+        ``status_repo`` / ``inherited_status``：节点据此把每阶段状态写回权威表
+        ``document_parse_pipeline``，并按 ``inherited_status`` 自跳过重试已成功阶段。
+        三者缺省为空时（独立 demo / 单测）节点只跑业务、不写状态。
 
         Each node opens its own DB session via the runtime's ``session_factory``;
         the runner does NOT hold one shared session, because concurrently-running
@@ -109,6 +123,14 @@ class ParseWorkflowRunner:
             payload=payload,
             session_factory=self._session_factory,
             services=self._services,
+            pipeline_id=pipeline_id,
+            status_repo=status_repo,
+            inherited_status=inherited_status or {},
+            pipeline_record=pipeline_record,
+            log_record=log_record,
+            log_repo=log_repo,
+            is_retry=is_retry,
+            failures=failures if failures is not None else {},
         )
         return await WorkflowEngine().run(
             definition,

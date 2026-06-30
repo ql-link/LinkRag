@@ -137,6 +137,7 @@ class ChunkIndexingResult:
     embed_prompt_tokens: int = 0
     embed_total_tokens: int = 0
     embed_provider_type: str | None = None
+    embed_config_id: int | None = None
 
     @property
     def is_success(self) -> bool:

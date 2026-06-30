@@ -2,7 +2,7 @@
 
 本文说明 `src/core/encoding/sparse/`：稀疏向量的编码与索引模块。它在**写入侧**把 chunk 原文编码成稀疏向量写进 Qdrant，在**召回侧**把用户 query 编码后做稀疏检索。dense 向量编排见 [vectorization.md](vectorization.md)，Qdrant 存储结构见 [schemas/qdrant.md](../api/schemas/qdrant.md)，召回编排见 [recall_pipeline.md](recall_pipeline.md)。
 
-> 编码模型按**发起用户的默认 SPARSE_EMBEDDING 配置**经统一 `(protocol, capability)` adapter 解析（必配、不保留系统级兜底）。历史上由 `.env` 的 `SPARSE_VECTOR_PROVIDER` 在本地 / HTTP / 远程 BGE-M3 间切换的整套机制已移除，相关 provider 实现与配置项参见 §3 与 §8。
+> 编码模型按**数据集绑定的 `dataset_parse_config.sparse_embedding_config_id`** 精确读取 `llm_user_config.id`，再经统一 `(protocol, capability)` adapter 解析（必配、不保留系统级兜底，也不回退用户当前默认配置）。历史上由 `.env` 的 `SPARSE_VECTOR_PROVIDER` 在本地 / HTTP / 远程 BGE-M3 间切换的整套机制已移除，相关 provider 实现与配置项参见 §3 与 §8。
 
 ---
 
@@ -10,14 +10,14 @@
 
 稀疏向量是 lexical weights（token_id → 权重），与 dense 向量互补：dense 擅长语义相似，sparse 擅长关键词/术语精确匹配。本模块只负责：
 
-1. 文本 → 稀疏向量的编码（按用户配置经统一 adapter 解析 provider）。
+1. 文本 → 稀疏向量的编码（按数据集绑定配置经统一 adapter 解析 provider）。
 2. 输出规整（截断 top_k、过滤低权重、唯一化、有限性校验）。
 3. 文件级稀疏索引阶段编排（写入 Qdrant、推进 chunk 状态）。
 4. 召回侧 query 编码与 Retriever 适配。
 
 它明确不做：dense 编码、Qdrant collection/point 结构定义（结构见 [schemas/qdrant.md](../api/schemas/qdrant.md)）、query 改写/清洗、跨路融合（属于召回 Pipeline）。
 
-与 LLM 配置能力的关系：稀疏编码模型不再走系统级 `.env`，而是按发起用户的默认 `SPARSE_EMBEDDING` 配置解析——经 `user_model_resolver.aresolve_user_model` 按 `(protocol, capability)` 做 adapter 门禁，产出统一的 `SparseEmbeddingResult`，再转成本模块的 `SparseVector`。写入与召回共用同一份解析配置，保证两侧落在同一 token 权重空间、sparse score 可比。**这是必配项**：用户没有默认 `SPARSE_EMBEDDING` 配置即抛 `SparseEmbeddingConfigMissingError`，不再有进程级兜底。
+与 LLM 配置能力的关系：稀疏编码模型不再走系统级 `.env`，也不按用户当前默认配置动态选择，而是按数据集行上的 `sparse_embedding_config_id` 解析——经 `user_model_resolver.aresolve_user_model` 按 `(protocol, capability)` 做 adapter 门禁，产出统一的 `SparseEmbeddingResult`，再转成本模块的 `SparseVector`。写入与召回共用同一份 dataset 绑定配置，保证两侧落在同一 token 权重空间、sparse score 可比。**这是必配项**：字段为空或配置无效即抛 `SparseEmbeddingConfigMissingError`，不再有进程级兜底。
 
 ---
 
@@ -31,7 +31,7 @@ src/core/encoding/sparse/
 ├── exceptions.py        # SparseVectorError 异常族
 ├── encoder.py           # SparseVectorEncoderProtocol + normalize_lexical_weights 清洗工具
 ├── adapter_encoder.py   # AdapterSparseVectorEncoder：llm adapter 输出 → SparseVector 的唯一桥接点
-├── factory.py           # 按用户配置解析 provider 装配 SparseVectorService
+├── factory.py           # 按用户默认或数据集绑定配置解析 provider 装配 SparseVectorService
 ├── pipeline.py          # SparseVectorService：对编排层暴露的稳定服务接口
 └── deploy_bge_m3.py     # 本地模型部署与冒烟脚本
 ```
@@ -40,7 +40,7 @@ src/core/encoding/sparse/
 
 ---
 
-## 3. 编码器抽象与 per-user adapter 解析
+## 3. 编码器抽象与 dataset-bound adapter 解析
 
 编码器实现同一个 `SparseVectorEncoderProtocol`（定义在 `encoder.py`）：
 
@@ -53,12 +53,12 @@ class SparseVectorEncoderProtocol(Protocol):
 
 `aencode` 的契约：返回列表与输入 `texts` **等长同序**；推理失败抛 `SparseVectorEncodingError`，输出非法抛 `SparseVectorOutputError`。上层 `SparseVectorService` 信任这个契约，编码器只管"文本进、稀疏向量出"，不碰 MySQL/Qdrant 状态。
 
-运行时**唯一**的装配入口是 `factory.py::aresolve_user_sparse_vector_service(user_id)`：
+解析建库与召回的装配入口是 `factory.py::aresolve_dataset_sparse_vector_service(user_id, dataset_id)`：
 
 ```text
-aresolve_user_sparse_vector_service(user_id)
-    ↓ 读发起用户的默认 SPARSE_EMBEDDING 配置
-aresolve_user_model(user_id, capability="SPARSE_EMBEDDING")   # (protocol, capability) 门禁
+aresolve_dataset_sparse_vector_service(user_id, dataset_id)
+    ↓ 读 dataset_parse_config.sparse_embedding_config_id
+aresolve_user_model(user_id, capability="SPARSE_EMBEDDING", config_id=...)   # (protocol, capability) 门禁
     ↓ 解析出 provider（必配，无配置抛 SparseEmbeddingConfigMissingError）
 AdapterSparseVectorEncoder(provider, top_k=…, min_weight=…)
     ↓
@@ -67,10 +67,10 @@ SparseVectorService(encoder, vector_name=SPARSE_VECTOR_QDRANT_VECTOR_NAME)
 
 - `AdapterSparseVectorEncoder`（`adapter_encoder.py`）是 llm 层与 encoding 层之间**唯一**的桥接点：llm 层（provider / adapter）只懂 protocol 与 HTTP、不认识 `SparseVector`；encoding 层只认识 `SparseVector`、不关心走哪个厂商。它调 `provider.embed_sparse` 拿到中性的 `SparseEmbeddingResult`，再用 `normalize_lexical_weights` 做 `top_k` / `min_weight` 清洗、升序排序、空向量报错，转成 `SparseVector`。
 - 清洗参数 `top_k` / `min_weight` 与命名 `vector_name` 仍取全局 `SPARSE_VECTOR_*`（见 §8），各 provider 复用同一套规则，保证不同用户、不同 provider 产出的稀疏向量在召回侧表现一致。
-- **写入与召回共用本入口**，保证「同一用户写入 / 召回走同一份解析配置」——token 权重空间一致，召回打分才可比。
-- 配置缺失（用户无默认 `SPARSE_EMBEDDING`）抛 `SparseEmbeddingConfigMissingError`；配置读取本身失败（Redis/DB 异常）按原异常向上传播，便于上层区分「未配置」与「读取失败(可重试)」。
+- **写入与召回共用 dataset 绑定入口**，保证同一数据集写入 / 召回走同一份解析配置；多数据集召回时逐 dataset 编码与检索，再由召回 Pipeline 合并。
+- 配置缺失或无效（字段为空、配置不存在/停用/非当前用户/系统预设/能力非 `SPARSE_EMBEDDING`）抛 `SparseEmbeddingConfigMissingError`；错误信息包含 `dataset_id` 与字段名。
 
-`create_sparse_vector_service(encoder)` 是显式注入入口，仅用于测试或自定义编码器。
+`aresolve_user_sparse_vector_service(user_id)` 仍保留给旧显式调用和测试；解析建库与召回路径不再使用它作为模型来源。`create_sparse_vector_service(encoder)` 是显式注入入口，仅用于测试或自定义编码器。
 
 > **当前已接入的稀疏 adapter provider**（均在 DB 模型目录登记后由 per-user 解析选用；都产出中性 `SparseEmbeddingResult`、清洗统一在 `AdapterSparseVectorEncoder`，`api_base_url` 存完整端点、adapter 直打不拼接）：
 >
@@ -143,7 +143,7 @@ backend.search_sparse_chunks(query, user_id, set_id, doc_id, top_k, score_thresh
 
 ## 8. 配置项
 
-编码模型不再由系统级配置项指定，而是按用户默认 `SPARSE_EMBEDDING` 配置经 adapter 解析（见 §3）。保留的配置项都是与具体 provider 无关的全局开关与清洗 / 命名规则：
+编码模型不再由系统级配置项指定，而是按数据集绑定的 `sparse_embedding_config_id` 经 adapter 解析（见 §3）。保留的配置项都是与具体 provider 无关的全局开关与清洗 / 命名规则：
 
 | 配置 | 默认 | 说明 |
 | --- | --- | --- |

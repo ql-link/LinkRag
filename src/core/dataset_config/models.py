@@ -12,7 +12,12 @@
 
 from __future__ import annotations
 
+import math
+
 from pydantic import BaseModel, field_validator, model_validator
+
+SUPPORTED_RECALL_FUSION_STRATEGIES = frozenset({"rrf", "weighted_score"})
+SUPPORTED_STAGE_TWO_ALGORITHMS = frozenset({"noop", "semantic_depth_window"})
 
 
 def _settings():
@@ -34,6 +39,8 @@ class ChunkingConfig(BaseModel):
     overlap_tokens: int = 64
     max_chunk_tokens: int = 512
     hard_max_tokens: int = 1024
+    stage_two_algorithm: str = "noop"
+    protected_neighbor_overlap: bool = False
 
     @field_validator("overlap_tokens")
     @classmethod
@@ -62,6 +69,15 @@ class ChunkingConfig(BaseModel):
         if v < 512 or v > 8192:
             raise ValueError("hard_max_tokens must be between 512 and 8192")
         return v
+
+    @field_validator("stage_two_algorithm")
+    @classmethod
+    def _validate_stage_two_algorithm(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if normalized not in SUPPORTED_STAGE_TWO_ALGORITHMS:
+            supported = ", ".join(sorted(SUPPORTED_STAGE_TWO_ALGORITHMS))
+            raise ValueError(f"stage_two_algorithm must be one of: {supported}")
+        return normalized
 
     @model_validator(mode="before")
     @classmethod
@@ -104,6 +120,8 @@ class ChunkingConfig(BaseModel):
             overlap_tokens=s.CHUNKING_OVERLAP_TOKENS,
             max_chunk_tokens=s.CHUNKING_MAX_CHUNK_TOKENS,
             hard_max_tokens=s.CHUNKING_HARD_MAX_TOKENS,
+            stage_two_algorithm=s.CHUNKING_STAGE_TWO_ALGORITHM,
+            protected_neighbor_overlap=s.CHUNKING_PROTECTED_NEIGHBOR_OVERLAP,
         )
 
 
@@ -121,6 +139,7 @@ class EnhancementConfig(BaseModel):
 
     enable_table_enhancement: bool = True
     enable_image_enhancement: bool = True
+    enable_heading_hierarchy: bool = False
 
     @classmethod
     def from_settings(cls) -> "EnhancementConfig":
@@ -129,6 +148,7 @@ class EnhancementConfig(BaseModel):
         return cls(
             enable_table_enhancement=s.MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT,
             enable_image_enhancement=s.MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT,
+            enable_heading_hierarchy=s.MARKDOWN_PARSER_ENABLE_HEADING_HIERARCHY,
         )
 
 
@@ -152,33 +172,47 @@ class PDFConfig(BaseModel):
 
 
 class RecallConfig(BaseModel):
-    """召回检索配置（9 项），消费点见 ``routes/rag.py`` / ``routes/recall.py`` 与各 retriever。
+    """召回检索配置（14 项），消费点见 ``routes/rag.py`` / ``routes/recall.py`` 与各 retriever。
 
-    其中三项为 pipeline / rerank 级旋钮：
+    其中多项为 pipeline / rerank 级旋钮：
 
     - ``recall_enabled_sources``：启用哪几条召回路并参与融合（``bm25`` / ``sparse`` / ``dense``）。
       **只能在系统已装配的召回路（``RECALL_ENABLED_SOURCES``）子集内收窄**：列出的路里凡未被
       系统装配的会被忽略；若交集为空则回退到系统全部已装配路（见 ``RecallPipeline`` 执行期处理）。
+    - ``recall_fusion_strategy``：候选融合策略，默认 ``rrf``，可选 ``weighted_score``。
+    - ``fusion_*_weight``：``weighted_score`` 三路权重，单项允许为 0；active source 权重和为 0
+      在运行期拒绝。
     - ``rerank_top_n``：重排后返回候选条数上限（透传给 ``RerankRequest.top_n``）。
     - ``recall_strict``：召回容错模式（透传给 ``RecallRequest.strict_override``）。``True`` 时任一路
       失败即整体抛错，``False`` 时允许单路失败降级。
     """
 
-    recall_result_limit: int = 20
+    recall_result_limit: int = 64
     recall_context_token_budget: int = 4000
-    sparse_top_k: int = 10
+    bm25_top_k: int = 100
+    sparse_top_k: int = 50
     sparse_score_threshold: float = 0.0
-    dense_top_k: int = 10
+    dense_top_k: int = 100
     dense_score_threshold: float = 0.0
     recall_enabled_sources: list[str] = ["bm25", "sparse", "dense"]
+    recall_fusion_strategy: str = "rrf"
+    fusion_bm25_weight: float = 0.2
+    fusion_sparse_weight: float = 0.3
+    fusion_dense_weight: float = 0.5
     rerank_top_n: int = 8
     recall_strict: bool = False
 
-    @field_validator("rerank_top_n")
+    @field_validator(
+        "recall_result_limit",
+        "bm25_top_k",
+        "sparse_top_k",
+        "dense_top_k",
+        "rerank_top_n",
+    )
     @classmethod
-    def _validate_rerank_top_n(cls, v: int) -> int:
+    def _validate_positive_int(cls, v: int) -> int:
         if v <= 0:
-            raise ValueError("rerank_top_n must be a positive int")
+            raise ValueError("must be a positive int")
         return v
 
     @field_validator("recall_enabled_sources")
@@ -188,6 +222,22 @@ class RecallConfig(BaseModel):
         cleaned = [s.strip() for s in v if s and s.strip()]
         return cleaned
 
+    @field_validator("recall_fusion_strategy")
+    @classmethod
+    def _validate_recall_fusion_strategy(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if normalized not in SUPPORTED_RECALL_FUSION_STRATEGIES:
+            supported = ", ".join(sorted(SUPPORTED_RECALL_FUSION_STRATEGIES))
+            raise ValueError(f"recall_fusion_strategy must be one of: {supported}")
+        return normalized
+
+    @field_validator("fusion_bm25_weight", "fusion_sparse_weight", "fusion_dense_weight")
+    @classmethod
+    def _validate_recall_fusion_weight(cls, v: float) -> float:
+        if not math.isfinite(v) or v < 0:
+            raise ValueError("fusion weights must be finite floats >= 0")
+        return v
+
     @classmethod
     def from_settings(cls) -> "RecallConfig":
         """以运行期系统 ``Settings`` 为 L1 基线构造。"""
@@ -195,16 +245,32 @@ class RecallConfig(BaseModel):
         return cls(
             recall_result_limit=s.RECALL_RESULT_LIMIT,
             recall_context_token_budget=s.RECALL_GENERATION_CONTEXT_TOKEN_BUDGET,
-            sparse_top_k=s.SPARSE_RETRIEVAL_TOP_K,
+            bm25_top_k=s.RECALL_BM25_TOP_K,
+            sparse_top_k=s.RECALL_SPARSE_TOP_K,
             sparse_score_threshold=s.SPARSE_RETRIEVAL_SCORE_THRESHOLD,
-            dense_top_k=s.DENSE_RETRIEVAL_TOP_K,
+            dense_top_k=s.RECALL_DENSE_TOP_K,
             dense_score_threshold=s.DENSE_RETRIEVAL_SCORE_THRESHOLD,
             recall_enabled_sources=[
                 src.strip() for src in (s.RECALL_ENABLED_SOURCES or "").split(",") if src.strip()
             ],
+            recall_fusion_strategy=s.RECALL_FUSION_STRATEGY,
+            fusion_bm25_weight=s.RECALL_FUSION_BM25_WEIGHT,
+            fusion_sparse_weight=s.RECALL_FUSION_SPARSE_WEIGHT,
+            fusion_dense_weight=s.RECALL_FUSION_DENSE_WEIGHT,
             rerank_top_n=s.RERANK_DEFAULT_TOP_N,
             recall_strict=s.RECALL_STRICT_DEFAULT,
         )
+
+
+class VectorModelBindingConfig(BaseModel):
+    """数据集绑定的向量模型配置 ID。
+
+    两个字段指向 Java 库 ``llm_user_config.id``。Python 侧不在此模型中校验配置行有效性，
+    只承载 ID；解析/召回消费点会按能力分别精确读取并校验。
+    """
+
+    sparse_embedding_config_id: int | None = None
+    dense_embedding_config_id: int | None = None
 
 
 class DatasetParseConfigBundle(BaseModel):
@@ -217,6 +283,7 @@ class DatasetParseConfigBundle(BaseModel):
     enhancement: EnhancementConfig = EnhancementConfig()
     pdf: PDFConfig = PDFConfig()
     recall: RecallConfig = RecallConfig()
+    vector_models: VectorModelBindingConfig = VectorModelBindingConfig()
 
     @classmethod
     def defaults(cls) -> "DatasetParseConfigBundle":
@@ -226,4 +293,5 @@ class DatasetParseConfigBundle(BaseModel):
             enhancement=EnhancementConfig.from_settings(),
             pdf=PDFConfig.from_settings(),
             recall=RecallConfig.from_settings(),
+            vector_models=VectorModelBindingConfig(),
         )

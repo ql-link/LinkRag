@@ -67,6 +67,7 @@ def _structured_chunker(
     heading_break_level: int = 5,
     min_candidate_chunk_tokens: int = 128,
     overlap_tokens: int = 0,
+    protected_neighbor_overlap: bool = False,
 ) -> StructuredSemanticChunker:
     tokenizer = MockWordTokenizer()
     overlapper = ChunkOverlapper(
@@ -90,6 +91,7 @@ def _structured_chunker(
             algorithms=[NoopStageTwoAlgorithm()],
         ),
         overlapper=overlapper,
+        protected_neighbor_overlap=protected_neighbor_overlap,
     )
 
 
@@ -470,11 +472,8 @@ async def test_achunk_should_fail_fast_when_protected_ranges_do_not_match_views(
         await chunker.achunk([_paragraph("visible", 0)])
 
 
-def test_neighbor_context_should_skip_protected_chunk_when_switch_is_off(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(settings, "CHUNKING_PROTECTED_NEIGHBOR_OVERLAP", False)
-    chunker = _structured_chunker(overlap_tokens=1)
+def test_neighbor_context_should_skip_protected_chunk_when_switch_is_off() -> None:
+    chunker = _structured_chunker(overlap_tokens=1, protected_neighbor_overlap=False)
     chunks = [
         Chunk("before alpha", 0, 0, {"chunk_role": "mixed"}),
         Chunk(
@@ -497,11 +496,8 @@ def test_neighbor_context_should_skip_protected_chunk_when_switch_is_off(
     assert result[2].metadata["context_prev_tokens_applied"] == 1
 
 
-def test_neighbor_context_should_allow_protected_chunk_when_switch_is_on(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(settings, "CHUNKING_PROTECTED_NEIGHBOR_OVERLAP", True)
-    chunker = _structured_chunker(overlap_tokens=1)
+def test_neighbor_context_should_allow_protected_chunk_when_switch_is_on() -> None:
+    chunker = _structured_chunker(overlap_tokens=1, protected_neighbor_overlap=True)
     chunks = [
         Chunk("before alpha", 0, 0, {"chunk_role": "mixed"}),
         Chunk(

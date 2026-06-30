@@ -15,7 +15,9 @@ class SystemProvider(BaseModel):
     """
 
     id: str = Field(..., description="厂商唯一标识 (UUID)")
-    provider_type: str = Field(..., description="厂商类型：openai/claude/aliyun/glm/deepseek")
+    provider_type: str = Field(
+        ..., description="厂商类型：openai/claude/aliyun/glm/deepseek/linkrag"
+    )
     provider_name: str = Field(..., description="厂商展示名称")
     api_base_url: str = Field(..., description="默认 API 地址（模板值，不参与运行决策）")
     default_protocol: str = Field("openai", description="默认协议（模板值，新增模型能力预填用）")

@@ -11,6 +11,9 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
+import re
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -26,8 +29,9 @@ from src.core.storage.chunks.constants import (
     CHUNK_STATUS_INDEXED,
     SPARSE_VECTOR_STATUS_INDEXED,
 )
+from src.core.storage.bm25_backend import build_indexing_pipeline
 from src.core.storage.chunks.repository import ChunkRepository
-from src.core.storage.es import EsIndexingPipeline, EsIndexingResult
+from src.core.storage.es import EsIndexingResult
 from src.core.markdown_parser import ParseResult
 from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.core.preprocessor.models import FilePostIndexPlan
@@ -137,6 +141,27 @@ class StageServices:
             **parser_kwargs,
         )
 
+    async def upload_md_images(self, markdown: str, payload: ParseTaskPayload) -> str:
+        """扫描 MD 文本中的 base64 内嵌图片，上传到 MinIO 并替换为对象 URL。
+
+        仅处理 ``data:image/...;base64,...`` 形式的内嵌图。外链图（http/https）和本地
+        相对路径引用（./img.png）原样保留——外链已可访问，相对路径在无配套文件时无法解析。
+
+        image_bucket 优先取 payload.image_bucket，未指定时回退 MINIO_PRIVATE_BUCKET；
+        image_prefix 优先取 payload.image_prefix，未指定时取 md_object_key 所在目录。
+        """
+        import asyncio
+
+        image_bucket = payload.image_bucket or settings.MINIO_PRIVATE_BUCKET
+        image_prefix = (payload.image_prefix or payload.md_object_key).strip("/")
+        return await asyncio.to_thread(
+            _upload_base64_images_sync,
+            markdown,
+            self._storage,
+            image_bucket,
+            image_prefix,
+        )
+
     async def load_markdown(self, payload: ParseTaskPayload) -> str:
         """从对象存储读回已上传的 Markdown 文本（重试从 CHUNKING 恢复时使用）。
 
@@ -186,8 +211,14 @@ class StageServices:
         """
         import asyncio
 
+        # stage_two_algorithm 优先取数据集级配置，不存在则回退系统全局设置。
+        stage_two_algorithm = (
+            chunking_config.stage_two_algorithm
+            if chunking_config is not None
+            else settings.CHUNKING_STAGE_TWO_ALGORITHM
+        )
         embedder = None
-        if settings.CHUNKING_STAGE_TWO_ALGORITHM == "semantic_depth_window":
+        if stage_two_algorithm == "semantic_depth_window":
             user_id = coerce_optional_int(payload.user_id)
             if user_id is None:
                 raise RuntimeError("chunking semantic stage requires payload.user_id")
@@ -614,7 +645,8 @@ class StageServices:
 
     def _get_es_indexing_pipeline(self):
         if self._es_indexing_pipeline is None:
-            self._es_indexing_pipeline = EsIndexingPipeline(
+            # BM25 写入后端按 BM25_BACKEND 选择（es / qdrant），两者鸭子兼容同签名。
+            self._es_indexing_pipeline = build_indexing_pipeline(
                 chunk_repository=self._chunk_repository,
             )
         return self._es_indexing_pipeline
@@ -628,3 +660,74 @@ class StageServices:
             raise RuntimeError("preprocessor service is not available") from exc
         self._preprocessor = Preprocessor()
         return self._preprocessor
+
+
+# ---------------------------------------------------------------------------
+# 模块级工具函数（同步，供 asyncio.to_thread 调用）
+# ---------------------------------------------------------------------------
+
+_BASE64_IMG_RE = re.compile(
+    r'!\[(?P<alt>[^\]]*)\]\(data:image/(?P<mime>[^;,\s]+);base64,(?P<data>[A-Za-z0-9+/=\s]+)\)',
+    re.MULTILINE,
+)
+
+_MIME_EXT: dict[str, str] = {
+    "jpeg": "jpg",
+    "jpg": "jpg",
+    "png": "png",
+    "gif": "gif",
+    "webp": "webp",
+    "bmp": "bmp",
+    "svg+xml": "svg",
+    "tiff": "tiff",
+}
+
+
+def _upload_base64_images_sync(
+    markdown: str,
+    storage: "Any",
+    image_bucket: str,
+    image_prefix: str,
+) -> str:
+    """（同步）将 markdown 中的 base64 内嵌图片上传到对象存储并替换为访问 URL。
+
+    单张图片上传失败时保留原始 base64（best-effort），不阻断整篇文档。
+    """
+    prefix = image_prefix.strip("/")
+    uploaded = 0
+    failed = 0
+
+    def _replace(match: re.Match) -> str:
+        nonlocal uploaded, failed
+        alt = match.group("alt")
+        mime = match.group("mime").lower()
+        raw_data = match.group("data").replace("\n", "").replace(" ", "")
+        try:
+            image_bytes = base64.b64decode(raw_data)
+            ext = _MIME_EXT.get(mime, mime.split("+")[0])
+            digest = hashlib.sha1(image_bytes).hexdigest()[:16]
+            object_key = f"{prefix}/{digest}.{ext}"
+            storage.upload_bytes(
+                bucket=image_bucket,
+                object_key=object_key,
+                content=image_bytes,
+                content_type=f"image/{mime}",
+            )
+            url = storage.build_object_url(image_bucket, object_key)
+            uploaded += 1
+            return f"![{alt}]({url})"
+        except Exception as exc:
+            failed += 1
+            logger.warning(
+                "[upload_md_images] 图片上传失败，保留原始 base64: mime={} err={}", mime, exc
+            )
+            return match.group(0)
+
+    result = _BASE64_IMG_RE.sub(_replace, markdown)
+    if uploaded or failed:
+        logger.info(
+            "[upload_md_images] base64 图片处理完成: uploaded={} failed={}",
+            uploaded,
+            failed,
+        )
+    return result

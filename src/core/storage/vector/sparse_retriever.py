@@ -6,8 +6,8 @@
         ↓
     facade ``search_sparse_chunks(query, user_id, set_id, doc_id, top_k, ...)``
 
-不重新实现编码 / Qdrant 查询逻辑。``user_id`` 与 ``top_k`` 改为**执行期**由
-pipeline 透传（来自 ``RecallRequest``）；``score_threshold`` 非用户上下文，仍装配期注入。
+不重新实现编码 / Qdrant 查询逻辑。``user_id`` 与本路 ``top_k`` 改为**执行期**由
+pipeline 透传（来自 ``RecallRequest.sparse_top_k``）；``score_threshold`` 非用户上下文，仍装配期注入。
 
 为什么不直接 import ``VectorStorageFacade``：``vector_storage`` 包在加载时
 会 import 本包（``sparse_vector``），如果反过来 hard import 会形成循环。
@@ -57,9 +57,7 @@ class SparseRetriever:
         score_threshold: float | None = None,
     ) -> None:
         if score_threshold is not None and score_threshold < 0:
-            raise ValueError(
-                f"score_threshold must be >= 0, got {score_threshold!r}"
-            )
+            raise ValueError(f"score_threshold must be >= 0, got {score_threshold!r}")
         self._backend = backend
         self._score_threshold = score_threshold
 
@@ -75,13 +73,14 @@ class SparseRetriever:
     ) -> list[RetrieverHit]:
         """按稀疏向量召回一组候选 chunk。
 
-        ``user_id`` / ``top_k`` 由 pipeline 执行期透传。``score_threshold_override`` 非 ``None``
+        ``user_id`` / ``top_k`` 由 pipeline 执行期透传（来自 ``RecallRequest.sparse_top_k``）。
+        ``score_threshold_override`` 非 ``None``
         时替代装配期注入的默认阈值（来自数据集级 ``recall_config.sparse_score_threshold``）。
         ``dataset_ids`` 为空 → 直接返空。底层 facade 的 ``set_id`` 是单值，
         协议层的"全库"语义在这一路放弃（与 ``Bm25Retriever`` 行为一致）。
         多个 ``dataset_ids`` → 逐个下发，合并后按 score 降序截断。
 
-        发起用户缺默认 SPARSE_EMBEDDING 配置时，facade 抛
+        数据集缺少有效 SPARSE_EMBEDDING 绑定配置时，facade 抛
         ``VectorRetrievalUserConfigMissingError`` → 本方法翻成 ``RecallFatalError``，
         让 pipeline 绕过宽松降级、整请求硬失败（与 ``DenseRetriever`` 严格对仗）。
         """
@@ -100,7 +99,7 @@ class SparseRetriever:
             else self._score_threshold
         )
 
-        # 发起用户缺默认 SPARSE_EMBEDDING 配置 → sparse 路无法编码 query：翻成 recall 层
+        # 数据集缺少有效 SPARSE_EMBEDDING 绑定配置 → sparse 路无法编码 query：翻成 recall 层
         # RecallFatalError，让 pipeline 绕过宽松降级、整请求硬失败（区别于普通单路失败）。
         from src.core.pipeline.recall.exceptions import RecallFatalError
         from src.core.storage.vector.exceptions import (

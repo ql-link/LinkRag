@@ -79,6 +79,7 @@ class VectorizingStage(Stage):
                 completion_tokens=0,
                 total_tokens=vector_result.embed_total_tokens,
                 task_id=str(ctx.payload.task_id),
+                config_id=vector_result.embed_config_id,
             )
 
     async def mark_success(self, ctx: StageContext, outcome: StageOutcome, *, started_at) -> None:
