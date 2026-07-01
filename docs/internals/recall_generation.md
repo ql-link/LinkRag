@@ -50,7 +50,7 @@
    │    └─ 拼装后 blocks 为空（全部缺正文）→ recall_done（不生成）
    └─ provider.stream(user_prompt, system_prompt)
         ├─ 逐 token → answer_delta
-        └─ 结束    → answer_done（answer + hits 元信息 + rerank_applied + failed_sources）
+        └─ 结束    → answer_done（answer + hits 元信息 + rerank_applied + failed_sources + recall_diagnostics）
 ```
 
 关键设计点：
@@ -60,6 +60,7 @@
 - **rerank 与召回共享同一条流超时**：只把剩余预算交给 rerank，整条流的端到端时间仍受单个 `RECALL_STREAM_TIMEOUT_MS` 约束，不会两段各占满一窗。
 - **rerank 是 best-effort 增强**：返回的是 rerank 精排后的最终候选；rerank 已知不可用情形（未配 RERANK 模型的硬失败、调用失败/返回不可用的软降级、超时、预算耗尽）都经 `degrade_to_fusion_order` 降级为当前融合顺序候选（口径与 reranker 软降级一致：只保留有正文候选、再截断 top_n）并置 `rerank_applied=False`，**绝不**因 rerank 不可用而让整条流失败。未预期异常不被吞成降级，照常上抛由顶层收敛为 `INTERNAL_ERROR`（带堆栈）。上下文拼装与终态 `hits` 均以最终候选为准。
 - **0 命中 / 全部缺正文 → `recall_done` 而非 error**：这是正常业务终态（没召回到东西不是错误），客户端据此走"无答案"分支。
+- **召回诊断只随成功终态透出**：`recall_diagnostics` 来自上游 `RecallResponse`，用于表达完整三路启用时的来源结构（`hybrid` / `bm25_only` / `missing_sparse` / `missing_dense`）。它不改变 rerank、prompt 或生成策略；BM25-only 不是错误。
 - **生成失败 → 整请求失败**：进入流式生成后任何异常统一收敛为 `error` GENERATION_FAILED，**不**把"已召回片段"当成功终态返回，避免给用户一个没有答案的"成功"。
 
 ---

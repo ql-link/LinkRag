@@ -6,7 +6,7 @@ SSE 流式端点（``recall_stream_runtime``）与纯召回 JSON 端点（``reca
 
 from __future__ import annotations
 
-from src.core.pipeline.recall import RecallResponse
+from src.core.pipeline.recall import RecallDiagnostics, RecallResponse
 from src.core.pipeline.rerank import RerankedHit
 
 
@@ -22,6 +22,18 @@ def serialize_hits(response: RecallResponse) -> list[dict]:
         }
         for h in response.hits
     ]
+
+
+def serialize_recall_diagnostics(diagnostics: RecallDiagnostics) -> dict:
+    """把召回来源结构诊断序列化为对外稳定 JSON 字段。"""
+    return {
+        "source_mode": diagnostics.source_mode,
+        "degraded": diagnostics.degraded,
+        "active_sources": diagnostics.active_sources,
+        "per_source_counts": diagnostics.per_source_counts,
+        "empty_sources": diagnostics.empty_sources,
+        "failed_sources": diagnostics.failed_sources,
+    }
 
 
 def serialize_reranked_hits(hits: list[RerankedHit], contents: dict[str, str]) -> list[dict]:

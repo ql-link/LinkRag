@@ -82,7 +82,7 @@ async def test_producer_enqueues_events_and_releases_slot(monkeypatch):
     channel = rag._StreamChannel()
 
     await rag._run_chat_turn_producer(
-        channel, None, None, SimpleNamespace(), "rid", 42, 7, 100, "t-1", False, 4000, 8
+        channel, None, None, SimpleNamespace(), "rid", 42, 7, "USER", 100, "t-1", False, 4000, 8
     )
 
     assert await _drain_queue(channel) == ["e1", "e2"]
@@ -97,7 +97,7 @@ async def test_producer_continues_and_releases_when_consumer_gone(monkeypatch):
     channel.consumer_gone.set()  # 模拟客户端已断连
 
     await rag._run_chat_turn_producer(
-        channel, None, None, SimpleNamespace(), "rid", 42, 7, 100, "t-2", False, 4000, 8
+        channel, None, None, SimpleNamespace(), "rid", 42, 7, "USER", 100, "t-2", False, 4000, 8
     )
 
     # 消费者已走：事件未入队，仅留哨兵；名额仍在任务结束时释放。
@@ -117,7 +117,7 @@ async def test_producer_releases_slot_even_when_stream_crashes(monkeypatch):
     channel = rag._StreamChannel()
 
     await rag._run_chat_turn_producer(
-        channel, None, None, SimpleNamespace(), "rid", 7, 1, 1, "t-3", False, 4000, 8
+        channel, None, None, SimpleNamespace(), "rid", 7, 1, "USER", 1, "t-3", False, 4000, 8
     )
     assert released == [7]
     assert channel.queue.get_nowait() is None  # 哨兵仍发出
