@@ -21,6 +21,7 @@ def test_build_recall_request_maps_fusion_limit_and_route_top_k():
         dense_score_threshold=0.7,
         recall_enabled_sources=["bm25", "dense"],
         recall_fusion_strategy="weighted_score",
+        rrf_k=10,
         fusion_bm25_weight=0.1,
         fusion_sparse_weight=0.2,
         fusion_dense_weight=0.7,
@@ -49,6 +50,7 @@ def test_build_recall_request_maps_fusion_limit_and_route_top_k():
     assert request.enabled_sources == ["bm25", "dense"]
     assert request.strict_override is True
     assert request.fusion_strategy_override == "weighted_score"
+    assert request.rrf_k_override == 10
     assert request.fusion_bm25_weight_override == 0.1
     assert request.fusion_sparse_weight_override == 0.2
     assert request.fusion_dense_weight_override == 0.7

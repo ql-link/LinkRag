@@ -120,7 +120,7 @@ class Retriever(Protocol):
 
 | 模型 | 方向 | 说明 |
 | --- | --- | --- |
-| `RecallRequest` | 入参 | `query` 必须非空；`user_id` 必须为正（HTTP 入口从凭证 claims 注入）；`dataset_ids` 允许空列表，表示不限数据集；`doc_ids` 可选；`top_k` 为正，表示融合候选池上限 / rerank 输入窗口，由数据集级 `recall_result_limit` 或系统 `RECALL_RESULT_LIMIT` 决定；`bm25_top_k` / `sparse_top_k` / `dense_top_k` 分别控制三路执行期召回深度；融合策略/权重 override 来自数据集级 `recall_config`，不来自 HTTP 请求体 |
+| `RecallRequest` | 入参 | `query` 必须非空；`user_id` 必须为正（HTTP 入口从凭证 claims 注入）；`dataset_ids` 允许空列表，表示不限数据集；`doc_ids` 可选；`top_k` 为正，表示融合候选池上限 / rerank 输入窗口，由数据集级 `recall_result_limit` 或系统 `RECALL_RESULT_LIMIT` 决定；`bm25_top_k` / `sparse_top_k` / `dense_top_k` 分别控制三路执行期召回深度；融合策略/权重与 `rrf_k` override 来自数据集级 `recall_config`，不来自 HTTP 请求体 |
 | `RetrieverHit` | 单路内部结果 | 单路返回的原始候选，包含 `chunk_id`、`doc_id`、`dataset_id`、`score`、`source` |
 | `RecallHit` | 融合结果 | 当前融合策略产出的候选，包含 `fused_score` 和每路原始 `scores` |
 | `RecallResponse` | 出参 | 回显 query、融合候选、各路命中数、失败路、整体耗时 |
@@ -156,7 +156,7 @@ class Retriever(Protocol):
 
 ## 7. 融合策略
 
-融合逻辑在 `fusion.py`。`fused_score` 表示当前策略产出的融合分；`RecallHit.scores` 始终保留各路原始分。默认策略是 `rrf`，可通过系统配置 `RECALL_FUSION_STRATEGY` 或数据集级 `recall_config.recall_fusion_strategy` 切换为 `weighted_score`。
+融合逻辑在 `fusion.py`。`fused_score` 表示当前策略产出的融合分；`RecallHit.scores` 始终保留各路原始分。默认策略是 `rrf`，可通过系统配置 `RECALL_FUSION_STRATEGY` 或数据集级 `recall_config.recall_fusion_strategy` 切换为 `weighted_score`。RRF 的 rank constant 默认取系统配置 `RECALL_RRF_K=60`，数据集级 `recall_config.rrf_k` 可覆盖。
 
 ### 7.1 RRF
 
@@ -173,7 +173,7 @@ fused_score = sum(contribution for every source where chunk_id appears)
 - RRF 只依赖各路排名，对不同分数尺度更稳定。
 - 同一个 `chunk_id` 被多路命中时贡献累加，只被一路命中时也保留。
 
-融合结果按 `fused_score` 降序返回。RRF 函数保持历史排序语义，默认配置下行为不变。
+融合结果按 `fused_score` 降序返回。RRF 函数保持历史排序语义，默认 `rrf_k=60` 时行为不变。`weighted_score` 策略不读取 `rrf_k`。
 
 ### 7.2 weighted_score
 

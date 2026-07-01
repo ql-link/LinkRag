@@ -192,6 +192,7 @@ logs/
 | `RECALL_BM25_TOP_K` | `100` | RAG pipeline bm25 路执行期召回深度；数据集级 `recall_config.bm25_top_k` 未配置时使用 |
 | `RECALL_ENABLED_SOURCES` | `bm25,sparse,dense` | 启用的召回路（逗号分隔）。本期默认开启三路；运维侧可显式 set `bm25,sparse` 暂时回退到 dev 旧行为；未登记的 source 出现在配置中装配期 `ValueError` |
 | `RECALL_FUSION_STRATEGY` | `rrf` | 召回融合策略，可选 `rrf` / `weighted_score`。默认保持 RRF；`weighted_score` 仅在 BM25/sparse/dense 召回后、rerank 前生效 |
+| `RECALL_RRF_K` | `60` | RRF rank constant，计算 `1 / (rrf_k + rank)` 时使用；仅 `RECALL_FUSION_STRATEGY=rrf` 生效，数据集级 `recall_config.rrf_k` 可覆盖 |
 | `RECALL_FUSION_BM25_WEIGHT` | `0.2` | `weighted_score` 下 BM25 路权重；允许为 0，active source 权重和为 0 时本次融合失败 |
 | `RECALL_FUSION_SPARSE_WEIGHT` | `0.3` | `weighted_score` 下 sparse 路权重；允许为 0，active source 权重和为 0 时本次融合失败 |
 | `RECALL_FUSION_DENSE_WEIGHT` | `0.5` | `weighted_score` 下 dense 路权重；允许为 0，active source 权重和为 0 时本次融合失败 |

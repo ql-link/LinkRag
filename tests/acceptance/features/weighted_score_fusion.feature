@@ -218,6 +218,7 @@ Feature: weighted_score 召回融合策略
       | fusion_strategy       |
       | fusion_weights        |
       | recall_fusion_strategy |
+      | rrf_k                 |
       | fusion_bm25_weight    |
       | fusion_sparse_weight  |
       | fusion_dense_weight   |

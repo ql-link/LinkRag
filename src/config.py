@@ -113,6 +113,8 @@ class Settings(BaseSettings):
     RECALL_ENABLED_SOURCES: str = "bm25,sparse,dense"
     # 召回融合策略：默认 RRF，weighted_score 作为可选策略在三路召回后、rerank 前生效。
     RECALL_FUSION_STRATEGY: str = "rrf"
+    # RRF rank constant，影响排名贡献衰减；仅 RECALL_FUSION_STRATEGY=rrf 时使用。
+    RECALL_RRF_K: int = 60
     # weighted_score 三路权重。单项允许为 0；active source 权重和为 0 在运行期拒绝。
     RECALL_FUSION_BM25_WEIGHT: float = 0.2
     RECALL_FUSION_SPARSE_WEIGHT: float = 0.3
@@ -126,6 +128,13 @@ class Settings(BaseSettings):
             supported = ", ".join(sorted(SUPPORTED_RECALL_FUSION_STRATEGIES))
             raise ValueError(f"RECALL_FUSION_STRATEGY must be one of: {supported}")
         return normalized
+
+    @field_validator("RECALL_RRF_K")
+    @classmethod
+    def validate_recall_rrf_k(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("RECALL_RRF_K must be a positive int")
+        return v
 
     @field_validator(
         "RECALL_FUSION_BM25_WEIGHT",

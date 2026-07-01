@@ -24,6 +24,7 @@ def _req_with_payload(payload: dict):
         "fusion_strategy",
         "fusion_weights",
         "recall_fusion_strategy",
+        "rrf_k",
         "fusion_bm25_weight",
         "fusion_sparse_weight",
         "fusion_dense_weight",
@@ -51,6 +52,7 @@ async def test_rag_stream_body_rejects_fusion_fields(field: str):
         "fusion_strategy",
         "fusion_weights",
         "recall_fusion_strategy",
+        "rrf_k",
         "fusion_bm25_weight",
         "fusion_sparse_weight",
         "fusion_dense_weight",
@@ -80,6 +82,7 @@ async def test_recall_json_maps_dataset_fusion_config_to_internal_request(monkey
             recall_enabled_sources=["bm25", "sparse", "dense"],
             recall_strict=False,
             recall_fusion_strategy="weighted_score",
+            rrf_k=10,
             fusion_bm25_weight=0.1,
             fusion_sparse_weight=0.2,
             fusion_dense_weight=0.7,
@@ -105,6 +108,7 @@ async def test_recall_json_maps_dataset_fusion_config_to_internal_request(monkey
     assert recall_req.sparse_top_k == 50
     assert recall_req.dense_top_k == 100
     assert recall_req.fusion_strategy_override == "weighted_score"
+    assert recall_req.rrf_k_override == 10
     assert recall_req.fusion_bm25_weight_override == 0.1
     assert recall_req.fusion_sparse_weight_override == 0.2
     assert recall_req.fusion_dense_weight_override == 0.7

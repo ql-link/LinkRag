@@ -188,6 +188,7 @@ async def test_recall_new_fields_default_from_settings(monkeypatch):
     monkeypatch.setattr(settings, "RECALL_SPARSE_TOP_K", 51)
     monkeypatch.setattr(settings, "RECALL_DENSE_TOP_K", 99)
     monkeypatch.setattr(settings, "RECALL_FUSION_STRATEGY", "weighted_score")
+    monkeypatch.setattr(settings, "RECALL_RRF_K", 60)
     monkeypatch.setattr(settings, "RECALL_FUSION_BM25_WEIGHT", 0.2)
     monkeypatch.setattr(settings, "RECALL_FUSION_SPARSE_WEIGHT", 0.3)
     monkeypatch.setattr(settings, "RECALL_FUSION_DENSE_WEIGHT", 0.5)
@@ -202,6 +203,7 @@ async def test_recall_new_fields_default_from_settings(monkeypatch):
     assert bundle.recall.sparse_top_k == 51
     assert bundle.recall.dense_top_k == 99
     assert bundle.recall.recall_fusion_strategy == "weighted_score"
+    assert bundle.recall.rrf_k == 60
     assert bundle.recall.fusion_bm25_weight == 0.2
     assert bundle.recall.fusion_sparse_weight == 0.3
     assert bundle.recall.fusion_dense_weight == 0.5
@@ -220,6 +222,7 @@ async def test_recall_new_fields_dataset_override():
                 "dense_top_k": 70,
                 "recall_enabled_sources": ["bm25", "sparse"],
                 "recall_fusion_strategy": "weighted_score",
+                "rrf_k": 10,
                 "fusion_bm25_weight": 0.1,
                 "fusion_sparse_weight": 0.2,
                 "fusion_dense_weight": 0.7,
@@ -235,6 +238,7 @@ async def test_recall_new_fields_dataset_override():
     assert bundle.recall.dense_top_k == 70
     assert bundle.recall.recall_enabled_sources == ["bm25", "sparse"]
     assert bundle.recall.recall_fusion_strategy == "weighted_score"
+    assert bundle.recall.rrf_k == 10
     assert bundle.recall.fusion_bm25_weight == 0.1
     assert bundle.recall.fusion_sparse_weight == 0.2
     assert bundle.recall.fusion_dense_weight == 0.7
@@ -274,6 +278,7 @@ async def test_recall_new_fields_l1_fallback(monkeypatch):
 
     monkeypatch.setattr(settings, "RECALL_ENABLED_SOURCES", "bm25,sparse")
     monkeypatch.setattr(settings, "RECALL_FUSION_STRATEGY", "rrf")
+    monkeypatch.setattr(settings, "RECALL_RRF_K", 10)
     monkeypatch.setattr(settings, "RECALL_FUSION_BM25_WEIGHT", 0.4)
     monkeypatch.setattr(settings, "RECALL_FUSION_SPARSE_WEIGHT", 0.6)
     monkeypatch.setattr(settings, "RECALL_FUSION_DENSE_WEIGHT", 0.0)
@@ -285,6 +290,7 @@ async def test_recall_new_fields_l1_fallback(monkeypatch):
 
     assert bundle.recall.recall_enabled_sources == ["bm25", "sparse"]
     assert bundle.recall.recall_fusion_strategy == "rrf"
+    assert bundle.recall.rrf_k == 10
     assert bundle.recall.fusion_bm25_weight == 0.4
     assert bundle.recall.fusion_sparse_weight == 0.6
     assert bundle.recall.fusion_dense_weight == 0.0
@@ -316,6 +322,12 @@ async def test_recall_fusion_invalid_dataset_config_propagates():
         await DatasetConfigService().get_config(user_id=1, dataset_id=2, db=db)
 
     assert "fusion_dense_weight" in str(exc_info.value)
+
+    db = _fake_db(row=_row(recall={"rrf_k": 0}))
+    with pytest.raises(ValidationError) as exc_info:
+        await DatasetConfigService().get_config(user_id=1, dataset_id=2, db=db)
+
+    assert "rrf_k" in str(exc_info.value)
 
 
 @pytest.mark.parametrize(
