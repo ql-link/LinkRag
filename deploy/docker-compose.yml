@@ -7,7 +7,7 @@ services:
     container_name: tolink-rag
     restart: always
     env_file:
-      - ../.env
+      - ../.env.${APP_ENV:-production}
     environment:
       TZ: Asia/Shanghai
     ports:
