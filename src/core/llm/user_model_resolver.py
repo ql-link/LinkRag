@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any, Optional
 from src.config import settings
 from src.core.llm.encryption import decrypt_api_key
 from src.core.llm.exceptions import (
+    ProviderConnectionError,
     ProtocolRequiredError,
     UnsupportedProtocolCapabilityError,
     UserModelConfigMissingError,
@@ -107,6 +108,11 @@ def build_provider_from_config(
     protocol = (config.get("protocol") or "").strip()
     if not protocol:
         raise ProtocolRequiredError(capability=capability)
+    if protocol.lower() != "google" and not (config.get("api_base_url") or "").strip():
+        raise ProviderConnectionError(
+            message=f"api_base_url is required for protocol {protocol!r}.",
+            provider_type=normalize_provider_type(config.get("provider_type")),
+        )
 
     provider_type = normalize_provider_type(config.get("provider_type"))
     model_name = override_model or config.get("model_name") or fallback_model

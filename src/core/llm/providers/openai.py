@@ -33,12 +33,12 @@ class OpenAIClient:
     def __init__(
         self,
         api_key: str,
-        api_base_url: str = "https://api.openai.com/v1",
+        api_base_url: Optional[str] = None,
         timeout_ms: int = 60000,
         max_retries: int = 3,
     ):
         self.api_key = api_key
-        self.api_base_url = api_base_url.rstrip("/")
+        self.api_base_url = (api_base_url or "").rstrip("/")
         self.timeout_ms = timeout_ms
         self.max_retries = max_retries
         self._http_client: Optional[httpx.AsyncClient] = None
@@ -73,6 +73,11 @@ class OpenAIClient:
             RateLimitError: 限流
             ProviderConnectionError: 连接失败
         """
+        if not self.api_base_url:
+            raise ProviderConnectionError(
+                message="OpenAI-compatible api_base_url is not configured.",
+                provider_type="openai",
+            )
         url = f"{self.api_base_url}{endpoint}"
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -177,6 +182,11 @@ class OpenAIClient:
             payload["max_tokens"] = max_tokens
         payload.update(kwargs)
 
+        if not self.api_base_url:
+            raise ProviderConnectionError(
+                message="OpenAI-compatible api_base_url is not configured.",
+                provider_type="openai",
+            )
         url = self.api_base_url  # 完整端点 URL，不拼后缀
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -242,7 +252,6 @@ class OpenAICompatibleProvider(BaseProvider):
     RERANK 不再由本 adapter 承载（改由 jina 平铺 / dashscope 原生）。
     """
 
-    DEFAULT_API_BASE = "https://api.openai.com/v1"
     DEFAULT_MODEL = "gpt-4"
 
     def __init__(
@@ -260,7 +269,7 @@ class OpenAICompatibleProvider(BaseProvider):
             provider_type=provider_type,
             provider_name=provider_name,
             api_key=api_key,
-            api_base_url=api_base_url or self.DEFAULT_API_BASE,
+            api_base_url=api_base_url,
             timeout_ms=timeout_ms,
             max_retries=max_retries,
             **kwargs

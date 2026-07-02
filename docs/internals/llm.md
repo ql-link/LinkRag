@@ -55,7 +55,7 @@ LLM 调用拆成两个正交维度：
 
 ### 2.2 URL 接缝：完整 URL 直打
 
-`api_base_url` 由配置下发**完整端点 URL**（含 capability 后缀），adapter 直接 POST，**不在代码里维护 `(protocol,capability)→后缀` 映射**。端点知识全部数据化，改端点只动配置不动代码。`google` 协议是唯一例外，配置保存到 `/v1beta` 为止，由 Python 按模型和流式模式补全 Gemini 原生路径。
+`api_base_url` 由配置下发**完整端点 URL**（含 capability 后缀），adapter 直接 POST，**不在代码里维护 `(protocol,capability)→后缀` 映射**。除 `google` 外，缺少 `api_base_url` 直接报错，不回退到代码内默认端点；端点知识全部数据化，改端点只动配置不动代码。`google` 协议是唯一例外，配置保存到 `/v1beta` 为止，由 Python 按模型和流式模式补全 Gemini 原生路径。
 
 ### 2.3 Google 流式特例（唯一例外）
 

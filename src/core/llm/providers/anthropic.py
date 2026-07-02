@@ -27,12 +27,12 @@ class AnthropicClient:
     def __init__(
         self,
         api_key: str,
-        api_base_url: str = "https://api.anthropic.com/v1",
+        api_base_url: Optional[str] = None,
         timeout_ms: int = 60000,
         max_retries: int = 3,
     ):
         self.api_key = api_key
-        self.api_base_url = api_base_url.rstrip("/")
+        self.api_base_url = (api_base_url or "").rstrip("/")
         self.timeout_ms = timeout_ms
         self.max_retries = max_retries
         self._http_client: Optional[httpx.AsyncClient] = None
@@ -62,6 +62,11 @@ class AnthropicClient:
         Returns:
             响应 JSON
         """
+        if not self.api_base_url:
+            raise ProviderConnectionError(
+                message="Anthropic api_base_url is not configured.",
+                provider_type="anthropic",
+            )
         url = f"{self.api_base_url}{endpoint}"
         headers = {
             "x-api-key": self.api_key,
@@ -160,6 +165,11 @@ class AnthropicClient:
             payload["system"] = system
         payload.update(kwargs)
 
+        if not self.api_base_url:
+            raise ProviderConnectionError(
+                message="Anthropic api_base_url is not configured.",
+                provider_type="anthropic",
+            )
         url = self.api_base_url  # 完整端点 URL，不拼后缀
         headers = {
             "x-api-key": self.api_key,
@@ -195,7 +205,6 @@ class AnthropicProvider(BaseProvider):
     文档：https://docs.anthropic.com/claude/reference
     """
 
-    DEFAULT_API_BASE = "https://api.anthropic.com/v1"
     DEFAULT_MODEL = "claude-3-sonnet-20240229"
 
     def __init__(
@@ -213,7 +222,7 @@ class AnthropicProvider(BaseProvider):
             provider_type=provider_type,
             provider_name=provider_name,
             api_key=api_key,
-            api_base_url=api_base_url or self.DEFAULT_API_BASE,
+            api_base_url=api_base_url,
             timeout_ms=timeout_ms,
             max_retries=max_retries,
             **kwargs

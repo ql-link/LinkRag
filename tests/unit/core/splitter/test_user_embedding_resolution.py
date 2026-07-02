@@ -172,7 +172,7 @@ async def test_resolve_user_chunk_embedding_pipeline_uses_user_model_and_batch_c
             "provider_type": "qwen",
             "protocol": "openai",
             "api_key": "ENC",
-            "api_base_url": None,
+            "api_base_url": "https://qwen.example/v1/embeddings",
             # DashScope text-embedding-v4 已知单次上限 10
             "model_name": "text-embedding-v4",
         },
