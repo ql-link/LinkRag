@@ -95,8 +95,8 @@ scope 校验。RAG 流额外要求 `config_id`（缺失 → 422）并在建流�
 `RERANK_DEFAULT_TOP_N`），再按 token 预算拼装上下文
 流式生成：
 
-- 命中 → 流式 `answer_delta` + 终态 `answer_done`（`hits` 为 rerank 后最终候选、不含正文，附顶层 `rerank_applied`；`failed_sources` 表达降级）。
-- 0 命中 / 全部片段缺正文 → `recall_done`（不生成）。
+- 命中 → 流式 `answer_delta` + 终态 `answer_done`（`hits` 为 rerank 后最终候选、不含正文，附顶层 `rerank_applied`；`failed_sources` 表达异常失败路；可带 `recall_diagnostics` 表达来源结构）。
+- 0 命中 / 全部片段缺正文 → `recall_done`（不生成；可带 `recall_diagnostics`）。
 - 用户无默认 EMBEDDING 配置 → `error RECALL_EMBEDDING_CONFIG_MISSING`（硬失败，不降级）。
 - 全路失败 `RecallError` → `error RECALL_ALL_SOURCES_FAILED`；超时 → `error RECALL_TIMEOUT`。
 - 生成阶段失败 → `error RECALL_GENERATION_FAILED`（整请求失败）。
@@ -109,7 +109,7 @@ scope 校验。RAG 流额外要求 `config_id`（缺失 → 422）并在建流�
 执行用 [src/application/recall_json_runtime.py](../../src/application/recall_json_runtime.py) 的 `run_recall_json`：
 `asyncio.wait_for(pipeline.execute(req), RECALL_STREAM_TIMEOUT_MS)` 后用
 [recall_serialization.py](../../src/application/recall_serialization.py) 的 `serialize_hits`（仅融合字段，
-不含 rerank 字段——RAG 流改用同模块的 `serialize_reranked_hits`）组装 `{hits, failed_sources}` JSON。
+不含 rerank 字段——RAG 流改用同模块的 `serialize_reranked_hits`）组装 `{hits, failed_sources, recall_diagnostics}` JSON。
 执行期异常映射为 `RecallApiError` 经全局 handler 转 HTTP 状态码：
 无默认 EMBEDDING 配置 → `422`、全路失败 → `500`、超时 → `504`、未预期异常 → `500`（错误码同 RAG 流，
 仅载体由 SSE `error` 帧变为 HTTP 状态码）。`recall_serialization.py`（两个序列化函数）

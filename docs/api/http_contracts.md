@@ -262,7 +262,7 @@ event: answer_delta
 data: {"text": "<增量 token>"}
 
 event: answer_done
-data: {"answer": "<完整答案>", "hits": [...], "rerank_applied": true, "failed_sources": []}
+data: {"answer": "<完整答案>", "hits": [...], "rerank_applied": true, "failed_sources": [], "recall_diagnostics": {...}}
 ```
 
 - `answer_delta`：流式增量 token，可 0 到多帧；
@@ -304,6 +304,24 @@ data: {"title": "<会话标题>"}
 `error` 发送后关闭流，`message` 不含内部堆栈。错误码见
 [error_codes.md §5](error_codes.md#5-recall-错误码对外-rag-流--纯召回-json)。
 
+`recall_diagnostics` 是召回来源结构诊断（LINK-195），在三路 `bm25` / `sparse` / `dense`
+均启用且结果可归入四态时返回：
+
+```json
+{
+  "source_mode": "bm25_only",
+  "degraded": true,
+  "active_sources": ["bm25", "sparse", "dense"],
+  "per_source_counts": {"bm25": 12, "sparse": 0, "dense": 0},
+  "empty_sources": ["sparse", "dense"],
+  "failed_sources": []
+}
+```
+
+`source_mode` 取值为 `hybrid` / `bm25_only` / `missing_sparse` / `missing_dense`。
+`empty_sources` 表示成功执行但 0 命中的路；`failed_sources` 仍只表示异常失败路。BM25-only
+不是错误，不改变 rerank、prompt 或生成策略。首版不返回 `reason` 字段。
+
 > CORS：本端点暴露给浏览器，生产环境必须把 `CORS_ORIGINS` 收敛为前端可信域名清单
 > （不可用 `*`）。
 
@@ -327,11 +345,12 @@ data: {"title": "<会话标题>"}
 终态 `hits` 区别在此）：
 
 ```json
-{ "hits": [ {"chunk_id": "...", "doc_id": 10, "dataset_id": 1, "fused_score": 0.92, "scores": {"bm25": 8.7, "sparse": 0.76}} ], "failed_sources": [] }
+{ "hits": [ {"chunk_id": "...", "doc_id": 10, "dataset_id": 1, "fused_score": 0.92, "scores": {"bm25": 8.7, "sparse": 0.76}} ], "failed_sources": [], "recall_diagnostics": {...} }
 ```
 
 `hits` 按 `fused_score` 降序、不含正文，长度 ≤ 数据集 `recall_config.recall_result_limit`（无数据集
-配置回退 `RECALL_RESULT_LIMIT`）；`failed_sources` 表达降级。三路执行期 top_k / 分数阈值 / 融合策略的数据集级
+配置回退 `RECALL_RESULT_LIMIT`）；`failed_sources` 表达异常失败路；`recall_diagnostics` 与
+RAG SSE 成功终态同构。三路执行期 top_k / 分数阈值 / 融合策略的数据集级
 解析与 `/api/v1/rag/stream` 完全一致（LINK-148）。
 执行期错误走 **HTTP 状态码**（区别于 SSE error 帧）：无默认 EMBEDDING 配置 `422`、全路失败 `500`、
 召回超时 `504`、未预期异常 `500`，错误体为 `{code, message, data}`，`message` 不含内部堆栈。错误码见

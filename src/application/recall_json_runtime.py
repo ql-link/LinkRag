@@ -20,7 +20,7 @@ from src.application.recall_errors import (
     CODE_TIMEOUT,
     RecallApiError,
 )
-from src.application.recall_serialization import serialize_hits
+from src.application.recall_serialization import serialize_hits, serialize_recall_diagnostics
 from src.config import settings
 from src.core.pipeline.recall import (
     RecallError,
@@ -68,7 +68,10 @@ async def run_recall_json(
         logger.exception("[recall-json] unexpected error request_id={}", request_id)
         raise RecallApiError(500, CODE_INTERNAL_ERROR, "internal error")
 
-    return {
+    payload = {
         "hits": serialize_hits(response),
         "failed_sources": response.failed_sources,
     }
+    if response.recall_diagnostics is not None:
+        payload["recall_diagnostics"] = serialize_recall_diagnostics(response.recall_diagnostics)
+    return payload
