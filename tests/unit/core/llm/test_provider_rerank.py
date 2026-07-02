@@ -15,6 +15,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
+from src.core.llm.exceptions import ProviderConnectionError
 from src.core.llm.interfaces import CapabilityType
 from src.core.llm.providers.anthropic import AnthropicProvider
 from src.core.llm.providers.dashscope import DashScopeProvider
@@ -64,6 +65,13 @@ def test_jina_declares_rerank_and_embedding():
     assert provider.has_capability(CapabilityType.EMBEDDING)
     # jina 不实现 embed_sparse，不再声明 SPARSE_EMBEDDING（避免能力门禁误放行）。
     assert not provider.has_capability(CapabilityType.SPARSE_EMBEDDING)
+
+
+@pytest.mark.asyncio
+async def test_jina_rerank_raises_without_api_base_url():
+    provider = JinaProvider(api_key="sk-test", model_name="jina-reranker-v3")
+    with pytest.raises(ProviderConnectionError):
+        await provider.rerank(query="q", documents=["doc-a"])
 
 
 @pytest.mark.asyncio
@@ -174,6 +182,13 @@ def test_dashscope_declares_rerank_only():
 
 
 @pytest.mark.asyncio
+async def test_dashscope_rerank_raises_without_api_base_url():
+    provider = DashScopeProvider(api_key="sk-test", model_name="gte-rerank-v2")
+    with pytest.raises(ProviderConnectionError):
+        await provider.rerank(query="q", documents=["doc-a"])
+
+
+@pytest.mark.asyncio
 async def test_dashscope_rerank_nested_body_and_parse():
     body = {
         "output": {
@@ -210,7 +225,10 @@ async def test_dashscope_empty_documents_short_circuits():
 
 @pytest.mark.asyncio
 async def test_openai_compatible_no_rerank():
-    provider = OpenAICompatibleProvider(api_key="sk-test")
+    provider = OpenAICompatibleProvider(
+        api_key="sk-test",
+        api_base_url="https://openai.example/v1/chat/completions",
+    )
     assert not provider.has_capability(CapabilityType.RERANK)
     with pytest.raises(NotImplementedError):
         await provider.rerank(query="q", documents=["a"])
@@ -218,7 +236,10 @@ async def test_openai_compatible_no_rerank():
 
 @pytest.mark.asyncio
 async def test_anthropic_no_rerank():
-    provider = AnthropicProvider(api_key="sk-test")
+    provider = AnthropicProvider(
+        api_key="sk-test",
+        api_base_url="https://anthropic.example/v1/messages",
+    )
     assert not provider.has_capability(CapabilityType.RERANK)
     with pytest.raises(NotImplementedError):
         await provider.rerank(query="q", documents=["a"])

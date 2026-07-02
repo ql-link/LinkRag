@@ -19,6 +19,7 @@ import pytest
 
 import src.core.llm.user_model_resolver as umr
 from src.core.llm.exceptions import (
+    ProviderConnectionError,
     ProtocolRequiredError,
     UnsupportedProtocolCapabilityError,
     UserModelConfigMissingError,
@@ -143,6 +144,7 @@ def test_build_provider_from_config_system_fallback_skips_decrypt(monkeypatch):
             "provider_type": "openai",
             "protocol": "openai",
             "api_key": "plain",
+            "api_base_url": "https://system.example/v1/embeddings",
             "model_name": "gpt",
             "is_system_fallback": True,
         },
@@ -159,6 +161,7 @@ def test_build_provider_override_model_wins(monkeypatch):
             "provider_type": "qwen",
             "protocol": "openai",
             "api_key": "ENC",
+            "api_base_url": "https://qwen.example/v1/chat/completions",
             "model_name": "cfg-model",
         },
         capability="CHAT",
@@ -184,6 +187,21 @@ def test_build_provider_missing_protocol_raises(monkeypatch):
             {"provider_type": "openai", "api_key": "x", "model_name": "m"}, capability="CHAT"
         )
     assert captured == {}  # 未触达 create_client
+
+
+def test_build_provider_missing_api_base_url_raises(monkeypatch):
+    captured, _ = _patch_factory(monkeypatch)
+    with pytest.raises(ProviderConnectionError):
+        build_provider_from_config(
+            {
+                "provider_type": "openai",
+                "protocol": "openai",
+                "api_key": "x",
+                "model_name": "m",
+            },
+            capability="CHAT",
+        )
+    assert captured == {}
 
 
 def test_build_provider_capability_unsupported(monkeypatch):
@@ -221,6 +239,7 @@ async def test_resolve_user_default_hit(monkeypatch):
             "provider_type": "qwen",
             "protocol": "openai",
             "api_key": "ENC",
+            "api_base_url": "https://qwen.example/v1/embeddings",
             "model_name": "m-user",
         }
     )
@@ -238,6 +257,7 @@ async def test_resolve_sparse_embedding_uses_sparse_capability(monkeypatch):
             "provider_type": "openai",
             "protocol": "openai",
             "api_key": "ENC",
+            "api_base_url": "https://openai.example/v1/embeddings",
             "model_name": "sparse-model",
         }
     )
@@ -256,6 +276,7 @@ async def test_resolve_by_config_id(monkeypatch):
             "protocol": "openai",
             "capability": "CHAT",
             "api_key": "ENC",
+            "api_base_url": "https://qwen.example/v1/chat/completions",
             "model_name": "by-id",
         }
     )
@@ -275,6 +296,7 @@ async def test_resolve_by_system_config_id(monkeypatch):
             "protocol": "openai",
             "capability": "CHAT",
             "api_key": "ENC-SYS",
+            "api_base_url": "https://linkrag.example/v1/chat/completions",
             "model_name": "linkrag-chat",
             "config_source": "SYSTEM",
         }
@@ -315,6 +337,7 @@ async def test_resolve_by_config_id_rejects_capability_mismatch(monkeypatch):
             "protocol": "openai",
             "capability": "EMBEDDING",
             "api_key": "ENC",
+            "api_base_url": "https://qwen.example/v1/embeddings",
             "model_name": "embedding-model",
         }
     )
@@ -347,6 +370,7 @@ async def test_resolve_system_fallback_used(monkeypatch):
             "provider_type": "qwen",
             "protocol": "openai",
             "api_key": "plain",
+            "api_base_url": "https://system.example/v1/chat/completions",
             "model_name": "sys",
             "is_system_fallback": True,
         },

@@ -13,6 +13,7 @@ EMBEDDING。复用 OpenAI 兼容 HTTP 客户端（Bearer 鉴权 + ``_post``）�
 from typing import AsyncIterator, List, Optional, Union
 
 from src.core.llm.base_provider import BaseProvider
+from src.core.llm.exceptions import ProviderConnectionError
 from src.core.llm.interfaces import CapabilityType
 from src.core.llm.providers._rerank import standard_rerank
 from src.core.llm.providers.openai import OpenAIClient
@@ -54,7 +55,15 @@ class JinaProvider(BaseProvider):
             max_retries=max_retries,
         )
 
+    def _require_api_base_url(self) -> None:
+        if not (self.api_base_url or "").strip():
+            raise ProviderConnectionError(
+                message="Jina-compatible api_base_url is not configured.",
+                provider_type=self.provider_type,
+            )
+
     async def rerank(self, query, documents, model=None, top_n=None, **kwargs) -> RerankResult:
+        self._require_api_base_url()
         # 平铺 /rerank：endpoint="" → 直打 api_base_url（完整 URL）。
         return await standard_rerank(
             self._client._post,
@@ -69,6 +78,7 @@ class JinaProvider(BaseProvider):
     async def embed(
         self, texts: Union[str, List[str]], model: Optional[str] = None, **kwargs
     ) -> EmbeddingResult:
+        self._require_api_base_url()
         if isinstance(texts, str):
             texts = [texts]
         response = await self._client.embeddings(

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from src.core.llm.exceptions import AuthenticationError
+from src.core.llm.exceptions import AuthenticationError, ProviderConnectionError
 from src.core.llm.providers._sse import iter_sse_json
 from src.core.llm.providers.anthropic import AnthropicProvider
 from src.core.llm.providers.google import GoogleProvider
@@ -275,6 +275,13 @@ async def test_qwen_stream_raises_on_auth_error():
         _ = [c async for c in provider.stream(prompt="hi")]
 
 
+@pytest.mark.asyncio
+async def test_openai_stream_raises_without_api_base_url():
+    provider = OpenAICompatibleProvider(api_key="k", model_name="qwen3.5-flash")
+    with pytest.raises(ProviderConnectionError):
+        _ = [c async for c in provider.stream(prompt="hi")]
+
+
 # ────────────────────────── anthropic（原生事件 schema） ──────────────────────────
 
 
@@ -292,7 +299,11 @@ async def test_anthropic_stream_parses_content_block_delta_and_usage():
             'data: {"type":"message_stop"}',
         ]
     )
-    provider = AnthropicProvider(api_key="k", model_name="claude-3-sonnet-20240229")
+    provider = AnthropicProvider(
+        api_key="k",
+        model_name="claude-3-sonnet-20240229",
+        api_base_url="https://anthropic.example/v1/messages",
+    )
     _inject(provider, resp)
 
     chunks = [c async for c in provider.stream(prompt="hi", system_prompt="sys")]
@@ -304,6 +315,13 @@ async def test_anthropic_stream_parses_content_block_delta_and_usage():
     assert last.usage.prompt_tokens == 12
     assert last.usage.completion_tokens == 9
     assert last.usage.total_tokens == 21
+
+
+@pytest.mark.asyncio
+async def test_anthropic_stream_raises_without_api_base_url():
+    provider = AnthropicProvider(api_key="k", model_name="claude-3-sonnet-20240229")
+    with pytest.raises(ProviderConnectionError):
+        _ = [c async for c in provider.stream(prompt="hi")]
 
 
 # ────────────────────────── google（Gemini 原生 schema） ──────────────────────────

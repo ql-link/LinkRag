@@ -25,6 +25,7 @@ from src.core.llm.response import SparseEmbeddingResult
 
 def _provider(handler, *, api_key="k", api_base_url=None, **kwargs) -> DoubaoVisionProvider:
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    api_base_url = api_base_url or "https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal"
     return DoubaoVisionProvider(
         api_key=api_key, api_base_url=api_base_url, http_client=client, **kwargs
     )
@@ -54,10 +55,7 @@ def test_declares_only_sparse_embedding():
 def test_default_model_and_base_url():
     provider = DoubaoVisionProvider(api_key="k")
     assert provider.model_name == "doubao-embedding-vision-251215"
-    assert (
-        provider.DEFAULT_ENDPOINT
-        == "https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal"
-    )
+    assert provider.api_base_url is None
 
 
 @pytest.mark.asyncio
@@ -76,7 +74,6 @@ async def test_embed_sparse_parses_array_and_request_contract():
     result = await provider.embed_sparse(["今天天气很好"])
 
     assert isinstance(result, SparseEmbeddingResult)
-    # 未传 api_base_url → 走默认 Ark 端点。
     assert captured["url"] == "https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal"
     assert captured["auth"] == "Bearer secret"
     assert captured["body"] == {
@@ -153,6 +150,13 @@ async def test_embed_sparse_raises_without_api_key():
         return httpx.Response(200, json=_resp([]))
 
     provider = _provider(handler, api_key="")
+    with pytest.raises(ProviderConnectionError):
+        await provider.embed_sparse(["a"])
+
+
+@pytest.mark.asyncio
+async def test_embed_sparse_raises_without_base_url():
+    provider = DoubaoVisionProvider(api_key="k", api_base_url=None)
     with pytest.raises(ProviderConnectionError):
         await provider.embed_sparse(["a"])
 

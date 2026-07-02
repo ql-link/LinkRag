@@ -41,6 +41,8 @@ class SystemProviderDB(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     provider_type: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
     provider_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    icon_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    icon_object_key: Mapped[str | None] = mapped_column(String(256), nullable=True)
     # 默认 API 地址（模板值，不参与运行决策；运行入口以模型能力层事实为准）
     api_base_url: Mapped[str] = mapped_column(String(512), nullable=False)
     # 默认协议（模板值，新增模型能力时预填用，不参与运行决策）
