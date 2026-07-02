@@ -29,13 +29,17 @@ from src.application.recall_errors import (
     CODE_MODEL_CONFIG_MISSING,
     CODE_TIMEOUT,
 )
-from src.application.recall_serialization import serialize_reranked_hits
+from src.application.recall_serialization import (
+    serialize_recall_diagnostics,
+    serialize_reranked_hits,
+)
 from src.config import settings
 from src.core.llm.exceptions import UserModelConfigMissingError
 from src.core.llm.response import UsageInfo
 from src.core.llm.user_model_resolver import aresolve_user_model
 from src.core.mq.messages import ChatTurnMessage
 from src.core.pipeline.recall import (
+    RecallDiagnostics,
     RecallError,
     RecallFatalError,
     RecallHit,
@@ -279,6 +283,7 @@ async def recall_event_stream(
             config_id,
             title_task,
             fallback_title,
+            recall_diagnostics=response.recall_diagnostics,
         ):
             yield event
     except RecallValidationError as exc:
@@ -458,6 +463,7 @@ async def _generate_answer(
     config_id: int,
     title_task: asyncio.Task | None,
     fallback_title: str | None,
+    recall_diagnostics: RecallDiagnostics | None = None,
 ) -> AsyncGenerator[str, None]:
     """生成模式后续：空命中判定 → 上下文拼装 → 流式生成 → 对话轮次落库通知。
 
@@ -481,11 +487,19 @@ async def _generate_answer(
     需独立超时防孤儿任务无限烧 token。按 deadline 在帧间检查（帧内卡死由 provider httpx
     超时兜底）。``partial`` 状态已退役——断连不取消任务，正常跑到 COMPLETED。
     """
+
+    def _with_recall_diagnostics(payload: dict) -> dict:
+        if recall_diagnostics is not None:
+            payload["recall_diagnostics"] = serialize_recall_diagnostics(recall_diagnostics)
+        return payload
+
     # 空命中：不生成，但仍落 COMPLETED 占位行（前端按空内容展示占位）。
     if not hits:
         yield recall_event(
             "recall_done",
-            {"hits": [], "rerank_applied": rerank_applied, "failed_sources": failed_sources},
+            _with_recall_diagnostics(
+                {"hits": [], "rerank_applied": rerank_applied, "failed_sources": failed_sources}
+            ),
         )
         title = await _await_title_result(title_task, fallback_title)
         if title:
@@ -523,11 +537,13 @@ async def _generate_answer(
     if not assembled.blocks:
         yield recall_event(
             "recall_done",
-            {
-                "hits": serialize_reranked_hits(hits, contents),
-                "rerank_applied": rerank_applied,
-                "failed_sources": failed_sources,
-            },
+            _with_recall_diagnostics(
+                {
+                    "hits": serialize_reranked_hits(hits, contents),
+                    "rerank_applied": rerank_applied,
+                    "failed_sources": failed_sources,
+                }
+            ),
         )
         title = await _await_title_result(title_task, fallback_title)
         if title:
@@ -636,13 +652,15 @@ async def _generate_answer(
     # 正常结束：answer_done 附 usage，随后发 COMPLETED 轮次消息（在 SSE 终态之后）。
     yield recall_event(
         "answer_done",
-        {
-            "answer": "".join(answer_parts),
-            "usage": usage.model_dump(),
-            "hits": serialize_reranked_hits(hits, contents),
-            "rerank_applied": rerank_applied,
-            "failed_sources": failed_sources,
-        },
+        _with_recall_diagnostics(
+            {
+                "answer": "".join(answer_parts),
+                "usage": usage.model_dump(),
+                "hits": serialize_reranked_hits(hits, contents),
+                "rerank_applied": rerank_applied,
+                "failed_sources": failed_sources,
+            }
+        ),
     )
     # 首轮标题：吐字期间已发则复用 sent_title；否则（LLM 比答案慢）此处 await 后补发。
     title = sent_title

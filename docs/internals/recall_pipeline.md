@@ -123,6 +123,7 @@ class Retriever(Protocol):
 | `RecallRequest` | 入参 | `query` 必须非空；`user_id` 必须为正（HTTP 入口从凭证 claims 注入）；`dataset_ids` 允许空列表，表示不限数据集；`doc_ids` 可选；`top_k` 为正，表示融合候选池上限 / rerank 输入窗口，由数据集级 `recall_result_limit` 或系统 `RECALL_RESULT_LIMIT` 决定；`bm25_top_k` / `sparse_top_k` / `dense_top_k` 分别控制三路执行期召回深度；融合策略/权重 override 来自数据集级 `recall_config`，不来自 HTTP 请求体 |
 | `RetrieverHit` | 单路内部结果 | 单路返回的原始候选，包含 `chunk_id`、`doc_id`、`dataset_id`、`score`、`source` |
 | `RecallHit` | 融合结果 | 当前融合策略产出的候选，包含 `fused_score` 和每路原始 `scores` |
+| `RecallDiagnostics` | 诊断结果 | LINK-195 召回来源结构诊断；完整三路启用且结果可归入四态时，标记 `hybrid` / `bm25_only` / `missing_sparse` / `missing_dense` |
 | `RecallResponse` | 出参 | 回显 query、融合候选、各路命中数、失败路、整体耗时 |
 | `RecallPipelineConfig` | 装配配置 | `parallel`、`strict`、`rrf_k`、`fusion_strategy`、三路 `fusion_*_weight` |
 
@@ -149,6 +150,18 @@ class Retriever(Protocol):
 | 某路合法返回空列表 | 不算失败；该路 `per_source_counts[source] = 0` |
 
 `per_source_counts` 的键集合等于已装配的全部 source。失败路与返回空列表的路都计 0；二者通过 `failed_sources` 区分。
+
+LINK-195 后，`RecallResponse.recall_diagnostics` 在完整三路 `bm25` / `sparse` / `dense` 启用且结果可归入四态时返回：
+
+| `source_mode` | 语义 |
+| --- | --- |
+| `hybrid` | bm25 / sparse / dense 都有候选贡献 |
+| `bm25_only` | 只有 bm25 有候选贡献，sparse 与 dense 没有候选贡献 |
+| `missing_sparse` | bm25 与 dense 有候选贡献，sparse 没有候选贡献 |
+| `missing_dense` | bm25 与 sparse 有候选贡献，dense 没有候选贡献 |
+
+诊断字段同时包含 `active_sources`、`per_source_counts`、`empty_sources` 与 `failed_sources`。
+`empty_sources` 只表示成功执行但 0 命中的路；`failed_sources` 仍只表示异常失败路。三路全空保持既有空召回语义，不扩展新的 `source_mode`。
 
 `RecallFatalError`（`RecallError` 子类）是宽松模式的例外：当前来源包括数据集缺少有效 `dense_embedding_config_id` / `sparse_embedding_config_id`、对应向量路无法编码 query。此时即便宽松模式也不能"降级为其余路继续"，否则会静默返回与建库模型不一致或不完整的结果。由 dense/sparse retriever 捕获 `VectorRetrievalUserConfigMissingError` 后抛出。
 

@@ -16,7 +16,7 @@ from src.application import recall_stream_runtime as rt
 from src.config import settings
 from src.core.llm.exceptions import UserModelConfigMissingError
 from src.core.llm.response import StreamChunk
-from src.core.pipeline.recall import RecallHit, RecallRequest, RecallResponse
+from src.core.pipeline.recall import RecallDiagnostics, RecallHit, RecallRequest, RecallResponse
 from src.core.pipeline.rerank import RerankedHit, RerankResponse
 
 
@@ -111,9 +111,25 @@ def _weighted_hits():
     ]
 
 
-def _response(hits):
+def _diagnostics():
+    return RecallDiagnostics(
+        source_mode="bm25_only",
+        degraded=True,
+        active_sources=["bm25", "sparse", "dense"],
+        per_source_counts={"bm25": 2, "sparse": 0, "dense": 0},
+        empty_sources=["sparse", "dense"],
+        failed_sources=[],
+    )
+
+
+def _response(hits, diagnostics=None):
     return RecallResponse(
-        query="q", hits=hits, per_source_counts={"bm25": len(hits)}, failed_sources=[], elapsed_ms=1
+        query="q",
+        hits=hits,
+        per_source_counts={"bm25": len(hits)},
+        failed_sources=[],
+        elapsed_ms=1,
+        recall_diagnostics=diagnostics,
     )
 
 
@@ -206,6 +222,34 @@ async def test_rerank_applied_carries_rerank_fields(stub_generation):
     assert all(h["rerank_score"] is not None for h in done["hits"])
     # 融合解释字段原样保留。
     assert all("fused_score" in h and "scores" in h for h in done["hits"])
+
+
+@pytest.mark.asyncio
+async def test_answer_done_carries_recall_diagnostics(stub_generation):
+    pipe = _FakePipeline(_response(_hits("c1", "c2"), diagnostics=_diagnostics()))
+    events = await _collect(
+        rt.recall_event_stream(
+            pipe,
+            _req(),
+            "rid",
+            config_id=77,
+            conversation_id=1,
+            turn_id="t-gen",
+            reranker=_FakeReranker(),
+            token_budget=4000,
+            rerank_top_n=8,
+        )
+    )
+
+    done = events[-1][1]
+    assert done["recall_diagnostics"] == {
+        "source_mode": "bm25_only",
+        "degraded": True,
+        "active_sources": ["bm25", "sparse", "dense"],
+        "per_source_counts": {"bm25": 2, "sparse": 0, "dense": 0},
+        "empty_sources": ["sparse", "dense"],
+        "failed_sources": [],
+    }
 
 
 @pytest.mark.asyncio
@@ -466,6 +510,27 @@ async def test_empty_hits_returns_recall_done_no_generation(stub_generation):
 
 
 @pytest.mark.asyncio
+async def test_empty_hits_recall_done_carries_diagnostics_when_present(stub_generation):
+    pipe = _FakePipeline(_response([], diagnostics=_diagnostics()))
+    events = await _collect(
+        rt.recall_event_stream(
+            pipe,
+            _req(),
+            "rid",
+            config_id=77,
+            conversation_id=1,
+            turn_id="t-gen",
+            reranker=_FakeReranker(),
+            token_budget=4000,
+            rerank_top_n=8,
+        )
+    )
+
+    assert [e for e, _ in events] == ["recall_done"]
+    assert events[0][1]["recall_diagnostics"]["source_mode"] == "bm25_only"
+
+
+@pytest.mark.asyncio
 async def test_all_chunks_missing_content_returns_recall_done(monkeypatch, stub_generation):
     async def _no_content(chunk_ids, user_id):
         return {}
@@ -487,6 +552,33 @@ async def test_all_chunks_missing_content_returns_recall_done(monkeypatch, stub_
     )
     assert [e for e, _ in events] == ["recall_done"]
     assert len(events[0][1]["hits"]) == 2  # 召回到了，只是无正文不生成
+
+
+@pytest.mark.asyncio
+async def test_all_chunks_missing_content_recall_done_carries_diagnostics(
+    monkeypatch, stub_generation
+):
+    async def _no_content(chunk_ids, user_id):
+        return {}
+
+    monkeypatch.setattr(rt, "fetch_chunk_contents", _no_content)
+    pipe = _FakePipeline(_response(_hits("c1", "c2"), diagnostics=_diagnostics()))
+    events = await _collect(
+        rt.recall_event_stream(
+            pipe,
+            _req(),
+            "rid",
+            config_id=77,
+            conversation_id=1,
+            turn_id="t-gen",
+            reranker=_FakeReranker(),
+            token_budget=4000,
+            rerank_top_n=8,
+        )
+    )
+
+    assert [e for e, _ in events] == ["recall_done"]
+    assert events[0][1]["recall_diagnostics"]["source_mode"] == "bm25_only"
 
 
 @pytest.mark.asyncio

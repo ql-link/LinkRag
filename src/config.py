@@ -11,6 +11,11 @@ MARKDOWN_HEADING_LLM_CONTEXT_TOKEN_MIN = 2048
 MARKDOWN_HEADING_LLM_CONTEXT_TOKEN_MAX = 262144
 MARKDOWN_HEADING_LLM_MAX_OUTPUT_TOKEN_MIN = 512
 MARKDOWN_HEADING_LLM_MAX_OUTPUT_TOKEN_MAX = 65536
+PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
+
+
+def _settings_env_file() -> str:
+    return os.getenv("TOLINK_ENV_FILE") or os.path.join(PROJECT_ROOT, ".env")
 
 
 class Settings(BaseSettings):
@@ -549,7 +554,7 @@ class Settings(BaseSettings):
         raise ValueError(v)
 
     model_config = SettingsConfigDict(
-        env_file=os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"),
+        env_file=_settings_env_file(),
         env_file_encoding="utf-8",
         extra="ignore",
     )

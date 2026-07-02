@@ -25,6 +25,7 @@ from src.core.pipeline.recall.models import (
     RecallRequest,
     RecallResponse,
     RetrieverHit,
+    build_recall_diagnostics,
     normalize_fusion_strategy,
     validate_fusion_weight,
 )
@@ -353,12 +354,28 @@ class RecallPipeline:
     ) -> RecallResponse:
         """组装响应：per_source_counts 基于本次生效的 source 集；空列表 / 失败路都计 0。"""
         per_source_counts = {source: len(success_hits.get(source, [])) for source in sources}
+        recall_diagnostics = build_recall_diagnostics(
+            active_sources=sources,
+            per_source_counts=per_source_counts,
+            failed_sources=failed_sources,
+        )
+        if recall_diagnostics is not None and recall_diagnostics.degraded:
+            logger.warning(
+                "[RecallPipeline] source degraded mode={} active_sources={} per_source={} "
+                "empty={} failed={}",
+                recall_diagnostics.source_mode,
+                recall_diagnostics.active_sources,
+                recall_diagnostics.per_source_counts,
+                recall_diagnostics.empty_sources,
+                recall_diagnostics.failed_sources,
+            )
         return RecallResponse(
             query=query,
             hits=fused_hits,
             per_source_counts=per_source_counts,
             failed_sources=failed_sources,
             elapsed_ms=elapsed_ms,
+            recall_diagnostics=recall_diagnostics,
         )
 
 

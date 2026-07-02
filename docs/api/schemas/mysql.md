@@ -66,6 +66,8 @@ ORM：[`SystemProviderDB`](../../../src/models/db_models.py)
 | `id` | BIGINT UNSIGNED PK | 厂商唯一标识 |
 | `provider_type` | VARCHAR(32) UNIQUE | `openai` / `claude` / `glm` / `deepseek` 等 |
 | `provider_name` | VARCHAR(64) | 厂商展示名 |
+| `icon_url` | VARCHAR(512) NULL | 厂商图标访问 URL |
+| `icon_object_key` | VARCHAR(256) NULL | 厂商图标对象存储 key |
 | `api_base_url` | VARCHAR(512) | 默认 API 地址（模板值，不参与运行决策） |
 | `default_protocol` | VARCHAR(32) | 默认协议（模板值，新增模型能力预填用），默认 `openai` |
 | `is_active` | BOOLEAN | 是否启用 |

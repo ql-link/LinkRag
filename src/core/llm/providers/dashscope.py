@@ -74,6 +74,11 @@ class DashScopeProvider(BaseProvider):
             "parameters": parameters,
         }
         url = self.api_base_url  # 完整端点 URL（含 /services/rerank/text-rerank/text-rerank）
+        if not url:
+            raise ProviderConnectionError(
+                message="DashScope api_base_url is not configured.",
+                provider_type=self.provider_type,
+            )
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",

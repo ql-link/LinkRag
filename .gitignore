@@ -41,6 +41,8 @@ venv/
 # Environment
 .env
 .env.local
+.env.development
+.env.production
 .env.test
 
 # NLTK data: 体积大(~99M)，不入 Git；由 scripts/setup/setup_nltk_data.py 在构建/部署时下载

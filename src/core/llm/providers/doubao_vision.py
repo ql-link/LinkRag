@@ -52,9 +52,6 @@ class DoubaoVisionProvider(BaseProvider):
     """火山方舟 doubao-embedding-vision 协议 adapter：仅稀疏向量化（文本）。"""
 
     DEFAULT_MODEL = "doubao-embedding-vision-251215"
-    # api_base_url 存「完整端点」（与种子数据 llm_provider_model.api_base_url 约定一致：
-    # 库里存完整 URL、adapter 直打不拼接）；缺省时回退到 Ark 多模态端点。
-    DEFAULT_ENDPOINT = "https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal"
 
     def __init__(
         self,
@@ -143,7 +140,12 @@ class DoubaoVisionProvider(BaseProvider):
     async def _encode_one(self, model: str, text: str) -> dict:
         """对单条文本调 ``/embeddings/multimodal`` 并取出 ``data`` 单对象。"""
 
-        url = (self.api_base_url or self.DEFAULT_ENDPOINT).rstrip("/")
+        url = (self.api_base_url or "").rstrip("/")
+        if not url:
+            raise ProviderConnectionError(
+                message="Ark multimodal embedding base url is not configured.",
+                provider_type=self.provider_type,
+            )
         payload = {
             "model": model,
             "input": [{"type": "text", "text": text}],
