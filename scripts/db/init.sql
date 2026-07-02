@@ -39,6 +39,8 @@ CREATE TABLE IF NOT EXISTS llm_system_provider (
     id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '厂商唯一标识',
     provider_type   VARCHAR(32)    NOT NULL COMMENT '厂商类型：openai/claude/glm/deepseek',
     provider_name   VARCHAR(64)    NOT NULL COMMENT '厂商展示名称，如 "OpenAI"',
+    icon_url        VARCHAR(512)   COMMENT '厂商图标访问 URL',
+    icon_object_key VARCHAR(256)   COMMENT '厂商图标对象存储 key',
     api_base_url    VARCHAR(512)   NOT NULL COMMENT '默认 API 地址（模板值，不参与运行决策）',
     default_protocol VARCHAR(32)   NOT NULL DEFAULT 'openai' COMMENT '默认协议（模板值，新增模型能力预填用）',
     is_active       BOOLEAN        NOT NULL DEFAULT TRUE COMMENT '是否启用',

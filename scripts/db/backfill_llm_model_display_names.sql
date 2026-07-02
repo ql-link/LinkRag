@@ -81,6 +81,13 @@ FROM (
 UPDATE tmp_llm_model_display_names
 SET display_name = TRIM(REGEXP_REPLACE(display_name, ' +', ' '));
 
+-- 展示名只保留稳定主版本；去掉模型 ID 里的日期 / 快照号 / latest / preview。
+UPDATE tmp_llm_model_display_names
+SET display_name = TRIM(REGEXP_REPLACE(display_name, '(^| )[0-9]{6,8}( |$)', ' '));
+
+UPDATE tmp_llm_model_display_names
+SET display_name = TRIM(REGEXP_REPLACE(display_name, ' +(latest|preview)$', ''));
+
 UPDATE tmp_llm_model_display_names
 SET display_name = REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
                    REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
@@ -142,6 +149,12 @@ SET display_name = REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(
                    ' beta', ' Beta'),
                    ' instruct', ' Instruct'),
                    ' a3b', ' A3B');
+
+UPDATE tmp_llm_model_display_names
+SET display_name = TRIM(REGEXP_REPLACE(display_name, '(^| )[0-9]{6,8}( |$)', ' '));
+
+UPDATE tmp_llm_model_display_names
+SET display_name = TRIM(REGEXP_REPLACE(display_name, ' +(Latest|Preview)$', ''));
 
 UPDATE tmp_llm_model_display_names
 SET display_name = LEFT(display_name, 64);
