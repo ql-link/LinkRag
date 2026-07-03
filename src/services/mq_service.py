@@ -6,13 +6,19 @@ MQ Service 服务层
 
 Pipeline: BusinessCode → MQService.send(msg) → Factory.get_sender() → VendorAdapter.send()
 """
-from typing import Any, Callable, Awaitable, Dict, Optional
+
+from typing import Any, Awaitable, Callable, Dict, Optional
 
 from loguru import logger
 
 from src.core.mq.factory import MQFactory
 from src.core.mq.message import AbstractMessage
-from src.core.mq.exceptions import MQSendError
+from src.observability.tracing import (
+    TRACE_ID_HEADER,
+    extract_trace_id_from_metadata,
+    get_trace_id,
+    trace_context,
+)
 
 
 class MQService:
@@ -33,6 +39,16 @@ class MQService:
     def __init__(self, factory: Optional[MQFactory] = None):
         self._factory = factory or MQFactory()
 
+    @staticmethod
+    def _headers_with_current_trace(headers: Dict[str, str] | None = None) -> Dict[str, str] | None:
+        trace_id = get_trace_id()
+        if not trace_id:
+            return headers
+
+        merged = dict(headers) if headers else {}
+        merged.setdefault(TRACE_ID_HEADER, trace_id)
+        return merged
+
     async def send(self, message: AbstractMessage) -> None:
         """发送业务消息
 
@@ -50,11 +66,10 @@ class MQService:
             topic=topic,
             message=serialized,
             key=routing_key,
+            headers=self._headers_with_current_trace(),
         )
-        logger.info(
-            f"[MQService] 消息已发送: type={message.get_mq_type()}, "
-            f"topic={topic}"
-        )
+        mq_type = message.get_mq_type()
+        logger.info(f"[MQService] 消息已发送: type={mq_type}, topic={topic}")
 
     async def send_raw(
         self,
@@ -69,7 +84,12 @@ class MQService:
         适用于对接外部系统的非标准消息格式。
         """
         sender = self._factory.get_sender()
-        await sender.send(topic=topic, message=message, key=key, headers=headers)
+        await sender.send(
+            topic=topic,
+            message=message,
+            key=key,
+            headers=self._headers_with_current_trace(headers),
+        )
 
     async def subscribe(
         self,
@@ -88,10 +108,20 @@ class MQService:
             from_beginning: 是否从最早消息开始
         """
         receiver = self._factory.get_receiver()
+
+        async def traced_callback(message_body: str, metadata: Dict[str, Any]) -> None:
+            trace_id = extract_trace_id_from_metadata(metadata)
+            if not trace_id:
+                await callback(message_body, metadata)
+                return
+
+            with trace_context(trace_id):
+                await callback(message_body, metadata)
+
         await receiver.subscribe(
             topic=topic,
             group_id=group_id,
-            callback=callback,
+            callback=traced_callback,
             from_beginning=from_beginning,
         )
 

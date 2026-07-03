@@ -11,7 +11,7 @@ configure_nltk_data_path()
 # 显式初始化日志：装好 Loguru sink 与标准库 logging 桥接（InterceptHandler），
 # 放在其余 src 导入之前，确保后续模块导入期产生的日志也被统一捕获，
 # 而非依赖某个 core 模块被 import 时的副作用触发。
-from src.utils.logger import logger, setup_logger
+from src.observability.logging import logger, setup_logger
 
 setup_logger()
 
@@ -46,6 +46,7 @@ from src.core.mq.topic_admin import ensure_topics
 # 解析任务临时落盘目录治理：启动时清空 PARSE_TEMP_DIR，回收上次异常退出残留的临时文件。
 from src.core.pipeline.parse_task import temp_workspace
 from src.database import close_database, init_database
+from src.observability.middleware import TraceContextMiddleware
 from src.services.mq_service import MQService
 
 
@@ -128,6 +129,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(TraceContextMiddleware)
 
 # 注册所有模块路由
 app.include_router(llm.router)
