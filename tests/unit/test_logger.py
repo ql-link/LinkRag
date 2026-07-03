@@ -7,7 +7,13 @@ from pathlib import Path
 import pytest
 
 from src.config import settings
-from src.observability.logging import _PROJECT_ROOT, _resolve_log_dir, logger, setup_logger
+from src.observability.logging import (
+    _PROJECT_ROOT,
+    _resolve_log_dir,
+    _service_name,
+    logger,
+    setup_logger,
+)
 from src.observability.tracing import trace_context
 
 
@@ -23,6 +29,26 @@ def test_should_keep_absolute_log_dir():
 
 def test_should_fallback_empty_log_dir_to_project_logs():
     assert _resolve_log_dir(" ") == _PROJECT_ROOT / "logs"
+
+
+def test_should_use_tolink_rag_as_default_service_name():
+    original = settings.LOG_SERVICE_NAME
+    settings.LOG_SERVICE_NAME = ""
+
+    try:
+        assert _service_name() == "tolink-rag"
+    finally:
+        settings.LOG_SERVICE_NAME = original
+
+
+def test_should_allow_explicit_log_service_name_override():
+    original = settings.LOG_SERVICE_NAME
+    settings.LOG_SERVICE_NAME = "unit-service"
+
+    try:
+        assert _service_name() == "unit-service"
+    finally:
+        settings.LOG_SERVICE_NAME = original
 
 
 @pytest.mark.asyncio

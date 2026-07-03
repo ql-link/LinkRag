@@ -81,7 +81,7 @@
 | `LOG_LEVEL` | `INFO` | 控制台与全量日志文件的级别下限；ERROR 文件固定只收 ERROR 及以上，不受此项影响 |
 | `LOG_FILE_ENABLED` | `true` | 是否写本地文件。纯容器环境若靠 `docker logs` 采集，可设 `false` 只保留 stdout |
 | `LOG_DIR` | `logs` | 日志根目录；相对路径会解析到项目根目录下，避免从 `src/` 等不同目录启动时生成多份日志 |
-| `LOG_SERVICE_NAME` | `tolink-service` | 日志文件名前缀 |
+| `LOG_SERVICE_NAME` | `tolink-rag` | 日志服务名与文件名前缀；Java 服务使用 `tolink-service`，Python RAG 服务使用 `tolink-rag` |
 | `LOG_RETENTION_DAYS` | `7` | 日志保留天数，超过自动清理旧日期目录 |
 
 落盘结构（每天 0 点切分，按日期目录归档，对齐 Java 端）：
@@ -89,11 +89,11 @@
 ```
 logs/
 ├── 2026-06-07/
-│   ├── tolink-service-<pid>.log          # 当天全量（>= LOG_LEVEL）
-│   └── tolink-service-error-<pid>.log    # 当天 ERROR 及以上
+│   ├── tolink-rag-<pid>.log          # 当天全量（>= LOG_LEVEL）
+│   └── tolink-rag-error-<pid>.log    # 当天 ERROR 及以上
 ├── 2026-06-08/
-│   ├── tolink-service-<pid>.log
-│   └── tolink-service-error-<pid>.log
+│   ├── tolink-rag-<pid>.log
+│   └── tolink-rag-error-<pid>.log
 └── ...
 ```
 
@@ -114,6 +114,8 @@ logs/
 | `exception` | `record.exception` |
 
 HTTP 请求链路通过 `X-Trace-Id` 头串联：请求带该头时沿用；未带时 Python 端生成 UUID 并在响应头回显。MQ 发送和消费会通过可选 `X-Trace-Id` 消息头透传当前 trace id。
+
+服务名约定：Java 业务服务日志使用 `service=tolink-service`，Python RAG 服务日志使用 `service=tolink-rag`。部署环境可以覆盖 `LOG_SERVICE_NAME`，但必须保持 Java / Python 服务名不同，否则集中采集到 Loki 后无法通过 `service` 标签区分筛选。
 
 `LOG_DIR` 支持绝对路径和相对路径。相对路径统一以项目根目录为基准，例如默认 `LOG_DIR=logs` 始终写入项目根目录的 `logs/`，不会因为进程从 `src` 目录启动而改写到该目录下的 `logs/`。
 

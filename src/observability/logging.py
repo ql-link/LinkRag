@@ -30,7 +30,7 @@ _HOSTNAME = socket.gethostname()
 
 
 def _service_name() -> str:
-    return settings.LOG_SERVICE_NAME.strip() or "tolink-service"
+    return settings.LOG_SERVICE_NAME.strip() or "tolink-rag"
 
 
 def _patch_log_record(record: dict[str, Any]) -> None:

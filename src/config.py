@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     # 每天 0 点切分，按目录归档；保留 LOG_RETENTION_DAYS 天后自动清理。
     LOG_FILE_ENABLED: bool = True
     LOG_DIR: str = "logs"
-    LOG_SERVICE_NAME: str = "tolink-service"
+    LOG_SERVICE_NAME: str = "tolink-rag"
     LOG_RETENTION_DAYS: int = 7
 
     # ==========================================
