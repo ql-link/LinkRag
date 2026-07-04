@@ -28,6 +28,7 @@ class ChunkExporter:
             ElementType.MATH_BLOCK.value,
             ElementType.TABLE.value,
             ElementType.IMAGE.value,
+            ElementType.FRONT_MATTER.value,
         ]
     )
 

@@ -59,7 +59,8 @@ class CandidateBoundaryChunker:
 
     name = "candidate_boundary"
 
-    NOISE_TYPES = frozenset([ElementType.FRONT_MATTER, ElementType.HORIZONTAL_RULE])
+    NOISE_TYPES = frozenset([ElementType.HORIZONTAL_RULE])
+    CONTEXT_SKIP_TYPES = frozenset([ElementType.FRONT_MATTER, ElementType.HORIZONTAL_RULE])
     MAX_DYNAMIC_HEADING_LEVEL = 5
     PROTECTED_TYPES = frozenset(
         [
@@ -155,6 +156,47 @@ class CandidateBoundaryChunker:
             bool: 非空且全部为标题时返回 True。
         """
         return bool(elements) and all(element.type == ElementType.HEADING for element in elements)
+
+    @staticmethod
+    def _is_isolated_source_element(element: MarkdownElement) -> bool:
+        """
+        判断元素是否必须独占 source chunk。
+
+        Args:
+            element: 待检查的 Markdown 元素。
+
+        Returns:
+            bool: 需要独立成块时返回 True。
+        """
+        return element.type == ElementType.FRONT_MATTER
+
+    @classmethod
+    def _semantic_neighbor_elements(
+        cls,
+        elements: list[MarkdownElement],
+        source_element_index: int,
+    ) -> tuple[MarkdownElement | None, MarkdownElement | None]:
+        """
+        查找派生元素可用的语义相邻元素，跳过 front matter 与分割线。
+
+        Args:
+            elements: SplitInput 原始元素序列。
+            source_element_index: 当前元素在原始序列中的索引。
+
+        Returns:
+            tuple[MarkdownElement | None, MarkdownElement | None]: 前后语义邻居。
+        """
+
+        def find(step: int) -> MarkdownElement | None:
+            index = source_element_index + step
+            while 0 <= index < len(elements):
+                candidate = elements[index]
+                if candidate.type not in cls.CONTEXT_SKIP_TYPES:
+                    return candidate
+                index += step
+            return None
+
+        return find(-1), find(1)
 
     def _heading_level(self, element: MarkdownElement) -> int | None:
         """
@@ -296,6 +338,9 @@ class CandidateBoundaryChunker:
             return
 
         previous_chunk = bundles[-2].source_chunk
+        if previous_chunk.element_types == [ElementType.FRONT_MATTER.value]:
+            return
+
         previous_content = previous_chunk.content
         tail_content = tail_chunk.content
         separator = "\n\n" if previous_content and tail_content else ""
@@ -455,6 +500,11 @@ class CandidateBoundaryChunker:
         if derived_result.derived_element_ids:
             metadata["derived_element_ids"] = derived_result.derived_element_ids
 
+        role = (
+            ElementType.FRONT_MATTER.value
+            if element_types == [ElementType.FRONT_MATTER.value]
+            else "mixed"
+        )
         source_chunk = CoarseChunk(
             id=source_coarse_chunk_id,
             content=content,
@@ -466,7 +516,7 @@ class CandidateBoundaryChunker:
             protected_ranges=self._protected_ranges(elements, source_element_indexes),
             heading_trail=list(unique_heading_trails[-1]) if unique_heading_trails else [],
             heading_trails=unique_heading_trails,
-            role="mixed",
+            role=role,
             strategy=self.name,
             metadata=metadata,
             element_views=derived_result.element_views,
@@ -555,7 +605,20 @@ class CandidateBoundaryChunker:
         ]
         visible_elements = [element for _, element in visible_entries]
         deepest_heading_level = self._deepest_heading_level(visible_elements)
-        for visible_index, (source_element_index, element) in enumerate(visible_entries):
+        for source_element_index, element in visible_entries:
+            if self._is_isolated_source_element(element):
+                flush_buffer()
+                heading_tracker.observe(element)
+                buffer_elements.append(element)
+                buffer_source_element_indexes.append(source_element_index)
+                buffer_heading_trails.append(heading_tracker.current_trail())
+                buffer_neighbor_elements.append(
+                    self._semantic_neighbor_elements(split_input.elements, source_element_index)
+                )
+                buffer_token_count += self._count_tokens(element.content)
+                flush_buffer()
+                continue
+
             if self._should_flush_before(
                 element,
                 buffer_elements,
@@ -570,14 +633,7 @@ class CandidateBoundaryChunker:
             buffer_source_element_indexes.append(source_element_index)
             buffer_heading_trails.append(heading_tracker.current_trail())
             buffer_neighbor_elements.append(
-                (
-                    visible_entries[visible_index - 1][1] if visible_index > 0 else None,
-                    (
-                        visible_entries[visible_index + 1][1]
-                        if visible_index + 1 < len(visible_entries)
-                        else None
-                    ),
-                )
+                self._semantic_neighbor_elements(split_input.elements, source_element_index)
             )
             buffer_token_count += self._count_tokens(element.content)
 

@@ -8,7 +8,7 @@
 --   - schema 演进的唯一权威源是 src/models/**.py + migrations/versions/*.py；
 --   - 修改字段必须先改 ORM 模型并新增 migration，再同步本文件。
 -- 同步时机：每条会改动表结构的 migration 落库时一并更新本文件。
--- 末次同步：migration 0029_20260627_llm_model_display_names
+-- 末次同步：migration 0031_20260701_dataset_recall_rrf_k
 -- ===============================================
 
 CREATE DATABASE IF NOT EXISTS tolink_rag_db DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -365,6 +365,7 @@ CREATE TABLE IF NOT EXISTS user_feedback (
 --   并按实际查询路径重构索引；
 -- 0010 新增 lifecycle_status 与生命周期查询索引。
 --   (重试治理与失败原因归 document_parse_pipeline)。
+-- 0032 收口 chunk_type 契约：历史 text 回填为 mixed，移除 text 默认值，新增 front_matter。
 CREATE TABLE IF NOT EXISTS kb_document_chunk (
     id                          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '物理主键ID',
     chunk_id                    VARCHAR(128) NOT NULL COMMENT 'Chunk业务唯一键，对应Qdrant Point ID',
@@ -374,7 +375,7 @@ CREATE TABLE IF NOT EXISTS kb_document_chunk (
     bucket_id                   INT DEFAULT NULL COMMENT '路由后的Qdrant物理桶编号',
     content                     TEXT NOT NULL COMMENT 'splitter最终产出的可检索Chunk原文',
     content_hash                VARCHAR(64) NOT NULL COMMENT '基于最终Chunk内容计算的SHA-256哈希',
-    chunk_type                  VARCHAR(32) NOT NULL DEFAULT 'text' COMMENT '分片类型: paragraph/image/table/code_block/heading/mixed/text',
+    chunk_type                  VARCHAR(32) NOT NULL COMMENT '分片类型: paragraph/heading/list/blockquote/code_block/math_block/table/image/mixed/front_matter',
     start_line                  INT DEFAULT NULL COMMENT 'Chunk在源文档中的起始行号',
     end_line                    INT DEFAULT NULL COMMENT 'Chunk在源文档中的结束行号',
     chunk_index                 INT DEFAULT NULL COMMENT '当前Chunk在文档内的顺序编号',
@@ -406,7 +407,7 @@ CREATE TABLE IF NOT EXISTS dataset_parse_config (
     chunking_config     JSON NOT NULL COMMENT '分块配置（3 项：heading_break_level / min_candidate_chunk_tokens / overlap_tokens）',
     enhancement_config  JSON NOT NULL COMMENT 'Markdown 增强配置（2 项：enable_table_enhancement / enable_image_enhancement）',
     pdf_config          JSON NOT NULL COMMENT 'PDF 解析配置（1 项：pdf_parser_backend）',
-    recall_config       JSON NOT NULL COMMENT '召回检索配置（14 项：recall_result_limit / recall_context_token_budget / bm25_top_k / sparse_top_k / sparse_score_threshold / dense_top_k / dense_score_threshold / recall_enabled_sources / recall_fusion_strategy / fusion_bm25_weight / fusion_sparse_weight / fusion_dense_weight / rerank_top_n / recall_strict）',
+    recall_config       JSON NOT NULL COMMENT '召回检索配置（15 项：recall_result_limit / recall_context_token_budget / bm25_top_k / sparse_top_k / sparse_score_threshold / dense_top_k / dense_score_threshold / recall_enabled_sources / recall_fusion_strategy / rrf_k / fusion_bm25_weight / fusion_sparse_weight / fusion_dense_weight / rerank_top_n / recall_strict）',
     sparse_embedding_config_id BIGINT UNSIGNED DEFAULT NULL COMMENT '稀疏向量模型配置 ID，对应 llm_user_config.id',
     dense_embedding_config_id  BIGINT UNSIGNED DEFAULT NULL COMMENT '稠密向量模型配置 ID，对应 llm_user_config.id',
     is_active           TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用',

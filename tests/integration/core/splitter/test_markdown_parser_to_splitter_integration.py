@@ -235,10 +235,17 @@ async def test_markdown_parser_to_splitter_should_cover_all_markdown_types_and_g
 
     embedded_chunks = await pipeline.aprocess_parse_result(parse_result)
 
-    assert len(embedded_chunks) == 5
+    assert len(embedded_chunks) == 6
     assert all(
         chunk.metadata["split_strategy"] == "candidate_boundary + noop" for chunk in embedded_chunks
     )
+    front_matter_chunk = embedded_chunks[0]
+    assert front_matter_chunk.metadata["element_types"] == ["front_matter"]
+    assert front_matter_chunk.metadata["chunk_role"] == "front_matter"
+    assert front_matter_chunk.metadata["protected_element_types"] == ["front_matter"]
+    assert front_matter_chunk.content.startswith("---\n")
+    assert 'title: "Markdown Parser to Splitter Integration Fixture"' in front_matter_chunk.content
+    assert "context_overlap_mode" not in front_matter_chunk.metadata
     assert any(chunk.metadata.get("chunk_role") == "derived_element" for chunk in embedded_chunks)
     assert not any(chunk.metadata["split_strategy"] == "isolated" for chunk in embedded_chunks)
     assert any(
@@ -284,7 +291,7 @@ async def test_markdown_parser_to_splitter_should_cover_all_markdown_types_and_g
         and chunk.metadata.get("element_type") == "image"
     )
     assert image_derived_chunk.metadata["element_id"] == "image_001"
-    assert image_derived_chunk.metadata["source_chunk_index"] == 0
+    assert image_derived_chunk.metadata["source_chunk_index"] == 1
     assert "类型：图片" in image_derived_chunk.content
     assert "图片ID：image_001" in image_derived_chunk.content
     assert "A dashboard screenshot with cards, charts, and highlighted retrieval metrics." in (
@@ -299,7 +306,7 @@ async def test_markdown_parser_to_splitter_should_cover_all_markdown_types_and_g
         and chunk.metadata.get("element_type") == "table"
     )
     assert table_derived_chunk.metadata["element_id"] == "table_001"
-    assert table_derived_chunk.metadata["source_chunk_index"] == 2
+    assert table_derived_chunk.metadata["source_chunk_index"] == 3
     assert table_derived_chunk.metadata["table_inline_in_source"] is True
     assert "类型：表格" in table_derived_chunk.content
     assert "表格ID：table_001" in table_derived_chunk.content

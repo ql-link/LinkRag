@@ -47,6 +47,30 @@ async def test_single_source_hit_preserved():
 
 
 @pytest.mark.asyncio
+async def test_rrf_k_override_changes_rank_contribution():
+    """数据集级 rrf_k 覆盖后，rank=1 的贡献使用 1/(rrf_k+1)。"""
+    dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("cX", SOURCE_DENSE, 0.9)])
+    pipeline = RecallPipeline([dense])
+
+    response = await pipeline.execute(
+        RecallRequest(user_id=1, query="q", dataset_ids=[10], rrf_k_override=10)
+    )
+
+    assert response.hits[0].fused_score == pytest.approx(1 / 11)
+
+
+@pytest.mark.asyncio
+async def test_rrf_k_config_changes_rank_contribution():
+    """系统级 rrf_k 注入 pipeline 后，rank=1 的贡献使用 1/(rrf_k+1)。"""
+    dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("cX", SOURCE_DENSE, 0.9)])
+    pipeline = RecallPipeline([dense], RecallPipelineConfig(rrf_k=10))
+
+    response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
+
+    assert response.hits[0].fused_score == pytest.approx(1 / 11)
+
+
+@pytest.mark.asyncio
 async def test_explicit_rrf_ignores_weighted_score_weights():
     """显式配置 rrf 时，weighted_score 权重不影响融合分。"""
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("c1", SOURCE_BM25, 10.0)])

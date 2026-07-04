@@ -119,7 +119,9 @@ chunking 阶段复用 `ChunkDraftFactory`，把每个 `Chunk` 转成 `StoredChun
 - `user_id` / `set_id` / `doc_id`：业务归属。
 - `bucket_id`：由 `BucketRouter.route_user(user_id)` 计算。
 - `content_hash`：基于内容的 SHA-256。
-- `chunk_type`：来自 `Chunk.metadata["element_types"]` 或默认 `text`。
+- `chunk_type`：只从非空 `Chunk.metadata["element_types"]` 推导；单一类型直接使用，多类型为
+  `mixed`。允许类型为 `paragraph` / `heading` / `list` / `blockquote` / `code_block` /
+  `math_block` / `table` / `image` / `mixed` / `front_matter`；`text` 和 `hr` 不再是当前可写类型。
 - `chunk_index`：来自 `Chunk.metadata["chunk_index"]`。
 
 ### 3.2 MySQL 状态

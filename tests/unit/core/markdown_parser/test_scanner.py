@@ -58,9 +58,7 @@ def test_backtick_pipe_text_is_not_table():
     elements = _scan("# H\n\n执行 `a | b | c` 仅为示例\n\n下一段\n")
 
     assert not any(e.type == ElementType.TABLE for e in elements)
-    assert any(
-        e.type == ElementType.PARAGRAPH and "a | b | c" in e.content for e in elements
-    )
+    assert any(e.type == ElementType.PARAGRAPH and "a | b | c" in e.content for e in elements)
 
 
 def test_single_pipe_line_at_eof_does_not_hang():
@@ -96,8 +94,7 @@ def test_mixed_pipe_prose_and_real_table():
     assert ElementType.TABLE in types
     # 含 `|` 的正文行落入段落，未被并进表格
     assert any(
-        e.type == ElementType.PARAGRAPH and "项目 | 特点 | 借鉴点" in e.content
-        for e in elements
+        e.type == ElementType.PARAGRAPH and "项目 | 特点 | 借鉴点" in e.content for e in elements
     )
     tables = [e for e in elements if e.type == ElementType.TABLE]
     assert len(tables) == 1
@@ -127,3 +124,119 @@ def test_various_non_table_pipe_lines_advance(line: str):
     elements = _scan(f"{line}\n")
     assert len(elements) == 1
     assert elements[0].type == ElementType.PARAGRAPH
+
+
+def test_yaml_front_matter_is_recognized_and_fields_are_not_parsed():
+    elements = _scan(
+        "---\n"
+        "title: 检索设计\n"
+        "tags:\n"
+        "  - rag\n"
+        "draft: false\n"
+        "---\n\n"
+        "# 正文标题\n\n"
+        "正文段落。"
+    )
+
+    assert elements[0].type == ElementType.FRONT_MATTER
+    assert "title: 检索设计" in elements[0].content
+    assert "title" not in elements[0].metadata
+    assert any(element.type == ElementType.HEADING for element in elements[1:])
+
+
+def test_toml_front_matter_is_recognized():
+    elements = _scan(
+        "+++\n"
+        'title = "检索设计"\n'
+        "draft = false\n"
+        'tags = ["rag", "splitter"]\n'
+        "+++\n\n"
+        "# 正文标题\n\n"
+        "正文段落。"
+    )
+
+    assert elements[0].type == ElementType.FRONT_MATTER
+    assert 'title = "检索设计"' in elements[0].content
+    assert "title" not in elements[0].metadata
+    assert any(element.type == ElementType.HEADING for element in elements[1:])
+
+
+def test_opening_horizontal_rule_with_prose_is_not_front_matter():
+    elements = _scan("---\n这是一段普通正文\n---\n\n# 后续标题")
+
+    assert [element.type for element in elements[:3]] == [
+        ElementType.HORIZONTAL_RULE,
+        ElementType.PARAGRAPH,
+        ElementType.HORIZONTAL_RULE,
+    ]
+    assert not any(element.type == ElementType.FRONT_MATTER for element in elements)
+
+
+def test_opening_markdown_heading_block_is_not_front_matter():
+    elements = _scan("---\n# 临时说明\n---\n\n正文。")
+
+    assert elements[0].type == ElementType.HORIZONTAL_RULE
+    assert any(
+        element.type == ElementType.HEADING and element.metadata["heading_text"] == "临时说明"
+        for element in elements
+    )
+    assert not any(element.type == ElementType.FRONT_MATTER for element in elements)
+
+
+def test_middle_horizontal_rule_is_never_front_matter():
+    elements = _scan("# 标题\n\n上半部分正文。\n\n---\n\n下半部分正文。")
+
+    hr_elements = [element for element in elements if element.type == ElementType.HORIZONTAL_RULE]
+    assert len(hr_elements) == 1
+    assert hr_elements[0].start_line > 0
+    assert not any(element.type == ElementType.FRONT_MATTER for element in elements)
+
+
+def test_unclosed_opening_fence_falls_back_to_horizontal_rule():
+    elements = _scan("---\ntitle: 未闭合元数据\n\n# 正文标题")
+
+    assert elements[0].type == ElementType.HORIZONTAL_RULE
+    assert not any(element.type == ElementType.FRONT_MATTER for element in elements)
+    assert any(element.type == ElementType.PARAGRAPH for element in elements)
+
+
+def test_indented_opening_fence_is_horizontal_rule_not_front_matter():
+    elements = _scan("  ---\ntitle: 缩进分割线\n  ---\n\n正文段落。")
+
+    assert [element.type for element in elements[:3]] == [
+        ElementType.HORIZONTAL_RULE,
+        ElementType.PARAGRAPH,
+        ElementType.HORIZONTAL_RULE,
+    ]
+    assert not any(element.type == ElementType.FRONT_MATTER for element in elements)
+
+
+def test_mismatched_front_matter_fence_does_not_consume_body():
+    elements = _scan("---\ntitle: 不匹配 fence\n+++\n正文段落。")
+
+    assert elements[0].type == ElementType.HORIZONTAL_RULE
+    assert not any(element.type == ElementType.FRONT_MATTER for element in elements)
+    assert any(
+        element.type == ElementType.PARAGRAPH and "title: 不匹配 fence" in element.content
+        for element in elements
+    )
+
+
+def test_empty_or_comment_only_front_matter_candidate_falls_back_to_hr():
+    elements = _scan("---\n\n# 只是 Markdown 标题\n---\n正文段落。")
+
+    assert elements[0].type == ElementType.HORIZONTAL_RULE
+    assert any(
+        element.type == ElementType.HEADING
+        and element.metadata["heading_text"] == "只是 Markdown 标题"
+        for element in elements
+    )
+    assert not any(element.type == ElementType.FRONT_MATTER for element in elements)
+
+
+def test_toml_front_matter_candidate_requires_metadata_shape():
+    elements = _scan("+++\n这里其实是普通正文\n+++\n正文段落。")
+
+    assert elements[0].type == ElementType.PARAGRAPH
+    assert "+++" in elements[0].content
+    assert not any(element.type == ElementType.FRONT_MATTER for element in elements)

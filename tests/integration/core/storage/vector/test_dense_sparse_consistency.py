@@ -179,7 +179,9 @@ async def test_should_keep_dense_sparse_qdrant_and_mysql_consistent_for_real_chu
     try:
         # ① 播种 PENDING 真值行（当前 store_chunks 不再自行 INSERT，按 doc_id 反查）。
         async with session_factory() as session:
-            await session.execute(delete(ChunkRecordDB).where(ChunkRecordDB.chunk_id.in_(chunk_ids)))
+            await session.execute(
+                delete(ChunkRecordDB).where(ChunkRecordDB.chunk_id.in_(chunk_ids))
+            )
             session.add_all(
                 [
                     ChunkRecordDB(
@@ -190,7 +192,7 @@ async def test_should_keep_dense_sparse_qdrant_and_mysql_consistent_for_real_chu
                         bucket_id=bucket_id,
                         content=content,
                         content_hash=f"hash-{cid}",
-                        chunk_type="text",
+                        chunk_type="mixed",
                         chunk_index=idx,
                         dense_vector_status=CHUNK_STATUS_PENDING,
                         sparse_vector_status=SPARSE_VECTOR_STATUS_PENDING,
@@ -223,7 +225,9 @@ async def test_should_keep_dense_sparse_qdrant_and_mysql_consistent_for_real_chu
                 .scalars()
                 .all()
             )
-            await sparse_pipeline.run(chunks=sparse_inputs, task_id="dense-sparse-consistency", db=session)
+            await sparse_pipeline.run(
+                chunks=sparse_inputs, task_id="dense-sparse-consistency", db=session
+            )
 
         # ④-a MySQL：dense 与 sparse 两列均 SUCCESS。
         async with session_factory() as session:

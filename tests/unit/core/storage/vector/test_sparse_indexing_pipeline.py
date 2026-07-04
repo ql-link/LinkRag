@@ -140,8 +140,10 @@ async def test_run_resolves_sparse_service_per_user_when_not_injected(monkeypatc
     service = _RecordingService()
     captured: dict[str, object] = {}
 
-    async def fake_resolve(user_id):
+    async def fake_resolve(user_id, dataset_id, *, db):
         captured["user_id"] = user_id
+        captured["dataset_id"] = dataset_id
+        captured["db"] = db
         return service
 
     monkeypatch.setattr(indexing_mod, "aresolve_user_sparse_vector_service", fake_resolve)
@@ -155,13 +157,16 @@ async def test_run_resolves_sparse_service_per_user_when_not_injected(monkeypatc
     await pipeline.run(chunks=rows, task_id="t1", db=_FakeDB())
 
     assert captured["user_id"] == 7  # 按发起用户解析
+    assert captured["dataset_id"] == 8
+    assert isinstance(captured["db"], _FakeDB)
     assert service.texts == ["alpha"]  # 确实用解析出的 service 编码
 
 
 @pytest.mark.asyncio
 async def test_run_prefers_injected_service_over_per_user_resolution(monkeypatch):
     # 注入了 service → 绕过 per-user 解析（测试 / 显式装配语义）。
-    async def fail_resolve(user_id):
+    async def fail_resolve(user_id, dataset_id, *, db):
+        del user_id, dataset_id, db
         raise AssertionError("must not resolve per-user when service is injected")
 
     monkeypatch.setattr(indexing_mod, "aresolve_user_sparse_vector_service", fail_resolve)

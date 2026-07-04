@@ -9,8 +9,25 @@ from collections.abc import Sequence
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.config import settings
+from src.core.encoding.sparse import (
+    SparseChunkVectorizationRequest,
+    SparseVector,
+    SparseVectorService,
+)
+from src.core.encoding.sparse.factory import (
+    aresolve_dataset_sparse_vector_service as aresolve_user_sparse_vector_service,
+)
+from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
+from src.core.splitter.factory import (
+    aresolve_dataset_chunk_embedding_pipeline as aresolve_user_chunk_embedding_pipeline,
+)
+from src.core.splitter.factory import (
+    validate_dense_dimension,
+)
+from src.core.splitter.models import EmbeddedChunk
 from src.core.storage.chunks import ChunkRepository
 from src.core.storage.chunks.constants import (
+    ALLOWED_CHUNK_TYPES,
     CHUNK_LIFECYCLE_ACTIVE,
     CHUNK_LIFECYCLE_INACTIVE_STATUSES,
     CHUNK_STATUS_INDEXED,
@@ -24,20 +41,6 @@ from src.core.storage.qdrant.point_factory import (
     indexed_point_from_record,
     sparse_indexed_point_from_record,
 )
-from src.core.encoding.sparse import (
-    SparseChunkVectorizationRequest,
-    SparseVector,
-    SparseVectorService,
-)
-from src.core.encoding.sparse.factory import (
-    aresolve_dataset_sparse_vector_service as aresolve_user_sparse_vector_service,
-)
-from src.core.splitter.factory import (
-    aresolve_dataset_chunk_embedding_pipeline as aresolve_user_chunk_embedding_pipeline,
-    validate_dense_dimension,
-)
-from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
-from src.core.splitter.models import EmbeddedChunk
 from src.models.chunk_record import ChunkRecordDB
 from src.utils.logger import logger
 
@@ -103,6 +106,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
 
         content_hash = self._content_hash(request.content)
         chunk_type = request.chunk_type or record.chunk_type
+        self._validate_chunk_type(chunk_type)
         start_line = request.start_line if request.start_line is not None else record.start_line
         end_line = request.end_line if request.end_line is not None else record.end_line
         chunk_index = request.chunk_index if request.chunk_index is not None else record.chunk_index
@@ -723,3 +727,18 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
             str: 十六进制内容哈希。
         """
         return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+    @staticmethod
+    def _validate_chunk_type(chunk_type: str) -> None:
+        """
+        校验管理端更新使用的 chunk_type。
+
+        Args:
+            chunk_type: 待写入 MySQL 与索引 payload 的分片类型。
+
+        Returns:
+            None.
+        """
+        if chunk_type not in ALLOWED_CHUNK_TYPES:
+            allowed = ", ".join(sorted(ALLOWED_CHUNK_TYPES))
+            raise ValueError(f"Unsupported chunk_type {chunk_type!r}; allowed values: {allowed}.")

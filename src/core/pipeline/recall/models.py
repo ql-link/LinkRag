@@ -40,6 +40,16 @@ def validate_fusion_weight(value: float, *, field_name: str) -> float:
     return normalized
 
 
+def validate_rrf_k(value: int, *, field_name: str = "rrf_k") -> int:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a positive int") from exc
+    if normalized <= 0:
+        raise ValueError(f"{field_name} must be a positive int")
+    return normalized
+
+
 @dataclass(frozen=True)
 class RetrieverHit:
     """单路召回返回的原始候选。
@@ -175,6 +185,8 @@ class RecallRequest:
             ``recall_config.recall_fusion_strategy``，不来自 HTTP 请求体。
         fusion_*_weight_override: 可选三路融合权重覆盖；``None`` 时沿用 pipeline 装配期默认值。
             仅 ``weighted_score`` 使用，来自数据集级 ``recall_config``。
+        rrf_k_override: 可选 RRF rank constant 覆盖；``None`` 时沿用 pipeline 装配期默认值。
+            仅 ``rrf`` 使用，来自数据集级 ``recall_config.rrf_k``。
     """
 
     query: str
@@ -193,6 +205,7 @@ class RecallRequest:
     fusion_bm25_weight_override: float | None = None
     fusion_sparse_weight_override: float | None = None
     fusion_dense_weight_override: float | None = None
+    rrf_k_override: int | None = None
 
 
 @dataclass
@@ -243,6 +256,7 @@ class RecallPipelineConfig:
             "fusion_strategy",
             normalize_fusion_strategy(self.fusion_strategy),
         )
+        object.__setattr__(self, "rrf_k", validate_rrf_k(self.rrf_k))
         for field_name in (
             "fusion_bm25_weight",
             "fusion_sparse_weight",

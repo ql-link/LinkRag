@@ -5,7 +5,7 @@
 - Fixture: `tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Source file recorded by parser: `tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
 - Element count: `31`
-- Final chunk count: `5`
+- Final chunk count: `6`
 - Vision mock calls: `1`
 - Table mock calls: `1`
 - Embedding calls: `1`
@@ -81,6 +81,7 @@
 [
   {
     "texts": [
+      "---\ntitle: \"Markdown Parser to Splitter Integration Fixture\"\nauthor: \"Codex\"\ndate: \"2026-04-18\"\n---",
       "# Overview\n\nThis opening paragraph mixes plain text with an inline image ![Architecture Inline](https://cdn.test.local/inline-architecture.png) so the parser keeps it inside a paragraph element and the vision mock can append a description for visual review.\n\n图片说明：A compact architecture sketch that highlights parser, splitter, and vector stages.\n\n[图片引用: image_001]\n图片说明：A dashboard screenshot with cards, charts, and highlighted retrieval metrics.\n\n## Quoted Insight\n\n> Retrieval quality improves when chunk boundaries respect structure.\n> Oversized narrative sections should wait for the next mixed-aware Stage 2 design.\n\n\n\n## Action Checklist\n\n- Collect parser output carefully\n- Preserve metadata for headings and source files\n- Keep isolated blocks independent\n\n1. Parse markdown into structured elements\n2. Enrich tables and images with mocked network results\n3. Preserve oversized narrative sections for the next Stage 2 design\n\n\n\n## Code Sample\n\nThe code fence below should become its own isolated chunk.\n\n```python\ndef summarize_metrics(total_requests: int, failures: int) -> float:\n    if total_requests == 0:\n        return 0.0\n    return round((total_requests - failures) / total_requests, 4)\n```",
       "类型：图片\n图片ID：image_001\n标题路径：Overview\n图片说明：A dashboard screenshot with cards, charts, and highlighted retrieval metrics.\n相邻上下文：图片说明：A compact architecture sketch that highlights parser, splitter, and vector stages.；## Quoted Insight\n原始引用：![Hero Dashboard](https://cdn.test.local/hero-dashboard.png)",
       "## Metrics Table\n\nThe table block below should stay isolated and also receive a mocked table summary.\n\n| Metric | Value | Trend |\n| :--- | ---: | :---: |\n| Recall | 0.82 | up |\n| LatencyMs | 128 | stable |\n| Coverage | 0.97 | up |\n\n## Math Notes\n\nThe parser should also isolate math blocks.\n\n$$\nE = mc^2\n$$\n\n\\[\n\\int_0^1 x^2 dx = \\frac{1}{3}\n\\]\n\n## Deep Dive\n\nChunking quality depends on keeping the overview sentence near the heading for retrieval and human review in realistic systems.\n\nThe next paragraph continues the same topic with nearby wording so the semantic splitter should still keep it close during chunk construction.\n\nA different subsection discusses incident response runbooks, rollback plans, pager fatigue, and on-call escalation details for critical outages.\n\nThe closing paragraph stays in the incident response theme and should therefore remain with the previous paragraph after splitting.",
@@ -97,13 +98,34 @@
 
 | Chunk | Strategy | Heading Trail | Lines | Cached | Prev Ctx | Next Ctx | Vector Preview |
 | ---: | --- | --- | --- | --- | --- | --- | --- |
-| 0 | `candidate_boundary + noop` | `Overview > Code Sample` | `L6-L42` | `False` | `0` | `0` | `0.6308, 0.6906, 0.1134, 0.3281` |
-| 1 | `candidate_boundary + noop` | `Overview` | `L12-L12` | `False` | `0` | `0` | `0.1324, 0.6357, 0.6819, 0.4573` |
-| 2 | `candidate_boundary + noop` | `Overview > Deep Dive` | `L44-L76` | `False` | `0` | `0` | `0.5868, 0.6158, 0.6304, 0.2145` |
-| 3 | `candidate_boundary + noop` | `Overview > Metrics Table` | `L48-L52` | `False` | `0` | `0` | `0.5885, 0.8628, 0.5686, 0.3729` |
-| 4 | `candidate_boundary + noop` | `Overview > Semantic Pressure Test` | `L78-L88` | `False` | `0` | `0` | `0.2056, 0.5381, 0.2065, 0.4338` |
+| 0 | `candidate_boundary + noop` | `` | `L0-L4` | `False` | `0` | `0` | `0.7196, 0.8757, 0.6619, 0.7253` |
+| 1 | `candidate_boundary + noop` | `Overview > Code Sample` | `L6-L42` | `False` | `0` | `0` | `0.6308, 0.6906, 0.1134, 0.3281` |
+| 2 | `candidate_boundary + noop` | `Overview` | `L12-L12` | `False` | `0` | `0` | `0.1324, 0.6357, 0.6819, 0.4573` |
+| 3 | `candidate_boundary + noop` | `Overview > Deep Dive` | `L44-L76` | `False` | `0` | `0` | `0.5868, 0.6158, 0.6304, 0.2145` |
+| 4 | `candidate_boundary + noop` | `Overview > Metrics Table` | `L48-L52` | `False` | `0` | `0` | `0.5885, 0.8628, 0.5686, 0.3729` |
+| 5 | `candidate_boundary + noop` | `Overview > Semantic Pressure Test` | `L78-L88` | `False` | `0` | `0` | `0.2056, 0.5381, 0.2065, 0.4338` |
 
 ### Chunk 0
+
+- Strategy: `candidate_boundary + noop`
+- Heading trail: `[]`
+- Source file: `tests/integration/core/splitter/fixtures/full_markdown_pipeline_fixture.md`
+- Element types: `['front_matter']`
+- Context prev tokens: `0`
+- Context next tokens: `0`
+- Embedding model: `visual-test-embedding`
+- Cached: `False`
+- Vector preview: `0.719591, 0.875736, 0.661919, 0.725321`
+
+````markdown
+---
+title: "Markdown Parser to Splitter Integration Fixture"
+author: "Codex"
+date: "2026-04-18"
+---
+````
+
+### Chunk 1
 
 - Strategy: `candidate_boundary + noop`
 - Heading trail: `['Overview', 'Code Sample']`
@@ -156,7 +178,7 @@ def summarize_metrics(total_requests: int, failures: int) -> float:
 ```
 ````
 
-### Chunk 1
+### Chunk 2
 
 - Strategy: `candidate_boundary + noop`
 - Heading trail: `['Overview']`
@@ -177,7 +199,7 @@ def summarize_metrics(total_requests: int, failures: int) -> float:
 原始引用：![Hero Dashboard](https://cdn.test.local/hero-dashboard.png)
 ````
 
-### Chunk 2
+### Chunk 3
 
 - Strategy: `candidate_boundary + noop`
 - Heading trail: `['Overview', 'Deep Dive']`
@@ -223,7 +245,7 @@ A different subsection discusses incident response runbooks, rollback plans, pag
 The closing paragraph stays in the incident response theme and should therefore remain with the previous paragraph after splitting.
 ````
 
-### Chunk 3
+### Chunk 4
 
 - Strategy: `candidate_boundary + noop`
 - Heading trail: `['Overview', 'Metrics Table']`
@@ -249,7 +271,7 @@ The closing paragraph stays in the incident response theme and should therefore 
 | Coverage | 0.97 | up |
 ````
 
-### Chunk 4
+### Chunk 5
 
 - Strategy: `candidate_boundary + noop`
 - Heading trail: `['Overview', 'Semantic Pressure Test']`
