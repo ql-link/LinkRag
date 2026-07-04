@@ -185,7 +185,7 @@ def test_candidate_boundary_should_keep_deepest_sibling_headings_and_split_on_pa
     ]
 
 
-def test_candidate_boundary_should_ignore_noise_and_merge_trailing_heading():
+def test_candidate_boundary_should_isolate_front_matter_filter_hr_and_keep_trailing_heading():
     elements = [
         _element(ElementType.FRONT_MATTER, "---\ntitle: Hidden\n---", 0),
         _element(ElementType.HORIZONTAL_RULE, "---", 4),
@@ -194,18 +194,66 @@ def test_candidate_boundary_should_ignore_noise_and_merge_trailing_heading():
     ]
     coarse_set = _run(elements, min_candidate_chunk_tokens=3)
 
-    assert len(coarse_set.chunks) == 1
-    chunk = coarse_set.chunks[0]
-    assert chunk.content == "one two three\n\n## Tail"
-    assert chunk.source_element_indexes == [2, 3]
-    assert chunk.element_types == ["heading", "paragraph"]
-    assert chunk.heading_trail == ["Tail"]
-    _assert_views_match_sources(chunk, elements)
-    assert [view.element_index for view in chunk.element_views] == [2, 3]
+    assert len(coarse_set.chunks) == 2
+    front_matter_chunk, body_chunk = coarse_set.chunks
+
+    assert front_matter_chunk.content == "---\ntitle: Hidden\n---"
+    assert front_matter_chunk.source_element_indexes == [0]
+    assert front_matter_chunk.element_types == ["front_matter"]
+    assert front_matter_chunk.role == "front_matter"
+    _assert_views_match_sources(front_matter_chunk, elements)
+
+    assert body_chunk.content == "one two three\n\n## Tail"
+    assert body_chunk.source_element_indexes == [2, 3]
+    assert body_chunk.element_types == ["heading", "paragraph"]
+    assert body_chunk.role == "mixed"
+    assert body_chunk.heading_trail == ["Tail"]
+    _assert_views_match_sources(body_chunk, elements)
+    assert [view.element_index for view in body_chunk.element_views] == [2, 3]
     assert (
-        chunk.content[chunk.element_views[1].content_start : chunk.element_views[1].content_end]
+        body_chunk.content[
+            body_chunk.element_views[1].content_start : body_chunk.element_views[1].content_end
+        ]
         == "## Tail"
     )
+    assert all("hr" not in chunk.element_types for chunk in coarse_set.chunks)
+    assert all("---" not in chunk.content for chunk in coarse_set.chunks[1:])
+
+
+def test_candidate_boundary_should_not_merge_trailing_heading_into_front_matter():
+    elements = [
+        _element(ElementType.FRONT_MATTER, "---\ntitle: Hidden\n---", 0),
+        _heading("# Only heading", 4, 1, "Only heading"),
+    ]
+
+    coarse_set = _run(elements)
+
+    assert [chunk.source_element_indexes for chunk in coarse_set.chunks] == [[0], [1]]
+    assert [chunk.element_types for chunk in coarse_set.chunks] == [
+        ["front_matter"],
+        ["heading"],
+    ]
+    assert [chunk.role for chunk in coarse_set.chunks] == ["front_matter", "mixed"]
+
+
+def test_candidate_boundary_validator_requires_front_matter_coverage():
+    elements = [_element(ElementType.FRONT_MATTER, "---\ntitle: Hidden\n---", 0)]
+    split_input = SplitInput(elements=elements)
+    coarse_set = CoarseChunkSet(strategy="candidate_boundary", chunks=[])
+
+    try:
+        CoarseChunkSetValidator().validate(coarse_set, split_input)
+    except Exception as exc:
+        assert "CoarseChunkSet must not be empty" in str(exc)
+    else:
+        raise AssertionError("front_matter must be covered by a source chunk")
+
+
+def test_candidate_boundary_validator_allows_uncovered_hr():
+    split_input = SplitInput(elements=[_element(ElementType.HORIZONTAL_RULE, "---", 0)])
+    coarse_set = CoarseChunkSet(strategy="candidate_boundary", chunks=[])
+
+    CoarseChunkSetValidator().validate(coarse_set, split_input)
 
 
 def test_candidate_boundary_should_record_protected_ranges_and_derived_image_chunk():
@@ -316,6 +364,47 @@ def test_candidate_boundary_should_limit_derived_adjacent_context_by_overlap_tok
     assert "相邻上下文：prev2 prev3 prev4；next0 next1 next2" in derived_chunk.content
     assert "prev0" not in derived_chunk.content
     assert "next3" not in derived_chunk.content
+
+
+def test_candidate_boundary_should_skip_front_matter_in_derived_adjacent_context():
+    coarse_set = _run(
+        [
+            _element(ElementType.FRONT_MATTER, "---\ntitle: Hidden\n---", 0),
+            _element(
+                ElementType.IMAGE,
+                "![diagram](./diagram.png)",
+                4,
+                metadata={"url": "./diagram.png", META_VISUAL_DESCRIPTION: "A diagram."},
+            ),
+            _element(ElementType.PARAGRAPH, "caption words", 6),
+        ],
+        overlap_tokens=4,
+    )
+
+    derived_chunk = [chunk for chunk in coarse_set.chunks if chunk.role == "derived_element"][0]
+    assert "title: Hidden" not in derived_chunk.content
+    assert "caption words" in derived_chunk.content
+    assert derived_chunk.source_coarse_chunk_id == coarse_set.chunks[1].id
+
+
+def test_candidate_boundary_should_cross_hr_for_derived_adjacent_context():
+    coarse_set = _run(
+        [
+            _element(ElementType.PARAGRAPH, "semantic context before image", 0),
+            _element(ElementType.HORIZONTAL_RULE, "---", 2),
+            _element(
+                ElementType.IMAGE,
+                "![diagram](./diagram.png)",
+                4,
+                metadata={"url": "./diagram.png", META_VISUAL_DESCRIPTION: "A diagram."},
+            ),
+        ],
+        overlap_tokens=4,
+    )
+
+    derived_chunk = [chunk for chunk in coarse_set.chunks if chunk.role == "derived_element"][0]
+    assert "semantic context before image" in derived_chunk.content
+    assert "相邻上下文：---" not in derived_chunk.content
 
 
 def test_candidate_boundary_should_not_generate_derived_chunks_for_code_or_math_blocks():

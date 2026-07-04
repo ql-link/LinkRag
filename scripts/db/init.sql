@@ -365,6 +365,7 @@ CREATE TABLE IF NOT EXISTS user_feedback (
 --   并按实际查询路径重构索引；
 -- 0010 新增 lifecycle_status 与生命周期查询索引。
 --   (重试治理与失败原因归 document_parse_pipeline)。
+-- 0032 收口 chunk_type 契约：历史 text 回填为 mixed，移除 text 默认值，新增 front_matter。
 CREATE TABLE IF NOT EXISTS kb_document_chunk (
     id                          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '物理主键ID',
     chunk_id                    VARCHAR(128) NOT NULL COMMENT 'Chunk业务唯一键，对应Qdrant Point ID',
@@ -374,7 +375,7 @@ CREATE TABLE IF NOT EXISTS kb_document_chunk (
     bucket_id                   INT DEFAULT NULL COMMENT '路由后的Qdrant物理桶编号',
     content                     TEXT NOT NULL COMMENT 'splitter最终产出的可检索Chunk原文',
     content_hash                VARCHAR(64) NOT NULL COMMENT '基于最终Chunk内容计算的SHA-256哈希',
-    chunk_type                  VARCHAR(32) NOT NULL DEFAULT 'text' COMMENT '分片类型: paragraph/image/table/code_block/heading/mixed/text',
+    chunk_type                  VARCHAR(32) NOT NULL COMMENT '分片类型: paragraph/heading/list/blockquote/code_block/math_block/table/image/mixed/front_matter',
     start_line                  INT DEFAULT NULL COMMENT 'Chunk在源文档中的起始行号',
     end_line                    INT DEFAULT NULL COMMENT 'Chunk在源文档中的结束行号',
     chunk_index                 INT DEFAULT NULL COMMENT '当前Chunk在文档内的顺序编号',

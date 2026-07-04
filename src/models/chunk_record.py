@@ -27,7 +27,7 @@ class ChunkRecordDB(Base):
     bucket_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    chunk_type: Mapped[str] = mapped_column(String(32), nullable=False, default="text")
+    chunk_type: Mapped[str] = mapped_column(String(32), nullable=False)
     start_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
     end_line: Mapped[int | None] = mapped_column(Integer, nullable=True)
     chunk_index: Mapped[int | None] = mapped_column(Integer, nullable=True)

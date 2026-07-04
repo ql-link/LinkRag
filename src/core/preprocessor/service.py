@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.storage.chunks.constants import (
     CHUNK_LIFECYCLE_ACTIVE,
-    CHUNK_STATUS_INDEXED,
+    DEFAULT_CHUNK_TYPE,
 )
 from src.database import get_async_session_factory
 from src.models.chunk_record import ChunkRecordDB
@@ -130,7 +130,7 @@ class Preprocessor:
             chunk_index=int(record.chunk_index),
             coarse_tokens=coarse_tokens,
             fine_tokens=fine_tokens,
-            chunk_type=record.chunk_type or "text",
+            chunk_type=record.chunk_type or DEFAULT_CHUNK_TYPE,
         )
 
     @staticmethod

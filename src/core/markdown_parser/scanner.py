@@ -41,8 +41,12 @@ class MarkdownScanner:
     # 新增：独立图片行识别 (![alt](url) 独占一行)
     _IMAGE_LINE_RE = re.compile(r"^\s*!\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)\s*$")
 
-    # 新增：YAML front matter 边界
-    _FRONT_MATTER_FENCE = re.compile(r"^---\s*$")
+    # 新增：front matter 边界（必须位于文档第一行，且无缩进）
+    _YAML_FRONT_MATTER_FENCE = re.compile(r"^---\s*$")
+    _TOML_FRONT_MATTER_FENCE = re.compile(r"^\+\+\+\s*$")
+    _YAML_METADATA_FIELD_RE = re.compile(r"^[A-Za-z_][\w.-]*\s*:")
+    _TOML_METADATA_FIELD_RE = re.compile(r"^[A-Za-z_][\w.-]*\s*=")
+    _TOML_SECTION_RE = re.compile(r"^\[[A-Za-z0-9_.-]+]$")
 
     # 新增：表头分隔线正则 (支持 |---| 或 ---|--- 甚至 :---:)
     _TABLE_DELIMITER_RE = re.compile(r"^\s*\|?\s*[:-]+[-| :]*\s*\|?\s*$")
@@ -64,8 +68,8 @@ class MarkdownScanner:
 
         i = 0
 
-        # ----- YAML Front Matter 检测（必须在文件开头）-----
-        if i < len(self._lines) and self._FRONT_MATTER_FENCE.match(self._lines[i]):
+        # ----- Front Matter 检测（必须在文件开头）-----
+        if i < len(self._lines) and self._front_matter_fence_kind(self._lines[i]):
             element = self._extract_front_matter(i)
             if element is not None:
                 elements.append(element)
@@ -158,6 +162,7 @@ class MarkdownScanner:
         改进: 解析 heading level 并记录到 metadata
         """
         m = self._HEADING_RE.match(self._lines[start])
+        assert m is not None
         level = len(m.group(1))  # '#' 的数量即 level
         return MarkdownElement(
             type=ElementType.HEADING,
@@ -304,6 +309,7 @@ class MarkdownScanner:
     def _extract_image(self, start: int) -> MarkdownElement:
         """提取独立图片行 (新增, RAGFlow 不单独识别)"""
         m = self._IMAGE_LINE_RE.match(self._lines[start])
+        assert m is not None
         return MarkdownElement(
             type=ElementType.IMAGE,
             content=self._lines[start],
@@ -351,16 +357,22 @@ class MarkdownScanner:
         return None
 
     def _extract_front_matter(self, start: int) -> MarkdownElement | None:
-        """提取 YAML front matter (新增)
+        """提取 front matter。
 
-        YAML front matter 必须在文件第一行以 --- 开头，
-        到下一个 --- 结束。
+        front matter 必须从文件第一行开始，且只在同类型 fence 闭合并且 body
+        看起来像元数据时才消费；否则交回主扫描，把 ``---`` 作为水平分割线处理。
         """
         if start != 0:
             return None
+        fence_kind = self._front_matter_fence_kind(self._lines[start])
+        if fence_kind is None:
+            return None
 
         for i in range(start + 1, len(self._lines)):
-            if self._FRONT_MATTER_FENCE.match(self._lines[i]):
+            if self._front_matter_fence_kind(self._lines[i]) == fence_kind:
+                body_lines = self._lines[start + 1 : i]
+                if not self._looks_like_front_matter_body(body_lines, fence_kind):
+                    return None
                 content = "\n".join(self._lines[start : i + 1])
                 return MarkdownElement(
                     type=ElementType.FRONT_MATTER,
@@ -368,11 +380,65 @@ class MarkdownScanner:
                     start_line=start,
                     end_line=i,
                 )
-        return None  # 没有找到关闭的 ---
+        return None
+
+    @classmethod
+    def _front_matter_fence_kind(cls, line: str) -> str | None:
+        """返回 front matter fence 类型；非独立无缩进行返回 None。"""
+        if cls._YAML_FRONT_MATTER_FENCE.match(line):
+            return "yaml"
+        if cls._TOML_FRONT_MATTER_FENCE.match(line):
+            return "toml"
+        return None
+
+    @classmethod
+    def _looks_like_front_matter_body(cls, lines: list[str], fence_kind: str) -> bool:
+        """低误判判断 fence 内是否像元数据块，不解析具体 YAML/TOML。"""
+        meaningful_lines: list[str] = []
+        has_metadata_field = False
+
+        for line in lines:
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if cls._HEADING_RE.match(line):
+                return False
+            if stripped.startswith("#"):
+                continue
+
+            meaningful_lines.append(line)
+            is_indented = line[:1].isspace()
+
+            if fence_kind == "yaml":
+                if cls._YAML_METADATA_FIELD_RE.match(stripped):
+                    has_metadata_field = True
+                    continue
+                if is_indented:
+                    continue
+            else:
+                if cls._TOML_METADATA_FIELD_RE.match(stripped):
+                    has_metadata_field = True
+                    continue
+                if cls._TOML_SECTION_RE.match(stripped):
+                    continue
+                if is_indented:
+                    continue
+
+            if (
+                cls._UNORDERED_LIST_RE.match(line)
+                or cls._ORDERED_LIST_RE.match(line)
+                or stripped.startswith(">")
+            ):
+                return False
+
+            return False
+
+        return bool(meaningful_lines and has_metadata_field)
 
     def _extract_math_block(self, start: int) -> MarkdownElement:
         """提取块级公式（支持 $$ 或者 \\[ 开头）"""
         m = self._MATH_BLOCK_START_RE.match(self._lines[start])
+        assert m is not None
         delimiter = m.group(1)
         closing_delimiter = r"\]" if delimiter == r"\[" else "$$"
 

@@ -527,7 +527,7 @@ ORM：[`ChunkRecordDB`](../../../src/models/chunk_record.py)
 | `bucket_id` | INT NULL | 路由后的 Qdrant 物理桶编号（路由前为空） |
 | `content` | TEXT | Splitter 最终产出的可检索 Chunk 原文 |
 | `content_hash` | VARCHAR(64) | 内容 SHA-256 |
-| `chunk_type` | VARCHAR(32) | `paragraph` / `image` / `table` / `code_block` / `heading` / `mixed` / `text` |
+| `chunk_type` | VARCHAR(32) | 当前允许：`paragraph` / `heading` / `list` / `blockquote` / `code_block` / `math_block` / `table` / `image` / `mixed` / `front_matter`；无数据库默认值 |
 | `start_line` / `end_line` | INT | 源文档起止行号 |
 | `chunk_index` | INT | 文档内顺序编号 |
 | `dense_vector_status` | VARCHAR(16) | 稠密向量状态：`PENDING` / `SUCCESS` / `FAILED` |

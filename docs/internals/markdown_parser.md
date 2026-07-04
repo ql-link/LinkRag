@@ -65,6 +65,11 @@ ParseResult
 - `front_matter`
 - `math_block`
 
+`front_matter` 只在文档第一行出现严格 fence 时探测，支持 `--- ... ---` 与
+`+++ ... +++`。scanner 不解析 YAML/TOML 字段值，只用低误判规则判断 fence 内是否像元数据；
+识别失败时不消费候选块，开头的 `---` 回到普通 `hr` 解析路径，文档中间的 `---` 永远只作为
+`hr`。`hr` 保留为 parser 内部结构信号，下游 splitter 不把它作为最终 chunk 类型输出。
+
 `MarkdownElement` 记录：
 
 - `type`
