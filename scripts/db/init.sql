@@ -8,7 +8,7 @@
 --   - schema 演进的唯一权威源是 src/models/**.py + migrations/versions/*.py；
 --   - 修改字段必须先改 ORM 模型并新增 migration，再同步本文件。
 -- 同步时机：每条会改动表结构的 migration 落库时一并更新本文件。
--- 末次同步：migration 0031_20260701_dataset_recall_rrf_k
+-- 末次同步：migration 0033_20260704_chunk_type_contract
 -- ===============================================
 
 CREATE DATABASE IF NOT EXISTS tolink_rag_db DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
@@ -365,7 +365,7 @@ CREATE TABLE IF NOT EXISTS user_feedback (
 --   并按实际查询路径重构索引；
 -- 0010 新增 lifecycle_status 与生命周期查询索引。
 --   (重试治理与失败原因归 document_parse_pipeline)。
--- 0032 收口 chunk_type 契约：历史 text 回填为 mixed，移除 text 默认值，新增 front_matter。
+-- 0033 收口 chunk_type 契约：历史 text 回填为 mixed，移除 text 默认值，新增 front_matter。
 CREATE TABLE IF NOT EXISTS kb_document_chunk (
     id                          BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '物理主键ID',
     chunk_id                    VARCHAR(128) NOT NULL COMMENT 'Chunk业务唯一键，对应Qdrant Point ID',
