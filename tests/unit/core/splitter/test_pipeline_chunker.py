@@ -518,3 +518,26 @@ def test_neighbor_context_should_allow_protected_chunk_when_switch_is_on() -> No
     assert result[1].content.endswith("\n\nafter")
     assert result[1].metadata["context_prev_tokens_applied"] == 1
     assert result[1].metadata["context_next_tokens_applied"] == 1
+
+
+def test_neighbor_context_should_always_skip_front_matter() -> None:
+    chunker = _structured_chunker(overlap_tokens=1, protected_neighbor_overlap=True)
+    chunks = [
+        Chunk(
+            "---\ntitle: Hidden\n---",
+            0,
+            2,
+            {
+                "chunk_role": "front_matter",
+                "element_types": [ElementType.FRONT_MATTER.value],
+                "protected_element_types": [ElementType.FRONT_MATTER.value],
+            },
+        ),
+        Chunk("body alpha", 4, 4, {"chunk_role": "mixed", "element_types": ["paragraph"]}),
+    ]
+
+    result = chunker._apply_neighbor_context(chunks)
+
+    assert result[0].content == "---\ntitle: Hidden\n---"
+    assert "context_overlap_mode" not in result[0].metadata
+    assert "title: Hidden" not in result[1].content

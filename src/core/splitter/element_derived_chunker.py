@@ -419,22 +419,41 @@ class DerivedElementChunkBuilder:
         previous_tokens = 0
         next_tokens = 0
 
-        if previous_element is not None:
+        context_previous = previous_element if self._is_context_element(previous_element) else None
+        context_next = next_element if self._is_context_element(next_element) else None
+
+        if context_previous is not None:
             previous_context = self.overlapper.take_last_tokens(
-                previous_element.content,
+                context_previous.content,
                 token_limit,
             )
             previous_tokens = self.overlapper.count_tokens(previous_context)
 
-        if next_element is not None:
+        if context_next is not None:
             next_context = self.overlapper.take_first_tokens(
-                next_element.content,
+                context_next.content,
                 token_limit,
             )
             next_tokens = self.overlapper.count_tokens(next_context)
 
         context = "；".join(part for part in [previous_context, next_context] if part)
         return context, previous_tokens, next_tokens
+
+    @staticmethod
+    def _is_context_element(element: MarkdownElement | None) -> bool:
+        """
+        判断元素是否可作为派生 chunk 的相邻语义上下文。
+
+        Args:
+            element: 候选相邻元素。
+
+        Returns:
+            bool: 可以进入 adjacent_context 时返回 True。
+        """
+        return element is not None and element.type not in {
+            ElementType.FRONT_MATTER,
+            ElementType.HORIZONTAL_RULE,
+        }
 
     @staticmethod
     def _heading_path(heading_trail: list[str]) -> str:

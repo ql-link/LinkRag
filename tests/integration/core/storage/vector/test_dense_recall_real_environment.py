@@ -34,6 +34,9 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src.config import settings
+from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
+from src.core.splitter.factory import create_lazy_system_embedding_client
+from src.core.splitter.models import Chunk, EmbeddedChunk
 from src.core.storage.chunks import ChunkRepository
 from src.core.storage.chunks.constants import (
     CHUNK_LIFECYCLE_ACTIVE,
@@ -42,9 +45,6 @@ from src.core.storage.chunks.constants import (
 )
 from src.core.storage.qdrant import BucketRouter, QdrantIndexStore
 from src.core.storage.qdrant.point_factory import indexed_point_from_record
-from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
-from src.core.splitter.factory import create_lazy_system_embedding_client
-from src.core.splitter.models import Chunk, EmbeddedChunk
 from src.core.storage.vector import (
     VectorRetrievalBackendError,
     VectorStorageFacade,
@@ -185,7 +185,7 @@ async def test_dense_query_should_hit_real_qdrant_and_return_active_chunks(
             doc_id=ns["doc_id"],
             bucket_id=0,  # bucket_count=1，固定 0
             content=chunk_text,
-            chunk_type="text",
+            chunk_type="mixed",
             chunk_index=0,
             content_hash=str(uuid4().hex),
             dense_vector_status=CHUNK_STATUS_INDEXED,
@@ -209,7 +209,7 @@ async def test_dense_query_should_hit_real_qdrant_and_return_active_chunks(
         embedded = EmbeddedChunk(
             chunk=Chunk(
                 content=chunk_text,
-                chunk_type="text",
+                chunk_type="mixed",
                 start_line=None,
                 end_line=None,
                 chunk_index=0,

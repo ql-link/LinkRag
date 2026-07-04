@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from src.core.storage.chunks.constants import DEFAULT_CHUNK_TYPE
+
 
 @dataclass(frozen=True, slots=True)
 class FileIndexMeta:
@@ -23,8 +25,8 @@ class ChunkWithTokens:
     chunk_index: int
     coarse_tokens: str
     fine_tokens: str
-    # chunk 种类（heading/paragraph/table/...），供 BM25 类型加权用；缺省 text 基准。
-    chunk_type: str = "text"
+    # chunk 种类（heading/paragraph/table/...），供 BM25 类型加权用。
+    chunk_type: str = DEFAULT_CHUNK_TYPE
 
 
 @dataclass(frozen=True, slots=True)

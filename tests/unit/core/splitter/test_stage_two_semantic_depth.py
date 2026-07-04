@@ -89,6 +89,7 @@ def _coarse_from_parts(
     parts: list[dict[str, Any]],
     *,
     chunk_id: str = "coarse_1",
+    role: str = "mixed",
 ) -> CoarseChunk:
     content_parts = [str(part["content"]) for part in parts]
     content = "\n\n".join(content_parts)
@@ -143,7 +144,7 @@ def _coarse_from_parts(
         protected_ranges=protected_ranges,
         heading_trail=[],
         heading_trails=[],
-        role="mixed",
+        role=role,
         strategy="candidate_boundary",
         element_views=views,
     )
@@ -214,6 +215,27 @@ async def test_run_gates_derived_and_under_limit_without_embedding() -> None:
     assert final_set.chunks[0].content == small.content
     assert final_set.chunks[1].source_coarse_chunk_id == "coarse_1"
     assert embedder.calls == []
+
+
+async def test_run_passthroughs_front_matter_without_embedding_or_hard_max_failure() -> None:
+    embedder = FakeEmbedder()
+    algorithm = _algorithm(embedder)
+    content = "---\n" + " ".join(f"meta{i}: value" for i in range(20)) + "\n---"
+    coarse = _coarse_from_parts(
+        [{"content": content, "element_type": ElementType.FRONT_MATTER.value}],
+        role=ElementType.FRONT_MATTER.value,
+    )
+
+    final_set = await algorithm.run(_coarse_set(coarse))
+
+    assert len(final_set.chunks) == 1
+    assert final_set.chunks[0].content == content
+    assert final_set.chunks[0].element_types == [ElementType.FRONT_MATTER.value]
+    assert final_set.chunks[0].role == "front_matter"
+    assert embedder.calls == []
+    FinalChunkSetValidator(WordTokenizer(), hard_max_tokens=10).validate(
+        final_set, _coarse_set(coarse)
+    )
 
 
 async def test_run_splits_over_limit_and_uses_embedding() -> None:

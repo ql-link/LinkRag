@@ -133,8 +133,9 @@ class CoarseChunk:
 约束：
 
 - `id` 是 splitter 单次运行内唯一、顺序确定的内部 ID，例如 `coarse_000001`。
-- `role` 当前使用 `mixed` / `derived_element`。
-- derived chunk 通过 `source_coarse_chunk_id` 指向其 source mixed coarse chunk。
+- `role` 当前使用 `mixed` / `front_matter` / `derived_element`。
+- `front_matter` 与 `mixed` 同为 source chunk 类型，必须独立成块。
+- derived chunk 通过 `source_coarse_chunk_id` 指向其 source coarse chunk。
 - `source_element_indexes` 和 `protected_ranges` 是第一阶段给第二阶段使用的内部结构字段，不进入最终 `Chunk`。
 - `strategy` 是第一阶段算法名；derived chunk 仍属于 `candidate_boundary` 的内部产物，不把 `derived_element` 写成算法名。
 
@@ -226,14 +227,19 @@ SplitInput -> CoarseChunkSet
 
 行为保持现有算法语义：
 
-- 忽略 front matter、水平分割线等噪声元素。
+- `front_matter` 不再视为噪声：它必须独占一个 source chunk，`element_types=["front_matter"]`
+  且 `role="front_matter"`，后续会作为结构保护块透传到最终 `Chunk`。
+- `hr` 只作为 parser 内部结构信号；第一阶段继续过滤，不生成 source chunk，不进入最终
+  `element_types`。
 - 标题、段落、列表、引用、代码块、公式、表格、图片等块级结构都作为候选元素。
 - 候选边界不等于硬 chunk 边界；`CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS` 是第一阶段软下限。
 - 未达到 token 软下限时，按当前文档实际标题结构执行动态标题层级保护；参与判断的标题层级由 `CHUNKING_HEADING_BREAK_LEVEL` 控制，最多到 5 级。
 - 6 级标题不参与动态标题层级保护。
-- 纯标题 buffer 不会因为达到软下限而单独输出；文档尾部只有标题时会并入前一个 chunk，除非全文只有标题。
+- 纯标题 buffer 不会因为达到软下限而单独输出；文档尾部只有标题时会并入前一个 chunk，
+  除非全文只有标题，或前一个 chunk 是 `front_matter`。
 - 代码块、公式、表格、图片作为 protected element 参与 mixed chunk 聚合，不在元素内部截断。
 - 图片、表格在保留 mixed chunk 原文位置连续性的同时生成 derived chunk，用于独立召回。
+  derived chunk 的相邻上下文会跳过 `front_matter` 和 `hr`，避免元数据块或分割线污染语义上下文。
 - 表格总是生成 table-derived chunk；短表格在 mixed chunk 中保留原始 Markdown 表格结构，长表格在 mixed chunk 中替换为稳定表格引用和表格摘要。
 - 短表格判定为：表格 token 数 `<= 256`、表格所有非空行数 `<= 12`、最大列数 `<= 5`。这些阈值是 splitter 内部常量。
 
@@ -280,7 +286,8 @@ CoarseChunkSet -> SemanticDepthWindowStageTwo -> FinalChunkSet
 
 - `run(coarse_set)` 签名与 `StageTwoAlgorithm` 保持一致；tokenizer、embedder、阈值在构造期注入。
 - 解析流水线启用本算法时，embedder 按发起用户默认 `EMBEDDING` 配置经 adapter 构造；不使用系统级 `SYSTEM_LLM_*` 预设，保证分块语义打分与用户模型配置一致。
-- `derived_element` 与 token 数 `<= CHUNKING_MAX_CHUNK_TOKENS` 的 `mixed` chunk 等价透传，不触发 atomization 或 embedding。
+- `derived_element`、`front_matter` 与 token 数 `<= CHUNKING_MAX_CHUNK_TOKENS` 的 `mixed` chunk
+  等价透传，不触发 atomization 或 embedding；`front_matter` 即使超过 hard max 也不截断。
 - 仅对 token 数超过软上限的 `mixed` chunk 构造 atom timeline；普通文本可按段落、行、句、token-safe 前缀降级，table / image / code block / math block 作为 protected atom，不在元素内部切分。
 - cohesion 评分只使用可评分文本：普通文本用自身文本，image / table 用非空 `semantic_text`，code block / math block 不参与评分但计入 token 预算。
 - TextTiling depth valley 只决定候选 atom gap 的切点；heading trail 只用于标注和避免标题孤儿，不作为高于语义的切分优先级。
@@ -295,8 +302,8 @@ CoarseChunkSet -> SemanticDepthWindowStageTwo -> FinalChunkSet
   按段落、行、句、token-safe 边界切分；超过 hard_max 的单个不可拆 protected atom
   按 hard_max 内最后完整行截断，若没有任何完整行可落入 hard max，则退回 token-safe
   前缀，并写入 `truncated=true`、`truncated_reason`、`original_token_count`。
-  `FinalChunkSetValidator` 会校验 `semantic_depth_window` 输出的所有 mixed final 不超过
-  hard_max。
+  `FinalChunkSetValidator` 会校验 `semantic_depth_window` 输出的普通 mixed final 不超过
+  hard_max；`front_matter` 是结构保护例外。
 
 embedding 失败语义：
 
@@ -322,6 +329,10 @@ derived 锚点：
 - `heading_trails`，仅在存在跨标题路径信息时写入
 - `split_strategy`
 - `source_file`，如果输入存在
+
+`front_matter` final chunk 会带 `chunk_role="front_matter"` 与
+`protected_element_types=["front_matter"]`，但 pipeline 后置
+neighbor overlap 永远跳过它，不受 `CHUNKING_PROTECTED_NEIGHBOR_OVERLAP` 开关影响。
 
 derived chunk 还应写入：
 

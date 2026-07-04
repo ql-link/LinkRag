@@ -44,8 +44,10 @@ class CoarseChunkSetValidator:
         None.
     """
 
-    NOISE_TYPES = frozenset([ElementType.FRONT_MATTER, ElementType.HORIZONTAL_RULE])
-    ROLES = frozenset(["mixed", "derived_element"])
+    NOISE_TYPES = frozenset([ElementType.HORIZONTAL_RULE])
+    SOURCE_ROLES = frozenset(["mixed", ElementType.FRONT_MATTER.value])
+    DERIVED_ROLE = "derived_element"
+    ROLES = SOURCE_ROLES | frozenset([DERIVED_ROLE])
     PROTECTED_TYPE_VALUES = frozenset(
         [
             ElementType.CODE_BLOCK.value,
@@ -86,19 +88,19 @@ class CoarseChunkSetValidator:
             return
 
         chunk_ids: set[str] = set()
-        mixed_ids: set[str] = set()
+        source_ids: set[str] = set()
         covered_indexes: set[int] = set()
-        expected_derived_ids_by_mixed_id: dict[str, set[str]] = {}
-        actual_derived_ids_by_mixed_id: dict[str, set[str]] = {}
+        expected_derived_ids_by_source_id: dict[str, set[str]] = {}
+        actual_derived_ids_by_source_id: dict[str, set[str]] = {}
 
         for position, chunk in enumerate(coarse_set.chunks):
             self._validate_chunk_basics(position, chunk)
             if chunk.id in chunk_ids:
                 raise SplitterOutputValidationError(f"CoarseChunk id {chunk.id!r} is duplicated.")
             chunk_ids.add(chunk.id)
-            if chunk.role == "mixed":
-                mixed_ids.add(chunk.id)
-                expected_derived_ids_by_mixed_id[chunk.id] = self._validate_mixed_chunk(
+            if chunk.role in self.SOURCE_ROLES:
+                source_ids.add(chunk.id)
+                expected_derived_ids_by_source_id[chunk.id] = self._validate_source_chunk(
                     chunk,
                     split_input,
                 )
@@ -107,9 +109,9 @@ class CoarseChunkSetValidator:
                 self._validate_derived_chunk(chunk)
 
         for position, chunk in enumerate(coarse_set.chunks):
-            if chunk.role != "derived_element":
+            if chunk.role != self.DERIVED_ROLE:
                 continue
-            if chunk.source_coarse_chunk_id not in mixed_ids:
+            if chunk.source_coarse_chunk_id not in source_ids:
                 raise SplitterOutputValidationError(
                     f"derived chunk at position {position} references missing source "
                     f"coarse chunk id {chunk.source_coarse_chunk_id!r}."
@@ -118,21 +120,21 @@ class CoarseChunkSetValidator:
             element_id = chunk.metadata.get("element_id")
             if element_id:
                 resolved_element_id = str(element_id)
-                expected_ids = expected_derived_ids_by_mixed_id.get(source_coarse_chunk_id, set())
+                expected_ids = expected_derived_ids_by_source_id.get(source_coarse_chunk_id, set())
                 if resolved_element_id not in expected_ids:
                     raise SplitterOutputValidationError(
                         f"derived chunk at position {position} references element_id "
-                        f"{resolved_element_id!r} not found in source mixed chunk views."
+                        f"{resolved_element_id!r} not found in source chunk views."
                     )
-                actual_derived_ids_by_mixed_id.setdefault(source_coarse_chunk_id, set()).add(
+                actual_derived_ids_by_source_id.setdefault(source_coarse_chunk_id, set()).add(
                     resolved_element_id
                 )
 
-        for mixed_id, expected_ids in expected_derived_ids_by_mixed_id.items():
-            missing_ids = expected_ids - actual_derived_ids_by_mixed_id.get(mixed_id, set())
+        for source_id, expected_ids in expected_derived_ids_by_source_id.items():
+            missing_ids = expected_ids - actual_derived_ids_by_source_id.get(source_id, set())
             if missing_ids:
                 raise SplitterOutputValidationError(
-                    f"mixed coarse chunk {mixed_id} has image/table element_views without "
+                    f"source coarse chunk {source_id} has image/table element_views without "
                     f"matching derived chunks: {sorted(missing_ids)}."
                 )
 
@@ -176,12 +178,12 @@ class CoarseChunkSetValidator:
         if not chunk.strategy:
             raise SplitterOutputValidationError(f"coarse chunk {chunk.id} misses strategy.")
 
-    def _validate_mixed_chunk(self, chunk: CoarseChunk, split_input: SplitInput) -> set[str]:
+    def _validate_source_chunk(self, chunk: CoarseChunk, split_input: SplitInput) -> set[str]:
         """
-        校验 mixed coarse chunk。
+        校验 source coarse chunk。
 
         Args:
-            chunk: 待校验 mixed 粗分片。
+            chunk: 待校验 source 粗分片。
             split_input: splitter 内部输入。
 
         Returns:
@@ -192,16 +194,16 @@ class CoarseChunkSetValidator:
         """
         if not chunk.source_element_indexes:
             raise SplitterOutputValidationError(
-                f"mixed coarse chunk {chunk.id} misses source_element_indexes."
+                f"source coarse chunk {chunk.id} misses source_element_indexes."
             )
         if not chunk.element_views:
             raise SplitterOutputValidationError(
-                f"mixed coarse chunk {chunk.id} misses element_views."
+                f"source coarse chunk {chunk.id} misses element_views."
             )
 
         if [view.element_index for view in chunk.element_views] != chunk.source_element_indexes:
             raise SplitterOutputValidationError(
-                f"element_views of mixed coarse chunk {chunk.id} must align with "
+                f"element_views of source coarse chunk {chunk.id} must align with "
                 "source_element_indexes."
             )
 
@@ -209,12 +211,12 @@ class CoarseChunkSetValidator:
         for element_index in chunk.source_element_indexes:
             if element_index < 0 or element_index > max_index:
                 raise SplitterOutputValidationError(
-                    f"mixed coarse chunk {chunk.id} has invalid source element index "
+                    f"source coarse chunk {chunk.id} has invalid source element index "
                     f"{element_index}."
                 )
         if chunk.source_element_indexes != sorted(chunk.source_element_indexes):
             raise SplitterOutputValidationError(
-                f"source_element_indexes of mixed coarse chunk {chunk.id} are not ordered."
+                f"source_element_indexes of source coarse chunk {chunk.id} are not ordered."
             )
 
         expected_derived_ids: set[str] = set()
@@ -223,13 +225,13 @@ class CoarseChunkSetValidator:
             self._validate_element_view(chunk, view, split_input, max_index)
             if view.content_start < previous_content_end:
                 raise SplitterOutputValidationError(
-                    f"element_views of mixed coarse chunk {chunk.id} are not ordered by content."
+                    f"element_views of source coarse chunk {chunk.id} are not ordered by content."
                 )
             previous_content_end = view.content_end
             if view.element_type in self.DERIVED_ANCHOR_TYPE_VALUES:
                 if not view.element_id:
                     raise SplitterOutputValidationError(
-                        f"{view.element_type} view in mixed coarse chunk {chunk.id} "
+                        f"{view.element_type} view in source coarse chunk {chunk.id} "
                         "misses element_id."
                     )
                 expected_derived_ids.add(view.element_id)
@@ -256,7 +258,7 @@ class CoarseChunkSetValidator:
         protected_range_indexes = [protected.element_index for protected in chunk.protected_ranges]
         if protected_view_indexes != protected_range_indexes:
             raise SplitterOutputValidationError(
-                f"protected_ranges of mixed coarse chunk {chunk.id} do not match "
+                f"protected_ranges of source coarse chunk {chunk.id} do not match "
                 "protected element_views."
             )
 
@@ -549,6 +551,8 @@ class FinalChunkSetValidator:
             return
         for final_chunk in final_set.chunks:
             if final_chunk.role == "derived_element":
+                continue
+            if final_chunk.element_types == [ElementType.FRONT_MATTER.value]:
                 continue
             tokens = self.tokenizer.count_tokens(final_chunk.content.strip())
             if tokens > self.hard_max_tokens:

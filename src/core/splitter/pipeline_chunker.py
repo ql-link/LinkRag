@@ -5,7 +5,7 @@ from __future__ import annotations
 
 import asyncio
 
-from src.core.markdown_parser import MarkdownElement, ParseResult
+from src.core.markdown_parser import ElementType, MarkdownElement, ParseResult
 
 from .candidate_boundary_chunker import CandidateBoundaryChunker
 from .chunk_exporter import ChunkExporter
@@ -144,9 +144,16 @@ class StructuredSemanticChunker:
         """
         if chunk.metadata.get("chunk_role") == "derived_element":
             return False
+        if self._is_front_matter_chunk(chunk):
+            return False
         if chunk.metadata.get("protected_element_types"):
             return self._protected_neighbor_overlap
         return True
+
+    @staticmethod
+    def _is_front_matter_chunk(chunk: Chunk) -> bool:
+        """判断 chunk 是否为 front_matter 结构保护块。"""
+        return chunk.metadata.get("element_types") == [ElementType.FRONT_MATTER.value]
 
     @staticmethod
     def _validate_candidate_chunks(chunks: list[Chunk]) -> None:
