@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from src.core.storage.qdrant_bm25.encoder import (
+    _PERSON_COARSE,
     _PERSON_FINE,
     Bm25SparseEncoder,
     term_to_dimension,
@@ -41,12 +42,41 @@ def test_coarse_fine_spaces_isolated() -> None:
 
 
 def test_encode_document_fills_both_spaces() -> None:
-    """文档侧：coarse 词进 coarse 段、fine 词进 fine 段，互不串段。"""
+    """文档侧：coarse 词进 coarse 段、fine 独有词（不与 coarse 重复）进 fine 段，互不串段。"""
     doc = _enc().encode_document(["退费"], ["退费", "查询"])
     dims = set(doc.indices)
     assert _coarse_dim("退费") in dims  # coarse 段
-    assert _fine_dim("退费") in dims and _fine_dim("查询") in dims  # fine 段
+    assert _fine_dim("查询") in dims  # fine 独有词进 fine 段
+    assert _fine_dim("退费") not in dims  # 与 coarse 段重复，去重后不进 fine 段
     assert _coarse_dim("查询") not in dims  # fine 的"查询"不该落进 coarse 段
+
+
+def test_encode_document_dedupes_fine_term_present_in_coarse() -> None:
+    """精确整词命中不应被 fine 段重复计分：词若已在 coarse 段出现，fine 段跳过该词。
+
+    典型触发场景：``fine_grained_tokenize`` 对短词（<3 字）或无法二次拆分的词原样保留，
+    导致同一个词同时出现在 coarse_tokens 与 fine_tokens 里。
+    """
+    doc = _enc().encode_document(["退费"], ["退费"])
+    dims = set(doc.indices)
+    assert _coarse_dim("退费") in dims
+    assert _fine_dim("退费") not in dims
+
+
+def test_double_hit_no_longer_amplified_beyond_coarse_boost() -> None:
+    """回归验证：coarse/fine 同词命中的总分应等于 coarse 段单独贡献（× coarse_boost），
+    不应再叠加 fine 段的额外 1 倍——即恢复"精确命中 : 子词命中 = coarse_boost : 1"的
+    设计比例，而不是去重前意外变成的 (coarse_boost + 1) : 1。
+    """
+    enc = _enc(coarse_boost=2.0, avgdl_coarse=4.0, avgdl_fine=4.0)
+    doc = enc.encode_document(["退费", "a", "b", "c"], ["退费", "a", "b", "c"])
+    query = enc.encode_query(["退费"])
+    doc_map = dict(zip(doc.indices, doc.values))
+    q_map = dict(zip(query.indices, query.values))
+    assert _fine_dim("退费") not in doc_map  # fine 段已去重，本身就不产生贡献
+    coarse_contrib = doc_map[_coarse_dim("退费")] * q_map[_coarse_dim("退费")]
+    total = sum(doc_map.get(d, 0.0) * v for d, v in q_map.items())
+    assert total == coarse_contrib  # 总分只有 coarse 段这一路，没有被 fine 段叠加放大
 
 
 def test_encode_query_lights_both_spaces_with_boost() -> None:
@@ -61,11 +91,14 @@ def test_encode_query_lights_both_spaces_with_boost() -> None:
 def test_document_query_share_dimension_per_space() -> None:
     """精准匹配根基：同词在文档侧与查询侧的 coarse / fine 段各自映射到同一维度。"""
     enc = _enc()
-    doc = enc.encode_document(["退费", "流程"], ["退费", "流"])
+    # coarse 段是未拆分的复合词"退费流程"，fine 段拆成"退费"+"流程"——真实的"只 fine 命中"场景
+    # （若 coarse 段也直接含"退费"，会被去重逻辑跳过，不适合验证 fine 路本身）。
+    doc = enc.encode_document(["退费流程"], ["退费", "流程"])
     query = enc.encode_query(["退费"])
-    # coarse 路：query coarse 词命中文档 coarse 段
-    assert _coarse_dim("退费") in doc.indices and _coarse_dim("退费") in query.indices
-    # fine 路：query 同一个 coarse 词命中文档 fine 段（嵌在长词里被细分出的子词那一路）
+    # coarse 路：query "退费" 只是复合词的一部分，不等于 coarse 段的完整词，不命中 coarse 段
+    assert _coarse_dim("退费") not in doc.indices
+    assert _coarse_dim("退费") in query.indices
+    # fine 路：query 同一个词命中文档 fine 段（嵌在长词里被细分出的子词那一路）
     assert _fine_dim("退费") in doc.indices and _fine_dim("退费") in query.indices
 
 
@@ -86,12 +119,19 @@ def test_length_normalization() -> None:
 
 
 def test_coarse_fine_use_separate_avgdl() -> None:
-    """coarse 段用 avgdl_coarse、fine 段用 avgdl_fine 各自归一，互不影响。"""
+    """coarse 段用 avgdl_coarse、fine 段用 avgdl_fine 各自归一，互不影响。
+
+    直接调 ``_accumulate`` 而非 ``encode_document``：同一个词要同时进 coarse 与 fine
+    两段做对比，但 ``encode_document`` 会对与 coarse 重复的 fine 词去重（见
+    ``test_encode_document_dedupes_fine_term_present_in_coarse``），绕不开 dedup 就没法
+    在同一个词上比较两段 avgdl 的效果，因此这里绕过 dedup 直接测底层的长度归一逻辑本身。
+    """
+    enc = _enc(avgdl_coarse=2.0, avgdl_fine=4.0)
     # 同一份 token：coarse 段 dl=4 远超 avgdl_coarse=2（重罚）；fine 段 dl=4 等 avgdl_fine=4（轻罚）。
-    doc = _enc(avgdl_coarse=2.0, avgdl_fine=4.0).encode_document(
-        ["退费", "a", "b", "c"], ["退费", "a", "b", "c"]
-    )
-    assert _val(doc, _fine_dim("退费")) > _val(doc, _coarse_dim("退费"))
+    by_dim: dict[int, float] = {}
+    enc._accumulate(by_dim, ["退费", "a", "b", "c"], person=_PERSON_COARSE, avgdl=enc._avgdl_coarse)
+    enc._accumulate(by_dim, ["退费", "a", "b", "c"], person=_PERSON_FINE, avgdl=enc._avgdl_fine)
+    assert by_dim[_fine_dim("退费")] > by_dim[_coarse_dim("退费")]
 
 
 def test_known_value_matches_smoke() -> None:

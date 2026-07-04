@@ -7,7 +7,9 @@ coarse 与 fine 各占一段**相互隔离的 hash 维度空间**（同一个词
 
 - **文档侧** ``encode_document(coarse, fine)``：
   - coarse 词 → coarse 段维度，value = BM25-TF（dl=coarse 长度，avgdl_coarse）
-  - fine 词  → fine 段维度，  value = BM25-TF（dl=fine 长度，  avgdl_fine）
+  - fine 词  → fine 段维度，  value = BM25-TF（dl=fine 长度，  avgdl_fine），但**跳过
+    与 coarse 段重复的 term**（``fine_grained_tokenize`` 对短词/无法二次拆分的词原样
+    保留，会与 coarse 段撞出同一个词），避免同一词在两段被重复计分
   IDF 不在此处算，留给 Qdrant 服务端 ``Modifier.IDF`` 按各维度全库文档频率补上——
   coarse 段与 fine 段维度不重叠，故两路 IDF 各自独立，正对齐 ES 两个字段。
 - **查询侧** ``encode_query(coarse)``：query 只用 coarse 词（与 ES 召回侧一致），
@@ -15,8 +17,12 @@ coarse 与 fine 各占一段**相互隔离的 hash 维度空间**（同一个词
   fine 段 value=1.0。query 词命中文档 fine 段 = 命中"嵌在长词里被细分出的子词"。
 
 二者点积 = ``coarse_boost·Σ(coarse BM25) + Σ(fine BM25)``（sum 融合）。ES 用
-best_fields 取 max——sum 在"只 fine 命中"时与 ES 结果一致，"两边都命中"时给分略高，
-覆盖面 ≥ ES；补 fine 路的目的（让只在 fine 命中的文档进结果集）两者完全一致。
+best_fields 取 max——sum 在"只 fine 命中"时与 ES 结果一致；"两边都命中"时若不去重，
+点积会把 ``coarse_boost`` 与 ``1`` 加总成 ``coarse_boost+1``（boost=2 时即 3 倍），
+比预期的 ``coarse_boost``（2 倍）多计一路——且只发生在"词恰好没被二次拆分"这个和
+相关性无关的偶然情况，短词（<3 字）必然如此。文档侧去重后，精确整词命中稳定为
+``coarse_boost`` 倍，与"只 fine 命中"的 1 倍保持设计预期的比例；补 fine 路的目的
+（让只在 fine 命中的文档进结果集）不受影响，覆盖面仍 ≥ ES。
 
 设计要点：
 
@@ -96,11 +102,27 @@ class Bm25SparseEncoder:
 
         两段都为空返回空向量（调用方据此判失败/跳过）。同段内不同 term 万一 hash 到
         同一维度（极罕见），权重累加而非丢弃。
+
+        fine 段跳过与 coarse 段重复的 term（``fine_grained_tokenize`` 对短词/无法二次
+        拆分的词原样保留，导致同一个词同时出现在两段）：不跳过的话，query 命中这类词会
+        同时点亮 coarse(×coarse_boost) 与 fine(×1) 两个维度、点积里两路加总，实际相对
+        权重变成 ``coarse_boost+1``（如 boost=2 时变成 3），而不是设计预期的
+        ``coarse_boost``（2）——精确整词命中被意外多算了一路 fine 权重，且只发生在"词恰好
+        没被二次拆分"这个和相关性无关的偶然情况上。跳过后，coarse 命中仍是
+        ``coarse_boost``，真正只在 fine 段命中（词嵌在长词里被拆出）的情形不受影响，
+        依旧是 1，符合两段"精确命中 vs 子词命中"的原始设计比例。
         """
 
+        coarse_terms = {t for token in coarse_tokens if (t := str(token).strip())}
         by_dim: dict[int, float] = {}
         self._accumulate(by_dim, coarse_tokens, person=_PERSON_COARSE, avgdl=self._avgdl_coarse)
-        self._accumulate(by_dim, fine_tokens, person=_PERSON_FINE, avgdl=self._avgdl_fine)
+        self._accumulate(
+            by_dim,
+            fine_tokens,
+            person=_PERSON_FINE,
+            avgdl=self._avgdl_fine,
+            skip_terms=coarse_terms,
+        )
         if not by_dim:
             return EncodedSparseVector(indices=[], values=[])
         indices = list(by_dim.keys())
@@ -113,8 +135,13 @@ class Bm25SparseEncoder:
         *,
         person: bytes,
         avgdl: float,
+        skip_terms: frozenset[str] = frozenset(),
     ) -> None:
-        """把一段 token 的 BM25-TF 权重累加进 ``by_dim``（落在 ``person`` 指定的 hash 空间）。"""
+        """把一段 token 的 BM25-TF 权重累加进 ``by_dim``（落在 ``person`` 指定的 hash 空间）。
+
+        ``skip_terms`` 命中的 term 不参与打分维度累加，但仍计入 ``dl``（长度归一分母用
+        该段真实 token 数，与 avgdl 校准脚本的统计口径一致，不因跳过计分而改变文档长度）。
+        """
 
         cleaned = [t for token in tokens if (t := str(token).strip())]
         if not cleaned:
@@ -123,6 +150,8 @@ class Bm25SparseEncoder:
         # 长度归一项：dl 越大、norm 越大、TF 部分被压得越低（长文档惩罚）。
         norm = self._k1 * (1.0 - self._b + self._b * dl / avgdl)
         for term, f in Counter(cleaned).items():
+            if term in skip_terms:
+                continue
             weight = f * (self._k1 + 1.0) / (f + norm)
             dim = term_to_dimension(term, person=person)
             by_dim[dim] = by_dim.get(dim, 0.0) + weight

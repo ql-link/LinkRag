@@ -444,11 +444,27 @@ class Settings(BaseSettings):
     BM25_BACKEND: str = "qdrant"
 
     # chunk_type 类型加权（仅 BM25_BACKEND=es 生效）：对命中的 chunk 按其种类额外加固定分
-    # （const_score 加法升权，主 BM25 分之上叠加）。数据源是 kb_document_chunk.chunk_type
-    # （heading/paragraph/table/list/code_block/... 见 markdown_parser.ElementType）。
-    # 只列需要升权的类型，未列出的默认 +0（基准）；分数与 BM25 主分同量纲，按召回评测调。
+    # （const_score 加法升权，主 BM25 分之上叠加）。数据源是 kb_document_chunk.chunk_type，
+    # 合法取值见 src.core.storage.chunks.constants.ALLOWED_CHUNK_TYPES。
+    # 只列需要升权/降权的类型，未列出的默认 +0（基准）；分数与 BM25 主分同量纲，按召回评测调。
+    #
+    # 未列出 heading/list/paragraph/blockquote：splitter 的 flush 边界只在标题前触发、且会把
+    # 尾部孤立标题合并回上一 chunk，实测正文分片几乎必然是多元素组合 → chunk_type 收敛成
+    # mixed，这几种类型在自动链路里基本不可达，配权重也打不到数据，故不再配（仍是合法值，
+    # 管理端手动改类型时可用，但不参与自动召回加权）。
+    # table/image/code_block/math_block 走 derived_element 抽取路径，稳定单独成块：table 结构化
+    # 强，保持较高升权；code_block/math_block 命中多为精确标识符匹配，误召回率低，给中等升权；
+    # image 派生 chunk 内容单薄（多是 alt/caption），升权幅度小于 table。
+    # front_matter 是文档级元数据（标题/作者/标签等），关键词密度高但通常不是回答内容本身，
+    # 用降权避免仅因元数据关键词命中而抢占正文 chunk 的排名。
     BM25_TYPE_BOOST: dict[str, float] = Field(
-        default_factory=lambda: {"heading": 3.0, "table": 1.5, "list": 1.0}
+        default_factory=lambda: {
+            "table": 1.5,
+            "code_block": 1.0,
+            "math_block": 1.0,
+            "image": 0.6,
+            "front_matter": -1.0,
+        }
     )
 
     # ---- Qdrant BM25 后端（仅 BM25_BACKEND=qdrant 时生效）----
@@ -465,20 +481,34 @@ class Settings(BaseSettings):
     # BM25 参数（对齐 Lucene 默认）。k1 控词频饱和强度，b 控长度归一强度。
     BM25_K1: float = 1.2
     BM25_B: float = 0.75
-    # 长度归一所需的全库平均文档长度。coarse / fine 两段各自归一，故分开配。默认值仅为
-    # 占位，**务必**用 scripts/dev/calibrate_bm25_avgdl.py 按真实语料校准（实测中文技术
-    # 文档 fine 仅略大于 coarse，并非数量级差异）。avgdl 写入时冻结，变更只对之后写入的
-    # chunk 生效，存量需重灌才完全对齐——见 docs/internals/parse_task_pipeline.md。
-    BM25_AVGDL: float = 200.0
-    BM25_AVGDL_FINE: float = 220.0
+    # 长度归一所需的全库平均文档长度。coarse / fine 两段各自归一，故分开配。默认值用真实
+    # Markdown 语料（177 篇文档）走完整生产 chunking pipeline（MarkdownParser +
+    # CandidateBoundaryChunker + 默认 noop stage two）产出 1951 个真实 chunk 校准得出
+    # （mean coarse=180.6 / fine=188.5，实测中文技术文档 fine 仅略大于 coarse，并非数量级
+    # 差异）；仍是单一语料来源、非全量生产数据，规模更大时建议用
+    # scripts/dev/calibrate_bm25_avgdl.py --from-db 重新校准。avgdl 写入时冻结，变更只对
+    # 之后写入的 chunk 生效，存量需重灌才完全对齐——见 docs/internals/parse_task_pipeline.md。
+    BM25_AVGDL: float = 181.0
+    BM25_AVGDL_FINE: float = 188.0
     # query 侧 coarse 段权重，对齐 ES multi_match 的 "coarse_tokens^2"：query 词在
     # coarse 段 value=该值、fine 段 value=1，点积即 coarse_boost×coarse_BM25 + fine_BM25。
     BM25_COARSE_BOOST: float = 2.0
     # 乘法类型权重（Qdrant Formula 用）：命中该 chunk_type 时 BM25 主分 ×倍数。
-    # 注意：与加法 BM25_TYPE_BOOST 语义不同，**不要复用**。温和起步（1.2~1.5），
-    # 再用召回评测扫参；别从 ×3 开始（会变成「类型碾压相关性」）。
+    # 注意：与加法 BM25_TYPE_BOOST 语义不同，**不要复用**。温和起步（1.1~1.5），
+    # 再用召回评测扫参；别从 ×3 开始（会变成「类型碾压相关性」）。取值 <1.0 表示降权
+    # （见 store._build_formula：乘数 = 1.0 + Σ(mult−1)·[chunk_type 命中]）。
+    # 类型取舍理由同 BM25_TYPE_BOOST：heading/list/paragraph/blockquote 在自动链路里几乎不
+    # 可达（splitter 正文分片必然收敛成 mixed），不配权重；table/code_block/math_block/image
+    # 走 derived_element 稳定单独成块，front_matter 走 isolated source chunk 稳定单独成块，
+    # 这几种才是实际打得到的类型。
     BM25_TYPE_MULT: dict[str, float] = Field(
-        default_factory=lambda: {"heading": 1.3, "table": 1.2, "list": 1.05}
+        default_factory=lambda: {
+            "table": 1.2,
+            "code_block": 1.15,
+            "math_block": 1.15,
+            "image": 1.1,
+            "front_matter": 0.7,
+        }
     )
 
     # ==========================================
