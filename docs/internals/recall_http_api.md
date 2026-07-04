@@ -82,7 +82,7 @@ scope 校验。RAG 流额外要求 `config_id`（缺失 → 422）并在建流�
 `RecallRequest`：`query` ← body；`user_id` ← claims `sub`；`dataset_ids` ← scope 解析结果；
 `doc_ids` = None；`top_k` ← `recall_result_limit`（融合候选池 / rerank 输入窗口）；
 `bm25_top_k` / `sparse_top_k` / `dense_top_k` ← 对应 per-route 配置；
-`fusion_strategy_override` 与三路 `fusion_*_weight_override` ← 对应融合配置。上述策略字段均由服务端配置决定，
+`fusion_strategy_override`、`rrf_k_override` 与三路 `fusion_*_weight_override` ← 对应融合配置。上述策略字段均由服务端配置决定，
 不接受请求覆盖。
 
 ### 5.1 RAG 流（建流在前）
@@ -140,7 +140,7 @@ CORS 复用全局 `CORSMiddleware`；对外环境必须把 `CORS_ORIGINS` 由 `*
 - `sparse` → `SparseRetriever(compose_vector_storage_facade(), score_threshold=...)`；
 - `dense` → `DenseRetriever(compose_vector_storage_facade(), score_threshold=...)`；
 - 配置中出现未登记 source → 装配期 `ValueError`，不静默跳过。
-- `RECALL_FUSION_STRATEGY` 与三路 `RECALL_FUSION_*_WEIGHT` 注入 `RecallPipelineConfig`，作为无数据集覆盖时的融合默认值。
+- `RECALL_FUSION_STRATEGY`、`RECALL_RRF_K` 与三路 `RECALL_FUSION_*_WEIGHT` 注入 `RecallPipelineConfig`，作为无数据集覆盖时的融合默认值。
 
 sparse / dense 底座的编码模型不在装配期加载，而是在执行期按每个 dataset 的
 `dataset_parse_config.sparse_embedding_config_id` / `dense_embedding_config_id` 精确解析。

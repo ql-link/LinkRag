@@ -96,6 +96,7 @@ def _build_pipeline() -> RecallPipeline:
         retrievers,
         RecallPipelineConfig(
             strict=settings.RECALL_STRICT_DEFAULT,
+            rrf_k=settings.RECALL_RRF_K,
             fusion_strategy=settings.RECALL_FUSION_STRATEGY,
             fusion_bm25_weight=settings.RECALL_FUSION_BM25_WEIGHT,
             fusion_sparse_weight=settings.RECALL_FUSION_SPARSE_WEIGHT,
@@ -136,8 +137,8 @@ def build_recall_request_from_config(
 
     RAG 流与纯召回 JSON 共用此映射，避免新增召回配置字段时两个入口失同步。
     ``top_k`` 在 ``RecallRequest`` 中表示融合候选池窗口；三路执行期召回深度由
-    ``bm25_top_k`` / ``sparse_top_k`` / ``dense_top_k`` 分别控制。融合策略与权重同样
-    在这里统一映射，避免 RAG 流与纯召回 JSON 入口失同步。
+    ``bm25_top_k`` / ``sparse_top_k`` / ``dense_top_k`` 分别控制。融合策略、``rrf_k`` 与权重
+    同样在这里统一映射，避免 RAG 流与纯召回 JSON 入口失同步。
     """
     return RecallRequest(
         query=query,
@@ -153,6 +154,7 @@ def build_recall_request_from_config(
         enabled_sources=recall_cfg.recall_enabled_sources,
         strict_override=recall_cfg.recall_strict,
         fusion_strategy_override=recall_cfg.recall_fusion_strategy,
+        rrf_k_override=recall_cfg.rrf_k,
         fusion_bm25_weight_override=recall_cfg.fusion_bm25_weight,
         fusion_sparse_weight_override=recall_cfg.fusion_sparse_weight,
         fusion_dense_weight_override=recall_cfg.fusion_dense_weight,
