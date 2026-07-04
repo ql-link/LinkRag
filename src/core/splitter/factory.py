@@ -180,8 +180,7 @@ def _create_structured_chunking_engine(
 
     ``config`` 为数据集级分块配置（LINK-148），``None`` 时全部取系统 ``Settings``。
     dev 的 splitter 重写已移除 percentile 语义切片，分片算法由 ``CHUNKING_STAGE_*``
-    阶段算法决定；数据集级覆盖作用于本架构仍有效的参数——``overlap_tokens`` /
-    ``min_candidate_chunk_tokens`` / ``heading_break_level``。
+    阶段算法决定；数据集级配置覆盖对应的 splitter 运行参数。
     """
     overlap_tokens = (
         config.overlap_tokens if config is not None else settings.CHUNKING_OVERLAP_TOKENS
@@ -199,6 +198,14 @@ def _create_structured_chunking_engine(
     )
     heading_break_level = (
         config.heading_break_level if config is not None else settings.CHUNKING_HEADING_BREAK_LEVEL
+    )
+    stage_two_algorithm = (
+        config.stage_two_algorithm if config is not None else settings.CHUNKING_STAGE_TWO_ALGORITHM
+    )
+    protected_neighbor_overlap = (
+        config.protected_neighbor_overlap
+        if config is not None
+        else settings.CHUNKING_PROTECTED_NEIGHBOR_OVERLAP
     )
 
     tokenizer = Tokenizer()
@@ -221,7 +228,7 @@ def _create_structured_chunking_engine(
     if stage_two_embedder is None:
         stage_two_embedder = create_lazy_system_embedding_client()
     stage_two_router = StageTwoRouter(
-        algorithm_name=settings.CHUNKING_STAGE_TWO_ALGORITHM,
+        algorithm_name=stage_two_algorithm,
         algorithms=[
             NoopStageTwoAlgorithm(),
             SemanticDepthWindowStageTwo(
@@ -243,6 +250,7 @@ def _create_structured_chunking_engine(
         ),
         exporter=ChunkExporter(),
         overlapper=overlapper,
+        protected_neighbor_overlap=protected_neighbor_overlap,
     )
     return ChunkingEngine(chunker=chunker)
 
