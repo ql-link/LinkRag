@@ -65,7 +65,7 @@ class SendUsageReportRequest(BaseModel):
     provider_type: str = Field(..., title="LLM厂商类型")
     model_name: str = Field(..., title="模型名称")
     stage: str = Field(..., title="阶段", description="parse/recall/chat")
-    operation: str = Field(..., title="操作", description="embed/sparse/rerank/vision/table（对话 generate 走 chat_turn，不走本接口）")
+    operation: str = Field(..., title="操作", description="embed/sparse/rerank/vision/table/generate")
     prompt_tokens: int = Field(0, ge=0, title="输入Token数")
     completion_tokens: int = Field(0, ge=0, title="输出Token数")
     total_tokens: int = Field(0, ge=0, title="总Token数")

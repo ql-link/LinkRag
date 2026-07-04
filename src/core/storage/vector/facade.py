@@ -458,7 +458,7 @@ class VectorStorageFacade:
           ``sparse_vector_service.vectorize_query``）
         ⑥ 段构造 ``DenseQueryVectorSpec(vector=...)``（sparse 用
           ``SparseQueryVectorSpec(name, indices, values)``）
-        ⑧ 段 ``vector_kind="dense"``，``vector_name=None`` 因为 unnamed，
+        ⑧ 段 ``vector_kind="dense"``，``vector_name`` 取自 ``DENSE_VECTOR_QDRANT_VECTOR_NAME``，
           ``model_name=embedding_pipeline.embedding_model``
 
         修改本方法时必须同步审视 ``search_sparse_chunks``（brief §3.3.1 工程纪律）。
@@ -539,7 +539,7 @@ class VectorStorageFacade:
         if not query or not query.strip():
             return VectorSearchResult(
                 hits=[],
-                vector_name=None,  # dense 是 unnamed vector
+                vector_name=self._dense_vector_name(),
                 top_k=effective_top_k,
                 score_threshold=effective_threshold,
                 model_name=None,
@@ -614,7 +614,7 @@ class VectorStorageFacade:
         bucket_route = self.qdrant_store.bucket_router.route_user(user_id)
 
         # ───────────────────── ⑥ 构造 query_vector_spec 与 payload_filter ────────
-        # spec 类型与 sparse 不同：dense 是 unnamed vector，spec 不带 vector_name。
+        # spec 类型与 sparse 不同：dense vector name 由 QdrantIndexStore 统一读取。
         # payload_filter 完全复用 sparse 的 staticmethod（共用 _build_payload_filter）。
         query_spec = DenseQueryVectorSpec(vector=list(dense_vector))
         payload_filter = self._build_payload_filter(
@@ -638,11 +638,11 @@ class VectorStorageFacade:
             raise VectorRetrievalBackendError(str(exc)) from exc
 
         # ───────────────────── ⑧ 结果包装（dense 与 sparse 字面差异点）─────────
-        # vector_kind="dense"；vector_name=None（unnamed vector）；
+        # vector_kind="dense"；vector_name 取自 dense named vector 配置；
         # model_name 取自 embedding_pipeline 而非 sparse_vector_service。
         return VectorSearchResult(
             hits=hits,
-            vector_name=None,
+            vector_name=self._dense_vector_name(),
             top_k=effective_top_k,
             score_threshold=effective_threshold,
             model_name=embedding_pipeline.embedding_model,
@@ -700,6 +700,12 @@ class VectorStorageFacade:
         if self._sparse_vector_service is not None:
             return self._sparse_vector_service.vector_name
         return str(getattr(settings, "SPARSE_VECTOR_QDRANT_VECTOR_NAME", "sparse_text"))
+
+    @staticmethod
+    def _dense_vector_name() -> str:
+        """读取写入与召回共用的 dense vector name。"""
+
+        return str(getattr(settings, "DENSE_VECTOR_QDRANT_VECTOR_NAME", "dense"))
 
     @staticmethod
     def _build_payload_filter(
