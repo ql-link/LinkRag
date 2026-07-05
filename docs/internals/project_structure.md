@@ -267,8 +267,12 @@ toLink-Rag/                         # 仓库根目录
 │   │       ├── factory.py
 │   │       ├── minio_storage.py
 │   │       └── oss_storage.py
+│   ├── observability/            # 可观测性基础设施：日志、trace 上下文、HTTP trace 中间件
+│   │   ├── logging.py            # Loguru 初始化、标准库 logging 桥接、JSON 文件日志
+│   │   ├── tracing.py            # trace_id 生成、校验、contextvars 绑定与 header 提取
+│   │   └── middleware.py         # FastAPI/ASGI X-Trace-Id 中间件
 │   └── utils/                    # 通用工具函数
-│       └── logger.py
+│       └── logger.py             # 历史兼容导出层；新代码优先使用 observability.logging
 └── tests/                        # 测试目录
     ├── README.md                 # pytest 统一入口（marker/集成测试开关）
     ├── conftest.py               # 测试分层与运行约定

@@ -164,6 +164,34 @@ services:
       kafka:
         condition: service_healthy
 
+  loki:
+    image: grafana/loki:2.9.8
+    container_name: tolink-loki
+    restart: always
+    command: -config.file=/etc/loki/loki-config.yml
+    ports:
+      - "${LOKI_HTTP_PORT:-3100}:3100"
+    volumes:
+      - ./deploy/observability/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    networks:
+      - tolink-net
+
+  promtail:
+    image: grafana/promtail:2.9.8
+    container_name: tolink-promtail
+    restart: always
+    command: -config.file=/etc/promtail/promtail-config.yml
+    volumes:
+      - ./deploy/observability/promtail-config.yml:/etc/promtail/promtail-config.yml:ro
+      - ${JAVA_LOG_PATH:-../toLink-Service/logs}:/var/log/tolink-service:ro
+      - ${PYTHON_LOG_PATH:-./logs}:/var/log/tolink-rag:ro
+      - promtail_positions:/tmp
+    networks:
+      - tolink-net
+    depends_on:
+      - loki
+
 networks:
   tolink-net:
     driver: bridge
@@ -175,3 +203,5 @@ volumes:
   qdrant_data:
   zookeeper_data:
   kafka_data:
+  loki_data:
+  promtail_positions:

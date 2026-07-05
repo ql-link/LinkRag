@@ -74,14 +74,14 @@
 
 ## 日志
 
-日志系统基于 Loguru，统一在 [src/utils/logger.py](../../src/utils/logger.py) 配置。运行时**始终输出到 stdout**（容器 / 本地通用）；开启文件落盘后，额外按 Java 端约定写入按日期归档的本地文件。
+日志系统基于 Loguru，统一在 [src/observability/logging.py](../../src/observability/logging.py) 配置。运行时**始终输出到 stdout**（容器 / 本地通用）；开启文件落盘后，额外按 Java 端约定写入按日期归档的 JSON Lines 本地文件。
 
 | 变量 | 默认 | 含义 |
 | --- | --- | --- |
 | `LOG_LEVEL` | `INFO` | 控制台与全量日志文件的级别下限；ERROR 文件固定只收 ERROR 及以上，不受此项影响 |
 | `LOG_FILE_ENABLED` | `true` | 是否写本地文件。纯容器环境若靠 `docker logs` 采集，可设 `false` 只保留 stdout |
 | `LOG_DIR` | `logs` | 日志根目录；相对路径会解析到项目根目录下，避免从 `src/` 等不同目录启动时生成多份日志 |
-| `LOG_SERVICE_NAME` | `tolink-service` | 日志文件名前缀 |
+| `LOG_SERVICE_NAME` | `tolink-rag` | 日志服务名与文件名前缀；Java 服务使用 `tolink-service`，Python RAG 服务使用 `tolink-rag` |
 | `LOG_RETENTION_DAYS` | `7` | 日志保留天数，超过自动清理旧日期目录 |
 
 落盘结构（每天 0 点切分，按日期目录归档，对齐 Java 端）：
@@ -89,15 +89,33 @@
 ```
 logs/
 ├── 2026-06-07/
-│   ├── tolink-service-<pid>.log          # 当天全量（>= LOG_LEVEL）
-│   └── tolink-service-error-<pid>.log    # 当天 ERROR 及以上
+│   ├── tolink-rag-<pid>.log          # 当天全量（>= LOG_LEVEL）
+│   └── tolink-rag-error-<pid>.log    # 当天 ERROR 及以上
 ├── 2026-06-08/
-│   ├── tolink-service-<pid>.log
-│   └── tolink-service-error-<pid>.log
+│   ├── tolink-rag-<pid>.log
+│   └── tolink-rag-error-<pid>.log
 └── ...
 ```
 
-实现要点：文件名中的日期由 Loguru 在创建新文件时求值，配合 `rotation="00:00"` 每天 0 点切分，自然落入新的日期目录；写入开启 `enqueue` 队列，异步刷盘不阻塞业务。
+实现要点：文件名中的日期由 Loguru 在创建新文件时求值，配合 `rotation="00:00"` 每天 0 点切分，自然落入新的日期目录；写入开启 `enqueue` 队列，异步刷盘不阻塞业务。文件 sink 使用 `serialize=True`，每行是一条 JSON 日志；采集侧应按 JSON 解析，而不是按旧的管道分隔文本解析。
+
+常用采集字段对应关系：
+
+| 语义字段 | JSON 路径 |
+| --- | --- |
+| `time` | `record.time` |
+| `level` | `record.level.name` |
+| `service` | `record.extra.service` |
+| `host` | `record.extra.host` |
+| `pid` | `record.extra.pid` |
+| `trace_id` | `record.extra.trace_id` |
+| `logger_name` | `record.extra.logger_name` |
+| `message` | `record.message` |
+| `exception` | `record.exception` |
+
+HTTP 请求链路通过 `X-Trace-Id` 头串联：请求带该头时沿用；未带时 Python 端生成 UUID 并在响应头回显。MQ 发送和消费会通过可选 `X-Trace-Id` 消息头透传当前 trace id。
+
+服务名约定：Java 业务服务日志使用 `service=tolink-service`，Python RAG 服务日志使用 `service=tolink-rag`。部署环境可以覆盖 `LOG_SERVICE_NAME`，但必须保持 Java / Python 服务名不同，否则集中采集到 Loki 后无法通过 `service` 标签区分筛选。
 
 `LOG_DIR` 支持绝对路径和相对路径。相对路径统一以项目根目录为基准，例如默认 `LOG_DIR=logs` 始终写入项目根目录的 `logs/`，不会因为进程从 `src` 目录启动而改写到该目录下的 `logs/`。
 
@@ -108,7 +126,7 @@ logs/
 
 ### 统一日志管道（标准库 logging 桥接）
 
-项目自身代码统一用 Loguru（`from src.utils.logger import logger`），但 uvicorn、SQLAlchemy、kafka、transformers 等第三方库以及少数遗留模块仍走 Python 标准库 `logging`。[src/utils/logger.py](../../src/utils/logger.py) 通过 `InterceptHandler` 把标准库 logging 全量桥接进 Loguru，使运行时**只有一条输出管道**：所有日志（无论来自 Loguru 还是标准库）都进同一份日期文件、同一种格式、由 `LOG_LEVEL` 统一过滤。
+项目自身代码统一用 Loguru。新代码优先从 `src.observability.logging` 引入；历史代码中的 `from src.utils.logger import logger` 仍由兼容层转发。uvicorn、SQLAlchemy、kafka、transformers 等第三方库以及少数遗留模块仍走 Python 标准库 `logging`，[src/observability/logging.py](../../src/observability/logging.py) 通过 `InterceptHandler` 把标准库 logging 全量桥接进 Loguru，使运行时**只有一条输出管道**：所有日志（无论来自 Loguru 还是标准库）都进同一份日期文件、同一种 JSON 结构、由 `LOG_LEVEL` 统一过滤。
 
 要点：
 

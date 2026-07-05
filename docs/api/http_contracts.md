@@ -5,6 +5,7 @@
 ## 1. 通用约定
 
 - API 前缀按模块划分：`/api/v1/parser`、`/api/v1/mq`、`/api/v1/llm`、`/api/v1/internal/llm`、`/api/v1/rag`、`/api/v1/recall`。
+- 所有 HTTP 请求可带 `X-Trace-Id` 请求头；未携带时 Python 端生成 UUID。响应会回显本次请求使用的 `X-Trace-Id`，日志上下文同步写入该值。
 - 普通 JSON 响应通常使用 `{code, message, data}` 或模块自定义响应模型。
 - 解析和 MQ 路由异常通常返回 HTTP `500`，`detail` 为异常文本。
 - LLM 路由在业务异常中多返回 `APIResponse(code=500, message=..., data=null)`。
