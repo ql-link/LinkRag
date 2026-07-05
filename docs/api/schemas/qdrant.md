@@ -64,7 +64,7 @@ Collection 名称示例：`kb_bucket_0`, `kb_bucket_1`, ..., `kb_bucket_127`。
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `id` | string | Point ID = `chunk_id`，与 MySQL `kb_document_chunk.chunk_id` 一致 |
-| `vector` | float[] / named sparse vector | 稠密 embedding 向量；启用稀疏向量后，同一 point 还会写入 named sparse vector，默认名称 `sparse_text` |
+| `vector` | named dense / named sparse vector | 稠密向量默认名称 `dense`；稀疏向量默认名称 `sparse_text`。两者通过 `update_vectors` 独立写入 |
 | `payload` | object | 业务标识，见下表 |
 
 ### Payload 字段
@@ -137,7 +137,7 @@ response = await client.query_points(
 
 召回链路通过 `VectorStorageFacade.search_dense_chunks` 发起稠密向量搜索，底层同样由 `QdrantIndexStore._search_chunks` 执行（与 sparse 共用底座，spec dispatch 区分 `SparseQueryVectorSpec` / `DenseQueryVectorSpec`）。
 
-**关键差异（与 sparse 对比）**：dense 是 **unnamed** vector——写入侧 `ensure_collection` 用 `vectors_config=VectorParams(size=1024, distance=COSINE)`（不是 `{name: VectorParams}` dict），`PointStruct(vector=[...])` 裸传；召回侧 `query_points` 调用时 `using=None`、`query` 直接给 `list[float]`。
+**关键差异（与旧 schema 对比）**：dense 现在是 **named vector**，默认名称来自 `DENSE_VECTOR_QDRANT_VECTOR_NAME=dense`。写入侧 `ensure_collection` 使用 `vectors_config={"dense": VectorParams(size=1024, distance=COSINE)}`，并通过 `update_vectors({"dense": [...]})` 写入；召回侧 `query_points` 调用时 `using="dense"`、`query` 直接给 `list[float]`。
 
 **SDK 调用形态**（qdrant-client 1.17.1）：
 
@@ -145,7 +145,7 @@ response = await client.query_points(
 response = await client.query_points(
     collection_name="kb_bucket_42",
     query=[0.1, 0.2, ...],            # list[float]，长度 = 数据集绑定 EMBEDDING 模型输出维度（当前要求 1024）
-    using=None,                        # dense 是 unnamed vector，**不传 vector name**
+    using="dense",                     # named dense vector，与写入侧同源
     query_filter=models.Filter(
         must=[
             models.FieldCondition(key="user_id", match=models.MatchValue(value=user_id)),
@@ -165,11 +165,11 @@ response = await client.query_points(
 | 场景 | 处理 |
 | --- | --- |
 | collection 不存在 | 返空 hits，不抛；warn 日志带 `bucket_id`（与 sparse 一致） |
-| named vector 未配置 | **不会触发**——dense 是 collection 创建时配齐的 unnamed vector，无中间状态 |
+| named dense vector 未配置 | 返空 hits，不抛；warn 日志带 `bucket_id` + vector name（通常表示旧匿名 dense collection 尚未迁移） |
 | Qdrant 网络故障 / 超时 | 抛 `QdrantStoreError`，由 facade 翻译为 `VectorRetrievalBackendError`（与 sparse 一致） |
 | 数据集绑定 embedding HTTP 推理失败 | facade 翻译为 `VectorRetrievalEncodingError` |
 
-**写读不变量**：bucket 路由、payload 字段、`embedding_model` 字符串、`embedder` 实例写入与召回共用同一套；**不引入 `DENSE_RETRIEVAL_VECTOR_NAME` 配置**——dense 永远 unnamed，避免分叉风险。
+**写读不变量**：bucket 路由、payload 字段、dense vector name、`embedding_model` 字符串、`embedder` 实例写入与召回共用同一套。dense vector name 由 `DENSE_VECTOR_QDRANT_VECTOR_NAME` 统一控制，默认 `dense`。
 
 **Embedding 模型升级**：详见 [docs/internals/vectorization.md §9.7](../../internals/vectorization.md)。当前锁定 Qwen `text-embedding-v4`（对称模型，dim=1024）。
 
@@ -191,7 +191,7 @@ response = await client.query_points(
 | 检查 Chunk 是否存在 | `QdrantStore.point_exists` |
 | 删除 Chunk | `QdrantStore.delete_points` |
 | **稀疏向量召回** | **`QdrantStore._search_chunks`（私有底座，由 `VectorStorageFacade.search_sparse_chunks` 调用）** |
-| **稠密向量召回** | **`QdrantStore._search_chunks`（同一底座，由 `VectorStorageFacade.search_dense_chunks` 调用，`using=None`）** |
+| **稠密向量召回** | **`QdrantStore._search_chunks`（同一底座，由 `VectorStorageFacade.search_dense_chunks` 调用，`using=DENSE_VECTOR_QDRANT_VECTOR_NAME`）** |
 | 用户路由 | `BucketRouter.route_user(user_id)` |
 | 按 bucket 取 collection 名 | `BucketRouter.collection_name(bucket_id)` |
 

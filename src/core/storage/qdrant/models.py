@@ -45,10 +45,9 @@ class DenseQueryVectorSpec:
     """store 层私有：稠密向量查询规格。
 
     供 ``QdrantIndexStore._search_chunks`` 的 dense 分支使用，向 Qdrant 提交搜索
-    时透传给 ``query_points(query=[float, ...], using=None)``——dense 在本项目
-    Qdrant 是 unnamed vector（写入侧 ``ensure_collection`` 用
-    ``vectors_config=VectorParams(size, distance=COSINE)``，``PointStruct(vector=[...])``
-    裸传），所以 spec **不带 ``vector_name``** 字段。
+    时透传给 ``query_points(query=[float, ...], using=dense_name)``。dense vector
+    name 由 ``QdrantIndexStore`` 从 ``DENSE_VECTOR_QDRANT_VECTOR_NAME`` 读取，避免
+    facade / spec 层重复携带并形成分叉。
 
     与 ``SparseQueryVectorSpec`` 形成 union dispatch；store 层依据 spec 实际类型
     选择 SDK 调用形态。本类**不进 ``vector_storage`` 包的对外 ``__all__``**。

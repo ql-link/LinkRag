@@ -160,11 +160,14 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── retry.py          # 消费重试策略
 │   │   │   ├── topic_admin.py    # Topic 初始化逻辑
 │   │   │   ├── consumers/        # MQ 消费者
-│   │   │   │   └── parse_task_consumer.py
+│   │   │   │   ├── parse_task_consumer.py
+│   │   │   │   └── document_delete_consumer.py
 │   │   │   ├── messages/         # MQ 业务消息
 │   │   │   │   ├── parse_task.py
+│   │   │   │   ├── document_delete.py
 │   │   │   │   ├── cache_sync.py
-│   │   │   │   └── usage_report.py   # parse_result.py 已删除（LINK-166）
+│   │   │   │   ├── token_usage.py
+│   │   │   │   └── chat_turn.py       # parse_result.py 已删除（LINK-166）
 │   │   │   └── vendors/          # MQ 厂商适配
 │   │   │       ├── rabbitmq_adapter.py
 │   │   │       └── kafka/        # Kafka 适配与 Topic 管理
