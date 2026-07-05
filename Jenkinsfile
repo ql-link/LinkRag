@@ -14,7 +14,8 @@ pipeline {
     environment {
         IMAGE      = 'tolink-rag'
         TAG        = "${env.GIT_COMMIT?.take(8) ?: env.BUILD_NUMBER}"
-        DEPLOY_DIR = '/opt/tolink/toLink-Rag'   // TODO: 本机部署目录，内含 .env 和 deploy/docker-compose.yml
+        DEPLOY_DIR = '/opt/tolink/toLink-Rag'   // TODO: 本机部署目录，内含 .env.production 和 deploy/docker-compose.yml
+        RAG_ENV_FILE = '/opt/tolink/toLink-Rag/.env.production'
     }
 
     stages {
@@ -50,6 +51,8 @@ pipeline {
                 sh """
                     cd ${DEPLOY_DIR}
                     export TAG=${TAG}
+                    export RAG_ENV_FILE=${RAG_ENV_FILE}
+                    test -f "${RAG_ENV_FILE}" || { echo "Missing RAG env file: ${RAG_ENV_FILE}"; exit 14; }
                     docker compose -f deploy/docker-compose.yml up -d
                 """
             }
