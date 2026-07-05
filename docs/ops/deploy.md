@@ -6,22 +6,32 @@
 
 ## 依赖服务清单
 
-`docker-compose.yml` 提供本地全套依赖：
+根目录 `docker-compose.yml` 提供主机服务器中间件栈：
 
 | 服务 | 镜像 | 主机端口 | 用途 | 必需 |
 | --- | --- | --- | --- | --- |
 | `mysql` | `mysql:8.0` | 3306 | 用户、LLM 配置、用量记录、Chunk 状态 | ✅ |
 | `redis` | `redis:7.2-alpine` | 6379 | 用户 LLM 配置缓存、共享下发 | ✅ |
 | `minio` | `minio/minio` | 9000 / 9001 | 原始文档、解析产物的对象存储 | 二选一¹ |
-| `qdrant` | `qdrant/qdrant` | 6333 / 6334 | 向量索引存储（默认） | 二选一² |
-| `elasticsearch` | `elasticsearch:8.11.3` | 9200 | 向量索引存储（备选） | 二选一² |
+| `qdrant` | `qdrant/qdrant` | 6333 / 6334 | 稠密 / 稀疏 / BM25 索引存储 | ✅ |
 | `zookeeper` | `bitnami/zookeeper:3.9` | 2181 | Kafka 协调 | 当 MQ 为 Kafka 时必需 |
 | `kafka` | `bitnami/kafka:3.7` | 9092 | 异步消息中台 | 当 `MQ_VENDOR=kafka` 时必需 |
 | `kafka-ui` | `provectuslabs/kafka-ui` | 9081 | Kafka 调试 UI | 可选 |
+| `loki` | `grafana/loki:2.9.8` | 3100 | 集中日志存储与查询 | ✅ |
 
 注 1：`STORAGE_TYPE=minio` 使用 MinIO，`STORAGE_TYPE=local` 使用 `LOCAL_DOCS_PATH` 本地目录。
-注 2：`VECTOR_STORE_TYPE` 决定向量存储用 `qdrant` 还是 `elasticsearch`。
-注 3：`BM25_BACKEND` 决定 BM25 全文检索后端用 `es`（默认，复用上面的 Elasticsearch）还是 `qdrant`（复用向量库进程，用 sparse vector + `Modifier.IDF` 实现真 BM25，无需独立服务）。设 `qdrant` 时 BM25 一路不依赖 ES；若 `VECTOR_STORE_TYPE` 也不用 ES，则可完全不启动 `elasticsearch` 服务。
+注 2：当前生产固定使用 Qdrant，不再部署 Elasticsearch。BM25 通过 Qdrant sparse vector + `Modifier.IDF` 承载。
+
+## Compose 文件分层
+
+| 文件 | 用途 |
+| --- | --- |
+| `docker-compose.yml` | 主机服务器中间件栈，作为当前主机部署入口 |
+| `deploy/host-server/docker-compose.yml` | 主机服务器中间件栈的 deploy 目录版本 |
+| `deploy/cloud-server/docker-compose.yml` | 云服务器应用栈：Java、Python RAG、Web、Promtail |
+| `deploy/docker-compose.yml` | 保留的 Python RAG 单服务部署入口 |
+
+Promtail 必须部署在产生日志文件的云服务器上；Loki 部署在主机服务器中间件栈中。
 
 ## 启动顺序
 

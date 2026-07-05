@@ -531,6 +531,10 @@ class Settings(BaseSettings):
     MINIO_PRIVATE_BUCKET: str = "tolink-rag-docs"
     MINIO_PUBLIC_BUCKET: str = "tolink-public"
     MINIO_USE_SSL: bool = False
+    # Optional external/public HTTP(S) endpoint used only when generating object URLs
+    # for cloud parsers and browser-facing resources. S3 SDK traffic still uses
+    # MINIO_ENDPOINT.
+    MINIO_PUBLIC_ENDPOINT: Optional[str] = None
     LOCAL_DOCS_PATH: str = "./data/documents"
     PDF_PARSER_BACKEND: str = "mineru"  # auto / mineru / opendataloader / naive
     PDF_PARSER_FALLBACKS: str = ""

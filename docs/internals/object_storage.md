@@ -66,9 +66,11 @@ build_object_url(bucket: str, object_key: str) -> str
 - `MINIO_PRIVATE_BUCKET`
 - `MINIO_PUBLIC_BUCKET`
 - `MINIO_USE_SSL`
+- `MINIO_PUBLIC_ENDPOINT`
 - `LOCAL_DOCS_PATH`
 
 MinIO endpoint 可带 `http://` 或 `https://`；不带 scheme 时由 `MINIO_USE_SSL` 决定。
+`MINIO_PUBLIC_ENDPOINT` 可选，仅用于 `build_object_url` 生成给云端解析器或浏览器访问的对象 URL；为空时复用 `MINIO_ENDPOINT`。S3 SDK 读写仍固定使用 `MINIO_ENDPOINT`，避免公网反向代理影响签名请求。
 `MINIO_PRIVATE_BUCKET` 是 RAG 文档默认桶，也是 Python 侧非 `md`/`markdown` 解析产物的实际写入桶；
 `MINIO_PUBLIC_BUCKET` 对齐 Java 端公开读桶（默认 `tolink-public`，需配匿名读），承载博客与反馈附件等不敏感资源（由 Java 写入，Python 侧不写）。原博客专用桶 `tolink-blog` 已并入该公开桶。
 
