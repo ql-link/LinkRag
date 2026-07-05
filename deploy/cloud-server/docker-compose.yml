@@ -1,0 +1,90 @@
+# 云服务器应用栈。
+# 包含 Java 管理端、Python RAG 服务、前端，以及跟随应用部署的 Promtail。
+# MySQL / Redis / MinIO / Qdrant / Kafka / Loki 等共享中间件由主机服务器提供。
+#
+# 用法示例：
+#   cd deploy/cloud-server
+#   HOST_VPN_IP=100.86.10.52 \
+#   RAG_TAG=a0c0592a SERVICE_TAG=f3c39554 WEB_TAG=4964c6ae \
+#   docker compose up -d
+
+services:
+  tolink-service:
+    image: tolink-service:${SERVICE_TAG:-latest}
+    container_name: tolink-service
+    restart: always
+    environment:
+      - TZ=Asia/Shanghai
+      - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:-prod}
+      - SPRING_CONFIG_ADDITIONAL_LOCATION=file:/app/config/
+      - RECALL_SESSION_STREAM_BASE_URL=${RECALL_SESSION_STREAM_BASE_URL:-http://117.72.214.40:8000}
+      - OBSERVABILITY_LOKI_BASE_URL=${OBSERVABILITY_LOKI_BASE_URL:-http://${HOST_VPN_IP:-100.86.10.52}:3100}
+    volumes:
+      - ${SERVICE_CONFIG_PATH:-/opt/tolink/toLink-Service/config}:/app/config:ro
+      - ${SERVICE_LOG_PATH:-/opt/tolink/toLink-Service/logs}:/app/logs
+    ports:
+      - "${SERVICE_HTTP_PORT:-8080}:8080"
+    networks:
+      - tolink-app-net
+
+  tolink-rag:
+    image: tolink-rag:${RAG_TAG:-latest}
+    container_name: tolink-rag
+    restart: always
+    env_file:
+      - ${RAG_ENV_FILE:-/opt/tolink/toLink-Rag/.env.production}
+    environment:
+      TZ: Asia/Shanghai
+      LOG_SERVICE_NAME: tolink-rag
+    volumes:
+      - ${RAG_LOG_PATH:-/opt/tolink/toLink-Rag/logs}:/app/logs
+    ports:
+      - "${RAG_HTTP_PORT:-8000}:8000"
+    networks:
+      - tolink-app-net
+
+  linkrag-web:
+    image: linkrag-web:${WEB_TAG:-latest}
+    container_name: linkrag-web
+    restart: always
+    environment:
+      - TZ=Asia/Shanghai
+    volumes:
+      - ${WEB_NGINX_CONF:-/opt/tolink/LinkRag-Web/nginx/default.conf}:/etc/nginx/conf.d/default.conf:ro
+      - ${CERTBOT_WEBROOT:-/opt/tolink/letsencrypt/www}:/var/www/certbot:ro
+      - ${LETSENCRYPT_CONF:-/opt/tolink/letsencrypt/conf}:/etc/letsencrypt:ro
+    ports:
+      - "${WEB_HTTP_PORT:-80}:80"
+      - "${WEB_HTTPS_PORT:-443}:443"
+    networks:
+      - tolink-app-net
+    depends_on:
+      - tolink-service
+      - tolink-rag
+
+  promtail:
+    image: grafana/promtail:2.9.8
+    container_name: tolink-promtail
+    restart: always
+    command:
+      - -config.file=/etc/promtail/promtail-remote-config.yml
+      - -config.expand-env=true
+    environment:
+      LOKI_PUSH_URL: ${LOKI_PUSH_URL:-http://${HOST_VPN_IP:-100.86.10.52}:3100/loki/api/v1/push}
+    volumes:
+      - ../observability/promtail-remote-config.yml:/etc/promtail/promtail-remote-config.yml:ro
+      - ${SERVICE_LOG_PATH:-/opt/tolink/toLink-Service/logs}:/var/log/tolink-service:ro
+      - ${RAG_LOG_PATH:-/opt/tolink/toLink-Rag/logs}:/var/log/tolink-rag:ro
+      - promtail_positions:/tmp
+    networks:
+      - tolink-app-net
+    depends_on:
+      - tolink-service
+      - tolink-rag
+
+networks:
+  tolink-app-net:
+    external: true
+
+volumes:
+  promtail_positions:
