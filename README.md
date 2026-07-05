@@ -15,7 +15,6 @@
   <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white">
   <img alt="Kafka" src="https://img.shields.io/badge/Kafka-MQ-231F20?logo=apachekafka&logoColor=white">
   <img alt="Qdrant" src="https://img.shields.io/badge/Qdrant-Dense%20%26%20Sparse-DC244C">
-  <img alt="Elasticsearch" src="https://img.shields.io/badge/Elasticsearch-BM25-005571?logo=elasticsearch&logoColor=white">
   <img alt="License" src="https://img.shields.io/badge/License-MIT-blue">
 </p>
 
@@ -29,9 +28,9 @@
 
 ## LinkRag 是什么？
 
-`LinkRag` 是一套企业级 RAG 系统，让任何人都能把自己的文档变成可对话的知识库——覆盖从文档接入、解析、分片、向量化、检索到问答生成的全链路能力。
+`LinkRag` 是一款从0开始完全自研自建的已上线RAG项目，立意之初是为了作为Agent的数据底座而构建，提供非结构化文档的存储召回。目前已经基于传统路线实现向量RAG，构建出完整的Web服务，可作为通用知识库解决企业/个人知识问答场景。同时我们也在拓展Agent的落地场景，将文档的存与查拓展到辅助写成为长期记忆底座。
 
-本仓库是其中的 **Python RAG 服务**，也是整个系统的引擎：它把各种复杂格式的文档解析成结构化 Markdown，按语义切成可检索的知识单元，建立稠密、稀疏、全文三路索引；在查询时多路并行召回、融合、重排，最终基于真正检索到的内容生成有据可查的答案。整个过程通过消息队列与 Java 业务系统异步集成，业务侧只管下发任务，不必关心解析与检索的内部实现。
+本仓库是其中的 **Python RAG 服务**，也是整个系统的引擎：它把各种复杂格式的文档解析成结构化 Markdown，按语义切成可检索的知识单元，建立稠密、稀疏、BM25 三路索引；在查询时多路并行召回、融合、重排，最终基于真正检索到的内容生成有据可查的答案。整个过程通过消息队列与 Java 业务系统异步集成，业务侧只管下发任务，不必关心解析与检索的内部实现。
 
 能力细节见技术文档：[文件解析](./docs/internals/file_parser.md) · [分块](./docs/internals/chunking.md) · [向量化](./docs/internals/vectorization.md) · [召回](./docs/internals/recall_pipeline.md)。
 
@@ -61,7 +60,7 @@
 
 **3. 三路召回，各取所长——混合检索 + RRF 融合**
 
-没有哪一种检索方式能包打天下。LinkRag 同时跑三路：稠密向量（Qdrant，擅长语义相似）、稀疏向量（lexical 权重，擅长术语和关键词的精确匹配）、BM25 全文（Elasticsearch）。三路并行触发，单路超时或出错按容错策略降级、不拖垮整体，再用 RRF（只看排名、不直接相加）把物理意义完全不同的分数稳定融合在一起。召回路是可插拔的协议，将来接入 GraphRAG、wiki 只需实现一个接口；融合之后还能接 rerank 精排，重排模型不可用时自动回落到 RRF 顺序。
+没有哪一种检索方式能包打天下。LinkRag 同时跑三路：稠密向量（Qdrant，擅长语义相似）、稀疏向量（lexical 权重，擅长术语和关键词的精确匹配）、BM25 全文（Qdrant sparse vector + IDF，擅长关键词匹配）。三路并行触发，单路超时或出错按容错策略降级、不拖垮整体，再用 RRF（只看排名、不直接相加）把物理意义完全不同的分数稳定融合在一起。召回路是可插拔的协议，将来接入 GraphRAG、wiki 只需实现一个接口；融合之后还能接 rerank 精排，重排模型不可用时自动回落到 RRF 顺序。
 
 <p align="center">
   <img alt="三路混合召回 + RRF 融合" src="./docs/assets/sketches/sketch-recall.png" width="680">
@@ -73,9 +72,9 @@ RAG 最怕"一本正经地胡说"。LinkRag 把召回到的片段回填正文、
 
 **5. 入库不怕中断，失败可续跑——可靠的处理流水线**
 
-一篇文档入库要过六道工序（清洗 → 分片 → 向量化 → 预分词 → ES 索引 → 稀疏向量化），任何一步都可能因为外部服务抖动而失败。LinkRag 以 MySQL 为权威真值源、把每一步的状态都落库：任一阶段失败即终态，重试时从第一个未完成的阶段断点续跑，已成功的阶段直接跳过；task_id 唯一索引保证同一任务不被重复处理，重试用 CAS 抢占防止并发重复执行。向量与全文索引都是可重建的副本，一旦与真值出现不一致，由补偿流程收敛。
+一篇文档入库要过多道工序（清洗 → 分片 → 向量化 → 预分词 → BM25 索引 → 稀疏向量化），任何一步都可能因为外部服务抖动而失败。LinkRag 以 MySQL 为权威真值源、把每一步的状态都落库：任一阶段失败即终态，重试时从第一个未完成的阶段断点续跑，已成功的阶段直接跳过；task_id 唯一索引保证同一任务不被重复处理，重试用 CAS 抢占防止并发重复执行。向量与全文索引都是可重建的副本，一旦与真值出现不一致，由补偿流程收敛。
 
-分片之后，稠密向量、稀疏向量、BM25 三路索引并行构建，BM25 这条还要先过预分词——索引侧与召回侧共用同一套分词，保证词分布不漂移：
+分片之后，稠密向量、稀疏向量、BM25 三路索引并行构建，BM25 通过 Qdrant sparse vector 承载，并在索引侧与召回侧共用同一套预分词结果，保证词分布不漂移：
 
 <p align="center">
   <img alt="三路索引并行构建" src="./docs/assets/sketches/sketch-indexing.png" width="680">
@@ -119,6 +118,17 @@ LinkRag 由三个仓库协作组成：
 | [ql-link/LinkRag-Service](https://github.com/ql-link/LinkRag-Service) | Java 管理端：业务编排、任务下发与终态回收 |
 | [ql-link/LinkRag-Web](https://github.com/ql-link/LinkRag-Web) | 前端：知识库管理与交互界面 |
 
+## 部署 Compose 说明
+
+| 文件 | 用途 |
+| --- | --- |
+| [docker-compose.yml](./docker-compose.yml) | 主机服务器中间件栈：MySQL、Redis、MinIO、Qdrant、Kafka、Kafka UI、Loki |
+| [deploy/host-server/docker-compose.yml](./deploy/host-server/docker-compose.yml) | 主机服务器中间件栈的 deploy 目录版本 |
+| [deploy/cloud-server/docker-compose.yml](./deploy/cloud-server/docker-compose.yml) | 云服务器应用栈：Java、Python RAG、Web、Promtail |
+| [deploy/docker-compose.yml](./deploy/docker-compose.yml) | 保留的 Python RAG 单服务部署入口 |
+
+日志拓扑：Loki 部署在主机服务器；Promtail 跟随云服务器应用部署，读取 Java/Python 本机日志并通过 VPN 推送到 Loki。
+
 ## 架构导览
 
 LinkRag 以本仓的 Python RAG 服务为核心，前端与 Java 管理端在业务侧协作，通过消息队列与 RAG 服务异步集成，数据落在共享基础设施。整体结构见文首总览图。
@@ -138,7 +148,7 @@ LinkRag 以本仓的 Python RAG 服务为核心，前端与 Java 管理端在业
 
 完整导航见 [docs/README.md](./docs/README.md)。常用入口：
 
-- **对外契约**：[HTTP](./docs/api/http_contracts.md) / [MQ](./docs/api/mq_contracts.md) / [错误码](./docs/api/error_codes.md) / [MySQL](./docs/api/schemas/mysql.md) · [Qdrant](./docs/api/schemas/qdrant.md) · [Elasticsearch](./docs/api/schemas/elasticsearch.md) Schema
+- **对外契约**：[HTTP](./docs/api/http_contracts.md) / [MQ](./docs/api/mq_contracts.md) / [错误码](./docs/api/error_codes.md) / [MySQL](./docs/api/schemas/mysql.md) · [Qdrant](./docs/api/schemas/qdrant.md) Schema
 - **内部实现**：[file_parser](./docs/internals/file_parser.md) / [chunking](./docs/internals/chunking.md) / [vectorization](./docs/internals/vectorization.md) / [recall_pipeline](./docs/internals/recall_pipeline.md) / [workflow_engine](./docs/internals/workflow_engine.md) / [mq](./docs/internals/mq.md)
 - **部署与配置**：[deploy](./docs/ops/deploy.md) / [configure](./docs/ops/configure.md)
 - **贡献者规范**：[docs/contributing.md](./docs/contributing.md) — 分支、提交、测试、迁移、文档同步

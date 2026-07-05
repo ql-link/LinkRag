@@ -1,14 +1,14 @@
 ---
 name: branch-pr-workflow
-description: 当用户认为当前模块代码实现完毕，且当前分支应为 dev，需要从 dev 基于当前修改创建规范分支、提交并发起合并到 dev 的 GitHub PR 时使用。适用于“从 dev 新建分支”“把当前修改提 PR”“实现完成后创建 feature/refactor 分支并 PR”等交付收口场景。本 skill 是交付链终点，并在建分支/提 PR 前执行收口门槛：测试未过、契约文档失同步、acceptance 未提升者拒绝收口。
-when_to_use: "当代码实现完成、准备从 dev 新建规范分支并发起合并 PR 时（交付链终点）激活。触发示例：'代码写完了提个 PR'、'从 dev 建个分支提交'、'实现完成创建 feature 分支并 PR'。进入即执行收口门槛校验：测试未全绿 / 契约改动未同步文档 / acceptance 仍停在 .specs 未提升时，停止并回退到对应 skill（run-all-tests、contract-guard、acceptance-generator），不强行收口。"
+description: 当用户认为当前模块代码实现完毕，且当前分支应为 dev，需要从 dev 基于当前修改创建规范分支、提交并发起合并到 dev 的 GitHub PR 时使用；也用于发布收口，即直接创建 dev -> master 的 release PR，不新建 release 分支。适用于“从 dev 新建分支”“把当前修改提 PR”“实现完成创建 feature/refactor 分支并 PR”“发布新版本”“dev 合并 master”等交付收口场景。本 skill 是交付链终点，并在建分支/提 PR 前执行收口门槛：测试未过、契约文档失同步、acceptance 未提升者拒绝收口。
+when_to_use: "当代码实现完成、准备从 dev 新建规范分支并发起合并 PR 时（交付链终点），或准备发布版本、需要创建 dev -> master release PR 时激活。触发示例：'代码写完了提个 PR'、'从 dev 建个分支提交'、'实现完成创建 feature 分支并 PR'、'发布新版本'、'把 dev 合并 master'。进入即执行收口门槛校验：测试未全绿 / 契约改动未同步文档 / acceptance 仍停在 .specs 未提升时，停止并回退到对应 skill（run-all-tests、contract-guard、acceptance-generator），不强行收口。发布 PR 不创建新分支，直接使用远端 dev 作为 head、master 作为 base。"
 ---
 
 # Branch PR Workflow
 
 ## Goal
 
-在当前模块实现完成后，把 `dev` 上的当前修改安全迁移到规范分支，并创建合并回 `dev` 的 PR。
+在当前模块实现完成后，把 `dev` 上的当前修改安全迁移到规范分支，并创建合并回 `dev` 的 PR；或在版本发布时直接创建 `dev -> master` release PR。
 
 ## Preconditions
 
@@ -17,6 +17,22 @@ when_to_use: "当代码实现完成、准备从 dev 新建规范分支并发起�
 3. 不要把无关本地修改混入分支、提交或 PR。
 
 如果当前分支不是 `dev`，停止并说明当前分支；不要自动切分支。
+
+## Release PR Mode
+
+当用户要求“发布新版本”“发版”“把 dev 合并 master”或语义等价的版本发布收口时，进入本模式。
+
+发布 PR 的目标是把已经集成到远端 `dev` 的内容合入 `master`，因此默认不创建任何新分支：
+
+1. 执行 `git fetch --all --prune`，确认远端 `dev` 与 `master` 状态。
+2. 检查是否已有打开的 `dev -> master` PR；有则复用并更新说明，不重复创建。
+3. 使用远端 `dev` 作为 head、`master` 作为 base 创建 release PR。
+4. PR 标题使用 `release: vX.Y.Z` 或仓库既有发布标题格式。
+5. PR 描述必须列出本次 `master..dev` 的主要变更、数据库迁移、配置变更、文档同步项、测试证据和已知风险。
+
+只有用户明确要求冻结发布内容、准备候选分支，或项目规范在当前仓库强制要求时，才创建 `release/<version>` 分支。不要为了创建 release PR 自动从 `dev` 派生新分支。
+
+发布 PR 合并方式必须是普通 merge commit，不要 squash。合并后再在 `master` 合入提交上打 tag。
 
 ## 收口硬门槛（建分支 / 提 PR 前必须满足）
 
@@ -63,6 +79,8 @@ refactor/parser_entry_pipeline
 避免使用空格、中文、驼峰、连续分隔符和泛泛名称，例如 `feature/update`。
 
 ## Workflow
+
+以下流程只适用于功能 / 重构 / 修复等日常 PR；发布收口使用上方 Release PR Mode。
 
 1. 检查状态：
    - `git branch --show-current`

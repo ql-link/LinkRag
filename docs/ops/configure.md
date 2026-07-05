@@ -16,7 +16,7 @@
 | Markdown 增强 | `MARKDOWN_PARSER_*` | 调整解析增强行为时 |
 | 分块策略 | `CHUNKING_*` | 调整分块参数时 |
 | 流程编排 | `WORKFLOW_*` | 使用轻量流程编排引擎时 |
-| 向量存储 | `VECTOR_STORE_TYPE`, `QDRANT_*`, `ES_*`, `CHUNK_INDEX_*`, `SPARSE_VECTOR_*` | 始终（选择 Qdrant 或 ES，并配置稀疏向量） |
+| 向量存储 | `VECTOR_STORE_TYPE`, `QDRANT_*`, `CHUNK_INDEX_*`, `SPARSE_VECTOR_*` | 始终（当前生产固定使用 Qdrant） |
 | 对象存储 | `STORAGE_TYPE`, `MINIO_*`, `LOCAL_DOCS_PATH` | 始终 |
 | 解析临时目录 | `PARSE_TEMP_DIR` | 始终（流式下载落盘目录） |
 | PDF 解析 | `PDF_PARSER_*`, `MINERU_*`, `DOCLING_*` | 处理 PDF 时 |
@@ -37,18 +37,19 @@
 | `MINIO_*`（若 `STORAGE_TYPE=minio`） | 对象存储凭据 |
 | `MINIO_RAW_BUCKET`（若 `STORAGE_TYPE=minio`） | 原文件桶：用户上传的源文件，由 Java 写入，Python 只读；默认 `tolink-rag-raw`，需在 MinIO 控制台预建 |
 | `MINIO_PUBLIC_BUCKET`（若 `STORAGE_TYPE=minio`） | 公开桶：博客与反馈附件等不敏感资源，默认 `tolink-public`，需配置匿名读 |
-| `QDRANT_HOST` 或 `ES_HOST`（取决于 `VECTOR_STORE_TYPE`） | 向量存储 |
+| `QDRANT_HOST` / `QDRANT_PORT` | 向量存储 |
 
 ## 关键开关
 
 | 开关 | 默认 | 含义 |
 | --- | --- | --- |
 | `MQ_VENDOR` | `kafka` | 切换 Kafka / RabbitMQ |
-| `VECTOR_STORE_TYPE` | `qdrant` | 切换 Qdrant / Elasticsearch |
+| `VECTOR_STORE_TYPE` | `qdrant` | 当前生产固定使用 Qdrant |
 | `SPARSE_VECTOR_ENABLED` | `true` | 是否在向量化阶段同步生成稀疏向量；关闭后保持旧 dense-only 语义 |
 | `STORAGE_TYPE` | `minio` | 切换 MinIO / 本地存储 |
 | `MINIO_RAW_BUCKET` | `tolink-rag-raw` | 用户上传原文件桶，由 Java 写入；Python 解析时从此桶下载源文件，不写入。需在 MinIO 控制台预先创建 |
 | `MINIO_PUBLIC_BUCKET` | `tolink-public` | Java 端公开读桶（博客 + 反馈附件）；Python 解析产物（Markdown + 图片）写入 `MINIO_PRIVATE_BUCKET`。原博客专用桶 `tolink-blog` 已并入 |
+| `MINIO_PUBLIC_ENDPOINT` | 空 | 可选公网对象访问入口；为空时复用 `MINIO_ENDPOINT`。用于给 MinerU 等云端解析器生成可访问 URL，SDK 读写仍走 `MINIO_ENDPOINT` |
 | `PARSE_TEMP_DIR` | `/tmp/tolink-rag-parse` | 解析任务源文件临时落盘目录。流式下载在此创建临时文件；解析为 markdown 后立即清理；worker 启动时清空兜底。不预设最小容量，沿用部署机系统盘大小；写满会归类为 `TEMP_DISK_FULL` 错误码。扩消费者时容量需要 ≥ 单文件上限 × 并发数 |
 | `PDF_PARSER_BACKEND` | `mineru` | PDF 解析后端：`auto` / `mineru` / `opendataloader` / `naive` |
 | `PDF_PARSER_FALLBACKS` | 空 | 逗号分隔回退链，空表示不回退 |
@@ -70,18 +71,18 @@
 
 > splitter 不再保留 `CHUNKING_ENABLE_ADVANCED_PIPELINE` 布尔开关，也不再回退到旧规则分片器。第二阶段默认使用 `noop`；`noop` 只做结构透传，不保证 final chunk token 数不超过 `CHUNKING_HARD_MAX_TOKENS`。如需启用 TextTiling depth valley 语义细分与 hard max 保障，显式配置 `CHUNKING_STAGE_TWO_ALGORITHM=semantic_depth_window`。
 
-> 注：ES 入库失败即终态，无 ES 内部自动重试配置。原 `ES_INDEXING_MAX_RETRY` 已移除（用户侧重试由 `document_parse_pipeline.retry_count` 记录，触发路径待后续需求接线）。
+> 注：当前生产不再部署 Elasticsearch；BM25 由 Qdrant sparse vector + `Modifier.IDF` 承载。
 
 ## 日志
 
-日志系统基于 Loguru，统一在 [src/utils/logger.py](../../src/utils/logger.py) 配置。运行时**始终输出到 stdout**（容器 / 本地通用）；开启文件落盘后，额外按 Java 端约定写入按日期归档的本地文件。
+日志系统基于 Loguru，统一在 [src/observability/logging.py](../../src/observability/logging.py) 配置。运行时**始终输出到 stdout**（容器 / 本地通用）；开启文件落盘后，额外按 Java 端约定写入按日期归档的 JSON Lines 本地文件。
 
 | 变量 | 默认 | 含义 |
 | --- | --- | --- |
 | `LOG_LEVEL` | `INFO` | 控制台与全量日志文件的级别下限；ERROR 文件固定只收 ERROR 及以上，不受此项影响 |
 | `LOG_FILE_ENABLED` | `true` | 是否写本地文件。纯容器环境若靠 `docker logs` 采集，可设 `false` 只保留 stdout |
 | `LOG_DIR` | `logs` | 日志根目录；相对路径会解析到项目根目录下，避免从 `src/` 等不同目录启动时生成多份日志 |
-| `LOG_SERVICE_NAME` | `tolink-service` | 日志文件名前缀 |
+| `LOG_SERVICE_NAME` | `tolink-rag` | 日志服务名与文件名前缀；Java 服务使用 `tolink-service`，Python RAG 服务使用 `tolink-rag` |
 | `LOG_RETENTION_DAYS` | `7` | 日志保留天数，超过自动清理旧日期目录 |
 
 落盘结构（每天 0 点切分，按日期目录归档，对齐 Java 端）：
@@ -89,15 +90,33 @@
 ```
 logs/
 ├── 2026-06-07/
-│   ├── tolink-service-<pid>.log          # 当天全量（>= LOG_LEVEL）
-│   └── tolink-service-error-<pid>.log    # 当天 ERROR 及以上
+│   ├── tolink-rag-<pid>.log          # 当天全量（>= LOG_LEVEL）
+│   └── tolink-rag-error-<pid>.log    # 当天 ERROR 及以上
 ├── 2026-06-08/
-│   ├── tolink-service-<pid>.log
-│   └── tolink-service-error-<pid>.log
+│   ├── tolink-rag-<pid>.log
+│   └── tolink-rag-error-<pid>.log
 └── ...
 ```
 
-实现要点：文件名中的日期由 Loguru 在创建新文件时求值，配合 `rotation="00:00"` 每天 0 点切分，自然落入新的日期目录；写入开启 `enqueue` 队列，异步刷盘不阻塞业务。
+实现要点：文件名中的日期由 Loguru 在创建新文件时求值，配合 `rotation="00:00"` 每天 0 点切分，自然落入新的日期目录；写入开启 `enqueue` 队列，异步刷盘不阻塞业务。文件 sink 使用 `serialize=True`，每行是一条 JSON 日志；采集侧应按 JSON 解析，而不是按旧的管道分隔文本解析。
+
+常用采集字段对应关系：
+
+| 语义字段 | JSON 路径 |
+| --- | --- |
+| `time` | `record.time` |
+| `level` | `record.level.name` |
+| `service` | `record.extra.service` |
+| `host` | `record.extra.host` |
+| `pid` | `record.extra.pid` |
+| `trace_id` | `record.extra.trace_id` |
+| `logger_name` | `record.extra.logger_name` |
+| `message` | `record.message` |
+| `exception` | `record.exception` |
+
+HTTP 请求链路通过 `X-Trace-Id` 头串联：请求带该头时沿用；未带时 Python 端生成 UUID 并在响应头回显。MQ 发送和消费会通过可选 `X-Trace-Id` 消息头透传当前 trace id。
+
+服务名约定：Java 业务服务日志使用 `service=tolink-service`，Python RAG 服务日志使用 `service=tolink-rag`。部署环境可以覆盖 `LOG_SERVICE_NAME`，但必须保持 Java / Python 服务名不同，否则集中采集到 Loki 后无法通过 `service` 标签区分筛选。
 
 `LOG_DIR` 支持绝对路径和相对路径。相对路径统一以项目根目录为基准，例如默认 `LOG_DIR=logs` 始终写入项目根目录的 `logs/`，不会因为进程从 `src` 目录启动而改写到该目录下的 `logs/`。
 
@@ -108,7 +127,7 @@ logs/
 
 ### 统一日志管道（标准库 logging 桥接）
 
-项目自身代码统一用 Loguru（`from src.utils.logger import logger`），但 uvicorn、SQLAlchemy、kafka、transformers 等第三方库以及少数遗留模块仍走 Python 标准库 `logging`。[src/utils/logger.py](../../src/utils/logger.py) 通过 `InterceptHandler` 把标准库 logging 全量桥接进 Loguru，使运行时**只有一条输出管道**：所有日志（无论来自 Loguru 还是标准库）都进同一份日期文件、同一种格式、由 `LOG_LEVEL` 统一过滤。
+项目自身代码统一用 Loguru。新代码优先从 `src.observability.logging` 引入；历史代码中的 `from src.utils.logger import logger` 仍由兼容层转发。uvicorn、SQLAlchemy、kafka、transformers 等第三方库以及少数遗留模块仍走 Python 标准库 `logging`，[src/observability/logging.py](../../src/observability/logging.py) 通过 `InterceptHandler` 把标准库 logging 全量桥接进 Loguru，使运行时**只有一条输出管道**：所有日志（无论来自 Loguru 还是标准库）都进同一份日期文件、同一种 JSON 结构、由 `LOG_LEVEL` 统一过滤。
 
 要点：
 
@@ -118,6 +137,37 @@ logs/
 - 全局未捕获异常由 [src/main.py](../../src/main.py) 的 `Exception` handler 兜底：带请求方法 / 路径记录完整堆栈，再返回统一 500 错误体 `{code, message, data}`。
 - 应用关闭（lifespan shutdown）时 `await logger.complete()`，等待 `enqueue` 队列里的日志全部落盘，避免退出丢尾部日志。
 - 约定：**应用代码新增日志一律用 Loguru**；遗留的标准库 logging 会被自动桥接，无需改写，但不要再新增标准库 logging 用法。
+
+### 集中日志部署（Loki + Promtail）
+
+生产环境按分布式拓扑部署：Loki 放在中间件服务器，Promtail 放在产生日志文件的应用服务器。Promtail 需要直接读取本机日志文件，不建议通过远程挂载读取另一台机器上的日志。
+
+```text
+应用服务器（Java / Python）
+  ├─ toLink-Service 写本机 Java 日志
+  ├─ toLink-Rag 写本机 Python 日志
+  └─ Promtail 读取本机日志并推送到 Loki
+
+中间件服务器
+  └─ Loki 集中存储日志并提供 LogQL 查询
+```
+
+中间件服务器启动 Loki：
+
+```bash
+docker compose up -d loki
+curl http://127.0.0.1:3100/ready
+```
+
+应用服务器启动 Promtail：
+
+```bash
+HOST_VPN_IP=<loki-vpn-host> docker compose -f deploy/cloud-server/docker-compose.yml up -d promtail
+```
+
+当前仓库根目录 [docker-compose.yml](../../docker-compose.yml) 只保留主机服务器中间件，包含 `loki`，不包含 `promtail`。Promtail 跟随云服务器应用栈部署，配置见 [deploy/cloud-server/docker-compose.yml](../../deploy/cloud-server/docker-compose.yml)。
+
+安全要求：Loki `3100` 不应直接暴露公网；跨服务器访问应走 VPN、内网或受控反向代理，并只允许应用服务器和 Java 查询代理访问。
 
 ## MQ 失败兜底（重试 + 死信）
 
@@ -192,6 +242,7 @@ logs/
 | `RECALL_BM25_TOP_K` | `100` | RAG pipeline bm25 路执行期召回深度；数据集级 `recall_config.bm25_top_k` 未配置时使用 |
 | `RECALL_ENABLED_SOURCES` | `bm25,sparse,dense` | 启用的召回路（逗号分隔）。本期默认开启三路；运维侧可显式 set `bm25,sparse` 暂时回退到 dev 旧行为；未登记的 source 出现在配置中装配期 `ValueError` |
 | `RECALL_FUSION_STRATEGY` | `rrf` | 召回融合策略，可选 `rrf` / `weighted_score`。默认保持 RRF；`weighted_score` 仅在 BM25/sparse/dense 召回后、rerank 前生效 |
+| `RECALL_RRF_K` | `60` | RRF rank constant，计算 `1 / (rrf_k + rank)` 时使用；仅 `RECALL_FUSION_STRATEGY=rrf` 生效，数据集级 `recall_config.rrf_k` 可覆盖 |
 | `RECALL_FUSION_BM25_WEIGHT` | `0.2` | `weighted_score` 下 BM25 路权重；允许为 0，active source 权重和为 0 时本次融合失败 |
 | `RECALL_FUSION_SPARSE_WEIGHT` | `0.3` | `weighted_score` 下 sparse 路权重；允许为 0，active source 权重和为 0 时本次融合失败 |
 | `RECALL_FUSION_DENSE_WEIGHT` | `0.5` | `weighted_score` 下 dense 路权重；允许为 0，active source 权重和为 0 时本次融合失败 |
@@ -206,7 +257,7 @@ logs/
 
 - `RECALL_RESULT_LIMIT=64`：参考 [RAGFlow `rag/nlp/search.py::_rerank_window`](https://github.com/infiniflow/ragflow/blob/main/rag/nlp/search.py) 将 rerank 候选池控制在约 64 的 provider-friendly 窗口；该值是 source-backed baseline，不是本项目评测结论。
 - `RECALL_DENSE_TOP_K=100`：参考 [Sentence Transformers retrieve-and-rerank](https://www.sbert.net/examples/sentence_transformer/applications/retrieve_rerank/README.html) / [Cross-Encoder 文档](https://www.sbert.net/examples/cross_encoder/applications/README.html)，先用 Bi-Encoder 取 top-100，再交 Cross-Encoder 重排。
-- `RECALL_SPARSE_TOP_K=50`：参考 [Elasticsearch RRF 文档](https://www.elastic.co/docs/reference/elasticsearch/rest-apis/reciprocal-rank-fusion) / [RRF retriever sparse vector 示例](https://www.elastic.co/docs/reference/elasticsearch/rest-apis/retrievers/rrf-retriever) 中每路 `rank_window_size=50` 的融合窗口，以及 [Azure AI Search semantic ranker](https://learn.microsoft.com/en-us/azure/search/semantic-search-overview) 对 top 50 的重排窗口。
+- `RECALL_SPARSE_TOP_K=50`：参考 RRF 检索常见的每路 50 候选窗口，以及 [Azure AI Search semantic ranker](https://learn.microsoft.com/en-us/azure/search/semantic-search-overview) 对 top 50 的重排窗口。
 - `RECALL_BM25_TOP_K=100`：参考 [BEIR BM25 + Cross-Encoder reranking 示例](https://github.com/beir-cellar/beir/blob/main/examples/retrieval/evaluation/reranking/evaluate_bm25_ce_reranking.py) 对 BM25 top-100 做 rerank。
 
 配置边界：`RECALL_*_TOP_K` 只驱动完整 RAG pipeline 的三路召回深度；`DENSE_RETRIEVAL_TOP_K` / `SPARSE_RETRIEVAL_TOP_K` 只在直接调用 `VectorStorageFacade.search_*_chunks()` 且调用方未传 `top_k` 时兜底。

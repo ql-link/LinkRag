@@ -21,3 +21,26 @@ ES_STATUS_FAILED = "FAILED"
 
 CHUNK_UPDATE_ALLOWED_STATUSES = (CHUNK_STATUS_INDEXED, CHUNK_STATUS_FAILED)
 CHUNK_DELETE_ALLOWED_STATUSES = (CHUNK_STATUS_PENDING, CHUNK_STATUS_SUCCESS, CHUNK_STATUS_FAILED)
+
+ALLOWED_CHUNK_TYPES = frozenset(
+    [
+        "paragraph",
+        "heading",
+        "list",
+        "blockquote",
+        "code_block",
+        "math_block",
+        "table",
+        "image",
+        "mixed",
+        "front_matter",
+    ]
+)
+DISALLOWED_CHUNK_TYPES = frozenset(["text", "hr"])
+LEGACY_TEXT_CHUNK_TYPE = "text"
+LEGACY_TEXT_BACKFILL_CHUNK_TYPE = "mixed"
+DEFAULT_CHUNK_TYPE = LEGACY_TEXT_BACKFILL_CHUNK_TYPE
+CHUNK_TYPE_COMMENT = (
+    "分片类型: paragraph/heading/list/blockquote/code_block/math_block/table/image/"
+    "mixed/front_matter"
+)

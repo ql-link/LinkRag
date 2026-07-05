@@ -61,13 +61,14 @@ async def test_recall_empty_tokens_short_circuits() -> None:
 
 async def test_recall_reads_type_mult_from_settings() -> None:
     retriever, store = _retriever([])
+    original = settings.BM25_TYPE_MULT
     settings.BM25_TYPE_MULT = {"heading": 1.3}
     try:
         await retriever.recall_topk_chunks(
             Bm25RecallRequest(user_id=1, dataset_id=1, tokens=["退费"], top_k=5)
         )
     finally:
-        settings.BM25_TYPE_MULT = {"heading": 1.3, "table": 1.2, "list": 1.05}
+        settings.BM25_TYPE_MULT = original
     assert store.calls[0]["type_mult"] == {"heading": 1.3}
 
 

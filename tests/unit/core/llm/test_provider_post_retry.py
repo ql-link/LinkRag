@@ -16,6 +16,7 @@ from src.core.llm.providers.openai import OpenAICompatibleProvider
 
 # 坍缩后 openai 兼容厂商共用一个 adapter，``_post`` 5xx 重试逻辑只需覆盖它一处。
 POST_PROVIDERS = [OpenAICompatibleProvider]
+FAKE_API_BASE_URL = "https://llm.test.local/v1"
 
 
 class _FakeResponse:
@@ -27,9 +28,7 @@ class _FakeResponse:
 
     def raise_for_status(self) -> None:
         if self.status_code >= 400:
-            raise httpx.HTTPStatusError(
-                "error", request=None, response=None
-            )
+            raise httpx.HTTPStatusError("error", request=None, response=None)
 
     def json(self) -> dict:
         return self._body
@@ -62,7 +61,7 @@ def _inject(provider, responses: list[_FakeResponse]) -> _FakeHttpClient:
 @pytest.mark.asyncio
 async def test_post_retries_5xx_then_returns_success(cls):
     """首个 500 重试后拿到 200 → 返回成功 body，不抛错。"""
-    provider = cls(api_key="sk-test")
+    provider = cls(api_key="sk-test", api_base_url=FAKE_API_BASE_URL)
     success = {"ok": True, "value": 42}
     fake = _inject(provider, [_FakeResponse(500), _FakeResponse(200, success)])
 
@@ -78,7 +77,7 @@ async def test_post_5xx_exhausts_retries_then_raises(cls):
     """持续 500 直到重试耗尽 → 抛 ProviderConnectionError。"""
     from src.core.llm.exceptions import ProviderConnectionError
 
-    provider = cls(api_key="sk-test", max_retries=2)
+    provider = cls(api_key="sk-test", api_base_url=FAKE_API_BASE_URL, max_retries=2)
     fake = _inject(provider, [_FakeResponse(500)] * 5)
 
     with pytest.raises(ProviderConnectionError):

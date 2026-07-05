@@ -67,6 +67,30 @@ async def test_weighted_score_three_sources_with_default_weights():
 
 
 @pytest.mark.asyncio
+async def test_weighted_score_ignores_rrf_k():
+    bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("cA", SOURCE_BM25, 100.0)])
+    dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("cB", SOURCE_DENSE, 0.9)])
+    pipeline = RecallPipeline(
+        [bm25, dense],
+        RecallPipelineConfig(
+            fusion_strategy="weighted_score",
+            rrf_k=10,
+            fusion_bm25_weight=0.2,
+            fusion_sparse_weight=0.3,
+            fusion_dense_weight=0.5,
+        ),
+    )
+
+    response = await pipeline.execute(
+        RecallRequest(user_id=1, query="q", dataset_ids=[10], rrf_k_override=120)
+    )
+
+    by_id = {h.chunk_id: h for h in response.hits}
+    assert by_id["cA"].fused_score == pytest.approx(0.2 / 0.7)
+    assert by_id["cB"].fused_score == pytest.approx(0.5 / 0.7)
+
+
+@pytest.mark.asyncio
 async def test_weighted_score_preserves_raw_scores_without_normalized_scores():
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("c1", SOURCE_BM25, 100.0)])
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[_hit("c1", SOURCE_SPARSE, 9.0)])

@@ -24,6 +24,8 @@ class MinioStorage(BaseObjectStorage):
             endpoint_url = f"{scheme}://{endpoint}"
 
         self._endpoint_url = endpoint_url.rstrip("/")
+        public_endpoint = settings.MINIO_PUBLIC_ENDPOINT or endpoint_url
+        self._public_endpoint_url = public_endpoint.rstrip("/")
         self._client = boto3.client(
             "s3",
             endpoint_url=endpoint_url,
@@ -61,7 +63,7 @@ class MinioStorage(BaseObjectStorage):
 
     def build_object_url(self, bucket: str, object_key: str) -> str:
         escaped_key = "/".join(quote(part) for part in object_key.split("/"))
-        return f"{self._endpoint_url}/{bucket}/{escaped_key}"
+        return f"{self._public_endpoint_url}/{bucket}/{escaped_key}"
 
     def remove_prefix(self, bucket: str, prefix: str) -> int:
         """列举前缀下全部对象并分批删除（S3 ``delete_objects`` 单批上限 1000）。

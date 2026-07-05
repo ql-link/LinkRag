@@ -68,6 +68,7 @@
 | `dense_score_threshold` | `float` | `0.0` | ≥ 0 | 稠密路分数过滤阈值，低于此分的候选被丢弃 |
 | `recall_enabled_sources` | `list[str]` | `["bm25","sparse","dense"]` | 系统已装配路的子集 | 本数据集启用的召回路；空列表退回系统全部已装配路 |
 | `recall_fusion_strategy` | `str` | `"rrf"` | `{"rrf", "weighted_score"}` | 多路融合算法；`rrf` 只按排名融合，不受各路分数量纲影响；`weighted_score` 按下方三项权重加权求和 |
+| `rrf_k` | `int` | `60` | > 0 | RRF rank constant；仅 `recall_fusion_strategy="rrf"` 时用于 `1 / (rrf_k + rank)` |
 | `fusion_bm25_weight` | `float` | `0.2` | ≥ 0，有限浮点 | `weighted_score` 模式下 BM25 路权重 |
 | `fusion_sparse_weight` | `float` | `0.3` | ≥ 0，有限浮点 | `weighted_score` 模式下稀疏路权重 |
 | `fusion_dense_weight` | `float` | `0.5` | ≥ 0，有限浮点 | `weighted_score` 模式下稠密路权重 |

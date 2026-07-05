@@ -15,6 +15,7 @@ def _final(
     *,
     role: str = "mixed",
     source_id: str | None = "coarse_1",
+    element_types: list[str] | None = None,
     metadata: dict | None = None,
 ) -> FinalChunk:
     return FinalChunk(
@@ -22,7 +23,7 @@ def _final(
         content=content,
         start_line=0,
         end_line=0,
-        element_types=[ElementType.PARAGRAPH.value],
+        element_types=element_types or [ElementType.PARAGRAPH.value],
         heading_trail=[],
         heading_trails=[],
         role=role,
@@ -80,6 +81,23 @@ def test_exporter_falls_back_to_source_coarse_id_for_noop_compatible_output() ->
     chunks = ChunkExporter().export(final_set)
 
     assert chunks[1].metadata["source_chunk_index"] == 0
+
+
+def test_exporter_preserves_front_matter_role_and_protected_type() -> None:
+    final_set = _set(
+        _final(
+            "final_front_matter",
+            "---\ntitle: Hidden\n---",
+            role="front_matter",
+            element_types=[ElementType.FRONT_MATTER.value],
+        )
+    )
+
+    chunks = ChunkExporter().export(final_set)
+
+    assert chunks[0].metadata["chunk_role"] == "front_matter"
+    assert chunks[0].metadata["element_types"] == ["front_matter"]
+    assert chunks[0].metadata["protected_element_types"] == ["front_matter"]
 
 
 def test_exporter_rejects_unresolvable_derived_source() -> None:

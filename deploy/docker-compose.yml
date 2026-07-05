@@ -1,5 +1,5 @@
 # 部署用 compose：引用本机 docker build 出来的镜像并启动
-# 外部依赖（MySQL/Redis/MinIO/ES/Qdrant/Kafka）由根目录 docker-compose.yml 单独拉起
+# 外部依赖（MySQL/Redis/MinIO/Qdrant/Kafka/Loki）由主机服务器中间件栈单独拉起
 # 用法：TAG=xxx docker compose -f deploy/docker-compose.yml up -d
 services:
   tolink-rag:

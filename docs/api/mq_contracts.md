@@ -25,6 +25,12 @@ Java 管理端                          toLink-Rag (Python)
 
 收发 topic 名由消息类的 `MQ_NAME` 常量固定（见 [src/core/mq/messages](../../src/core/mq/messages)），不随 `.env` 改变；环境变量 `PARSE_TASK_TOPIC` 仅用于 Kafka topic 的自动创建（`topic_admin`），不影响实际投递/订阅的 topic。业务方按下方固定值对接即可。
 
+## 公共消息头
+
+所有 MQ 消息可选携带 `X-Trace-Id` header，用于和 HTTP 请求、Java 服务日志、Python 服务日志串联。Python 端发送消息时会把当前日志上下文中的 trace id 写入 `X-Trace-Id`；消费消息时会读取 `X-Trace-Id`、`x-trace-id`、`trace_id` 或 `trace-id` header 并绑定到当前处理协程的日志上下文。
+
+该字段是消息头，不属于业务 payload；缺失时不影响消费兼容性。
+
 ## 解析任务投递（Java → Python）
 
 ### Topic

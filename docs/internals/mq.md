@@ -80,6 +80,14 @@ FastAPI lifespan（src/main.py 组合根装配 _start_mq_consumers）
 
 > **parse_result 终态回传 MQ 已下线（LINK-166）**：Python 端解析完成后**只写 DB 终态**（`document_parse_pipeline`），不再向 Java 发送 `ParseResultMessage`。`messages/parse_result.py` 与生产侧 `ParseResultNotifier`、`PARSE_RESULT_TOPIC` 配置项均已删除。前端改由轮询 Java `parse-results` 接口读 DB 获取终态（LINK-98）；Java 端停止消费见 LINK-165。
 
+### Trace ID 透传
+
+`MQService` 在服务层处理 trace id，不要求各业务消息重复声明字段：
+
+- 发送：当前协程已有 trace id 时，`MQService.send()` / `send_raw()` 自动把它写入 `X-Trace-Id` 消息头；调用方显式传入的同名 header 优先。
+- 消费：`MQService.subscribe()` 会包装业务 callback，从 metadata headers 中读取 `X-Trace-Id` / `x-trace-id` / `trace_id` / `trace-id`，并在 callback 执行期间绑定到日志上下文。
+- 业务 payload 不变；缺少 trace header 时按普通消息消费，日志里的 `trace_id` 为空。
+
 ### 消费者层异常兜底
 
 `consumers/parse_task_consumer.py::handle_parse_task` 在 `ParseTaskPipeline.execute()` 之外再包一层 catch-all：
@@ -109,6 +117,8 @@ Kafka Topic 初始化还会读取：
 - `PARSE_TASK_TOPIC`
 - `CACHE_SYNC_TOPIC`
 - `USAGE_REPORT_TOPIC`
+- `CHAT_TURN_TOPIC`
+- `DOCUMENT_DELETE_TOPIC`
 - `REPLICATION_FACTOR`
 - `MIN_INSYNC_REPLICAS`
 - `MAX_MESSAGE_BYTES`

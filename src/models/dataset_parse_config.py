@@ -40,7 +40,7 @@ class DatasetParseConfig(Base):
     chunking_config = Column(JSON, nullable=False, comment="分块配置（3 项）")
     enhancement_config = Column(JSON, nullable=False, comment="Markdown 增强配置（2 项）")
     pdf_config = Column(JSON, nullable=False, comment="PDF 解析配置（1 项）")
-    recall_config = Column(JSON, nullable=False, comment="召回检索配置（14 项）")
+    recall_config = Column(JSON, nullable=False, comment="召回检索配置（15 项）")
     sparse_embedding_config_id = Column(
         BIGINT(unsigned=True),
         nullable=True,

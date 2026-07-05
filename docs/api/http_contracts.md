@@ -5,6 +5,7 @@
 ## 1. 通用约定
 
 - API 前缀按模块划分：`/api/v1/parser`、`/api/v1/mq`、`/api/v1/llm`、`/api/v1/internal/llm`、`/api/v1/rag`、`/api/v1/recall`。
+- 所有 HTTP 请求可带 `X-Trace-Id` 请求头；未携带时 Python 端生成 UUID。响应会回显本次请求使用的 `X-Trace-Id`，日志上下文同步写入该值。
 - 普通 JSON 响应通常使用 `{code, message, data}` 或模块自定义响应模型。
 - 解析和 MQ 路由异常通常返回 HTTP `500`，`detail` 为异常文本。
 - LLM 路由在业务异常中多返回 `APIResponse(code=500, message=..., data=null)`。
@@ -241,11 +242,11 @@ session token 由 Java 签发、Python 用**独立专用密钥**验签；claims�
 **身份只取 token claims**——body 不含 `user_id`，前端自报一律不信任。融合候选池窗口 / 三路执行期 top_k / 召回分数阈值 /
 召回路 / 融合策略与权重 / 容错模式 / rerank 条数均由服务端**按数据集配置**控制（`dataset_parse_config.recall_config`：
 `recall_result_limit` / `bm25_top_k` / `sparse_top_k` / `dense_top_k` / `sparse_score_threshold` / `dense_score_threshold` / `recall_enabled_sources` /
-`recall_fusion_strategy` / `fusion_bm25_weight` / `fusion_sparse_weight` / `fusion_dense_weight` /
+`recall_fusion_strategy` / `rrf_k` / `fusion_bm25_weight` / `fusion_sparse_weight` / `fusion_dense_weight` /
 `recall_strict` / `rerank_top_n`；多数据集混合取首个 dataset，无数据集配置回退
 `RECALL_RESULT_LIMIT` / `RECALL_BM25_TOP_K` / `RECALL_SPARSE_TOP_K` / `RECALL_DENSE_TOP_K` /
 `SPARSE_RETRIEVAL_SCORE_THRESHOLD` / `DENSE_RETRIEVAL_SCORE_THRESHOLD` / `RECALL_ENABLED_SOURCES` /
-`RECALL_FUSION_STRATEGY` / `RECALL_FUSION_*_WEIGHT` /
+`RECALL_FUSION_STRATEGY` / `RECALL_RRF_K` / `RECALL_FUSION_*_WEIGHT` /
 `RECALL_STRICT_DEFAULT` / `RERANK_DEFAULT_TOP_N` 等系统默认）；均不接受
 请求覆盖。其中 `recall_enabled_sources` **只能在系统已装配的召回路集合内收窄**（不能启用系统未
 装配的路）。模型按 `(user_id, config_source, config_id)` 解析；`config_source=SYSTEM` 时只读取 LinkRag 系统预设。
@@ -333,7 +334,7 @@ data: {"title": "<会话标题>"}
 
 会话鉴权与 `dataset_ids` scope 校验同 `/api/v1/rag/stream`。请求体（仅以下字段；出现 `config_id` /
 `user_id` / `top_k` / `sources` / `strict` / `doc_ids` / `fusion_strategy` / `fusion_weights` /
-`recall_fusion_strategy` / `fusion_*_weight` 等任何未知字段返回 `422`）：
+`recall_fusion_strategy` / `rrf_k` / `fusion_*_weight` 等任何未知字段返回 `422`）：
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |

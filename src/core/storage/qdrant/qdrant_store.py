@@ -386,8 +386,8 @@ class QdrantIndexStore:
         ``_`` 前缀显式表达"模块内可见、不对业务方暴露"的语义边界。本方法只吞两类
         Qdrant SDK 异常并降级为空结果（业务等价于"没数据"）：
         - 目标 bucket collection 不存在
-        - 目标 named sparse vector 在 collection 上未配置（**仅对 sparse 分支有效**；
-          dense 是 collection 创建时配齐的 unnamed vector，不会触发此降级）
+        - 目标 named vector 在 collection 上未配置（常见于旧 collection 尚未迁移到
+          named dense，或 sparse schema 未建成）
 
         其他失败（网络、超时、配置缺失）一律抛 ``QdrantStoreError`` /
         ``QdrantVectorStorageConfigurationError``，由 facade 翻译为

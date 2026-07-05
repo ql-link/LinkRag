@@ -85,6 +85,7 @@ NON_SCORING_PROTECTED_VALUES = frozenset(
     [ElementType.CODE_BLOCK.value, ElementType.MATH_BLOCK.value]
 )
 HEADING_TYPE_VALUE = ElementType.HEADING.value
+FRONT_MATTER_TYPE_VALUE = ElementType.FRONT_MATTER.value
 
 # Stage 1（element_derived_chunker）在缺真实增强时写入的占位串：视为“无语义代理”。
 SEMANTIC_TEXT_PLACEHOLDERS = frozenset(["未提供图片说明。", "未提供表格总结。"])
@@ -824,7 +825,11 @@ class SemanticDepthWindowStageTwo:
         id_factory = StageIdFactory("final")
         finals: list[FinalChunk] = []
         for coarse in coarse_set.chunks:
-            if coarse.role == "derived_element" or coarse.token_count <= self.max_chunk_tokens:
+            if (
+                coarse.role == "derived_element"
+                or self._is_structural_passthrough(coarse)
+                or coarse.token_count <= self.max_chunk_tokens
+            ):
                 finals.append(self._passthrough(coarse, id_factory, coarse_set))
                 continue
             atoms = self._builder.build(coarse)
@@ -881,6 +886,13 @@ class SemanticDepthWindowStageTwo:
             source_coarse_chunk_id=source_coarse_chunk_id,
             metadata=metadata,
         )
+
+    @staticmethod
+    def _is_structural_passthrough(coarse: CoarseChunk) -> bool:
+        """front_matter 是结构保护块，Stage 2 不做切分、embedding 或截断。"""
+        return coarse.role != "derived_element" and coarse.element_types == [
+            FRONT_MATTER_TYPE_VALUE
+        ]
 
 
 __all__ = [

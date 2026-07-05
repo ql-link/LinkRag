@@ -65,7 +65,7 @@ ParseTaskPipeline
     -> SparseVectorizingStage
       -> StageServices.run_sparse_vectorizing()
   -> document_parse_pipeline.sparse_vectorizing_status = SUCCESS（开启时）
-  -> parse_result success notification
+  -> document_parse_pipeline.pipeline_status = SUCCESS（终态只写 DB，前端轮询 Java 查询）
 ```
 
 ## 2. 核心角色
@@ -119,7 +119,9 @@ chunking 阶段复用 `ChunkDraftFactory`，把每个 `Chunk` 转成 `StoredChun
 - `user_id` / `set_id` / `doc_id`：业务归属。
 - `bucket_id`：由 `BucketRouter.route_user(user_id)` 计算。
 - `content_hash`：基于内容的 SHA-256。
-- `chunk_type`：来自 `Chunk.metadata["element_types"]` 或默认 `text`。
+- `chunk_type`：只从非空 `Chunk.metadata["element_types"]` 推导；单一类型直接使用，多类型为
+  `mixed`。允许类型为 `paragraph` / `heading` / `list` / `blockquote` / `code_block` /
+  `math_block` / `table` / `image` / `mixed` / `front_matter`；`text` 和 `hr` 不再是当前可写类型。
 - `chunk_index`：来自 `Chunk.metadata["chunk_index"]`。
 
 ### 3.2 MySQL 状态
@@ -236,7 +238,7 @@ result = await vector_storage.index_chunks(
 - `sparse_model`
 - `compensation_entry`
 
-部分 Chunk 失败不会直接抛到解析主流程，而是通过结果汇总表达。当前文件级语义下，只要向量化存在失败 Chunk，整体 parse_result 会以 `failed` 通知 Java；全部 Chunk 向量化成功后才进入 ES 入库阶段。
+部分 Chunk 失败不会直接抛到解析主流程，而是通过结果汇总表达。当前文件级语义下，只要向量化存在失败 Chunk，`document_parse_pipeline` 会落 `FAILED` 终态；全部 Chunk 向量化成功后才进入 ES/BM25 入库阶段。parse_result MQ 终态回传已下线。
 
 ### 4.2 文件级 ES 入库
 
@@ -529,7 +531,7 @@ SparseVectorService(encoder)
 
 - MySQL 状态流转。
 - vectorizing 接收 pipeline 现场过滤好的 `list[ChunkRecordDB]`（`index_chunks(chunks=...)`），不自查 SQL、不接收内存 `list[Chunk]`，且只处理 dense。
-- 稀疏向量由 `SparseIndexingPipeline.run(chunks=...)` 独立阶段处理：pipeline 在 dense 完成后重新 load 并现场过滤 `dense=SUCCESS AND sparse != SUCCESS` 透传；`bucket_id` 从 chunks 自带字段取，入口前置断言 dense=SUCCESS。
+- 稀疏向量由 `SparseIndexingPipeline.run(chunks=...)` 独立阶段处理：pipeline 现场过滤 `sparse_vector_status != SUCCESS` 后透传；named dense 解耦后不再要求 dense 已成功，Qdrant point 由 `ensure_points` 兜底创建。
 - embedding 批处理和缓存命中。
 - Qdrant collection 自动创建和 upsert。
 - ES 文件级索引创建和逐 Chunk 写入。
@@ -563,12 +565,12 @@ SparseVectorService(encoder)
        -> BucketRouter.route_user(user_id) → bucket_id（两路共用）
        -> 构造 query_vector_spec + payload_filter(must: user_id, set_id, [doc_id MatchAny])
             - sparse: SparseQueryVectorSpec(name, indices, values)
-            - dense:  DenseQueryVectorSpec(vector=list[float])  ← 不带 vector_name
+            - dense:  DenseQueryVectorSpec(vector=list[float])  ← vector name 由 QdrantIndexStore 读取 DENSE_VECTOR_QDRANT_VECTOR_NAME
        -> QdrantIndexStore._search_chunks(bucket_id, spec, filter, limit, score_threshold)
             -> collection_exists? 不存在 → 返空 hits + warn 日志
             -> client.query_points:
                  - sparse: query=SparseVector, using="sparse_text"
-                 - dense:  query=list[float],  using=None
+                 - dense:  query=list[float],  using="dense"（默认）
             -> named vector 不存在（仅 sparse 触发）→ 返空 hits + warn 日志
             -> ScoredPoint → VectorSearchHit(chunk_id, doc_id, set_id, score, vector_kind)
        -> 包装为 VectorSearchResult
@@ -583,7 +585,7 @@ SparseVectorService(encoder)
 | --- | --- |
 | bucket 路由 | `BucketRouter.route_user(user_id)`，写入 / sparse 召回 / dense 召回共用同一路由算法（按 user_id CRC32 哈希 → bucket_id → collection 名） |
 | sparse vector 命名 | `settings.SPARSE_VECTOR_QDRANT_VECTOR_NAME`（默认 `sparse_text`），写入 `upsert_sparse_vectors` 与召回 sparse 分支都从该 setting 读取，不分叉 |
-| dense vector 形态 | unnamed vector，写入 `ensure_collection` 用 `vectors_config=VectorParams(size=1024, distance=COSINE)`，`PointStruct(vector=[...])` 裸传；召回 `query_points(using=None)` 与之对齐——不引入 `DENSE_RETRIEVAL_VECTOR_NAME` 配置避免分叉风险 |
+| dense vector 形态 | named vector，默认名来自 `settings.DENSE_VECTOR_QDRANT_VECTOR_NAME`（默认 `dense`）；写入 `ensure_collection` 用 `vectors_config={dense: VectorParams(size=1024, distance=COSINE)}`，`update_vectors({dense: [...]})` 只写 dense 维度；召回 `query_points(using=dense)` 与之对齐 |
 | 稀疏编码器配置 | 写入与召回都经 `aresolve_dataset_sparse_vector_service(user_id, dataset_id)` 按 `dataset_parse_config.sparse_embedding_config_id` 解析同一份配置，保证两侧落在同一 token 权重空间 |
 | 稠密编码器配置 | 写入与召回都经 `aresolve_dataset_chunk_embedding_pipeline(user_id, dataset_id)` 按 `dataset_parse_config.dense_embedding_config_id` 解析同一份配置，保证 query 与 chunk dense 向量空间一致 |
 | payload 字段 | `point_factory._payload()` 写入 `{chunk_id, user_id, set_id, doc_id}`；两路召回 filter 命中同名字段（`facade._build_payload_filter` 是 staticmethod，sparse / dense 共用） |
@@ -596,7 +598,7 @@ SparseVectorService(encoder)
 | 场景 | 处理 | 判别 |
 | --- | --- | --- |
 | bucket collection 不存在 | 返空 hits，不抛；warn 日志带 `bucket_id` | 业务等价于"用户/set 没数据"；与写入侧 `delete_points` 把"collection 不存在"当作合法语义一致 |
-| collection 存在但目标 named vector 未配置 | 返空 hits，不抛；warn 日志带 `bucket_id` + `vector_name`（**仅 sparse 触发**——dense 是 collection 创建时一并配齐的 unnamed vector，无中间状态） | sparse 写入侧 `ensure_sparse_vector_schema` 是首次写入时延迟挂载 |
+| collection 存在但目标 named vector 未配置 | 返空 hits，不抛；warn 日志带 `bucket_id` + `vector_name` | 常见于旧 collection 尚未迁移到 named dense，或 sparse schema 未建成 |
 | Qdrant 网络故障 / 超时 / 服务不可用 | 抛 `VectorRetrievalBackendError` | 底层故障，由调用方决定降级或重试 |
 | `SPARSE_VECTOR_ENABLED=False` / dense `embedding_pipeline` 未注入 / 依赖缺失 / Qdrant URL 无效 | 抛 `VectorRetrievalConfigurationError` | 部署侧配置错误，不是常态 |
 | 编码器（稀疏 adapter / 数据集绑定 embedding HTTP）推理失败 | 抛 `VectorRetrievalEncodingError` | 编码失败不是召回的常态 |

@@ -6,8 +6,9 @@ import hashlib
 from collections.abc import Sequence
 from uuid import uuid4
 
-from src.core.storage.qdrant import BucketRouter
 from src.core.splitter.models import Chunk
+from src.core.storage.chunks.constants import ALLOWED_CHUNK_TYPES, DISALLOWED_CHUNK_TYPES
+from src.core.storage.qdrant import BucketRouter
 
 from .models import StoredChunkDraft
 
@@ -88,7 +89,7 @@ class ChunkDraftFactory:
 
     def _resolve_chunk_type(self, chunk: Chunk) -> str:
         """
-            从 chunk 元数据中解析分片类型，并兼容多元素混合与缺省回退场景。
+            从 chunk 元数据中解析分片类型。
 
         Args:
             chunk: 待解析类型信息的 Chunk 对象。
@@ -97,12 +98,25 @@ class ChunkDraftFactory:
             str: 归一化后的 chunk 类型标记。
         """
         metadata = chunk.metadata or {}
-        element_types = metadata.get("element_types") or []
-        if len(element_types) == 1:
-            return str(element_types[0])
-        if len(element_types) > 1:
-            return "mixed"
-        return str(metadata.get("chunk_type") or metadata.get("type") or "text")
+        element_types = metadata.get("element_types")
+        if not isinstance(element_types, list) or not element_types:
+            raise ValueError("Chunk metadata must include non-empty element_types.")
+
+        normalized_types = [str(element_type) for element_type in element_types]
+        invalid_types = sorted(
+            {
+                element_type
+                for element_type in normalized_types
+                if element_type in DISALLOWED_CHUNK_TYPES or element_type not in ALLOWED_CHUNK_TYPES
+            }
+        )
+        if invalid_types:
+            raise ValueError(f"Chunk element_types contain unsupported values: {invalid_types}.")
+
+        chunk_type = normalized_types[0] if len(normalized_types) == 1 else "mixed"
+        if chunk_type not in ALLOWED_CHUNK_TYPES:
+            raise ValueError(f"Unsupported chunk_type resolved from element_types: {chunk_type!r}.")
+        return chunk_type
 
     def _resolve_chunk_index(self, chunk: Chunk) -> int | None:
         """

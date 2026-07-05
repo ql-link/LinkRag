@@ -28,6 +28,7 @@ from src.core.pipeline.recall.models import (
     build_recall_diagnostics,
     normalize_fusion_strategy,
     validate_fusion_weight,
+    validate_rrf_k,
 )
 from src.core.pipeline.recall.protocols import (
     SOURCE_BM25,
@@ -78,7 +79,7 @@ class RecallPipeline:
 
         # 本次生效的召回路：按数据集级 enabled_sources 在已装配路集合内收窄（见 _effective_sources）。
         effective_sources = self._effective_sources(request)
-        fusion_strategy, fusion_weights = self._effective_fusion_config(request)
+        fusion_strategy, fusion_weights, rrf_k = self._effective_fusion_config(request)
         # 容错模式：请求级覆盖优先，未指定时沿用装配期默认。
         strict = (
             request.strict_override if request.strict_override is not None else self._config.strict
@@ -87,7 +88,7 @@ class RecallPipeline:
         # 入口日志：不记 query 原文（可能含用户敏感内容），只记可观测的元信息。
         logger.info(
             "[RecallPipeline] start user={} datasets={} docs={} fusion_limit={} "
-            "route_top_k={} sources={} strict={} fusion={} mode={}",
+            "route_top_k={} sources={} strict={} fusion={} rrf_k={} mode={}",
             request.user_id,
             len(request.dataset_ids or []),
             len(request.doc_ids or []),
@@ -96,6 +97,7 @@ class RecallPipeline:
             effective_sources,
             strict,
             fusion_strategy,
+            rrf_k,
             "parallel" if self._config.parallel else "serial",
         )
 
@@ -111,7 +113,7 @@ class RecallPipeline:
             per_source_hits=success_hits,
             all_sources=effective_sources,
             strategy=fusion_strategy,
-            rrf_k=self._config.rrf_k,
+            rrf_k=rrf_k,
             weights=fusion_weights,
         )
         # 融合候选池窗口：融合后按 request.top_k 截断，作为下游 rerank 输入池。
@@ -136,11 +138,18 @@ class RecallPipeline:
             sources=effective_sources,
         )
 
-    def _effective_fusion_config(self, request: RecallRequest) -> tuple[str, dict[str, float]]:
-        """合并装配期默认与请求级覆盖，得到本次生效的融合策略与三路权重。"""
+    def _effective_fusion_config(self, request: RecallRequest) -> tuple[str, dict[str, float], int]:
+        """合并装配期默认与请求级覆盖，得到本次生效的融合策略、权重与 RRF 常数。"""
         try:
             strategy = normalize_fusion_strategy(
                 request.fusion_strategy_override or self._config.fusion_strategy
+            )
+            rrf_k = validate_rrf_k(
+                (
+                    request.rrf_k_override
+                    if request.rrf_k_override is not None
+                    else self._config.rrf_k
+                )
             )
             weights = {
                 SOURCE_BM25: validate_fusion_weight(
@@ -170,7 +179,7 @@ class RecallPipeline:
             }
         except ValueError as exc:
             raise RecallValidationError(str(exc)) from exc
-        return strategy, weights
+        return strategy, weights, rrf_k
 
     def _effective_sources(self, request: RecallRequest) -> list[str]:
         """求本次实际触发的召回路：在已装配路集合内按 ``request.enabled_sources`` 收窄。

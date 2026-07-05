@@ -69,7 +69,7 @@ def build_default_topic_specs() -> list[TopicSpec]:
     min_insync_replicas = _env_int("MIN_INSYNC_REPLICAS", 1)
     max_message_bytes = _env_int("MAX_MESSAGE_BYTES", 1048576)
 
-    return [
+    business_specs = [
         TopicSpec(
             name=os.getenv("PARSE_TASK_TOPIC", "tolink.rag.parse_task"),
             partitions=_env_int("PARSE_TASK_PARTITIONS", 1),
@@ -94,7 +94,36 @@ def build_default_topic_specs() -> list[TopicSpec]:
             min_insync_replicas=min_insync_replicas,
             max_message_bytes=max_message_bytes,
         ),
+        TopicSpec(
+            name=os.getenv("CHAT_TURN_TOPIC", "tolink.rag.chat_turn"),
+            partitions=_env_int("CHAT_TURN_PARTITIONS", 1),
+            replication_factor=replication_factor,
+            retention_ms=_env_int("RETENTION_MS_CHAT_TURN", 604800000),
+            min_insync_replicas=min_insync_replicas,
+            max_message_bytes=max_message_bytes,
+        ),
+        TopicSpec(
+            name=os.getenv("DOCUMENT_DELETE_TOPIC", "tolink.rag.document_delete"),
+            partitions=_env_int("DOCUMENT_DELETE_PARTITIONS", 1),
+            replication_factor=replication_factor,
+            retention_ms=_env_int("RETENTION_MS_DOCUMENT_DELETE", 604800000),
+            min_insync_replicas=min_insync_replicas,
+            max_message_bytes=max_message_bytes,
+        ),
     ]
+    dlq_suffix = os.getenv("MQ_DLQ_SUFFIX", settings.MQ_DLQ_SUFFIX)
+    dlt_specs = [
+        TopicSpec(
+            name=spec.name + dlq_suffix,
+            partitions=spec.partitions,
+            replication_factor=spec.replication_factor,
+            retention_ms=spec.retention_ms,
+            min_insync_replicas=spec.min_insync_replicas,
+            max_message_bytes=spec.max_message_bytes,
+        )
+        for spec in business_specs
+    ]
+    return business_specs + dlt_specs
 
 
 def ensure_topics() -> list[str]:

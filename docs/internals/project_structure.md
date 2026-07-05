@@ -160,11 +160,14 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── retry.py          # 消费重试策略
 │   │   │   ├── topic_admin.py    # Topic 初始化逻辑
 │   │   │   ├── consumers/        # MQ 消费者
-│   │   │   │   └── parse_task_consumer.py
+│   │   │   │   ├── parse_task_consumer.py
+│   │   │   │   └── document_delete_consumer.py
 │   │   │   ├── messages/         # MQ 业务消息
 │   │   │   │   ├── parse_task.py
+│   │   │   │   ├── document_delete.py
 │   │   │   │   ├── cache_sync.py
-│   │   │   │   └── usage_report.py   # parse_result.py 已删除（LINK-166）
+│   │   │   │   ├── token_usage.py
+│   │   │   │   └── chat_turn.py       # parse_result.py 已删除（LINK-166）
 │   │   │   └── vendors/          # MQ 厂商适配
 │   │   │       ├── rabbitmq_adapter.py
 │   │   │       └── kafka/        # Kafka 适配与 Topic 管理
@@ -264,8 +267,12 @@ toLink-Rag/                         # 仓库根目录
 │   │       ├── factory.py
 │   │       ├── minio_storage.py
 │   │       └── oss_storage.py
+│   ├── observability/            # 可观测性基础设施：日志、trace 上下文、HTTP trace 中间件
+│   │   ├── logging.py            # Loguru 初始化、标准库 logging 桥接、JSON 文件日志
+│   │   ├── tracing.py            # trace_id 生成、校验、contextvars 绑定与 header 提取
+│   │   └── middleware.py         # FastAPI/ASGI X-Trace-Id 中间件
 │   └── utils/                    # 通用工具函数
-│       └── logger.py
+│       └── logger.py             # 历史兼容导出层；新代码优先使用 observability.logging
 └── tests/                        # 测试目录
     ├── README.md                 # pytest 统一入口（marker/集成测试开关）
     ├── conftest.py               # 测试分层与运行约定

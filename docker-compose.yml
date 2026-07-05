@@ -1,3 +1,4 @@
+# 主机服务器中间件栈：只放共享基础设施，不放云服务器应用组件。
 services:
   mysql:
     image: mysql:8.0
@@ -59,24 +60,6 @@ services:
       timeout: 20s
       retries: 3
 
-  # BM25 全文检索默认用 ES（BM25_BACKEND=es）。设 BM25_BACKEND=qdrant 时 BM25 复用向量库
-  # 进程（sparse vector + Modifier.IDF），无需此服务；若向量存储（VECTOR_STORE_TYPE）也不用 ES 则可整体省略。
-  elasticsearch:
-    image: elasticsearch:8.11.3
-    container_name: tolink-es
-    restart: always
-    ports:
-      - "9200:9200"
-    environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=true
-      - ELASTIC_PASSWORD=ql354210
-      - ES_JAVA_OPTS=-Xms512m -Xmx512m
-    volumes:
-      - es_data:/usr/share/elasticsearch/data
-    networks:
-      - tolink-net
-
   qdrant:
     image: qdrant/qdrant:latest
     container_name: tolink-qdrant
@@ -113,14 +96,15 @@ services:
     restart: always
     ports:
       - "9092:9092"
+      - "39092:39092"
     environment:
       - KAFKA_ENABLE_KRAFT=no
       - KAFKA_CFG_BROKER_ID=1
       - KAFKA_CFG_ZOOKEEPER_CONNECT=tolink-zookeeper:2181
-      - KAFKA_CFG_LISTENERS=INTERNAL://:29092,EXTERNAL://:9092
-      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=INTERNAL:SASL_PLAINTEXT,EXTERNAL:SASL_PLAINTEXT
+      - KAFKA_CFG_LISTENERS=INTERNAL://:29092,EXTERNAL://:9092,PUBLIC://:39092
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=INTERNAL:SASL_PLAINTEXT,EXTERNAL:SASL_PLAINTEXT,PUBLIC:SASL_PLAINTEXT
       - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=INTERNAL
-      - KAFKA_CFG_ADVERTISED_LISTENERS=INTERNAL://tolink-kafka:29092,EXTERNAL://100.86.10.52:9092
+      - KAFKA_CFG_ADVERTISED_LISTENERS=INTERNAL://tolink-kafka:29092,EXTERNAL://100.86.10.52:9092,PUBLIC://103.205.254.30:39092
       - ALLOW_PLAINTEXT_LISTENER=yes
       - KAFKA_CFG_SASL_ENABLED_MECHANISMS=PLAIN
       - KAFKA_CFG_SASL_MECHANISM_INTER_BROKER_PROTOCOL=PLAIN
@@ -164,6 +148,19 @@ services:
       kafka:
         condition: service_healthy
 
+  loki:
+    image: grafana/loki:2.9.8
+    container_name: tolink-loki
+    restart: always
+    command: -config.file=/etc/loki/loki-config.yml
+    ports:
+      - "${LOKI_HTTP_PORT:-3100}:3100"
+    volumes:
+      - ./deploy/observability/loki-config.yml:/etc/loki/loki-config.yml:ro
+      - loki_data:/loki
+    networks:
+      - tolink-net
+
 networks:
   tolink-net:
     driver: bridge
@@ -171,7 +168,7 @@ networks:
 volumes:
   mysql_data:
   minio_data:
-  es_data:
   qdrant_data:
   zookeeper_data:
   kafka_data:
+  loki_data:
