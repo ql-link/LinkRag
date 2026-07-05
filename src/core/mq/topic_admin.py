@@ -95,6 +95,14 @@ def build_default_topic_specs() -> list[TopicSpec]:
             max_message_bytes=max_message_bytes,
         ),
         TopicSpec(
+            name=os.getenv("CHAT_TURN_TOPIC", "tolink.rag.chat_turn"),
+            partitions=_env_int("CHAT_TURN_PARTITIONS", 1),
+            replication_factor=replication_factor,
+            retention_ms=_env_int("RETENTION_MS_CHAT_TURN", 604800000),
+            min_insync_replicas=min_insync_replicas,
+            max_message_bytes=max_message_bytes,
+        ),
+        TopicSpec(
             name=os.getenv("DOCUMENT_DELETE_TOPIC", "tolink.rag.document_delete"),
             partitions=_env_int("DOCUMENT_DELETE_PARTITIONS", 1),
             replication_factor=replication_factor,
