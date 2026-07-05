@@ -32,8 +32,10 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import sys
 import uuid
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -79,9 +81,15 @@ class EvalDoc:
     ext: str = ""  # 外部 id（BEIR corpus _id，用于对齐 qrels）；合成 / db 模式不用
     coarse: list[str] = field(default_factory=list)
     fine: list[str] = field(default_factory=list)
+    # 真实 kb_document_chunk.chunk_type（--from-db 时用真实值）；合成/BEIR 语料没有真实
+    # 类型语义，默认 "mixed"（实际分片里最常见的类型，而非之前占位的、几乎不可达的
+    # "paragraph"）。只有这个字段有真实分布，--type-mult 才谈得上测出类型加权的效果。
+    chunk_type: str = "mixed"
 
 
-def tokenize_docs(tok: RagFlowTokenizer, texts: list[str]) -> list[EvalDoc]:
+def tokenize_docs(
+    tok: RagFlowTokenizer, texts: list[str], chunk_types: list[str] | None = None
+) -> list[EvalDoc]:
     docs = []
     for i, text in enumerate(texts):
         tk = tok.tokenize(text)
@@ -92,6 +100,7 @@ def tokenize_docs(tok: RagFlowTokenizer, texts: list[str]) -> list[EvalDoc]:
                 text=text,
                 coarse=tk.coarse_tokens.split(),
                 fine=tk.fine_tokens.split(),
+                chunk_type=(chunk_types[i] if chunk_types else "mixed"),
             )
         )
     return docs
@@ -144,7 +153,15 @@ def overlap_at_k(a: list[str], b: list[str], k: int) -> float:
 
 
 # ---------------- Qdrant 侧 ----------------
-async def run_qdrant(docs: list[EvalDoc], queries: list[list[str]], enc, host, port):
+async def run_qdrant(
+    docs: list[EvalDoc],
+    queries: list[list[str]],
+    enc,
+    host,
+    port,
+    type_mult: dict[str, float] | None = None,
+):
+    """``type_mult`` 非空时走 Formula 类型加权召回，复用真实 store 逻辑；为空则纯 BM25。"""
     coll = f"tolink_bm25_eval_{uuid.uuid4().hex[:8]}"
     store = QdrantBm25Store(host=host, port=port, api_key=None, collection_name=coll)
     from qdrant_client import QdrantClient
@@ -157,7 +174,7 @@ async def run_qdrant(docs: list[EvalDoc], queries: list[list[str]], enc, host, p
                 doc_id=d.idx,
                 user_id=1,
                 dataset_id=1,
-                chunk_type="paragraph",
+                chunk_type=d.chunk_type,
                 sparse_vector=enc.encode_document(d.coarse, d.fine),
             )
             for d in docs
@@ -169,7 +186,8 @@ async def run_qdrant(docs: list[EvalDoc], queries: list[list[str]], enc, host, p
         for qterms in queries:
             qvec = enc.encode_query(qterms)
             hits = await store.query(
-                query_vector=qvec, user_id=1, dataset_id=1, doc_id=None, type_mult={}, limit=K
+                query_vector=qvec, user_id=1, dataset_id=1, doc_id=None,
+                type_mult=type_mult or {}, limit=K,
             )
             rankings.append([h.chunk_id for h in hits])
         return rankings
@@ -178,12 +196,17 @@ async def run_qdrant(docs: list[EvalDoc], queries: list[list[str]], enc, host, p
 
 
 # ---------------- ES 侧（复刻 src/core/storage/es 的 mapping 与查询）----------------
-def run_es(docs: list[EvalDoc], queries: list[list[str]], url, user, password):
+def run_es(
+    docs: list[EvalDoc], queries: list[list[str]], url, user, password,
+    type_boost: dict[str, float] | None = None,
+):
+    """``type_boost`` 非空时复刻 ``EsBm25Retriever._build_query`` 的 constant_score 加法类型加权。"""
     from elasticsearch import Elasticsearch, helpers
 
     es = Elasticsearch(url, basic_auth=(user, password), request_timeout=30, verify_certs=False)
     index = f"tolink_bm25_eval_{uuid.uuid4().hex[:8]}"
-    # mapping 复刻 src/core/storage/es/mapping.py：coarse/fine 均 whitespace analyzer。
+    # mapping 复刻 src/core/storage/es/mapping.py：coarse/fine 均 whitespace analyzer；
+    # chunk_type 用 keyword，供 constant_score 类型加权的 term filter 用。
     es.indices.create(
         index=index,
         body={
@@ -200,6 +223,7 @@ def run_es(docs: list[EvalDoc], queries: list[list[str]], url, user, password):
                     "dataset_id": {"type": "long"},
                     "coarse_tokens": {"type": "text", "analyzer": "ws"},
                     "fine_tokens": {"type": "text", "analyzer": "ws"},
+                    "chunk_type": {"type": "keyword"},
                 }
             },
         },
@@ -216,6 +240,7 @@ def run_es(docs: list[EvalDoc], queries: list[list[str]], url, user, password):
                         "dataset_id": 1,
                         "coarse_tokens": " ".join(d.coarse),
                         "fine_tokens": " ".join(d.fine),
+                        "chunk_type": d.chunk_type,
                     },
                 }
                 for d in docs
@@ -224,30 +249,44 @@ def run_es(docs: list[EvalDoc], queries: list[list[str]], url, user, password):
         )
         rankings = []
         for qterms in queries:
-            # 复刻 src/core/storage/es/retrieval.py 的 multi_match（coarse^2 + fine, best_fields）。
-            query_dsl = {
-                "bool": {
-                    "filter": [{"term": {"user_id": 1}}, {"term": {"dataset_id": 1}}],
-                    "must": [
-                        {
-                            "multi_match": {
-                                "fields": ["coarse_tokens^2", "fine_tokens"],
-                                "query": " ".join(qterms),
-                                "type": "best_fields",
-                            }
+            # 复刻 src/core/storage/es/retrieval.py 的 multi_match（coarse^2 + fine, best_fields）
+            # + type_boost 非空时的 constant_score 类型加权（should，不影响过滤命中集）。
+            bool_query: dict = {
+                "filter": [{"term": {"user_id": 1}}, {"term": {"dataset_id": 1}}],
+                "must": [
+                    {
+                        "multi_match": {
+                            "fields": ["coarse_tokens^2", "fine_tokens"],
+                            "query": " ".join(qterms),
+                            "type": "best_fields",
                         }
-                    ],
-                }
+                    }
+                ],
             }
-            resp = es.search(index=index, query=query_dsl, size=K)
+            if type_boost:
+                bool_query["should"] = [
+                    {
+                        "constant_score": {
+                            "filter": {"term": {"chunk_type": chunk_type}},
+                            "boost": float(weight),
+                        }
+                    }
+                    for chunk_type, weight in type_boost.items()
+                ]
+            resp = es.search(index=index, query={"bool": bool_query}, size=K)
             rankings.append([h["_id"] for h in resp["hits"]["hits"]])
         return rankings
     finally:
         es.indices.delete(index=index, ignore_unavailable=True)
 
 
-def load_db_corpus(args) -> tuple[list[str], list[str] | None]:
-    """从 MySQL 读真实 chunk content 作语料；query 用 self-retrieval（见 build_queries）。"""
+def load_db_corpus(args) -> tuple[list[str], list[str]]:
+    """从 MySQL 读真实 chunk content + chunk_type 作语料；query 用 self-retrieval（见 build_queries）。
+
+    带上真实 ``chunk_type`` 是 ``--type-mult`` 能测出类型加权效果的前提——合成语料没有
+    真实类型分布，只有这条真实数据路径能反映 table/image/front_matter 等类型在生产语料
+    里的实际占比。
+    """
     import pymysql
 
     conn = pymysql.connect(
@@ -257,11 +296,15 @@ def load_db_corpus(args) -> tuple[list[str], list[str] | None]:
     )
     try:
         cur = conn.cursor()
-        sql = "SELECT content FROM kb_document_chunk WHERE content IS NOT NULL AND content != ''"
+        sql = (
+            "SELECT content, chunk_type FROM kb_document_chunk "
+            "WHERE content IS NOT NULL AND content != ''"
+        )
         if args.limit:
             sql += f" LIMIT {int(args.limit)}"
         cur.execute(sql)
-        return [r[0] for r in cur.fetchall()], None
+        rows = cur.fetchall()
+        return [r[0] for r in rows], [r[1] or "mixed" for r in rows]
     finally:
         conn.close()
 
@@ -394,7 +437,7 @@ def main() -> None:
     ap.add_argument("--db-host", default="127.0.0.1")
     ap.add_argument("--db-port", type=int, default=33306)
     ap.add_argument("--db-user", default="root")
-    ap.add_argument("--db-password", default="")
+    ap.add_argument("--db-password", default=os.environ.get("MYSQL_PASSWORD", ""))
     ap.add_argument("--db-database", default="tolink_rag_db")
     ap.add_argument("--limit", type=int, default=0)
     ap.add_argument("--avgdl-coarse", type=float, default=None, help="覆盖 avgdl_coarse（默认走 settings）")
@@ -402,6 +445,13 @@ def main() -> None:
     ap.add_argument("--from-beir", metavar="DIR", help="BEIR 格式数据集目录（用人工 qrels 评测）")
     ap.add_argument("--k", type=int, default=5, help="评测 top-k（BEIR 惯例用 10）")
     ap.add_argument("--doc-limit", type=int, default=0, help="BEIR：最多灌多少文档（0=全部）")
+    ap.add_argument(
+        "--type-mult", action="store_true",
+        help="启用 settings.BM25_TYPE_MULT 类型加权（默认关闭，纯 BM25）；"
+             "配合 --from-db 才有真实 chunk_type 分布可测，合成/BEIR 语料没有真实类型语义。"
+             "注意：self-retrieval 只能验证加权不会拖累整体 recall/nDCG，测不出"
+             "某类型是否被过度提权导致误判压过更相关的其他类型（结构性盲点，见 issue #290 讨论）。",
+    )
     args = ap.parse_args()
 
     global K
@@ -425,19 +475,32 @@ def main() -> None:
         return
 
     if args.from_db:
-        texts, _ = load_db_corpus(args)
-        docs = tokenize_docs(tok, texts)
+        texts, chunk_types = load_db_corpus(args)
+        docs = tokenize_docs(tok, texts, chunk_types)
         raw_queries = build_db_queries(docs)
+        type_dist = Counter(d.chunk_type for d in docs)
         print(f"语料：真实 MySQL chunk {len(docs)} 条；self-retrieval query {len(raw_queries)} 个")
+        print(f"chunk_type 分布：{dict(type_dist.most_common())}")
     else:
         docs = tokenize_docs(tok, SYNTHETIC_DOCS)
         raw_queries = SYNTHETIC_QUERIES
-        print(f"语料：合成 {len(docs)} 条；query {len(raw_queries)} 个")
+        print(f"语料：合成 {len(docs)} 条；query {len(raw_queries)} 个（无真实 chunk_type，全部按 mixed 处理）")
 
     queries = [query_terms(tok, q) for q in raw_queries]
 
-    q_rank = asyncio.run(run_qdrant(docs, queries, enc, args.qdrant_host, args.qdrant_port))
-    es_rank = run_es(docs, queries, args.es_url, args.es_user, args.es_password) if args.with_es else None
+    type_mult = settings.BM25_TYPE_MULT if args.type_mult else {}
+    type_boost = settings.BM25_TYPE_BOOST if args.type_mult else {}
+    print(f"type_mult（qdrant）：{type_mult or '（关闭，纯 BM25）'}")
+    print(f"type_boost（es）：{type_boost or '（关闭，纯 BM25）'}\n")
+
+    q_rank = asyncio.run(
+        run_qdrant(docs, queries, enc, args.qdrant_host, args.qdrant_port, type_mult=type_mult)
+    )
+    es_rank = (
+        run_es(docs, queries, args.es_url, args.es_user, args.es_password, type_boost=type_boost)
+        if args.with_es
+        else None
+    )
 
     # 汇总
     recs, mrrs, ndcgs, fine_recs, overlaps = [], [], [], [], []
