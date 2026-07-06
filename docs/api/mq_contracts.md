@@ -51,8 +51,8 @@ Java 管理端                          toLink-Rag (Python)
 | `source_bucket` | string | ✅ | 源文件对象存储 bucket |
 | `source_object_key` | string | ✅ | 源文件对象存储 key |
 | `source_filename` | string | ✅ | 用户上传时的原始文件名 |
-| `md_bucket` | string | ✅ | 历史兼容字段；Python 侧非 `md`/`markdown` 解析产物实际写入 `MINIO_PRIVATE_BUCKET` 配置桶，`md`/`markdown` 透传时不使用 |
-| `md_object_key` | string | ✅ | 解析后 Markdown 输出 key（`md`/`markdown` 透传时不使用，见下方说明） |
+| `md_bucket` | string | ✅ | 历史兼容字段；所有 `file_type`（含 `md`/`markdown`）解析产物实际都写入 Python 侧 `MINIO_PRIVATE_BUCKET` 配置桶，本字段不作为权威来源 |
+| `md_object_key` | string | ✅ | 解析后 Markdown 输出 key，所有 `file_type` 均生效 |
 | `trigger_mode` | string | ⬜ | `upload_auto`（默认） / `manual_retry` |
 | `pdf_parser_backend` | string | ⬜ | `mineru`（默认） / `opendataloader` / `naive` / `auto` |
 | `docling_force_ocr` | bool | ⬜ | 仅 Docling 后端生效 |
@@ -111,7 +111,7 @@ Java 管理端                          toLink-Rag (Python)
 }
 ```
 
-> **`md` / `markdown` 透传**：源文件本身即目标 Markdown，cleaning 阶段跳过解析引擎转换，也**不再把 markdown 重复写入输出桶**——markdown 产物坐标直接取上传位置（`source_bucket` / `source_object_key`）。因此对 md/markdown 文件，业务方读取解析产物（预览/下载）须以 `document_parsed_log.parsed_bucket_name` / `parsed_object_key`（即上传位置）为准，不可硬取请求里的 `md_object_key`。其余格式（pdf/docx/html/…）仍把转换后的 markdown 写入 Python 侧 `MINIO_PRIVATE_BUCKET` / `md_object_key`。
+> **`md` / `markdown` 透传**：源文件本身即目标 Markdown，cleaning 阶段仅跳过解析引擎转换（直接读取源文件文本作为产物），**markdown 产物仍会写入 Python 侧 `MINIO_PRIVATE_BUCKET` / 消息中的 `md_object_key`**，与其余格式（pdf/docx/html/…）行为一致。因此不论 `file_type` 是什么，业务方读取解析产物（预览/下载）统一以 `document_parsed_log.parsed_bucket_name` / `parsed_object_key` 为准。
 
 ### 路由键
 
@@ -161,7 +161,7 @@ Java 管理端                          toLink-Rag (Python)
 
 ### 边界
 
-- 不删原文件：`document_original_file` 行（Java 软删保留）与 OSS 原文件对象（Java 保留）。透传 md（`file_type∈{md,markdown}`）的 `parsed_object_key` 指向原文件对象，Python 按「非 `parsed/` 前缀跳过」护栏排除。
+- 不删原文件：`document_original_file` 行（Java 软删保留）与 OSS 原文件对象（Java 保留）。md/markdown 透传的 `parsed_object_key` 现在也落在 `parsed/` 前缀下（不再指向原文件对象），与其余格式一样按前缀正常参与删除；`_PARSED_PRODUCT_PREFIX` 护栏仍保留，仅作为异常兜底（防御非规范 key 误删原文件）。
 - 不删账务/用户态：`llm_usage_log`、`chat_*`（会话消息由 Java 物理删）。
 
 ## 终态读取（Python → DB → 前端轮询）
