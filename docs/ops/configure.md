@@ -72,6 +72,9 @@
 > splitter 不再保留 `CHUNKING_ENABLE_ADVANCED_PIPELINE` 布尔开关，也不再回退到旧规则分片器。第二阶段默认使用 `noop`；`noop` 只做结构透传，不保证 final chunk token 数不超过 `CHUNKING_HARD_MAX_TOKENS`。如需启用 TextTiling depth valley 语义细分与 hard max 保障，显式配置 `CHUNKING_STAGE_TWO_ALGORITHM=semantic_depth_window`。
 
 > 注：当前生产不再部署 Elasticsearch；BM25 由 Qdrant sparse vector + `Modifier.IDF` 承载。
+> `BM25_BACKEND=manticore` 是实验性新后端（按 dataset 物理建表，原生 bm25f 真 BM25F），
+> 需额外部署 Manticore（`docker-compose.yml` 已加 `manticore` 服务，SQL 协议端口
+> `MANTICORE_PORT` 默认 `9306`），详见 [docs/internals/parse_task_pipeline.md](../internals/parse_task_pipeline.md)。
 
 ## 日志
 

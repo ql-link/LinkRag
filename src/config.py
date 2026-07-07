@@ -437,8 +437,9 @@ class Settings(BaseSettings):
     ES_SMOKE_ENABLED: bool = False
     TOLINK_RUN_REAL_ES_INDEX_TESTS: bool = False
 
-    # BM25 全文检索后端选择：es / qdrant。默认 qdrant（2026-06 切换，见迁移脚本
-    # scripts/migrate/es_to_qdrant_bm25.py）；如需临时回退 ES 可设 BM25_BACKEND=es。
+    # BM25 全文检索后端选择：es / qdrant / manticore。默认 qdrant（2026-06 切换，见迁移
+    # 脚本 scripts/migrate/es_to_qdrant_bm25.py）；如需临时回退 ES 可设 BM25_BACKEND=es。
+    # manticore 是实验性新后端（原生 BM25F，按 dataset 物理建表，见下方 MANTICORE_* 配置）。
     # 开关只影响 BM25 一路，dense / sparse 召回不受影响。
     # 详见 docs/internals/parse_task_pipeline.md。
     BM25_BACKEND: str = "qdrant"
@@ -510,6 +511,25 @@ class Settings(BaseSettings):
             "front_matter": 0.7,
         }
     )
+
+    # ---- Manticore BM25 后端（仅 BM25_BACKEND=manticore 时生效）----
+    # 用原生 bm25f(k1, b, {coarse=coarse_boost, fine=1}) 做 coarse+fine 双字段真 BM25F，
+    # 不需要 Qdrant 那套 hash 维度隔离编码——Manticore 原生支持多字段加权，字段权重语义与
+    # ES multi_match(["coarse_tokens^2","fine_tokens"]) 直接对齐。
+    # 按 dataset 物理建表（一个 dataset 一张表，表名 f"{prefix}_{dataset_id}"），IDF 与
+    # avgdl 天然只统计这个 dataset 自己的语料，不需要额外的 tenant filter 或旁路统计基础
+    # 设施；相应地也不复用 Qdrant 那套 BucketRouter（那是按 user 哈希分桶，这里是按
+    # dataset 精确建表，两回事）。avgdl 走 Manticore 动态计算（index_field_lengths，
+    # 每张表天然只含一个 dataset 的文档，动态平均值等价于"按 dataset 计算"，不需要
+    # bm25f() 的常量覆盖参数）；k1/b/coarse_boost/type_mult 复用上面 BM25_* 通用配置。
+    # 中文字符必须显式加进 charset_table，Manticore 默认字符集表不认 CJK，会把中文词
+    # 当分隔符丢弃（实测踩过：charset_table 不配置时，中文 chunk 基本等于没索引）。
+    MANTICORE_HOST: str = "localhost"
+    # SQL 协议端口（MySQL wire protocol），不是 HTTP(S) 的 9308。
+    MANTICORE_PORT: int = 9306
+    MANTICORE_TIMEOUT_SECONDS: int = 10
+    # 表名前缀：真实表名 = f"{MANTICORE_BM25_TABLE_PREFIX}_{dataset_id}"。
+    MANTICORE_BM25_TABLE_PREFIX: str = "bm25_ds"
 
     # ==========================================
     # 存储 & 资源配置 (Storage & Resources)
