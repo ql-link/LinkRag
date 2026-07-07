@@ -49,6 +49,10 @@ def _row(**json_cols):
     row.enhancement_config = json_cols.get("enhancement", {})
     row.pdf_config = json_cols.get("pdf", {})
     row.recall_config = json_cols.get("recall", {})
+    row.sparse_embedding_config_id = None
+    row.dense_embedding_config_id = None
+    row.sparse_embedding_config_source = "USER"
+    row.dense_embedding_config_source = "USER"
     return row
 
 

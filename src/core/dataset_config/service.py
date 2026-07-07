@@ -71,6 +71,8 @@ class DatasetConfigService:
         return VectorModelBindingConfig(
             sparse_embedding_config_id=row.sparse_embedding_config_id,
             dense_embedding_config_id=row.dense_embedding_config_id,
+            sparse_embedding_config_source=row.sparse_embedding_config_source,
+            dense_embedding_config_source=row.dense_embedding_config_source,
         )
 
     async def get_config(
@@ -138,5 +140,7 @@ class DatasetConfigService:
             vector_models=VectorModelBindingConfig(
                 sparse_embedding_config_id=row.sparse_embedding_config_id,
                 dense_embedding_config_id=row.dense_embedding_config_id,
+                sparse_embedding_config_source=row.sparse_embedding_config_source,
+                dense_embedding_config_source=row.dense_embedding_config_source,
             ),
         )

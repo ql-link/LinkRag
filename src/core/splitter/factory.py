@@ -422,6 +422,7 @@ async def aresolve_dataset_embedding_client(
                 user_id=user_id,
                 capability="EMBEDDING",
                 config_id=config_id,
+                config_source=binding.dense_embedding_config_source,
                 db=session,
             )
         except UserModelConfigMissingError as exc:

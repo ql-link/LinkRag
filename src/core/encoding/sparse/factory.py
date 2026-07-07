@@ -154,6 +154,7 @@ async def aresolve_dataset_sparse_vector_service(
                 user_id=user_id,
                 capability="SPARSE_EMBEDDING",
                 config_id=config_id,
+                config_source=binding.sparse_embedding_config_source,
                 db=session,
             )
         except UserModelConfigMissingError as exc:

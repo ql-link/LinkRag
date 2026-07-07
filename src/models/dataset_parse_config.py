@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 
 from sqlalchemy import Boolean, Column, DateTime, Index, UniqueConstraint
-from sqlalchemy.dialects.mysql import BIGINT, JSON
+from sqlalchemy.dialects.mysql import BIGINT, JSON, VARCHAR
 from sqlalchemy.orm import declarative_base
 
 Base = declarative_base()
@@ -46,10 +46,18 @@ class DatasetParseConfig(Base):
         nullable=True,
         comment="稀疏向量模型配置 ID，对应 llm_user_config.id",
     )
+    sparse_embedding_config_source = Column(
+        VARCHAR(16), nullable=False, default="USER",
+        comment="稀疏向量模型配置来源：USER/SYSTEM",
+    )
     dense_embedding_config_id = Column(
         BIGINT(unsigned=True),
         nullable=True,
         comment="稠密向量模型配置 ID，对应 llm_user_config.id",
+    )
+    dense_embedding_config_source = Column(
+        VARCHAR(16), nullable=False, default="USER",
+        comment="稠密向量模型配置来源：USER/SYSTEM",
     )
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=utc_now, nullable=False)
