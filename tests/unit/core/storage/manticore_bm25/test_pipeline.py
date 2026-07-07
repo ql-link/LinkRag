@@ -11,21 +11,28 @@ from src.core.storage.manticore_bm25 import ManticoreBm25IndexingPipeline
 
 
 class _FakeStore:
-    def __init__(self) -> None:
+    def __init__(self, *, unverified: set[str] | None = None) -> None:
         self.ensured: list[int] = []
         self.upserted: list = []
         self.deleted: list = []
+        self.dropped: list[int] = []
+        # 模拟"REPLACE INTO 没抛异常，但回读校验查不到"的那部分 chunk_id。
+        self._unverified = unverified or set()
 
     async def ensure_table(self, dataset_id: int) -> str:
         self.ensured.append(dataset_id)
         return f"bm25_ds_{dataset_id}"
 
-    async def upsert_chunks(self, points) -> None:
+    async def upsert_chunks(self, points) -> list[str]:
         self.upserted.extend(points)
+        return [p.chunk_id for p in points if p.chunk_id not in self._unverified]
 
     async def delete_by_document(self, *, dataset_id, doc_id) -> int:
         self.deleted.append((dataset_id, doc_id))
-        return 0
+        return 3  # 非零，用于验证 pipeline 层原样透传返回值、不做硬编码
+
+    async def drop_table(self, dataset_id: int) -> None:
+        self.dropped.append(dataset_id)
 
 
 class _FakeRepo:
@@ -61,8 +68,8 @@ def _plan(chunks, *, doc_id=1, user_id=1, dataset_id=2):
     )
 
 
-def _pipeline():
-    store = _FakeStore()
+def _pipeline(*, unverified: set[str] | None = None):
+    store = _FakeStore(unverified=unverified)
     repo = _FakeRepo()
     pipe = ManticoreBm25IndexingPipeline(store=store, chunk_repository=repo)
     return pipe, store, repo
@@ -102,6 +109,25 @@ async def test_write_marks_invalid_chunk_failed() -> None:
     assert {p.chunk_id for p in store.upserted} == {"ok"}
 
 
+async def test_write_marks_chunk_failed_when_not_confirmed_by_readback() -> None:
+    # REPLACE INTO 没抛异常（校验通过、进了 upserted），但批量回读没查到 "c2"——
+    # 这条必须被标记为失败，不能因为整批没抛异常就被当成全部成功。
+    pipe, store, repo = _pipeline(unverified={"c2"})
+    plan = _plan(
+        [
+            _chunk("c1", 0, "heading", "退费 流程", "退费 流程"),
+            _chunk("c2", 1, "normal", "查询 系统", "查询 系统"),
+        ]
+    )
+    res = await pipe.write_es_index(plan, db=_FakeDB())
+    assert res.indexed_items == 1
+    assert res.failed_item_ids == ["c2"]
+    assert set(repo.success) == {"c1"}
+    assert any("c2" in ids for ids, _ in repo.failed)
+    # 两条都确实发起过写入尝试（upsert_chunks 收到了完整批次）。
+    assert {p.chunk_id for p in store.upserted} == {"c1", "c2"}
+
+
 async def test_empty_plan_is_noop() -> None:
     pipe, store, _ = _pipeline()
     res = await pipe.write_es_index(_plan([]), db=_FakeDB())
@@ -113,5 +139,11 @@ async def test_empty_plan_is_noop() -> None:
 async def test_delete_delegates_to_store_ignoring_user_id() -> None:
     pipe, store, _ = _pipeline()
     n = await pipe.delete_document_index(user_id=3, dataset_id=4, doc_id=9)
-    assert n == 0
+    assert n == 3  # 原样透传 store 的真实删除行数，不能被 pipeline 层拍平成 0
     assert store.deleted == [(4, 9)]
+
+
+async def test_delete_by_dataset_delegates_to_store_drop_table() -> None:
+    pipe, store, _ = _pipeline()
+    await pipe.delete_by_dataset(dataset_id=7)
+    assert store.dropped == [7]

@@ -72,8 +72,13 @@ class ManticoreBm25IndexingPipeline:
         if points:
             try:
                 await self._store.ensure_table(meta.dataset_id)
-                await self._store.upsert_chunks(points)
-                success_ids = [p.chunk_id for p in points]
+                success_ids = await self._store.upsert_chunks(points)
+                verified = set(success_ids)
+                for p in points:
+                    if p.chunk_id not in verified:
+                        failed_errors.append(
+                            (p.chunk_id, "manticore_bm25_write: not confirmed by read-back verification")
+                        )
             except Exception as exc:
                 reason = f"manticore_bm25_write: {exc}"
                 failed_errors.extend((p.chunk_id, reason) for p in points)
@@ -112,6 +117,16 @@ class ManticoreBm25IndexingPipeline:
 
         del user_id
         return await self._store.delete_by_document(dataset_id=dataset_id, doc_id=doc_id)
+
+    async def delete_by_dataset(self, *, dataset_id: int) -> None:
+        """dataset 整体删除时的表级清理：ES/Qdrant 没有对应方法，仅 Manticore 实现。
+
+        Manticore 按 dataset_id 物理建表，dataset 删除必须整表 DROP 才能回收，逐文档
+        删除干净不了空表本身；调用方（``DocumentDeletePurger``）按 ``hasattr`` 探测
+        这个方法是否存在，探测不到时（ES/Qdrant 后端）跳过，行为保持不变。
+        """
+
+        await self._store.drop_table(dataset_id)
 
     async def _mark_status(
         self,

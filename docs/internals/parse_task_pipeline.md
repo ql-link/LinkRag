@@ -31,7 +31,19 @@
 > 计算（`index_field_lengths`），不传常量覆盖——每张表只含一个 dataset 的文档，动态平均值
 > 本来就等价于"按 dataset 计算"。**建表 DDL 必须显式配置 `charset_table='non_cjk, chinese'`**：
 > Manticore 默认字符集表不认中文字符，会把中文词当分隔符丢弃（实测：不配置时中文内容基本
-> 等于没索引）。选型评估与 POC 见 `scripts/dev/eval_bm25_manticore_poc.py`。
+> 等于没索引）。选型评估与 POC 见 `scripts/dev/eval_bm25_manticore_poc.py`。**表生命周期**：
+> dataset 整体删除时，`DocumentDeletePurger._purge_dataset`（`src/core/pipeline/document_delete/purger.py`）
+> 在逐文档清理完之后，会用 `hasattr` 探测 BM25 管线是否暴露 `delete_by_dataset(dataset_id)`——
+> 只有 manticore 后端实现了这个方法（`ManticoreBm25IndexingPipeline.delete_by_dataset` →
+> `ManticoreBm25Store.drop_table`，整表 `DROP TABLE IF EXISTS`），es/qdrant 没有对应的物理表
+> 结构，探测不到即跳过，行为不变。逐文档删除只清行、不清表，若不补这一刀，dataset 删除后
+> 空表会一直留存，只增不减。**写入校验**：`ManticoreBm25Store.upsert_chunks` 单条 `REPLACE
+> INTO` 出错只记录日志、跳过，不让同批次其余成功写入被牵连判定失败；批次写完后按
+> chunk_id 批量 `SELECT` 回读，只有真正查得到的行才计入返回的已确认 chunk_id 列表，
+> `ManticoreBm25IndexingPipeline.write_es_index` 据此精确标记每个 chunk 的 `es_status`，
+> 而不是"这批是否抛过异常"这种粗粒度判断。**连接管理**：未显式注入 `conn` 时走进程内
+> `aiomysql` 连接池（`minsize=1, maxsize=10`，对齐 `src/database.py` 的 SQLAlchemy
+> pool_size），并发写入/查询请求可并行拿到不同物理连接，不再排队在同一条常驻连接上。
 
 ## 1. 模块框架
 

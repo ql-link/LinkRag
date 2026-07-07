@@ -23,7 +23,8 @@
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import Any
 
@@ -44,6 +45,10 @@ from .table_router import TableRouter
 
 _BM25_K1_DEFAULT = 1.2
 _BM25_B_DEFAULT = 0.75
+# 与 src/database.py 的 SQLAlchemy pool_size=10 对齐：并发请求下多条连接可用，
+# 避免单连接排队成为召回/写入路径的瓶颈。
+_POOL_MINSIZE = 1
+_POOL_MAXSIZE = 10
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +103,7 @@ class ManticoreBm25Store:
     ) -> None:
         self._conn = conn
         self._owns_conn = conn is None
+        self._pool: Any | None = None
         self.host = host or settings.MANTICORE_HOST
         self.port = port or settings.MANTICORE_PORT
         self.timeout = timeout or getattr(settings, "MANTICORE_TIMEOUT_SECONDS", 10)
@@ -118,58 +124,118 @@ class ManticoreBm25Store:
         table = self.table_router.table_name(dataset_id)
         if table in self._ready_tables:
             return table
-        conn = await self._get_conn()
-        cur = await conn.cursor()
-        try:
-            await cur.execute(
-                f"CREATE TABLE IF NOT EXISTS {table}("
-                f"{ATTR_CHUNK_ID} string, {ATTR_DOC_ID} bigint, {ATTR_USER_ID} bigint, "
-                f"{ATTR_CHUNK_TYPE} string, {FIELD_COARSE} text, {FIELD_FINE} text"
-                f") {TABLE_DDL_OPTIONS}"
-            )
-        except Exception as exc:
-            raise ManticoreStoreError(f"Failed to ensure table {table}: {exc}") from exc
+        async with self._connection() as conn:
+            cur = await conn.cursor()
+            try:
+                await cur.execute(
+                    f"CREATE TABLE IF NOT EXISTS {table}("
+                    f"{ATTR_CHUNK_ID} string, {ATTR_DOC_ID} bigint, {ATTR_USER_ID} bigint, "
+                    f"{ATTR_CHUNK_TYPE} string, {FIELD_COARSE} text, {FIELD_FINE} text"
+                    f") {TABLE_DDL_OPTIONS}"
+                )
+            except Exception as exc:
+                raise ManticoreStoreError(f"Failed to ensure table {table}: {exc}") from exc
         self._ready_tables.add(table)
         return table
 
+    async def drop_table(self, dataset_id: int) -> None:
+        """整表物理删除（dataset 被整体删除时用，而非 ``delete_by_document`` 的文档级删除）。
+
+        与 ES/Qdrant 不同：Manticore 每个 dataset 一张物理表，dataset 删除必须显式
+        ``DROP TABLE`` 才能真正回收——只删行不删表会让空表在 dataset 之间只增不减，
+        对应的内存/句柄也不会释放（见 POC 里"删表后内存不随 DROP 立即回落"的现象）。
+        """
+
+        table = self.table_router.table_name(dataset_id)
+        async with self._connection() as conn:
+            cur = await conn.cursor()
+            try:
+                await cur.execute(f"DROP TABLE IF EXISTS {table}")
+            except Exception as exc:
+                raise ManticoreStoreError(f"Failed to drop table {table}: {exc}") from exc
+        self._ready_tables.discard(table)
+
     async def _table_exists(self, table: str) -> bool:
-        conn = await self._get_conn()
-        cur = await conn.cursor()
-        try:
-            await cur.execute("SHOW TABLES LIKE %s", (table,))
-            rows = await cur.fetchall()
-            return bool(rows)
-        except Exception as exc:
-            raise ManticoreStoreError(f"Failed to check table existence {table}: {exc}") from exc
+        async with self._connection() as conn:
+            cur = await conn.cursor()
+            try:
+                await cur.execute("SHOW TABLES LIKE %s", (table,))
+                rows = await cur.fetchall()
+                return bool(rows)
+            except Exception as exc:
+                raise ManticoreStoreError(f"Failed to check table existence {table}: {exc}") from exc
 
     # ---------------- 写入 ----------------
-    async def upsert_chunks(self, points: Sequence[Bm25Point]) -> None:
-        """按 chunk_id 幂等写入（``REPLACE INTO``），按 dataset_id 分组路由到各自的表。"""
+    async def upsert_chunks(self, points: Sequence[Bm25Point]) -> list[str]:
+        """按 chunk_id 幂等写入（``REPLACE INTO``），返回回读校验后确认已落地的 chunk_id。
+
+        单条 ``REPLACE INTO`` 出错只记录、跳过，不让同批次其余已经成功的写入被
+        牵连判定失败——批次内某个 chunk 写坏（数据本身有问题）不该导致同批其余
+        chunk 被误标失败、引发不必要的重试。批次写完后按 chunk_id 做一次批量
+        ``SELECT`` 回读，只有真正查得到的行才计入返回值，调用方（pipeline.py）
+        据此精确标记每个 chunk 的 ``es_status``，而不是"这批是否抛过异常"这种
+        粗粒度判断。
+        """
 
         if not points:
-            return
+            return []
         by_dataset: dict[int, list[Bm25Point]] = {}
         for p in points:
             by_dataset.setdefault(p.dataset_id, []).append(p)
 
-        conn = await self._get_conn()
+        verified: list[str] = []
         for dataset_id, group in by_dataset.items():
             table = await self.ensure_table(dataset_id)
-            cur = await conn.cursor()
-            try:
+            attempted: list[str] = []
+            async with self._connection() as conn:
+                cur = await conn.cursor()
                 for p in group:
                     row_id = _chunk_id_to_row_id(p.chunk_id)
-                    await cur.execute(
-                        f"REPLACE INTO {table} "
-                        f"(id, {ATTR_CHUNK_ID}, {ATTR_DOC_ID}, {ATTR_USER_ID}, "
-                        f"{ATTR_CHUNK_TYPE}, {FIELD_COARSE}, {FIELD_FINE}) "
-                        f"VALUES (%s,%s,%s,%s,%s,%s,%s)",
-                        (row_id, p.chunk_id, p.doc_id, p.user_id, p.chunk_type, p.coarse_tokens, p.fine_tokens),
-                    )
+                    try:
+                        await cur.execute(
+                            f"REPLACE INTO {table} "
+                            f"(id, {ATTR_CHUNK_ID}, {ATTR_DOC_ID}, {ATTR_USER_ID}, "
+                            f"{ATTR_CHUNK_TYPE}, {FIELD_COARSE}, {FIELD_FINE}) "
+                            f"VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                            (row_id, p.chunk_id, p.doc_id, p.user_id, p.chunk_type, p.coarse_tokens, p.fine_tokens),
+                        )
+                        attempted.append(p.chunk_id)
+                    except Exception as exc:
+                        logger.error(
+                            "[ManticoreBm25Store.upsert_chunks] REPLACE INTO failed "
+                            "table={} chunk_id={} error={}",
+                            table,
+                            p.chunk_id,
+                            exc,
+                        )
+            if attempted:
+                verified.extend(await self._verify_written(table, attempted))
+        return verified
+
+    async def _verify_written(self, table: str, chunk_ids: Sequence[str]) -> list[str]:
+        """按 chunk_id 批量回读，返回真正查得到的子集——唯一可信的"写入成功"判据。
+
+        与单纯"execute 没抛异常就算成功"不同：这一步能捕捉网络层已确认、但因值
+        截断/类型静默转换等原因未真正落地的行。回读本身失败（连接不可用等）视为
+        无法判断，直接抛出，交给调用方按整批失败处理。
+        """
+
+        if not chunk_ids:
+            return []
+        async with self._connection() as conn:
+            cur = await conn.cursor()
+            placeholders = ",".join(["%s"] * len(chunk_ids))
+            try:
+                await cur.execute(
+                    f"SELECT {ATTR_CHUNK_ID} FROM {table} WHERE {ATTR_CHUNK_ID} IN ({placeholders})",
+                    tuple(chunk_ids),
+                )
+                rows = await cur.fetchall()
             except Exception as exc:
                 raise ManticoreStoreError(
-                    f"Failed to upsert BM25 points into {table}: {exc}"
+                    f"Failed to verify written BM25 chunks in {table}: {exc}"
                 ) from exc
+        return [str(row[0]) for row in rows]
 
     # ---------------- 查询（BM25F 召回 + 应用层类型乘数重排）----------------
     async def query(
@@ -196,23 +262,23 @@ class ManticoreBm25Store:
             logger.warning("[ManticoreBm25Store.query] table not found; empty hits: {}", table)
             return []
 
-        conn = await self._get_conn()
-        cur = await conn.cursor()
         match_expr = " | ".join(t.replace("'", " ") for t in terms)
         where_doc = f" AND {ATTR_DOC_ID}={int(doc_id)}" if doc_id is not None else ""
         fetch_limit = max(limit, settings.BM25_PREFETCH_LIMIT) if type_mult else limit
         ranker = f"1000*bm25f({self.k1},{self.b},{{{FIELD_COARSE}={self.coarse_boost},{FIELD_FINE}=1}})"
 
-        try:
-            await cur.execute(
-                f"SELECT {ATTR_CHUNK_ID}, {ATTR_DOC_ID}, {ATTR_CHUNK_TYPE}, WEIGHT() as w "
-                f"FROM {table} WHERE MATCH(%s){where_doc} "
-                f"ORDER BY w DESC LIMIT {int(fetch_limit)} OPTION ranker=expr('{ranker}')",
-                (match_expr,),
-            )
-            rows = await cur.fetchall()
-        except Exception as exc:
-            raise ManticoreStoreError(f"Failed to query BM25 table {table}: {exc}") from exc
+        async with self._connection() as conn:
+            cur = await conn.cursor()
+            try:
+                await cur.execute(
+                    f"SELECT {ATTR_CHUNK_ID}, {ATTR_DOC_ID}, {ATTR_CHUNK_TYPE}, WEIGHT() as w "
+                    f"FROM {table} WHERE MATCH(%s){where_doc} "
+                    f"ORDER BY w DESC LIMIT {int(fetch_limit)} OPTION ranker=expr('{ranker}')",
+                    (match_expr,),
+                )
+                rows = await cur.fetchall()
+            except Exception as exc:
+                raise ManticoreStoreError(f"Failed to query BM25 table {table}: {exc}") from exc
 
         hits = [
             Bm25ScoredPoint(chunk_id=str(chunk_id), doc_id=int(doc_id_val), score=float(w) * type_mult.get(chunk_type, 1.0))
@@ -223,40 +289,67 @@ class ManticoreBm25Store:
 
     # ---------------- 删除（文档级全量重建的删除半步）----------------
     async def delete_by_document(self, *, dataset_id: int, doc_id: int) -> int:
-        """删除某文档在对应 dataset 表里的全部 chunk。表不存在时视为无操作。"""
+        """删除某文档在对应 dataset 表里的全部 chunk，返回实际删除的行数。
+
+        表不存在时视为无操作，返回 0；与 ES 的 ``delete_by_query`` 返回 ``deleted``
+        字段语义对齐（调用方按返回值判断"是否真的删到东西"，日志/幂等观测都靠它）。
+        """
 
         table = self.table_router.table_name(dataset_id)
         if not await self._table_exists(table):
             return 0
-        conn = await self._get_conn()
-        cur = await conn.cursor()
-        try:
-            await cur.execute(f"DELETE FROM {table} WHERE {ATTR_DOC_ID}=%s", (doc_id,))
-        except Exception as exc:
-            raise ManticoreStoreError(f"Failed to delete BM25 document from {table}: {exc}") from exc
-        return 0
+        async with self._connection() as conn:
+            cur = await conn.cursor()
+            try:
+                await cur.execute(f"DELETE FROM {table} WHERE {ATTR_DOC_ID}=%s", (doc_id,))
+            except Exception as exc:
+                raise ManticoreStoreError(f"Failed to delete BM25 document from {table}: {exc}") from exc
+            return cur.rowcount or 0
 
     async def close(self) -> None:
-        """关闭本 store 自建的连接。"""
+        """关闭本 store 自建的连接/连接池（不关闭外部注入的连接，那由调用方管理）。"""
 
-        if self._owns_conn and self._conn is not None:
+        if not self._owns_conn:
+            return
+        if self._conn is not None:
             self._conn.close()
             self._conn = None
+        if self._pool is not None:
+            self._pool.close()
+            await self._pool.wait_closed()
+            self._pool = None
 
-    # ---------------- 内部：连接 ----------------
-    async def _get_conn(self) -> Any:
+    # ---------------- 内部：连接（外部注入单连接 / 内部自建连接池） ----------------
+    @asynccontextmanager
+    async def _connection(self) -> AsyncIterator[Any]:
+        """产出一条可用连接。
+
+        显式注入 ``conn``（测试、或调用方自行管理连接生命周期）时直接复用，不建池；
+        否则从进程内连接池按需借还——单条常驻连接会让并发写入/查询请求排队在同一
+        条 MySQL 协议连接上，池化后并发请求可以拿到不同的物理连接并行执行。
+        """
+
         if self._conn is not None:
-            return self._conn
-        aiomysql = self._aiomysql()
-        self._conn = await aiomysql.connect(
-            host=self.host,
-            port=self.port,
-            user="",
-            password="",
-            autocommit=True,
-            connect_timeout=self.timeout,
-        )
-        return self._conn
+            yield self._conn
+            return
+        pool = await self._get_pool()
+        async with pool.acquire() as conn:
+            yield conn
+
+    async def _get_pool(self) -> Any:
+        if self._pool is None:
+            aiomysql = self._aiomysql()
+            self._pool = await aiomysql.create_pool(
+                host=self.host,
+                port=self.port,
+                user="",
+                password="",
+                autocommit=True,
+                connect_timeout=self.timeout,
+                minsize=_POOL_MINSIZE,
+                maxsize=_POOL_MAXSIZE,
+            )
+        return self._pool
 
     @staticmethod
     def _aiomysql() -> Any:
