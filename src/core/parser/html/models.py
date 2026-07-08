@@ -8,6 +8,7 @@ class HtmlParseOptions:
     source_file_url: str | None = None
     image_prefix: str = "html-images"
     mock_minio_base_url: str = "mock-minio://tolink-rag"
+    preserve_image_src: bool = False
 
 
 @dataclass(slots=True)

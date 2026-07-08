@@ -114,7 +114,8 @@ class StageServices:
         enhancement_config = dataset_cfg.enhancement if dataset_cfg is not None else None
 
         parser_kwargs: dict[str, Any] = {}
-        if payload.file_type.lower() == "pdf":
+        file_type = payload.file_type.lower()
+        if file_type == "pdf":
             dataset_backend = (
                 dataset_cfg.pdf.pdf_parser_backend if dataset_cfg is not None else None
             )
@@ -131,6 +132,12 @@ class StageServices:
             }
             if pdf_backend.lower() == "mineru":
                 parser_kwargs["source_file_url"] = self.source_io.build_source_file_url(payload)
+        elif file_type in {"doc", "docx"}:
+            parser_kwargs = {
+                "image_bucket": payload.image_bucket or payload.markdown_bucket,
+                "image_prefix": payload.image_prefix or payload.md_object_key,
+                "storage": self._storage,
+            }
 
         return await ParseTaskService.aprocess(
             source_path,
@@ -160,6 +167,25 @@ class StageServices:
             self._storage,
             image_bucket,
             image_prefix,
+        )
+
+    async def enhance_markdown_passthrough(
+        self,
+        markdown: str,
+        payload: ParseTaskPayload,
+        dataset_cfg: "DatasetParseConfigBundle | None" = None,
+    ) -> dict:
+        """对 md/markdown 透传内容执行与普通解析产物一致的 Markdown 增强。"""
+        return await ParseTaskService.aenhance_existing_markdown(
+            markdown,
+            source_file=payload.source_filename or payload.md_object_key,
+            metadata={
+                "format": "markdown",
+                "passthrough": True,
+                "pages_or_length": len(markdown or ""),
+            },
+            user_id=coerce_optional_int(payload.user_id),
+            enhancement_config=dataset_cfg.enhancement if dataset_cfg is not None else None,
         )
 
     async def load_markdown(self, payload: ParseTaskPayload) -> str:

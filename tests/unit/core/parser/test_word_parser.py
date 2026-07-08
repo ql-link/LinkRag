@@ -27,6 +27,27 @@ _PNG = (
 )
 
 
+class _FakeStorage:
+    def __init__(self) -> None:
+        self.uploads: list[dict] = []
+
+    def download_to_path(self, bucket, object_key, dst):
+        raise NotImplementedError
+
+    def upload_bytes(self, bucket, object_key, content, content_type):
+        self.uploads.append(
+            {
+                "bucket": bucket,
+                "object_key": object_key,
+                "content": content,
+                "content_type": content_type,
+            }
+        )
+
+    def build_object_url(self, bucket, object_key):
+        return f"mock-minio://{bucket}/{object_key}"
+
+
 def _add_hyperlink(paragraph, url: str, text: str) -> None:
     part = paragraph.part
     r_id = part.relate_to(
@@ -233,6 +254,35 @@ def test_embedded_image_to_mock_minio():
     assert "![](mock-minio://" in md
     assert "data:image" not in md
     assert meta["image_count"] == 1
+
+
+def test_embedded_image_uploads_to_parse_image_prefix_when_storage_available():
+    def build(d):
+        d.add_paragraph("配图说明")
+        d.add_picture(io.BytesIO(_PNG), width=Inches(1))
+
+    storage = _FakeStorage()
+    parser = WordParser(
+        storage=storage,
+        image_bucket="tolink-rag-docs",
+        image_prefix="parsed/user-1/dataset-2/task-1/report.md",
+    )
+
+    md = parser.parse(_as_path(_docx_bytes(build)))
+    meta = parser.extract_metadata()
+
+    assert len(storage.uploads) == 1
+    upload = storage.uploads[0]
+    assert upload["bucket"] == "tolink-rag-docs"
+    assert upload["object_key"].startswith(
+        "parsed/user-1/dataset-2/task-1/image/report/word-"
+    )
+    assert upload["object_key"].endswith(".png")
+    assert upload["content_type"] == "image/png"
+    assert "![](mock-minio://tolink-rag-docs/parsed/user-1/dataset-2/task-1/image/report/word-" in md
+    assert "mock-minio://tolink-rag/html-images" not in md
+    assert meta["image_upload_count"] == 1
+    assert meta["image_assets"][0]["object_key"] == upload["object_key"]
 
 
 def test_image_object_path_failure_keeps_placeholder(monkeypatch):

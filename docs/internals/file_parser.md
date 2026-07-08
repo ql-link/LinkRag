@@ -76,9 +76,10 @@ HtmlParser
 | `HtmlParseService` | `html/service.py` | 构建并清理 DOM（含删全部 HTML 注释）、trafilatura 定位正文/去样板、文本重合度映射回 soup 容器（低置信分级回退）、空内容判定、编排 Markdown 渲染 |
 | `HtmlMarkdownRenderer` | `html/renderer.py` | 按 DOM 顺序渲染标题、段落、列表、代码块、图片和表格 |
 | `HtmlTableProcessor` | `html/table_processor.py` | 将普通表格输出为 Markdown table，将复杂表格输出为记录式 Markdown |
-| `HtmlImageRewriter` | `html/image_rewriter.py` | 将图片 URL 绝对化，并生成模拟对象存储路径 |
+| `HtmlImageRewriter` | `html/image_rewriter.py` | 将图片 URL 绝对化，并生成离线解析使用的模拟对象存储路径 |
 | `PdfParser` | `providers/pdf_parser.py` | PDF 格式入口，读取配置并组装 PDF 参数 |
 | `PdfParserService` | `pdf/service.py` | PDF 解析流程编排、图片上传和引用替换 |
+| `WordParser` | `providers/word_parser.py` | mammoth 转语义 HTML；pipeline 传入对象存储参数时会上传内嵌图片并回写真实对象 URL |
 | `PdfBackendRegistry` | `pdf/registry.py` | PDF 后端注册、实例创建、解析顺序解析 |
 | `BasePdfBackend` | `pdf/base.py` | 单个 PDF 解析后端必须实现的接口 |
 
@@ -207,11 +208,11 @@ MQ 解析任务通过 `pdf_parser_backend` 指定：
 
 ### 5.4 图片资产输出
 
-PDF 解析可传 `image_bucket`、`image_prefix` 配合对象存储输出图片资产；完整流水线中，这些参数通常由 `ParseTaskPipeline` 从 MQ payload 和 Markdown 输出路径中组装。
+PDF 和 Word 解析可传 `image_bucket`、`image_prefix` 配合对象存储输出图片资产；完整流水线中，这些参数通常由 `ParseTaskPipeline` 从 MQ payload 和 Markdown 输出路径中组装。未显式传入时，pipeline 会默认使用 `md_bucket` / `md_object_key`。
 
 MinerU 精准解析返回的 ZIP 中，Markdown 图片默认是 `images/xxx` 相对路径。`MinerUBackend` 会保留该相对路径作为图片资产的 `source_path`，`PdfParserService` 会先同步生成最终对象 key 与 URL，再把 Markdown 中的相对路径替换为对象存储 URL。
 
-所有 PDF 图片上传路径都会收敛到同一套图片准备逻辑，包括 MinerU/OpenDataLoader 已提取的二进制图片、PyMuPDF 内嵌图、Naive 图片块、页渲染图片和视觉区域裁剪图片。对象存储层仍然是一张图片一个 object 上传，不使用单次批量上传；当 `PDF_IMAGE_UPLOAD_ASYNC=true` 时，主链路只负责生成 URL 并提交后台上传任务，不等待 MinIO 上传完成，因此 Markdown 中的图片链接会经历一个短暂的最终一致性窗口。
+PDF 图片上传路径都会收敛到同一套图片准备逻辑，包括 MinerU/OpenDataLoader 已提取的二进制图片、PyMuPDF 内嵌图、Naive 图片块、页渲染图片和视觉区域裁剪图片。Word 内嵌图片由 mammoth 图片钩子读取 bytes 后同步上传。两者对象 key 都使用 `parent(image_prefix)/image/stem(image_prefix)/filename` 规则，例如 `parsed/.../report.md` 对应图片目录 `parsed/.../image/report/`。对象存储层仍然是一张图片一个 object 上传，不使用单次批量上传；当 `PDF_IMAGE_UPLOAD_ASYNC=true` 时，PDF 主链路只负责生成 URL 并提交后台上传任务，不等待 MinIO 上传完成，因此 Markdown 中的图片链接会经历一个短暂的最终一致性窗口。Word 图片上传当前在解析过程中同步完成。
 
 图片增强不会依赖 MinIO 图片已上传完成。`PdfParserService` 会把受限数量的图片 bytes 作为进程内临时映射交给 `ParseTaskService`，`ProviderVisionClient` 优先使用内存图片进行视觉模型调用，只有内存映射缺失时才回退读取 Markdown 中的图片 URL。该内存映射不会写入最终 metadata、MQ 或数据库。
 
@@ -302,7 +303,7 @@ register_pdf_backend(
 
 修改 Word 或 HTML：
 
-- Word：`src/core/parser/providers/word_parser.py`（适配层：mammoth→语义 HTML→复用 `src/core/parser/html` 渲染引擎，跳过 trafilatura；内嵌图经 mammoth 钩子转模拟 MinIO 路径）
+- Word：`src/core/parser/providers/word_parser.py`（适配层：mammoth→语义 HTML→复用 `src/core/parser/html` 渲染引擎，跳过 trafilatura；pipeline 路径下内嵌图经 mammoth 钩子上传到解析产物图片目录，离线无 storage 时保留模拟 MinIO 路径）
 - HTML 入口：`src/core/parser/providers/html_parser.py`
 - HTML 内部流程：`src/core/parser/html/service.py`
 - HTML 表格：`src/core/parser/html/table_processor.py`

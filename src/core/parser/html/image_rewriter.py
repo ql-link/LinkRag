@@ -18,6 +18,13 @@ class HtmlImageRewriter:
         original_url = self._select_source(img)
         alt = self._clean_inline_text(img.get("alt", ""))
         absolute_url = self.resolve_url(original_url)
+        if self.options.preserve_image_src:
+            return ImageRewriteResult(
+                markdown=f"![{self._escape_alt(alt)}]({absolute_url})",
+                original_url=original_url,
+                absolute_url=absolute_url,
+                object_url=absolute_url,
+            )
         object_url = self.build_mock_object_url(absolute_url)
 
         target_url = object_url or absolute_url

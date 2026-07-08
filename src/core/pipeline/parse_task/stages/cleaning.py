@@ -97,13 +97,17 @@ class CleaningStage(Stage):
             try:
                 if payload.is_markdown_passthrough:
                     # md/markdown 源文件本身即目标格式：cleaning 阶段的职责是把多源文件
-                    # 「解析为 md」，md 无需任何引擎转换，直接读取源文件文本透传，跳过解析。
-                    # 透传不经增强/PDF，无需数据集配置。
-                    parse_result = await self._read_markdown_passthrough(source_path)
+                    # 「解析为 md」，无需文件解析引擎，但仍需复用 Markdown 增强链路。
+                    dataset_cfg = await self._load_dataset_config(payload, ctx)
+                    markdown = await self._read_markdown_passthrough(source_path)
                     # 提取 MD 中 base64 内嵌图片并上传到 MinIO，替换为对象 URL；
                     # 单张失败不阻断整篇（best-effort），修改后的 markdown 用于后续分片。
-                    parse_result["markdown"] = await self._services.upload_md_images(
-                        parse_result["markdown"], payload
+                    markdown = await self._services.upload_md_images(markdown, payload)
+                    # Java 可能已把配套图片改写成内部 URL，因此这里让图片描述进入后续 chunk。
+                    parse_result = await self._services.enhance_markdown_passthrough(
+                        markdown,
+                        payload,
+                        dataset_cfg,
                     )
                 else:
                     # 读取数据集级配置（PDF 后端 + 增强模型/开关）注入解析。get_config 内部已对
@@ -198,29 +202,13 @@ class CleaningStage(Stage):
         return await DatasetConfigService().get_config(user_id, dataset_id, ctx.db)
 
     @staticmethod
-    async def _read_markdown_passthrough(source_path: Path | None) -> dict:
-        """直接读取已下载的 md/markdown 源文件文本作为 markdown 产物。
-
-        返回与 :meth:`StageServices.parse_file` 一致的产物字典形状
-        （``markdown`` / ``parse_result`` / ``metadata`` / ``time_cost_ms``），
-        ``parse_result`` 置空使下游 chunking 走纯 markdown 分片路径。
-        """
+    async def _read_markdown_passthrough(source_path: Path | None) -> str:
+        """直接读取已下载的 md/markdown 源文件文本。"""
         if source_path is None:
             raise ValueError("md/markdown 源文件路径不能为空，无法透传")
-        started_at = time.monotonic()
-        markdown = await asyncio.to_thread(
+        return await asyncio.to_thread(
             Path(source_path).read_text, "utf-8", "ignore"
         )
-        return {
-            "markdown": markdown,
-            "parse_result": None,
-            "metadata": {
-                "format": "markdown",
-                "passthrough": True,
-                "pages_or_length": len(markdown),
-            },
-            "time_cost_ms": int((time.monotonic() - started_at) * 1000),
-        }
 
     @staticmethod
     def _classified_failure(payload, code: ParseFailureCode, exc: Exception) -> StageOutcome:

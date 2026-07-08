@@ -2,12 +2,14 @@ import hashlib
 import zipfile
 from io import BytesIO
 from pathlib import Path
+from typing import Any
 
 import mammoth
 import mammoth.images
 from bs4 import BeautifulSoup
 
 from src.core.parser.exceptions import ParseBaseException
+from src.services.storage.base import BaseObjectStorage
 
 from ..base import BaseParser
 from ..html.image_rewriter import HtmlImageRewriter
@@ -50,14 +52,26 @@ class WordParser(BaseParser):
     """.docx -> Markdown：mammoth 转语义 HTML，复用 HTML 渲染引擎产出结构保真 Markdown。
 
     docx 本身即正文、无站点样板，故复用 HTML 引擎时**跳过 trafilatura 正文定位**，
-    直接清理 mammoth HTML 后交 HtmlMarkdownRenderer。内嵌图片在 mammoth 图片钩子
-    内转模拟 MinIO 对象路径（复用 HtmlImageRewriter 同款规则），不输出 data:base64。
+    直接清理 mammoth HTML 后交 HtmlMarkdownRenderer。pipeline 传入对象存储参数时，
+    内嵌图片在 mammoth 图片钩子内上传到解析产物图片目录；离线解析无 storage 时
+    保留模拟 MinIO 对象路径，不输出 data:base64。
     """
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        storage: BaseObjectStorage | None = None,
+        image_bucket: str | None = None,
+        image_prefix: str | None = None,
+    ) -> None:
         super().__init__()
         # WordParser 自包含解析选项（Word 无相对 URL，无需来源 URL 上下文）。
-        self._options = HtmlParseOptions()
+        self._storage = storage
+        self._image_bucket = image_bucket
+        self._image_prefix = image_prefix
+        self._options = HtmlParseOptions(
+            preserve_image_src=bool(storage and image_bucket and image_prefix)
+        )
+        self._image_assets: list[dict[str, Any]] = []
         self._image_warning_count = 0
 
     def parse(self, source: Path | None) -> str:
@@ -67,6 +81,7 @@ class WordParser(BaseParser):
         self.validate_source(source)
         file_stream = Path(source).read_bytes()
         self._image_warning_count = 0
+        self._image_assets = []
 
         if not self._is_ooxml(file_stream):
             raise ParseBaseException("Word 解析失败：非 .docx（OOXML）文件或文件损坏")
@@ -107,23 +122,62 @@ class WordParser(BaseParser):
         return result.value or ""
 
     def _image_hook(self, image) -> dict:
-        # 内嵌图是真内容：取字节 → 按字节 sha1 合成伪 URI → 复用 HTML 模块
-        # build_mock_object_url 同款规则生成 mock-minio:// 路径（image_rewriter 零改动）。
+        # 内嵌图是真内容：pipeline 路径下上传到解析产物图片目录；无 storage 的离线
+        # 调用保持旧的 mock-minio:// 行为，兼容现有测试与本地调试。
         try:
             with image.open() as image_bytes:
                 data = image_bytes.read()
-            ext = _CONTENT_TYPE_EXT.get((image.content_type or "").lower(), "bin")
+            content_type = (image.content_type or "").lower()
+            ext = _CONTENT_TYPE_EXT.get(content_type, "bin")
             digest = hashlib.sha1(data).hexdigest()
-            # 三斜杠使路径段非空，build_mock_object_url 能提取出带扩展名的文件名。
-            pseudo_uri = f"docx-embedded:///{digest}.{ext}"
-            object_url = HtmlImageRewriter(self._options).build_mock_object_url(pseudo_uri)
-            if not object_url:
-                raise ValueError("对象路径生成失败")
+            object_url = self._upload_embedded_image(data, content_type, ext, digest)
+            if object_url is None:
+                # 三斜杠使路径段非空，build_mock_object_url 能提取出带扩展名的文件名。
+                pseudo_uri = f"docx-embedded:///{digest}.{ext}"
+                object_url = HtmlImageRewriter(self._options).build_mock_object_url(pseudo_uri)
+                if not object_url:
+                    raise ValueError("对象路径生成失败")
             return {"src": object_url}
         except Exception:
             # 单图失败不阻断整篇：记 warning + 占位引用。
             self._image_warning_count += 1
             return {"src": "mock-minio://unresolved/word-embedded-image"}
+
+    def _upload_embedded_image(
+        self,
+        data: bytes,
+        content_type: str,
+        ext: str,
+        digest: str,
+    ) -> str | None:
+        if not (self._storage and self._image_bucket and self._image_prefix):
+            return None
+        filename = f"word-{digest[:16]}.{ext}"
+        object_key = self._build_image_object_key(self._image_prefix, filename)
+        resolved_content_type = content_type or "application/octet-stream"
+        self._storage.upload_bytes(
+            bucket=self._image_bucket,
+            object_key=object_key,
+            content=data,
+            content_type=resolved_content_type,
+        )
+        url = self._storage.build_object_url(self._image_bucket, object_key)
+        self._image_assets.append(
+            {
+                "object_key": object_key,
+                "url": url,
+                "content_type": resolved_content_type,
+                "bytes": len(data),
+            }
+        )
+        return url
+
+    @staticmethod
+    def _build_image_object_key(image_prefix: str, filename: str) -> str:
+        prefix_path = Path(image_prefix)
+        parent = prefix_path.parent
+        stem = prefix_path.stem if prefix_path.suffix else prefix_path.name
+        return str(parent / "image" / stem / filename)
 
     def _render_html(self, html: str) -> HtmlMarkdownRenderer:
         soup = BeautifulSoup(html, "lxml")
@@ -147,5 +201,7 @@ class WordParser(BaseParser):
                 "table_failure_count": renderer.table_failure_count,
                 "image_count": renderer.image_count,
                 "image_warning_count": self._image_warning_count,
+                "image_assets": list(self._image_assets),
+                "image_upload_count": len(self._image_assets),
             }
         )

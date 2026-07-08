@@ -56,8 +56,8 @@ Java 管理端                          toLink-Rag (Python)
 | `trigger_mode` | string | ⬜ | `upload_auto`（默认） / `manual_retry` |
 | `pdf_parser_backend` | string | ⬜ | `mineru`（默认） / `opendataloader` / `naive` / `auto` |
 | `docling_force_ocr` | bool | ⬜ | 仅 Docling 后端生效 |
-| `image_bucket` | string | ⬜ | PDF 图片输出 bucket |
-| `image_prefix` | string | ⬜ | PDF 图片输出 key 前缀 |
+| `image_bucket` | string | ⬜ | PDF / Word 解析图片输出 bucket |
+| `image_prefix` | string | ⬜ | PDF / Word 解析图片输出 key 前缀 |
 | `is_retry` | bool | ⬜ | `false`（默认）表示首次解析；`true` 表示用户触发的重试任务。老消息缺省默认 `false`，与首次解析路径完全等价（migration 0009 新增） |
 | `previous_task_id` | string | ⬜ | `is_retry=true` 时必填，指向上一轮失败任务的 `task_id`；Python 端 `ParseTaskGuard.validate_retry_context` 会严格校验上一轮记录存在、pipeline 失败且可恢复。若恢复点晚于 `CLEANING`，还会要求上一轮 markdown 已成功上传 |
 

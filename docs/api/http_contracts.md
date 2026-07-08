@@ -31,8 +31,8 @@
 | `file_type` | string | 是 | `pdf/docx/doc/html/htm` 等 |
 | `parser_backend` | string | 否 | PDF 解析器，默认 `mineru` |
 | `docling_force_ocr` | bool | 否 | 仅兼容旧 PDF 参数 |
-| `image_bucket` | string | 否 | PDF 图片输出 bucket |
-| `image_prefix` | string | 否 | PDF 图片输出 key 前缀 |
+| `image_bucket` | string | 否 | PDF / Word 解析图片输出 bucket |
+| `image_prefix` | string | 否 | PDF / Word 解析图片输出 key 前缀 |
 | `source_file_url` | string | 否 | MinerU 精准解析 API 使用的源文件 URL；选择 `parser_backend=mineru` 时必须可被 MinerU 云端访问 |
 | `mineru_model_version` | string | 否 | MinerU 精准解析模型，默认 `vlm` |
 
@@ -64,8 +64,8 @@
 | `trigger_mode` | string | `upload_auto` | 触发方式 |
 | `pdf_parser_backend` | string | `mineru` | PDF 解析器 |
 | `docling_force_ocr` | bool | `false` | 兼容旧参数；当前内置 PDF 后端不使用 Docling |
-| `image_bucket` | string/null | `null` | 图片输出 bucket |
-| `image_prefix` | string/null | `null` | 图片输出前缀 |
+| `image_bucket` | string/null | `null` | PDF / Word 解析图片输出 bucket |
+| `image_prefix` | string/null | `null` | PDF / Word 解析图片输出前缀 |
 
 响应：
 

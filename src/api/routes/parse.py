@@ -54,6 +54,10 @@ async def extract_sync(
                 parser_kwargs["image_bucket"] = image_bucket
                 parser_kwargs["image_prefix"] = image_prefix
                 parser_kwargs["storage"] = StorageFactory.get_storage()
+        elif file_type.lower() in {"doc", "docx"} and image_bucket and image_prefix:
+            parser_kwargs["image_bucket"] = image_bucket
+            parser_kwargs["image_prefix"] = image_prefix
+            parser_kwargs["storage"] = StorageFactory.get_storage()
 
         task_id = file.filename or "extract_sync"
         upload_path = temp_workspace.create_temp_file(task_id, Path(settings.PARSE_TEMP_DIR))

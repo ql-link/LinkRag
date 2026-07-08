@@ -101,13 +101,15 @@ ParseTaskPipeline._upload_markdown()
   -> storage.upload_bytes(MINIO_PRIVATE_BUCKET, md_object_key, markdown, "text/markdown")
 ```
 
-PDF 图片资产：
+解析图片资产：
 
 ```text
-PdfParserService
+PdfParserService / WordParser
   -> storage.upload_bytes(image_bucket, image_object_key, image_bytes, content_type)
   -> storage.build_object_url(image_bucket, image_object_key)
 ```
+
+PDF 与 Word 解析图片使用解析产物目录下的统一 key 规则：`parent(image_prefix)/image/stem(image_prefix)/filename`。
 
 ## 6. 新增存储后端
 

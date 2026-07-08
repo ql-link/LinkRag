@@ -1,7 +1,9 @@
 import asyncio
+import re
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 from loguru import logger
 
@@ -48,8 +50,44 @@ class ParseTaskService:
             len(raw_markdown or ""),
         )
         metadata = parser.extract_metadata()
+        result = await ParseTaskService.aenhance_existing_markdown(
+            raw_markdown,
+            source_file=source_file,
+            metadata=metadata,
+            user_id=user_id,
+            enhancement_config=enhancement_config,
+        )
+        final_markdown = result["markdown"]
+        final_parse_result = result["parse_result"]
+        metadata = result["metadata"]
+
+        time_cost_ms = int((time.time() - start_time) * 1000)
+
+        return {
+            "markdown": final_markdown,
+            "parse_result": final_parse_result,
+            "metadata": metadata,
+            "time_cost_ms": time_cost_ms,
+        }
+
+    @staticmethod
+    async def aenhance_existing_markdown(
+        markdown: str,
+        source_file: str | None = None,
+        metadata: dict | None = None,
+        user_id: int | None = None,
+        enhancement_config: "EnhancementConfig | None" = None,
+    ) -> dict:
+        """对已经产出的 Markdown 文本执行统一增强与最终结构化解析。
+
+        普通文件解析会先由 provider 产出 Markdown；md/markdown 透传文件则直接读取
+        Java 上传的 normalized Markdown。两条路径都应复用这里的表格/图片增强逻辑，
+        避免透传 Markdown 中的图片引用只作为普通文本进入 chunk。
+        """
+        start_time = time.time()
+        metadata = dict(metadata or {})
         image_bytes_by_url = metadata.pop("_image_bytes_by_url", {})
-        cleaned_markdown = TextFormatter.clean(raw_markdown)
+        cleaned_markdown = TextFormatter.clean(markdown or "")
 
         orchestrator = MarkdownEnhancementOrchestrator()
         enhance_started_at = time.monotonic()
@@ -72,6 +110,10 @@ class ParseTaskService:
             len(image_bytes_by_url),
         )
         final_markdown = TextFormatter.clean(enhanced_parse_result.to_markdown())
+        final_markdown, stripped_count = _strip_internal_asset_tokens(final_markdown)
+        if stripped_count:
+            metadata["markdown_internal_asset_tokens_stripped"] = stripped_count
+
         final_parse_started_at = time.monotonic()
         heading_config = None
         if enhancement_config is not None:
@@ -108,13 +150,11 @@ class ParseTaskService:
         metadata["heading_hierarchy_reason"] = heading_result.decision.reason.value
         metadata["heading_hierarchy_insertions"] = heading_result.insertion_count
 
-        time_cost_ms = int((time.time() - start_time) * 1000)
-
         return {
             "markdown": final_markdown,
             "parse_result": final_parse_result,
             "metadata": metadata,
-            "time_cost_ms": time_cost_ms,
+            "time_cost_ms": int((time.time() - start_time) * 1000),
         }
 
     @staticmethod
@@ -146,3 +186,29 @@ class ParseTaskService:
         parser = ParserFactory.get_parser(file_type, **parser_kwargs)
         raw_markdown = parser.parse(source_path)
         return parser, raw_markdown
+
+
+_INTERNAL_ASSET_URL_RE = re.compile(
+    r"https?://[^\s)>'\"]+/api/v1/internal/files/\d+/assets\?[^)\s>'\"]+"
+)
+
+
+def _strip_internal_asset_tokens(markdown: str) -> tuple[str, int]:
+    """剥离 Java 内部图片 URL 中的 token 参数，避免服务 token 入库到 chunk。"""
+    stripped = 0
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal stripped
+        url = match.group(0)
+        parsed = urlsplit(url)
+        if not re.fullmatch(r"/api/v1/internal/files/\d+/assets", parsed.path):
+            return url
+        query_pairs = parse_qsl(parsed.query, keep_blank_values=True)
+        filtered_pairs = [(key, value) for key, value in query_pairs if key.lower() != "token"]
+        if len(filtered_pairs) == len(query_pairs):
+            return url
+        stripped += len(query_pairs) - len(filtered_pairs)
+        query = urlencode(filtered_pairs, doseq=True, quote_via=quote)
+        return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, query, parsed.fragment))
+
+    return _INTERNAL_ASSET_URL_RE.sub(replace, markdown or ""), stripped
