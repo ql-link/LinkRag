@@ -92,6 +92,23 @@ async def test_row_present_applies_dataset_values():
 
 
 @pytest.mark.asyncio
+async def test_row_present_applies_vector_model_binding_source():
+    row = _row()
+    row.sparse_embedding_config_id = 11
+    row.sparse_embedding_config_source = "SYSTEM"
+    row.dense_embedding_config_id = 12
+    row.dense_embedding_config_source = "USER"
+    db = _fake_db(row=row)
+
+    bundle = await DatasetConfigService().get_config(user_id=1, dataset_id=2, db=db)
+
+    assert bundle.vector_models.sparse_embedding_config_id == 11
+    assert bundle.vector_models.sparse_embedding_config_source == "SYSTEM"
+    assert bundle.vector_models.dense_embedding_config_id == 12
+    assert bundle.vector_models.dense_embedding_config_source == "USER"
+
+
+@pytest.mark.asyncio
 async def test_partial_override_fills_unset_from_defaults():
     db = _fake_db(row=_row(chunking={"heading_break_level": 2}))
     bundle = await DatasetConfigService().get_config(user_id=1, dataset_id=2, db=db)

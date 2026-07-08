@@ -28,8 +28,16 @@ class DatasetParseConfig(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "dataset_id", name="uk_user_dataset"),
         Index("idx_dataset_parse_config_dataset", "dataset_id"),
-        Index("idx_dataset_parse_sparse_config", "sparse_embedding_config_id"),
-        Index("idx_dataset_parse_dense_config", "dense_embedding_config_id"),
+        Index(
+            "idx_dataset_parse_sparse_config",
+            "sparse_embedding_config_source",
+            "sparse_embedding_config_id",
+        ),
+        Index(
+            "idx_dataset_parse_dense_config",
+            "dense_embedding_config_source",
+            "dense_embedding_config_id",
+        ),
     )
 
     id = Column(BIGINT(unsigned=True), primary_key=True, autoincrement=True)
@@ -44,7 +52,7 @@ class DatasetParseConfig(Base):
     sparse_embedding_config_id = Column(
         BIGINT(unsigned=True),
         nullable=True,
-        comment="稀疏向量模型配置 ID，对应 llm_user_config.id",
+        comment="稀疏向量模型配置 ID，source=USER 对应 llm_user_config.id，source=SYSTEM 对应 llm_system_preset.id",
     )
     sparse_embedding_config_source = Column(
         VARCHAR(16), nullable=False, default="USER",
@@ -53,7 +61,7 @@ class DatasetParseConfig(Base):
     dense_embedding_config_id = Column(
         BIGINT(unsigned=True),
         nullable=True,
-        comment="稠密向量模型配置 ID，对应 llm_user_config.id",
+        comment="稠密向量模型配置 ID，source=USER 对应 llm_user_config.id，source=SYSTEM 对应 llm_system_preset.id",
     )
     dense_embedding_config_source = Column(
         VARCHAR(16), nullable=False, default="USER",
