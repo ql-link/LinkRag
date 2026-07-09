@@ -140,20 +140,19 @@ class CleaningStage(Stage):
             temp_workspace.safe_unlink(source_path)
             source_path = None
 
-            # md/markdown 在上传阶段已存入 minio（source 位置），cleaning 不重复写输出桶；
-            # 其余格式需把解析转换得到的 markdown 写入 Python 配置的 RAG 文档桶。
-            # markdown 产物坐标由 payload.markdown_bucket/markdown_object_key 统一解析。
-            if not payload.is_markdown_passthrough:
-                try:
-                    await asyncio.to_thread(
-                        self._services.source_io.upload_markdown,
-                        payload,
-                        parse_result["markdown"],
-                    )
-                except Exception as exc:
-                    return self._classified_failure(
-                        payload, ParseFailureCode.PARSED_FILE_UPLOAD_FAILED, exc
-                    )
+            # markdown 产物统一写入 Python 配置的 RAG 文档私有桶（MINIO_PRIVATE_BUCKET）；
+            # md/markdown 只跳过解析引擎转换（is_markdown_passthrough），不跳过落盘，
+            # 避免产物停留在 source_bucket。坐标由 payload.markdown_bucket/markdown_object_key 统一解析。
+            try:
+                await asyncio.to_thread(
+                    self._services.source_io.upload_markdown,
+                    payload,
+                    parse_result["markdown"],
+                )
+            except Exception as exc:
+                return self._classified_failure(
+                    payload, ParseFailureCode.PARSED_FILE_UPLOAD_FAILED, exc
+                )
 
             ctx.parse_result = parse_result
             return StageOutcome.success()

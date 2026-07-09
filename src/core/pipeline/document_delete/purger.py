@@ -6,8 +6,9 @@
 任何一步失败/重复消费都能从 DB 重读重做，整条链幂等且崩溃安全。
 
 不触碰原文件：``document_original_file`` 行由 Java 软删保留、OSS 原文件对象由 Java 保留；
-透传 md（``file_type∈{md,markdown}``）的 ``parsed_object_key`` 指向原文件对象，由
-``_PARSED_PRODUCT_PREFIX`` 护栏排除，绝不删原文件。
+md/markdown 透传的 ``parsed_object_key`` 现在也落在 ``parsed/`` 前缀下（与其余格式一致，
+不再指向原文件对象），``_PARSED_PRODUCT_PREFIX`` 护栏保留作为异常兜底，防御非规范 key
+误删原文件。
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ from src.services.storage.factory import StorageFactory
 from src.utils.logger import logger
 
 # 解析产物对象键根前缀（Java buildMdObjectKey 固定以此开头）。只有落在此根下的
-# parsed_object_key 才执行 OSS 前缀删除；透传 md 指向原文件区，前缀不匹配即跳过。
+# parsed_object_key 才执行 OSS 前缀删除；非规范 key（异常数据）前缀不匹配即跳过，兜底保护。
 _PARSED_PRODUCT_PREFIX = "parsed/"
 # 解析任务目录前缀的最小段数安全阀。Java buildMdObjectKey 规范键的父目录为
 # parsed/user-{uid}/dataset-{did}/{Y}/{M}/{D}/{taskId} 共 7 段。设下限拦掉异常浅前缀
@@ -136,8 +137,8 @@ class DocumentDeletePurger:
     ) -> list[tuple[str, str]]:
         """从 parsed_log 行算出去重后的 ``(prefix, bucket)`` 删除目标。
 
-        仅保留 ``parsed_object_key`` 落在 ``parsed/`` 根下的行（解析产物），透传 md 指向
-        原文件对象的行被排除（护栏）。前缀取 ``parsed_object_key`` 的父目录（= 解析任务
+        仅保留 ``parsed_object_key`` 落在 ``parsed/`` 根下的行（解析产物），非规范 key
+        的行被排除（护栏兜底）。前缀取 ``parsed_object_key`` 的父目录（= 解析任务
         目录 ``parsed/.../{taskId}/``），整删即清掉 Markdown + 全部图片。
         """
         seen: set[tuple[str, str]] = set()
@@ -146,7 +147,7 @@ class DocumentDeletePurger:
             if not bucket or not object_key:
                 continue
             if not object_key.startswith(_PARSED_PRODUCT_PREFIX):
-                continue  # 护栏：非解析产物区（含透传 md 原文件）一律跳过
+                continue  # 护栏兜底：非解析产物区（异常 key）一律跳过
             parent = posixpath.dirname(object_key)
             if not parent:
                 continue

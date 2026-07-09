@@ -2,7 +2,7 @@
 
 用注入的 fake 替代各存储依赖、monkeypatch get_db_context，验证：
 - 删除次序：外部存储（Qdrant/ES/OSS）全部先于 DB 行删除；
-- 透传 md 护栏：parsed_object_key 非 parsed/ 前缀（指向原文件）被跳过；
+- 非规范 key 护栏（兜底）：parsed_object_key 非 parsed/ 前缀被跳过，绝不误删原文件；
 - taskId 目录前缀：md + 图片整目录一次删 + 去重；
 - dataset 分页枚举逐文件清理、取空即止；
 - 空产物（已删/未解析）全程 no-op。
@@ -128,8 +128,8 @@ class TestTaskDirPrefixes:
         out = DocumentDeletePurger._task_dir_prefixes(keys)
         assert out == [("parsed/user-1/dataset-1/2026/06/20/abc/", "priv")]
 
-    def test_passthrough_md_original_is_skipped(self):
-        # 透传 md：key 指向原文件上传位置，不在 parsed/ 根下 → 必须跳过，绝不删原文件
+    def test_non_parsed_prefix_key_is_skipped(self):
+        # 非规范 key（不在 parsed/ 根下，如异常数据指向原文件位置）→ 必须跳过，绝不误删原文件
         keys = [("priv", "user-1/dataset-1/file.md")]
         assert DocumentDeletePurger._task_dir_prefixes(keys) == []
 
