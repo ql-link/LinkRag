@@ -56,7 +56,12 @@ def _patch_config_reader(monkeypatch, *, config):
             self.db = db
 
         async def get_user_default_config_by_capability(
-            self, *, user_id, capability, use_cache=True
+            self,
+            *,
+            user_id,
+            capability,
+            use_cache=True,
+            allow_linkrag_default=True,
         ):
             assert capability == "EMBEDDING"
             return config

@@ -376,7 +376,12 @@ async def aresolve_user_embedding_client(
     from src.core.llm.user_model_resolver import aresolve_user_model
 
     try:
-        resolved = await aresolve_user_model(user_id=user_id, capability="EMBEDDING", db=db)
+        resolved = await aresolve_user_model(
+            user_id=user_id,
+            capability="EMBEDDING",
+            allow_linkrag_default=False,
+            db=db,
+        )
     except UserModelConfigMissingError as exc:
         raise DenseEmbeddingConfigMissingError(user_id) from exc
     return (
@@ -422,6 +427,7 @@ async def aresolve_dataset_embedding_client(
                 user_id=user_id,
                 capability="EMBEDDING",
                 config_id=config_id,
+                config_source=binding.dense_embedding_config_source,
                 db=session,
             )
         except UserModelConfigMissingError as exc:

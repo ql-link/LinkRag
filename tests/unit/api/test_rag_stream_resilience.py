@@ -44,6 +44,16 @@ async def test_turn_id_present_parses_ok():
     assert body.turn_id == "t-abc"
 
 
+async def test_config_source_system_parses_and_normalizes():
+    # 前端选择系统预设模型时传 SYSTEM；后端规范化后交给 runtime 精确查 llm_system_preset。
+    req = _req_with_body(
+        b'{"query":"q","config_id":10,"config_source":"system","conversation_id":2,"turn_id":"t-system"}'
+    )
+    body = await rag._parse_and_validate_body(req)
+    assert body.config_id == 10
+    assert body.config_source == "SYSTEM"
+
+
 # ---- 生产者 / 消费者解耦 ----
 
 

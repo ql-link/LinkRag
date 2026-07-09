@@ -75,7 +75,7 @@ class TestParseTaskMessage:
         assert payload.md_object_key == "parsed/t-001.md"
         assert payload.pdf_parser_backend == "mineru"
 
-    def test_markdown_passthrough_uses_source_location(self):
+    def test_markdown_passthrough_still_writes_private_bucket(self):
         payload = ParseTaskMessage.build(
             task_id="t-md",
             original_file_id=1,
@@ -90,8 +90,8 @@ class TestParseTaskMessage:
             md_object_key="parsed/t-md.md",
         ).get_payload()
 
-        assert payload.markdown_bucket == "source-bucket"
-        assert payload.markdown_object_key == "uploads/test.md"
+        assert payload.markdown_bucket == settings.MINIO_PRIVATE_BUCKET
+        assert payload.markdown_object_key == "parsed/t-md.md"
 
     def test_serialize_deserialize_roundtrip(self):
         """序列化 → 反序列化闭环"""

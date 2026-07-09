@@ -57,7 +57,16 @@ class _FakeConfigService:
         self._system_by_id = system_by_id
         self._fallback = fallback
 
-    async def get_user_default_config_by_capability(self, *, user_id, capability, use_cache=True):
+    async def get_user_default_config_by_capability(
+        self,
+        *,
+        user_id,
+        capability,
+        use_cache=True,
+        allow_linkrag_default=True,
+    ):
+        if not allow_linkrag_default and self._default is None:
+            return None
         return self._default
 
     async def get_user_config_by_id(self, user_id, config_id, use_cache=True):
