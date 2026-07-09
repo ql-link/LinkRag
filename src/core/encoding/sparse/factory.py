@@ -100,7 +100,11 @@ async def aresolve_user_sparse_vector_service(user_id: int) -> SparseVectorServi
     from src.core.llm.user_model_resolver import aresolve_user_model
 
     try:
-        resolved = await aresolve_user_model(user_id=user_id, capability="SPARSE_EMBEDDING")
+        resolved = await aresolve_user_model(
+            user_id=user_id,
+            capability="SPARSE_EMBEDDING",
+            allow_linkrag_default=False,
+        )
     except UserModelConfigMissingError as exc:
         raise SparseEmbeddingConfigMissingError(user_id) from exc
 

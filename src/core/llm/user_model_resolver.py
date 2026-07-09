@@ -161,6 +161,7 @@ async def aresolve_user_model(
     capability: str,
     config_id: int | None = None,
     config_source: str = "USER",
+    allow_linkrag_default: bool = True,
     allow_system_fallback: bool = False,
     fallback_model: str | None = None,
     override_model: str | None = None,
@@ -170,8 +171,9 @@ async def aresolve_user_model(
     """按发起用户解析指定能力的可用模型。
 
     解析顺序：``config_id`` 指定 → 按 ``config_source + config_id`` 精确读配置；
-    否则取用户该能力默认配置，未命中时回退 LinkRag 系统默认预设；仍未命中且
-    ``allow_system_fallback`` 为真 → 旧系统环境兜底配置。全部未命中抛
+    否则取用户该能力默认配置；``allow_linkrag_default`` 为真时，未命中会回退
+    LinkRag 系统默认预设；仍未命中且 ``allow_system_fallback`` 为真 → 旧系统环境
+    兜底配置。全部未命中抛
     :class:`UserModelConfigMissingError`。配置读取本身失败（DB/序列化异常）按原样向上传播，
     便于上层区分「未配置」与「读取失败(可重试)」。
 
@@ -181,6 +183,9 @@ async def aresolve_user_model(
         config_id: 可选，指定具体配置 ID（``/llm`` 路由按 ID 调用场景）。
         config_source: ``USER`` 或 ``SYSTEM``。``SYSTEM`` 时 ``config_id`` 指向
             ``llm_system_preset.id``；默认 ``USER`` 兼容旧调用。
+        allow_linkrag_default: 未指定 ``config_id`` 且用户默认缺失时，是否允许读取
+            LinkRag DB 系统默认预设。RAG 内部 rerank 会关闭此项，用户没配 RERANK
+            时直接跳过 rerank。
         allow_system_fallback: LinkRag DB 预设仍未命中时是否回退旧系统环境兜底。解析写入、
             召回链路与 ``/llm`` 直调路由默认不启用旧 env 兜底；保留该开关给显式需要
             env 兜底的内部调用点或测试。
@@ -210,7 +215,10 @@ async def aresolve_user_model(
                 raise UserModelConfigMissingError(capability, user_id)
         else:
             config = await svc.get_user_default_config_by_capability(
-                user_id=user_id, capability=capability, use_cache=False
+                user_id=user_id,
+                capability=capability,
+                use_cache=False,
+                allow_linkrag_default=allow_linkrag_default,
             )
         if not config and allow_system_fallback:
             config = svc.get_system_fallback_config_by_capability(capability)

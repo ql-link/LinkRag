@@ -258,15 +258,19 @@ async def test_all_missing_content_returns_empty_without_model():
 # ==== 失败与降级语义 ====
 
 
-async def test_missing_rerank_config_hard_fails_without_degrade():
+async def test_missing_rerank_config_degrades_without_model_call():
     hits = [_hit("c1", 0.9), _hit("c2", 0.8), _hit("c3", 0.7)]
+    provider = FakeProvider()
     reranker = PostRecallReranker(
         content_fetcher=make_fetcher({"c1": "a", "c2": "b", "c3": "c"}),
         model_resolver=make_resolver(error=UserModelConfigMissingError("RERANK", 10002)),
     )
 
-    with pytest.raises(UserModelConfigMissingError):
-        await reranker.rerank(RerankRequest(query="q", user_id=10002, hits=hits))
+    resp = await reranker.rerank(RerankRequest(query="q", user_id=10002, hits=hits))
+
+    assert [h.chunk_id for h in resp.hits] == ["c1", "c2", "c3"]
+    assert resp.rerank_applied is False
+    assert provider.calls == []
 
 
 async def test_rerank_call_error_degrades_to_fusion_order():
@@ -332,6 +336,7 @@ async def test_uses_user_configured_model_no_system_fallback():
     await reranker.rerank(RerankRequest(query="q", user_id=10002, hits=[_hit("c1", 0.9)]))
 
     assert resolve_spy[0]["capability"] == "RERANK"
+    assert resolve_spy[0]["allow_linkrag_default"] is False
     assert resolve_spy[0]["allow_system_fallback"] is False
     assert resolve_spy[0]["user_id"] == 10002
     # rerank 调用使用解析出的用户模型名

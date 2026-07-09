@@ -136,18 +136,20 @@ class ConfigReaderService:
         capability: str,
         provider_type: Optional[str] = None,
         use_cache: bool = True,
+        allow_linkrag_default: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """获取用户指定能力的生效默认 LLM 配置
 
         读取顺序：
         1. 用户自己的 ``llm_user_config`` 默认配置；
-        2. 未命中且未指定 ``provider_type`` 时，回退到 LinkRag 系统默认预设。
+        2. 未命中、未指定 ``provider_type`` 且允许时，回退到 LinkRag 系统默认预设。
 
         Args:
             user_id: 用户 ID
             capability: 能力类型（CHAT/EMBEDDING/SPARSE_EMBEDDING/RERANK/VISION）
             provider_type: 可选，指定 provider 类型
             use_cache: 是否使用缓存
+            allow_linkrag_default: 用户默认缺失时是否允许读取 LinkRag 系统默认预设
 
         Returns:
             该能力的生效默认配置，未设置则返回 None
@@ -187,7 +189,7 @@ class ConfigReaderService:
 
         cache_user_default = cfg is not None
         if cfg is None:
-            if provider_type:
+            if provider_type or not allow_linkrag_default:
                 return None
             config = await self.get_default_linkrag_system_preset_by_capability(
                 capability_upper, use_cache=use_cache

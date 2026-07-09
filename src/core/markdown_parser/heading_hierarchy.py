@@ -574,7 +574,11 @@ async def build_default_heading_plan_generator(
         from src.core.markdown_parser.provider_clients import LLMConfigMissingError
 
         try:
-            resolved = await aresolve_user_model(user_id=user_id, capability="CHAT")
+            resolved = await aresolve_user_model(
+                user_id=user_id,
+                capability="CHAT",
+                allow_linkrag_default=False,
+            )
         except UserModelConfigMissingError as exc:
             raise LLMConfigMissingError("CHAT", user_id) from exc
 

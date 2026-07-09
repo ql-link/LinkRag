@@ -4,8 +4,8 @@
 - 上游产出融合候选、下游消费重排结果，均不在本模块——它是一个可独立调用、独立测试的单元。
 - 不碰向量化、不碰 LLM 文本生成、不触 ``RecallPipeline`` 纯召回边界。
 
-失败语义（brief Q1）：
-- **未配置 RERANK 模型 → 硬失败**：解析模型的异常直接上抛，不降级（rerank 是本模块核心职责）。
+失败语义：
+- **未配置用户 RERANK 模型 → 降级**：不读取 LinkRag 系统默认 RERANK，不调用模型，返回当前融合顺序。
 - **调用失败 / 返回不可用 → 降级**：返回当前融合顺序候选并标记 ``rerank_applied=False``。
 
 依赖通过构造注入（``content_fetcher`` / ``model_resolver``），便于单测以替身替换 DB 与 LLM。
@@ -20,6 +20,7 @@ from typing import Awaitable, Callable
 from loguru import logger
 
 from src.config import settings
+from src.core.llm.exceptions import UserModelConfigMissingError
 from src.core.llm.user_model_resolver import ResolvedModel, aresolve_user_model
 from src.core.pipeline.chunk_content import fetch_chunk_contents
 from src.core.pipeline.recall.models import RecallHit
@@ -86,7 +87,7 @@ class PostRecallReranker:
         """对融合后候选执行重排，返回重排后候选列表。
 
         步骤：空候选 → 回填正文 → 缺正文过滤（只记日志）→ 全空短路 →
-        解析 RERANK 模型（硬失败点）→ 调用 rerank（降级点）→ index 映射 → 截断 top_n。
+        解析用户 RERANK 模型（缺失则降级）→ 调用 rerank（降级点）→ index 映射 → 截断 top_n。
         """
         start = time.perf_counter()
         # 入参校验：top_n 要么不传（取配置默认），要么为正整数。
@@ -123,13 +124,22 @@ class PostRecallReranker:
         if not scored_hits:
             return _resp([], False)
 
-        # 硬失败点：解析用户配置的 RERANK 模型，不开系统兜底。
-        # 未配置 / provider 不支持 → 异常上抛，不降级。
-        resolved = await self._resolve(
-            user_id=request.user_id,
-            capability="RERANK",
-            allow_system_fallback=False,
-        )
+        # RAG rerank 只使用用户自己的默认 RERANK。用户未配置时不读取 LinkRag 系统默认
+        # rerank，直接降级为当前融合顺序。
+        try:
+            resolved = await self._resolve(
+                user_id=request.user_id,
+                capability="RERANK",
+                allow_linkrag_default=False,
+                allow_system_fallback=False,
+            )
+        except UserModelConfigMissingError as exc:
+            logger.info(
+                "[rerank] user rerank config missing, degrade to fusion order user_id={}: {}",
+                request.user_id,
+                exc,
+            )
+            return _resp(self._degrade(scored_hits, top_n), False)
 
         # 按当前融合顺序构造 rerank documents；top_n 传 None 取回全部打分项，
         # 由本模块自行映射、排序、编号、截断，保证 rerank_rank 连续可控。

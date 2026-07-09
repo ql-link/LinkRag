@@ -166,7 +166,11 @@ async def test_gate_match_uses_user_default_chat_model(monkeypatch):
 
     assert result.applied is True
     assert result.markdown.startswith("# 文档概览\n")
-    resolve.assert_awaited_once_with(user_id=7, capability="CHAT")
+    resolve.assert_awaited_once_with(
+        user_id=7,
+        capability="CHAT",
+        allow_linkrag_default=False,
+    )
     provider.generate.assert_awaited_once()
     assert provider.generate.await_args.kwargs["max_tokens"] == 4096
 
