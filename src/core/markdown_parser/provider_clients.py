@@ -204,7 +204,11 @@ async def _resolve_user_model(capability_str: str, *, user_id: int):
     from src.core.llm.user_model_resolver import aresolve_user_model
 
     try:
-        resolved = await aresolve_user_model(user_id=user_id, capability=capability_str)
+        resolved = await aresolve_user_model(
+            user_id=user_id,
+            capability=capability_str,
+            allow_linkrag_default=False,
+        )
     except UserModelConfigMissingError as exc:
         raise LLMConfigMissingError(capability_str, user_id) from exc
     return resolved

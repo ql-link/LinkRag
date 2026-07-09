@@ -200,6 +200,52 @@ async def test_happy_streams_answer_delta_then_done(stub_generation):
 
 
 @pytest.mark.asyncio
+async def test_system_config_source_resolves_chat_model_by_system_preset(monkeypatch):
+    provider = _FakeProvider()
+    captured: dict = {}
+
+    async def _resolve(*a, **k):
+        captured.update(k)
+        return SimpleNamespace(
+            provider=provider,
+            model_name="linkrag-chat",
+            provider_type="linkrag",
+            source="system",
+            config_id=10,
+        )
+
+    async def _contents(chunk_ids, user_id):
+        return {cid: f"正文-{cid}" for cid in chunk_ids}
+
+    monkeypatch.setattr(rt, "aresolve_user_model", _resolve)
+    monkeypatch.setattr(rt, "fetch_chunk_contents", _contents)
+
+    events = await _collect(
+        rt.recall_event_stream(
+            _FakePipeline(_response(_hits("c1"))),
+            _req(),
+            "rid",
+            config_id=10,
+            config_source="SYSTEM",
+            conversation_id=1,
+            turn_id="t-system",
+            reranker=_FakeReranker(),
+            token_budget=4000,
+            rerank_top_n=8,
+        )
+    )
+
+    assert events[-1][0] == "answer_done"
+    assert captured == {
+        "user_id": 123,
+        "capability": "CHAT",
+        "config_id": 10,
+        "config_source": "SYSTEM",
+        "allow_system_fallback": False,
+    }
+
+
+@pytest.mark.asyncio
 async def test_rerank_applied_carries_rerank_fields(stub_generation):
     """rerank 生效：answer_done 标记 rerank_applied，hits 带 rerank_score / rerank_rank。"""
     pipe = _FakePipeline(_response(_hits("c1", "c2")))
