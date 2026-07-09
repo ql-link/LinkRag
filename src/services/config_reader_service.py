@@ -410,6 +410,7 @@ class ConfigReaderService:
             select(SystemPresetDB)
             .where(SystemPresetDB.id == config_id)
             .where(SystemPresetDB.is_active == True)
+            .where(SystemPresetDB.is_default == True)
             .where(SystemPresetDB.provider_type == "linkrag")
             .limit(1)
         )

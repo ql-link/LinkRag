@@ -269,12 +269,15 @@ class RecallConfig(BaseModel):
 class VectorModelBindingConfig(BaseModel):
     """数据集绑定的向量模型配置 ID。
 
-    两个字段指向 Java 库 ``llm_user_config.id``。Python 侧不在此模型中校验配置行有效性，
-    只承载 ID；解析/召回消费点会按能力分别精确读取并校验。
+    四个字段（ID + source）共同定位 Java 库的模型配置。``source=USER`` 时 ID 指向
+    ``llm_user_config.id``，``source=SYSTEM`` 时指向 ``llm_system_preset.id``。Python 侧
+    不在此模型中校验配置行有效性，只承载绑定信息；解析/召回消费点会按能力分别精确读取并校验。
     """
 
     sparse_embedding_config_id: int | None = None
+    sparse_embedding_config_source: str = "USER"
     dense_embedding_config_id: int | None = None
+    dense_embedding_config_source: str = "USER"
 
 
 class DatasetParseConfigBundle(BaseModel):

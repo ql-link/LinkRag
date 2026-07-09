@@ -49,6 +49,10 @@ def _row(**json_cols):
     row.enhancement_config = json_cols.get("enhancement", {})
     row.pdf_config = json_cols.get("pdf", {})
     row.recall_config = json_cols.get("recall", {})
+    row.sparse_embedding_config_id = None
+    row.dense_embedding_config_id = None
+    row.sparse_embedding_config_source = "USER"
+    row.dense_embedding_config_source = "USER"
     return row
 
 
@@ -85,6 +89,23 @@ async def test_row_present_applies_dataset_values():
     assert bundle.chunking.overlap_tokens == 32
     assert bundle.recall.recall_result_limit == 10
     assert bundle.recall.dense_score_threshold == 0.5
+
+
+@pytest.mark.asyncio
+async def test_row_present_applies_vector_model_binding_source():
+    row = _row()
+    row.sparse_embedding_config_id = 11
+    row.sparse_embedding_config_source = "SYSTEM"
+    row.dense_embedding_config_id = 12
+    row.dense_embedding_config_source = "USER"
+    db = _fake_db(row=row)
+
+    bundle = await DatasetConfigService().get_config(user_id=1, dataset_id=2, db=db)
+
+    assert bundle.vector_models.sparse_embedding_config_id == 11
+    assert bundle.vector_models.sparse_embedding_config_source == "SYSTEM"
+    assert bundle.vector_models.dense_embedding_config_id == 12
+    assert bundle.vector_models.dense_embedding_config_source == "USER"
 
 
 @pytest.mark.asyncio

@@ -231,15 +231,17 @@ ORM：[`UsageLogDB`](../../../src/models/db_models.py)
 | `pdf_config` | JSON | PDF 解析配置（1 项：pdf_parser_backend，null 表示用系统默认） |
 | `recall_config` | JSON | 召回检索配置（15 项：recall_result_limit / recall_context_token_budget / bm25_top_k / sparse_top_k / sparse_score_threshold / dense_top_k / dense_score_threshold / recall_enabled_sources / recall_fusion_strategy / rrf_k / fusion_bm25_weight / fusion_sparse_weight / fusion_dense_weight / rerank_top_n / recall_strict；数据库列 COMMENT 由 Alembic 迁移同步维护）。其中 recall_result_limit 为融合后候选池窗口；bm25_top_k / sparse_top_k / dense_top_k 分别控制三路执行期召回深度；recall_enabled_sources 为启用的召回路数组（bm25/sparse/dense，**仅能在系统已装配的召回路集合内收窄**，列出的未装配路被忽略、交集为空时回退全部已装配路）；recall_fusion_strategy 可选 rrf / weighted_score；rrf_k 仅用于 rrf，计算 `1 / (rrf_k + rank)`；三路 fusion 权重仅用于 weighted_score 且允许单项为 0；rerank_top_n 为重排返回条数上限；recall_strict 为召回容错模式（true=任一路失败即整体失败，false=允许单路失败降级） |
 | `sparse_embedding_config_id` | BIGINT UNSIGNED NULL | 数据集绑定的稀疏向量模型配置 ID，指向 `llm_user_config.id`，要求属于当前用户、启用中、`is_system_preset=false`、`capability='SPARSE_EMBEDDING'` |
+| `sparse_embedding_config_source` | VARCHAR(16) NOT NULL DEFAULT 'USER' | 稀疏向量模型配置来源：`USER` 或 `SYSTEM`；`source=USER` 时 ID 指向 `llm_user_config.id`，`source=SYSTEM` 时指向 `llm_system_preset.id` |
 | `dense_embedding_config_id` | BIGINT UNSIGNED NULL | 数据集绑定的稠密向量模型配置 ID，指向 `llm_user_config.id`，要求属于当前用户、启用中、`is_system_preset=false`、`capability='EMBEDDING'` |
+| `dense_embedding_config_source` | VARCHAR(16) NOT NULL DEFAULT 'USER' | 稠密向量模型配置来源：`USER` 或 `SYSTEM`；`source=USER` 时 ID 指向 `llm_user_config.id`，`source=SYSTEM` 时指向 `llm_system_preset.id` |
 | `is_active` | BOOLEAN | 是否启用，默认 `TRUE` |
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
 
 索引：
 - `uk_user_dataset(user_id, dataset_id)`
 - `idx_dataset_parse_config_dataset(dataset_id)`
-- `idx_dataset_parse_sparse_config(sparse_embedding_config_id)`
-- `idx_dataset_parse_dense_config(dense_embedding_config_id)`
+- `idx_dataset_parse_sparse_config(sparse_embedding_config_source, sparse_embedding_config_id)`
+- `idx_dataset_parse_dense_config(dense_embedding_config_source, dense_embedding_config_id)`
 
 > 所有权：表结构由 Python 侧 Alembic 迁移管理；**行数据的增删改由 Java 侧负责**，Python 侧只读。JSON 配置无行时使用内存默认；向量模型绑定不做默认模型回退，`sparse_embedding_config_id` / `dense_embedding_config_id` 缺失或无效时解析建向量与召回会明确失败，历史数据集需先回填。
 
