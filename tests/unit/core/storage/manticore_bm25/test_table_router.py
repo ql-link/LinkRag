@@ -31,3 +31,9 @@ def test_rejects_non_positive_dataset_id() -> None:
 def test_rejects_empty_prefix() -> None:
     with pytest.raises(ValueError):
         TableRouter(prefix="")
+
+
+@pytest.mark.parametrize("prefix", ["bm25-ds", "bm25 ds", "bm25;DROP_TABLE", "1bm25"])
+def test_rejects_unsafe_sql_identifier_prefix(prefix: str) -> None:
+    with pytest.raises(ValueError, match="safe SQL identifier"):
+        TableRouter(prefix=prefix)

@@ -57,6 +57,7 @@
 | --- | --- |
 | [deploy.md](ops/deploy.md) | 部署指南 |
 | [configure.md](ops/configure.md) | 配置详解 |
+| [manticore_bm25_migration.md](ops/manticore_bm25_migration.md) | Manticore BM25 双写、回填、影子读、切换与回滚 |
 
 ### [contributing.md](contributing.md) — 贡献者规范
 

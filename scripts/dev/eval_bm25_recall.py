@@ -1,9 +1,9 @@
 #!/usr/bin/env python
-"""可复现的 BM25 召回评测：量化 Qdrant BM25 后端的召回质量，并与 ES 对比。
+"""可复现的 BM25 召回评测：量化 Qdrant / Manticore 后端并与 ES 对比。
 
 回答"Qdrant BM25 能否替代 ES 全文检索"需要可复现的指标，而不是一次性的口头数字。
-本脚本对同一份语料、同一把 RagFlowTokenizer，分别灌 Qdrant（本项目 BM25 后端）和
-（可选）ES（复刻项目 mapping 与 multi_match 查询），算：
+本脚本对同一份语料、同一把 RagFlowTokenizer，分别灌 Qdrant，并可选灌入
+Manticore（复用生产 coarse-only store）和 ES（复刻 mapping/multi_match）。
 
 - **recall@k / MRR / nDCG@k**：BM25 召回质量（gold = 字面包含 query 词的文档，客观可算）。
 - **fine-only 召回率**：只在 fine 段命中（query 词嵌在长词里被细分出）的文档能否被召回，
@@ -42,6 +42,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 
 from src.core.preprocessor.ragflow_tokenizer import RagFlowTokenizer  # noqa: E402
+from src.core.storage.manticore_bm25.store import Bm25Point as ManticoreBm25Point  # noqa: E402
+from src.core.storage.manticore_bm25.store import (
+    ManticoreBm25Store,
+)
 from src.core.storage.qdrant_bm25.encoder import Bm25SparseEncoder  # noqa: E402
 from src.core.storage.qdrant_bm25.store import Bm25Point, QdrantBm25Store  # noqa: E402
 
@@ -186,8 +190,12 @@ async def run_qdrant(
         for qterms in queries:
             qvec = enc.encode_query(qterms)
             hits = await store.query(
-                query_vector=qvec, user_id=1, dataset_id=1, doc_id=None,
-                type_mult=type_mult or {}, limit=K,
+                query_vector=qvec,
+                user_id=1,
+                dataset_id=1,
+                doc_id=None,
+                type_mult=type_mult or {},
+                limit=K,
             )
             rankings.append([h.chunk_id for h in hits])
         return rankings
@@ -195,9 +203,64 @@ async def run_qdrant(
         QdrantClient(host=host, port=port, api_key=None, https=False).delete_collection(coll)
 
 
+# ---------------- Manticore 侧（直接复用生产 coarse-only store）----------------
+async def run_manticore(
+    docs: list[EvalDoc],
+    queries: list[list[str]],
+    host: str,
+    port: int,
+    type_mult: dict[str, float] | None = None,
+) -> list[list[str]]:
+    prefix = f"tolink_bm25_eval_v2_{uuid.uuid4().hex[:8]}"
+    store = ManticoreBm25Store(host=host, port=port, table_prefix=prefix)
+    try:
+        await store.ensure_table(1)
+        points = [
+            ManticoreBm25Point(
+                chunk_id=d.cid,
+                doc_id=d.idx,
+                user_id=1,
+                dataset_id=1,
+                chunk_type=d.chunk_type,
+                coarse_tokens=" ".join(d.coarse),
+            )
+            for d in docs
+        ]
+        # 按生产可控批次灌入，同时避免评测语料的回读 IN 过大。
+        for start in range(0, len(points), 500):
+            batch = points[start : start + 500]
+            verified = await store.upsert_chunks(batch)
+            if len(verified) != len(batch):
+                raise RuntimeError(
+                    f"Manticore eval write verification failed: "
+                    f"batch={len(batch)} verified={len(verified)}"
+                )
+        rankings: list[list[str]] = []
+        for qterms in queries:
+            hits = await store.query(
+                query_terms=qterms,
+                user_id=1,
+                dataset_id=1,
+                doc_id=None,
+                type_mult=type_mult or {},
+                limit=K,
+            )
+            rankings.append([hit.chunk_id for hit in hits])
+        return rankings
+    finally:
+        try:
+            await store.drop_table(1, user_id=1)
+        finally:
+            await store.close()
+
+
 # ---------------- ES 侧（复刻 src/core/storage/es 的 mapping 与查询）----------------
 def run_es(
-    docs: list[EvalDoc], queries: list[list[str]], url, user, password,
+    docs: list[EvalDoc],
+    queries: list[list[str]],
+    url,
+    user,
+    password,
     type_boost: dict[str, float] | None = None,
 ):
     """``type_boost`` 非空时复刻 ``EsBm25Retriever._build_query`` 的 constant_score 加法类型加权。"""
@@ -290,9 +353,13 @@ def load_db_corpus(args) -> tuple[list[str], list[str]]:
     import pymysql
 
     conn = pymysql.connect(
-        host=args.db_host, port=args.db_port, user=args.db_user,
-        password=args.db_password, database=args.db_database,
-        connect_timeout=5, read_timeout=30,
+        host=args.db_host,
+        port=args.db_port,
+        user=args.db_user,
+        password=args.db_password,
+        database=args.db_database,
+        connect_timeout=5,
+        read_timeout=30,
     )
     try:
         cur = conn.cursor()
@@ -354,8 +421,12 @@ def load_beir(beir_dir: str, tok: RagFlowTokenizer, doc_limit: int = 0):
             ext2cid[o["_id"]] = cid
             docs.append(
                 EvalDoc(
-                    cid=cid, idx=len(docs), text=text, ext=o["_id"],
-                    coarse=tk.coarse_tokens.split(), fine=tk.fine_tokens.split(),
+                    cid=cid,
+                    idx=len(docs),
+                    text=text,
+                    ext=o["_id"],
+                    coarse=tk.coarse_tokens.split(),
+                    fine=tk.fine_tokens.split(),
                 )
             )
             if doc_limit and len(docs) >= doc_limit:
@@ -388,24 +459,41 @@ def load_beir(beir_dir: str, tok: RagFlowTokenizer, doc_limit: int = 0):
 
 
 def run_beir(args, tok: RagFlowTokenizer, enc: Bm25SparseEncoder) -> None:
-    """BEIR 评测：用人工分级 qrels 算 nDCG@k / recall@k，并对比 ES。"""
+    """BEIR 评测：用人工分级 qrels 对比 Qdrant / Manticore / ES。"""
     import asyncio
 
     docs, cid2ext, queries, qrels = load_beir(args.from_beir, tok, args.doc_limit)
     print(f"BEIR 语料：{len(docs)} 文档，{len(queries)} 个 test query（人工分级 qrels）\n")
     qts = [qt for _, qt in queries]
     q_rank = asyncio.run(run_qdrant(docs, qts, enc, args.qdrant_host, args.qdrant_port))
+    m_rank = (
+        asyncio.run(
+            run_manticore(
+                docs,
+                qts,
+                args.manticore_host,
+                args.manticore_port,
+            )
+        )
+        if args.with_manticore
+        else None
+    )
     es_rank = (
         run_es(docs, qts, args.es_url, args.es_user, args.es_password) if args.with_es else None
     )
 
-    q_rec, q_ndcg, e_rec, e_ndcg, ov = [], [], [], [], []
+    q_rec, q_ndcg, m_rec, m_ndcg, mq_ov, e_rec, e_ndcg, ov = [], [], [], [], [], [], [], []
     for i, (qid, _) in enumerate(queries):
         rel_map = qrels[qid]
         gold = set(rel_map)
         r_ext = [cid2ext[c] for c in q_rank[i]]
         q_rec.append(recall_at_k(r_ext, gold, K))
         q_ndcg.append(ndcg_graded(r_ext, rel_map, K))
+        if m_rank is not None:
+            m_ext = [cid2ext[c] for c in m_rank[i]]
+            m_rec.append(recall_at_k(m_ext, gold, K))
+            m_ndcg.append(ndcg_graded(m_ext, rel_map, K))
+            mq_ov.append(overlap_at_k(m_ext, r_ext, K))
         if es_rank is not None:
             e_ext = [cid2ext[c] for c in es_rank[i]]
             e_rec.append(recall_at_k(e_ext, gold, K))
@@ -418,6 +506,21 @@ def run_beir(args, tok: RagFlowTokenizer, enc: Bm25SparseEncoder) -> None:
 
     print(f"汇总（k={K}，{len(queries)} 个 test query，人工分级 qrels）：")
     print(f"  Qdrant  recall@{K}={_avg(q_rec):.3f}  nDCG@{K}={_avg(q_ndcg):.3f}")
+    if m_rank is not None:
+        m_recall = _avg(m_rec)
+        m_ndcg_score = _avg(m_ndcg)
+        print(f"  Manticore recall@{K}={m_recall:.3f}  nDCG@{K}={m_ndcg_score:.3f}")
+        print(f"  manticore-vs-qdrant overlap@{K}={_avg(mq_ov):.3f}" f"（top-{K} 结果重合度）")
+        if args.manticore_min_recall is not None and m_recall < args.manticore_min_recall:
+            raise SystemExit(
+                f"Manticore recall gate failed: {m_recall:.4f} < "
+                f"{args.manticore_min_recall:.4f}"
+            )
+        if args.manticore_min_ndcg is not None and m_ndcg_score < args.manticore_min_ndcg:
+            raise SystemExit(
+                f"Manticore nDCG gate failed: {m_ndcg_score:.4f} < "
+                f"{args.manticore_min_ndcg:.4f}"
+            )
     if es_rank is not None:
         print(f"  ES      recall@{K}={_avg(e_rec):.3f}  nDCG@{K}={_avg(e_ndcg):.3f}")
         print(f"  es-vs-qdrant overlap@{K}={_avg(ov):.3f}（top-{K} 结果重合度，越高越接近 ES）")
@@ -426,31 +529,55 @@ def run_beir(args, tok: RagFlowTokenizer, enc: Bm25SparseEncoder) -> None:
 def main() -> None:
     import asyncio
 
-    ap = argparse.ArgumentParser(description="BM25 召回评测（Qdrant，可选对比 ES）")
-    ap.add_argument("--from-db", action="store_true", help="用真实 MySQL chunk 语料（self-retrieval）")
+    ap = argparse.ArgumentParser(description="BM25 召回评测（Qdrant，可选对比 Manticore / ES）")
+    ap.add_argument(
+        "--from-db", action="store_true", help="用真实 MySQL chunk 语料（self-retrieval）"
+    )
     ap.add_argument("--with-es", action="store_true", help="同时灌 ES 对比 overlap")
+    ap.add_argument(
+        "--with-manticore", action="store_true", help="同时灌 Manticore coarse-only 生产实现"
+    )
     ap.add_argument("--qdrant-host", default="localhost")
     ap.add_argument("--qdrant-port", type=int, default=36333)
     ap.add_argument("--es-url", default="http://localhost:9200")
     ap.add_argument("--es-user", default="elastic")
     ap.add_argument("--es-password", default="")
+    ap.add_argument("--manticore-host", default="127.0.0.1")
+    ap.add_argument("--manticore-port", type=int, default=19306)
+    ap.add_argument(
+        "--manticore-min-recall",
+        type=float,
+        default=None,
+        help="BEIR 门槛：Manticore recall@k 低于该值时非 0 退出",
+    )
+    ap.add_argument(
+        "--manticore-min-ndcg",
+        type=float,
+        default=None,
+        help="BEIR 门槛：Manticore nDCG@k 低于该值时非 0 退出",
+    )
     ap.add_argument("--db-host", default="127.0.0.1")
     ap.add_argument("--db-port", type=int, default=33306)
     ap.add_argument("--db-user", default="root")
     ap.add_argument("--db-password", default=os.environ.get("MYSQL_PASSWORD", ""))
     ap.add_argument("--db-database", default="tolink_rag_db")
     ap.add_argument("--limit", type=int, default=0)
-    ap.add_argument("--avgdl-coarse", type=float, default=None, help="覆盖 avgdl_coarse（默认走 settings）")
-    ap.add_argument("--avgdl-fine", type=float, default=None, help="覆盖 avgdl_fine（默认走 settings）")
+    ap.add_argument(
+        "--avgdl-coarse", type=float, default=None, help="覆盖 avgdl_coarse（默认走 settings）"
+    )
+    ap.add_argument(
+        "--avgdl-fine", type=float, default=None, help="覆盖 avgdl_fine（默认走 settings）"
+    )
     ap.add_argument("--from-beir", metavar="DIR", help="BEIR 格式数据集目录（用人工 qrels 评测）")
     ap.add_argument("--k", type=int, default=5, help="评测 top-k（BEIR 惯例用 10）")
     ap.add_argument("--doc-limit", type=int, default=0, help="BEIR：最多灌多少文档（0=全部）")
     ap.add_argument(
-        "--type-mult", action="store_true",
+        "--type-mult",
+        action="store_true",
         help="启用 settings.BM25_TYPE_MULT 类型加权（默认关闭，纯 BM25）；"
-             "配合 --from-db 才有真实 chunk_type 分布可测，合成/BEIR 语料没有真实类型语义。"
-             "注意：self-retrieval 只能验证加权不会拖累整体 recall/nDCG，测不出"
-             "某类型是否被过度提权导致误判压过更相关的其他类型（结构性盲点，见 issue #290 讨论）。",
+        "配合 --from-db 才有真实 chunk_type 分布可测，合成/BEIR 语料没有真实类型语义。"
+        "注意：self-retrieval 只能验证加权不会拖累整体 recall/nDCG，测不出"
+        "某类型是否被过度提权导致误判压过更相关的其他类型（结构性盲点，见 issue #290 讨论）。",
     )
     args = ap.parse_args()
 
@@ -467,8 +594,10 @@ def main() -> None:
         avgdl_fine=args.avgdl_fine if args.avgdl_fine else settings.BM25_AVGDL_FINE,
         coarse_boost=settings.BM25_COARSE_BOOST,
     )
-    print(f"encoder: k1={enc._k1} b={enc._b} avgdl_coarse={enc._avgdl_coarse} "
-          f"avgdl_fine={enc._avgdl_fine} coarse_boost={enc._coarse_boost}\n")
+    print(
+        f"encoder: k1={enc._k1} b={enc._b} avgdl_coarse={enc._avgdl_coarse} "
+        f"avgdl_fine={enc._avgdl_fine} coarse_boost={enc._coarse_boost}\n"
+    )
 
     if args.from_beir:
         run_beir(args, tok, enc)
@@ -484,7 +613,9 @@ def main() -> None:
     else:
         docs = tokenize_docs(tok, SYNTHETIC_DOCS)
         raw_queries = SYNTHETIC_QUERIES
-        print(f"语料：合成 {len(docs)} 条；query {len(raw_queries)} 个（无真实 chunk_type，全部按 mixed 处理）")
+        print(
+            f"语料：合成 {len(docs)} 条；query {len(raw_queries)} 个（无真实 chunk_type，全部按 mixed 处理）"
+        )
 
     queries = [query_terms(tok, q) for q in raw_queries]
 
@@ -504,8 +635,10 @@ def main() -> None:
 
     # 汇总
     recs, mrrs, ndcgs, fine_recs, overlaps = [], [], [], [], []
-    print(f"{'query':<16} {'gold':>4} {'fineOnly':>8} {'R@k':>6} {'MRR':>6} {'nDCG':>6}"
-          + ("  esR@k  ovlp@k" if args.with_es else ""))
+    print(
+        f"{'query':<16} {'gold':>4} {'fineOnly':>8} {'R@k':>6} {'MRR':>6} {'nDCG':>6}"
+        + ("  esR@k  ovlp@k" if args.with_es else "")
+    )
     print("-" * (58 + (16 if args.with_es else 0)))
     for i, (raw, qt) in enumerate(zip(raw_queries, queries)):
         gold_all, gold_coarse = gold_for(qt, docs)
@@ -516,11 +649,15 @@ def main() -> None:
         n = ndcg_at_k(ranked, gold_all, K)
         fr = recall_at_k(ranked, fine_only, K) if fine_only else float("nan")
         if not math.isnan(r):
-            recs.append(r); mrrs.append(m); ndcgs.append(n)
+            recs.append(r)
+            mrrs.append(m)
+            ndcgs.append(n)
         if not math.isnan(fr):
             fine_recs.append(fr)
-        line = (f"{raw[:15]:<16} {len(gold_all):>4} {len(fine_only):>8} "
-                f"{r:>6.3f} {m:>6.3f} {n:>6.3f}")
+        line = (
+            f"{raw[:15]:<16} {len(gold_all):>4} {len(fine_only):>8} "
+            f"{r:>6.3f} {m:>6.3f} {n:>6.3f}"
+        )
         if args.with_es:
             er = recall_at_k(es_rank[i], gold_all, K)
             ov = overlap_at_k(ranked, es_rank[i], K)
@@ -534,12 +671,18 @@ def main() -> None:
 
     print("-" * (58 + (16 if args.with_es else 0)))
     print(f"\n汇总（k={K}，{len(recs)} 个有效 query）：")
-    print(f"  Qdrant  recall@{K}={_avg(recs):.3f}  MRR={_avg(mrrs):.3f}  nDCG@{K}={_avg(ndcgs):.3f}")
+    print(
+        f"  Qdrant  recall@{K}={_avg(recs):.3f}  MRR={_avg(mrrs):.3f}  nDCG@{K}={_avg(ndcgs):.3f}"
+    )
     if fine_recs:
-        print(f"  fine-only 文档召回率={_avg(fine_recs):.3f}（{len(fine_recs)} 个 query 含只-fine-命中文档；"
-              f"纯 coarse 时这些必为 0）")
+        print(
+            f"  fine-only 文档召回率={_avg(fine_recs):.3f}（{len(fine_recs)} 个 query 含只-fine-命中文档；"
+            f"纯 coarse 时这些必为 0）"
+        )
     if args.with_es and overlaps:
-        print(f"  es-vs-qdrant overlap@{K}={_avg(overlaps):.3f}（top-{K} 结果重合度，越高越接近 ES）")
+        print(
+            f"  es-vs-qdrant overlap@{K}={_avg(overlaps):.3f}（top-{K} 结果重合度，越高越接近 ES）"
+        )
 
 
 if __name__ == "__main__":

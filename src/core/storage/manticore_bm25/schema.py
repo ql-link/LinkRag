@@ -14,15 +14,20 @@ ATTR_DOC_ID = "doc_id"
 ATTR_USER_ID = "user_id"
 ATTR_CHUNK_TYPE = "chunk_type"
 
-# 全文字段名：coarse / fine 两个字段各自建 BM25F 索引，字段权重在查询时通过
-# bm25f(k1, b, {coarse=coarse_boost, fine=1}) 给，对齐 ES multi_match 的双字段召回。
+# 生产基线只索引 coarse 字段。实测表明，将 coarse/fine 直接合并进
+# Manticore BM25F 与 ES best_fields / Qdrant 独立字段统计并不等价，会显著损害
+# 中文排序。fine 后续应作为独立召回路融合，不再共享一个 BM25F 分数。
 FIELD_COARSE = "coarse"
-FIELD_FINE = "fine"
+
+# 显式固定 IDF 语义。Manticore 历史默认 normalized/tfidf_normalized 会惩罚
+# 高频词，且分数会随查询词数漂移。该组合是本项目对齐现有 ES/Qdrant
+# 评测基线的必要选项。
+IDF_FLAGS = "plain,tfidf_unnormalized"
 
 # 建表 DDL 用到的公共选项：
 # - morphology='none'：文本已经过 RagFlowTokenizer 预分词、空格拼接，不需要 Manticore
 #   自己的词干化/形态还原，避免二次处理打乱预分词结果。
-# - index_field_lengths='1'：bm25f() 需要按字段长度做长度归一，必须显式开启。
+# - index_field_lengths='1'：bm25a() 需要按字段长度做长度归一，必须显式开启。
 # - charset_table='non_cjk, chinese'：默认字符集表不认中文字符，会把中文词当分隔符
 #   丢弃（实测：不加这个配置，中文内容基本等于没索引）。
 TABLE_DDL_OPTIONS = "morphology='none' index_field_lengths='1' charset_table='non_cjk, chinese'"

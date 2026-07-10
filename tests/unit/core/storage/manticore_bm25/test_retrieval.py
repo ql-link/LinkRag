@@ -17,10 +17,11 @@ class _FakeStore:
         self._hits = hits
         self.calls: list[dict] = []
 
-    async def query(self, *, query_terms, dataset_id, doc_id, type_mult, limit):
+    async def query(self, *, query_terms, user_id, dataset_id, doc_id, type_mult, limit):
         self.calls.append(
             {
                 "dataset_id": dataset_id,
+                "user_id": user_id,
                 "doc_id": doc_id,
                 "type_mult": dict(type_mult),
                 "limit": limit,
@@ -36,13 +37,12 @@ def _retriever(hits: list[Bm25ScoredPoint]) -> tuple[ManticoreBm25Retriever, _Fa
 
 
 async def test_recall_maps_scored_points_to_bm25chunkhit() -> None:
-    retriever, store = _retriever(
-        [Bm25ScoredPoint("c1", 5, 1.2), Bm25ScoredPoint("c2", 6, 0.8)]
-    )
+    retriever, store = _retriever([Bm25ScoredPoint("c1", 5, 1.2), Bm25ScoredPoint("c2", 6, 0.8)])
     req = Bm25RecallRequest(user_id=1, dataset_id=2, tokens=["退费"], top_k=10)
     hits = await retriever.recall_topk_chunks(req)
     assert [(h.chunk_id, h.doc_id, h.score) for h in hits] == [("c1", 5, 1.2), ("c2", 6, 0.8)]
     assert store.calls[0]["dataset_id"] == 2
+    assert store.calls[0]["user_id"] == 1
     assert store.calls[0]["limit"] == 10
     assert store.calls[0]["terms"] == ["退费"]
 

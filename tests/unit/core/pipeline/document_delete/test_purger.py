@@ -93,11 +93,11 @@ class _FakeEsWithDatasetDrop(_FakeEs):
 
     def __init__(self, log):
         super().__init__(log)
-        self.dropped_datasets: list[int] = []
+        self.dropped_datasets: list[tuple[int, int]] = []
 
-    async def delete_by_dataset(self, *, dataset_id):
+    async def delete_by_dataset(self, *, user_id, dataset_id):
         self._log.append(f"es.drop_dataset:{dataset_id}")
-        self.dropped_datasets.append(dataset_id)
+        self.dropped_datasets.append((user_id, dataset_id))
 
 
 class _FakeStorage:
@@ -197,11 +197,13 @@ class TestPurgeFile:
         assert storage.removed == [("priv", "parsed/u/d/2026/06/20/task7/")]
         # 铁律：外部存储删除全部早于任意 DB 行删除
         last_external = max(
-            i for i, e in enumerate(log)
+            i
+            for i, e in enumerate(log)
             if e.startswith(("qdrant.delete", "es.delete", "oss.remove"))
         )
         first_db_delete = min(
-            i for i, e in enumerate(log)
+            i
+            for i, e in enumerate(log)
             if e.startswith(("db.delete_chunks", "db.delete_parse_rows"))
         )
         assert last_external < first_db_delete
@@ -245,7 +247,9 @@ class TestPurgeDataset:
     async def test_drops_dataset_table_when_pipeline_supports_it(self, monkeypatch):
         # Manticore 后端才有 delete_by_dataset；探测到就在逐文件清理完之后调用一次整表 DROP。
         purger, log, qdrant, es, storage = _make_purger(
-            monkeypatch, dataset_pages=[[21], []], es_cls=_FakeEsWithDatasetDrop,
+            monkeypatch,
+            dataset_pages=[[21], []],
+            es_cls=_FakeEsWithDatasetDrop,
         )
         payload = DocumentDeleteMessage.build(
             delete_type="dataset", dataset_id=5, user_id=1
@@ -253,7 +257,7 @@ class TestPurgeDataset:
 
         await purger.purge(payload)
 
-        assert es.dropped_datasets == [5]
+        assert es.dropped_datasets == [(1, 5)]
         # 表级 DROP 必须发生在逐文件清理之后，而不是之前。
         last_file_delete = max(
             i for i, e in enumerate(log) if e.startswith("db.delete_parse_rows:")
@@ -264,7 +268,8 @@ class TestPurgeDataset:
     async def test_skips_dataset_drop_when_pipeline_lacks_method(self, monkeypatch):
         # ES/Qdrant 后端没有 delete_by_dataset，hasattr 探测不到即跳过，不应报错。
         purger, log, qdrant, es, storage = _make_purger(
-            monkeypatch, dataset_pages=[[21], []],
+            monkeypatch,
+            dataset_pages=[[21], []],
         )
         payload = DocumentDeleteMessage.build(
             delete_type="dataset", dataset_id=5, user_id=1

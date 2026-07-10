@@ -39,9 +39,11 @@ class QdrantBm25IndexingPipeline:
         store: QdrantBm25Store | None = None,
         chunk_repository: ChunkRepository | None = None,
         encoder: Bm25SparseEncoder | None = None,
+        update_chunk_status: bool = True,
     ) -> None:
         self._store = store or QdrantBm25Store()
         self._chunk_repository = chunk_repository or ChunkRepository()
+        self._update_chunk_status = update_chunk_status
         self._encoder = encoder or build_encoder_from_settings()
 
     async def write_es_index(self, plan: FilePostIndexPlan, *, db: Any) -> EsIndexingResult:
@@ -120,9 +122,7 @@ class QdrantBm25IndexingPipeline:
             succeeded_item_ids=success_ids,
         )
 
-    async def delete_document_index(
-        self, *, user_id: int, dataset_id: int, doc_id: int
-    ) -> int:
+    async def delete_document_index(self, *, user_id: int, dataset_id: int, doc_id: int) -> int:
         """删除某文档在 Qdrant BM25 中的全部 chunk（文档级全量重建的删除半步）。"""
 
         return await self._store.delete_by_document(
@@ -135,6 +135,8 @@ class QdrantBm25IndexingPipeline:
         success_ids: list[str],
         failed_errors: list[tuple[str, str]],
     ) -> None:
+        if not self._update_chunk_status:
+            return
         if success_ids:
             await self._chunk_repository.mark_es_success(db, success_ids)
         failed_by_reason: dict[str, list[str]] = defaultdict(list)

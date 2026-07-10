@@ -94,7 +94,7 @@ class DocumentDeletePurger:
         # 不减。ES/Qdrant 没有对应的表级结构，鸭子探测不到方法即跳过，行为不变。
         drop_dataset = getattr(self._es_pipeline, "delete_by_dataset", None)
         if drop_dataset is not None:
-            await drop_dataset(dataset_id=dataset_id)
+            await drop_dataset(user_id=user_id, dataset_id=dataset_id)
 
         logger.info(
             f"[DocumentDeletePurger] dataset 清理完成: dataset_id={dataset_id}, "

@@ -7,7 +7,10 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+
+_SQL_IDENTIFIER = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +27,10 @@ class TableRouter:
     def __init__(self, prefix: str) -> None:
         if not prefix:
             raise ValueError("prefix must not be empty.")
+        if not _SQL_IDENTIFIER.fullmatch(prefix):
+            raise ValueError(
+                "prefix must be a safe SQL identifier: letters, digits and underscores only"
+            )
         self.prefix = prefix
 
     def route_dataset(self, dataset_id: int) -> TableRoute:

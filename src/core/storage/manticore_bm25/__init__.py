@@ -11,7 +11,13 @@ IDF 统计范围收窄到"同桶用户"）；Manticore 按 dataset_id 精确建�
 from .exceptions import ManticoreConfigurationError, ManticoreStoreError
 from .pipeline import ManticoreBm25IndexingPipeline
 from .retrieval import ManticoreBm25Retriever
-from .store import Bm25Point, Bm25ScoredPoint, ManticoreBm25Store
+from .store import (
+    Bm25Point,
+    Bm25ScoredPoint,
+    ManticoreBm25Store,
+    close_manticore_bm25_store,
+    get_manticore_bm25_store,
+)
 from .table_router import TableRoute, TableRouter
 
 __all__ = [
@@ -22,6 +28,8 @@ __all__ = [
     "ManticoreBm25Store",
     "ManticoreConfigurationError",
     "ManticoreStoreError",
+    "close_manticore_bm25_store",
+    "get_manticore_bm25_store",
     "TableRoute",
     "TableRouter",
 ]
