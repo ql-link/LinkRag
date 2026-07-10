@@ -59,7 +59,7 @@ def build_parse_task_serial_workflow(
     *,
     biz_key: str | None = None,
 ) -> WorkflowDefinition:
-    """Build the strictly serial parse DAG (穿行).
+    """Build the strictly serial parse DAG (串行).
 
     Same nodes as the parallel DAG, but downstream branches are chained into a
     single line via ``extra_requires`` ordering edges, reproducing the production
