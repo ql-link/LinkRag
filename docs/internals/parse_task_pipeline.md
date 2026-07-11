@@ -160,7 +160,7 @@ StagePipeline.run（串行 6 阶段编排）
 
 ### 并行 DAG 引擎（生产默认引擎）
 
-`src/core/pipeline/parse_task/workflow_demo/` 把 6 阶段包成通用 Workflow Engine 的节点，提供两个拓扑入口：`build_parse_task_demo_workflow()`（并行）与 `build_parse_task_serial_workflow()`（穿行，在并行 DAG 上叠加定序边串成一条线）；runner 为 `ParseWorkflowRunner`。
+`src/core/pipeline/parse_task/workflow_demo/` 把 6 阶段包成通用 Workflow Engine 的节点，提供两个拓扑入口：`build_parse_task_demo_workflow()`（并行）与 `build_parse_task_serial_workflow()`（串行，在并行 DAG 上叠加定序边串成一条线）；runner 为 `ParseWorkflowRunner`。
 
 **接入方式（开关二选一，不改既有串行逻辑）**：`ParseTaskPipeline._execute_stages` 按 `settings.PARSE_USE_WORKFLOW_DAG` 选引擎——`True`（默认）走并行 `_run_via_dag`，`False` 走串行 `StagePipeline`（保留作回退，代码不删，出问题置 `False` 秒回滚）。消费者 `ParseTaskConsumer` 与生命周期外壳（幂等/校验/重试 CAS/兜底 except）两条引擎共用，不感知差异。
 
@@ -184,7 +184,7 @@ StagePipeline.run（串行 6 阶段编排）
 
 demo DAG 当前依赖关系为：`cleaning → chunking`；`chunking → ensure_points`；之后 **dense / sparse / es 三路并行**——`ensure_points → dense_vectorizing`、`ensure_points → sparse_vectorizing`、`chunking → pretokenize → es_indexing`。dense 额外声明 `CHUNKS`（向量化文本）依赖，故并行 DAG 中其上游为 `{chunking, ensure_points}`；ensure_points 本就在 chunking 之后，这条边不损失并行度，但**节点 `run()` 从 ctx 读的每个 product 都必须进 `requires`，否则续跑（resume）按声明回放上游产物时会漏 restore 导致 `KeyError`**。
 
-**named-dense 解耦（让 dense / sparse 真正并行的前提）**：dense 向量从 Qdrant **匿名默认向量**改为**命名向量 `dense`**（`settings.DENSE_VECTOR_QDRANT_VECTOR_NAME`）。命名向量下 collection 无强制默认向量，于是可由 `EnsurePointsNode` 先建只含 payload 的空 point（`QdrantIndexStore.ensure_points`，create-if-missing 幂等、单写者防并发建点相互覆盖），dense 与 sparse 再各自 `update_vectors` 写自己的命名向量（`dense` / `sparse_text`），互不覆盖、顺序无关。`sparse_vectorizing` 因此不再依赖 dense（旧实现里 sparse 依赖 dense 仅因 sparse 向量需追加在 dense 建出的 point 上）。这一存储层改动同样作用于生产 StagePipeline（见 §3 表 dense / sparse 行）。穿行 DAG 在此真实数据边上叠加 `dense_vectorizing → pretokenize`、`es_indexing → sparse_vectorizing` 两条纯定序边，把并行分支串成一条线。
+**named-dense 解耦（让 dense / sparse 真正并行的前提）**：dense 向量从 Qdrant **匿名默认向量**改为**命名向量 `dense`**（`settings.DENSE_VECTOR_QDRANT_VECTOR_NAME`）。命名向量下 collection 无强制默认向量，于是可由 `EnsurePointsNode` 先建只含 payload 的空 point（`QdrantIndexStore.ensure_points`，create-if-missing 幂等、单写者防并发建点相互覆盖），dense 与 sparse 再各自 `update_vectors` 写自己的命名向量（`dense` / `sparse_text`），互不覆盖、顺序无关。`sparse_vectorizing` 因此不再依赖 dense（旧实现里 sparse 依赖 dense 仅因 sparse 向量需追加在 dense 建出的 point 上）。这一存储层改动同样作用于生产 StagePipeline（见 §3 表 dense / sparse 行）。串行 DAG 在此真实数据边上叠加 `dense_vectorizing → pretokenize`、`es_indexing → sparse_vectorizing` 两条纯定序边，把并行分支串成一条线。
 
 各阶段的特例（均封装在对应 Stage 子类内，对编排循环透明）：
 

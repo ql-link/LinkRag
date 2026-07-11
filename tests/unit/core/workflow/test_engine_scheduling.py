@@ -115,3 +115,19 @@ async def test_max_concurrency_limits_running_nodes():
     assert run.status == RunStatus.SUCCESS
     assert probe.max_active <= 2
     assert all(node.run_count == 1 for node in nodes)
+
+
+@pytest.mark.asyncio
+async def test_missing_runtime_initial_product_fails_before_creating_run():
+    clean = FakeNode("clean", requires=("source",), provides=("md",))
+    definition = WorkflowDefinition.from_nodes(
+        [clean],
+        initial_products=("source",),
+    )
+    store = InMemoryWorkflowStore()
+
+    with pytest.raises(ValueError, match="missing runtime initial workflow products: source"):
+        await WorkflowEngine().run(definition, store=store)
+
+    assert clean.run_count == 0
+    assert store._runs == {}

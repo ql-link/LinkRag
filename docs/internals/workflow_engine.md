@@ -68,10 +68,12 @@
 flowchart LR
     source["parse.source"] --> cleaning["cleaning"]
     cleaning --> chunking["chunking"]
+    chunking --> ensure_points["ensure_points"]
     chunking --> dense["dense_vectorizing"]
+    ensure_points --> dense
+    ensure_points --> sparse["sparse_vectorizing"]
     chunking --> pretokenize["pretokenize"]
     pretokenize --> es["es_indexing"]
-    dense --> sparse["sparse_vectorizing"]
 ```
 
-说明：`sparse_vectorizing` 依赖 `dense_vectorizing`，因为当前 `StageServices.run_sparse_vectorizing()` 会重新加载 chunk 并过滤 `dense_vector_status == SUCCESS` 的记录；它不是和 dense 完全并行的分支。
+说明：`ensure_points` 先创建 Qdrant payload-only point；`dense_vectorizing` 与 `sparse_vectorizing` 分别写入命名向量，二者不再互相依赖。`pretokenize → es_indexing` 直接基于 chunk 产物推进，因此 dense / sparse / es 可在各自轻量前置完成后并行。
