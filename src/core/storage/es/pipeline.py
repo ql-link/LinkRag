@@ -9,8 +9,8 @@ from typing import Any
 from elasticsearch import AsyncElasticsearch
 
 from src.config import settings
-from src.core.storage.chunks.repository import ChunkRepository
 from src.core.preprocessor.models import FilePostIndexPlan
+from src.core.storage.chunks.repository import ChunkRepository
 
 from .batcher import TokenBatch, TokenBatcher
 from .client import get_async_es_client
@@ -18,7 +18,6 @@ from .document_factory import EsDocumentFactory
 from .exceptions import EsBulkError
 from .mapping import build_es_index_body
 from .models import BulkBatchResult, EsIndexingResult
-
 
 ClientFactory = Callable[[], AsyncElasticsearch | Awaitable[AsyncElasticsearch]]
 
@@ -32,10 +31,12 @@ class EsIndexingPipeline:
         client_factory: ClientFactory | None = None,
         index_name: str | None = None,
         chunk_repository: ChunkRepository | None = None,
+        update_chunk_status: bool = True,
     ) -> None:
         self._client_factory = client_factory or (lambda: get_async_es_client(settings))
         self._index_name = index_name or settings.ES_INDEX_NAME
         self._chunk_repository = chunk_repository or ChunkRepository()
+        self._update_chunk_status = update_chunk_status
         self._document_factory = EsDocumentFactory(
             max_document_bytes=settings.ES_MAX_DOCUMENT_BYTES,
         )
@@ -201,13 +202,14 @@ class EsIndexingPipeline:
         if len(response_items) < len(batch.items):
             missing_ids = batch.chunk_ids[len(response_items) :]
             failed_errors.extend(
-                (chunk_id, "es_bulk: bulk response missing item result")
-                for chunk_id in missing_ids
+                (chunk_id, "es_bulk: bulk response missing item result") for chunk_id in missing_ids
             )
 
         return BulkBatchResult(success_ids=success_ids, failed_errors=failed_errors)
 
     async def _mark_batch_status(self, db: Any, batch_result: BulkBatchResult) -> None:
+        if not self._update_chunk_status:
+            return
         if batch_result.success_ids:
             await self._chunk_repository.mark_es_success(db, batch_result.success_ids)
 
@@ -224,6 +226,8 @@ class EsIndexingPipeline:
         db: Any,
         failed_errors: list[tuple[str, str]],
     ) -> None:
+        if not self._update_chunk_status:
+            return
         failed_by_reason: dict[str, list[str]] = defaultdict(list)
         for chunk_id, reason in failed_errors:
             failed_by_reason[reason].append(chunk_id)

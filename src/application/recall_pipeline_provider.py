@@ -31,7 +31,7 @@ from src.core.storage.vector.sparse_retriever import SparseRetriever
 
 
 def _build_bm25_retriever() -> Retriever:
-    # BM25 召回后端按 BM25_BACKEND 选择（es / qdrant）；适配器只依赖 recall_topk_chunks。
+    # BM25 主读按 BM25_BACKEND 选择；迁移期可由工厂包一层不影响返回值的影子读比较。
     return Bm25Retriever(
         es_retriever=build_bm25_recall_backend(),
         tokenizer=RagFlowTokenizer(),

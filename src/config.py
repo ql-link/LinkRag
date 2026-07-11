@@ -7,6 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SUPPORTED_CHUNKING_STAGE_TWO_ALGORITHMS = frozenset({"noop", "semantic_depth_window"})
 SUPPORTED_RECALL_FUSION_STRATEGIES = frozenset({"rrf", "weighted_score"})
+SUPPORTED_BM25_BACKENDS = frozenset({"es", "qdrant", "manticore"})
 MARKDOWN_HEADING_LLM_CONTEXT_TOKEN_MIN = 2048
 MARKDOWN_HEADING_LLM_CONTEXT_TOKEN_MAX = 262144
 MARKDOWN_HEADING_LLM_MAX_OUTPUT_TOKEN_MIN = 512
@@ -437,11 +438,63 @@ class Settings(BaseSettings):
     ES_SMOKE_ENABLED: bool = False
     TOLINK_RUN_REAL_ES_INDEX_TESTS: bool = False
 
-    # BM25 全文检索后端选择：es / qdrant。默认 qdrant（2026-06 切换，见迁移脚本
-    # scripts/migrate/es_to_qdrant_bm25.py）；如需临时回退 ES 可设 BM25_BACKEND=es。
+    # BM25 全文检索后端选择：es / qdrant / manticore。默认 qdrant（2026-06 切换，见迁移
+    # 脚本 scripts/migrate/es_to_qdrant_bm25.py）；如需临时回退 ES 可设 BM25_BACKEND=es。
+    # manticore 是实验性新后端（coarse-only 原生 BM25，按 dataset 物理建表，见下方配置）。
     # 开关只影响 BM25 一路，dense / sparse 召回不受影响。
     # 详见 docs/internals/parse_task_pipeline.md。
     BM25_BACKEND: str = "qdrant"
+    # 迁移期写后端（逗号分隔）。空值表示只写 BM25_BACKEND；双写示例：qdrant,manticore。
+    # 读后端必须包含在写后端中，保证切换后新写入的数据一定可读。
+    BM25_WRITE_BACKENDS: str = ""
+    # 影子读只记录与主读的 top-k 重合度，不返回影子结果、不增加主链路成功依赖。
+    BM25_SHADOW_BACKEND: Optional[str] = None
+    BM25_SHADOW_SAMPLE_RATE: float = 0.0
+    BM25_SHADOW_TIMEOUT_SECONDS: float = 10.0
+
+    @field_validator("BM25_BACKEND")
+    @classmethod
+    def validate_bm25_backend(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized not in SUPPORTED_BM25_BACKENDS:
+            supported = ", ".join(sorted(SUPPORTED_BM25_BACKENDS))
+            raise ValueError(f"BM25_BACKEND must be one of: {supported}")
+        return normalized
+
+    @field_validator("BM25_WRITE_BACKENDS")
+    @classmethod
+    def validate_bm25_write_backends(cls, value: str) -> str:
+        backends = list(
+            dict.fromkeys(part.strip().lower() for part in value.split(",") if part.strip())
+        )
+        invalid = [backend for backend in backends if backend not in SUPPORTED_BM25_BACKENDS]
+        if invalid:
+            raise ValueError(f"BM25_WRITE_BACKENDS contains unsupported backends: {invalid}")
+        return ",".join(backends)
+
+    @field_validator("BM25_SHADOW_BACKEND", mode="before")
+    @classmethod
+    def validate_bm25_shadow_backend(cls, value: object) -> str | None:
+        if value is None or not str(value).strip():
+            return None
+        normalized = str(value).strip().lower()
+        if normalized not in SUPPORTED_BM25_BACKENDS:
+            raise ValueError(f"unsupported BM25_SHADOW_BACKEND: {normalized}")
+        return normalized
+
+    @field_validator("BM25_SHADOW_SAMPLE_RATE")
+    @classmethod
+    def validate_bm25_shadow_sample_rate(cls, value: float) -> float:
+        if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+            raise ValueError("BM25_SHADOW_SAMPLE_RATE must be between 0 and 1")
+        return value
+
+    @field_validator("BM25_SHADOW_TIMEOUT_SECONDS")
+    @classmethod
+    def validate_bm25_shadow_timeout(cls, value: float) -> float:
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("BM25_SHADOW_TIMEOUT_SECONDS must be finite and > 0")
+        return value
 
     # chunk_type 类型加权（仅 BM25_BACKEND=es 生效）：对命中的 chunk 按其种类额外加固定分
     # （const_score 加法升权，主 BM25 分之上叠加）。数据源是 kb_document_chunk.chunk_type，
@@ -510,6 +563,90 @@ class Settings(BaseSettings):
             "front_matter": 0.7,
         }
     )
+
+    # ---- Manticore BM25 后端（仅 BM25_BACKEND=manticore 时生效）----
+    # 用原生 bm25a(k1, b) 对 coarse 预分词字段计分。真实召回评测表明，把 fine 字段混进
+    # 同一 BM25F 分数会明显拉低中文召回，因此 v2 只保留 coarse；fine 后续作为独立召回路。
+    # 按 dataset 物理建表（一个 dataset 一张表，表名 f"{prefix}_{dataset_id}"），IDF 与
+    # avgdl 天然只统计这个 dataset 自己的语料，不需要额外的 tenant filter 或旁路统计基础
+    # 设施；相应地也不复用 Qdrant 那套 BucketRouter（那是按 user 哈希分桶，这里是按
+    # dataset 精确建表，两回事）。avgdl 走 Manticore 动态计算（index_field_lengths，
+    # 每张表天然只含一个 dataset 的文档，动态平均值等价于"按 dataset 计算"，不需要
+    # bm25a() 的常量覆盖参数）；k1/b/type_mult 复用上面 BM25_* 通用配置，coarse_boost
+    # 只用于 Qdrant 双段编码，不参与 Manticore v2 coarse-only 计分。
+    # 中文字符必须显式加进 charset_table，Manticore 默认字符集表不认 CJK，会把中文词
+    # 当分隔符丢弃（实测踩过：charset_table 不配置时，中文 chunk 基本等于没索引）。
+    MANTICORE_HOST: str = "localhost"
+    # SQL 协议端口（MySQL wire protocol），不是 HTTP(S) 的 9308。
+    MANTICORE_PORT: int = 9306
+    # 单条 SQL 操作截止时间；不再只充当 connect_timeout。
+    MANTICORE_TIMEOUT_SECONDS: float = 10.0
+    MANTICORE_CONNECT_TIMEOUT_SECONDS: float = 5.0
+    MANTICORE_POOL_ACQUIRE_TIMEOUT_SECONDS: float = 5.0
+    MANTICORE_POOL_MINSIZE: int = 1
+    MANTICORE_POOL_MAXSIZE: int = 10
+    MANTICORE_POOL_RECYCLE_SECONDS: int = 300
+    MANTICORE_WRITE_BATCH_SIZE: int = 500
+    MANTICORE_WRITE_BATCH_BYTES: int = 5 * 1024 * 1024
+    # 单个 coarse 预分词字段的 UTF-8 字节上限，提前拒绝异常巨型 chunk，避免撑爆 SQL 包和内存。
+    MANTICORE_MAX_DOCUMENT_BYTES: int = 128 * 1024
+    # Manticore 开启鉴权时使用；本地默认保持空账号/密码。
+    MANTICORE_USER: str = ""
+    MANTICORE_PASSWORD: str = ""
+    # 跨主机生产连接应启用 TLS；CA 校验服务端，cert/key 可选用于双向 TLS。
+    MANTICORE_SSL_ENABLED: bool = False
+    MANTICORE_SSL_CA: Optional[str] = None
+    MANTICORE_SSL_CERT: Optional[str] = None
+    MANTICORE_SSL_KEY: Optional[str] = None
+    MANTICORE_SSL_CHECK_HOSTNAME: bool = True
+    # 表名前缀：真实表名 = f"{MANTICORE_BM25_TABLE_PREFIX}_{dataset_id}"。
+    # v2 是 coarse-only + 显式 IDF 语义的索引代际，避免旧 BM25F 表被静默复用。
+    MANTICORE_BM25_TABLE_PREFIX: str = "bm25_ds_v2"
+
+    @field_validator(
+        "MANTICORE_TIMEOUT_SECONDS",
+        "MANTICORE_CONNECT_TIMEOUT_SECONDS",
+        "MANTICORE_POOL_ACQUIRE_TIMEOUT_SECONDS",
+    )
+    @classmethod
+    def validate_manticore_positive_timeout(cls, value: float) -> float:
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError("Manticore timeout values must be finite and > 0")
+        return value
+
+    @model_validator(mode="after")
+    def validate_manticore_pool_and_batch(self) -> "Settings":
+        write_backends = (
+            set(self.BM25_WRITE_BACKENDS.split(","))
+            if self.BM25_WRITE_BACKENDS
+            else {self.BM25_BACKEND}
+        )
+        if self.BM25_BACKEND not in write_backends:
+            raise ValueError("BM25_BACKEND must be included in BM25_WRITE_BACKENDS")
+        if self.BM25_SHADOW_BACKEND is not None:
+            if self.BM25_SHADOW_BACKEND == self.BM25_BACKEND:
+                raise ValueError("BM25_SHADOW_BACKEND must differ from BM25_BACKEND")
+            if self.BM25_SHADOW_BACKEND not in write_backends:
+                raise ValueError("BM25_SHADOW_BACKEND must be included in BM25_WRITE_BACKENDS")
+        if self.MANTICORE_POOL_MINSIZE < 0:
+            raise ValueError("MANTICORE_POOL_MINSIZE must be >= 0")
+        if self.MANTICORE_POOL_MAXSIZE <= 0:
+            raise ValueError("MANTICORE_POOL_MAXSIZE must be > 0")
+        if self.MANTICORE_POOL_MINSIZE > self.MANTICORE_POOL_MAXSIZE:
+            raise ValueError("MANTICORE_POOL_MINSIZE must be <= MANTICORE_POOL_MAXSIZE")
+        if self.MANTICORE_POOL_RECYCLE_SECONDS <= 0:
+            raise ValueError("MANTICORE_POOL_RECYCLE_SECONDS must be > 0")
+        if self.MANTICORE_WRITE_BATCH_SIZE <= 0:
+            raise ValueError("MANTICORE_WRITE_BATCH_SIZE must be > 0")
+        if self.MANTICORE_WRITE_BATCH_BYTES <= 0:
+            raise ValueError("MANTICORE_WRITE_BATCH_BYTES must be > 0")
+        if self.MANTICORE_MAX_DOCUMENT_BYTES <= 0:
+            raise ValueError("MANTICORE_MAX_DOCUMENT_BYTES must be > 0")
+        if self.MANTICORE_MAX_DOCUMENT_BYTES > self.MANTICORE_WRITE_BATCH_BYTES:
+            raise ValueError("MANTICORE_MAX_DOCUMENT_BYTES must be <= MANTICORE_WRITE_BATCH_BYTES")
+        if bool(self.MANTICORE_SSL_CERT) != bool(self.MANTICORE_SSL_KEY):
+            raise ValueError("MANTICORE_SSL_CERT and MANTICORE_SSL_KEY must be configured together")
+        return self
 
     # ==========================================
     # 存储 & 资源配置 (Storage & Resources)

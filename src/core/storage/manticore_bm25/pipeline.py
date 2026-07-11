@@ -1,4 +1,4 @@
-"""Qdrant BM25 入库管线：与 ``EsIndexingPipeline`` 鸭子兼容的 BM25 写入后端。
+"""Manticore BM25 入库管线：与 ``EsIndexingPipeline`` 鸭子兼容的 BM25 写入后端。
 
 对外暴露相同的两个方法签名，使 ``run_es_indexing`` / ``DocumentDeletePurger`` 等
 编排层无需感知后端差异（靠 ``BM25_BACKEND`` 工厂切换）：
@@ -6,14 +6,9 @@
 - ``write_es_index(plan, *, db) -> EsIndexingResult``
 - ``delete_document_index(*, user_id, dataset_id, doc_id) -> int``
 
-与 ES 入库管线的差异（均已对齐外层语义）：
-
-- **coarse + fine 双段编码**：coarse 与 fine 两套 token 编进同一个 sparse 向量的
-  隔离 hash 维度空间（named vector ``bm25_text``），单次点积即 coarse+fine 双路真
-  BM25，对齐 ES ``multi_match(["coarse_tokens^2", "fine_tokens"])`` 的双字段召回。
-  chunk 校验要求 coarse+fine 均非空，与 ES 灌入规则一致。
-- **文档级全量重建**：与 ES 一致，由外层先 ``delete_document_index`` 再
-  ``write_es_index`` 编排；Qdrant upsert 按 chunk_id 幂等覆盖。
+与 Qdrant 入库管线的差异：不需要 sparse 向量编码（``Bm25SparseEncoder``），
+``coarse_tokens`` 直接写进 Manticore 全文字段，TF/长度归一/IDF 交给服务端的
+``bm25a()`` 按对应 dataset 表统计。fine 后续作为独立召回路接入，不再混入同一分数。
 """
 
 from __future__ import annotations
@@ -21,33 +16,31 @@ from __future__ import annotations
 from collections import defaultdict
 from typing import Any
 
+from src.config import settings
 from src.core.preprocessor.models import ChunkWithTokens, FilePostIndexPlan
 from src.core.storage.chunks.repository import ChunkRepository
 from src.core.storage.es.models import EsIndexingResult
 from src.utils.logger import logger
 
-from .encoder import Bm25SparseEncoder, build_encoder_from_settings
-from .store import Bm25Point, QdrantBm25Store
+from .store import Bm25Point, ManticoreBm25Store, get_manticore_bm25_store
 
 
-class QdrantBm25IndexingPipeline:
-    """消费预分词 plan，把 BM25 sparse 向量 + chunk_type payload 写入 Qdrant。"""
+class ManticoreBm25IndexingPipeline:
+    """消费预分词 plan，把 BM25 全文字段 + chunk_type 属性写入 Manticore。"""
 
     def __init__(
         self,
         *,
-        store: QdrantBm25Store | None = None,
+        store: ManticoreBm25Store | None = None,
         chunk_repository: ChunkRepository | None = None,
-        encoder: Bm25SparseEncoder | None = None,
         update_chunk_status: bool = True,
     ) -> None:
-        self._store = store or QdrantBm25Store()
+        self._store = store or get_manticore_bm25_store()
         self._chunk_repository = chunk_repository or ChunkRepository()
         self._update_chunk_status = update_chunk_status
-        self._encoder = encoder or build_encoder_from_settings()
 
     async def write_es_index(self, plan: FilePostIndexPlan, *, db: Any) -> EsIndexingResult:
-        """写一个文件的 post-index plan 到 Qdrant BM25 并回写 chunk es_status。"""
+        """写一个文件的 post-index plan 到 Manticore BM25 并回写 chunk es_status。"""
 
         total = len(plan.chunks_with_tokens)
         if total == 0:
@@ -57,7 +50,7 @@ class QdrantBm25IndexingPipeline:
         valid_chunks: list[ChunkWithTokens] = []
         failed_errors: list[tuple[str, str]] = []
 
-        # 1. 逐 chunk 校验（与 ES document_factory 同规则）。
+        # 逐 chunk 校验（与 ES document_factory / Qdrant 管线同规则）。
         for chunk in sorted(plan.chunks_with_tokens, key=lambda c: c.chunk_index):
             reason = self._validate_chunk(chunk)
             if reason is None:
@@ -65,53 +58,49 @@ class QdrantBm25IndexingPipeline:
             else:
                 failed_errors.append((chunk.chunk_id or "", reason))
 
-        # 2. 编码 BM25 sparse 向量；分词后为空向量的 chunk 归为 failed。
-        points: list[Bm25Point] = []
-        for chunk in valid_chunks:
-            vector = self._encoder.encode_document(
-                chunk.coarse_tokens.split(), chunk.fine_tokens.split()
+        points = [
+            Bm25Point(
+                chunk_id=chunk.chunk_id,
+                doc_id=meta.doc_id,
+                user_id=meta.user_id,
+                dataset_id=meta.dataset_id,
+                chunk_type=chunk.chunk_type,
+                coarse_tokens=chunk.coarse_tokens,
             )
-            if not vector.indices:
-                failed_errors.append(
-                    (chunk.chunk_id, "validation: empty sparse vector after tokenization")
-                )
-                continue
-            points.append(
-                Bm25Point(
-                    chunk_id=chunk.chunk_id,
-                    doc_id=meta.doc_id,
-                    user_id=meta.user_id,
-                    dataset_id=meta.dataset_id,
-                    chunk_type=chunk.chunk_type,
-                    sparse_vector=vector,
-                )
-            )
+            for chunk in valid_chunks
+        ]
 
-        # 3. 写入 Qdrant（ensure collection + upsert）。失败 → 该批全部记 failed。
         success_ids: list[str] = []
         if points:
             try:
-                await self._store.ensure_collection()
-                await self._store.upsert_chunks(points)
-                success_ids = [p.chunk_id for p in points]
+                await self._store.ensure_table(meta.dataset_id)
+                success_ids = await self._store.upsert_chunks(points)
+                verified = set(success_ids)
+                for p in points:
+                    if p.chunk_id not in verified:
+                        failed_errors.append(
+                            (
+                                p.chunk_id,
+                                "manticore_bm25_write: not confirmed by read-back verification",
+                            )
+                        )
             except Exception as exc:
-                reason = f"qdrant_bm25_write: {exc}"
+                reason = f"manticore_bm25_write: {exc}"
                 failed_errors.extend((p.chunk_id, reason) for p in points)
                 logger.error(
-                    "[QdrantBm25] write failed doc_id={} chunks={} error={}",
+                    "[ManticoreBm25] write failed doc_id={} chunks={} error={}",
                     meta.doc_id,
                     len(points),
                     exc,
                 )
 
-        # 4. 状态回写（与 ES pipeline 同语义）。
         await self._mark_status(db, success_ids, failed_errors)
 
         failed_item_ids = [chunk_id for chunk_id, _ in failed_errors]
         failure_reason = None
         if failed_item_ids:
             failure_reason = (
-                "QDRANT_BM25_INDEXING_FAILED: BM25入库失败；"
+                "MANTICORE_BM25_INDEXING_FAILED: BM25入库失败；"
                 f"total={total}, indexed={len(success_ids)}, failed={len(failed_item_ids)}"
             )
         return EsIndexingResult(
@@ -123,11 +112,24 @@ class QdrantBm25IndexingPipeline:
         )
 
     async def delete_document_index(self, *, user_id: int, dataset_id: int, doc_id: int) -> int:
-        """删除某文档在 Qdrant BM25 中的全部 chunk（文档级全量重建的删除半步）。"""
+        """删除某文档在 Manticore BM25 中的全部 chunk（文档级全量重建的删除半步）。
+
+        表虽然已按 dataset_id 路由，仍保留 user_id 硬过滤作为租户隔离的第二道防线。
+        """
 
         return await self._store.delete_by_document(
             user_id=user_id, dataset_id=dataset_id, doc_id=doc_id
         )
+
+    async def delete_by_dataset(self, *, user_id: int, dataset_id: int) -> None:
+        """dataset 整体删除时的表级清理：ES/Qdrant 没有对应方法，仅 Manticore 实现。
+
+        Manticore 按 dataset_id 物理建表，dataset 删除必须整表 DROP 才能回收，逐文档
+        删除干净不了空表本身；调用方（``DocumentDeletePurger``）按 ``hasattr`` 探测
+        这个方法是否存在，探测不到时（ES/Qdrant 后端）跳过，行为保持不变。
+        """
+
+        await self._store.drop_table(dataset_id, user_id=user_id)
 
     async def _mark_status(
         self,
@@ -156,6 +158,10 @@ class QdrantBm25IndexingPipeline:
             return "validation: chunk_index must be non-negative"
         if not isinstance(chunk.coarse_tokens, str) or not chunk.coarse_tokens.strip():
             return "validation: coarse_tokens must be non-empty text"
-        if not isinstance(chunk.fine_tokens, str) or not chunk.fine_tokens.strip():
-            return "validation: fine_tokens must be non-empty text"
+        token_bytes = len(chunk.coarse_tokens.encode("utf-8"))
+        if token_bytes > settings.MANTICORE_MAX_DOCUMENT_BYTES:
+            return (
+                "validation: coarse_tokens exceeds MANTICORE_MAX_DOCUMENT_BYTES "
+                f"({token_bytes} > {settings.MANTICORE_MAX_DOCUMENT_BYTES})"
+            )
         return None

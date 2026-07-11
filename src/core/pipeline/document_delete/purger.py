@@ -89,6 +89,14 @@ class DocumentDeletePurger:
             for doc_id in doc_ids:
                 await self._purge_file(user_id=user_id, dataset_id=dataset_id, doc_id=doc_id)
             total += len(doc_ids)
+
+        # 表级清理（仅 Manticore 后端实现）：按 dataset_id 物理建表的后端，逐文档删除
+        # 干净不了空表本身，dataset 整体删除时必须再补一刀 DROP TABLE，否则空表只增
+        # 不减。ES/Qdrant 没有对应的表级结构，鸭子探测不到方法即跳过，行为不变。
+        drop_dataset = getattr(self._es_pipeline, "delete_by_dataset", None)
+        if drop_dataset is not None:
+            await drop_dataset(user_id=user_id, dataset_id=dataset_id)
+
         logger.info(
             f"[DocumentDeletePurger] dataset 清理完成: dataset_id={dataset_id}, "
             f"user_id={user_id}, files={total}"

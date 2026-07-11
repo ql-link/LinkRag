@@ -23,20 +23,13 @@ from loguru import logger
 if TYPE_CHECKING:
     from src.core.dataset_config import ChunkingConfig, DatasetParseConfigBundle
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from src.config import settings
-from src.core.storage.chunks.constants import (
-    CHUNK_LIFECYCLE_ACTIVE,
-    CHUNK_STATUS_INDEXED,
-    SPARSE_VECTOR_STATUS_INDEXED,
-)
-from src.core.storage.bm25_backend import build_indexing_pipeline
-from src.core.storage.chunks.repository import ChunkRepository
-from src.core.storage.es import EsIndexingResult
 from src.core.markdown_parser import ParseResult
 from src.core.mq.messages.parse_task import ParseTaskPayload
+from src.core.parse_task_service import ParseTaskService
 from src.core.preprocessor.models import FilePostIndexPlan
-from src.core.storage.qdrant import BucketRouter
-from src.core.storage.qdrant.constants import DEFAULT_BUCKET_COUNT, DEFAULT_COLLECTION_PREFIX
 from src.core.splitter import create_chunking_engine
 from src.core.splitter.factory import (
     DenseEmbeddingConfigMissingError,
@@ -44,13 +37,21 @@ from src.core.splitter.factory import (
     aresolve_user_embedding_client,
 )
 from src.core.splitter.models import Chunk
+from src.core.storage.bm25_backend import build_indexing_pipeline
+from src.core.storage.chunks.constants import (
+    CHUNK_LIFECYCLE_ACTIVE,
+    CHUNK_STATUS_INDEXED,
+    SPARSE_VECTOR_STATUS_INDEXED,
+)
+from src.core.storage.chunks.repository import ChunkRepository
+from src.core.storage.es import EsIndexingResult
+from src.core.storage.qdrant import BucketRouter
+from src.core.storage.qdrant.constants import DEFAULT_BUCKET_COUNT, DEFAULT_COLLECTION_PREFIX
 from src.core.storage.vector import compose_vector_storage_facade
 from src.core.storage.vector.draft_factory import ChunkDraftFactory
 from src.core.storage.vector.models import ChunkIndexingResult
-from src.core.parse_task_service import ParseTaskService
 from src.models.chunk_record import ChunkRecordDB
 from src.services.storage.base import BaseObjectStorage
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from .._utils import coerce_optional_int
 from ..source import ParseSourceIO
@@ -565,9 +566,7 @@ class StageServices:
         # sparse 与 dense 解耦：不再要求 dense=SUCCESS，只挑还没成功的 sparse chunk。
         fresh_chunks = await self._reload_chunks_from_db(payload, db)
         sparse_chunks = [
-            c
-            for c in fresh_chunks
-            if c.sparse_vector_status != SPARSE_VECTOR_STATUS_INDEXED
+            c for c in fresh_chunks if c.sparse_vector_status != SPARSE_VECTOR_STATUS_INDEXED
         ]
         await sparse_pipeline.run(
             chunks=sparse_chunks,
@@ -645,7 +644,7 @@ class StageServices:
 
     def _get_es_indexing_pipeline(self):
         if self._es_indexing_pipeline is None:
-            # BM25 写入后端按 BM25_BACKEND 选择（es / qdrant），两者鸭子兼容同签名。
+            # BM25 写入按 BM25_WRITE_BACKENDS 装配；迁移期可返回严格双写管线。
             self._es_indexing_pipeline = build_indexing_pipeline(
                 chunk_repository=self._chunk_repository,
             )
@@ -667,7 +666,7 @@ class StageServices:
 # ---------------------------------------------------------------------------
 
 _BASE64_IMG_RE = re.compile(
-    r'!\[(?P<alt>[^\]]*)\]\(data:image/(?P<mime>[^;,\s]+);base64,(?P<data>[A-Za-z0-9+/=\s]+)\)',
+    r"!\[(?P<alt>[^\]]*)\]\(data:image/(?P<mime>[^;,\s]+);base64,(?P<data>[A-Za-z0-9+/=\s]+)\)",
     re.MULTILINE,
 )
 

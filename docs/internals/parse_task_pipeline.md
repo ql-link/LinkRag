@@ -2,24 +2,51 @@
 
 本文说明 `src/core/pipeline/parse_task/pipeline.py` 解析任务业务流水线的端到端职责、状态边界和失败语义。
 
-> **BM25 写入后端可切换（ES / qdrant）**：下文「ES 入库 / Elasticsearch」描述的是
-> `es_indexing` 阶段的 BM25 关键词写入步骤，其底层后端由 `settings.BM25_BACKEND` 决定：
-> `qdrant`（默认，复用向量库进程，sparse vector + `Modifier.IDF` 真 BM25）
-> 或 `es`（Elasticsearch）。qdrant 后端的 coarse 与 fine 两段 token 编进同一 sparse 向量的隔离 hash 维度空间，单次点积即
+> **BM25 写入后端可切换（ES / qdrant / manticore）**：下文「ES 入库 / Elasticsearch」
+> 描述的是 `es_indexing` 阶段的 BM25 关键词写入步骤。主读由 `settings.BM25_BACKEND`
+> 决定；写入由 `BM25_WRITE_BACKENDS` 决定（空值等于主读，迁移期可严格双写）。后端包括
+> `qdrant`（默认，复用向量库进程，sparse vector + `Modifier.IDF` 真 BM25）、
+> `es`（Elasticsearch）或 `manticore`（实验性，见下）。qdrant 后端的 coarse 与 fine 两段
+> token 编进同一 sparse 向量的隔离 hash 维度空间，单次点积即
 > coarse+fine 双路，对齐 ES `multi_match(["coarse_tokens^2", "fine_tokens"])` 双字段召回；
-> 独立 collection，见 `src/core/storage/qdrant_bm25/`）。两后端鸭子兼容同一接口
+> 独立 collection，见 `src/core/storage/qdrant_bm25/`）。三个后端鸭子兼容同一接口
 > （`write_es_index` / `delete_document_index` / `recall_topk_chunks`），
 > **状态机与终态语义完全一致**——阶段顺序、文档级全量重建编排、`es_status` 回写均不变。
-> 差异：① 失败前缀——qdrant 用 `QDRANT_BM25_INDEXING_FAILED:`（与 `ES_INDEXING_FAILED:`
-> 对称）；② 类型加权机制——es 用 `constant_score` 加法（`BM25_TYPE_BOOST`），qdrant 用
-> Formula Query 乘法（`BM25_TYPE_MULT`，命中 chunk_type 时 BM25 主分 ×倍数；实测乘法重塑
-> 排序的能力显著强于加法）。切换经 `src/core/storage/bm25_backend.py` 工厂分发，回退到 `es`
-> 零代码改动。
+> 差异：① 失败前缀——qdrant 用 `QDRANT_BM25_INDEXING_FAILED:`、manticore 用
+> `MANTICORE_BM25_INDEXING_FAILED:`（均与 `ES_INDEXING_FAILED:` 对称）；② 类型加权机制——
+> es 用 `constant_score` 加法（`BM25_TYPE_BOOST`），qdrant 用 Formula Query 乘法、manticore
+> 在应用层对候选池乘法重排（两者共用 `BM25_TYPE_MULT`，命中 chunk_type 时 BM25 主分
+> ×倍数；实测乘法重塑排序的能力显著强于加法）。切换经 `src/core/storage/bm25_backend.py`
+> 工厂分发。未知后端名直接失败，不做静默回退。
 >
 > qdrant 后端的长度归一 `avgdl` 在客户端编码时写入即冻结，务必用
 > `scripts/dev/calibrate_bm25_avgdl.py` 按真实语料校准 `BM25_AVGDL` / `BM25_AVGDL_FINE`
 > （变更只对之后写入的 chunk 生效，存量需重灌才完全对齐）；qdrant 与 ES 的召回一致性
 > （recall@k / es-vs-qdrant overlap@k）用 `scripts/dev/eval_bm25_recall.py` 评测。
+>
+> **manticore 后端（实验性）**：与 qdrant「按 user 哈希分桶、128 桶共享 IDF 统计」不同，
+> manticore 按 `dataset_id` **物理建表**（`src/core/storage/manticore_bm25/table_router.py`，
+> 表名 `f"{MANTICORE_BM25_TABLE_PREFIX}_{dataset_id}"`），IDF 与 avgdl 天然只统计这一个
+> dataset 自己的语料，不需要 tenant filter 圈统计口径。v2 只用 coarse 字段和原生
+> `bm25a(k1, b)`；真实中文评测证明把 fine 混入 BM25F 会明显降低召回。avgdl 用 Manticore 动态
+> 计算（`index_field_lengths`），不传常量覆盖——每张表只含一个 dataset 的文档，动态平均值
+> 本来就等价于"按 dataset 计算"。**建表 DDL 必须显式配置 `charset_table='non_cjk, chinese'`**：
+> Manticore 默认字符集表不认中文字符，会把中文词当分隔符丢弃（实测：不配置时中文内容基本
+> 等于没索引）。选型评估与 POC 见 `scripts/dev/eval_bm25_manticore_poc.py`。**表生命周期**：
+> dataset 整体删除时，`DocumentDeletePurger._purge_dataset`（`src/core/pipeline/document_delete/purger.py`）
+> 在逐文档清理完之后，会用 `hasattr` 探测 BM25 管线是否暴露 `delete_by_dataset(dataset_id)`——
+> 只有 manticore 后端实现了这个方法（`ManticoreBm25IndexingPipeline.delete_by_dataset` →
+> `ManticoreBm25Store.drop_table`，整表 `DROP TABLE IF EXISTS`），es/qdrant 没有对应的物理表
+> 结构，探测不到即跳过，行为不变。逐文档删除只清行、不清表，若不补这一刀，dataset 删除后
+> 空表会一直留存，只增不减。**写入校验**：`ManticoreBm25Store.upsert_chunks` 按条数和字节
+> 拆分多行 `REPLACE INTO`；任一批失败向文档级编排抛出。批次写完后按
+> chunk_id 批量 `SELECT` 回读，只有真正查得到的行才计入返回的已确认 chunk_id 列表，
+> `ManticoreBm25IndexingPipeline.write_es_index` 据此精确标记每个 chunk 的 `es_status`，
+> 而不是"这批是否抛过异常"这种粗粒度判断。**连接管理**：未显式注入 `conn` 时走进程内
+> `aiomysql` 共享连接池（默认 `minsize=1, maxsize=10`），并发写入/查询可拿不同物理连接；
+> 获取连接、连接建立和每条 SQL 都有独立截止时间，应用停机时关闭连接池。首次使用表时还会
+> 校验字段与 tokenizer 选项，拒绝静默复用错误代际的同名表。迁移流程见
+> [Manticore BM25 上线手册](../ops/manticore_bm25_migration.md)。
 
 ## 1. 模块框架
 

@@ -9,9 +9,9 @@ from dataclasses import dataclass
 
 import pytest
 
+from src.core.pipeline.recall.protocols import SOURCE_BM25
 from src.core.storage.es.bm25_retriever import Bm25Retriever
 from src.core.storage.es.retrieval_models import Bm25ChunkHit, Bm25RecallRequest
-from src.core.pipeline.recall.protocols import SOURCE_BM25
 
 
 @dataclass
@@ -29,9 +29,15 @@ class _FakeTokenizer:
 
 
 class _FakeEsRetriever:
-    def __init__(self, hits_by_dataset: dict[int, list[Bm25ChunkHit]] | None = None) -> None:
+    def __init__(
+        self,
+        hits_by_dataset: dict[int, list[Bm25ChunkHit]] | None = None,
+        *,
+        score_scope: str = "global",
+    ) -> None:
         self._hits_by_dataset = hits_by_dataset or {}
         self.calls: list[Bm25RecallRequest] = []
+        self.score_scope = score_scope
 
     async def recall_topk_chunks(self, request: Bm25RecallRequest) -> list[Bm25ChunkHit]:
         self.calls.append(request)
@@ -107,6 +113,32 @@ async def test_top_k_truncates_merged_result():
 
     assert len(hits) == 3
     assert [h.score for h in hits] == [20.0, 19.0, 18.0]
+
+
+@pytest.mark.asyncio
+async def test_dataset_scoped_backend_uses_rank_fusion_instead_of_raw_scores():
+    backend = _FakeEsRetriever(
+        hits_by_dataset={
+            10: [
+                Bm25ChunkHit(chunk_id="a1", doc_id=101, score=500.0),
+                Bm25ChunkHit(chunk_id="a2", doc_id=102, score=400.0),
+            ],
+            11: [
+                Bm25ChunkHit(chunk_id="b1", doc_id=201, score=1200.0),
+                Bm25ChunkHit(chunk_id="b2", doc_id=202, score=1100.0),
+            ],
+        },
+        score_scope="dataset",
+    )
+    retriever = _build(es=backend)
+
+    hits = await retriever.recall("合同 付款", dataset_ids=[10, 11], user_id=7, top_k=4)
+
+    # 跨表原始分不可比；各表第 1 名先于各表第 2 名，同名次按请求顺序稳定。
+    assert [hit.chunk_id for hit in hits] == ["a1", "b1", "a2", "b2"]
+    assert hits[0].score == hits[1].score
+    assert hits[2].score == hits[3].score
+    assert hits[0].score > hits[2].score
 
 
 @pytest.mark.asyncio

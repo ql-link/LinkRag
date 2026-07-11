@@ -14,6 +14,7 @@
 | `redis` | `redis:7.2-alpine` | 6379 | 用户 LLM 配置缓存、共享下发 | ✅ |
 | `minio` | `minio/minio` | 9000 / 9001 | 原始文档、解析产物的对象存储 | 二选一¹ |
 | `qdrant` | `qdrant/qdrant` | 6333 / 6334 | 稠密 / 稀疏 / BM25 索引存储 | ✅ |
+| `manticore` | `manticoresearch/manticore:27.1.5` | 9306 / 9308 | 可选 BM25 全文索引；迁移期与 Qdrant 双写 | 按需 |
 | `zookeeper` | `bitnami/zookeeper:3.9` | 2181 | Kafka 协调 | 当 MQ 为 Kafka 时必需 |
 | `kafka` | `bitnami/kafka:3.7` | 9092 | 异步消息中台 | 当 `MQ_VENDOR=kafka` 时必需 |
 | `kafka-ui` | `provectuslabs/kafka-ui` | 9081 | Kafka 调试 UI | 可选 |
@@ -60,10 +61,12 @@ uvicorn src.main:app --host 0.0.0.0 --port 8000
 | 检查 | 命令 | 期望 |
 | --- | --- | --- |
 | 应用存活 | `curl http://localhost:8000/health` | 返回 JSON，含已加载模块 |
+| 应用就绪 | `curl http://localhost:8000/ready` | Manticore 启用时实际执行 `SELECT 1`，失败返回 503 |
 | Swagger | 访问 `http://localhost:8000/docs` | 看到所有路由 |
 | MySQL | `docker compose exec mysql mysqladmin ping -uroot -p` | `mysqld is alive` |
 | Kafka | `docker compose ps kafka` | `healthy` |
 | MinIO | `curl http://localhost:9000/minio/health/live` | 200 |
+| Manticore | `docker compose ps manticore` | `healthy` |
 
 常见失败：
 
@@ -86,6 +89,7 @@ uvicorn src.main:app --host 0.0.0.0 --port 8000
 2. **配置外部化**：`.env` 通过 Secret Manager（如 K8s Secret、Vault）注入，不打进镜像。
 3. **多副本与扩缩容**：FastAPI 进程可水平扩展；Kafka 消费者通过 consumer group 自动分配 partition，消费侧扩缩容时关注 `PARSE_TASK_PARTITIONS` 是否足够。
 4. **初始化 topic**：生产环境建议把 `INIT_KAFKA_TOPICS_ON_STARTUP=false`，topic 由部署流程或运维侧显式创建，避免应用启动时副作用。
+5. **Manticore 高可用**：根 Compose 仅为单节点，不具备生产 HA。切主读前必须另行完成副本/备份、故障恢复演练与容量压测；迁移步骤见 [Manticore BM25 上线手册](manticore_bm25_migration.md)。
 
 ## Python 依赖变更
 

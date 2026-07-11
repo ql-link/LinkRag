@@ -33,15 +33,16 @@ class _QueryTokenizer(Protocol):
 
 
 class _Bm25RecallBackend(Protocol):
-    """召回侧 BM25 后端的最小契约：ES 与 qdrant 两实现都满足。
+    """召回侧 BM25 后端的最小契约：ES、Qdrant、Manticore 与影子包装都满足。
 
     适配器只依赖这一个方法，不绑定具体后端，由 ``build_bm25_recall_backend`` 工厂
-    按 ``BM25_BACKEND`` 注入 ``EsBm25Retriever`` 或 ``QdrantBm25Retriever``。
+    按 ``BM25_BACKEND`` 注入对应实现。
     """
 
-    async def recall_topk_chunks(
-        self, request: Bm25RecallRequest
-    ) -> list[Bm25ChunkHit]: ...
+    async def recall_topk_chunks(self, request: Bm25RecallRequest) -> list[Bm25ChunkHit]: ...
+
+
+_DATASET_RRF_K = 60
 
 
 class Bm25Retriever:
@@ -97,8 +98,9 @@ class Bm25Retriever:
             return []
 
         doc_iter: list[int | None] = list(doc_ids) if doc_ids else [None]
-        accumulated: list[RetrieverHit] = []
+        by_dataset: dict[int, list[RetrieverHit]] = {}
         for dataset_id in dataset_ids:
+            dataset_hits = by_dataset.setdefault(dataset_id, [])
             for doc_id in doc_iter:
                 request = Bm25RecallRequest(
                     user_id=user_id,
@@ -109,7 +111,7 @@ class Bm25Retriever:
                 )
                 hits = await self._es_retriever.recall_topk_chunks(request)
                 for hit in hits:
-                    accumulated.append(
+                    dataset_hits.append(
                         RetrieverHit(
                             chunk_id=hit.chunk_id,
                             doc_id=hit.doc_id,
@@ -119,6 +121,17 @@ class Bm25Retriever:
                         )
                     )
 
+        # ES/Qdrant 的各 dataset 查询共享同一物理 index/collection 统计，
+        # 原始分可按现有语义比较。Manticore 则每个 dataset 一张表，IDF/avgdl
+        # 彼此独立，跨表 raw score 不可比；对声明 dataset score scope 的后端，
+        # 多 dataset 时改用名次 RRF，避免大表/稀有词统计将其他库系统性挤出。
+        if (
+            getattr(self._es_retriever, "score_scope", "global") == "dataset"
+            and len(by_dataset) > 1
+        ):
+            return self._merge_dataset_rankings(by_dataset, dataset_ids, top_k)
+
+        accumulated = [hit for hits in by_dataset.values() for hit in hits]
         accumulated.sort(key=lambda h: h.score, reverse=True)
         return accumulated[:top_k]
 
@@ -126,3 +139,32 @@ class Bm25Retriever:
         tokenized = self._tokenizer.tokenize(query)
         # ``coarse_tokens`` 是空格分隔的词串；与写入侧 ES 索引保持一致。
         return [tok for tok in tokenized.coarse_tokens.split() if tok]
+
+    @staticmethod
+    def _merge_dataset_rankings(
+        by_dataset: dict[int, list[RetrieverHit]],
+        dataset_order: list[int],
+        top_k: int,
+    ) -> list[RetrieverHit]:
+        """对分数统计边界独立的 dataset 结果做稳定 RRF。
+
+        每个 dataset 先按自己的 raw score 排名，再用 ``1/(k+rank)`` 转为
+        可比的名次分。同名次按请求中 dataset 顺序稳定打破平局。
+        """
+
+        dataset_pos = {dataset_id: pos for pos, dataset_id in enumerate(dataset_order)}
+        ranked: list[tuple[float, int, int, RetrieverHit]] = []
+        for dataset_id in dataset_order:
+            hits = sorted(by_dataset.get(dataset_id, []), key=lambda h: h.score, reverse=True)
+            for rank, hit in enumerate(hits, start=1):
+                rrf_score = 1.0 / (_DATASET_RRF_K + rank)
+                normalized = RetrieverHit(
+                    chunk_id=hit.chunk_id,
+                    doc_id=hit.doc_id,
+                    dataset_id=hit.dataset_id,
+                    score=rrf_score,
+                    source=hit.source,
+                )
+                ranked.append((rrf_score, dataset_pos[dataset_id], rank, normalized))
+        ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
+        return [item[3] for item in ranked[:top_k]]
