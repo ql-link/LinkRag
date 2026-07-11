@@ -8,7 +8,7 @@
 --   - schema 演进的唯一权威源是 src/models/**.py + migrations/versions/*.py；
 --   - 修改字段必须先改 ORM 模型并新增 migration，再同步本文件。
 -- 同步时机：每条会改动表结构的 migration 落库时一并更新本文件。
--- 末次同步：migration 0033_20260704_chunk_type_contract
+-- 末次同步：migration 0035_20260711_add_user_login_event
 -- 备注：0032_20260702_provider_icon_fields 兼容历史 dev 库中 provider icon 误用 0031 revision 的状态；
 --      本快照只表达叠加全部 migration 后的最终结构。
 -- ===============================================
@@ -33,8 +33,19 @@ CREATE TABLE IF NOT EXISTS sys_user (
     updated_at      DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
     UNIQUE KEY uk_username (username),
-    UNIQUE KEY uk_email (email)
+    UNIQUE KEY uk_email (email),
+    INDEX idx_sys_user_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '系统用户表';
+
+-- 1.1 用户成功登录事件表
+CREATE TABLE IF NOT EXISTS user_login_event (
+    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '登录事件唯一标识',
+    user_id         BIGINT UNSIGNED NOT NULL COMMENT '登录用户ID',
+    login_source    VARCHAR(16) NOT NULL COMMENT '登录来源：LOGIN 普通登录, REGISTER 注册自动登录',
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '登录成功时间（Asia/Shanghai）',
+
+    INDEX idx_user_login_event_created_user (created_at, user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '用户成功登录事件表';
 
 -- 2. LLM 系统级厂商配置表
 CREATE TABLE IF NOT EXISTS llm_system_provider (
