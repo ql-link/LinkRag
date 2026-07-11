@@ -49,7 +49,9 @@ ES 全文检索"。配套工具在 `scripts/dev/`，结论可复现。
 - CovidRetrieval corpus 采样 1 万 / 10 万，干扰文档少，recall 绝对值偏高；但 es / qdrant
   同等条件，overlap 与相对对比仍有效。
 - 单数据集、单主题（医疗），不代表所有中文场景；规模也远小于生产十万级。
-- `avgdl` 写入时冻结，存量需重灌才完全对齐，务必用 calibrate 脚本按真实语料校准。
+- Qdrant 的 `avgdl` 在向量写入时冻结，存量需重灌才完全对齐，务必用 calibrate 脚本按
+  真实语料校准；Manticore v2 按 dataset 建表，通过 `index_field_lengths` 动态统计 avgdl，
+  不使用这两个固定常量。
 
 ## 复现
 
