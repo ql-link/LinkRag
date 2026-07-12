@@ -23,7 +23,6 @@
 | [error_codes.md](api/error_codes.md) | 业务错误码 |
 | [schemas/mysql.md](api/schemas/mysql.md) | MySQL 表结构（共 20 张表） |
 | [schemas/qdrant.md](api/schemas/qdrant.md) | Qdrant collection 与 payload |
-| [schemas/elasticsearch.md](api/schemas/elasticsearch.md) | ES 索引结构 |
 
 ### [internals/](internals/) — 内部实现
 
@@ -41,9 +40,8 @@
 | [chunking.md](internals/chunking.md) | 分块策略与流水线 |
 | [vectorization.md](internals/vectorization.md) | 向量化模块（dense） |
 | [sparse_vector.md](internals/sparse_vector.md) | 稀疏向量编码与索引 |
-| [preprocessor.md](internals/preprocessor.md) | ES 预分词（RAGFlow） |
-| [es_index_storage.md](internals/es_index_storage.md) | ES 索引与 BM25 检索 |
-| [bm25_eval.md](internals/bm25_eval.md) | BM25 召回评测（es/qdrant 对齐验证）与工具 |
+| [preprocessor.md](internals/preprocessor.md) | BM25 预分词（RAGFlow） |
+| [bm25_eval.md](internals/bm25_eval.md) | BM25 召回评测（Qdrant/Manticore）与工具 |
 | [chunk_fact_storage.md](internals/chunk_fact_storage.md) | Chunk SQL 事实存储（真值源/状态机） |
 | [mq.md](internals/mq.md) | MQ 中间件实现 |
 | [llm.md](internals/llm.md) | LLM 调用模块 |

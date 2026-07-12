@@ -45,7 +45,7 @@ src/core/pipeline/recall/
 | 路 | source | 适配器 |
 | --- | --- | --- |
 | sparse | `sparse` | `src/core/storage/vector/sparse_retriever.py` |
-| BM25 | `bm25` | `src/core/storage/es/bm25_retriever.py` |
+| BM25 | `bm25` | `src/core/storage/bm25_retriever.py` |
 | dense | `dense` | `src/core/storage/vector/dense_retriever.py` |
 
 `RecallPipeline` 不写死具体路数；新增 GraphRAG、wiki 或其他召回路时，只要实现 `Retriever` 协议并在构造时传入即可。
@@ -260,7 +260,7 @@ RecallPipelineConfig(
 | 容错语义 | `tests/unit/core/pipeline/recall/test_recall_pipeline_fault.py` |
 | 文档级门禁、保序与 top_k 补位 | `tests/unit/core/pipeline/recall/test_recall_pipeline_readiness.py` |
 | 入参与构造边界 | `tests/unit/core/pipeline/recall/test_recall_pipeline_validation.py`、`test_recall_pipeline_boundary.py` |
-| 单路适配器 | `tests/unit/core/storage/vector/test_sparse_retriever.py`、`tests/unit/core/storage/es/test_bm25_retriever.py` |
+| 单路适配器 | `tests/unit/core/storage/vector/test_sparse_retriever.py`、`tests/unit/core/storage/test_bm25_retriever.py` |
 
 测试 Pipeline 编排时优先使用 fake Retriever，不要 mock Qdrant、ES 或 tokenizer；这些属于各路适配器自己的测试范围。
 

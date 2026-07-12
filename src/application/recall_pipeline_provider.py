@@ -25,7 +25,7 @@ from src.core.pipeline.recall.protocols import (
 from src.core.pipeline.rerank import PostRecallReranker
 from src.core.preprocessor.ragflow_tokenizer import RagFlowTokenizer
 from src.core.storage.bm25_backend import build_bm25_recall_backend
-from src.core.storage.es import Bm25Retriever
+from src.core.storage.bm25_retriever import Bm25Retriever
 from src.core.storage.vector import compose_vector_storage_facade
 from src.core.storage.vector.dense_retriever import DenseRetriever
 from src.core.storage.vector.sparse_retriever import SparseRetriever
@@ -34,7 +34,7 @@ from src.core.storage.vector.sparse_retriever import SparseRetriever
 def _build_bm25_retriever() -> Retriever:
     # BM25 主读按 BM25_BACKEND 选择；迁移期可由工厂包一层不影响返回值的影子读比较。
     return Bm25Retriever(
-        es_retriever=build_bm25_recall_backend(),
+        backend=build_bm25_recall_backend(),
         tokenizer=RagFlowTokenizer(),
     )
 

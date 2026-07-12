@@ -25,10 +25,9 @@ from src.core.mq.messages.document_delete import (
 from src.core.pipeline.document_delete.repository import ParseDeleteRepository
 from src.core.storage.bm25_backend import build_indexing_pipeline
 from src.core.storage.chunks.repository import ChunkRepository
-from src.core.storage.es.pipeline import EsIndexingPipeline
 from src.core.storage.index_mutation_guard import get_index_mutation_guard
-from src.core.storage.index_mutation_models import IndexBranch
 from src.core.storage.index_mutation_guard import MutationGuardProtocol
+from src.core.storage.index_mutation_models import IndexBranch
 from src.core.storage.qdrant.qdrant_store import QdrantIndexStore
 from src.database import get_db_context
 from src.services.storage.base import BaseObjectStorage
@@ -53,7 +52,7 @@ class DocumentDeletePurger:
         chunk_repository: ChunkRepository | None = None,
         parse_repository: ParseDeleteRepository | None = None,
         qdrant_store: QdrantIndexStore | None = None,
-        es_pipeline: EsIndexingPipeline | None = None,
+        es_pipeline: object | None = None,
         storage: BaseObjectStorage | None = None,
         page_size: int | None = None,
         mutation_guard: MutationGuardProtocol | None = None,

@@ -1,4 +1,4 @@
-"""RAGFlow-compatible tokenizer adapter for ES pre-tokenization."""
+"""RAGFlow-compatible tokenizer adapter for BM25 pre-tokenization."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True, slots=True)
 class TokenizedText:
-    """Coarse and fine token strings consumed by the ES indexing stage."""
+    """Coarse and fine token strings consumed by BM25 indexing."""
 
     coarse_tokens: str
     fine_tokens: str

@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 from src.config import settings
-from src.core.storage.es.exceptions import EsRecallValidationError
-from src.core.storage.es.retrieval_models import Bm25RecallRequest
+from src.core.storage.bm25_exceptions import Bm25RecallValidationError
+from src.core.storage.bm25_models import Bm25RecallRequest
 from src.core.storage.qdrant_bm25 import Bm25SparseEncoder, QdrantBm25Retriever
 from src.core.storage.qdrant_bm25.store import Bm25ScoredPoint
 
@@ -74,11 +74,11 @@ async def test_recall_reads_type_mult_from_settings() -> None:
 
 async def test_recall_validates_request() -> None:
     retriever, _ = _retriever([])
-    with pytest.raises(EsRecallValidationError):
+    with pytest.raises(Bm25RecallValidationError):
         await retriever.recall_topk_chunks(
             Bm25RecallRequest(user_id=1, dataset_id=1, tokens=["退费"], top_k=0)
         )
-    with pytest.raises(EsRecallValidationError):
+    with pytest.raises(Bm25RecallValidationError):
         await retriever.recall_topk_chunks(
             Bm25RecallRequest(user_id=0, dataset_id=1, tokens=["退费"], top_k=5)
         )

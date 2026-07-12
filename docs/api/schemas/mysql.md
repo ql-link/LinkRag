@@ -619,6 +619,6 @@ ORM：[`WorkflowNodeRunDB`](../../../src/models/workflow.py)
 ## 相关文档
 
 - 向量索引模式：[qdrant_schema.md](qdrant.md)
-- 全文索引模式：[elasticsearch_schema.md](elasticsearch.md)
+- BM25 召回评测：[bm25_eval.md](../../internals/bm25_eval.md)
 - API 契约：[api_contracts.md](../http_contracts.md)
 - 解析流水线架构：[../internals/parse_task_pipeline.md](../../internals/parse_task_pipeline.md)

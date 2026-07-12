@@ -3,7 +3,7 @@
 对外暴露相同的两个方法签名，使 ``run_es_indexing`` / ``DocumentDeletePurger`` 等
 编排层无需感知后端差异（靠 ``BM25_BACKEND`` 工厂切换）：
 
-- ``write_es_index(plan, *, db, update_status=True) -> EsIndexingResult``
+- ``write_es_index(plan, *, db, update_status=True) -> Bm25IndexingResult``
 - ``delete_document_index(*, user_id, dataset_id, doc_id) -> int``
 
 与 ES 入库管线的差异（均已对齐外层语义）：
@@ -23,7 +23,7 @@ from typing import Any
 
 from src.core.preprocessor.models import ChunkWithTokens, FilePostIndexPlan
 from src.core.storage.chunks.repository import ChunkRepository
-from src.core.storage.es.models import EsIndexingResult
+from src.core.storage.bm25_models import Bm25IndexingResult
 from src.utils.logger import logger
 
 from .encoder import Bm25SparseEncoder, build_encoder_from_settings
@@ -52,12 +52,12 @@ class QdrantBm25IndexingPipeline:
         *,
         db: Any,
         update_status: bool = True,
-    ) -> EsIndexingResult:
+    ) -> Bm25IndexingResult:
         """写一个文件的 plan；补偿模式可由外层统一提交 chunk es_status。"""
 
         total = len(plan.chunks_with_tokens)
         if total == 0:
-            return EsIndexingResult(total_items=0, indexed_items=0)
+            return Bm25IndexingResult(total_items=0, indexed_items=0)
 
         meta = plan.file_meta
         valid_chunks: list[ChunkWithTokens] = []
@@ -121,7 +121,7 @@ class QdrantBm25IndexingPipeline:
                 "QDRANT_BM25_INDEXING_FAILED: BM25入库失败；"
                 f"total={total}, indexed={len(success_ids)}, failed={len(failed_item_ids)}"
             )
-        return EsIndexingResult(
+        return Bm25IndexingResult(
             total_items=total,
             indexed_items=len(success_ids),
             failed_item_ids=failed_item_ids,

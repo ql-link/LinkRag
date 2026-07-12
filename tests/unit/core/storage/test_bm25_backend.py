@@ -13,8 +13,8 @@ def test_backend_normalizes_configured_value(monkeypatch: pytest.MonkeyPatch) ->
     assert bm25_backend._backend() == "manticore"
 
 
-@pytest.mark.parametrize("value", ["", "elastic", "mantcore"])
-def test_backend_rejects_invalid_value_instead_of_silent_es_fallback(
+@pytest.mark.parametrize("value", ["", "es", "elastic", "mantcore"])
+def test_backend_rejects_invalid_value_without_silent_fallback(
     monkeypatch: pytest.MonkeyPatch, value: str
 ) -> None:
     monkeypatch.setattr(bm25_backend.settings, "BM25_BACKEND", value)

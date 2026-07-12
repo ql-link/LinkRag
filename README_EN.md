@@ -15,7 +15,7 @@ An enterprise-grade RAG system for everyone — turn complex documents into know
   <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white">
   <img alt="Kafka" src="https://img.shields.io/badge/Kafka-MQ-231F20?logo=apachekafka&logoColor=white">
   <img alt="Qdrant" src="https://img.shields.io/badge/Qdrant-Dense%20%26%20Sparse-DC244C">
-  <img alt="Elasticsearch" src="https://img.shields.io/badge/Elasticsearch-BM25-005571?logo=elasticsearch&logoColor=white">
+  <img alt="Manticore Search" src="https://img.shields.io/badge/Manticore-BM25-ffcc00">
   <img alt="License" src="https://img.shields.io/badge/License-MIT-blue">
 </p>
 
@@ -61,7 +61,7 @@ The ceiling of retrieval quality is set the moment you chunk. LinkRag avoids cru
 
 **3. Three retrieval paths, each to its strength — hybrid search + RRF fusion**
 
-No single retrieval method wins at everything. LinkRag runs three paths at once: dense vectors (Qdrant, strong at semantic similarity), sparse vectors (lexical weights, strong at exact term and keyword matching), and BM25 full-text (Elasticsearch). The three fire in parallel; if one times out or errors, a fault-tolerance policy degrades gracefully without dragging down the whole, then RRF (which looks only at rank, not raw scores) fuses physically incomparable scores stably. The recall path is a pluggable protocol — adding GraphRAG or a wiki later takes only implementing one interface; after fusion, a rerank stage can refine results, automatically falling back to RRF order when the rerank model is unavailable.
+No single retrieval method wins at everything. LinkRag runs three paths at once: dense vectors (Qdrant, strong at semantic similarity), sparse vectors (lexical weights, strong at exact term and keyword matching), and BM25 full-text (Manticore). The three fire in parallel; if one times out or errors, a fault-tolerance policy degrades gracefully without dragging down the whole, then RRF (which looks only at rank, not raw scores) fuses physically incomparable scores stably. The recall path is a pluggable protocol — adding GraphRAG or a wiki later takes only implementing one interface; after fusion, a rerank stage can refine results, automatically falling back to RRF order when the rerank model is unavailable.
 
 <p align="center">
   <img alt="Three-path hybrid recall + RRF fusion" src="./docs/assets/sketches/sketch-recall.png" width="680">
@@ -73,7 +73,7 @@ The biggest fear in RAG is "confidently making things up." LinkRag fills retriev
 
 **5. Ingestion survives interruptions, failures resume — a reliable processing pipeline**
 
-Ingesting one document goes through six steps (cleaning → chunking → vectorization → pre-tokenization → ES indexing → sparse vectorization), and any step can fail due to a flaky external service. LinkRag treats MySQL as the authoritative source of truth and persists the state of every step: any stage failure is terminal, and on retry it resumes from the first unfinished stage, skipping the ones that already succeeded; a unique index on task_id ensures the same task is never processed twice, and retries use CAS to claim the task and prevent concurrent duplicate execution. Vector and full-text indexes are both rebuildable replicas; once they drift from the source of truth, a compensation flow reconverges them.
+Ingesting one document goes through six steps (cleaning → chunking → vectorization → pre-tokenization → BM25 indexing → sparse vectorization), and any step can fail due to a flaky external service. LinkRag treats MySQL as the authoritative source of truth and persists the state of every step: any stage failure is terminal, and on retry it resumes from the first unfinished stage, skipping the ones that already succeeded; a unique index on task_id ensures the same task is never processed twice, and retries use CAS to claim the task and prevent concurrent duplicate execution. Vector and full-text indexes are both rebuildable replicas; once they drift from the source of truth, a compensation flow reconverges them.
 
 After chunking, the dense, sparse, and BM25 indexes are built in parallel; the BM25 path first goes through pre-tokenization — the indexing side and the recall side share the same tokenizer, so the term distribution never drifts:
 
@@ -138,7 +138,7 @@ The query side fires multiple Retrievers in parallel, converges them under a fau
 
 For full navigation, see [docs/README.md](./docs/README.md). Common entry points:
 
-- **External contracts**: [HTTP](./docs/api/http_contracts.md) / [MQ](./docs/api/mq_contracts.md) / [Error Codes](./docs/api/error_codes.md) / [MySQL](./docs/api/schemas/mysql.md) · [Qdrant](./docs/api/schemas/qdrant.md) · [Elasticsearch](./docs/api/schemas/elasticsearch.md) schemas
+- **External contracts**: [HTTP](./docs/api/http_contracts.md) / [MQ](./docs/api/mq_contracts.md) / [Error Codes](./docs/api/error_codes.md) / [MySQL](./docs/api/schemas/mysql.md) · [Qdrant](./docs/api/schemas/qdrant.md) schemas
 - **Internals**: [file_parser](./docs/internals/file_parser.md) / [chunking](./docs/internals/chunking.md) / [vectorization](./docs/internals/vectorization.md) / [recall_pipeline](./docs/internals/recall_pipeline.md) / [workflow_engine](./docs/internals/workflow_engine.md) / [mq](./docs/internals/mq.md)
 - **Deployment & configuration**: [deploy](./docs/ops/deploy.md) / [configure](./docs/ops/configure.md)
 - **Contributing**: [docs/contributing.md](./docs/contributing.md) — branching, commits, testing, migrations, doc sync

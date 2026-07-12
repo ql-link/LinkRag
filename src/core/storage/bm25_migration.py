@@ -10,8 +10,7 @@ from contextlib import suppress
 from typing import Any
 
 from src.core.storage.chunks.repository import ChunkRepository
-from src.core.storage.es.models import EsIndexingResult
-from src.core.storage.es.retrieval_models import Bm25ChunkHit, Bm25RecallRequest
+from src.core.storage.bm25_models import Bm25ChunkHit, Bm25IndexingResult, Bm25RecallRequest
 from src.utils.logger import logger
 
 
@@ -29,17 +28,17 @@ class DualWriteBm25IndexingPipeline:
         self._pipelines = dict(pipelines)
         self._chunk_repository = chunk_repository or ChunkRepository()
 
-    async def write_es_index(self, plan: Any, *, db: Any) -> EsIndexingResult:
+    async def write_es_index(self, plan: Any, *, db: Any) -> Bm25IndexingResult:
         total = len(plan.chunks_with_tokens)
         if total == 0:
-            return EsIndexingResult(total_items=0, indexed_items=0)
+            return Bm25IndexingResult(total_items=0, indexed_items=0)
 
         backend_names = list(self._pipelines)
         outcomes = await asyncio.gather(
             *(pipeline.write_es_index(plan, db=db) for pipeline in self._pipelines.values()),
             return_exceptions=True,
         )
-        results: dict[str, EsIndexingResult | BaseException] = dict(zip(backend_names, outcomes))
+        results: dict[str, Bm25IndexingResult | BaseException] = dict(zip(backend_names, outcomes))
         ordered_ids = list(
             dict.fromkeys(
                 str(chunk.chunk_id) for chunk in plan.chunks_with_tokens if chunk.chunk_id
@@ -83,7 +82,7 @@ class DualWriteBm25IndexingPipeline:
                 f"backends={','.join(backend_names)}, total={total}, "
                 f"indexed={len(success_ids)}, failed={len(failed_ids)}"
             )
-        return EsIndexingResult(
+        return Bm25IndexingResult(
             total_items=total,
             indexed_items=len(success_ids),
             failed_item_ids=failed_ids,

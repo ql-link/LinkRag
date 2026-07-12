@@ -1,7 +1,7 @@
-"""Manticore BM25 召回：与 ``EsBm25Retriever`` / ``QdrantBm25Retriever`` 鸭子兼容。
+"""Manticore BM25 召回：实现统一的 BM25 召回契约。
 
-暴露相同的 ``recall_topk_chunks(Bm25RecallRequest) -> list[Bm25ChunkHit]``，复用 ES 侧
-的请求 / 结果模型与异常，使召回 pipeline 适配器（``Bm25Retriever``）无需感知后端。
+暴露 ``recall_topk_chunks(Bm25RecallRequest) -> list[Bm25ChunkHit]``，使召回 pipeline
+适配器（``Bm25Retriever``）无需感知后端。
 
 查询语义：
 
@@ -18,8 +18,8 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 from src.config import settings
-from src.core.storage.es.exceptions import EsRecallValidationError, EsRetrievalError
-from src.core.storage.es.retrieval_models import Bm25ChunkHit, Bm25RecallRequest
+from src.core.storage.bm25_exceptions import Bm25RecallValidationError, Bm25RetrievalError
+from src.core.storage.bm25_models import Bm25ChunkHit, Bm25RecallRequest
 
 from .store import ManticoreBm25Store, get_manticore_bm25_store
 
@@ -28,7 +28,7 @@ class ManticoreBm25Retriever:
     """按 BM25 在 Manticore 对应 dataset 表上召回 topK chunk id 与原始分。"""
 
     # 每个 dataset 是独立表，原始 BM25 分数跨表不可比。通用适配器读取
-    # 这个能力标记，多 dataset 时改按表内名次融合，不影响 ES/Qdrant。
+    # 这个能力标记，多 dataset 时改按表内名次融合。
     score_scope: str = "dataset"
 
     def __init__(self, *, store: ManticoreBm25Store | None = None) -> None:
@@ -52,7 +52,7 @@ class ManticoreBm25Retriever:
                 limit=request.top_k,
             )
         except Exception as exc:
-            raise EsRetrievalError(f"search failed - {exc}") from exc
+            raise Bm25RetrievalError(f"search failed - {exc}") from exc
 
         return [Bm25ChunkHit(chunk_id=p.chunk_id, doc_id=p.doc_id, score=p.score) for p in scored]
 
@@ -63,10 +63,10 @@ class ManticoreBm25Retriever:
     @staticmethod
     def _validate_request(request: Bm25RecallRequest) -> None:
         if request.top_k is None or request.top_k <= 0:
-            raise EsRecallValidationError("top_k must be positive")
+            raise Bm25RecallValidationError("top_k must be positive")
         if request.user_id is None or request.user_id <= 0:
-            raise EsRecallValidationError("user_id must be positive")
+            raise Bm25RecallValidationError("user_id must be positive")
         if request.dataset_id is None or request.dataset_id <= 0:
-            raise EsRecallValidationError("dataset_id must be positive")
+            raise Bm25RecallValidationError("dataset_id must be positive")
         if request.tokens is None:
-            raise EsRecallValidationError("tokens are required")
+            raise Bm25RecallValidationError("tokens are required")

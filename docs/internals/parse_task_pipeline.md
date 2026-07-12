@@ -2,27 +2,25 @@
 
 本文说明 `src/core/pipeline/parse_task/pipeline.py` 解析任务业务流水线的端到端职责、状态边界和失败语义。
 
-> **BM25 写入后端可切换（ES / qdrant / manticore）**：下文「ES 入库 / Elasticsearch」
-> 描述的是 `es_indexing` 阶段的 BM25 关键词写入步骤。主读由 `settings.BM25_BACKEND`
+> **BM25 写入后端可切换（qdrant / manticore）**：下文保留的 `es_indexing` 是数据库
+> 兼容阶段名，实际描述 BM25 关键词写入步骤。主读由 `settings.BM25_BACKEND`
 > 决定；写入由 `BM25_WRITE_BACKENDS` 决定（空值等于主读，迁移期可严格双写）。后端包括
-> `qdrant`（默认，复用向量库进程，sparse vector + `Modifier.IDF` 真 BM25）、
-> `es`（Elasticsearch）或 `manticore`（实验性，见下）。qdrant 后端的 coarse 与 fine 两段
+> `qdrant`（sparse vector + `Modifier.IDF` 真 BM25）或 `manticore`（见下）。qdrant 后端的 coarse 与 fine 两段
 > token 编进同一 sparse 向量的隔离 hash 维度空间，单次点积即
-> coarse+fine 双路，对齐 ES `multi_match(["coarse_tokens^2", "fine_tokens"])` 双字段召回；
-> 独立 collection，见 `src/core/storage/qdrant_bm25/`）。三个后端鸭子兼容同一接口
+> coarse+fine 双路；独立 collection，见 `src/core/storage/qdrant_bm25/`）。两个后端兼容同一接口
 > （`write_es_index` / `delete_document_index` / `recall_topk_chunks`），
 > **状态机与终态语义完全一致**——阶段顺序、文档级全量重建编排、`es_status` 回写均不变。
 > 差异：① 失败前缀——qdrant 用 `QDRANT_BM25_INDEXING_FAILED:`、manticore 用
-> `MANTICORE_BM25_INDEXING_FAILED:`（均与 `ES_INDEXING_FAILED:` 对称）；② 类型加权机制——
-> es 用 `constant_score` 加法（`BM25_TYPE_BOOST`），qdrant 用 Formula Query 乘法、manticore
+> `MANTICORE_BM25_INDEXING_FAILED:`；② 类型加权机制——
+> qdrant 用 Formula Query 乘法、manticore
 > 在应用层对候选池乘法重排（两者共用 `BM25_TYPE_MULT`，命中 chunk_type 时 BM25 主分
 > ×倍数；实测乘法重塑排序的能力显著强于加法）。切换经 `src/core/storage/bm25_backend.py`
 > 工厂分发。未知后端名直接失败，不做静默回退。
 >
 > qdrant 后端的长度归一 `avgdl` 在客户端编码时写入即冻结，务必用
 > `scripts/dev/calibrate_bm25_avgdl.py` 按真实语料校准 `BM25_AVGDL` / `BM25_AVGDL_FINE`
-> （变更只对之后写入的 chunk 生效，存量需重灌才完全对齐）；qdrant 与 ES 的召回一致性
-> （recall@k / es-vs-qdrant overlap@k）用 `scripts/dev/eval_bm25_recall.py` 评测。
+> （变更只对之后写入的 chunk 生效，存量需重灌才完全对齐）；后端召回质量与 overlap
+> 用 `scripts/dev/eval_bm25_recall.py` 评测。
 >
 > **manticore 后端（实验性）**：与 qdrant「按 user 哈希分桶、128 桶共享 IDF 统计」不同，
 > manticore 按 `dataset_id` **物理建表**（`src/core/storage/manticore_bm25/table_router.py`，

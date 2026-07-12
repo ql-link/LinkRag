@@ -1,4 +1,4 @@
-"""Pre-tokenization service that builds file-level ES post-index plans."""
+"""Pre-tokenization service that builds file-level BM25 post-index plans."""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ class Preprocessor:
         doc_id: int,
         task_id: str,
     ) -> FilePostIndexPlan:
-        """Build a pre-tokenized plan for chunks that still need ES indexing."""
+        """Build a pre-tokenized plan for chunks that still need BM25 indexing."""
 
         async with self._session_factory() as db:
             records = await self._list_chunks_for_pretokenization(db, doc_id)

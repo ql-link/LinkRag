@@ -2,7 +2,6 @@ import pytest
 
 
 pytest.importorskip("boto3")
-pytest.importorskip("elasticsearch")
 
 from src.core.pipeline.parse_task.workflow_demo import (
     PARSE_TASK_DEMO_WORKFLOW_NAME,

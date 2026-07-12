@@ -7,7 +7,7 @@ import pytest
 from src.config import Settings
 
 
-@pytest.mark.parametrize("backend", ["es", "qdrant", "manticore", " MANTICORE "])
+@pytest.mark.parametrize("backend", ["qdrant", "manticore", " MANTICORE "])
 def test_bm25_backend_accepts_only_registered_values(backend: str) -> None:
     configured = Settings(_env_file=None, BM25_BACKEND=backend)
 
@@ -17,6 +17,11 @@ def test_bm25_backend_accepts_only_registered_values(backend: str) -> None:
 def test_bm25_backend_rejects_typo() -> None:
     with pytest.raises(ValueError, match="BM25_BACKEND must be one of"):
         Settings(_env_file=None, BM25_BACKEND="mantcore")
+
+
+def test_bm25_backend_rejects_removed_elasticsearch_backend() -> None:
+    with pytest.raises(ValueError, match="BM25_BACKEND must be one of"):
+        Settings(_env_file=None, BM25_BACKEND="es")
 
 
 @pytest.mark.parametrize(

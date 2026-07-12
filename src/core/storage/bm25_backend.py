@@ -1,11 +1,10 @@
-"""BM25 全文检索后端工厂：按 ``settings.BM25_BACKEND`` 分发 es / qdrant / manticore。
+"""BM25 全文检索后端工厂：按配置分发 Qdrant / Manticore。
 
 写入侧（indexing pipeline）与召回侧（recall backend）各一个工厂。各后端实现鸭子
 兼容（方法签名一致），调用方拿到的对象接口相同——切换后端只改 ``BM25_BACKEND``。
-延迟 import 各后端，避免未启用后端的依赖在装配期被加载。配置错误必须立即失败，不能
-静默回退到 ES，否则会出现“写到一个后端、读另一个后端”的隐蔽数据不一致。
+延迟 import 各后端，避免未启用后端的依赖在装配期被加载。配置错误必须立即失败，
+否则会出现“写到一个后端、读另一个后端”的隐蔽数据不一致。
 
-- ``es``：Elasticsearch，类型加权用 ``constant_score`` 加法（``BM25_TYPE_BOOST``）。
 - ``qdrant``：sparse vector + ``Modifier.IDF`` 真 BM25，按 user 哈希分桶（128 桶
   共享 IDF 统计），类型加权用 Formula Query 乘法（``BM25_TYPE_MULT``）。
 - ``manticore``（实验性）：coarse-only 原生 ``bm25a()``，按 dataset_id 精确建表
@@ -21,8 +20,7 @@ from src.config import settings
 
 _QDRANT = "qdrant"
 _MANTICORE = "manticore"
-_ES = "es"
-_SUPPORTED = frozenset({_ES, _QDRANT, _MANTICORE})
+_SUPPORTED = frozenset({_QDRANT, _MANTICORE})
 
 
 def _backend() -> str:
@@ -56,13 +54,6 @@ def _build_indexing_backend(
         from src.core.storage.manticore_bm25 import ManticoreBm25IndexingPipeline
 
         return ManticoreBm25IndexingPipeline(
-            chunk_repository=chunk_repository,
-            update_chunk_status=update_chunk_status,
-        )
-    if backend == _ES:
-        from src.core.storage.es import EsIndexingPipeline
-
-        return EsIndexingPipeline(
             chunk_repository=chunk_repository,
             update_chunk_status=update_chunk_status,
         )
@@ -104,10 +95,6 @@ def _build_recall_backend(backend: str) -> Any:
         from src.core.storage.manticore_bm25 import ManticoreBm25Retriever
 
         return ManticoreBm25Retriever()
-    if backend == _ES:
-        from src.core.storage.es import EsBm25Retriever
-
-        return EsBm25Retriever()
     raise ValueError(f"Unsupported BM25 recall backend: {backend!r}")
 
 
