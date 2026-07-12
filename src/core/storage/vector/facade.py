@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any
 from src.config import settings
 from src.core.splitter.models import Chunk
 from src.services.usage_reporter import report_usage_nowait
-from src.utils.logger import logger
 
 from .compensation_pipeline import VectorStorageCompensationPipeline
 from .exceptions import (
@@ -224,18 +223,20 @@ class VectorStorageFacade:
         self,
         chunk_ids: Sequence[str],
     ) -> ChunkMutationResult:
-        """当 Qdrant point 已存在时，将对应 INDEXING 记录轻量修复为 INDEXED。"""
+        """兼容入口：不再允许外部 point 存在反向证明 MySQL 成功。"""
         return await self.compensation_service.mark_indexed_if_point_exists(chunk_ids)
 
     async def mark_failed_if_point_missing(
         self,
         chunk_ids: Sequence[str],
     ) -> ChunkMutationResult:
-        """当 Qdrant point 确认不存在时，将对应 INDEXING 记录显式关闭为 FAILED。"""
+        """兼容入口：自动核对已禁用，不根据外部状态修改 MySQL。"""
         return await self.compensation_service.mark_failed_if_point_missing(chunk_ids)
 
-    async def reindex_failed_chunks(self, chunk_ids: Sequence[str]) -> ChunkIndexingResult:
-        """受控重建 FAILED chunk 的向量索引。"""
+    async def reindex_failed_chunks(
+        self, chunk_ids: Sequence[str]
+    ) -> ChunkIndexingResult:
+        """兼容入口：不自动重建，调用方应要求用户重试整篇文档。"""
         return await self.compensation_service.reindex_failed_chunks(chunk_ids)
 
     async def search_sparse_chunks(
@@ -306,7 +307,9 @@ class VectorStorageFacade:
         if not isinstance(set_id, int) or isinstance(set_id, bool) or set_id <= 0:
             raise ValueError(f"set_id must be a positive integer, got {set_id!r}")
         effective_top_k = (
-            top_k if top_k is not None else int(getattr(settings, "SPARSE_RETRIEVAL_TOP_K", 10))
+            top_k
+            if top_k is not None
+            else int(getattr(settings, "SPARSE_RETRIEVAL_TOP_K", 10))
         )
         effective_threshold = (
             score_threshold
@@ -318,9 +321,13 @@ class VectorStorageFacade:
             or isinstance(effective_top_k, bool)
             or effective_top_k <= 0
         ):
-            raise ValueError(f"top_k must be a positive integer, got {effective_top_k!r}")
+            raise ValueError(
+                f"top_k must be a positive integer, got {effective_top_k!r}"
+            )
         if effective_threshold < 0:
-            raise ValueError(f"score_threshold must be >= 0, got {effective_threshold!r}")
+            raise ValueError(
+                f"score_threshold must be >= 0, got {effective_threshold!r}"
+            )
 
         # 提前读取 vector_name：空 query / 配置错路径都需要它包装空 result。
         vector_name = self._sparse_vector_name()
@@ -365,7 +372,9 @@ class VectorStorageFacade:
         # 翻成 VectorRetrievalUserConfigMissingError（上层据此硬失败，不做宽松降级，
         # 与 dense 的 DenseEmbeddingConfigMissingError 翻译对偶）。
         if self._query_sparse_resolver is not None:
-            from src.core.encoding.sparse.factory import SparseEmbeddingConfigMissingError
+            from src.core.encoding.sparse.factory import (
+                SparseEmbeddingConfigMissingError,
+            )
 
             try:
                 service = await self._call_sparse_resolver(user_id, set_id)
@@ -512,7 +521,9 @@ class VectorStorageFacade:
         if not isinstance(set_id, int) or isinstance(set_id, bool) or set_id <= 0:
             raise ValueError(f"set_id must be a positive integer, got {set_id!r}")
         effective_top_k = (
-            top_k if top_k is not None else int(getattr(settings, "DENSE_RETRIEVAL_TOP_K", 10))
+            top_k
+            if top_k is not None
+            else int(getattr(settings, "DENSE_RETRIEVAL_TOP_K", 10))
         )
         effective_threshold = (
             score_threshold
@@ -524,13 +535,16 @@ class VectorStorageFacade:
             or isinstance(effective_top_k, bool)
             or effective_top_k <= 0
         ):
-            raise ValueError(f"top_k must be a positive integer, got {effective_top_k!r}")
+            raise ValueError(
+                f"top_k must be a positive integer, got {effective_top_k!r}"
+            )
         # dense 比 sparse 多一条 cosine 上界校验（§4.4.1 假设的代码层兜底）：
         # cosine 物理范围 [-1, 1]；本项目 score_threshold >= 0（"不过滤" = 0.0）；
         # > 1.0 会让 Qdrant 永远返 0 hits，调用方会误以为"没数据"。
         if effective_threshold < 0 or effective_threshold > 1.0:
             raise ValueError(
-                f"score_threshold must be in [0, 1] (cosine bound), " f"got {effective_threshold!r}"
+                f"score_threshold must be in [0, 1] (cosine bound), "
+                f"got {effective_threshold!r}"
             )
 
         # ───────────────────── ② 空 query 短路（与 sparse 完全相同） ─────────────
@@ -553,7 +567,8 @@ class VectorStorageFacade:
         # 走它；否则回退进程级 embedding_pipeline（写入 / management / 单测路径）。
         if self._query_embedding_resolver is None and self._embedding_pipeline is None:
             raise VectorRetrievalConfigurationError(
-                "Dense vector recall is unavailable: " "embedding_pipeline is not configured."
+                "Dense vector recall is unavailable: "
+                "embedding_pipeline is not configured."
             )
         if self.qdrant_store is None:
             raise VectorRetrievalConfigurationError(
@@ -576,7 +591,9 @@ class VectorStorageFacade:
             from src.core.splitter.factory import DenseEmbeddingConfigMissingError
 
             try:
-                embedding_pipeline = await self._call_embedding_resolver(user_id, set_id)
+                embedding_pipeline = await self._call_embedding_resolver(
+                    user_id, set_id
+                )
             except DenseEmbeddingConfigMissingError as exc:
                 raise VectorRetrievalUserConfigMissingError(str(exc)) from exc
         else:
@@ -588,7 +605,9 @@ class VectorStorageFacade:
         # ValueError（空 query / 长度不一致）属于 caller 错误，由 ① / ② 段已拦下，
         # 不到这里。
         try:
-            dense_vector, _q_usage = await embedding_pipeline.aembed_query_detailed(query)
+            dense_vector, _q_usage = await embedding_pipeline.aembed_query_detailed(
+                query
+            )
         except Exception as exc:
             # 包含 httpx.HTTPStatusError / httpx.TimeoutException / 其它远程错误。
             # ValueError 经 ① / ② 段后不会到这一步，但理论上仍会被吞——这是预期，
@@ -600,14 +619,17 @@ class VectorStorageFacade:
         if _q_usage is not None:
             report_usage_nowait(
                 user_id=user_id,
-                provider_type=getattr(embedding_pipeline.embedder, "provider_type", "") or "",
+                provider_type=getattr(embedding_pipeline.embedder, "provider_type", "")
+                or "",
                 model_name=embedding_pipeline.embedding_model or "",
                 stage="recall",
                 operation="embed",
                 prompt_tokens=int(getattr(_q_usage, "prompt_tokens", 0) or 0),
                 completion_tokens=0,
                 total_tokens=int(getattr(_q_usage, "total_tokens", 0) or 0),
-                config_id=getattr(getattr(embedding_pipeline, "embedder", None), "config_id", None),
+                config_id=getattr(
+                    getattr(embedding_pipeline, "embedder", None), "config_id", None
+                ),
             )
 
         # ───────────────────── ⑤ bucket 路由（与写入侧共用 BucketRouter）────────
@@ -673,9 +695,13 @@ class VectorStorageFacade:
                 raise exc
 
     @staticmethod
-    def _report_sparse_query_usage(*, service: "SparseVectorService", user_id: int) -> None:
+    def _report_sparse_query_usage(
+        *, service: "SparseVectorService", user_id: int
+    ) -> None:
         usage = getattr(service, "last_usage", None)
-        total_tokens = int(getattr(usage, "total_tokens", 0) or 0) if usage is not None else 0
+        total_tokens = (
+            int(getattr(usage, "total_tokens", 0) or 0) if usage is not None else 0
+        )
         if total_tokens <= 0:
             return
         report_usage_nowait(

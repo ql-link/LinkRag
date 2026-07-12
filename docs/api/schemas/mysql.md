@@ -10,7 +10,7 @@ ORM 与 migration 不一致时，以 migration 为准并修正 ORM；scripts/db/
 
 ## 表清单
 
-按业务域共 20 张表：
+按业务域共 21 张表：
 
 | 业务域 | 表 | 主键 ID 起始 |
 | --- | --- | --- |
@@ -550,8 +550,6 @@ ORM：[`ChunkRecordDB`](../../../src/models/chunk_record.py)
 - `idx_doc_es_status(doc_id, es_status)`
 - `idx_doc_lifecycle_status(doc_id, lifecycle_status)`
 - `idx_lifecycle_update_time(lifecycle_status, update_time)`
-
----
 
 ## 8. Workflow 运行记录
 

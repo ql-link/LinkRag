@@ -46,8 +46,18 @@ class EsIndexingPipeline:
             max_batch_chunks=settings.ES_MAX_TOKEN_BATCH_CHUNKS,
         )
 
-    async def write_es_index(self, plan: FilePostIndexPlan, *, db: Any) -> EsIndexingResult:
-        """Write one file post-index plan to ES and mark chunk ES statuses."""
+    async def write_es_index(
+        self,
+        plan: FilePostIndexPlan,
+        *,
+        db: Any,
+        update_status: bool = True,
+    ) -> EsIndexingResult:
+        """Write one file post-index plan to ES and optionally mark chunk ES statuses.
+
+        ``update_status=False`` is reserved for guarded reconciliation: the repair worker
+        owns the final MySQL CAS and must not let this backend pipeline commit status early.
+        """
 
         total_items = len(plan.chunks_with_tokens)
         if total_items == 0:
@@ -73,13 +83,14 @@ class EsIndexingPipeline:
         succeeded_item_ids: list[str] = []
         failed_errors: list[tuple[str, str]] = []
 
-        if batch_result.failed_errors:
-            failed_errors.extend(batch_result.failed_errors)
+        failed_errors.extend(batch_result.failed_errors)
+        if update_status and batch_result.failed_errors:
             await self._mark_validation_failures(db, batch_result.failed_errors)
 
         for batch in batch_result.batches:
             current_result = await self._bulk_index_batch(client, batch)
-            await self._mark_batch_status(db, current_result)
+            if update_status:
+                await self._mark_batch_status(db, current_result)
             succeeded_item_ids.extend(current_result.success_ids)
             failed_errors.extend(current_result.failed_errors)
 
@@ -119,22 +130,64 @@ class EsIndexingPipeline:
         ES 不可达 / 删除请求异常时向上抛，由编排层（_run_es_indexing）判 ES 阶段失败。
         """
         client = await self._resolve_client()
-        response = await client.delete_by_query(
-            index=self._index_name,
-            routing=str(dataset_id),
-            query={
-                "bool": {
-                    "filter": [
-                        {"term": {"user_id": user_id}},
-                        {"term": {"dataset_id": dataset_id}},
-                        {"term": {"doc_id": doc_id}},
-                    ]
-                }
-            },
-            conflicts="proceed",
-            refresh=False,
-        )
+        try:
+            response = await client.delete_by_query(
+                index=self._index_name,
+                routing=str(dataset_id),
+                query={
+                    "bool": {
+                        "filter": [
+                            {"term": {"user_id": user_id}},
+                            {"term": {"dataset_id": dataset_id}},
+                            {"term": {"doc_id": doc_id}},
+                        ]
+                    }
+                },
+                conflicts="proceed",
+                refresh=False,
+            )
+        except Exception as exc:
+            # Reconciliation cleanup is idempotent.  A deleted/missing index
+            # already satisfies the desired external state and must not trap a
+            # job in CLEANUP_RETRY.
+            if self._is_not_found_error(exc):
+                return 0
+            raise
         return int(response.get("deleted", 0) or 0)
+
+    async def chunk_exists(
+        self,
+        *,
+        user_id: int,
+        dataset_id: int,
+        doc_id: int,
+        chunk_id: str,
+    ) -> bool:
+        """按写入侧复合 ``_id`` 与 routing 精确检查一个 ES chunk 文档。"""
+
+        client = await self._resolve_client()
+        document_id = f"{user_id}-{dataset_id}-{doc_id}-{chunk_id}"
+        try:
+            response = await client.exists(
+                index=self._index_name,
+                id=document_id,
+                routing=str(dataset_id),
+            )
+        except Exception as exc:
+            if self._is_not_found_error(exc):
+                return False
+            raise
+        return bool(response)
+
+    @staticmethod
+    def _is_not_found_error(exc: BaseException) -> bool:
+        """兼容 elasticsearch-py 8.x 与测试替身的 404 异常形态。"""
+
+        status_code = getattr(exc, "status_code", None)
+        if status_code == 404:
+            return True
+        meta = getattr(exc, "meta", None)
+        return getattr(meta, "status", None) == 404
 
     async def _resolve_client(self) -> AsyncElasticsearch:
         client = self._client_factory()

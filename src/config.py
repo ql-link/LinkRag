@@ -386,7 +386,19 @@ class Settings(BaseSettings):
     DENSE_VECTOR_DIMENSION: int = 1024
     CHUNK_INDEX_RETRY_LIMIT: int = 3
     CHUNK_INDEX_RETRY_INTERVAL_SECONDS: int = 300
+    # Deprecated: automatic orphan cleanup must never infer inactivity from a
+    # shared chunk update timestamp. It remains temporarily for compatibility.
     CHUNK_INDEX_INDEXING_STALE_SECONDS: int = 900
+
+    # 同一文档、同一索引分支的外部写入和失败清理共用 MySQL advisory lock。
+    INDEX_MUTATION_LOCK_TIMEOUT_SECONDS: int = 10
+
+    @field_validator("INDEX_MUTATION_LOCK_TIMEOUT_SECONDS")
+    @classmethod
+    def validate_positive_index_mutation_lock_timeout(cls, v: int, info) -> int:
+        if v <= 0:
+            raise ValueError(f"{info.field_name} must be a positive int")
+        return v
 
     # Sparse vector
     # 稀疏向量的「用哪个模型 / 连哪个端点」已统一按发起用户配置经 (protocol, capability)

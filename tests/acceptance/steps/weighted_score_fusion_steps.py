@@ -64,6 +64,11 @@ class _FakeRetriever:
         return list(self.hits)
 
 
+class _PassthroughDocumentReadinessGate:
+    async def filter_visible_hits(self, hits, *, user_id: int):
+        return list(hits)
+
+
 @dataclass
 class _CapturingReranker:
     unavailable: bool
@@ -158,6 +163,7 @@ def _run_pipeline(state: _State, *, request_override: bool = False) -> None:
     pipeline = RecallPipeline(
         list(state.retrievers.values()),
         RecallPipelineConfig(**config_kwargs),
+        readiness_gate=_PassthroughDocumentReadinessGate(),
     )
     request_kwargs = {
         "query": "q",

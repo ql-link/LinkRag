@@ -3,7 +3,6 @@
 import pytest
 
 from src.core.pipeline.recall import (
-    RecallPipeline,
     RecallPipelineConfig,
     RecallRequest,
     RetrieverHit,
@@ -11,7 +10,7 @@ from src.core.pipeline.recall import (
     SOURCE_DENSE,
     SOURCE_SPARSE,
 )
-from tests.unit.core.pipeline.recall.conftest import FakeRetriever
+from tests.unit.core.pipeline.recall.conftest import FakeRetriever, make_recall_pipeline
 
 
 def _hit(chunk_id: str, source: str, score: float, doc_id: int = 100, dataset_id: int = 10):
@@ -37,7 +36,7 @@ async def test_parallel_all_success():
         _hit("c5", SOURCE_BM25, 12.0),
         _hit("c1", SOURCE_BM25, 10.0),
     ])
-    pipeline = RecallPipeline([dense, sparse, bm25])
+    pipeline = make_recall_pipeline([dense, sparse, bm25])
 
     response = await pipeline.execute(
         RecallRequest(user_id=1, query="如何重试", dataset_ids=[10])
@@ -75,7 +74,7 @@ async def test_serial_fixed_order():
         source=SOURCE_BM25, hits=[_hit("c3", SOURCE_BM25, 12.0)],
         delay_seconds=0.02, sequence_recorder=recorder,
     )
-    pipeline = RecallPipeline(
+    pipeline = make_recall_pipeline(
         [dense, sparse, bm25],
         config=RecallPipelineConfig(parallel=False),
     )
@@ -105,7 +104,7 @@ async def test_rrf_sum_across_sources():
         _hit("cC", SOURCE_SPARSE, 4.0),
     ])
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[])
-    pipeline = RecallPipeline([dense, sparse, bm25])
+    pipeline = make_recall_pipeline([dense, sparse, bm25])
 
     response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
     by_id = {h.chunk_id: h for h in response.hits}

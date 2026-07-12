@@ -465,7 +465,7 @@ class ChunkRepository:
         *,
         expected_status: str | None = None,
     ) -> int:
-        return await self._execute_status_update(
+        return await self._execute_es_status_update(
             db,
             chunk_ids,
             values={
@@ -483,7 +483,7 @@ class ChunkRepository:
         error_msg: str,
         expected_status: str | None = None,
     ) -> int:
-        return await self._execute_status_update(
+        return await self._execute_es_status_update(
             db,
             chunk_ids,
             values={
@@ -500,7 +500,7 @@ class ChunkRepository:
         *,
         expected_status: str | None = None,
     ) -> int:
-        return await self._execute_status_update(
+        return await self._execute_es_status_update(
             db,
             chunk_ids,
             values={
@@ -509,6 +509,67 @@ class ChunkRepository:
             expected_status=expected_status,
             protect_delete_statuses=True,
         )
+
+    async def _execute_es_status_update(
+        self,
+        db: AsyncSession,
+        chunk_ids: Sequence[str],
+        *,
+        values: Mapping[str, object],
+        expected_status: str | None = None,
+        protect_delete_statuses: bool = False,
+    ) -> int:
+        """Update BM25 status with a BM25-specific CAS predicate."""
+
+        if not chunk_ids:
+            return 0
+        stmt = update(self.model_cls).where(self.model_cls.chunk_id.in_(chunk_ids))
+        if expected_status is not None:
+            stmt = stmt.where(self.model_cls.es_status == expected_status)
+        if protect_delete_statuses:
+            stmt = stmt.where(self._active_predicate())
+        result = await db.execute(stmt.values(**values))
+        return int(result.rowcount or 0)
+
+    async def mark_document_es_failed(
+        self,
+        db: AsyncSession,
+        *,
+        doc_id: int,
+        user_id: int,
+        set_id: int,
+    ) -> int:
+        """Reset all ACTIVE chunks after document-scoped BM25 cleanup."""
+
+        result = await db.execute(
+            update(self.model_cls)
+            .where(self.model_cls.doc_id == doc_id)
+            .where(self.model_cls.user_id == user_id)
+            .where(self.model_cls.set_id == set_id)
+            .where(self._active_predicate())
+            .values(es_status=ES_STATUS_FAILED)
+        )
+        return int(result.rowcount or 0)
+
+    async def mark_document_es_success(
+        self,
+        db: AsyncSession,
+        *,
+        doc_id: int,
+        user_id: int,
+        set_id: int,
+    ) -> int:
+        """Confirm all ACTIVE chunks after a document-scoped BM25 rebuild."""
+
+        result = await db.execute(
+            update(self.model_cls)
+            .where(self.model_cls.doc_id == doc_id)
+            .where(self.model_cls.user_id == user_id)
+            .where(self.model_cls.set_id == set_id)
+            .where(self._active_predicate())
+            .values(es_status=ES_STATUS_SUCCESS)
+        )
+        return int(result.rowcount or 0)
 
     async def count_es_not_success_by_doc_id(
         self,

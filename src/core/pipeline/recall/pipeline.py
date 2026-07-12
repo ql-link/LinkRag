@@ -34,6 +34,7 @@ from src.core.pipeline.recall.protocols import (
     SOURCE_BM25,
     SOURCE_DENSE,
     SOURCE_SPARSE,
+    DocumentReadinessGate,
     Retriever,
 )
 
@@ -53,6 +54,8 @@ class RecallPipeline:
         self,
         retrievers: list[Retriever],
         config: RecallPipelineConfig | None = None,
+        *,
+        readiness_gate: DocumentReadinessGate,
     ) -> None:
         if not retrievers:
             raise ValueError("RecallPipeline requires at least one retriever")
@@ -65,6 +68,7 @@ class RecallPipeline:
         self._retrievers = list(retrievers)
         self._sources = sources
         self._config = config or RecallPipelineConfig()
+        self._readiness_gate = readiness_gate
 
     async def execute(self, request: RecallRequest) -> RecallResponse:
         """顶层编排入口。
@@ -116,7 +120,13 @@ class RecallPipeline:
             rrf_k=rrf_k,
             weights=fusion_weights,
         )
-        # 融合候选池窗口：融合后按 request.top_k 截断，作为下游 rerank 输入池。
+        # 文档门禁必须在最终 top_k 之前执行，否则隐藏候选会占用窗口，
+        # 导致后方的可见文档无法补位。门禁必须保持融合顺序。
+        fused_hits = await self._readiness_gate.filter_visible_hits(
+            fused_hits,
+            user_id=request.user_id,
+        )
+        # 融合候选池窗口：门禁过滤后再按 request.top_k 截断，作为下游 rerank 输入池。
         fused_hits = fused_hits[: request.top_k]
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
 

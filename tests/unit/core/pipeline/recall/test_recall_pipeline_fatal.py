@@ -6,13 +6,12 @@ import pytest
 
 from src.core.pipeline.recall import (
     RecallFatalError,
-    RecallPipeline,
     RecallPipelineConfig,
     RecallRequest,
     RetrieverHit,
 )
 
-from .conftest import FakeRetriever
+from .conftest import FakeRetriever, make_recall_pipeline
 
 
 def _req():
@@ -29,7 +28,7 @@ async def test_fatal_error_bypasses_lenient_degrade():
         source="bm25",
         hits=[RetrieverHit(chunk_id="c1", doc_id=1, dataset_id=1, score=1.0, source="bm25")],
     )
-    pipeline = RecallPipeline([fatal, ok], RecallPipelineConfig(strict=False))
+    pipeline = make_recall_pipeline([fatal, ok], RecallPipelineConfig(strict=False))
 
     with pytest.raises(RecallFatalError):
         await pipeline.execute(_req())
@@ -43,7 +42,7 @@ async def test_ordinary_failure_still_degrades_in_lenient():
         source="bm25",
         hits=[RetrieverHit(chunk_id="c1", doc_id=1, dataset_id=1, score=1.0, source="bm25")],
     )
-    pipeline = RecallPipeline([failing, ok], RecallPipelineConfig(strict=False))
+    pipeline = make_recall_pipeline([failing, ok], RecallPipelineConfig(strict=False))
 
     resp = await pipeline.execute(_req())
     assert "dense" in resp.failed_sources

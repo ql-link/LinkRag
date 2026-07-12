@@ -56,7 +56,9 @@ class ParseLogRepository:
             await db.commit()
         except IntegrityError:
             await db.rollback()
-            logger.info(f"[ParseLogRepository] skip duplicate task: task_id={payload.task_id}")
+            logger.info(
+                f"[ParseLogRepository] skip duplicate task: task_id={payload.task_id}"
+            )
             return None
         return log_record
 
@@ -75,14 +77,23 @@ class ParseLogRepository:
     async def get_parse_task(
         document_parse_task_id: int,
         db: AsyncSession,
+        *,
+        for_share: bool = False,
     ) -> DocumentParseTask | None:
         """查询 Java 侧创建的文件解析任务记录。
 
         参数名沿用历史命名，对应 ``document_parse_file.id``。
         """
-        result = await db.execute(
-            select(DocumentParseTask).where(DocumentParseTask.id == document_parse_task_id)
+        stmt = select(DocumentParseTask).where(
+            DocumentParseTask.id == document_parse_task_id
         )
+        if for_share:
+            # Retry validation and supersede CAS run in one transaction.  A
+            # shared row lock lets parallel readers proceed but blocks Java
+            # from switching latest_parse_task_id between the validation and
+            # commit points.
+            stmt = stmt.with_for_update(read=True)
+        result = await db.execute(stmt)
         return result.scalar_one_or_none()
 
     async def mark_parsed(
@@ -100,7 +111,9 @@ class ParseLogRepository:
         # markdown 产物坐标统一经 payload 解析：md/markdown 透传取上传位置（source_*），
         # 其余格式取 cleaning 写出的 md_*。让 parsed_* 始终指向 markdown 真实所在位置，
         # 后续重试从 CHUNKING 恢复时即按此坐标读回，不会误用历史 md_bucket 字段。
-        log_record.parsed_filename = self._build_parsed_filename(payload.source_filename)
+        log_record.parsed_filename = self._build_parsed_filename(
+            payload.source_filename
+        )
         log_record.parsed_bucket_name = payload.markdown_bucket
         log_record.parsed_object_key = payload.markdown_object_key
         log_record.parsed_file_url = self._build_internal_file_url(
@@ -109,7 +122,9 @@ class ParseLogRepository:
         )
         log_record.parsed_at = finished_at
         log_record.parse_finished_at = finished_at
-        log_record.parse_duration_ms = duration_ms(log_record.parse_started_at, finished_at)
+        log_record.parse_duration_ms = duration_ms(
+            log_record.parse_started_at, finished_at
+        )
         await db.commit()
 
     async def mark_parse_finished(
@@ -121,7 +136,9 @@ class ParseLogRepository:
         try:
             finished_at = now()
             log_record.parse_finished_at = finished_at
-            log_record.parse_duration_ms = duration_ms(log_record.parse_started_at, finished_at)
+            log_record.parse_duration_ms = duration_ms(
+                log_record.parse_started_at, finished_at
+            )
             await db.commit()
         except Exception as db_exc:
             await db.rollback()
@@ -159,7 +176,9 @@ class ParseLogRepository:
             trigger_mode=payload.trigger_mode,
             retry_of_task_id=retry_of_task_id,
             parsed_filename=(
-                self._build_parsed_filename(payload.source_filename) if parsed_object_key else None
+                self._build_parsed_filename(payload.source_filename)
+                if parsed_object_key
+                else None
             ),
             parsed_bucket_name=parsed_bucket,
             parsed_object_key=parsed_object_key,

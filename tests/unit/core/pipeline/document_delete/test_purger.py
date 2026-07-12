@@ -8,11 +8,12 @@
 - 空产物（已删/未解析）全程 no-op。
 """
 
-import pytest
+from contextlib import asynccontextmanager
 
 from src.core.mq.messages import DocumentDeleteMessage
 from src.core.pipeline.document_delete import purger as purger_module
 from src.core.pipeline.document_delete.purger import DocumentDeletePurger
+from src.core.storage.index_mutation_guard import NoopIndexMutationGuard
 
 
 # --------------------------------------------------------------------------- #
@@ -127,6 +128,7 @@ def _make_purger(monkeypatch, *, routing=None, oss_keys=None, dataset_pages=None
         es_pipeline=es,
         storage=storage,
         page_size=10,
+        mutation_guard=NoopIndexMutationGuard(),
     )
     return purger, log, qdrant, es, storage
 
@@ -179,6 +181,39 @@ class TestTaskDirPrefixes:
 # 单文件编排
 # --------------------------------------------------------------------------- #
 class TestPurgeFile:
+    async def test_acquires_all_branch_locks_in_fixed_order(self, monkeypatch):
+        class _RecordingGuard:
+            def __init__(self):
+                self.events = []
+
+            @asynccontextmanager
+            async def hold(self, *, doc_id, branch, timeout_seconds=None):
+                self.events.append(f"enter:{branch.value}:{doc_id}")
+                try:
+                    yield None
+                finally:
+                    self.events.append(f"exit:{branch.value}:{doc_id}")
+
+        purger, log, _, _, _ = _make_purger(monkeypatch)
+        guard = _RecordingGuard()
+        purger._mutation_guard = guard
+        payload = DocumentDeleteMessage.build(
+            delete_type="file", dataset_id=2, user_id=1, original_file_id=7
+        ).get_payload()
+
+        await purger.purge(payload)
+
+        assert guard.events == [
+            "enter:DENSE:7",
+            "enter:SPARSE:7",
+            "enter:BM25:7",
+            "exit:BM25:7",
+            "exit:SPARSE:7",
+            "exit:DENSE:7",
+        ]
+        # DB 销账位于锁的临界区内，而非释放后再删。
+        assert "db.delete_parse_rows:7" in log
+
     async def test_external_stores_deleted_before_db_rows(self, monkeypatch):
         purger, log, qdrant, es, storage = _make_purger(
             monkeypatch,

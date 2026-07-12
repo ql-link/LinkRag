@@ -273,10 +273,40 @@ class QdrantBm25Store:
                 wait=True,
             )
         except Exception as exc:
+            if self._is_collection_missing_error(exc):
+                return 0
             raise QdrantStoreError(
                 f"Failed to delete BM25 document from {self.collection_name}: {exc}"
             ) from exc
         return 0
+
+    async def point_exists(self, *, chunk_id: str) -> bool:
+        """精确判断 BM25 独立 collection 中是否存在指定 chunk point。"""
+
+        client = await self._get_client()
+        try:
+            if not await client.collection_exists(collection_name=self.collection_name):
+                return False
+            records = await client.retrieve(
+                collection_name=self.collection_name,
+                ids=[chunk_id],
+                with_payload=False,
+                with_vectors=False,
+            )
+        except Exception as exc:
+            raise QdrantStoreError(
+                f"Failed to check BM25 point existence in {self.collection_name}: {exc}"
+            ) from exc
+        return bool(records)
+
+    @staticmethod
+    def _is_collection_missing_error(exc: BaseException) -> bool:
+        message = str(exc).lower()
+        missing = any(
+            marker in message
+            for marker in ("not found", "does not exist", "doesn't exist", "missing")
+        )
+        return missing and "collection" in message
 
     async def close(self) -> None:
         """关闭本 store 自建的 client。"""

@@ -142,6 +142,10 @@ is_success = (not failed_item_ids) and (indexed_items == total_items)
 - **基础设施故障文件级处理**：`_ensure_index` 失败（ES 不可达 / 建索引失败）属文件级故障，**不标任何 chunk es_status**，返回 `failed_item_ids=[]` 且 `failure_reason` 以 `ensure_index:` 前缀，`is_success=False`（`indexed != total`）。
 - **空计划短路**：`chunks_with_tokens` 为空时直接返回成功的空结果，不调用 ES。
 
+正常 BM25 写入的“文档级前置删除 → 全量写入 → 失败清理 → MySQL 状态确认”整体位于 MySQL `(doc_id, BM25)` 锁内，并在锁内复核 `latest_parse_task_id`。current-task SELECT 使用共享行锁，事务保持到 mutation guard 退出，因此 Java 不能在外部写删尚未结束时切换 current pointer。失败后的半成品清理成功时，整篇 ACTIVE chunk 的 `es_status` 统一收敛为 `FAILED`，不能保留早先成功 batch 的虚假成功。
+
+BM25 正常写入失败时，当前链路在文档分支锁内按文档同步删除可能的半成品；不创建补偿任务，也不自动重建。
+
 ## 查询约束
 
 BM25 / lexical 召回应只依赖 ES 文档中的 token 与定位字段。查询必须至少包含：
@@ -192,10 +196,27 @@ _source = ["chunk_id"]
 
 ES 查询失败会抛 `EsRetrievalError`，不会返回空列表；参数错误会抛 `EsRecallValidationError`，且不会访问 ES。
 
+### 存在性核对与文档级补偿
+
+`EsIndexingPipeline.chunk_exists(...)` 使用写入侧相同的复合 `_id={user_id}-{dataset_id}-{doc_id}-{chunk_id}` 与 `routing=str(dataset_id)` 精确核对单个 chunk；404 返回 `False`，其他异常向上抛出。
+
+存在性只用于诊断和防御性缺失发现，不能反向把 MySQL `es_status` 回填为成功。统一补偿采用文档 scope：
+
+1. 只从 `latest_parse_task_id` 对应且明确 `pipeline_status=FAILED` 的当前任务扫描孤儿，不凭 chunk 共享 `update_time` 判断正常写已经结束。
+2. 在 `(doc_id, BM25)` 锁内按 `user_id + dataset_id + doc_id` 与 routing 执行 `delete_by_query`，清理成功后把整篇 ACTIVE chunk 收敛为 `FAILED`，并将同一条持久化 job 推进到 `REBUILD_PENDING`。
+3. 从 MySQL ACTIVE chunk 重建完整 `FilePostIndexPlan` 并全量写入；成功后再确认整篇状态与 job，失败则持久化重试。
+
+若 cleanup 时整篇文档已没有 ACTIVE chunk（source 被删除或 REMOVED），仍使用 job 保存的 index、用户、数据集和文档快照清理 ES 孤儿；清理后直接 `SUCCEEDED`，不进入 rebuild。
+
+若防御性发现“MySQL 当前 pipeline 已成功、ES 文档缺失”，任务从 rebuild 阶段开始并设置 `visibility_hold=1`，使整篇文档在重建完成前不参与召回。门禁只匹配 job `source_task_id == latest_parse_task_id`，旧 task 的 hold 不影响新 current task。
+
 ## 一致性约束
 
-- **MySQL 为真值**：`kb_document_chunk.es_status` 是 ES 侧的状态权威。ES 实际数据可能因为重试/失败而暂时不一致，以 MySQL 状态决定补偿动作。
+- **MySQL 为真值**：`kb_document_chunk.es_status` 是 BM25 分支的状态权威。ES 实际数据可能因为重试/失败而暂时不一致，以 MySQL 状态决定补偿动作；ES 文档存在不能证明 MySQL 成功。
 - **重建链路**：`kb_document_chunk` → pretokenize 阶段构建 `FilePostIndexPlan` → `EsIndexingPipeline.write_es_index` 可重建 ES token 索引副本。
+- **失败清理粒度**：ES BM25 按文档同步清理，不对单个 chunk 做孤儿回填；清理后由用户重试整篇文档。
+- **后端快照**：job 的 `artifact_name` 固定本次补偿的 ES index；配置切换后，旧 job 仍清理和重建原 index，避免跨索引误操作。
+- **并发互斥**：正常写、补偿清理/重建与文档删除共用 MySQL `(doc_id, BM25)` 锁，并在锁内复核 current task。
 - **跨库 join**：ES / MySQL / Qdrant 统一使用 `chunk_id` 作为 Chunk 业务唯一键。
 - **删除一致性**：Chunk 被业务删除时，MySQL `kb_document_chunk.lifecycle_status` 从 `ACTIVE` 推进到 `REMOVED`，后续由异步流程幂等清理 Qdrant、ES 等外部索引。`dense_vector_status` 只保留 `PENDING/SUCCESS/FAILED` 稠密向量产物结果，不再承载删除生命周期。
 

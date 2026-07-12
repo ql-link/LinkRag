@@ -106,6 +106,26 @@ async def test_write_marks_invalid_chunk_failed() -> None:
     assert {p.chunk_id for p in store.upserted} == {"ok"}
 
 
+async def test_write_update_status_false_skips_repository_and_commit() -> None:
+    pipe, store, repo = _pipeline()
+    db = _FakeDB()
+    plan = _plan(
+        [
+            _chunk("ok", 0, "normal", "退费", "退费"),
+            _chunk("bad", 1, "normal", "", ""),
+        ]
+    )
+
+    res = await pipe.write_es_index(plan, db=db, update_status=False)
+
+    assert res.succeeded_item_ids == ["ok"]
+    assert res.failed_item_ids == ["bad"]
+    assert {p.chunk_id for p in store.upserted} == {"ok"}
+    assert repo.success == []
+    assert repo.failed == []
+    assert db.commits == 0
+
+
 async def test_empty_plan_is_noop() -> None:
     pipe, store, _ = _pipeline()
     res = await pipe.write_es_index(_plan([]), db=_FakeDB())

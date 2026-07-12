@@ -9,12 +9,11 @@ from src.core.pipeline.recall import (
     SOURCE_DENSE,
     SOURCE_SPARSE,
     RecallHit,
-    RecallPipeline,
     RecallPipelineConfig,
     RecallRequest,
     RetrieverHit,
 )
-from tests.unit.core.pipeline.recall.conftest import FakeRetriever
+from tests.unit.core.pipeline.recall.conftest import FakeRetriever, make_recall_pipeline
 
 
 def _hit(chunk_id, source, score, doc_id=100, dataset_id=10):
@@ -36,7 +35,7 @@ async def test_single_source_hit_preserved():
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("cX", SOURCE_DENSE, 0.9)])
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[])
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[])
-    pipeline = RecallPipeline([dense, sparse, bm25])
+    pipeline = make_recall_pipeline([dense, sparse, bm25])
 
     response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
     assert len(response.hits) == 1
@@ -50,7 +49,7 @@ async def test_single_source_hit_preserved():
 async def test_rrf_k_override_changes_rank_contribution():
     """数据集级 rrf_k 覆盖后，rank=1 的贡献使用 1/(rrf_k+1)。"""
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("cX", SOURCE_DENSE, 0.9)])
-    pipeline = RecallPipeline([dense])
+    pipeline = make_recall_pipeline([dense])
 
     response = await pipeline.execute(
         RecallRequest(user_id=1, query="q", dataset_ids=[10], rrf_k_override=10)
@@ -63,7 +62,7 @@ async def test_rrf_k_override_changes_rank_contribution():
 async def test_rrf_k_config_changes_rank_contribution():
     """系统级 rrf_k 注入 pipeline 后，rank=1 的贡献使用 1/(rrf_k+1)。"""
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("cX", SOURCE_DENSE, 0.9)])
-    pipeline = RecallPipeline([dense], RecallPipelineConfig(rrf_k=10))
+    pipeline = make_recall_pipeline([dense], RecallPipelineConfig(rrf_k=10))
 
     response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
 
@@ -75,7 +74,7 @@ async def test_explicit_rrf_ignores_weighted_score_weights():
     """显式配置 rrf 时，weighted_score 权重不影响融合分。"""
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("c1", SOURCE_BM25, 10.0)])
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("c2", SOURCE_DENSE, 0.9)])
-    pipeline = RecallPipeline(
+    pipeline = make_recall_pipeline(
         [bm25, dense],
         RecallPipelineConfig(
             fusion_strategy="rrf",
@@ -114,7 +113,7 @@ async def test_per_source_scores_preserved():
             _hit("cB", SOURCE_BM25, 12.3),
         ],
     )
-    pipeline = RecallPipeline([dense, sparse, bm25])
+    pipeline = make_recall_pipeline([dense, sparse, bm25])
 
     response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
     by_id = {h.chunk_id: h for h in response.hits}
@@ -143,7 +142,7 @@ async def test_hit_metadata_no_content():
     )
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[])
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[])
-    pipeline = RecallPipeline([dense, sparse, bm25])
+    pipeline = make_recall_pipeline([dense, sparse, bm25])
 
     response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
     hit = response.hits[0]

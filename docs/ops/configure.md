@@ -17,6 +17,7 @@
 | 分块策略 | `CHUNKING_*` | 调整分块参数时 |
 | 流程编排 | `WORKFLOW_*` | 使用轻量流程编排引擎时 |
 | 向量存储 | `VECTOR_STORE_TYPE`, `QDRANT_*`, `CHUNK_INDEX_*`, `SPARSE_VECTOR_*` | 始终（当前生产固定使用 Qdrant） |
+| 索引写入互斥 | `INDEX_MUTATION_*` | 调整写入失败同步清理的锁等待时 |
 | 对象存储 | `STORAGE_TYPE`, `MINIO_*`, `LOCAL_DOCS_PATH` | 始终 |
 | 解析临时目录 | `PARSE_TEMP_DIR` | 始终（流式下载落盘目录） |
 | PDF 解析 | `PDF_PARSER_*`, `MINERU_*`, `DOCLING_*` | 处理 PDF 时 |
@@ -241,6 +242,16 @@ HOST_VPN_IP=<loki-vpn-host> docker compose -f deploy/cloud-server/docker-compose
 | `SPARSE_VECTOR_BATCH_SIZE` | `32` | 稀疏索引外层批大小：一次从 DB 取多少 chunk 原文喂给编码器；编码器内部批大小由 provider 自行决定，不随之变化 |
 
 > 已移除的稀疏向量配置项（不再生效，配置也无效果）：`SPARSE_VECTOR_PROVIDER`、`SPARSE_VECTOR_MODEL_NAME`、`SPARSE_VECTOR_MODEL_CACHE_DIR`、`SPARSE_VECTOR_LOCAL_FILES_ONLY`、`SPARSE_VECTOR_DEVICE`、`SPARSE_VECTOR_MAX_LENGTH`、`SPARSE_VECTOR_HTTP_ENDPOINT` / `SPARSE_VECTOR_HTTP_TIMEOUT` / `SPARSE_VECTOR_HTTP_BATCH_SIZE`、`BGE_M3_SERVICE_URL` / `BGE_M3_TIMEOUT_SECONDS` / `BGE_M3_MAX_RETRIES`、`SPARSE_VECTOR_RETRY_LIMIT` / `SPARSE_VECTOR_INDEXING_STALE_SECONDS`、`TOLINK_RUN_REAL_SPARSE_VECTOR_TESTS`，以及更早的 `SPARSE_VECTOR_USE_FP16`。
+
+## 索引写入互斥配置
+
+MySQL 是业务真值。正常写入与写入失败后的同步清理对同一 `(doc_id, branch)` 共用 advisory lock；系统不启动后台补偿，不自动重建，失败任务由用户重试。
+
+| 变量 | 默认 | 说明 |
+| --- | --- | --- |
+| `INDEX_MUTATION_LOCK_TIMEOUT_SECONDS` | `10` | 获取文档分支 advisory lock 的最长等待时间；超时使当前解析失败，不绕过互斥执行 |
+
+`CHUNK_INDEX_INDEXING_STALE_SECONDS` 已废弃，仅为旧兼容入口暂时保留；同步清理不依赖共享 `update_time`。
 
 ## 召回执行配置
 
