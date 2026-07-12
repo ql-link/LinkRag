@@ -203,7 +203,7 @@ StagePipeline.run（串行 6 阶段编排）
 
 `ensure_chunk_points` 会创建 dense/sparse 共用的 payload-only point，必须按固定顺序同时持有 DENSE、SPARSE 两把锁。dense/sparse 补偿即使只处理一个 named vector，也同样同时持有两把锁，避免两个 repair worker 并发建共享 point 时覆盖 sibling vector。
 
-补偿 job 的 lease 只防止多个 worker 同时领取同一任务，不能代替上述跨存储互斥。关于持久化清理/重建状态机见 [vectorization.md §4.6](vectorization.md#46-补偿)。
+系统不创建补偿 job。正常写入与失败后的同步清理必须共用上述跨存储互斥；详细规则见 [vectorization.md §4.6](vectorization.md#46-写入失败清理)。
 
 ### 并行 DAG 引擎（生产默认引擎）
 
