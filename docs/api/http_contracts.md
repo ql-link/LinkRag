@@ -259,6 +259,9 @@ session token 由 Java 签发、Python 用**独立专用密钥**验签；claims�
 流式生成答案。SSE 事件：
 
 ```
+event: stream_started
+data: {"conversation_id": 123, "request_id": "<本次请求 ID>"}
+
 event: answer_delta
 data: {"text": "<增量 token>"}
 
@@ -266,10 +269,17 @@ event: answer_done
 data: {"answer": "<完整答案>", "hits": [...], "rerank_applied": true, "failed_sources": [], "recall_diagnostics": {...}}
 ```
 
+- `stream_started`：建流后的**首个事件**，在模型校验、召回、rerank 与生成之前发出；前端收到后将
+  `conversation_id` 对应的会话标记为“回复中”，`request_id` 用于链路关联；
 - `answer_delta`：流式增量 token，可 0 到多帧；
 - `answer_done`：生成结束终态，`hits` 为 **rerank 精排后**的最终候选（含正文 `content`），发送后关闭流；
 - **空命中 / 全部片段缺正文**：不生成，发 `recall_done`（`hits` 可空，同带 `rerank_applied`；全部缺正文时各 hit `content` 为空串）；
 - **生成阶段失败**：整请求失败，发 `error` `RECALL_GENERATION_FAILED`，不返回部分召回片段。
+
+事件顺序为 `stream_started` → 零到多个中间事件（`answer_delta` / `conversation_title`）→ 恰好一个
+终态（`answer_done` / `recall_done` / `error`）。终态是最后一个业务事件；客户端收到任一终态或检测到
+连接关闭时，必须清除该 `conversation_id` 的“回复中”状态。新增事件遵循增量兼容：消费者应忽略未知
+事件，旧的 `answer_delta` / `answer_done` / `recall_done` / `error` payload 保持不变。
 
 **会话标题事件 `conversation_title`**（仅 `is_first_turn=true` 的会话首轮）：
 
@@ -278,7 +288,7 @@ event: conversation_title
 data: {"title": "<会话标题>"}
 ```
 
-服务端用本轮对话模型基于 `query` 生成短标题，标题任务**与召回 + 答案生成并行**，不串行增加问答耗时；一旦算好即在 `answer_delta` 间隙插发本事件（LLM 比答案慢时在 `answer_done` 后补发），前端据此即时刷新侧栏/会话头标题，无需轮询。同一标题随首轮终态的 `chat_turn.title` 上报落库（标题为空/默认「新对话」时由 Java 写入 `chat_conversation.title`，不覆盖用户手改）。标题生成失败/超时回落首问截断兜底（首轮一定命名会话），不影响答案与落库；**生成失败（FAILED）的首轮**仅落库截断标题、不发本事件。非首轮无本事件。
+服务端用本轮对话模型基于 `query` 生成短标题，标题任务**与召回 + 答案生成并行**，不串行增加问答耗时；一旦算好即在 `answer_delta` 间隙插发本事件（LLM 比答案慢时在本轮终态前补发），前端据此即时刷新侧栏/会话头标题，无需轮询。同一标题随首轮终态的 `chat_turn.title` 上报落库（标题为空/默认「新对话」时由 Java 写入 `chat_conversation.title`，不覆盖用户手改）。标题生成失败/超时回落首问截断兜底（首轮一定命名会话），不影响答案与落库；**生成失败（FAILED）的首轮**仅落库截断标题、不发本事件。非首轮无本事件。
 
 终态 `hits` 单项在融合字段基础上补 rerank 字段与 chunk 正文 `content`：
 

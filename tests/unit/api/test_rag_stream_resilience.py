@@ -95,7 +95,11 @@ async def test_producer_enqueues_events_and_releases_slot(monkeypatch):
         channel, None, None, SimpleNamespace(), "rid", 42, 7, "USER", 100, "t-1", False, 4000, 8
     )
 
-    assert await _drain_queue(channel) == ["e1", "e2"]
+    queued = await _drain_queue(channel)
+    assert queued[0].startswith("event: stream_started")
+    assert '"conversation_id": 100' in queued[0]
+    assert '"request_id": "rid"' in queued[0]
+    assert queued[1:] == ["e1", "e2"]
     assert released == [42]  # 名额绑任务，任务结束才释放
 
 
@@ -130,7 +134,8 @@ async def test_producer_releases_slot_even_when_stream_crashes(monkeypatch):
         channel, None, None, SimpleNamespace(), "rid", 7, 1, "USER", 1, "t-3", False, 4000, 8
     )
     assert released == [7]
-    assert channel.queue.get_nowait() is None  # 哨兵仍发出
+    assert channel.queue.get_nowait().startswith("event: stream_started")
+    assert channel.queue.get_nowait() is None  # 首帧之后哨兵仍发出
 
 
 async def test_consumer_stops_on_sentinel():

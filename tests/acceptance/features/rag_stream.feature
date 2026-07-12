@@ -29,6 +29,15 @@ Feature: 对外 RAG 问答流 SSE
 
   # ==== 主流程：召回 + 生成 ====
 
+  Scenario: 建流后首帧标记对应会话正在回复且终态后不再发送业务事件
+    Given session token claims sub=123 dataset_ids=[1] scope=recall:stream 未过期
+    And config_id 指向的 CHAT 模型对用户 123 可用
+    And bm25 与 sparse 两路均返回命中
+    When 前端携带该 token 调用 POST /api/v1/rag/stream body query="任意" dataset_ids=[1]
+    Then 首个 SSE 事件为 "stream_started"
+    And stream_started.data 含 conversation_id 与 request_id
+    And 最终收到 SSE 事件 "answer_done"
+
   Scenario: 模型可用且命中且正文可回填时以 answer_delta/answer_done 返回生成答案
     Given session token claims sub=123 aud=tolink-rag-frontend iss=tolink-java scope=recall:stream dataset_ids=[1,2] 未过期
     And config_id 指向的 CHAT 模型对用户 123 可用
@@ -38,6 +47,7 @@ Feature: 对外 RAG 问答流 SSE
     And 响应 Content-Type 为 "text/event-stream"
     And 响应头 Cache-Control 为 "no-cache"
     And 响应头 X-Accel-Buffering 为 "no"
+    And 首个 SSE 事件为 "stream_started"
     And 至少收到一个 SSE 事件 "answer_delta"
     And 最终收到 SSE 事件 "answer_done"
     And answer_done.data 含字段 answer 与 hits 与 failed_sources

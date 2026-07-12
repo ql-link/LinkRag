@@ -690,6 +690,18 @@ def _got_at_least_one(rag_acc_state, name):
     assert any(n == name for n, _ in rag_acc_state.events)
 
 
+@then(parsers.re(r'首个 SSE 事件为 "(?P<name>[^"]+)"'))
+def _first_event(rag_acc_state, name):
+    assert rag_acc_state.events and rag_acc_state.events[0][0] == name
+
+
+@then(parsers.parse("stream_started.data 含 conversation_id 与 request_id"))
+def _stream_started_fields(rag_acc_state):
+    data = _event_data(rag_acc_state, "stream_started")
+    assert data["conversation_id"] == CONVERSATION_ID
+    assert data["request_id"]
+
+
 @then(parsers.re(r'最终收到 SSE 事件 "(?P<name>[^"]+)"'))
 def _final_event(rag_acc_state, name):
     names = [n for n, _ in rag_acc_state.events]
