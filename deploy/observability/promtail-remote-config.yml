@@ -57,7 +57,7 @@ scrape_configs:
           template: '{{ if .level_json }}{{ .level_json }}{{ else }}{{ .level_text }}{{ end }}'
       - template:
           source: service
-          template: '{{ if .service_json }}{{ .service_json }}{{ else }}tolink-rag{{ end }}'
+          template: 'tolink-rag'
       - labels:
           service:
           level:
