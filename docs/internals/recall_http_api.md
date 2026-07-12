@@ -95,14 +95,16 @@ scope 校验。RAG 流额外要求 `config_id`（缺失 → 422）并在建流�
 `RERANK_DEFAULT_TOP_N`），再按 token 预算拼装上下文
 流式生成：
 
+- 建流后首先发 `stream_started`（`conversation_id` + `request_id`），供前端跨会话维护“回复中”状态；
 - 命中 → 流式 `answer_delta` + 终态 `answer_done`（`hits` 为 rerank 后最终候选、不含正文，附顶层 `rerank_applied`；`failed_sources` 表达异常失败路；可带 `recall_diagnostics` 表达来源结构）。
 - 0 命中 / 全部片段缺正文 → `recall_done`（不生成；可带 `recall_diagnostics`）。
 - 用户无默认 EMBEDDING 配置 → `error RECALL_EMBEDDING_CONFIG_MISSING`（硬失败，不降级）。
 - 全路失败 `RecallError` → `error RECALL_ALL_SOURCES_FAILED`；超时 → `error RECALL_TIMEOUT`。
 - 生成阶段失败 → `error RECALL_GENERATION_FAILED`（整请求失败）。
-- 客户端断连（`CancelledError`）→ 停止发送事件并向上传播取消，pipeline 协程随之结束。
+- `answer_done` / `recall_done` / `error` 是最后一个业务事件；前端收到终态或连接关闭后清除“回复中”。
+- 客户端断连只结束 SSE 消费者并停止继续入队；后台生产者仍完成生成和终态落库。
 
-**会话标题（LINK-209）**：请求体可选 `is_first_turn: bool`（默认 `false`）。为 `true` 时（会话首条用户消息），在 `resolved` 后起一个**与召回 + 生成并行**的标题任务：用本轮对话模型基于 `query` 生成短标题（独立超时 `TITLE_GENERATION_TIMEOUT_MS`，失败/超时回落首问截断，见 [conversation_title.py](../../src/core/prompts/conversation_title.py)）。标题一旦算好即在吐字间隙插发 SSE `conversation_title`（`{"title": "..."}`）让前端即时刷新侧栏；若 LLM 比答案慢则在 `answer_done` 后补发。标题随首轮**任一终态**的 `chat_turn.title` 落库（成功用 LLM 标题或兜底、失败用截断兜底——保证首轮一定命名会话）；标题任务失败绝不影响答案与落库，也不发 SSE `error`。非首轮无 `conversation_title` 事件、`title` 为 `null`。
+**会话标题（LINK-209）**：请求体可选 `is_first_turn: bool`（默认 `false`）。为 `true` 时（会话首条用户消息），在 `resolved` 后起一个**与召回 + 生成并行**的标题任务：用本轮对话模型基于 `query` 生成短标题（独立超时 `TITLE_GENERATION_TIMEOUT_MS`，失败/超时回落首问截断，见 [conversation_title.py](../../src/core/prompts/conversation_title.py)）。标题一旦算好即在吐字间隙插发 SSE `conversation_title`（`{"title": "..."}`）让前端即时刷新侧栏；若 LLM 比答案慢则在本轮终态前补发。标题随首轮**任一终态**的 `chat_turn.title` 落库（成功用 LLM 标题或兜底、失败用截断兜底——保证首轮一定命名会话）；标题任务失败绝不影响答案与落库，也不发 SSE `error`。非首轮无 `conversation_title` 事件、`title` 为 `null`。
 
 ### 5.2 纯召回 JSON
 

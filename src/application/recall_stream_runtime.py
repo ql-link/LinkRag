@@ -493,17 +493,18 @@ async def _generate_answer(
             payload["recall_diagnostics"] = serialize_recall_diagnostics(recall_diagnostics)
         return payload
 
-    # 空命中：不生成，但仍落 COMPLETED 占位行（前端按空内容展示占位）。
+    # 空命中：不生成，但仍落 COMPLETED 占位行（前端按空内容展示占位）。标题必须先于
+    # recall_done 发出，保证 recall_done 作为真正终态后不再有业务事件。
     if not hits:
+        title = await _await_title_result(title_task, fallback_title)
+        if title:
+            yield recall_event("conversation_title", {"title": title})
         yield recall_event(
             "recall_done",
             _with_recall_diagnostics(
                 {"hits": [], "rerank_applied": rerank_applied, "failed_sources": failed_sources}
             ),
         )
-        title = await _await_title_result(title_task, fallback_title)
-        if title:
-            yield recall_event("conversation_title", {"title": title})
         await _emit_chat_turn(
             recall_req=recall_req,
             request_id=request_id,
@@ -535,6 +536,9 @@ async def _generate_answer(
 
     # 全部片段缺正文：按空命中处理，不生成，同样落 COMPLETED 占位。
     if not assembled.blocks:
+        title = await _await_title_result(title_task, fallback_title)
+        if title:
+            yield recall_event("conversation_title", {"title": title})
         yield recall_event(
             "recall_done",
             _with_recall_diagnostics(
@@ -545,9 +549,6 @@ async def _generate_answer(
                 }
             ),
         )
-        title = await _await_title_result(title_task, fallback_title)
-        if title:
-            yield recall_event("conversation_title", {"title": title})
         await _emit_chat_turn(
             recall_req=recall_req,
             request_id=request_id,
@@ -649,6 +650,14 @@ async def _generate_answer(
         )
         return
 
+    # 首轮标题：吐字期间已发则复用 sent_title；否则（LLM 比答案慢）在终态前等待并补发。
+    # answer_done 必须是最后一帧业务事件，便于消费者收到后立即清除“回复中”状态。
+    title = sent_title
+    if title_task is not None and title is None:
+        title = await _await_title_result(title_task, fallback_title)
+        if title:
+            yield recall_event("conversation_title", {"title": title})
+
     # 正常结束：answer_done 附 usage，随后发 COMPLETED 轮次消息（在 SSE 终态之后）。
     yield recall_event(
         "answer_done",
@@ -662,12 +671,6 @@ async def _generate_answer(
             }
         ),
     )
-    # 首轮标题：吐字期间已发则复用 sent_title；否则（LLM 比答案慢）此处 await 后补发。
-    title = sent_title
-    if title_task is not None and title is None:
-        title = await _await_title_result(title_task, fallback_title)
-        if title:
-            yield recall_event("conversation_title", {"title": title})
     await _emit_chat_turn(
         recall_req=recall_req,
         request_id=request_id,
