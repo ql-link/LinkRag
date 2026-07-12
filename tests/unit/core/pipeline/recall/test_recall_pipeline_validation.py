@@ -6,12 +6,11 @@ from src.core.pipeline.recall import (
     SOURCE_BM25,
     SOURCE_DENSE,
     SOURCE_SPARSE,
-    RecallPipeline,
     RecallRequest,
     RecallValidationError,
     RetrieverHit,
 )
-from tests.unit.core.pipeline.recall.conftest import FakeRetriever
+from tests.unit.core.pipeline.recall.conftest import FakeRetriever, make_recall_pipeline
 
 
 def _hit(chunk_id, source, score=1.0, doc_id=100, dataset_id=10):
@@ -31,7 +30,7 @@ async def test_invalid_query_raises(query: str):
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[])
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[])
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[])
-    pipeline = RecallPipeline([dense, sparse, bm25])
+    pipeline = make_recall_pipeline([dense, sparse, bm25])
 
     with pytest.raises(RecallValidationError):
         await pipeline.execute(RecallRequest(user_id=1, query=query, dataset_ids=[10]))
@@ -47,7 +46,7 @@ async def test_empty_dataset_ids_allowed():
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("c1", SOURCE_DENSE)])
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[])
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[])
-    pipeline = RecallPipeline([dense, sparse, bm25])
+    pipeline = make_recall_pipeline([dense, sparse, bm25])
 
     response = await pipeline.execute(RecallRequest(user_id=1, query="任意查询", dataset_ids=[]))
 
@@ -61,7 +60,7 @@ async def test_empty_dataset_ids_allowed():
 async def test_non_positive_fusion_limit_or_route_top_k_raises(field: str):
     """融合候选池窗口与三路执行期 top_k 均必须为正，错误信息包含字段名。"""
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[])
-    pipeline = RecallPipeline([bm25])
+    pipeline = make_recall_pipeline([bm25])
     kwargs = {
         "user_id": 1,
         "query": "任意查询",
@@ -85,7 +84,7 @@ async def test_doc_ids_pass_through():
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[])
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[])
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[])
-    pipeline = RecallPipeline([dense, sparse, bm25])
+    pipeline = make_recall_pipeline([dense, sparse, bm25])
 
     await pipeline.execute(
         RecallRequest(user_id=1, query="任意查询", dataset_ids=[10, 11], doc_ids=[2001])

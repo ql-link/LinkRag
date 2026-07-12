@@ -15,6 +15,7 @@ from functools import lru_cache
 from src.config import settings
 from src.core.dataset_config import DatasetConfigService, RecallConfig
 from src.core.pipeline.recall import RecallPipeline, RecallPipelineConfig, RecallRequest
+from src.core.pipeline.recall.document_readiness import MySqlDocumentReadinessGate
 from src.core.pipeline.recall.protocols import (
     SOURCE_BM25,
     SOURCE_DENSE,
@@ -102,6 +103,7 @@ def _build_pipeline() -> RecallPipeline:
             fusion_sparse_weight=settings.RECALL_FUSION_SPARSE_WEIGHT,
             fusion_dense_weight=settings.RECALL_FUSION_DENSE_WEIGHT,
         ),
+        readiness_gate=MySqlDocumentReadinessGate(),
     )
 
 

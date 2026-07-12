@@ -20,6 +20,8 @@ src/core/storage/vector/
 ├── sparse_indexing.py             # 稀疏索引流水线
 └── sparse_retriever.py            # sparse 召回适配器
 
+src/core/storage/index_mutation_guard.py  # MySQL (doc_id, branch) 跨实例互斥
+
 src/core/storage/es/
 ├── models.py                      # ES 入库结果模型
 └── pipeline.py                    # 文件级 Elasticsearch 入库阶段
@@ -50,20 +52,21 @@ ParseTaskPipeline
       -> ChunkRepository.bulk_insert_pending()
     -> VectorizingStage
       -> StageServices.store_chunk_vectors()  # 现场过滤 dense_vector_status != SUCCESS
-        -> VectorStorageFacade.index_chunks(chunks=...)
-          -> VectorStoragePipeline.index_chunks(chunks=...)  # 接收已过滤 chunks，不自查 SQL
-            -> 按 batch 处理（chunk_index 顺序）
-              -> ChunkRepository.mark_indexing(allowed_statuses=(PENDING, FAILED))  # 多值 CAS
-              -> ChunkEmbeddingPipeline.aembed_chunks(batch)
-              -> QdrantIndexStore.ensure_collection()
-              -> QdrantIndexStore.upsert_points()
-              -> ChunkRepository.mark_indexed()
+        -> (doc_id, DENSE) lock + current task 复核
+          -> VectorStorageFacade.index_chunks(chunks=...)
+            -> VectorStoragePipeline.index_chunks(chunks=...)  # 接收已过滤 chunks，不自查 SQL
+              -> 按 batch 处理（chunk_index 顺序）
+                -> ChunkRepository.mark_indexing(allowed_statuses=(PENDING, FAILED))  # 多值 CAS
+                -> ChunkEmbeddingPipeline.aembed_chunks(batch)
+                -> QdrantIndexStore.ensure_collection()
+                -> QdrantIndexStore.upsert_points()
+                -> ChunkRepository.mark_indexed()
     -> PretokenizeStage
       -> StageServices.build_pretokenize_plan()
     -> EsIndexingStage
-      -> StageServices.run_es_indexing()
+      -> StageServices.run_es_indexing() # (doc_id, BM25) lock；文档级全量重建
     -> SparseVectorizingStage
-      -> StageServices.run_sparse_vectorizing()
+      -> StageServices.run_sparse_vectorizing() # (doc_id, SPARSE) lock
   -> document_parse_pipeline.sparse_vectorizing_status = SUCCESS（开启时）
   -> document_parse_pipeline.pipeline_status = SUCCESS（终态只写 DB，前端轮询 Java 查询）
 ```
@@ -77,7 +80,8 @@ ParseTaskPipeline
 | `VectorStorageFacade` | `vector_storage/facade.py` | 向上游暴露统一入口；含写入、管理、补偿与**召回**（`search_sparse_chunks` / `search_dense_chunks`） |
 | `VectorStoragePipeline` | `vector_storage/pipeline.py` | 消费 SQL chunk 真值，写 dense Qdrant 索引副本并回写状态 |
 | `VectorStorageManagementPipeline` | `vector_storage/management_pipeline.py` | Chunk 修改、删除 |
-| `VectorStorageCompensationPipeline` | `vector_storage/compensation_pipeline.py` | 删除失败、INDEXING 卡住、FAILED 重建 |
+| `VectorStorageCompensationPipeline` | `vector_storage/compensation_pipeline.py` | 旧接口兼容 no-op；不扫描、不回填、不自动重建 |
+| `IndexMutationGuard` | `index_mutation_guard.py` | 串行化同一文档同一索引分支的正常写、失败清理和删除 |
 | `ChunkDraftFactory` | `vector_storage/draft_factory.py` | 生成 chunk_id、content_hash、bucket_id、chunk_type |
 | `ChunkRepository` | `chunk_fact_storage/repository.py` | MySQL Chunk 真值表读写和状态机 |
 | `BucketRouter` | `qdrant_vector_storage/bucket_router.py` | 按 `user_id` 路由到 Qdrant collection；写入与召回共用 |
@@ -136,6 +140,8 @@ chunking 阶段复用 `ChunkDraftFactory`，把每个 `Chunk` 转成 `StoredChun
 
 MySQL 是 Chunk 真值源，Qdrant 是向量索引副本。chunk 表中的稠密和稀疏向量状态使用 `PENDING/SUCCESS/FAILED` 粗粒度终态；代码中的 `INDEXED` 常量映射为数据库值 `SUCCESS`。`vectorizing_status` 只代表 dense/Qdrant 阶段成功；启用稀疏向量后，文件级整体成功还要求后续 `sparse_vectorizing_status=SUCCESS`，且每个有效 chunk 的 `sparse_vector_status=SUCCESS`。
 
+三路 chunk 状态用于写入进度、故障诊断和补偿分支判断，不承担文档业务可见性，也不新增统一 `processing_status`。文档是否可召回由 `document_parse_file.latest_parse_task_id` 指向的当前 `document_parse_pipeline.pipeline_status=SUCCESS` 统一判定。
+
 稀疏向量子状态：
 
 | 状态 | 含义 |
@@ -153,13 +159,15 @@ MySQL 是 Chunk 真值源，Qdrant 是向量索引副本。chunk 表中的稠密
 | `pipeline_status` | 整体状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
 | `chunking_status` | 分片阶段状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
 | `vectorizing_status` | 向量化/Qdrant 阶段状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
-| `es_indexing_status` | Elasticsearch 入库阶段状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
+| `pretokenize_status` | BM25 预分词阶段状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
+| `es_indexing_status` | BM25 入库阶段状态：`PENDING/PROCESSING/SUCCESS/FAILED`，后端可为 Qdrant BM25 或 Elasticsearch |
+| `sparse_vectorizing_status` | 稀疏向量阶段状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
 | `failed_stage` | 失败阶段：`CHUNKING/VECTORIZING/ES_INDEXING` |
 | `recover_from_stage` | 重投或补偿时可恢复的阶段 |
 | `chunk_count` | 本次解析生成的 Chunk 数量 |
 | `*_duration_ms` | 各阶段耗时与总耗时 |
 
-解析日志 `document_parsed_log` 会先记录 Markdown 解析和上传成功；只有分片、向量化和 ES 入库都成功后，Python 才发送 parse_result `success` 通知给 Java。任一后处理阶段失败都会把 `document_parse_pipeline` 标记为 `FAILED`，并发送 parse_result `failed`。
+解析日志 `document_parsed_log` 会先记录 Markdown 解析和上传成功；只有分片、dense、预分词、BM25 与 sparse 全部成功后，`document_parse_pipeline` 才会落 `SUCCESS`。任一后处理阶段失败都会把当前 pipeline 标记为 `FAILED`；终态只写 DB，由 Java 轮询读取，不再发送 parse_result MQ。
 
 ### 3.4 Qdrant Point
 
@@ -306,16 +314,40 @@ result = await facade.delete_chunks(["chunk-id-1", "chunk-id-2"])
 - 任一步失败时不回写 chunk 生命周期失败态；重试继续扫描 `REMOVED` 记录并重复执行清理。
 - `dense_vector_status` / `sparse_vector_status` / `es_status` 保留原产物状态，不再承载删除生命周期。
 
-### 4.6 补偿
+### 4.6 写入失败清理
 
-Facade 暴露补偿入口：
+系统不运行补偿任务。dense / sparse 外部写入未被 MySQL 确认时，在当前分支锁内同步精确删除对应 named vector；BM25 按文档清理。清理失败只告警，任务保持失败，由用户重试整篇文档。
 
-```python
-await facade.repair_stale_indexing(limit=100)
-await facade.reindex_failed_chunks(chunk_ids)
+补偿器不再用 chunk 共享 `update_time` 判断 `PENDING` 是否“卡住”，也不会在正常写仍可能进行时据此清理。非终态超时应先由解析任务治理收敛为明确的 `FAILED`。
+
+一条 job 持久化覆盖完整两阶段：
+
+```text
+CLEANUP_PENDING → CLEANING → REBUILD_PENDING → REBUILDING → SUCCEEDED
+CLEANING 失败 → CLEANUP_RETRY → CLEANING
+REBUILDING 失败 → REBUILD_RETRY → REBUILDING
+current task 已切换 → CANCELLED_SUPERSEDED；超过重试上限 → DEAD
 ```
 
-补偿用于恢复 MySQL 和 Qdrant 的最终一致性。删除补偿状态机当前未启用；后续删除流程会基于 `REMOVED` chunk 记录做幂等重试。
+cleanup 成功后，在同一个 MySQL 事务中把对应分支状态收敛为 `FAILED` 并把 job 推进到 `REBUILD_PENDING`；rebuild 的外部写成功后，再原子确认分支 `SUCCESS` 与 job `SUCCEEDED`。进程崩溃后可依靠 job state、lease 与 `next_run_at` 续跑，不能用内存任务替代。
+
+每个 worker batch 会在到期的 cleanup 与 rebuild 间交替取任务，并轮换下一批的起始 phase；即使 `batch_size=1`，两类工作也会轮流推进，避免持续新增 cleanup 使已清理任务长期得不到 rebuild。
+
+每次 job 执行完成会记录 `kind`、`branch`、`backend`、结果 `state`、`retry_count`、`job_age_seconds` 与 `last_error`；换行会被压平且不记录正文。mutation guard 对每次取锁记录 `branch`、`wait_ms` 与单次 `timeout_count`，current task 指针缺失单独输出错误事件。BM25 cleanup/rebuild 更新整篇状态时会对账 ACTIVE 行数与 update rowcount，不一致输出 `bm25_status_rowcount_mismatch` 告警。
+
+补偿粒度：
+
+| 分支 | scope | cleanup / rebuild | mutation lock |
+| --- | --- | --- | --- |
+| dense | chunk | 只删除、重建目标 chunk 的 dense named vector | 与 sparse 共用 point，固定同时取得 `DENSE → SPARSE` |
+| sparse | chunk | 只删除、重建目标 chunk 的 sparse named vector | 与 dense 相同，固定同时取得 `DENSE → SPARSE` |
+| BM25（Qdrant / ES） | document | 按用户、数据集、文档清理整篇，并从 MySQL ACTIVE chunk 全量重建；整篇 `es_status` 一致收敛 | `(doc_id, BM25)` |
+
+MySQL 是唯一权威：外部产物“存在”只用于诊断，不能反向把 MySQL 状态回填为成功。外部存在但 MySQL 未确认时，按 `cleanup → FAILED → rebuild` 收敛；外部已经不存在时，cleanup 视为幂等成功并继续状态机。
+
+job 保存创建时的路由与 `artifact_name` 快照。若 cleanup 时目标 chunk 已 `REMOVED` 或 MySQL source 已硬删除，仍按快照清掉外部孤儿；随后因不存在 ACTIVE 重建来源而直接以 cleanup-only `SUCCEEDED` 收口，不重新制造已删除数据。BM25 的 inspect、文档删除和重建也始终使用 job 保存的 collection / ES index 名，不跟随运行期间的 `BM25_BACKEND` 或索引名配置漂移。
+
+防御性发现“MySQL 当前 pipeline 已成功、外部产物缺失”时，从 `REBUILD_PENDING` 开始，并设置 `visibility_hold=1`。worker 只从 MySQL 正文和路由重建；hold 在 `SUCCEEDED` 或 `CANCELLED_SUPERSEDED` 后释放，失败或 `DEAD` 时继续阻断整篇文档召回。召回门禁只匹配 `source_task_id == latest_parse_task_id` 的 hold，旧 task 的遗留 job 不会隐藏新 current task。
 
 ### 4.7 向量召回入口
 
@@ -383,7 +415,7 @@ chunk_id_to_content = {
 - `CHUNK_INDEX_EMBED_BATCH_SIZE`
 - `CHUNK_INDEX_BUCKET_COUNT`
 - `CHUNK_INDEX_COLLECTION_PREFIX`
-- `CHUNK_INDEX_INDEXING_STALE_SECONDS`
+- `CHUNK_INDEX_INDEXING_STALE_SECONDS`（兼容配置；统一补偿不再据此扫描共享 `update_time`）
 - `QDRANT_HOST`
 - `QDRANT_PORT`
 - `QDRANT_API_KEY`
@@ -501,17 +533,21 @@ SparseVectorService(encoder)
 
 ## 7. 一致性原则
 
-- MySQL Chunk 记录是真值源。
+- MySQL 的当前任务指针、pipeline 与 Chunk 记录是业务真值；Qdrant / Elasticsearch 是派生索引，外部存在不能证明 MySQL 成功。
 - Qdrant point 是可重建索引副本。
 - Elasticsearch document 是面向检索的文本索引副本。
 - `document_parse_pipeline` 是文件级后处理阶段状态源。
+- `latest_parse_task_id` 是当前 attempt 的唯一选择器；历史成功 pipeline 不参与当前可见性判断。
 - chunking 阶段负责创建 chunk 真值，向量化阶段不得创建新的 chunk 行。
 - dense 写入采用 `PENDING/FAILED -> SUCCESS/FAILED` 的粗粒度 SQL 状态；运行时处理中间态由文件级阶段和 Qdrant 操作边界表达。
 - sparse 是独立文件级阶段，在 dense、pretokenize、ES 成功后采用 `PENDING/FAILED -> SUCCESS/FAILED` 的粗粒度 SQL 状态。
 - 业务生命周期由 `lifecycle_status` 表达：`ACTIVE -> REMOVED`；产物状态字段只保留 `PENDING/SUCCESS/FAILED`。
-- Qdrant 写入成功但 MySQL 回写失败时，仍以 SQL 状态为准；后续进入 vectorizing 时按原 `chunk_id` 覆盖写索引副本。
-- 解析结果成功通知只在 Markdown、分片、向量化和 ES 入库均成功后发送。
-- 自动补偿不应无限重试所有失败；显式重建由 `reindex_failed_chunks` 控制。
+- Qdrant / BM25 写入成功但 MySQL 回写失败时，仍以 SQL 状态为准；统一补偿先精确清理未确认产物，再从 MySQL 重建，禁止仅检查存在性后回填成功。
+- dense 与 sparse 共用 Qdrant point，补偿只能删除目标 named vector；完整 point 删除只用于文档业务删除。
+- BM25 的一致性单位是文档，无论后端是 Qdrant BM25 还是 Elasticsearch，均按整篇清理与全量重建。
+- 正常写、补偿 cleanup、补偿 rebuild 与文档删除必须共用 MySQL `(doc_id, branch)` advisory lock；dense/sparse repair 因共享 point 固定同时取得 `DENSE → SPARSE`，其他多锁路径也遵守 `DENSE → SPARSE → BM25` 顺序。锁内 current-task 查询使用共享行锁并保留事务到 mutation guard 退出，使 Java 的 `latest_parse_task_id` 切换不能穿过外部 mutation。
+- 自动扫描只消费明确的当前 `FAILED` pipeline，不凭 chunk 共享 `update_time` 推断写入已停止。
+- 文档业务可见性要求当前 pipeline 整体 `SUCCESS` 且无 `visibility_hold`；单个分支重建成功不会提前放行文档，也不会修改失败 pipeline 的整体状态。
 
 ## 8. 测试建议
 
@@ -537,7 +573,10 @@ SparseVectorService(encoder)
 - ES 文件级索引创建和逐 Chunk 写入。
 - `document_parse_pipeline` 阶段状态流转。
 - 部分失败时的 `failed_chunk_ids`。
-- 删除失败补偿和 INDEXING 卡住修复。
+- 当前 FAILED pipeline 的幂等建 job、lease/CAS、cleanup→rebuild 持久化续跑。
+- cleanup/rebuild 公平轮转；source 已删除时只按快照清孤儿、不进入 rebuild。
+- payload-only point 不算任一路向量成功，且 dense/sparse 单路清理不影响 sibling named vector。
+- 同文档正常写、补偿与文档删除遵守 `(doc_id, branch)` 锁和 current-task 复核。
 
 ## 9. 召回链路
 
@@ -574,8 +613,8 @@ SparseVectorService(encoder)
             -> named vector 不存在（仅 sparse 触发）→ 返空 hits + warn 日志
             -> ScoredPoint → VectorSearchHit(chunk_id, doc_id, set_id, score, vector_kind)
        -> 包装为 VectorSearchResult
-  -> 调用方拿 chunk_id 列表 → ChunkRepository.list_by_chunk_ids 查 MySQL
-     ★ 必须按 lifecycle_status == ACTIVE 过滤（消除删除间隙鬼影 hit，详见 §9.6）
+  -> 公共 RecallPipeline 融合后执行 MySQL 文档门禁
+     ★ latest task pipeline=SUCCESS、chunk ACTIVE、无 visibility_hold（详见 recall_pipeline.md）
   -> 回填 content 给下游 rerank / prompt 拼装
 ```
 
@@ -678,11 +717,9 @@ ordered = [
 
 | 调用方 | 鬼影 hit 责任归属 |
 | --- | --- |
-| 对外 RAG 问答流（`routes/rag.py` → 召回 Pipeline → `generation.fetch_chunk_contents`） | **Python 侧**：`fetch_chunk_contents` 反查 MySQL 时已强制 `lifecycle_status == ACTIVE`，鬼影 hit 在正文回填阶段被剔除（见 [generation.py](../../src/core/pipeline/recall/generation.py)）。〔历史：LINK-122 前曾走 Java Recall Gateway 由 Java 侧过滤，该内部网关链路已删除〕 |
+| 对外纯召回与 RAG 问答流 | **Python 侧双重防线**：`RecallPipeline` 在融合后、top_k 前通过文档级 MySQL 门禁过滤 current pipeline 未成功、REMOVED chunk 与 visibility hold；`generation.fetch_chunk_contents` 回填时再次要求 `ACTIVE` |
 | 内部 Python 直调（调试脚本 / 内部 service / 评测 harness） | **caller 侧**按上面模式自行处理 |
-| 未来 hybrid 融合 reranker | hybrid issue 中实现，在 RRF 融合后一次性反查 MySQL + lifecycle 过滤 |
-
-**Follow-up（不在本期）**：单独 issue「dense/sparse 召回鬼影 hit 防御」——可选 utility 工具或 Qdrant payload 同步删除标记（把不一致窗口从分钟级降到毫秒级）。
+| hybrid 融合 / reranker | 融合后的候选已先经过公共文档门禁；reranker 消费可见候选 |
 
 ### 9.7 Embedding 模型升级 SOP
 

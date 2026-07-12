@@ -8,13 +8,12 @@ from src.core.pipeline.recall import (
     SOURCE_BM25,
     SOURCE_DENSE,
     SOURCE_SPARSE,
-    RecallPipeline,
     RecallPipelineConfig,
     RecallRequest,
     RecallValidationError,
     RetrieverHit,
 )
-from tests.unit.core.pipeline.recall.conftest import FakeRetriever
+from tests.unit.core.pipeline.recall.conftest import FakeRetriever, make_recall_pipeline
 
 
 def _hit(chunk_id: str, source: str, score: float, doc_id: int = 100, dataset_id: int = 10):
@@ -55,7 +54,7 @@ async def test_weighted_score_three_sources_with_default_weights():
         source=SOURCE_DENSE,
         hits=[_hit("cC", SOURCE_DENSE, 0.9), _hit("cA", SOURCE_DENSE, 0.4)],
     )
-    pipeline = RecallPipeline([bm25, sparse, dense], _config())
+    pipeline = make_recall_pipeline([bm25, sparse, dense], _config())
 
     response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
 
@@ -70,7 +69,7 @@ async def test_weighted_score_three_sources_with_default_weights():
 async def test_weighted_score_ignores_rrf_k():
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("cA", SOURCE_BM25, 100.0)])
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("cB", SOURCE_DENSE, 0.9)])
-    pipeline = RecallPipeline(
+    pipeline = make_recall_pipeline(
         [bm25, dense],
         RecallPipelineConfig(
             fusion_strategy="weighted_score",
@@ -95,7 +94,7 @@ async def test_weighted_score_preserves_raw_scores_without_normalized_scores():
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("c1", SOURCE_BM25, 100.0)])
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[_hit("c1", SOURCE_SPARSE, 9.0)])
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("c1", SOURCE_DENSE, 0.7)])
-    pipeline = RecallPipeline([bm25, sparse, dense], _config())
+    pipeline = make_recall_pipeline([bm25, sparse, dense], _config())
 
     response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
 
@@ -113,7 +112,7 @@ async def test_weighted_score_missing_source_normalizes_active_weights_only():
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("cA", SOURCE_BM25, 7.0)])
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[])
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("cB", SOURCE_DENSE, 0.9)])
-    pipeline = RecallPipeline([bm25, sparse, dense], _config())
+    pipeline = make_recall_pipeline([bm25, sparse, dense], _config())
 
     response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
 
@@ -128,7 +127,7 @@ async def test_weighted_score_missing_chunk_source_contributes_zero():
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("cA", SOURCE_BM25, 10.0)])
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[_hit("cB", SOURCE_SPARSE, 8.0)])
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("cC", SOURCE_DENSE, 0.9)])
-    pipeline = RecallPipeline([bm25, sparse, dense], _config())
+    pipeline = make_recall_pipeline([bm25, sparse, dense], _config())
 
     response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
 
@@ -145,7 +144,7 @@ async def test_weighted_score_missing_chunk_source_contributes_zero():
 @pytest.mark.asyncio
 async def test_single_hit_source_normalized_to_one(source: str, score: float):
     retriever = FakeRetriever(source=source, hits=[_hit("c1", source, score)])
-    pipeline = RecallPipeline([retriever], _config())
+    pipeline = make_recall_pipeline([retriever], _config())
 
     response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
 
@@ -162,7 +161,7 @@ async def test_equal_scores_normalized_to_one_and_tiebreaks_by_chunk_id(source: 
         source=source,
         hits=[_hit("c2", source, score), _hit("c1", source, score)],
     )
-    pipeline = RecallPipeline([retriever], _config())
+    pipeline = make_recall_pipeline([retriever], _config())
 
     response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
 
@@ -176,7 +175,7 @@ async def test_extreme_bm25_scores_use_log1p_without_overflow():
         source=SOURCE_BM25,
         hits=[_hit("cHigh", SOURCE_BM25, 1_000_000_000.0), _hit("cLow", SOURCE_BM25, 0.0)],
     )
-    pipeline = RecallPipeline([bm25], _config())
+    pipeline = make_recall_pipeline([bm25], _config())
 
     response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
 
@@ -189,7 +188,7 @@ async def test_extreme_bm25_scores_use_log1p_without_overflow():
 @pytest.mark.asyncio
 async def test_negative_bm25_or_sparse_score_is_rejected(source: str):
     retriever = FakeRetriever(source=source, hits=[_hit("cBad", source, -2.0)])
-    pipeline = RecallPipeline([retriever], _config())
+    pipeline = make_recall_pipeline([retriever], _config())
 
     with pytest.raises(RecallValidationError):
         await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
@@ -199,7 +198,7 @@ async def test_negative_bm25_or_sparse_score_is_rejected(source: str):
 async def test_zero_weight_source_contributes_zero_when_active_weight_sum_positive():
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("cA", SOURCE_BM25, 100.0)])
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("cB", SOURCE_DENSE, 0.9)])
-    pipeline = RecallPipeline([bm25, dense], _config(bm25=0.0, sparse=0.0, dense=1.0))
+    pipeline = make_recall_pipeline([bm25, dense], _config(bm25=0.0, sparse=0.0, dense=1.0))
 
     response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
 
@@ -212,7 +211,7 @@ async def test_zero_weight_source_contributes_zero_when_active_weight_sum_positi
 @pytest.mark.asyncio
 async def test_active_source_weight_sum_zero_is_rejected():
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("cA", SOURCE_BM25, 100.0)])
-    pipeline = RecallPipeline([bm25], _config(bm25=0.0, sparse=0.0, dense=0.0))
+    pipeline = make_recall_pipeline([bm25], _config(bm25=0.0, sparse=0.0, dense=0.0))
 
     with pytest.raises(RecallValidationError, match="active source fusion weight sum"):
         await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
@@ -223,7 +222,7 @@ async def test_enabled_sources_subset_controls_active_weight_normalization():
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("cB", SOURCE_BM25, 10.0)])
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[_hit("cS", SOURCE_SPARSE, 5.0)])
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("cD", SOURCE_DENSE, 0.9)])
-    pipeline = RecallPipeline([bm25, sparse, dense], _config())
+    pipeline = make_recall_pipeline([bm25, sparse, dense], _config())
 
     response = await pipeline.execute(
         RecallRequest(
@@ -252,7 +251,7 @@ async def test_weighted_score_truncates_after_fusion():
             _hit("c1", SOURCE_DENSE, 0.7),
         ],
     )
-    pipeline = RecallPipeline([dense], _config())
+    pipeline = make_recall_pipeline([dense], _config())
 
     response = await pipeline.execute(
         RecallRequest(user_id=1, query="q", dataset_ids=[10], top_k=2)
@@ -265,7 +264,7 @@ async def test_weighted_score_truncates_after_fusion():
 async def test_request_override_selects_weighted_score_over_config_default():
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("cA", SOURCE_BM25, 10.0)])
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("cB", SOURCE_DENSE, 0.9)])
-    pipeline = RecallPipeline([bm25, dense], RecallPipelineConfig(fusion_strategy="rrf"))
+    pipeline = make_recall_pipeline([bm25, dense], RecallPipelineConfig(fusion_strategy="rrf"))
 
     response = await pipeline.execute(
         RecallRequest(

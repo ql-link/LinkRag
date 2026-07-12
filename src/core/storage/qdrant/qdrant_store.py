@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from src.config import settings
@@ -535,7 +535,129 @@ class QdrantIndexStore:
             return True
         if "does not exist" in message and ("vector" in message or "sparse" in message):
             return True
+        if "doesn't exist" in message and ("vector" in message or "sparse" in message):
+            return True
+        if "not existing" in message and ("vector" in message or "sparse" in message):
+            return True
+        if "not configured" in message and ("vector" in message or "sparse" in message):
+            return True
         return False
+
+    async def get_named_vector_presence(
+        self,
+        *,
+        bucket_id: int,
+        chunk_ids: Sequence[str],
+        vector_name: str,
+    ) -> dict[str, bool]:
+        """逐 chunk 判断指定 named vector 是否真实存在。
+
+        这里不能复用 :meth:`point_exists`：解析 DAG 会先创建只有 payload 的空 point，
+        因此 point 存在并不能证明 dense / sparse 任一路已经写入成功。返回值始终包含
+        所有传入的 chunk_id；collection、named-vector schema 或具体 point 不存在时，
+        对应结果均为 ``False``。
+        """
+
+        presence = {str(chunk_id): False for chunk_id in chunk_ids}
+        if not presence:
+            return presence
+        if not vector_name:
+            raise ValueError("vector_name must not be empty.")
+
+        client = await self._get_client()
+        collection_name = self.bucket_router.collection_name(bucket_id)
+
+        try:
+            exists = await client.collection_exists(collection_name=collection_name)
+            if not exists:
+                return presence
+            records = await client.retrieve(
+                collection_name=collection_name,
+                ids=list(presence),
+                with_payload=False,
+                with_vectors=[vector_name],
+            )
+        except Exception as exc:
+            # 老 collection 尚未配置该 named vector 是合法中间态，等价于全量缺失。
+            if (
+                self._is_named_vector_missing_error(exc)
+                or self._is_collection_or_point_missing_error(exc)
+            ):
+                return presence
+            raise QdrantStoreError(
+                f"Failed to inspect named vector {vector_name!r} in {collection_name}: {exc}"
+            ) from exc
+
+        for record in records:
+            chunk_id = str(record.id)
+            if chunk_id not in presence:
+                continue
+            vectors = getattr(record, "vector", None)
+            presence[chunk_id] = isinstance(vectors, Mapping) and vector_name in vectors
+        return presence
+
+    async def delete_named_vectors(
+        self,
+        *,
+        bucket_id: int,
+        chunk_ids: Sequence[str],
+        vector_name: str,
+    ) -> None:
+        """仅删除一批 point 上的目标 named vector，保留 payload 与 sibling vectors。
+
+        该操作供索引补偿使用，必须保持幂等：collection、point 或 named vector 已经
+        不存在均视为清理成功。Qdrant 的 ``delete_vectors`` 对缺失 point/vector 本身
+        是幂等的；这里另行吞掉 schema 或 collection 在检查后被删除的竞态错误。
+        """
+
+        if not chunk_ids:
+            return
+        if not vector_name:
+            raise ValueError("vector_name must not be empty.")
+
+        client = await self._get_client()
+        collection_name = self.bucket_router.collection_name(bucket_id)
+
+        try:
+            exists = await client.collection_exists(collection_name=collection_name)
+            if not exists:
+                return
+            await self._with_write_retry(
+                "delete_named_vectors.delete_vectors",
+                lambda: client.delete_vectors(
+                    collection_name=collection_name,
+                    vectors=[vector_name],
+                    points=list(chunk_ids),
+                    wait=True,
+                ),
+            )
+        except Exception as exc:
+            if (
+                self._is_named_vector_missing_error(exc)
+                or self._is_collection_or_point_missing_error(exc)
+            ):
+                return
+            raise QdrantStoreError(
+                f"Failed to delete named vector {vector_name!r} from {collection_name}: {exc}"
+            ) from exc
+
+    @staticmethod
+    def _is_collection_or_point_missing_error(exc: BaseException) -> bool:
+        """识别读写间 collection / point 已不存在的幂等语义。"""
+
+        message = str(exc).lower()
+        missing_marker = any(
+            marker in message
+            for marker in (
+                "not found",
+                "does not exist",
+                "doesn't exist",
+                "not existing",
+                "missing",
+                "no point with id",
+            )
+        )
+        return missing_marker and ("collection" in message or "point" in message)
 
     async def point_exists(self, *, bucket_id: int, chunk_id: str) -> bool:
         """检查指定 chunk_id 对应的 Qdrant point 是否存在。"""

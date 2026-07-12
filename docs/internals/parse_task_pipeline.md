@@ -88,7 +88,7 @@ src/core/pipeline/
 | --- | --- |
 | `ParseLogRepository` | `document_parsed_log` 创建、按 task_id 查询、success/failed 终态写入 |
 | `ParseSourceIO` | 源文件下载、Markdown 上传、MinerU URL 拼接、`should_skip_source_download` 判断 |
-| `ParseTaskGuard` | 消息载荷一致性校验、重复 task_id 的终态收敛、中断 pipeline 的失败收敛 |
+| `ParseTaskGuard` | 消息载荷一致性校验（含 `latest_parse_task_id == payload.task_id` 当前任务门禁）、重复 task_id 的终态收敛、中断 pipeline 的失败收敛 |
 
 > **终态回传 MQ 已下线（LINK-166）**：流水线只把终态写入 `document_parse_pipeline`（DB 权威源），不再发送 `tolink.rag.parse_result`。原 `ParseResultNotifier` 协作者已删除；前端通过轮询 Java `parse-results` 接口读 DB 获取终态。
 
@@ -127,7 +127,7 @@ DocumentParsedLog / DocumentParsePipeline
 ```text
 parse_task message
   -> create document_parsed_log(created)
-  -> validate document_parse_file context
+  -> validate document_parse_file context and latest_parse_task_id
   -> parse source file
   -> upload markdown
   -> mark document_parsed_log success
@@ -135,11 +135,11 @@ parse_task message
   -> chunk markdown / ParseResult
   -> store chunk facts to MySQL
   -> reload persisted chunk truth rows (list[ChunkRecordDB])
-  -> dense index filtered chunks to Qdrant (filter dense_vector_status != SUCCESS)
+  -> dense index filtered chunks to Qdrant under (doc, DENSE) lock
   -> pretokenize chunks
-  -> index chunks to Elasticsearch
+  -> rebuild document BM25 under (doc, BM25) lock (Qdrant BM25 or Elasticsearch)
   -> reload fresh chunk truth rows
-  -> sparse vectorize filtered chunks (filter sparse_vector_status != SUCCESS)
+  -> sparse vectorize filtered chunks under (doc, SPARSE) lock
   -> mark document_parse_pipeline success   # 终态只写 DB，前端轮询读取（LINK-166）
 ```
 
@@ -185,6 +185,26 @@ StagePipeline.run（串行 6 阶段编排）
 
 `StageContext` 在阶段间传递可变产物（`parse_result` / `chunks` / `plan` / `vector_result`）并收敛最终 `ParsePipelineResult`；`StageOutcome` 是单阶段成败结果（`finalized=True` 表示该阶段已自行写终态，模板不重复处理）。
 
+### 当前任务与索引变更互斥
+
+`document_parse_file.latest_parse_task_id` 是一篇文档当前解析 attempt 的唯一指针。Java 侧必须先提交该指针再发布 parse MQ；Python 的 `ParseTaskGuard.validate()` 会在任务入口核对它，旧 task 即使历史 pipeline 成功也会以 `INVALID_TASK_CONTEXT:stale_task` 拒绝，不能继续写外部索引。
+
+所有会改变派生索引的生产路径共用 `IndexMutationGuard`：
+
+| 路径 | 锁粒度 |
+| --- | --- |
+| dense 正常写 | `(doc_id, DENSE)` |
+| sparse 正常写 | `(doc_id, SPARSE)` |
+| dense / sparse 补偿清理与重建 | 因共用 Qdrant point，固定按 `DENSE → SPARSE` 同时取得两把锁 |
+| BM25 正常写、清理、文档级重建 | `(doc_id, BM25)` |
+| 文档删除 | 按 `DENSE → SPARSE → BM25` 固定顺序取得三把锁 |
+
+锁通过同一 MySQL 锁域的 connection-scoped `GET_LOCK` 实现，整个外部写/删与最终 MySQL 状态确认期间固定持有同一连接。拿锁后，`assert_current_task` 使用 `SELECT ... LOCK IN SHARE MODE` 核对 `latest_parse_task_id`、pipeline 状态和是否已被 supersede，并让该共享行锁所属事务一直保持到 mutation guard 退出；Java 若要切换 `latest_parse_task_id`，必须等待当前 mutation 完成。这样避免“已经校验 current、外部写删尚未结束时指针又切换”的窗口，旧任务或旧补偿也不能删除或覆盖新 attempt 的产物。
+
+`ensure_chunk_points` 会创建 dense/sparse 共用的 payload-only point，必须按固定顺序同时持有 DENSE、SPARSE 两把锁。dense/sparse 补偿即使只处理一个 named vector，也同样同时持有两把锁，避免两个 repair worker 并发建共享 point 时覆盖 sibling vector。
+
+补偿 job 的 lease 只防止多个 worker 同时领取同一任务，不能代替上述跨存储互斥。关于持久化清理/重建状态机见 [vectorization.md §4.6](vectorization.md#46-补偿)。
+
 ### 并行 DAG 引擎（生产默认引擎）
 
 `src/core/pipeline/parse_task/workflow_demo/` 把 6 阶段包成通用 Workflow Engine 的节点，提供两个拓扑入口：`build_parse_task_demo_workflow()`（并行）与 `build_parse_task_serial_workflow()`（串行，在并行 DAG 上叠加定序边串成一条线）；runner 为 `ParseWorkflowRunner`。
@@ -228,14 +248,14 @@ demo DAG 当前依赖关系为：`cleaning → chunking`；`chunking → ensure_
 | --- | --- | --- |
 | 幂等屏障 | `ParseLogRepository.create()` | 先插入 `document_parsed_log`，依赖 task_id 唯一索引阻止重复解析 |
 | 重投处理 | `ParseTaskGuard.handle_duplicate()` | 已有终态直接按现状返回；对中断后处理在 DB 中收敛为可恢复失败 |
-| 上下文校验 | `ParseTaskGuard.validate()` | 校验 MQ payload 与 Java 侧 `document_parse_file` 记录一致 |
+| 上下文校验 | `ParseTaskGuard.validate()` | 校验 MQ payload 与 Java 侧 `document_parse_file` 记录一致，并要求 `latest_parse_task_id == payload.task_id` |
 | 源文件处理 | `ParseSourceIO.should_skip_source_download()` / `.download_to_path()` + `temp_workspace.*` | MinerU URL API 跳过本地下载（`source_path=None`）；其他后端流式下载到 `PARSE_TEMP_DIR/parse-{task_id}-{rand}.{file_type}`，非法/缺失后缀回退 `.tmp`。保留后缀是为了兼容 OpenDataLoader 等按扩展名识别 PDF 的本地解析器。拿到 markdown 后立即 `safe_unlink` 早删，`finally` 二次兜底 |
 | 文件解析 | `StageServices.parse_file()` | 调 `ParseTaskService.aprocess()` 生成 Markdown；首次与 `recover_from_stage=CLEANING` 重试同序 |
 | MD 内嵌图片上传 | `StageServices.upload_md_images()` | 仅 md/markdown 透传路径执行：扫描 markdown 中 `data:image/...;base64,...` 块，上传至私有桶（`MINIO_PRIVATE_BUCKET`）并替换为对象 URL；单张失败 best-effort 保留 base64，不影响 `cleaning_status` |
 | 分片 | `StageServices.run_chunking()` / `._chunk_markdown()` / `.load_markdown()` / `._reload_chunks_from_db()` | 优先消费上游 `ParseResult`，否则重新解析 Markdown；分片成功后单事务批量写入 `kb_document_chunk` 真值记录，**commit 后立即按 `doc_id` 反查 ORM 行（`_reload_chunks_from_db`）作为返回值 `list[ChunkRecordDB]`**——使首次链路与 retry 链路（`load_all_chunks_from_db`）的 chunks 形态完全一致，下游 dense / sparse 用同一套字段契约消费。`_reload_chunks_from_db` 的 SELECT 带 **`execution_options(populate_existing=True)`**：session 配置为 `expire_on_commit=False`，而后续阶段可能在**独立 session** 推进 chunk 级产物状态；若不强制刷新，身份映射里同主键 ORM 实例会保留旧值，导致后续阶段按过期状态判断补做范围。`populate_existing` 用查询结果覆盖已加载实例属性，确保读到最新真值。**重试时**（`payload.is_retry`）`_persist_chunk_facts` 先 `ChunkRepository.delete_by_doc_id(doc_id)` 清本文档残留再全量写入，同事务原子重建 chunk truth set（`chunk_id` 由内容派生且全局唯一，不清残留会撞唯一键）。`load_markdown` 经 `download_to_path` 流式读回旧 markdown（守 OOM 约束），供「重试从 CHUNKING 恢复」重新分片。**数据集级分块配置（LINK-148）**：ChunkingStage 按 `(user_id, dataset_id)` 读 `dataset_parse_config.chunking_config` 注入 `run_chunking`/`create_chunking_engine`，未配置数据集取系统 `CHUNKING_*` 默认（L1 fallback），JSON 字段非法归 `PARSE_ENGINE_FAILED`。**二阶段语义细分 embedder（#235 / LINK-219）**：`stage_two_algorithm` 优先取数据集级 `chunking_config.stage_two_algorithm`，未配置回退系统 `CHUNKING_STAGE_TWO_ALGORITHM`；当其值为 `semantic_depth_window` 时，`run_chunking` 按 `payload.user_id` 读取用户默认 `EMBEDDING` 配置并经 adapter 构造 embedder；不再使用 `SYSTEM_LLM_*`，用户缺默认 EMBEDDING 配置归类 `LLM_CONFIG_MISSING` |
 | 向量化（dense） | `StageServices.store_chunk_vectors()` | 接收 `list[ChunkRecordDB]`，**现场过滤 `dense_vector_status != SUCCESS`** 后通过 `VectorStorageFacade.index_chunks(chunks=...)` 写 Qdrant；dense 模块不再自查 SQL、不感知首次/retry（`index_document_chunks(include_failed=...)` 已删除）。多值 CAS（`mark_indexing(allowed_statuses=(PENDING, FAILED))`）在 SQL 层兜底：若现场过滤口径错误把已 SUCCESS chunk 混入，UPDATE rowcount 不达预期进失败路径，不会把 SUCCESS chunk 拉回 INDEXING。全部已 SUCCESS 时短路幂等成功。**embedder 按数据集绑定解析**：`index_chunks` 用 `(user_id, set_id)` 读取 `dataset_parse_config.dense_embedding_config_id`，再按该 `llm_user_config.id` 精确构造稠密 embedder；字段缺失、配置不存在/停用/非当前用户/系统预设/能力非 `EMBEDDING` 均抛 `DenseEmbeddingConfigMissingError`，错误信息包含 `dataset_id` 与字段名，且不回退用户当前默认 EMBEDDING。**维度方案 A**：写入前校验用户模型输出维度须等于 `settings.DENSE_VECTOR_DIMENSION`（per-bucket 共享 collection、维度固定），不符抛 `DenseEmbeddingDimensionError` → `EMBEDDING_DIMENSION_UNSUPPORTED`。**named-dense（解耦）**：dense 写入 Qdrant **命名向量 `dense`**（非匿名默认）；`upsert_points` 内部先 `ensure_points`（payload-only 空 point，create-if-missing）再 `update_vectors({dense: ...})`，只动 dense 维度不触碰 sparse，故 dense 与 sparse 可独立 / 并行写入。召回侧 dense query 同样按数据集绑定模型编码 |
 | 预分词 | `StageServices.build_pretokenize_plan()` | 聚合 doc 下 chunk token 为内存 `FilePostIndexPlan`（不持久化、不写状态）。**plan 覆盖该文档全部有效 chunk（不按 `es_status` 过滤，Issue #57）**。文件级 all-or-nothing：成功置 `ctx.plan`，失败返回 `(None, reason)`，由 PretokenizeStage 统一写失败终态，**不写任何 chunk es_status** |
-| ES 入库 | `StageServices.run_es_indexing()` | **前置删除 → 全量写入 → 失败清理**（Issue #57）；前置删除失败 `es_delete:` 前缀；写入未全部成功再 delete 清理半成品（best-effort）。失败由 EsIndexingStage 统一写失败终态，**不计数、不设上限** |
+| BM25 入库（阶段名仍为 ES_INDEXING） | `StageServices.run_es_indexing()` | 在 `(doc_id, BM25)` 锁内执行**前置删除 → 全量写入 → 失败清理**；底层由 `BM25_BACKEND` 选择 Qdrant BM25 或 Elasticsearch。半成品清理成功后，整篇 ACTIVE chunk 的 `es_status` 统一收敛为 `FAILED`，避免部分批次残留虚假成功；状态 update rowcount 与 plan 总数不一致时输出 `bm25_status_rowcount_mismatch` 告警 |
 | 稀疏向量化 | `StageServices.run_sparse_vectorizing()` → `SparseIndexingPipeline.run(chunks=...)` | **named-dense 解耦后不再依赖 dense**：重新 load chunks 后**现场只过滤 `sparse != SUCCESS`**（去掉旧的 `dense=SUCCESS AND` 前缀），入口**不再前置断言 `dense=SUCCESS`**（fail-fast 已移除）。sparse 用 `update_vectors` 只写 `sparse_text` 命名向量；`upsert_sparse_vectors` 内部先 `ensure_points` 保证 point 存在，故 sparse 可独立 / 先于 dense 写入。sparse 模块不再自查 SQL（`count_by_doc_id` / `list_sparse_candidates_by_doc_id` 不再调用），`bucket_id` 从 `chunks[0].bucket_id` 取（不再误传 `payload.dataset_id`，关闭 #95）；多值 CAS `allowed_statuses=(PENDING, FAILED)` 切 INDEXING；空集短路幂等成功。**sparse encoder 按数据集绑定解析**：读取 `dataset_parse_config.sparse_embedding_config_id` 指向的 `llm_user_config.id`，字段缺失或配置无效时抛 `SparseEmbeddingConfigMissingError`，错误信息包含 `dataset_id` 与字段名，且不回退用户当前默认 SPARSE_EMBEDDING。**代价**：dense / sparse 严格共存不变量弱化（允许"有 sparse 无 dense"的部分态）；存量旧 collection（匿名 dense schema）需迁移到 named-dense schema 后召回才生效 |
 | 重试抢占 | `ParsePipelineRepository.mark_superseded()` | CAS 第 2 层只执行 `UPDATE ... WHERE superseded_by_task_id IS NULL` 并返回 rowcount，不主动 commit；调用方必须与新 retry log / pipeline 建行放在同一事务内提交 |
 | 结果落库 | `ParsePipelineRepository.mark_*` | 终态只写 `document_parse_pipeline`（DB 权威源），前端轮询 Java 查询读取；不再发送 parse_result MQ（LINK-166） |
@@ -265,6 +285,8 @@ demo DAG 当前依赖关系为：`cleaning → chunking`；`chunking → ensure_
 
 阶段顺序：`CLEANING(PARSING) → CHUNKING → VECTORIZING(dense/Qdrant) → PRETOKENIZE → ES_INDEXING → SPARSE_VECTORIZING`。`pipeline_status=SUCCESS` 是整体成功语义：6 阶段全部成功才算整体成功；任一阶段失败即写 `pipeline_status=FAILED`。终态只写 DB，前端轮询 Java 查询读取（LINK-166）。
 
+召回侧不重新聚合 chunk 三路状态，而是从 `latest_parse_task_id` 找到当前 pipeline，并且只在其 `pipeline_status=SUCCESS` 时放行整篇文档。任一路失败导致当前 pipeline 失败时，该文档三路命中都不可见；补偿只修派生索引和 chunk 分支状态，不会把失败 pipeline 直接翻回成功。
+
 **`pipeline_status` 三态翻转**（整体唯一权威）：
 - **`PENDING → PROCESSING`**：首个 `mark_<stage>_started` 触发（幂等，已 PROCESSING 不重复翻转）。
 - **`* → SUCCESS`**：6 阶段全部 SUCCESS 后由 `mark_sparse_vectorizing_success` **唯一**翻转；`mark_es_success` 不再触碰 `pipeline_status`（本期重要变更，与 sparse 阶段对称）。
@@ -287,9 +309,9 @@ demo DAG 当前依赖关系为：`cleaning → chunking`；`chunking → ensure_
 - **chunking 二阶段模型配置缺失（#235）**：启用 `semantic_depth_window` 时，二阶段语义打分使用发起用户默认 `EMBEDDING` 配置；用户缺默认 EMBEDDING 配置时抛 `DenseEmbeddingConfigMissingError`，由 ChunkingStage 归类 `LLM_CONFIG_MISSING`，不回退系统级 `SYSTEM_LLM_*`。
 - **vectorizing 失败**：当前失败 chunk 的 dense 状态标 `FAILED`，已成功 chunk 保持 `SUCCESS`，未处理 chunk 保持 `PENDING`；文件级 `vectorizing_status=FAILED`。稀疏向量不在 vectorizing 阶段执行。用户侧人工重试进入 VECTORIZING 时由 `store_chunk_vectors` 现场过滤出 dense `PENDING` 与 `FAILED` chunk 透传给 `index_chunks`，已 `SUCCESS` 的 chunk 被过滤掉不重复向量化（多值 CAS `allowed_statuses=(PENDING, FAILED)` 在 SQL 层兜底）。
 - **vectorizing 配置/维度失败**：数据集缺少 `dense_embedding_config_id` 或绑定配置无效时，`index_chunks` 在 embed 前抛 `DenseEmbeddingConfigMissingError`（不触碰任何 chunk 状态），`store_chunk_vectors` 透传、VectorizingStage 归类 `LLM_CONFIG_MISSING`（写 DB 终态）；用户模型输出维度与 `DENSE_VECTOR_DIMENSION` 不一致时当前批标 `FAILED` 后抛 `DenseEmbeddingDimensionError`，归类 `EMBEDDING_DIMENSION_UNSUPPORTED`。两者区别于普通 `VECTORIZING_FAILED`，使前端能提示用户补齐数据集模型绑定 / 换模型。
-- **ES 前置删除失败**（`delete_document_index` 抛异常，如 ES 不可达）：直接判 ES 阶段失败、不进入写入，`failure_reason` 以 `es_delete:` 前缀。
-- **ES 基础设施故障**（`_ensure_index` 等）：文件级，不标 chunk，`failure_reason` 以 `ensure_index:` 前缀。
-- **ES chunk 级写失败**：逐 chunk 标 `es_status=FAILED`，文件级 `es_indexing_status=FAILED`，前缀 `ES_INDEXING_FAILED:`；失败后触发文档级删除清理半成品（best-effort），避免 ES 残留部分写入。
+- **BM25 前置删除失败**（`delete_document_index` 抛异常）：直接判 ES_INDEXING 阶段失败、不进入写入，`failure_reason` 以 `es_delete:` 前缀。
+- **BM25 基础设施故障**（如 ES `_ensure_index`）：文件级，不标 chunk，沿后端既有失败前缀返回。
+- **BM25 chunk 级写失败**：文件级 `es_indexing_status=FAILED`；失败后在同一 BM25 锁内文档级清理半成品，清理成功则把整篇 ACTIVE chunk 的 `es_status` 统一标为 `FAILED`。ES 后端使用 `ES_INDEXING_FAILED:`，Qdrant BM25 使用 `QDRANT_BM25_INDEXING_FAILED:`。
 - **稀疏向量阶段失败**（`SparseIndexingPipeline.run` 抛 `SparseIndexingError`）：触发失败的 chunk 标 `sparse_vector_status=FAILED` 留审计痕迹；文件级 `mark_sparse_vectorizing_failed` 落 `sparse_vectorizing_status=FAILED` + `failed_stage=SPARSE_VECTORIZING`，前缀 `SPARSE_VECTORIZING_FAILED:`。
 - **恢复入口** `_infer_recover_stage()` 取首个非 SUCCESS 阶段（cleaning→chunking→vectorizing→pretokenize→es→sparse_vectorizing）。所有 `*_status` 跨重投持久，不被 `mark_<stage>_started` 清空（只清 `failed_stage` / `failure_reason` 等失败痕迹）。
 - **用户侧重试**：重试由 Java 端负责，重试链通过 `document_parsed_log.retry_of_task_id` 与 `document_parse_pipeline.superseded_by_task_id` 双向追溯（migration 0009）。Python 侧已不再维护 `retry_count` / `last_retry_at`（migration 0007 下线）。

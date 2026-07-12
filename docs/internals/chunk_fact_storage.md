@@ -1,6 +1,6 @@
 # Chunk 事实存储（chunk_fact_storage）
 
-本文说明 `src/core/storage/chunks/` —— Chunk 的 **SQL 真值源**。它是整条 RAG 链路的单一事实来源：解析流水线把分片落到这里，向量化 / 稀疏 / ES 三路在这里翻转各自的子状态，召回生成阶段按 `chunk_id` 从这里回读正文。Qdrant 与 Elasticsearch 都只是它的派生索引，最终一致而非强一致。
+本文说明 `src/core/storage/chunks/` —— Chunk 的 **SQL 真值源**。它是整条 RAG 链路的单一事实来源：解析流水线把分片落到这里，dense / sparse / BM25 三路在这里翻转各自的子状态，召回生成阶段按 `chunk_id` 从这里回读正文。Qdrant 与 Elasticsearch 都只是它的派生索引，最终一致而非强一致。
 
 底层表结构见 [docs/api/schemas/mysql.md](../api/schemas/mysql.md) 的 `kb_document_chunk`，ORM 为 [`ChunkRecordDB`](../../src/models/chunk_record.py)。
 
@@ -29,10 +29,12 @@ src/core/storage/chunks/
 | --- | --- | --- |
 | `dense_vector_status` | `PENDING` / `SUCCESS` / `FAILED` | Qdrant 稠密向量索引 |
 | `sparse_vector_status` | `PENDING` / `SUCCESS` / `FAILED` | 稀疏向量索引 |
-| `es_status` | `PENDING` / `SUCCESS` / `FAILED` | Elasticsearch BM25 入库 |
+| `es_status` | `PENDING` / `SUCCESS` / `FAILED` | BM25 入库（字段名保留历史 `es`，实际后端可为 Qdrant BM25 或 Elasticsearch） |
 | `lifecycle_status` | `ACTIVE` / `REMOVED` | 软删除生命周期 |
 
 > **常量命名陷阱**（见 [constants.py](../../src/core/storage/chunks/constants.py)）：代码里 `CHUNK_STATUS_INDEXING` 与 `CHUNK_STATUS_PENDING` 是**同一个 DB 值 `"PENDING"`**，`CHUNK_STATUS_INDEXED` / `SUCCESS` 同为 `"SUCCESS"`。即落库只有 `PENDING` / `SUCCESS` / `FAILED` 三态，"INDEXING" 只是语义别名、不是独立第四态。读写时不要把 `INDEXING` 当成区别于 `PENDING` 的状态。
+
+三路子状态只承担处理进度、诊断与补偿，不聚合成新的 chunk `processing_status`，也不直接决定文档可见性。文档是否可召回由 `document_parse_file.latest_parse_task_id` 指向的当前 `document_parse_pipeline.pipeline_status=SUCCESS` 统一判断。
 
 允许状态集合（CAS 白名单）：
 
@@ -49,14 +51,20 @@ src/core/storage/chunks/
 | --- | --- | --- |
 | `bulk_insert_pending(drafts)` | 由 `FactChunkDraft` 批量插入，初始 `lifecycle=ACTIVE`、sparse/es=`PENDING` | `chunk_id` 全局唯一键去重 |
 | `delete_by_doc_id(doc_id)` | **硬删除**一个 doc 的全部 chunk 行（不分 lifecycle） | 服务于「重试从 CHUNKING 恢复」：先清场再 `bulk_insert_pending`，同事务原子重建 |
-| `mark_indexing` / `mark_indexed` / `mark_failed` | dense 状态翻转；`mark_indexing` 同时把 sparse/es 重置 `PENDING` | 见下方 CAS 优先级；恒带 `_active_predicate` |
+| `mark_indexing` / `mark_indexed` / `mark_failed` | dense 状态翻转，只修改 dense 维度 | 见下方 CAS 优先级；恒带 `_active_predicate` |
 | `mark_sparse_indexing` / `mark_sparse_indexed` / `mark_sparse_failed` | sparse 状态翻转 | CAS 同下；只 SET sparse 维度 |
-| `mark_es_success` / `mark_es_failed` / `mark_es_retrying` | es 状态翻转 | 恒带 `_active_predicate` |
+| `mark_es_success` / `mark_es_failed` / `mark_es_retrying` | BM25 chunk 状态翻转 | 使用 ES/BM25 专属 CAS，并恒带 `_active_predicate` |
+| `mark_document_es_failed` / `mark_document_es_success` | 文档级 BM25 清理/重建后统一更新整篇 ACTIVE chunk | 按 `doc_id + user_id + set_id` 限定范围 |
 | `mark_removed(chunk_ids)` | 软删除：`lifecycle ACTIVE→REMOVED` | 触发「鬼影 hit」窗口（见 §5） |
 | `update_chunk_for_reindex` / `update_chunk_metadata` | 改写正文/元数据并重置索引状态 | 限 `dense_vector_status ∈ (SUCCESS, FAILED)` 且 `ACTIVE` |
-| `claim_failed_for_reindex` / `claim_stale_indexing_for_repair` | 补偿修复：抢占 FAILED / 卡住的 INDEXING 行 | 单行 CAS，rowcount 仲裁 |
 
-**CAS 优先级（关键不变量）**：所有状态翻转走 `_execute_status_update` / `_execute_sparse_status_update`，条件优先级统一为
+系统不保存补偿状态，也不扫描失败记录。外部写入未被 MySQL 确认时由当前写入链路同步清理，随后等待用户重试；不得凭三路共享的 `update_time` 推断任务已经失活。
+
+外部 Qdrant point、named vector 或 ES document 的存在性只作诊断，绝不能反向证明 chunk 状态成功。MySQL 未确认时，统一补偿会先幂等清理目标产物、把分支收敛为 `FAILED`，再从本表正文重建并确认 `SUCCESS`。
+
+旧补偿入口均为 no-op，不回填状态、不重建外部索引。恢复方式是重新发起整篇文档解析。
+
+**CAS 优先级（关键不变量）**：状态翻转分别走 dense、sparse、ES/BM25 专属 update helper，条件优先级统一为
 
 ```
 allowed_statuses（多值 IN）  >  expected_status（单值 =）  >  无状态 CAS
@@ -88,14 +96,14 @@ allowed_statuses（多值 IN）  >  expected_status（单值 =）  >  无状态 
 
 `lifecycle_status` 是删除的**权威信号**且即时翻转；Qdrant / ES 的实际清理经 MQ + 补偿异步完成（窗口数十秒至分钟级）。窗口内向量/BM25 召回**可能返回已 `REMOVED` 但索引尚未清理的 `chunk_id`**（"鬼影 hit"）。
 
-因此**所有下游读回正文都必须按 `lifecycle_status == ACTIVE` 过滤**——召回生成阶段的 [`fetch_chunk_contents`](../../src/core/pipeline/recall/generation.py) 已强制此过滤。完整边界与调用模式见 [vectorization.md §9.6](vectorization.md)。
+因此**所有下游读回正文都必须按 `lifecycle_status == ACTIVE` 过滤**。公共 `RecallPipeline` 已在融合后、top_k 前通过 MySQL 门禁同时校验 ACTIVE、当前 pipeline 整体成功与当前 task 的 `visibility_hold`；旧 task 的 hold 不影响新 current task。召回生成阶段的 [`fetch_chunk_contents`](../../src/core/pipeline/recall/generation.py) 回填时再次过滤 ACTIVE。完整边界与调用模式见 [recall_pipeline.md §3.1](recall_pipeline.md#31-文档级可见性门禁) 和 [vectorization.md §9.6](vectorization.md#96-鬼影-hit-边界删除一致性)。
 
 ---
 
 ## 6. 协作关系
 
-- **写入侧**：解析流水线 `ChunkingStage` 经 `StageServices._persist_chunk_facts` 调 `bulk_insert_pending`；`VectorizingStage` / `SparseVectorizingStage` / `EsIndexingStage` 翻转各自子状态。详见 [parse_task_pipeline.md](parse_task_pipeline.md)。
-- **读取侧**：召回生成阶段回填正文（[recall_generation.md](recall_generation.md)）；向量存储补偿/修复链路（[vectorization.md](vectorization.md)）。
+- **写入侧**：解析流水线 `ChunkingStage` 经 `StageServices._persist_chunk_facts` 调 `bulk_insert_pending`；`VectorizingStage` / `SparseVectorizingStage` / `EsIndexingStage` 翻转各自子状态。三路正常写、统一补偿清理/重建和文档删除共用 MySQL `(doc_id, branch)` 锁；dense/sparse repair 固定同时取得 `DENSE → SPARSE`。锁内 current-task SELECT 持有共享行锁到 mutation guard 退出，阻止 Java 在外部 mutation 中途切换 `latest_parse_task_id`。详见 [parse_task_pipeline.md](parse_task_pipeline.md)。
+- **读取侧**：公共召回门禁先判断当前文档就绪，再由召回生成阶段回填正文（[recall_pipeline.md](recall_pipeline.md)、[recall_generation.md](recall_generation.md)）；向量存储补偿/修复链路见 [vectorization.md](vectorization.md)。
 - **schema 权威**：字段/索引以 ORM + Alembic 迁移为准，对外摘要见 [mysql.md](../api/schemas/mysql.md)。
 
 ---

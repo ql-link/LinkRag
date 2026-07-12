@@ -4,7 +4,6 @@ import pytest
 
 from src.core.pipeline.recall import (
     RecallError,
-    RecallPipeline,
     RecallPipelineConfig,
     RecallRequest,
     RetrieverHit,
@@ -12,7 +11,7 @@ from src.core.pipeline.recall import (
     SOURCE_DENSE,
     SOURCE_SPARSE,
 )
-from tests.unit.core.pipeline.recall.conftest import FakeRetriever
+from tests.unit.core.pipeline.recall.conftest import FakeRetriever, make_recall_pipeline
 
 
 def _hit(chunk_id, source, score=1.0, doc_id=100, dataset_id=10):
@@ -32,7 +31,7 @@ async def test_lenient_one_source_fails():
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[
         _hit("c2", SOURCE_BM25), _hit("c4", SOURCE_BM25),
     ])
-    pipeline = RecallPipeline([dense, sparse, bm25])
+    pipeline = make_recall_pipeline([dense, sparse, bm25])
 
     response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
 
@@ -50,7 +49,7 @@ async def test_lenient_two_sources_fail():
     dense = FakeRetriever(source=SOURCE_DENSE, exc=RuntimeError("qdrant down"))
     sparse = FakeRetriever(source=SOURCE_SPARSE, exc=RuntimeError("model oom"))
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("c1", SOURCE_BM25)])
-    pipeline = RecallPipeline([dense, sparse, bm25])
+    pipeline = make_recall_pipeline([dense, sparse, bm25])
 
     response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
 
@@ -65,7 +64,7 @@ async def test_lenient_all_fail_raises():
     dense = FakeRetriever(source=SOURCE_DENSE, exc=RuntimeError("qdrant_down"))
     sparse = FakeRetriever(source=SOURCE_SPARSE, exc=RuntimeError("model_oom"))
     bm25 = FakeRetriever(source=SOURCE_BM25, exc=RuntimeError("es_timeout"))
-    pipeline = RecallPipeline([dense, sparse, bm25])
+    pipeline = make_recall_pipeline([dense, sparse, bm25])
 
     with pytest.raises(RecallError) as ei:
         await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
@@ -82,7 +81,7 @@ async def test_strict_any_fail_raises():
     dense = FakeRetriever(source=SOURCE_DENSE, exc=RuntimeError("qdrant_timeout"))
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[_hit("c1", SOURCE_SPARSE)])
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("c2", SOURCE_BM25)])
-    pipeline = RecallPipeline(
+    pipeline = make_recall_pipeline(
         [dense, sparse, bm25],
         config=RecallPipelineConfig(strict=True),
     )
@@ -98,7 +97,7 @@ async def test_strict_all_success_returns():
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("c1", SOURCE_DENSE)])
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[_hit("c2", SOURCE_SPARSE)])
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("c3", SOURCE_BM25)])
-    pipeline = RecallPipeline(
+    pipeline = make_recall_pipeline(
         [dense, sparse, bm25],
         config=RecallPipelineConfig(strict=True),
     )
