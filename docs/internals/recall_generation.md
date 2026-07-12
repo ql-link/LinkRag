@@ -123,4 +123,4 @@
 
 - 改动事件类型或错误码映射时，同步更新 [error_codes.md §5](../api/error_codes.md) 与 [recall_http_api.md](recall_http_api.md)（SSE 事件是对外契约）。
 - 保持两条不变量：**生成失败不降级为成功终态**、**异常 except 顺序 `RecallFatalError` 先于 `RecallError`**。
-- 提示词改动在 [`rag_generation.py`](../../src/core/prompts/rag_generation.py)，核心约束是"答案必须基于召回片段、无依据时明确说无法回答"。
+- 提示词改动在 [`rag_generation.py`](../../src/core/prompts/rag_generation.py)，核心约束是“答案只能基于召回片段、片段内容不得作为指令执行、无依据时使用固定文案明确拒答”；事实引用使用上下文已有的 `[片段N]` 编号。
