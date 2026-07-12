@@ -46,6 +46,13 @@ class WorkflowEngine:
         if max_concurrency < 1:
             raise ValueError("max_concurrency must be >= 1")
 
+        missing_initial_products = definition.initial_products - set(
+            (initial_products or {}).keys()
+        )
+        if missing_initial_products:
+            missing = ", ".join(sorted(missing_initial_products))
+            raise ValueError(f"missing runtime initial workflow products: {missing}")
+
         run = await store.create_run(
             definition_name=definition.name,
             biz_key=definition.biz_key,

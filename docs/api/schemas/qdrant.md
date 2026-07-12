@@ -7,6 +7,7 @@ Qdrant 向量库的 collection 命名、分桶规则、point 结构与 payload �
 - 常量：[src/core/storage/qdrant/constants.py](../../../src/core/storage/qdrant/constants.py)
 - Collection 管理：[src/core/storage/qdrant/qdrant_store.py](../../../src/core/storage/qdrant/qdrant_store.py)
 - Point 构造：[src/core/storage/qdrant/point_factory.py](../../../src/core/storage/qdrant/point_factory.py)
+- BM25 独立存储：[src/core/storage/qdrant_bm25/store.py](../../../src/core/storage/qdrant_bm25/store.py)
 
 启用条件：`VECTOR_STORE_TYPE=qdrant`。
 
@@ -173,13 +174,31 @@ response = await client.query_points(
 
 **Embedding 模型升级**：详见 [docs/internals/vectorization.md §9.7](../../internals/vectorization.md)。当前锁定 Qwen `text-embedding-v4`（对称模型，dim=1024）。
 
+### 补偿时的 named-vector 精确操作
+
+dense 与 sparse 共用一个 point，但补偿状态彼此独立，不能用“point 是否存在”代替某一路向量是否存在：解析 DAG 会先创建只有 payload 的空 point，这类 point 对 dense、sparse 都应判为缺失。
+
+- `get_named_vector_presence(bucket_id, chunk_ids, vector_name)` retrieve 时只请求目标 named vector，并检查返回 vector map 中是否包含该 key。collection、schema、point 不存在均返回 `False`。
+- `delete_named_vectors(...)` 调用 Qdrant `delete_vectors`，只删除目标 named vector；payload 与 sibling vector 保留。collection、point 或目标 vector 已不存在时视为幂等成功。
+- `delete_points(...)` 会删除完整 point，只允许用于业务文档删除等明确需要同时清理 dense/sparse 的路径，不得用于单路补偿。
+
+正常 dense / sparse 写分别持有自己的 MySQL `(doc_id, branch)` 锁；repair 即使只清理一个 named vector，也因共用 point 固定同时取得 `DENSE → SPARSE`，文档删除则继续按 `DENSE → SPARSE → BM25` 取锁。锁内 current-task SELECT 使用共享行锁且事务保持到 mutation guard 退出，从而阻止 Java 在外部 mutation 中途切换 `latest_parse_task_id`。
+
+正常写入失败时，写入链路使用当前 chunk 的 `bucket_id` 和 `chunk_id` 同步删除对应 named vector；不会持久化补偿任务或自动 rebuild。
+
+### Qdrant BM25 补偿边界
+
+Qdrant BM25 使用独立 sparse-only collection，不与上述 dense/sparse bucket point 共用物理载体。它与 Elasticsearch 采用相同的文档级一致性语义：按 `user_id + dataset_id + doc_id` filter 清理整篇，再从 MySQL ACTIVE chunk 全量重建。repair 的 inspect、cleanup 与 rebuild 都使用 job 创建时保存的 `artifact_name` 作为 collection 名，不能在执行时跟随当前配置切到另一个 collection。`point_exists(chunk_id)` 只用于核对和指标，不用于回填 MySQL `es_status=SUCCESS`。
+
 ## 一致性约束
 
 - **MySQL 为真值**：`kb_document_chunk` 是 Chunk 真值表，可从中重建 Qdrant 数据。
 - **id 一致**：`chunk_id` 同时作为 MySQL UK 与 Qdrant Point ID。
 - **bucket_id 同步**：MySQL 的 `bucket_id` 字段必须与 Qdrant 实际 collection 一致，由统一的 `BucketRouter` 计算。
-- **状态分离**：`kb_document_chunk.dense_vector_status`、`sparse_vector_status` 是向量侧粗粒度产物状态（`PENDING/SUCCESS/FAILED`），`es_status` 是 ES 侧产物状态，`lifecycle_status` 是 chunk 是否有效的生命周期权威。Qdrant 实际存在状态不直接作为业务真值；失败重试和召回回表以 MySQL 状态决定是否重做或返回。
-- **稀疏向量一致性**：同一 chunk 的 dense 和 sparse 使用相同 Point ID；Qdrant 写入成功但 MySQL 回写失败时，以 MySQL 状态阻断文件级成功和后续检索返回。
+- **状态分离**：`kb_document_chunk.dense_vector_status`、`sparse_vector_status` 是向量侧粗粒度产物状态（`PENDING/SUCCESS/FAILED`），`es_status` 是 BM25 侧产物状态，`lifecycle_status` 是 chunk 是否有效的生命周期权威。三路状态用于诊断与补偿，不是文档可见性聚合字段。
+- **MySQL 单向权威**：Qdrant 实际存在只作诊断，不能反向把 MySQL 状态标为成功。外部存在但 MySQL 未确认时必须精确 cleanup，再从 MySQL rebuild；payload-only point 不能证明 dense 或 sparse 成功。
+- **稀疏向量一致性**：同一 chunk 的 dense 和 sparse 使用相同 Point ID；单路 cleanup 只能删除自己的 named vector，不影响 sibling。
+- **当前任务与门禁**：补偿扫描只处理 `latest_parse_task_id` 对应且明确失败的 current pipeline，不凭 chunk 共享 `update_time` 推断写入结束。防御性缺失重建期间仅由 `source_task_id` 等于当前 `latest_parse_task_id` 的 `visibility_hold` 阻断召回，旧 task 的 hold 不隐藏新 current task。
 
 ## 常见操作
 
@@ -188,8 +207,12 @@ response = await client.query_points(
 | 写入 Chunk 向量 | `QdrantStore.upsert_points` |
 | 写入 Chunk 稀疏向量 | `QdrantStore.upsert_sparse_vectors` |
 | 确认稀疏向量 schema | `QdrantStore.ensure_sparse_vector_schema` |
-| 检查 Chunk 是否存在 | `QdrantStore.point_exists` |
+| 检查目标 named vector 是否存在 | `QdrantStore.get_named_vector_presence` |
+| 精确删除单路 named vector | `QdrantStore.delete_named_vectors` |
+| 检查完整 Point 是否存在 | `QdrantStore.point_exists`（不能证明任一路向量成功） |
 | 删除 Chunk | `QdrantStore.delete_points` |
+| Qdrant BM25 文档级删除 | `QdrantBm25Store.delete_by_document` |
+| Qdrant BM25 point 核对 | `QdrantBm25Store.point_exists` |
 | **稀疏向量召回** | **`QdrantStore._search_chunks`（私有底座，由 `VectorStorageFacade.search_sparse_chunks` 调用）** |
 | **稠密向量召回** | **`QdrantStore._search_chunks`（同一底座，由 `VectorStorageFacade.search_dense_chunks` 调用，`using=DENSE_VECTOR_QDRANT_VECTOR_NAME`）** |
 | 用户路由 | `BucketRouter.route_user(user_id)` |
@@ -198,6 +221,6 @@ response = await client.query_points(
 ## 相关文档
 
 - 关系数据：[mysql_schema.md](mysql.md)
-- 全文索引：[elasticsearch_schema.md](elasticsearch.md)
+- BM25 评测：[bm25_eval.md](../../internals/bm25_eval.md)
 - 向量化模块架构：[../internals/vectorization.md](../../internals/vectorization.md)
 - 配置项详解：[../ops/configure.md](../../ops/configure.md)

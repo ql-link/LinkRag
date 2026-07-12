@@ -25,7 +25,9 @@ from src.core.mq.messages.document_delete import (
 from src.core.pipeline.document_delete.repository import ParseDeleteRepository
 from src.core.storage.bm25_backend import build_indexing_pipeline
 from src.core.storage.chunks.repository import ChunkRepository
-from src.core.storage.es.pipeline import EsIndexingPipeline
+from src.core.storage.index_mutation_guard import get_index_mutation_guard
+from src.core.storage.index_mutation_guard import MutationGuardProtocol
+from src.core.storage.index_mutation_models import IndexBranch
 from src.core.storage.qdrant.qdrant_store import QdrantIndexStore
 from src.database import get_db_context
 from src.services.storage.base import BaseObjectStorage
@@ -50,9 +52,10 @@ class DocumentDeletePurger:
         chunk_repository: ChunkRepository | None = None,
         parse_repository: ParseDeleteRepository | None = None,
         qdrant_store: QdrantIndexStore | None = None,
-        es_pipeline: EsIndexingPipeline | None = None,
+        es_pipeline: object | None = None,
         storage: BaseObjectStorage | None = None,
         page_size: int | None = None,
+        mutation_guard: MutationGuardProtocol | None = None,
     ) -> None:
         self._chunk_repo = chunk_repository or ChunkRepository()
         self._parse_repo = parse_repository or ParseDeleteRepository()
@@ -60,6 +63,7 @@ class DocumentDeletePurger:
         self._es_pipeline = es_pipeline or build_indexing_pipeline()
         self._storage = storage or StorageFactory.get_storage()
         self._page_size = page_size or settings.DOCUMENT_DELETE_PAGE_SIZE
+        self._mutation_guard = mutation_guard or get_index_mutation_guard()
 
     async def purge(self, payload: DocumentDeletePayload) -> None:
         """删除入口：按范围分流。失败向上抛，由消费者归类为暂时性失败重试。"""
@@ -89,13 +93,42 @@ class DocumentDeletePurger:
             for doc_id in doc_ids:
                 await self._purge_file(user_id=user_id, dataset_id=dataset_id, doc_id=doc_id)
             total += len(doc_ids)
+
+        # 表级清理（仅 Manticore 后端实现）：按 dataset_id 物理建表的后端，逐文档删除
+        # 干净不了空表本身，dataset 整体删除时必须再补一刀 DROP TABLE，否则空表只增
+        # 不减。ES/Qdrant 没有对应的表级结构，鸭子探测不到方法即跳过，行为不变。
+        drop_dataset = getattr(self._es_pipeline, "delete_by_dataset", None)
+        if drop_dataset is not None:
+            await drop_dataset(user_id=user_id, dataset_id=dataset_id)
+
         logger.info(
             f"[DocumentDeletePurger] dataset 清理完成: dataset_id={dataset_id}, "
             f"user_id={user_id}, files={total}"
         )
 
     async def _purge_file(self, *, user_id: int, dataset_id: int, doc_id: int) -> None:
-        """单文件清理：先读路由 → 删 Qdrant → 删 ES → 删 OSS → 最后删 DB 行。"""
+        """单文件清理：固定顺序持有三路锁，再删外部产物和 DB 账本。"""
+        # Qdrant dense/sparse 共用同一 point，文档删除会删整个 point。
+        # 因此必须同时持有 DENSE 与 SPARSE，并与其他多锁路径统一按
+        # DENSE → SPARSE → BM25 获取，避免多实例间交叉等待。DB 销账完成后
+        # 才释放锁，排队的旧 writer 随后会因 current task 复核失败而退出。
+        async with self._mutation_guard.hold(doc_id=doc_id, branch=IndexBranch.DENSE):
+            async with self._mutation_guard.hold(doc_id=doc_id, branch=IndexBranch.SPARSE):
+                async with self._mutation_guard.hold(doc_id=doc_id, branch=IndexBranch.BM25):
+                    await self._purge_file_guarded(
+                        user_id=user_id,
+                        dataset_id=dataset_id,
+                        doc_id=doc_id,
+                    )
+
+    async def _purge_file_guarded(
+        self,
+        *,
+        user_id: int,
+        dataset_id: int,
+        doc_id: int,
+    ) -> None:
+        """在三路 mutation lock 均持有时执行实际删除。"""
         # STEP 1 读路由（只读，不删）：拿到 chunk_id/bucket_id 与 OSS 产物前缀
         async with get_db_context() as db:
             routing = await self._chunk_repo.list_routing_by_doc_id(db, doc_id, user_id)

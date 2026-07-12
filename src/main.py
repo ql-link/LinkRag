@@ -50,6 +50,19 @@ from src.observability.middleware import TraceContextMiddleware
 from src.services.mq_service import MQService
 
 
+def _manticore_enabled() -> bool:
+    write_backends = {
+        backend.strip()
+        for backend in (settings.BM25_WRITE_BACKENDS or settings.BM25_BACKEND).split(",")
+        if backend.strip()
+    }
+    return (
+        settings.BM25_BACKEND == "manticore"
+        or settings.BM25_SHADOW_BACKEND == "manticore"
+        or "manticore" in write_backends
+    )
+
+
 async def _start_mq_consumers() -> None:
     """组合根装配：用 MQService 订阅各业务 handler 并启动消费。
 
@@ -105,6 +118,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception:
         pass
     await redis_client.close()
+    if _manticore_enabled():
+        from src.core.storage.manticore_bm25 import close_manticore_bm25_store
+
+        await close_manticore_bm25_store()
     await close_database()
     # 等待 enqueue 异步队列里的日志全部落盘，避免退出时丢失尾部日志。
     await logger.complete()
@@ -170,8 +187,34 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 @app.get("/health")
 async def health_check():
-    """健康检查"""
+    """进程存活检查；不访问外部依赖。"""
     return {"status": "ok", "app": settings.APP_NAME, "services": ["llm", "document_parser"]}
+
+
+@app.get("/ready")
+async def readiness_check():
+    """流量就绪检查；启用 Manticore 时必须能在截止时间内执行 SQL。"""
+
+    if _manticore_enabled():
+        from src.core.storage.manticore_bm25 import get_manticore_bm25_store
+
+        try:
+            await get_manticore_bm25_store().ping()
+        except Exception as exc:
+            logger.warning(f"Manticore readiness check failed: {exc}")
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "not_ready",
+                    "app": settings.APP_NAME,
+                    "bm25_backend": "manticore",
+                },
+            )
+    return {
+        "status": "ready",
+        "app": settings.APP_NAME,
+        "bm25_backend": settings.BM25_BACKEND,
+    }
 
 
 if __name__ == "__main__":

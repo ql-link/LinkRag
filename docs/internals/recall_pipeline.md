@@ -8,16 +8,17 @@
 
 ## 1. 设计目标
 
-`RecallPipeline` 是查询侧的轻量编排层，只做三件事：
+`RecallPipeline` 是查询侧的轻量编排层，只做四件事：
 
 1. 按配置并行或串行触发已装配的全部召回路。
 2. 按严格或宽松容错策略收敛单路异常。
-3. 对成功路结果按配置做粗融合，返回稳定结构的候选列表。
+3. 对成功路结果按配置做粗融合。
+4. 通过注入的 `DocumentReadinessGate` 按 MySQL 当前任务过滤不可见文档，再返回稳定结构的候选列表。
 
 它明确不做这些事情：
 
 - query 预处理、embedding、稀疏化、分词。
-- 直接访问 Qdrant、Elasticsearch、MySQL 等存储。
+- 直接访问 Qdrant、Elasticsearch、MySQL 等存储；MySQL 门禁由独立协作者实现并注入。
 - 非融合策略所需的复杂排序或评测调参。
 - reranker 精排、上下文拼装、答案生成。
 
@@ -32,7 +33,8 @@ src/core/pipeline/recall/
 ├── __init__.py       # 对外导出 RecallPipeline / models / source 常量
 ├── pipeline.py       # RecallPipeline：多路触发、容错、融合和响应组装
 ├── models.py         # RecallRequest / RetrieverHit / RecallHit / RecallResponse / Config
-├── protocols.py      # Retriever 协议 + SOURCE_DENSE / SOURCE_SPARSE / SOURCE_BM25
+├── protocols.py      # Retriever / DocumentReadinessGate 协议 + SOURCE_* 常量
+├── document_readiness.py # MySQL 当前任务、ACTIVE chunk 与 visibility hold 门禁
 ├── fusion.py         # RRF / weighted_score 粗融合
 ├── generation.py     # 召回后生成准备：正文回填 + 按 token 预算拼装上下文（独立于 RecallPipeline，见 §1 说明）
 └── exceptions.py     # RecallError / RecallValidationError / RecallFatalError
@@ -43,7 +45,7 @@ src/core/pipeline/recall/
 | 路 | source | 适配器 |
 | --- | --- | --- |
 | sparse | `sparse` | `src/core/storage/vector/sparse_retriever.py` |
-| BM25 | `bm25` | `src/core/storage/es/bm25_retriever.py` |
+| BM25 | `bm25` | `src/core/storage/bm25_retriever.py` |
 | dense | `dense` | `src/core/storage/vector/dense_retriever.py` |
 
 `RecallPipeline` 不写死具体路数；新增 GraphRAG、wiki 或其他召回路时，只要实现 `Retriever` 协议并在构造时传入即可。
@@ -59,7 +61,8 @@ RecallRequest(query, user_id, dataset_ids, doc_ids, top_k, bm25_top_k, sparse_to
        -> run retrievers in parallel / serial（透传 user_id 与各路 top_k）
        -> check failures by strict / loose policy
        -> fuse successful hits with configured strategy
-       -> truncate fused hits to top_k（融合候选池 / rerank 输入窗口）
+       -> filter visible hits by MySQL document readiness（保持融合顺序）
+       -> truncate visible hits to top_k（融合候选池 / rerank 输入窗口）
        -> build RecallResponse
 ```
 
@@ -82,6 +85,22 @@ for retriever in retrievers:
 ```
 
 串行与并行只影响触发方式，不改变容错语义：单路异常都会先收敛为该 source 的失败结果，再由 `_check_failures()` 统一判断。
+
+### 3.1 文档级可见性门禁
+
+门禁位于**融合完成后、最终 `top_k` 截断前**。因此不可见文档不会占用候选窗口，后续可见候选可以按原融合顺序补位；纯召回 JSON 与 RAG/SSE 都调用同一个 `RecallPipeline.execute()`，不会出现出口间口径分叉。
+
+`MySqlDocumentReadinessGate` 以候选 `chunk_id` 批量查询 MySQL，单批最多 500 个。候选必须同时满足：
+
+- chunk 属于当前请求用户，且 `lifecycle_status=ACTIVE`；hit 中的 `doc_id` / `dataset_id` 与 MySQL 归属一致。
+- `document_parse_file.latest_parse_task_id` 指向的 `document_parse_pipeline` 行存在，且该**当前任务**的 `pipeline_status=SUCCESS`。
+- 当前 `latest_parse_task_id` 不存在 `visibility_hold=1` 且尚未进入 `SUCCEEDED` / `CANCELLED_SUPERSEDED` 的索引补偿任务。
+
+历史 pipeline 即使曾经成功也不能放行文档；`latest_parse_task_id` 为空、当前 pipeline 缺行或未成功时，整篇文档的 dense / sparse / BM25 命中全部被过滤。门禁查询异常直接向上抛出，按 fail-closed 处理，不降级为返回未过滤候选。
+
+`visibility_hold` 用于防御性反向补偿：当 MySQL 已确认成功但外部索引缺失时，补偿从 MySQL 重建期间先隐藏整篇文档；重建成功或任务因 current task 切换而取消后才释放。门禁同时要求 job 的 `source_task_id == latest_parse_task_id`，因此旧 task 遗留的 hold 不会阻断已经切换到新 current task 的文档。
+
+每次门禁输出结构化汇总日志：`candidate_count`、`visible_count`、`filtered_count`、`query_ms`，以及 `filtered_by_routing_or_missing` / `filtered_by_lifecycle` / `filtered_by_pipeline` / `filtered_by_hold`。为保证各原因之和等于过滤总量，同一 hit 同时不满足多个条件时按 `routing_or_missing → lifecycle → pipeline → hold` 选择首个原因；日志不记录 query 或 chunk 正文。
 
 ---
 
@@ -239,8 +258,9 @@ RecallPipelineConfig(
 | RRF 融合 | `tests/unit/core/pipeline/recall/test_recall_pipeline_rrf.py` |
 | weighted_score 融合 | `tests/unit/core/pipeline/recall/test_recall_pipeline_weighted_score.py` |
 | 容错语义 | `tests/unit/core/pipeline/recall/test_recall_pipeline_fault.py` |
+| 文档级门禁、保序与 top_k 补位 | `tests/unit/core/pipeline/recall/test_recall_pipeline_readiness.py` |
 | 入参与构造边界 | `tests/unit/core/pipeline/recall/test_recall_pipeline_validation.py`、`test_recall_pipeline_boundary.py` |
-| 单路适配器 | `tests/unit/core/storage/vector/test_sparse_retriever.py`、`tests/unit/core/storage/es/test_bm25_retriever.py` |
+| 单路适配器 | `tests/unit/core/storage/vector/test_sparse_retriever.py`、`tests/unit/core/storage/test_bm25_retriever.py` |
 
 测试 Pipeline 编排时优先使用 fake Retriever，不要 mock Qdrant、ES 或 tokenizer；这些属于各路适配器自己的测试范围。
 
@@ -250,6 +270,7 @@ RecallPipelineConfig(
 
 - `src/core/pipeline/recall/` 保持编排层纯度，不直接读写存储。
 - 单路查询、预处理、过滤和打分逻辑放在各自 Retriever 内。
+- 文档业务可见性只由必传的 `DocumentReadinessGate` 判定；不得在单路 Retriever、JSON/SSE 出口或正文回填处各自复制一套 current-task 规则。
 - Pipeline 只消费 `RetrieverHit`，只输出 `RecallHit`，不携带 chunk 正文。
 - 不在召回层接入 rerank score；rerank 永远消费融合后的 `RecallHit`。
 
@@ -259,7 +280,7 @@ LINK-136 后，`RecallRequest.top_k` 不再是三路共同的执行期 top_k，�
 
 ```text
 dataset_parse_config.recall_config 或系统 Settings
-  -> recall_result_limit        -> RecallRequest.top_k        -> 融合后截断 / rerank 输入池
+  -> recall_result_limit        -> RecallRequest.top_k        -> 文档门禁后截断 / rerank 输入池
   -> bm25_top_k / sparse_top_k / dense_top_k
                                 -> Retriever.recall(top_k=...) -> 单路召回深度
 ```
@@ -273,7 +294,7 @@ dataset_parse_config.recall_config 或系统 Settings
 | `RECALL_SPARSE_TOP_K` | 50 | sparse 路执行期召回深度 |
 | `RECALL_DENSE_TOP_K` | 100 | dense 路执行期召回深度 |
 
-`DENSE_RETRIEVAL_TOP_K` / `SPARSE_RETRIEVAL_TOP_K` 只作为 `VectorStorageFacade.search_dense_chunks()` / `search_sparse_chunks()` 直调时的兜底默认。完整 RAG pipeline 会显式传入三路 top_k，因此不会读取这两个 facade 默认作为召回深度。
+`DENSE_RETRIEVAL_TOP_K` / `SPARSE_RETRIEVAL_TOP_K` 只作为 `VectorStorageFacade.search_dense_chunks()` / `search_sparse_chunks()` 直调时的兜底默认。完整 RAG pipeline 会显式传入三路 top_k，因此不会读取这两个 facade 默认作为召回深度。最终顺序固定为 `fuse → readiness gate → top_k`，不能提前截断。
 
 ---
 

@@ -8,7 +8,8 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 
-from src.core.pipeline.recall import RetrieverHit
+from src.core.pipeline.recall import RecallPipeline, RecallPipelineConfig, RetrieverHit
+from src.core.pipeline.recall.models import RecallHit
 
 
 @dataclass
@@ -59,3 +60,39 @@ class FakeRetriever:
         if self.exc is not None:
             raise self.exc
         return list(self.hits or [])
+
+
+@dataclass
+class FakeDocumentReadinessGate:
+    """可控的文档门禁替身；默认原样保序放行所有候选。"""
+
+    visible_chunk_ids: set[str] | None = None
+    exc: Exception | None = None
+    calls: list[tuple[list[RecallHit], int]] = field(default_factory=list)
+
+    async def filter_visible_hits(
+        self,
+        hits: list[RecallHit],
+        *,
+        user_id: int,
+    ) -> list[RecallHit]:
+        self.calls.append((list(hits), user_id))
+        if self.exc is not None:
+            raise self.exc
+        if self.visible_chunk_ids is None:
+            return list(hits)
+        return [hit for hit in hits if hit.chunk_id in self.visible_chunk_ids]
+
+
+def make_recall_pipeline(
+    retrievers,
+    config: RecallPipelineConfig | None = None,
+    *,
+    readiness_gate: FakeDocumentReadinessGate | None = None,
+) -> RecallPipeline:
+    """为既有召回单测显式装配一个默认放行的门禁替身。"""
+    return RecallPipeline(
+        retrievers,
+        config,
+        readiness_gate=readiness_gate or FakeDocumentReadinessGate(),
+    )

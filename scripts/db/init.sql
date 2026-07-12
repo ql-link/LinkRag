@@ -8,7 +8,7 @@
 --   - schema 演进的唯一权威源是 src/models/**.py + migrations/versions/*.py；
 --   - 修改字段必须先改 ORM 模型并新增 migration，再同步本文件。
 -- 同步时机：每条会改动表结构的 migration 落库时一并更新本文件。
--- 末次同步：migration 0033_20260704_chunk_type_contract
+-- 末次同步：migration 0035_20260711_add_parse_stage_error_code
 -- 备注：0032_20260702_provider_icon_fields 兼容历史 dev 库中 provider icon 误用 0031 revision 的状态；
 --      本快照只表达叠加全部 migration 后的最终结构。
 -- ===============================================
@@ -33,8 +33,19 @@ CREATE TABLE IF NOT EXISTS sys_user (
     updated_at      DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
     UNIQUE KEY uk_username (username),
-    UNIQUE KEY uk_email (email)
+    UNIQUE KEY uk_email (email),
+    INDEX idx_sys_user_created_at (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '系统用户表';
+
+-- 1.1 用户成功登录事件表
+CREATE TABLE IF NOT EXISTS user_login_event (
+    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '登录事件唯一标识',
+    user_id         BIGINT UNSIGNED NOT NULL COMMENT '登录用户ID',
+    login_source    VARCHAR(16) NOT NULL COMMENT '登录来源：LOGIN 普通登录, REGISTER 注册自动登录',
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '登录成功时间（Asia/Shanghai）',
+
+    INDEX idx_user_login_event_created_user (created_at, user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '用户成功登录事件表';
 
 -- 2. LLM 系统级厂商配置表
 CREATE TABLE IF NOT EXISTS llm_system_provider (
@@ -399,7 +410,7 @@ CREATE TABLE IF NOT EXISTS kb_document_chunk (
     KEY idx_lifecycle_update_time (lifecycle_status, update_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '文档Chunk真值记录表';
 
--- 16. 数据集级解析/检索参数配置表（migration 0017 引入，LINK-148）
+-- 17. 数据集级解析/检索参数配置表（migration 0017 引入，LINK-148）
 -- 四个 JSON 列承载分块 / Markdown 增强 / PDF / 召回四类配置；行数据增删改由 Java 侧负责，
 -- Python 侧只读（无行/读取失败降级系统默认）。
 CREATE TABLE IF NOT EXISTS dataset_parse_config (
@@ -424,7 +435,7 @@ CREATE TABLE IF NOT EXISTS dataset_parse_config (
     KEY idx_dataset_parse_dense_config (dense_embedding_config_source, dense_embedding_config_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '数据集解析/检索参数配置';
 
--- 17. 通用流程编排运行记录表（migration 0024 引入，LINK-102）
+-- 18. 通用流程编排运行记录表（migration 0024 引入，LINK-102）
 -- 仅记录 workflow engine 的 run 级状态；不替代 document_parse_pipeline。
 CREATE TABLE IF NOT EXISTS workflow_run (
     id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '物理主键ID',
@@ -446,7 +457,7 @@ CREATE TABLE IF NOT EXISTS workflow_run (
     KEY idx_workflow_run_definition_status (definition_name, status, updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '通用流程编排运行记录表';
 
--- 18. 通用流程编排节点运行记录表（migration 0024 引入，LINK-102）
+-- 19. 通用流程编排节点运行记录表（migration 0024 引入，LINK-102）
 -- 仅记录 workflow engine 的 node 级状态；产物引用 output_ref 由节点自行定义。
 CREATE TABLE IF NOT EXISTS workflow_node_run (
     id                    BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '物理主键ID',

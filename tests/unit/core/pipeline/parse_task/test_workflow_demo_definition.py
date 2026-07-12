@@ -2,7 +2,6 @@ import pytest
 
 
 pytest.importorskip("boto3")
-pytest.importorskip("elasticsearch")
 
 from src.core.pipeline.parse_task.workflow_demo import (
     PARSE_TASK_DEMO_WORKFLOW_NAME,
@@ -42,7 +41,7 @@ def test_parse_task_serial_workflow_is_a_single_linear_chain():
 
     assert definition.name == PARSE_TASK_SERIAL_WORKFLOW_NAME
     assert definition.initial_products == frozenset({"parse.source"})
-    # 穿行：在并行 DAG 的真实数据边之上，叠加 dense→pretokenize、es→sparse 两条定序边，
+    # 串行：在并行 DAG 的真实数据边之上，叠加 dense→pretokenize、es→sparse 两条定序边，
     # 把并行分支串成一条线。
     assert definition.edges() == {
         ("cleaning", "chunking"),

@@ -1,8 +1,8 @@
 # 预分词模块（Preprocessor）
 
-本文说明 `src/core/preprocessor/`。它是 ES/BM25 链路的**上游**：把已落库的 chunk 正文用 RAGFlow 分词器预先切成 token，产出文件级"ES 后置索引计划"（`FilePostIndexPlan`），交给 [es_index_storage](es_index_storage.md) 写入 Elasticsearch。
+本文说明 `src/core/preprocessor/`。它是 BM25 链路的上游：把已落库的 chunk 正文用 RAGFlow 分词器预先切成 token，产出文件级 `FilePostIndexPlan`，交给当前 BM25 后端写入索引。
 
-"预分词"指**写入侧提前完成分词**：ES 索引文档里直接存空格分隔的 token 串，ES 端只做 `whitespace` 切分不再二次分词，从而索引侧与 BM25 召回侧共用同一份分词产物，避免 token 分布漂移（召回侧分词见 [es_index_storage.md §4.2](es_index_storage.md#42-bm25retrieverbm25_retrieverpy-召回-pipeline-适配器)）。
+“预分词”指写入侧提前完成分词：索引侧与 BM25 召回侧共用同一份分词器，避免 token 分布漂移。
 
 ---
 
@@ -20,15 +20,15 @@ src/core/preprocessor/
 
 ## 2. 产物模型（models.py）
 
-这些 dataclass 是预分词与 ES 入库之间的**共享契约**（`frozen` + `slots`）：
+这些 dataclass 是预分词与 BM25 入库之间的共享契约（`frozen` + `slots`）：
 
 | 模型 | 字段 | 说明 |
 | --- | --- | --- |
 | `FileIndexMeta` | `user_id` / `dataset_id` / `doc_id` / `task_id` | 文件级归属元信息 |
 | `ChunkWithTokens` | `chunk_id` / `chunk_index` / `coarse_tokens` / `fine_tokens` | 单 chunk 的两级 token 串 |
-| `FilePostIndexPlan` | `file_meta` + `chunks_with_tokens: list[ChunkWithTokens]` | 一个文件的完整 ES 后置索引计划 |
+| `FilePostIndexPlan` | `file_meta` + `chunks_with_tokens: list[ChunkWithTokens]` | 一个文件的完整 BM25 后置索引计划 |
 
-`coarse_tokens`（粗粒度）与 `fine_tokens`（细粒度）对应 ES mapping 里的两个检索字段，召回时 `coarse_tokens` 权重更高（见 ES BM25 查询构造）。
+`coarse_tokens`（粗粒度）与 `fine_tokens`（细粒度）供不同 BM25 后端按各自策略使用；Manticore 当前生产实现只索引 coarse。
 
 ---
 
@@ -67,9 +67,9 @@ storage.chunks (ChunkRecordDB)        ← 数据来源（dense 已 INDEXED 的 a
 preprocessor.Preprocessor                  ← 本模块：读 chunk → 预分词
         │  FilePostIndexPlan
         ▼
-storage.es.EsIndexingPipeline        ← 下游：批量写 ES
+storage.manticore_bm25               ← 下游：批量写 Manticore BM25
         ⋮
-storage.es.Bm25Retriever             ← 召回侧复用 RagFlowTokenizer 分词 query
+storage.bm25_retriever.Bm25Retriever ← 召回侧复用 RagFlowTokenizer 分词 query
 ```
 
 在解析主流水线里，预分词对应 parse_task 的 `pretokenize` 阶段，紧接其后是 `es_indexing` 阶段（见 [parse_task_pipeline.md](parse_task_pipeline.md)）。

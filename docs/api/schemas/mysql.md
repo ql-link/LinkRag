@@ -10,7 +10,7 @@ ORM 与 migration 不一致时，以 migration 为准并修正 ORM；scripts/db/
 
 ## 表清单
 
-按业务域共 20 张表：
+按业务域共 21 张表：
 
 | 业务域 | 表 | 主键 ID 起始 |
 | --- | --- | --- |
@@ -551,8 +551,6 @@ ORM：[`ChunkRecordDB`](../../../src/models/chunk_record.py)
 - `idx_doc_lifecycle_status(doc_id, lifecycle_status)`
 - `idx_lifecycle_update_time(lifecycle_status, update_time)`
 
----
-
 ## 8. Workflow 运行记录
 
 通用 workflow engine 的运行记录表。它们只记录 demo / 后续显式接入的 workflow run 与 node run，不替代现有 `document_parse_pipeline`、`document_parsed_log` 或 `kb_document_chunk`。
@@ -621,6 +619,6 @@ ORM：[`WorkflowNodeRunDB`](../../../src/models/workflow.py)
 ## 相关文档
 
 - 向量索引模式：[qdrant_schema.md](qdrant.md)
-- 全文索引模式：[elasticsearch_schema.md](elasticsearch.md)
+- BM25 召回评测：[bm25_eval.md](../../internals/bm25_eval.md)
 - API 契约：[api_contracts.md](../http_contracts.md)
 - 解析流水线架构：[../internals/parse_task_pipeline.md](../../internals/parse_task_pipeline.md)

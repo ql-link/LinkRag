@@ -9,7 +9,6 @@ import pytest
 
 from src.core.pipeline.recall import (
     RecallError,
-    RecallPipeline,
     RecallPipelineConfig,
     RecallRequest,
     RetrieverHit,
@@ -17,7 +16,7 @@ from src.core.pipeline.recall import (
     SOURCE_DENSE,
     SOURCE_SPARSE,
 )
-from tests.unit.core.pipeline.recall.conftest import FakeRetriever
+from tests.unit.core.pipeline.recall.conftest import FakeRetriever, make_recall_pipeline
 
 
 def _hit(chunk_id, source, score=1.0):
@@ -30,7 +29,7 @@ def _pipeline_three(strict=False):
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("c1", SOURCE_DENSE)])
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[_hit("c2", SOURCE_SPARSE)])
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("c3", SOURCE_BM25)])
-    pipeline = RecallPipeline([dense, sparse, bm25], RecallPipelineConfig(strict=strict))
+    pipeline = make_recall_pipeline([dense, sparse, bm25], RecallPipelineConfig(strict=strict))
     return pipeline, dense, sparse, bm25
 
 
@@ -94,7 +93,7 @@ async def test_strict_override_true_raises_on_single_failure():
     """装配期 strict=False，但 strict_override=True → 单路失败即整体抛 RecallError。"""
     dense = FakeRetriever(source=SOURCE_DENSE, exc=RuntimeError("boom"))
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[_hit("c2", SOURCE_SPARSE)])
-    pipeline = RecallPipeline([dense, sparse], RecallPipelineConfig(strict=False))
+    pipeline = make_recall_pipeline([dense, sparse], RecallPipelineConfig(strict=False))
 
     with pytest.raises(RecallError):
         await pipeline.execute(
@@ -107,7 +106,7 @@ async def test_strict_override_false_overrides_assembled_strict():
     """装配期 strict=True，但 strict_override=False → 单路失败降级，不抛错。"""
     dense = FakeRetriever(source=SOURCE_DENSE, exc=RuntimeError("boom"))
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[_hit("c2", SOURCE_SPARSE)])
-    pipeline = RecallPipeline([dense, sparse], RecallPipelineConfig(strict=True))
+    pipeline = make_recall_pipeline([dense, sparse], RecallPipelineConfig(strict=True))
 
     resp = await pipeline.execute(
         RecallRequest(user_id=1, query="q", dataset_ids=[10], strict_override=False)
@@ -122,7 +121,7 @@ async def test_strict_override_none_uses_assembled_default():
     """strict_override=None → 沿用装配期 strict=True，单路失败即抛错。"""
     dense = FakeRetriever(source=SOURCE_DENSE, exc=RuntimeError("boom"))
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[_hit("c2", SOURCE_SPARSE)])
-    pipeline = RecallPipeline([dense, sparse], RecallPipelineConfig(strict=True))
+    pipeline = make_recall_pipeline([dense, sparse], RecallPipelineConfig(strict=True))
 
     with pytest.raises(RecallError):
         await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))

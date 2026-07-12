@@ -4,9 +4,10 @@ pipeline 只认"满足契约的召回方式"，不限制路数。本期默认装
 三路；后续要加 GraphRag / wiki 等，只要新路满足本契约就能直接挂进来。
 """
 
+from collections.abc import Sequence
 from typing import Protocol, runtime_checkable
 
-from src.core.pipeline.recall.models import RetrieverHit
+from src.core.pipeline.recall.models import RecallHit, RetrieverHit
 
 # 本期内置三路 source 名常量；调用方自由选用，pipeline 不依赖具体取值。
 SOURCE_DENSE = "dense"
@@ -47,3 +48,19 @@ class Retriever(Protocol):
         top_k: int,
         score_threshold_override: float | None = None,
     ) -> list[RetrieverHit]: ...
+
+
+@runtime_checkable
+class DocumentReadinessGate(Protocol):
+    """文档级召回可见性门禁契约。
+
+    实现方必须基于 MySQL 当前任务的整体状态判断候选是否可见，并保持输入顺序。
+    门禁异常必须向上抛出，不能把未经确认的候选原样放行。
+    """
+
+    async def filter_visible_hits(
+        self,
+        hits: Sequence[RecallHit],
+        *,
+        user_id: int,
+    ) -> list[RecallHit]: ...

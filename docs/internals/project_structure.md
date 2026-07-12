@@ -217,16 +217,9 @@ toLink-Rag/                         # 仓库根目录
 │   │       │   ├── exceptions.py
 │   │       │   ├── models.py
 │   │       │   └── repository.py
-│   │       ├── es/               # ES 入库 + BM25 检索
-│   │       │   ├── client.py     # 进程级 AsyncElasticsearch 单例
-│   │       │   ├── mapping.py    # ES index settings + mappings
-│   │       │   ├── document_factory.py / batcher.py # chunk → bulk action / 分批
-│   │       │   ├── pipeline.py   # EsIndexingPipeline 入库阶段
-│   │       │   ├── retrieval.py  # EsBm25Retriever BM25 检索
-│   │       │   ├── bm25_retriever.py # 召回 Pipeline 适配器
-│   │       │   ├── retrieval_models.py # Bm25RecallRequest / Bm25ChunkHit
-│   │       │   ├── smoke.py      # 集成测试冒烟工具
-│   │       │   └── models.py / exceptions.py
+│   │       ├── bm25_models.py    # BM25 后端无关请求/结果模型
+│   │       ├── bm25_retriever.py # 召回 Pipeline 适配器
+│   │       ├── manticore_bm25/   # Manticore BM25 写入、召回与表管理
 │   │       ├── qdrant/           # Qdrant 向量索引底座
 │   │       │   ├── bucket_router.py
 │   │       │   ├── constants.py

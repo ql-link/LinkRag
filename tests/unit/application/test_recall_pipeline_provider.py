@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from src.application import recall_pipeline_provider as provider
 from src.core.pipeline.recall import SOURCE_BM25
+from src.core.pipeline.recall.document_readiness import MySqlDocumentReadinessGate
 from tests.unit.core.pipeline.recall.conftest import FakeRetriever
 
 
@@ -29,3 +30,4 @@ def test_build_pipeline_injects_recall_fusion_settings(monkeypatch):
     assert pipeline._config.fusion_bm25_weight == 0.2
     assert pipeline._config.fusion_sparse_weight == 0.3
     assert pipeline._config.fusion_dense_weight == 0.5
+    assert isinstance(pipeline._readiness_gate, MySqlDocumentReadinessGate)

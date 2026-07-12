@@ -3,7 +3,7 @@
 对外暴露相同的两个方法签名，使 ``run_es_indexing`` / ``DocumentDeletePurger`` 等
 编排层无需感知后端差异（靠 ``BM25_BACKEND`` 工厂切换）：
 
-- ``write_es_index(plan, *, db) -> EsIndexingResult``
+- ``write_es_index(plan, *, db, update_status=True) -> Bm25IndexingResult``
 - ``delete_document_index(*, user_id, dataset_id, doc_id) -> int``
 
 与 ES 入库管线的差异（均已对齐外层语义）：
@@ -23,7 +23,7 @@ from typing import Any
 
 from src.core.preprocessor.models import ChunkWithTokens, FilePostIndexPlan
 from src.core.storage.chunks.repository import ChunkRepository
-from src.core.storage.es.models import EsIndexingResult
+from src.core.storage.bm25_models import Bm25IndexingResult
 from src.utils.logger import logger
 
 from .encoder import Bm25SparseEncoder, build_encoder_from_settings
@@ -39,17 +39,25 @@ class QdrantBm25IndexingPipeline:
         store: QdrantBm25Store | None = None,
         chunk_repository: ChunkRepository | None = None,
         encoder: Bm25SparseEncoder | None = None,
+        update_chunk_status: bool = True,
     ) -> None:
         self._store = store or QdrantBm25Store()
         self._chunk_repository = chunk_repository or ChunkRepository()
+        self._update_chunk_status = update_chunk_status
         self._encoder = encoder or build_encoder_from_settings()
 
-    async def write_es_index(self, plan: FilePostIndexPlan, *, db: Any) -> EsIndexingResult:
-        """写一个文件的 post-index plan 到 Qdrant BM25 并回写 chunk es_status。"""
+    async def write_es_index(
+        self,
+        plan: FilePostIndexPlan,
+        *,
+        db: Any,
+        update_status: bool = True,
+    ) -> Bm25IndexingResult:
+        """写一个文件的 plan；补偿模式可由外层统一提交 chunk es_status。"""
 
         total = len(plan.chunks_with_tokens)
         if total == 0:
-            return EsIndexingResult(total_items=0, indexed_items=0)
+            return Bm25IndexingResult(total_items=0, indexed_items=0)
 
         meta = plan.file_meta
         valid_chunks: list[ChunkWithTokens] = []
@@ -102,8 +110,9 @@ class QdrantBm25IndexingPipeline:
                     exc,
                 )
 
-        # 4. 状态回写（与 ES pipeline 同语义）。
-        await self._mark_status(db, success_ids, failed_errors)
+        # 4. 状态回写（与 ES pipeline 同语义）；测试/受控调用可显式跳过。
+        if update_status:
+            await self._mark_status(db, success_ids, failed_errors)
 
         failed_item_ids = [chunk_id for chunk_id, _ in failed_errors]
         failure_reason = None
@@ -112,7 +121,7 @@ class QdrantBm25IndexingPipeline:
                 "QDRANT_BM25_INDEXING_FAILED: BM25入库失败；"
                 f"total={total}, indexed={len(success_ids)}, failed={len(failed_item_ids)}"
             )
-        return EsIndexingResult(
+        return Bm25IndexingResult(
             total_items=total,
             indexed_items=len(success_ids),
             failed_item_ids=failed_item_ids,
@@ -120,9 +129,7 @@ class QdrantBm25IndexingPipeline:
             succeeded_item_ids=success_ids,
         )
 
-    async def delete_document_index(
-        self, *, user_id: int, dataset_id: int, doc_id: int
-    ) -> int:
+    async def delete_document_index(self, *, user_id: int, dataset_id: int, doc_id: int) -> int:
         """删除某文档在 Qdrant BM25 中的全部 chunk（文档级全量重建的删除半步）。"""
 
         return await self._store.delete_by_document(
@@ -135,6 +142,8 @@ class QdrantBm25IndexingPipeline:
         success_ids: list[str],
         failed_errors: list[tuple[str, str]],
     ) -> None:
+        if not self._update_chunk_status:
+            return
         if success_ids:
             await self._chunk_repository.mark_es_success(db, success_ids)
         failed_by_reason: dict[str, list[str]] = defaultdict(list)

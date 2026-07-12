@@ -23,20 +23,18 @@ from loguru import logger
 if TYPE_CHECKING:
     from src.core.dataset_config import ChunkingConfig, DatasetParseConfigBundle
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from src.config import settings
-from src.core.storage.chunks.constants import (
-    CHUNK_LIFECYCLE_ACTIVE,
-    CHUNK_STATUS_INDEXED,
-    SPARSE_VECTOR_STATUS_INDEXED,
+from src.core.storage.index_mutation_models import IndexBranch
+from src.core.storage.index_mutation_guard import (
+    MutationGuardProtocol,
+    NoopIndexMutationGuard,
 )
-from src.core.storage.bm25_backend import build_indexing_pipeline
-from src.core.storage.chunks.repository import ChunkRepository
-from src.core.storage.es import EsIndexingResult
 from src.core.markdown_parser import ParseResult
 from src.core.mq.messages.parse_task import ParseTaskPayload
+from src.core.parse_task_service import ParseTaskService
 from src.core.preprocessor.models import FilePostIndexPlan
-from src.core.storage.qdrant import BucketRouter
-from src.core.storage.qdrant.constants import DEFAULT_BUCKET_COUNT, DEFAULT_COLLECTION_PREFIX
 from src.core.splitter import create_chunking_engine
 from src.core.splitter.factory import (
     DenseEmbeddingConfigMissingError,
@@ -44,16 +42,34 @@ from src.core.splitter.factory import (
     aresolve_user_embedding_client,
 )
 from src.core.splitter.models import Chunk
+from src.core.storage.bm25_backend import build_indexing_pipeline
+from src.core.storage.chunks.constants import (
+    CHUNK_LIFECYCLE_ACTIVE,
+    CHUNK_STATUS_INDEXED,
+    SPARSE_VECTOR_STATUS_INDEXED,
+)
+from src.core.storage.chunks.repository import ChunkRepository
+from src.core.storage.bm25_models import Bm25IndexingResult
+from src.core.storage.qdrant import BucketRouter
+from src.core.storage.qdrant.constants import DEFAULT_BUCKET_COUNT, DEFAULT_COLLECTION_PREFIX
 from src.core.storage.vector import compose_vector_storage_facade
 from src.core.storage.vector.draft_factory import ChunkDraftFactory
 from src.core.storage.vector.models import ChunkIndexingResult
-from src.core.parse_task_service import ParseTaskService
 from src.models.chunk_record import ChunkRecordDB
 from src.services.storage.base import BaseObjectStorage
-from sqlalchemy.ext.asyncio import AsyncSession
 
 from .._utils import coerce_optional_int
+from ..post_process.constants import (
+    PIPELINE_STATUS_PENDING,
+    PIPELINE_STATUS_PROCESSING,
+)
 from ..source import ParseSourceIO
+
+
+_NORMAL_MUTATION_PIPELINE_STATUSES = (
+    PIPELINE_STATUS_PENDING,
+    PIPELINE_STATUS_PROCESSING,
+)
 
 
 class PreprocessorProtocol(Protocol):
@@ -81,6 +97,7 @@ class StageServices:
         preprocessor: PreprocessorProtocol | None = None,
         chunk_draft_factory: ChunkDraftFactory | None = None,
         sparse_indexing_pipeline: Any | None = None,
+        mutation_guard: MutationGuardProtocol | None = None,
     ) -> None:
         self._storage = storage
         self.source_io = source_io
@@ -90,6 +107,10 @@ class StageServices:
         self._preprocessor = preprocessor
         self._chunk_draft_factory = chunk_draft_factory
         self._sparse_indexing_pipeline = sparse_indexing_pipeline
+        # StageServices is also instantiated directly by focused unit tests.  Keep
+        # that boundary lightweight, while production ParseTaskPipeline injects
+        # the shared MySQL-backed guard explicitly.
+        self._mutation_guard = mutation_guard or NoopIndexMutationGuard()
 
     # ------------------------------------------------------------------
     # cleaning
@@ -382,12 +403,44 @@ class StageServices:
             )
 
         try:
-            result = await self._get_vector_storage().index_chunks(
-                user_id=user_id,
-                set_id=set_id,
+            async with self._mutation_guard.hold(
                 doc_id=doc_id,
-                chunks=dense_chunks,
-            )
+                branch=IndexBranch.DENSE,
+            ) as lock_connection:
+                await self._mutation_guard.assert_current_task(
+                    lock_connection,
+                    doc_id=doc_id,
+                    task_id=payload.task_id,
+                    allowed_pipeline_statuses=_NORMAL_MUTATION_PIPELINE_STATUSES,
+                    require_unsuperseded=True,
+                )
+                try:
+                    result = await self._get_vector_storage().index_chunks(
+                        user_id=user_id,
+                        set_id=set_id,
+                        doc_id=doc_id,
+                        chunks=dense_chunks,
+                    )
+                except (DenseEmbeddingConfigMissingError, DenseEmbeddingDimensionError):
+                    raise
+                except Exception:
+                    await self._cleanup_qdrant_branch(
+                        chunks=dense_chunks,
+                        vector_name=str(settings.DENSE_VECTOR_QDRANT_VECTOR_NAME),
+                        task_id=payload.task_id,
+                        branch=IndexBranch.DENSE,
+                    )
+                    raise
+                if result.failed_chunk_ids:
+                    failed_ids = set(result.failed_chunk_ids)
+                    await self._cleanup_qdrant_branch(
+                        chunks=[
+                            chunk for chunk in dense_chunks if chunk.chunk_id in failed_ids
+                        ],
+                        vector_name=str(settings.DENSE_VECTOR_QDRANT_VECTOR_NAME),
+                        task_id=payload.task_id,
+                        branch=IndexBranch.DENSE,
+                    )
         except (DenseEmbeddingConfigMissingError, DenseEmbeddingDimensionError):
             # 必配缺失 / 维度不支持：交给 VectorizingStage 归类为明确错误码（LLM_CONFIG_MISSING /
             # EMBEDDING_DIMENSION_UNSUPPORTED）并通知 Java，不在此吞成 generic 失败结果。
@@ -488,13 +541,75 @@ class StageServices:
         self,
         plan: FilePostIndexPlan,
         db: AsyncSession,
-    ) -> EsIndexingResult:
-        """ES 入库：文档级全量重建（Issue #57）——前置删除 → 全量写入 → 失败清理。"""
+    ) -> Bm25IndexingResult:
+        """BM25 入库：在文档分支锁内全量重建并收敛状态。"""
         total = len(plan.chunks_with_tokens)
         if total == 0:
-            return EsIndexingResult(total_items=0, indexed_items=0)
+            return Bm25IndexingResult(total_items=0, indexed_items=0)
 
         es_pipeline = self._get_es_indexing_pipeline()
+        meta = plan.file_meta
+        task_id = meta.task_id
+        if not task_id:
+            return Bm25IndexingResult(
+                total_items=total,
+                indexed_items=0,
+                failure_reason="bm25_guard: file_meta.task_id is required",
+            )
+
+        try:
+            async with self._mutation_guard.hold(
+                doc_id=meta.doc_id,
+                branch=IndexBranch.BM25,
+            ) as lock_connection:
+                await self._mutation_guard.assert_current_task(
+                    lock_connection,
+                    doc_id=meta.doc_id,
+                    task_id=task_id,
+                    allowed_pipeline_statuses=_NORMAL_MUTATION_PIPELINE_STATUSES,
+                    require_unsuperseded=True,
+                )
+                return await self._run_es_indexing_guarded(
+                    plan=plan,
+                    db=db,
+                    es_pipeline=es_pipeline,
+                )
+        except Exception as exc:
+            # The guarded body may fail during a MySQL status commit (for example
+            # a transient deadlock), leaving the caller-owned AsyncSession in a
+            # failed transaction.  Clear it before EsIndexingStage records the
+            # stage-level FAILED state on that same session.
+            try:
+                await db.rollback()
+            except Exception as rollback_exc:
+                logger.warning(
+                    "[StageServices] rollback after BM25 guarded failure also failed: "
+                    "task_id={} error={}",
+                    task_id,
+                    rollback_exc,
+                )
+            logger.error(
+                "[StageServices] BM25 mutation guard failed: "
+                "task_id={} doc_id={} error={}",
+                task_id,
+                meta.doc_id,
+                exc,
+            )
+            return Bm25IndexingResult(
+                total_items=total,
+                indexed_items=0,
+                failure_reason=f"bm25_guard: {exc}",
+            )
+
+    async def _run_es_indexing_guarded(
+        self,
+        *,
+        plan: FilePostIndexPlan,
+        db: AsyncSession,
+        es_pipeline: Any,
+    ) -> Bm25IndexingResult:
+        """Run the complete document-level BM25 mutation while its lock is held."""
+        total = len(plan.chunks_with_tokens)
         meta = plan.file_meta
 
         try:
@@ -509,13 +624,26 @@ class StageServices:
                 meta.doc_id,
                 exc,
             )
-            return EsIndexingResult(
+            return Bm25IndexingResult(
                 total_items=total,
                 indexed_items=0,
                 failure_reason=f"es_delete: {exc}",
             )
 
-        result = await es_pipeline.write_es_index(plan, db=db)
+        try:
+            result = await es_pipeline.write_es_index(plan, db=db)
+        except Exception as exc:
+            logger.error(
+                "[StageServices] BM25 写入异常，将清理可能半成品: "
+                "doc_id={} error={}",
+                meta.doc_id,
+                exc,
+            )
+            result = Bm25IndexingResult(
+                total_items=total,
+                indexed_items=0,
+                failure_reason=f"bm25_write: {exc}",
+            )
 
         if not result.is_success:
             try:
@@ -530,11 +658,33 @@ class StageServices:
                     meta.doc_id,
                     exc,
                 )
+            else:
+                # BM25 是文档级全量重建：一旦半成品已确认清空，
+                # MySQL 也必须将整篇 ACTIVE chunk 统一收敛为 FAILED，
+                # 不能保留某些批次早先写下的虚假 SUCCESS。
+                affected_rows = await self._chunk_repository.mark_document_es_failed(
+                    db,
+                    doc_id=meta.doc_id,
+                    user_id=meta.user_id,
+                    set_id=meta.dataset_id,
+                )
+                if affected_rows != total:
+                    logger.error(
+                        "[IndexWriteCleanupAlert] "
+                        "event=bm25_status_rowcount_mismatch source=normal_write "
+                        "task_id={} doc_id={} target_status=FAILED "
+                        "expected_rows={} affected_rows={}",
+                        meta.task_id,
+                        meta.doc_id,
+                        total,
+                        affected_rows,
+                    )
+                await db.commit()
 
         return result
 
     @staticmethod
-    def build_es_failure_reason(es_result: EsIndexingResult) -> str:
+    def build_es_failure_reason(es_result: Bm25IndexingResult) -> str:
         failed_count = len(es_result.failed_item_ids)
         return (
             "ES_INDEXING_FAILED: ES入库失败；"
@@ -561,19 +711,99 @@ class StageServices:
         from src.core.storage.vector.sparse_indexing import SparseIndexingPipeline
 
         sparse_pipeline = self._sparse_indexing_pipeline or SparseIndexingPipeline()
+        doc_id = int(payload.original_file_id)
 
-        # sparse 与 dense 解耦：不再要求 dense=SUCCESS，只挑还没成功的 sparse chunk。
-        fresh_chunks = await self._reload_chunks_from_db(payload, db)
-        sparse_chunks = [
-            c
-            for c in fresh_chunks
-            if c.sparse_vector_status != SPARSE_VECTOR_STATUS_INDEXED
-        ]
-        await sparse_pipeline.run(
-            chunks=sparse_chunks,
-            task_id=payload.task_id,
-            db=db,
-        )
+        async with self._mutation_guard.hold(
+            doc_id=doc_id,
+            branch=IndexBranch.SPARSE,
+        ) as lock_connection:
+            await self._mutation_guard.assert_current_task(
+                lock_connection,
+                doc_id=doc_id,
+                task_id=payload.task_id,
+                allowed_pipeline_statuses=_NORMAL_MUTATION_PIPELINE_STATUSES,
+                require_unsuperseded=True,
+            )
+
+            # sparse 与 dense 解耦：不再要求 dense=SUCCESS，只挑还没成功的 sparse chunk。
+            fresh_chunks = await self._reload_chunks_from_db(payload, db)
+            sparse_chunks = [
+                c
+                for c in fresh_chunks
+                if c.sparse_vector_status != SPARSE_VECTOR_STATUS_INDEXED
+            ]
+            try:
+                await sparse_pipeline.run(
+                    chunks=sparse_chunks,
+                    task_id=payload.task_id,
+                    db=db,
+                )
+            except Exception:
+                # pipeline 会把失败批次收敛为 FAILED；重新读取后仅清理这些
+                # 未被 MySQL 确认为成功的 named vector，保留早先成功批次。
+                await db.rollback()
+                current_chunks = await self._reload_chunks_from_db(payload, db)
+                failed_chunks = [
+                    chunk
+                    for chunk in current_chunks
+                    if chunk.sparse_vector_status != SPARSE_VECTOR_STATUS_INDEXED
+                ]
+                await self._cleanup_qdrant_branch(
+                    chunks=failed_chunks,
+                    vector_name=str(settings.SPARSE_VECTOR_QDRANT_VECTOR_NAME),
+                    task_id=payload.task_id,
+                    branch=IndexBranch.SPARSE,
+                )
+                raise
+
+    async def _cleanup_qdrant_branch(
+        self,
+        *,
+        chunks: list[ChunkRecordDB],
+        vector_name: str,
+        task_id: str,
+        branch: IndexBranch,
+    ) -> None:
+        """同步精确清理未被 MySQL 确认成功的 named vector。
+
+        清理失败只记录高优先级告警，不创建任务、不自动重建；解析任务保持失败，
+        后续由用户重新发起整篇文档解析。
+        """
+        from src.core.storage.qdrant.qdrant_store import QdrantIndexStore
+
+        by_bucket: dict[int, list[str]] = {}
+        for chunk in chunks:
+            if chunk.bucket_id is None:
+                logger.error(
+                    "[IndexWriteCleanupAlert] event=missing_bucket task_id={} "
+                    "doc_id={} branch={} chunk_id={}",
+                    task_id,
+                    chunk.doc_id,
+                    branch.value,
+                    chunk.chunk_id,
+                )
+                continue
+            by_bucket.setdefault(int(chunk.bucket_id), []).append(chunk.chunk_id)
+
+        store = QdrantIndexStore()
+        for bucket_id, chunk_ids in by_bucket.items():
+            try:
+                await store.delete_named_vectors(
+                    bucket_id=bucket_id,
+                    chunk_ids=chunk_ids,
+                    vector_name=vector_name,
+                )
+            except Exception as exc:
+                logger.error(
+                    "[IndexWriteCleanupAlert] event=cleanup_failed task_id={} "
+                    "branch={} bucket_id={} chunk_count={} error={}",
+                    task_id,
+                    branch.value,
+                    bucket_id,
+                    len(chunk_ids),
+                    exc,
+                )
+
 
     # ------------------------------------------------------------------
     # ensure points（dense/sparse 解耦的前置建点）
@@ -591,11 +821,37 @@ class StageServices:
         按 bucket 建好 collection（维度取系统强制的 ``DENSE_VECTOR_DIMENSION``）与空点，
         之后 dense / sparse 各自 ``update_vectors`` 独立写入、可并行，互不覆盖。
         """
-        from src.core.storage.qdrant.models import IndexedPoint
-        from src.core.storage.qdrant.qdrant_store import QdrantIndexStore
-
         if not chunks:
             return
+
+        doc_id = int(payload.original_file_id)
+        # ensure_points 创建 dense/sparse 共用的 Qdrant point，同时影响两个
+        # branch 的物理载体。按全局固定顺序同时持有两路锁，避免与
+        # document delete 交错后重新制造 payload-only 孤儿 point。
+        async with self._mutation_guard.hold(
+            doc_id=doc_id,
+            branch=IndexBranch.DENSE,
+        ):
+            async with self._mutation_guard.hold(
+                doc_id=doc_id,
+                branch=IndexBranch.SPARSE,
+            ) as lock_connection:
+                await self._mutation_guard.assert_current_task(
+                    lock_connection,
+                    doc_id=doc_id,
+                    task_id=payload.task_id,
+                    allowed_pipeline_statuses=_NORMAL_MUTATION_PIPELINE_STATUSES,
+                    require_unsuperseded=True,
+                )
+                await self._ensure_chunk_points_guarded(chunks)
+
+    async def _ensure_chunk_points_guarded(
+        self,
+        chunks: list[ChunkRecordDB],
+    ) -> None:
+        """Create shared Qdrant points while both vector branch locks are held."""
+        from src.core.storage.qdrant.models import IndexedPoint
+        from src.core.storage.qdrant.qdrant_store import QdrantIndexStore
 
         dim = getattr(settings, "DENSE_VECTOR_DIMENSION", 1024)
         store = QdrantIndexStore()
@@ -645,7 +901,7 @@ class StageServices:
 
     def _get_es_indexing_pipeline(self):
         if self._es_indexing_pipeline is None:
-            # BM25 写入后端按 BM25_BACKEND 选择（es / qdrant），两者鸭子兼容同签名。
+            # BM25 写入按 BM25_WRITE_BACKENDS 装配；迁移期可返回严格双写管线。
             self._es_indexing_pipeline = build_indexing_pipeline(
                 chunk_repository=self._chunk_repository,
             )
@@ -667,7 +923,7 @@ class StageServices:
 # ---------------------------------------------------------------------------
 
 _BASE64_IMG_RE = re.compile(
-    r'!\[(?P<alt>[^\]]*)\]\(data:image/(?P<mime>[^;,\s]+);base64,(?P<data>[A-Za-z0-9+/=\s]+)\)',
+    r"!\[(?P<alt>[^\]]*)\]\(data:image/(?P<mime>[^;,\s]+);base64,(?P<data>[A-Za-z0-9+/=\s]+)\)",
     re.MULTILINE,
 )
 

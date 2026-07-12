@@ -12,6 +12,8 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.core.storage.chunks.repository import ChunkRepository
+from src.core.storage.index_mutation_guard import get_index_mutation_guard
+from src.core.storage.index_mutation_guard import MutationGuardProtocol
 from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.core.pipeline.parse_task.post_process.repository import ParsePipelineRepository
 from src.core.storage.vector.draft_factory import ChunkDraftFactory
@@ -74,6 +76,7 @@ class ParseTaskPipeline:
         chunk_repository: ChunkRepository | None = None,
         chunk_draft_factory: ChunkDraftFactory | None = None,
         sparse_indexing_pipeline: Any | None = None,
+        mutation_guard: MutationGuardProtocol | None = None,
     ) -> None:
         """初始化解析流水线依赖。
 
@@ -102,6 +105,7 @@ class ParseTaskPipeline:
             preprocessor=preprocessor,
             chunk_draft_factory=chunk_draft_factory,
             sparse_indexing_pipeline=sparse_indexing_pipeline,
+            mutation_guard=mutation_guard or get_index_mutation_guard(),
         )
 
     def _build_stage_pipeline(self):

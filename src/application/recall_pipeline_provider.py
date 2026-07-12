@@ -15,6 +15,7 @@ from functools import lru_cache
 from src.config import settings
 from src.core.dataset_config import DatasetConfigService, RecallConfig
 from src.core.pipeline.recall import RecallPipeline, RecallPipelineConfig, RecallRequest
+from src.core.pipeline.recall.document_readiness import MySqlDocumentReadinessGate
 from src.core.pipeline.recall.protocols import (
     SOURCE_BM25,
     SOURCE_DENSE,
@@ -24,16 +25,16 @@ from src.core.pipeline.recall.protocols import (
 from src.core.pipeline.rerank import PostRecallReranker
 from src.core.preprocessor.ragflow_tokenizer import RagFlowTokenizer
 from src.core.storage.bm25_backend import build_bm25_recall_backend
-from src.core.storage.es import Bm25Retriever
+from src.core.storage.bm25_retriever import Bm25Retriever
 from src.core.storage.vector import compose_vector_storage_facade
 from src.core.storage.vector.dense_retriever import DenseRetriever
 from src.core.storage.vector.sparse_retriever import SparseRetriever
 
 
 def _build_bm25_retriever() -> Retriever:
-    # BM25 召回后端按 BM25_BACKEND 选择（es / qdrant）；适配器只依赖 recall_topk_chunks。
+    # BM25 主读按 BM25_BACKEND 选择；迁移期可由工厂包一层不影响返回值的影子读比较。
     return Bm25Retriever(
-        es_retriever=build_bm25_recall_backend(),
+        backend=build_bm25_recall_backend(),
         tokenizer=RagFlowTokenizer(),
     )
 
@@ -102,6 +103,7 @@ def _build_pipeline() -> RecallPipeline:
             fusion_sparse_weight=settings.RECALL_FUSION_SPARSE_WEIGHT,
             fusion_dense_weight=settings.RECALL_FUSION_DENSE_WEIGHT,
         ),
+        readiness_gate=MySqlDocumentReadinessGate(),
     )
 
 

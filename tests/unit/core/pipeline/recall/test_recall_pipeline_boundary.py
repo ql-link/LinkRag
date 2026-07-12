@@ -6,11 +6,10 @@ from src.core.pipeline.recall import (
     SOURCE_BM25,
     SOURCE_DENSE,
     SOURCE_SPARSE,
-    RecallPipeline,
     RecallRequest,
     RetrieverHit,
 )
-from tests.unit.core.pipeline.recall.conftest import FakeRetriever
+from tests.unit.core.pipeline.recall.conftest import FakeRetriever, make_recall_pipeline
 
 
 def _hit(chunk_id, source, score=1.0, doc_id=100, dataset_id=10):
@@ -28,7 +27,7 @@ async def test_fused_hits_truncated_to_fusion_limit():
     """融合结果按 request.top_k（融合候选池窗口）截断，各路 top_k 独立。"""
     bm25_hits = [_hit(f"c{i}", SOURCE_BM25, score=10.0 - i) for i in range(5)]
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=bm25_hits)
-    pipeline = RecallPipeline([bm25])
+    pipeline = make_recall_pipeline([bm25])
 
     response = await pipeline.execute(
         RecallRequest(user_id=99, query="q", dataset_ids=[10], top_k=2)
@@ -45,7 +44,7 @@ async def test_route_top_k_dispatched_per_source():
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("b1", SOURCE_BM25)])
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[_hit("s1", SOURCE_SPARSE)])
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("d1", SOURCE_DENSE)])
-    pipeline = RecallPipeline([bm25, sparse, dense])
+    pipeline = make_recall_pipeline([bm25, sparse, dense])
 
     await pipeline.execute(
         RecallRequest(
@@ -79,7 +78,7 @@ async def test_fused_hits_truncated_to_fusion_limit_not_route_top_k():
         source=SOURCE_DENSE,
         hits=[_hit(f"d{i}", SOURCE_DENSE, score=100.0 - i) for i in range(100)],
     )
-    pipeline = RecallPipeline([bm25, sparse, dense])
+    pipeline = make_recall_pipeline([bm25, sparse, dense])
 
     response = await pipeline.execute(
         RecallRequest(
@@ -107,7 +106,7 @@ async def test_enabled_sources_uses_route_top_k_only_for_active_sources():
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("b1", SOURCE_BM25)])
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[_hit("s1", SOURCE_SPARSE)])
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("d1", SOURCE_DENSE)])
-    pipeline = RecallPipeline([bm25, sparse, dense])
+    pipeline = make_recall_pipeline([bm25, sparse, dense])
 
     response = await pipeline.execute(
         RecallRequest(
@@ -132,7 +131,7 @@ async def test_enabled_sources_uses_route_top_k_only_for_active_sources():
 async def test_unknown_source_uses_fusion_limit_as_fallback_top_k():
     """新增未知召回路没有专属 top_k 字段时，回退使用融合候选池窗口。"""
     graph = FakeRetriever(source="graph", hits=[_hit("g1", "graph")])
-    pipeline = RecallPipeline([graph])
+    pipeline = make_recall_pipeline([graph])
 
     await pipeline.execute(RecallRequest(user_id=7, query="q", dataset_ids=[10], top_k=64))
 
@@ -145,7 +144,7 @@ async def test_score_threshold_override_dispatched_per_source():
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("c1", SOURCE_BM25)])
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[_hit("c2", SOURCE_SPARSE)])
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("c3", SOURCE_DENSE)])
-    pipeline = RecallPipeline([bm25, sparse, dense])
+    pipeline = make_recall_pipeline([bm25, sparse, dense])
 
     await pipeline.execute(
         RecallRequest(
@@ -168,7 +167,7 @@ async def test_score_threshold_override_absent_passes_none():
     """未带 override（无数据集配置 / 全库召回）时各路收到 None，沿用装配期默认阈值。"""
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[_hit("c1", SOURCE_SPARSE)])
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("c2", SOURCE_DENSE)])
-    pipeline = RecallPipeline([sparse, dense])
+    pipeline = make_recall_pipeline([sparse, dense])
 
     await pipeline.execute(RecallRequest(user_id=7, query="q", dataset_ids=[10], top_k=5))
 
@@ -182,7 +181,7 @@ async def test_all_empty_returns_empty():
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[])
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[])
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[])
-    pipeline = RecallPipeline([dense, sparse, bm25])
+    pipeline = make_recall_pipeline([dense, sparse, bm25])
 
     response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
     assert response.hits == []
@@ -210,7 +209,7 @@ async def test_trust_declared_order():
     )
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[])
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[])
-    pipeline = RecallPipeline([dense, sparse, bm25])
+    pipeline = make_recall_pipeline([dense, sparse, bm25])
 
     response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
     by_id = {h.chunk_id: h for h in response.hits}
@@ -227,7 +226,7 @@ async def test_four_retrievers():
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[_hit("c2", SOURCE_SPARSE)])
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("c3", SOURCE_BM25)])
     graph = FakeRetriever(source="graph", hits=[_hit("c4", "graph")])
-    pipeline = RecallPipeline([dense, sparse, bm25, graph])
+    pipeline = make_recall_pipeline([dense, sparse, bm25, graph])
 
     response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
 
@@ -256,7 +255,7 @@ async def test_empty_list_not_failed_source():
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[])
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[_hit("c1", SOURCE_SPARSE)])
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[])
-    pipeline = RecallPipeline([dense, sparse, bm25])
+    pipeline = make_recall_pipeline([dense, sparse, bm25])
 
     response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
     assert response.failed_sources == []
@@ -272,11 +271,11 @@ def test_construct_with_duplicate_sources_raises():
     r1 = FakeRetriever(source=SOURCE_DENSE, hits=[])
     r2 = FakeRetriever(source=SOURCE_DENSE, hits=[])
     with pytest.raises(ValueError) as ei:
-        RecallPipeline([r1, r2])
+        make_recall_pipeline([r1, r2])
     assert SOURCE_DENSE in str(ei.value)
 
 
 def test_construct_with_no_retrievers_raises():
     """装配期 retrievers 为空 → 直接 ValueError。"""
     with pytest.raises(ValueError):
-        RecallPipeline([])
+        make_recall_pipeline([])

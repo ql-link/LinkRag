@@ -10,11 +10,10 @@ from src.core.pipeline.recall import (
     SOURCE_MODE_MISSING_DENSE,
     SOURCE_MODE_MISSING_SPARSE,
     SOURCE_SPARSE,
-    RecallPipeline,
     RecallRequest,
     RetrieverHit,
 )
-from tests.unit.core.pipeline.recall.conftest import FakeRetriever
+from tests.unit.core.pipeline.recall.conftest import FakeRetriever, make_recall_pipeline
 
 
 def _hit(chunk_id: str, source: str, score: float = 1.0) -> RetrieverHit:
@@ -23,7 +22,7 @@ def _hit(chunk_id: str, source: str, score: float = 1.0) -> RetrieverHit:
 
 @pytest.mark.asyncio
 async def test_diagnostics_hybrid_when_three_sources_have_hits():
-    pipeline = RecallPipeline(
+    pipeline = make_recall_pipeline(
         [
             FakeRetriever(SOURCE_BM25, hits=[_hit("b1", SOURCE_BM25)]),
             FakeRetriever(SOURCE_SPARSE, hits=[_hit("s1", SOURCE_SPARSE)]),
@@ -45,7 +44,7 @@ async def test_diagnostics_hybrid_when_three_sources_have_hits():
 
 @pytest.mark.asyncio
 async def test_diagnostics_bm25_only_when_vectors_empty():
-    pipeline = RecallPipeline(
+    pipeline = make_recall_pipeline(
         [
             FakeRetriever(SOURCE_BM25, hits=[_hit("b1", SOURCE_BM25), _hit("b2", SOURCE_BM25)]),
             FakeRetriever(SOURCE_SPARSE, hits=[]),
@@ -67,7 +66,7 @@ async def test_diagnostics_bm25_only_when_vectors_empty():
 
 @pytest.mark.asyncio
 async def test_diagnostics_missing_sparse():
-    pipeline = RecallPipeline(
+    pipeline = make_recall_pipeline(
         [
             FakeRetriever(SOURCE_BM25, hits=[_hit("b1", SOURCE_BM25)]),
             FakeRetriever(SOURCE_SPARSE, hits=[]),
@@ -86,7 +85,7 @@ async def test_diagnostics_missing_sparse():
 
 @pytest.mark.asyncio
 async def test_diagnostics_missing_dense():
-    pipeline = RecallPipeline(
+    pipeline = make_recall_pipeline(
         [
             FakeRetriever(SOURCE_BM25, hits=[_hit("b1", SOURCE_BM25)]),
             FakeRetriever(SOURCE_SPARSE, hits=[_hit("s1", SOURCE_SPARSE)]),
@@ -105,7 +104,7 @@ async def test_diagnostics_missing_dense():
 
 @pytest.mark.asyncio
 async def test_diagnostics_keeps_failed_sources_separate_from_empty_sources():
-    pipeline = RecallPipeline(
+    pipeline = make_recall_pipeline(
         [
             FakeRetriever(SOURCE_BM25, hits=[_hit("b1", SOURCE_BM25)]),
             FakeRetriever(SOURCE_SPARSE, exc=RuntimeError("sparse down")),
@@ -126,7 +125,7 @@ async def test_diagnostics_keeps_failed_sources_separate_from_empty_sources():
 
 @pytest.mark.asyncio
 async def test_diagnostics_not_generated_for_all_empty_existing_empty_recall_semantics():
-    pipeline = RecallPipeline(
+    pipeline = make_recall_pipeline(
         [
             FakeRetriever(SOURCE_BM25, hits=[]),
             FakeRetriever(SOURCE_SPARSE, hits=[]),
@@ -143,7 +142,7 @@ async def test_diagnostics_not_generated_for_all_empty_existing_empty_recall_sem
 
 @pytest.mark.asyncio
 async def test_diagnostics_not_generated_when_full_hybrid_sources_are_not_active():
-    pipeline = RecallPipeline(
+    pipeline = make_recall_pipeline(
         [
             FakeRetriever(SOURCE_BM25, hits=[_hit("b1", SOURCE_BM25)]),
             FakeRetriever(SOURCE_SPARSE, hits=[]),

@@ -5,7 +5,7 @@
   - 续跑 happy path：基于上一轮成功 run 续跑，全部节点 SKIPPED、不重复执行；
   - 失败注入重试：某阶段首跑失败 → 续跑跳过已成功节点、按需 restore、重跑失败链。
 
-真实依赖：MinIO / MySQL / Qdrant / Elasticsearch / 嵌入模型。
+真实依赖：MinIO / MySQL / Qdrant / Manticore / 嵌入模型。
 使用 user_id=10000（DB 内已配置 default+active 的 EMBEDDING 与 SPARSE_EMBEDDING）。
 markdown passthrough 源文件，避免依赖 MinerU 公网解析。
 
@@ -22,7 +22,6 @@ import pytest
 import pytest_asyncio
 
 pytest.importorskip("boto3")
-pytest.importorskip("elasticsearch")
 
 from sqlalchemy import delete, func, select
 
@@ -208,7 +207,7 @@ async def parse_case():
     try:
         yield payload, doc_id
     finally:
-        # ---- 清理：chunk 行 / ES 索引 / DB 任务行 / MinIO 对象 ----
+        # ---- 清理：chunk 行 / BM25 索引 / DB 任务行 / MinIO 对象 ----
         async with factory() as db:
             await ChunkRepository().delete_by_doc_id(db, doc_id)
             await db.execute(
@@ -216,9 +215,9 @@ async def parse_case():
             )
             await db.commit()
         try:
-            from src.core.storage.es import EsIndexingPipeline
+            from src.core.storage.bm25_backend import build_indexing_pipeline
 
-            await EsIndexingPipeline().delete_document_index(
+            await build_indexing_pipeline().delete_document_index(
                 user_id=_TEST_USER_ID,
                 dataset_id=_TEST_DATASET_ID,
                 doc_id=doc_id,

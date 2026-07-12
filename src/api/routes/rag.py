@@ -47,7 +47,7 @@ from src.application.recall_pipeline_provider import (
     get_recall_pipeline,
     get_reranker,
 )
-from src.application.recall_stream_runtime import recall_event_stream
+from src.application.recall_stream_runtime import recall_event, recall_event_stream
 from src.core.pipeline.recall import RecallPipeline, RecallRequest
 from src.core.pipeline.rerank import PostRecallReranker
 
@@ -144,6 +144,14 @@ async def _run_chat_turn_producer(
     绑任务而非连接，避免断连即还名额、任务仍在烧 token 却不计数。
     """
     try:
+        # 建流后的首帧不依赖模型解析、MQ 或召回，前端可立即标记对应侧栏会话为“回复中”。
+        if not channel.consumer_gone.is_set():
+            await channel.queue.put(
+                recall_event(
+                    "stream_started",
+                    {"conversation_id": conversation_id, "request_id": request_id},
+                )
+            )
         async for event in recall_event_stream(
             pipeline,
             recall_req,

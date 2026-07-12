@@ -12,7 +12,6 @@ class RepairDecision(str, Enum):
     """Decision categories used by compensation schedulers and future repair entry points."""
 
     AUTO_RETRY_DELETE = "auto_retry_delete"
-    LIGHTWEIGHT_STATUS_REPAIR = "lightweight_status_repair"
     MANUAL_REINDEX_REQUIRED = "manual_reindex_required"
     SKIP = "skip"
 
@@ -45,15 +44,13 @@ class RepairPolicy:
     ) -> RepairDecision:
         """Return the safest supported repair decision for a dense vector status."""
         if dense_vector_status == CHUNK_STATUS_PENDING and self.allow_stale_indexing_status_repair:
-            if point_exists is True:
-                return RepairDecision.LIGHTWEIGHT_STATUS_REPAIR
-            if point_exists is False:
-                return RepairDecision.MANUAL_REINDEX_REQUIRED
-            return RepairDecision.SKIP
+            # External presence is diagnostic only.  It can never prove that
+            # the MySQL status commit succeeded.
+            _ = point_exists
+            return RepairDecision.MANUAL_REINDEX_REQUIRED
 
         if dense_vector_status == CHUNK_STATUS_FAILED:
-            if self.allow_auto_reindex_failed:
-                return RepairDecision.LIGHTWEIGHT_STATUS_REPAIR
+            _ = self.allow_auto_reindex_failed
             return RepairDecision.MANUAL_REINDEX_REQUIRED
 
         return RepairDecision.SKIP
