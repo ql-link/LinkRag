@@ -78,6 +78,31 @@ services:
     networks:
       - tolink-net
 
+  # Manticore 承载 BM25 全文检索；Qdrant 继续承载 dense / learned sparse 向量。
+  # 9306 是应用使用的 MySQL wire protocol 端口，9308 是 HTTP(S) 管理端口。
+  manticore:
+    # 固定已验证版本，避免 latest 升级导致 tokenizer / ranker 行为漂移。
+    image: manticoresearch/manticore:27.1.5
+    container_name: tolink-manticore
+    restart: always
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    ports:
+      - "9306:9306"
+      - "9308:9308"
+    volumes:
+      - manticore_data:/var/lib/manticore
+    networks:
+      - tolink-net
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9308/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
   zookeeper:
     image: bitnami/zookeeper:3.9
     container_name: tolink-zookeeper
@@ -175,6 +200,7 @@ volumes:
   mysql_data:
   minio_data:
   qdrant_data:
+  manticore_data:
   zookeeper_data:
   kafka_data:
   loki_data:

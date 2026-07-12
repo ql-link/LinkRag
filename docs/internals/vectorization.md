@@ -86,7 +86,7 @@ ParseTaskPipeline
 | `ChunkRepository` | `chunk_fact_storage/repository.py` | MySQL Chunk 真值表读写和状态机 |
 | `BucketRouter` | `qdrant_vector_storage/bucket_router.py` | 按 `user_id` 路由到 Qdrant collection；写入与召回共用 |
 | `QdrantIndexStore` | `qdrant_vector_storage/qdrant_store.py` | Qdrant collection、point 写入、删除、查询；`_search_chunks` 为向量类型无关召回底座 |
-| `EsIndexingPipeline` | `es_index_storage/pipeline.py` | 将文件级 Chunk 内容写入 Elasticsearch |
+| `ManticoreBm25IndexingPipeline` | `storage/manticore_bm25/pipeline.py` | 将文件级 Chunk 的 BM25 token 写入 Manticore |
 | `ParsePipelineRepository` | `pipeline/post_process_repository.py` | 维护 `document_parse_pipeline` 文件级阶段状态 |
 
 ## 3. 数据模型

@@ -221,6 +221,6 @@ Qdrant BM25 使用独立 sparse-only collection，不与上述 dense/sparse buck
 ## 相关文档
 
 - 关系数据：[mysql_schema.md](mysql.md)
-- 全文索引：[elasticsearch_schema.md](elasticsearch.md)
+- BM25 评测：[bm25_eval.md](../../internals/bm25_eval.md)
 - 向量化模块架构：[../internals/vectorization.md](../../internals/vectorization.md)
 - 配置项详解：[../ops/configure.md](../../ops/configure.md)

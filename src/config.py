@@ -7,7 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SUPPORTED_CHUNKING_STAGE_TWO_ALGORITHMS = frozenset({"noop", "semantic_depth_window"})
 SUPPORTED_RECALL_FUSION_STRATEGIES = frozenset({"rrf", "weighted_score"})
-SUPPORTED_BM25_BACKENDS = frozenset({"es", "qdrant", "manticore"})
+SUPPORTED_BM25_BACKENDS = frozenset({"qdrant", "manticore"})
 MARKDOWN_HEADING_LLM_CONTEXT_TOKEN_MIN = 2048
 MARKDOWN_HEADING_LLM_CONTEXT_TOKEN_MAX = 262144
 MARKDOWN_HEADING_LLM_MAX_OUTPUT_TOKEN_MIN = 512
@@ -109,7 +109,7 @@ class Settings(BaseSettings):
     RECALL_RESULT_LIMIT: int = 64
     # RAG pipeline 三路执行期召回深度。来源简述：
     # dense=100: Sentence Transformers retrieve-and-rerank top-100；
-    # sparse=50: Elasticsearch RRF/ELSER 与 Azure semantic ranker 50-candidate；
+    # sparse=50: 参考常见 semantic ranker 的 50-candidate 窗口；
     # bm25=100: BEIR BM25 top-100 rerank。
     RECALL_DENSE_TOP_K: int = 100
     RECALL_SPARSE_TOP_K: int = 50
@@ -357,7 +357,7 @@ class Settings(BaseSettings):
     # 轻量流程编排引擎配置 (Workflow Engine)
     # ==========================================
     WORKFLOW_MAX_CONCURRENCY: int = 8
-    # 解析任务编排引擎选择：True=并行 DAG（dense∥sparse∥es，默认）；
+    # 解析任务编排引擎选择：True=并行 DAG（dense∥sparse∥BM25，默认）；
     # False=串行 StagePipeline（保留作稳定回退，代码不删）。两者复用同一套
     # StageServices 业务，权威状态源都是 document_parse_pipeline。出问题置 False 秒回滚。
     PARSE_USE_WORKFLOW_DAG: bool = True
@@ -365,7 +365,7 @@ class Settings(BaseSettings):
     # ==========================================
     # 向量数据库配置 (Vector Store)
     # ==========================================
-    # 可选值: qdrant / elasticsearch
+    # 当前仅支持 qdrant。
     VECTOR_STORE_TYPE: str = "qdrant"
 
     # Qdrant
@@ -436,22 +436,7 @@ class Settings(BaseSettings):
     DENSE_RETRIEVAL_TOP_K: int = 10
     DENSE_RETRIEVAL_SCORE_THRESHOLD: float = 0.0
 
-    # Elasticsearch
-    ES_HOST: str = "http://localhost:9200"
-    ES_USER: Optional[str] = None
-    ES_PASSWORD: Optional[str] = None
-    ES_INDEX_NAME: str = "tolink_rag_index"
-    ES_INDEX_SHARDS: int = 3
-    ES_INDEX_REPLICAS: int = 1
-    ES_MAX_DOCUMENT_BYTES: int = 131072
-    ES_MAX_TOKEN_BATCH_BYTES: int = 5242880
-    ES_MAX_TOKEN_BATCH_CHUNKS: int = 500
-    ES_BULK_REQUEST_TIMEOUT_SECONDS: int = 30
-    ES_SMOKE_ENABLED: bool = False
-    TOLINK_RUN_REAL_ES_INDEX_TESTS: bool = False
-
-    # BM25 全文检索后端选择：es / qdrant / manticore。默认 qdrant（2026-06 切换，见迁移
-    # 脚本 scripts/migrate/es_to_qdrant_bm25.py）；如需临时回退 ES 可设 BM25_BACKEND=es。
+    # BM25 全文检索后端选择：qdrant / manticore。
     # manticore 是实验性新后端（coarse-only 原生 BM25，按 dataset 物理建表，见下方配置）。
     # 开关只影响 BM25 一路，dense / sparse 召回不受影响。
     # 详见 docs/internals/parse_task_pipeline.md。
@@ -508,34 +493,10 @@ class Settings(BaseSettings):
             raise ValueError("BM25_SHADOW_TIMEOUT_SECONDS must be finite and > 0")
         return value
 
-    # chunk_type 类型加权（仅 BM25_BACKEND=es 生效）：对命中的 chunk 按其种类额外加固定分
-    # （const_score 加法升权，主 BM25 分之上叠加）。数据源是 kb_document_chunk.chunk_type，
-    # 合法取值见 src.core.storage.chunks.constants.ALLOWED_CHUNK_TYPES。
-    # 只列需要升权/降权的类型，未列出的默认 +0（基准）；分数与 BM25 主分同量纲，按召回评测调。
-    #
-    # 未列出 heading/list/paragraph/blockquote：splitter 的 flush 边界只在标题前触发、且会把
-    # 尾部孤立标题合并回上一 chunk，实测正文分片几乎必然是多元素组合 → chunk_type 收敛成
-    # mixed，这几种类型在自动链路里基本不可达，配权重也打不到数据，故不再配（仍是合法值，
-    # 管理端手动改类型时可用，但不参与自动召回加权）。
-    # table/image/code_block/math_block 走 derived_element 抽取路径，稳定单独成块：table 结构化
-    # 强，保持较高升权；code_block/math_block 命中多为精确标识符匹配，误召回率低，给中等升权；
-    # image 派生 chunk 内容单薄（多是 alt/caption），升权幅度小于 table。
-    # front_matter 是文档级元数据（标题/作者/标签等），关键词密度高但通常不是回答内容本身，
-    # 用降权避免仅因元数据关键词命中而抢占正文 chunk 的排名。
-    BM25_TYPE_BOOST: dict[str, float] = Field(
-        default_factory=lambda: {
-            "table": 1.5,
-            "code_block": 1.0,
-            "math_block": 1.0,
-            "image": 0.6,
-            "front_matter": -1.0,
-        }
-    )
-
     # ---- Qdrant BM25 后端（仅 BM25_BACKEND=qdrant 时生效）----
     # 以 sparse vector + Modifier.IDF 实现真 BM25（路 A：客户端补算 TF 部分，IDF 服务端补），
     # 召回用 Formula Query 表达「BM25 主分 × chunk_type 乘数」的乘法类型加权。
-    # BM25 独立 collection（单 collection + payload filter 隔离租户，对称 ES 单 index）。
+    # BM25 独立 collection（单 collection + payload filter 隔离租户）。
     QDRANT_BM25_COLLECTION: str = "tolink_rag_bm25"
     # BM25 专用 named sparse vector 名（带 Modifier.IDF），与 BGE-M3 sparse_text 并存。
     # 装 coarse + fine 双段 token（各占隔离 hash 维度空间，单向量单次点积即双路 BM25）。
@@ -555,14 +516,14 @@ class Settings(BaseSettings):
     # 之后写入的 chunk 生效，存量需重灌才完全对齐——见 docs/internals/parse_task_pipeline.md。
     BM25_AVGDL: float = 181.0
     BM25_AVGDL_FINE: float = 188.0
-    # query 侧 coarse 段权重，对齐 ES multi_match 的 "coarse_tokens^2"：query 词在
+    # query 侧 coarse 段权重：query 词在
     # coarse 段 value=该值、fine 段 value=1，点积即 coarse_boost×coarse_BM25 + fine_BM25。
     BM25_COARSE_BOOST: float = 2.0
     # 乘法类型权重（Qdrant Formula 用）：命中该 chunk_type 时 BM25 主分 ×倍数。
-    # 注意：与加法 BM25_TYPE_BOOST 语义不同，**不要复用**。温和起步（1.1~1.5），
+    # 建议从温和权重（1.1~1.5）起步，
     # 再用召回评测扫参；别从 ×3 开始（会变成「类型碾压相关性」）。取值 <1.0 表示降权
     # （见 store._build_formula：乘数 = 1.0 + Σ(mult−1)·[chunk_type 命中]）。
-    # 类型取舍理由同 BM25_TYPE_BOOST：heading/list/paragraph/blockquote 在自动链路里几乎不
+    # heading/list/paragraph/blockquote 在自动链路里几乎不
     # 可达（splitter 正文分片必然收敛成 mixed），不配权重；table/code_block/math_block/image
     # 走 derived_element 稳定单独成块，front_matter 走 isolated source chunk 稳定单独成块，
     # 这几种才是实际打得到的类型。

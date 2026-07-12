@@ -3,7 +3,7 @@
 对外暴露相同的两个方法签名，使 ``run_es_indexing`` / ``DocumentDeletePurger`` 等
 编排层无需感知后端差异（靠 ``BM25_BACKEND`` 工厂切换）：
 
-- ``write_es_index(plan, *, db) -> EsIndexingResult``
+- ``write_es_index(plan, *, db) -> Bm25IndexingResult``
 - ``delete_document_index(*, user_id, dataset_id, doc_id) -> int``
 
 与 Qdrant 入库管线的差异：不需要 sparse 向量编码（``Bm25SparseEncoder``），
@@ -19,7 +19,7 @@ from typing import Any
 from src.config import settings
 from src.core.preprocessor.models import ChunkWithTokens, FilePostIndexPlan
 from src.core.storage.chunks.repository import ChunkRepository
-from src.core.storage.es.models import EsIndexingResult
+from src.core.storage.bm25_models import Bm25IndexingResult
 from src.utils.logger import logger
 
 from .store import Bm25Point, ManticoreBm25Store, get_manticore_bm25_store
@@ -39,12 +39,12 @@ class ManticoreBm25IndexingPipeline:
         self._chunk_repository = chunk_repository or ChunkRepository()
         self._update_chunk_status = update_chunk_status
 
-    async def write_es_index(self, plan: FilePostIndexPlan, *, db: Any) -> EsIndexingResult:
+    async def write_es_index(self, plan: FilePostIndexPlan, *, db: Any) -> Bm25IndexingResult:
         """写一个文件的 post-index plan 到 Manticore BM25 并回写 chunk es_status。"""
 
         total = len(plan.chunks_with_tokens)
         if total == 0:
-            return EsIndexingResult(total_items=0, indexed_items=0)
+            return Bm25IndexingResult(total_items=0, indexed_items=0)
 
         meta = plan.file_meta
         valid_chunks: list[ChunkWithTokens] = []
@@ -103,7 +103,7 @@ class ManticoreBm25IndexingPipeline:
                 "MANTICORE_BM25_INDEXING_FAILED: BM25入库失败；"
                 f"total={total}, indexed={len(success_ids)}, failed={len(failed_item_ids)}"
             )
-        return EsIndexingResult(
+        return Bm25IndexingResult(
             total_items=total,
             indexed_items=len(success_ids),
             failed_item_ids=failed_item_ids,

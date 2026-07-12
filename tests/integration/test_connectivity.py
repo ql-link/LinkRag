@@ -137,24 +137,6 @@ def test_qdrant():
         pytest.fail(f"Qdrant 连接失败: {e}")
 
 
-@pytest.mark.skipif(not settings.ES_HOST, reason="当前环境未配置 ES_HOST")
-def test_elasticsearch():
-    """测试 Elasticsearch 连通性"""
-    elasticsearch = pytest.importorskip("elasticsearch", reason="未安装 elasticsearch，跳过 Elasticsearch 测试")
-    
-    logger.info(f"正在测试 Elasticsearch 连通性: {settings.ES_HOST}")
-    try:
-        es = elasticsearch.Elasticsearch(
-            [settings.ES_HOST],
-            basic_auth=(settings.ES_USER, settings.ES_PASSWORD) if settings.ES_USER else None,
-            request_timeout=5
-        )
-        assert es.ping() is True, "Elasticsearch ping 失败"
-        logger.success("Elasticsearch 连接成功!")
-    except Exception as e:
-        pytest.fail(f"Elasticsearch 连接失败: {e}")
-
-
 @pytest.mark.skipif(settings.STORAGE_TYPE != "minio", reason="当前环境存储组件未配置使用 MinIO")
 def test_minio():
     """测试 MinIO 连通性"""

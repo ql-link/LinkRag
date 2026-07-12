@@ -1,14 +1,12 @@
 #!/usr/bin/env python
-"""可复现的 BM25 召回评测：量化 Qdrant / Manticore 后端并与 ES 对比。
+"""可复现的 BM25 召回评测：量化 Qdrant / Manticore 后端。
 
-回答"Qdrant BM25 能否替代 ES 全文检索"需要可复现的指标，而不是一次性的口头数字。
-本脚本对同一份语料、同一把 RagFlowTokenizer，分别灌 Qdrant，并可选灌入
-Manticore（复用生产 coarse-only store）和 ES（复刻 mapping/multi_match）。
+本脚本对同一份语料、同一把 RagFlowTokenizer 灌入 Qdrant，并可选灌入
+Manticore（复用生产 coarse-only store）。
 
 - **recall@k / MRR / nDCG@k**：BM25 召回质量（gold = 字面包含 query 词的文档，客观可算）。
 - **fine-only 召回率**：只在 fine 段命中（query 词嵌在长词里被细分出）的文档能否被召回，
   直接量化 coarse+fine 双段相对纯 coarse 的覆盖面增益。
-- **es-vs-qdrant overlap@k**（--with-es）：两后端 top-k 结果重合度，"能否替代"的最直接证据。
 
 数据源：
   默认           自带合成中文语料 + query（可复现，不依赖外部数据 / CI 可跑）
@@ -16,15 +14,14 @@ Manticore（复用生产 coarse-only store）和 ES（复刻 mapping/multi_match
   --from-beir D  BEIR 格式集（corpus.jsonl/queries.jsonl/qrels/test.tsv），用人工分级
                  qrels 算 nDCG@k / recall@k（非 self-retrieval，最有说服力）
 
-安全：只连本地（Qdrant 默认 localhost:36333、ES 默认 localhost:9200），用独立 eval
-collection / index，跑完即删；绝不连生产，绝不动 kb_bucket_* / 业务 index。
+安全：只连本地 Qdrant / Manticore，用独立 eval collection / table，跑完即删；
+绝不连生产，绝不动业务索引。
 
 用法：
   python scripts/dev/eval_bm25_recall.py
-  python scripts/dev/eval_bm25_recall.py --with-es --es-password ***
-  python scripts/dev/eval_bm25_recall.py --from-db --db-password *** --with-es --es-password ***
+  python scripts/dev/eval_bm25_recall.py --from-db --db-password ***
   python scripts/dev/eval_bm25_recall.py --avgdl-coarse 175 --avgdl-fine 181   # 校准后复评
-  python scripts/dev/eval_bm25_recall.py --from-beir ./nfcorpus --k 10 --with-es --es-password ***
+  python scripts/dev/eval_bm25_recall.py --from-beir ./nfcorpus --k 10 --with-manticore
 """
 
 from __future__ import annotations
@@ -254,95 +251,6 @@ async def run_manticore(
             await store.close()
 
 
-# ---------------- ES 侧（复刻 src/core/storage/es 的 mapping 与查询）----------------
-def run_es(
-    docs: list[EvalDoc],
-    queries: list[list[str]],
-    url,
-    user,
-    password,
-    type_boost: dict[str, float] | None = None,
-):
-    """``type_boost`` 非空时复刻 ``EsBm25Retriever._build_query`` 的 constant_score 加法类型加权。"""
-    from elasticsearch import Elasticsearch, helpers
-
-    es = Elasticsearch(url, basic_auth=(user, password), request_timeout=30, verify_certs=False)
-    index = f"tolink_bm25_eval_{uuid.uuid4().hex[:8]}"
-    # mapping 复刻 src/core/storage/es/mapping.py：coarse/fine 均 whitespace analyzer；
-    # chunk_type 用 keyword，供 constant_score 类型加权的 term filter 用。
-    es.indices.create(
-        index=index,
-        body={
-            "settings": {
-                "analysis": {
-                    "analyzer": {
-                        "ws": {"type": "custom", "tokenizer": "whitespace", "filter": ["lowercase"]}
-                    }
-                }
-            },
-            "mappings": {
-                "properties": {
-                    "user_id": {"type": "long"},
-                    "dataset_id": {"type": "long"},
-                    "coarse_tokens": {"type": "text", "analyzer": "ws"},
-                    "fine_tokens": {"type": "text", "analyzer": "ws"},
-                    "chunk_type": {"type": "keyword"},
-                }
-            },
-        },
-    )
-    try:
-        helpers.bulk(
-            es,
-            [
-                {
-                    "_index": index,
-                    "_id": d.cid,
-                    "_source": {
-                        "user_id": 1,
-                        "dataset_id": 1,
-                        "coarse_tokens": " ".join(d.coarse),
-                        "fine_tokens": " ".join(d.fine),
-                        "chunk_type": d.chunk_type,
-                    },
-                }
-                for d in docs
-            ],
-            refresh=True,
-        )
-        rankings = []
-        for qterms in queries:
-            # 复刻 src/core/storage/es/retrieval.py 的 multi_match（coarse^2 + fine, best_fields）
-            # + type_boost 非空时的 constant_score 类型加权（should，不影响过滤命中集）。
-            bool_query: dict = {
-                "filter": [{"term": {"user_id": 1}}, {"term": {"dataset_id": 1}}],
-                "must": [
-                    {
-                        "multi_match": {
-                            "fields": ["coarse_tokens^2", "fine_tokens"],
-                            "query": " ".join(qterms),
-                            "type": "best_fields",
-                        }
-                    }
-                ],
-            }
-            if type_boost:
-                bool_query["should"] = [
-                    {
-                        "constant_score": {
-                            "filter": {"term": {"chunk_type": chunk_type}},
-                            "boost": float(weight),
-                        }
-                    }
-                    for chunk_type, weight in type_boost.items()
-                ]
-            resp = es.search(index=index, query={"bool": bool_query}, size=K)
-            rankings.append([h["_id"] for h in resp["hits"]["hits"]])
-        return rankings
-    finally:
-        es.indices.delete(index=index, ignore_unavailable=True)
-
-
 def load_db_corpus(args) -> tuple[list[str], list[str]]:
     """从 MySQL 读真实 chunk content + chunk_type 作语料；query 用 self-retrieval（见 build_queries）。
 
@@ -459,7 +367,7 @@ def load_beir(beir_dir: str, tok: RagFlowTokenizer, doc_limit: int = 0):
 
 
 def run_beir(args, tok: RagFlowTokenizer, enc: Bm25SparseEncoder) -> None:
-    """BEIR 评测：用人工分级 qrels 对比 Qdrant / Manticore / ES。"""
+    """BEIR 评测：用人工分级 qrels 对比 Qdrant / Manticore。"""
     import asyncio
 
     docs, cid2ext, queries, qrels = load_beir(args.from_beir, tok, args.doc_limit)
@@ -478,11 +386,7 @@ def run_beir(args, tok: RagFlowTokenizer, enc: Bm25SparseEncoder) -> None:
         if args.with_manticore
         else None
     )
-    es_rank = (
-        run_es(docs, qts, args.es_url, args.es_user, args.es_password) if args.with_es else None
-    )
-
-    q_rec, q_ndcg, m_rec, m_ndcg, mq_ov, e_rec, e_ndcg, ov = [], [], [], [], [], [], [], []
+    q_rec, q_ndcg, m_rec, m_ndcg, mq_ov = [], [], [], [], []
     for i, (qid, _) in enumerate(queries):
         rel_map = qrels[qid]
         gold = set(rel_map)
@@ -494,11 +398,6 @@ def run_beir(args, tok: RagFlowTokenizer, enc: Bm25SparseEncoder) -> None:
             m_rec.append(recall_at_k(m_ext, gold, K))
             m_ndcg.append(ndcg_graded(m_ext, rel_map, K))
             mq_ov.append(overlap_at_k(m_ext, r_ext, K))
-        if es_rank is not None:
-            e_ext = [cid2ext[c] for c in es_rank[i]]
-            e_rec.append(recall_at_k(e_ext, gold, K))
-            e_ndcg.append(ndcg_graded(e_ext, rel_map, K))
-            ov.append(overlap_at_k(r_ext, e_ext, K))
 
     def _avg(xs):
         v = [x for x in xs if not math.isnan(x)]
@@ -521,27 +420,18 @@ def run_beir(args, tok: RagFlowTokenizer, enc: Bm25SparseEncoder) -> None:
                 f"Manticore nDCG gate failed: {m_ndcg_score:.4f} < "
                 f"{args.manticore_min_ndcg:.4f}"
             )
-    if es_rank is not None:
-        print(f"  ES      recall@{K}={_avg(e_rec):.3f}  nDCG@{K}={_avg(e_ndcg):.3f}")
-        print(f"  es-vs-qdrant overlap@{K}={_avg(ov):.3f}（top-{K} 结果重合度，越高越接近 ES）")
-
-
 def main() -> None:
     import asyncio
 
-    ap = argparse.ArgumentParser(description="BM25 召回评测（Qdrant，可选对比 Manticore / ES）")
+    ap = argparse.ArgumentParser(description="BM25 召回评测（Qdrant，可选对比 Manticore）")
     ap.add_argument(
         "--from-db", action="store_true", help="用真实 MySQL chunk 语料（self-retrieval）"
     )
-    ap.add_argument("--with-es", action="store_true", help="同时灌 ES 对比 overlap")
     ap.add_argument(
         "--with-manticore", action="store_true", help="同时灌 Manticore coarse-only 生产实现"
     )
     ap.add_argument("--qdrant-host", default="localhost")
     ap.add_argument("--qdrant-port", type=int, default=36333)
-    ap.add_argument("--es-url", default="http://localhost:9200")
-    ap.add_argument("--es-user", default="elastic")
-    ap.add_argument("--es-password", default="")
     ap.add_argument("--manticore-host", default="127.0.0.1")
     ap.add_argument("--manticore-port", type=int, default=19306)
     ap.add_argument(
@@ -620,26 +510,17 @@ def main() -> None:
     queries = [query_terms(tok, q) for q in raw_queries]
 
     type_mult = settings.BM25_TYPE_MULT if args.type_mult else {}
-    type_boost = settings.BM25_TYPE_BOOST if args.type_mult else {}
     print(f"type_mult（qdrant）：{type_mult or '（关闭，纯 BM25）'}")
-    print(f"type_boost（es）：{type_boost or '（关闭，纯 BM25）'}\n")
 
     q_rank = asyncio.run(
         run_qdrant(docs, queries, enc, args.qdrant_host, args.qdrant_port, type_mult=type_mult)
     )
-    es_rank = (
-        run_es(docs, queries, args.es_url, args.es_user, args.es_password, type_boost=type_boost)
-        if args.with_es
-        else None
-    )
-
     # 汇总
-    recs, mrrs, ndcgs, fine_recs, overlaps = [], [], [], [], []
+    recs, mrrs, ndcgs, fine_recs = [], [], [], []
     print(
         f"{'query':<16} {'gold':>4} {'fineOnly':>8} {'R@k':>6} {'MRR':>6} {'nDCG':>6}"
-        + ("  esR@k  ovlp@k" if args.with_es else "")
     )
-    print("-" * (58 + (16 if args.with_es else 0)))
+    print("-" * 58)
     for i, (raw, qt) in enumerate(zip(raw_queries, queries)):
         gold_all, gold_coarse = gold_for(qt, docs)
         fine_only = gold_all - gold_coarse
@@ -658,18 +539,12 @@ def main() -> None:
             f"{raw[:15]:<16} {len(gold_all):>4} {len(fine_only):>8} "
             f"{r:>6.3f} {m:>6.3f} {n:>6.3f}"
         )
-        if args.with_es:
-            er = recall_at_k(es_rank[i], gold_all, K)
-            ov = overlap_at_k(ranked, es_rank[i], K)
-            if not math.isnan(ov):
-                overlaps.append(ov)
-            line += f"  {er:>5.3f}  {ov:>5.3f}"
         print(line)
 
     def _avg(xs):
         return sum(xs) / len(xs) if xs else float("nan")
 
-    print("-" * (58 + (16 if args.with_es else 0)))
+    print("-" * 58)
     print(f"\n汇总（k={K}，{len(recs)} 个有效 query）：")
     print(
         f"  Qdrant  recall@{K}={_avg(recs):.3f}  MRR={_avg(mrrs):.3f}  nDCG@{K}={_avg(ndcgs):.3f}"
@@ -678,10 +553,6 @@ def main() -> None:
         print(
             f"  fine-only 文档召回率={_avg(fine_recs):.3f}（{len(fine_recs)} 个 query 含只-fine-命中文档；"
             f"纯 coarse 时这些必为 0）"
-        )
-    if args.with_es and overlaps:
-        print(
-            f"  es-vs-qdrant overlap@{K}={_avg(overlaps):.3f}（top-{K} 结果重合度，越高越接近 ES）"
         )
 
 

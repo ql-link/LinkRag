@@ -11,8 +11,7 @@ from src.core.storage.bm25_migration import (
     DualWriteBm25IndexingPipeline,
     ShadowComparingBm25Retriever,
 )
-from src.core.storage.es.models import EsIndexingResult
-from src.core.storage.es.retrieval_models import Bm25ChunkHit, Bm25RecallRequest
+from src.core.storage.bm25_models import Bm25ChunkHit, Bm25IndexingResult, Bm25RecallRequest
 
 
 class _Repo:
@@ -53,7 +52,7 @@ class _Pipeline:
             raise self.write_error
         all_ids = [chunk.chunk_id for chunk in plan.chunks_with_tokens]
         failed = [chunk_id for chunk_id in all_ids if chunk_id not in self.success_ids]
-        return EsIndexingResult(
+        return Bm25IndexingResult(
             total_items=len(all_ids),
             indexed_items=len(self.success_ids),
             succeeded_item_ids=self.success_ids,

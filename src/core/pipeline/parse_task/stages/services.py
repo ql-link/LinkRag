@@ -49,7 +49,7 @@ from src.core.storage.chunks.constants import (
     SPARSE_VECTOR_STATUS_INDEXED,
 )
 from src.core.storage.chunks.repository import ChunkRepository
-from src.core.storage.es import EsIndexingResult
+from src.core.storage.bm25_models import Bm25IndexingResult
 from src.core.storage.qdrant import BucketRouter
 from src.core.storage.qdrant.constants import DEFAULT_BUCKET_COUNT, DEFAULT_COLLECTION_PREFIX
 from src.core.storage.vector import compose_vector_storage_facade
@@ -541,17 +541,17 @@ class StageServices:
         self,
         plan: FilePostIndexPlan,
         db: AsyncSession,
-    ) -> EsIndexingResult:
+    ) -> Bm25IndexingResult:
         """BM25 入库：在文档分支锁内全量重建并收敛状态。"""
         total = len(plan.chunks_with_tokens)
         if total == 0:
-            return EsIndexingResult(total_items=0, indexed_items=0)
+            return Bm25IndexingResult(total_items=0, indexed_items=0)
 
         es_pipeline = self._get_es_indexing_pipeline()
         meta = plan.file_meta
         task_id = meta.task_id
         if not task_id:
-            return EsIndexingResult(
+            return Bm25IndexingResult(
                 total_items=total,
                 indexed_items=0,
                 failure_reason="bm25_guard: file_meta.task_id is required",
@@ -595,7 +595,7 @@ class StageServices:
                 meta.doc_id,
                 exc,
             )
-            return EsIndexingResult(
+            return Bm25IndexingResult(
                 total_items=total,
                 indexed_items=0,
                 failure_reason=f"bm25_guard: {exc}",
@@ -607,7 +607,7 @@ class StageServices:
         plan: FilePostIndexPlan,
         db: AsyncSession,
         es_pipeline: Any,
-    ) -> EsIndexingResult:
+    ) -> Bm25IndexingResult:
         """Run the complete document-level BM25 mutation while its lock is held."""
         total = len(plan.chunks_with_tokens)
         meta = plan.file_meta
@@ -624,7 +624,7 @@ class StageServices:
                 meta.doc_id,
                 exc,
             )
-            return EsIndexingResult(
+            return Bm25IndexingResult(
                 total_items=total,
                 indexed_items=0,
                 failure_reason=f"es_delete: {exc}",
@@ -639,7 +639,7 @@ class StageServices:
                 meta.doc_id,
                 exc,
             )
-            result = EsIndexingResult(
+            result = Bm25IndexingResult(
                 total_items=total,
                 indexed_items=0,
                 failure_reason=f"bm25_write: {exc}",
@@ -684,7 +684,7 @@ class StageServices:
         return result
 
     @staticmethod
-    def build_es_failure_reason(es_result: EsIndexingResult) -> str:
+    def build_es_failure_reason(es_result: Bm25IndexingResult) -> str:
         failed_count = len(es_result.failed_item_ids)
         return (
             "ES_INDEXING_FAILED: ES入库失败；"

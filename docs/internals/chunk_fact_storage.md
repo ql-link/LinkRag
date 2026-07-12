@@ -1,6 +1,6 @@
 # Chunk 事实存储（chunk_fact_storage）
 
-本文说明 `src/core/storage/chunks/` —— Chunk 的 **SQL 真值源**。它是整条 RAG 链路的单一事实来源：解析流水线把分片落到这里，dense / sparse / BM25 三路在这里翻转各自的子状态，召回生成阶段按 `chunk_id` 从这里回读正文。Qdrant 与 Elasticsearch 都只是它的派生索引，最终一致而非强一致。
+本文说明 `src/core/storage/chunks/` —— Chunk 的 **SQL 真值源**。它是整条 RAG 链路的单一事实来源：解析流水线把分片落到这里，向量化 / 稀疏 / BM25 三路在这里翻转各自的子状态，召回生成阶段按 `chunk_id` 从这里回读正文。Qdrant 与 Manticore 都只是它的派生索引，最终一致而非强一致。
 
 底层表结构见 [docs/api/schemas/mysql.md](../api/schemas/mysql.md) 的 `kb_document_chunk`，ORM 为 [`ChunkRecordDB`](../../src/models/chunk_record.py)。
 
@@ -8,8 +8,8 @@
 
 ## 1. 定位与职责
 
-- **唯一真值**：`kb_document_chunk` 一行 = 一个 chunk 的权威记录（正文、来源、三路索引状态、生命周期）。下游读取（召回正文回填、补偿修复、状态统计）以本表为准，不以 Qdrant/ES 为准。
-- **薄仓储**：`ChunkRepository` 只做 SQL 读写与 CAS（compare-and-set）状态翻转，不含业务编排、不发通知、不调外部存储。编排归 [parse_task_pipeline](parse_task_pipeline.md) 的各 Stage，外部索引写入归 [vector_storage](vectorization.md) / [es_index_storage](es_index_storage.md) / [sparse_vector](sparse_vector.md)。
+- **唯一真值**：`kb_document_chunk` 一行 = 一个 chunk 的权威记录（正文、来源、三路索引状态、生命周期）。下游读取（召回正文回填、补偿修复、状态统计）以本表为准，不以 Qdrant/Manticore 为准。
+- **薄仓储**：`ChunkRepository` 只做 SQL 读写与 CAS（compare-and-set）状态翻转，不含业务编排、不发通知、不调外部存储。编排归 [parse_task_pipeline](parse_task_pipeline.md) 的各 Stage，外部索引写入归 [vectorization](vectorization.md) / [sparse_vector](sparse_vector.md) / Manticore BM25。
 
 ```text
 src/core/storage/chunks/

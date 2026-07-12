@@ -1,4 +1,4 @@
-"""Shared plan models produced by the preprocessor and consumed by ES indexing."""
+"""Shared plan models produced by the preprocessor and consumed by BM25 indexing."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ class FileIndexMeta:
 
 @dataclass(frozen=True, slots=True)
 class ChunkWithTokens:
-    """Single chunk token payload for ES keyword indexing."""
+    """Single chunk token payload for BM25 keyword indexing."""
 
     chunk_id: str
     chunk_index: int
@@ -31,7 +31,7 @@ class ChunkWithTokens:
 
 @dataclass(frozen=True, slots=True)
 class FilePostIndexPlan:
-    """Complete ES post-indexing plan for one file."""
+    """Complete BM25 post-indexing plan for one file."""
 
     file_meta: FileIndexMeta
     chunks_with_tokens: list[ChunkWithTokens] = field(default_factory=list)
