@@ -18,7 +18,7 @@ from src.core.storage.chunks.constants import (
     SPARSE_VECTOR_STATUS_PENDING,
 )
 from src.core.storage.chunks.repository import ChunkRepository
-from src.core.storage.es.models import EsIndexingResult
+from src.core.storage.bm25_models import Bm25IndexingResult
 from src.core.storage.vector.models import ChunkIndexingResult
 from src.core.storage.qdrant import qdrant_store as qdrant_store_module
 
@@ -89,7 +89,7 @@ class _SparsePipeline:
 
 
 class _Bm25Pipeline:
-    def __init__(self, events: list[str], result: EsIndexingResult):
+    def __init__(self, events: list[str], result: Bm25IndexingResult):
         self._events = events
         self._result = result
         self.delete_calls = 0
@@ -356,7 +356,7 @@ async def test_bm25_failure_cleanup_unifies_document_status_inside_lock(monkeypa
     monkeypatch.setattr(services_module, "logger", observability_logger)
     pipeline = _Bm25Pipeline(
         events,
-        EsIndexingResult(
+        Bm25IndexingResult(
             total_items=1,
             indexed_items=0,
             failed_item_ids=["c1"],
