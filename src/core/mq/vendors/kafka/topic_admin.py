@@ -79,14 +79,6 @@ def build_default_topic_specs() -> list[TopicSpec]:
             max_message_bytes=max_message_bytes,
         ),
         TopicSpec(
-            name=os.getenv("CACHE_SYNC_TOPIC", "tolink.rag.cache_sync"),
-            partitions=_env_int("CACHE_SYNC_PARTITIONS", 1),
-            replication_factor=replication_factor,
-            retention_ms=_env_int("RETENTION_MS_CACHE_SYNC", 172800000),
-            min_insync_replicas=min_insync_replicas,
-            max_message_bytes=max_message_bytes,
-        ),
-        TopicSpec(
             name=os.getenv("USAGE_REPORT_TOPIC", "tolink.rag.usage_report"),
             partitions=_env_int("USAGE_REPORT_PARTITIONS", 1),
             replication_factor=replication_factor,

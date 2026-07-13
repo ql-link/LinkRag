@@ -10,7 +10,7 @@
 - :func:`build_provider_from_config`：纯函数，给定配置 dict → 构造 Provider（不碰 DB）。
 - :func:`aresolve_user_model`：按 ``(user_id, capability)``（或 ``config_id``）读配置后构造。
 
-缓存策略：本期不启用 Redis 配置缓存，读配置统一 ``use_cache=False`` 直读 DB。
+配置读取以共享 MySQL 为唯一事实来源。
 """
 
 from __future__ import annotations
@@ -206,9 +206,9 @@ async def aresolve_user_model(
         if config_id is not None:
             source_upper = (config_source or "USER").upper()
             if source_upper == "SYSTEM":
-                config = await svc.get_system_preset_by_id(config_id, use_cache=False)
+                config = await svc.get_system_preset_by_id(config_id)
             elif source_upper == "USER":
-                config = await svc.get_user_config_by_id(user_id, config_id, use_cache=False)
+                config = await svc.get_user_config_by_id(user_id, config_id)
             else:
                 raise ValueError(f"Unknown config_source {config_source!r}")
             if config and (config.get("capability") or "").upper() != capability.upper():
@@ -217,7 +217,6 @@ async def aresolve_user_model(
             config = await svc.get_user_default_config_by_capability(
                 user_id=user_id,
                 capability=capability,
-                use_cache=False,
                 allow_linkrag_default=allow_linkrag_default,
             )
         if not config and allow_system_fallback:

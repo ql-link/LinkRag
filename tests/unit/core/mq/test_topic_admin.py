@@ -14,7 +14,7 @@ def test_build_default_topic_specs_emits_dlt_siblings() -> None:
 
     # 业务 topic 与 DLT 一一对应（每个业务 topic 对应一个 DLT）
     assert len(business) == len(dlt)
-    assert len(business) >= 4  # parse_task / cache_sync / usage_report / document_delete
+    assert len(business) >= 4  # parse_task / usage_report / chat_turn / document_delete
 
     biz_by_name = {s.name: s for s in business}
     for d in dlt:

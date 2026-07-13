@@ -60,7 +60,6 @@ def _patch_config_reader(monkeypatch, *, config):
             *,
             user_id,
             capability,
-            use_cache=True,
             allow_linkrag_default=True,
         ):
             assert capability == "EMBEDDING"

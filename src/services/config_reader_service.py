@@ -10,7 +10,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from src.cache.cache_manager import CacheManager, cache_manager
 from src.core.llm.encryption import decrypt_api_key as decrypt_api_key_util
 from src.models.db_models import SystemPresetDB, SystemProviderDB, UserLLMConfigDB
 
@@ -64,51 +63,32 @@ class ConfigReaderService:
     - 从 MySQL 读取 llm_user_config 表
     - 从 MySQL 读取 llm_system_preset 表中 LinkRag 默认预设
     - 从 MySQL 读取 llm_system_provider 表
-    - 维护 Redis 缓存
-    - 配置变更时主动失效缓存
-
-    缓存通过依赖注入实现：
-    - 生产环境：使用全局 cache_manager（Redis 后端）
-    - 测试环境：可注入使用 NullCacheBackend 的 CacheManager
+    所有数据库配置读取均以 MySQL 为唯一事实来源。
     """
 
     def __init__(
         self,
         db: Optional[AsyncSession] = None,
-        cache: Optional[CacheManager] = None,
     ):
         """初始化服务
 
         Args:
             db: 可选的数据库 Session，用于依赖注入
-            cache: 可选的缓存管理器，默认使用全局 cache_manager
         """
         self._db: Optional[AsyncSession] = db
-        self._cache: CacheManager = cache or cache_manager
 
     def set_db(self, db: AsyncSession) -> None:
         """设置数据库 Session"""
         self._db = db
 
-    async def get_user_configs(self, user_id: int, use_cache: bool = True) -> List[Dict[str, Any]]:
+    async def get_user_configs(self, user_id: int) -> List[Dict[str, Any]]:
         """获取用户的所有 LLM 配置
 
         Args:
             user_id: 用户 ID
-            use_cache: 是否使用缓存
-
         Returns:
             用户配置列表
         """
-        cache_key = self._cache.user_configs_key(str(user_id))
-
-        # 先查缓存
-        if use_cache:
-            cached = await self._cache.get(cache_key)
-            if cached is not None:
-                return cached
-
-        # 缓存未命中，从数据库查询
         if self._db is None:
             return []
 
@@ -122,20 +102,13 @@ class ConfigReaderService:
         result = await self._db.execute(stmt)
         configs_db = result.scalars().all()
 
-        configs = [_user_config_to_dict(cfg) for cfg in configs_db]
-
-        # 回填缓存
-        if use_cache:
-            await self._cache.set(cache_key, configs)
-
-        return configs
+        return [_user_config_to_dict(cfg) for cfg in configs_db]
 
     async def get_user_default_config_by_capability(
         self,
         user_id: int,
         capability: str,
         provider_type: Optional[str] = None,
-        use_cache: bool = True,
         allow_linkrag_default: bool = True,
     ) -> Optional[Dict[str, Any]]:
         """获取用户指定能力的生效默认 LLM 配置
@@ -148,24 +121,12 @@ class ConfigReaderService:
             user_id: 用户 ID
             capability: 能力类型（CHAT/EMBEDDING/SPARSE_EMBEDDING/RERANK/VISION）
             provider_type: 可选，指定 provider 类型
-            use_cache: 是否使用缓存
             allow_linkrag_default: 用户默认缺失时是否允许读取 LinkRag 系统默认预设
 
         Returns:
             该能力的生效默认配置，未设置则返回 None
         """
         capability_upper = capability.upper()
-        cache_key = f"llm:user:{user_id}:default:{capability_upper}"
-        if provider_type:
-            cache_key = f"{cache_key}:{provider_type}"
-
-        # 先查缓存
-        if use_cache:
-            cached = await self._cache.get(cache_key)
-            if cached is not None:
-                return cached
-
-        # 缓存未命中，从数据库查询
         if self._db is None:
             return None
 
@@ -187,47 +148,24 @@ class ConfigReaderService:
         result = await self._db.execute(stmt)
         cfg = result.scalars().first()
 
-        cache_user_default = cfg is not None
         if cfg is None:
             if provider_type or not allow_linkrag_default:
                 return None
-            config = await self.get_default_linkrag_system_preset_by_capability(
-                capability_upper, use_cache=use_cache
-            )
-            if config is None:
-                return None
-        else:
-            config = _user_config_to_dict(cfg)
-
-        # 用户默认缓存只保存用户表命中结果；LinkRag 预设走 system cache，避免系统默认切换后
-        # 用户 key 中残留旧预设。
-        if use_cache and cache_user_default:
-            await self._cache.set(cache_key, config)
-
-        return config
+            return await self.get_default_linkrag_system_preset_by_capability(capability_upper)
+        return _user_config_to_dict(cfg)
 
     async def get_user_config_by_id(
-        self, user_id: int, config_id: int, use_cache: bool = True
+        self, user_id: int, config_id: int
     ) -> Optional[Dict[str, Any]]:
         """根据 ID 获取用户特定配置
 
         Args:
             user_id: 用户 ID
             config_id: 配置 ID
-            use_cache: 是否使用缓存
 
         Returns:
             配置详情，未找到则返回 None
         """
-        cache_key = self._cache.user_config_key(str(user_id), str(config_id))
-
-        # 先查缓存
-        if use_cache:
-            cached = await self._cache.get(cache_key)
-            if cached is not None:
-                return cached
-
-        # 缓存未命中，从数据库查询
         if self._db is None:
             return None
 
@@ -244,37 +182,21 @@ class ConfigReaderService:
         if cfg is None:
             return None
 
-        config = _user_config_to_dict(cfg)
-
-        # 回填缓存
-        if use_cache:
-            await self._cache.set(cache_key, config)
-
-        return config
+        return _user_config_to_dict(cfg)
 
     async def get_user_configs_by_capability(
-        self, user_id: int, capability: str, use_cache: bool = True
+        self, user_id: int, capability: str
     ) -> List[Dict[str, Any]]:
         """获取用户指定能力的所有配置
 
         Args:
             user_id: 用户 ID
             capability: 能力类型（CHAT/EMBEDDING/SPARSE_EMBEDDING/RERANK/VISION）
-            use_cache: 是否使用缓存
 
         Returns:
             该能力的所有配置列表
         """
         capability_upper = capability.upper()
-        cache_key = f"llm:user:{user_id}:configs:{capability_upper}"
-
-        # 先查缓存
-        if use_cache:
-            cached = await self._cache.get(cache_key)
-            if cached is not None:
-                return cached
-
-        # 缓存未命中，从数据库查询
         if self._db is None:
             return []
 
@@ -289,38 +211,19 @@ class ConfigReaderService:
         result = await self._db.execute(stmt)
         configs_db = result.scalars().all()
 
-        configs = [_user_config_to_dict(cfg) for cfg in configs_db]
-
-        # 回填缓存
-        if use_cache:
-            await self._cache.set(cache_key, configs)
-
-        return configs
+        return [_user_config_to_dict(cfg) for cfg in configs_db]
 
     async def get_system_providers(
-        self, provider_type: Optional[str] = None, use_cache: bool = True
+        self, provider_type: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         """获取系统级厂商列表
 
         Args:
             provider_type: 可选，按类型过滤
-            use_cache: 是否使用缓存
 
         Returns:
             系统厂商列表
         """
-        if provider_type:
-            cache_key = self._cache.system_provider_key(provider_type)
-        else:
-            cache_key = self._cache.system_providers_key()
-
-        # 先查缓存
-        if use_cache:
-            cached = await self._cache.get(cache_key)
-            if cached is not None:
-                return cached
-
-        # 缓存未命中，从数据库查询
         if self._db is None:
             return []
 
@@ -368,43 +271,29 @@ class ConfigReaderService:
                 }
             )
 
-        # 回填缓存
-        if use_cache:
-            await self._cache.set(cache_key, providers)
-
         return providers
 
     async def get_system_provider_by_type(
-        self, provider_type: str, use_cache: bool = True
+        self, provider_type: str
     ) -> Optional[Dict[str, Any]]:
         """根据类型获取系统厂商
 
         Args:
             provider_type: 厂商类型
-            use_cache: 是否使用缓存
 
         Returns:
             厂商详情
         """
-        providers = await self.get_system_providers(
-            provider_type=provider_type, use_cache=use_cache
-        )
+        providers = await self.get_system_providers(provider_type=provider_type)
         return providers[0] if providers else None
 
     async def get_system_preset_by_id(
-        self, config_id: int, use_cache: bool = True
+        self, config_id: int
     ) -> Optional[Dict[str, Any]]:
         """根据 ID 获取系统预设配置。
 
         仅供 Java 返回 ``source=SYSTEM`` 时按 ``source + configId`` 精确定位。
         """
-        cache_key = f"llm:system:preset:{config_id}"
-
-        if use_cache:
-            cached = await self._cache.get(cache_key)
-            if cached is not None:
-                return cached
-
         if self._db is None:
             return None
 
@@ -422,23 +311,13 @@ class ConfigReaderService:
         if cfg is None:
             return None
 
-        config = _system_preset_to_dict(cfg)
-        if use_cache:
-            await self._cache.set(cache_key, config)
-        return config
+        return _system_preset_to_dict(cfg)
 
     async def get_default_linkrag_system_preset_by_capability(
-        self, capability: str, use_cache: bool = True
+        self, capability: str
     ) -> Optional[Dict[str, Any]]:
         """获取指定能力的 LinkRag 系统默认预设。"""
         capability_upper = capability.upper()
-        cache_key = f"llm:system:linkrag:default:{capability_upper}"
-
-        if use_cache:
-            cached = await self._cache.get(cache_key)
-            if cached is not None:
-                return cached
-
         if self._db is None:
             return None
 
@@ -457,22 +336,7 @@ class ConfigReaderService:
         if cfg is None:
             return None
 
-        config = _system_preset_to_dict(cfg)
-        if use_cache:
-            await self._cache.set(cache_key, config)
-        return config
-
-    async def clear_cache(self, user_id: Optional[str] = None) -> None:
-        """清除缓存
-
-        Args:
-            user_id: 如果指定，只清除该用户的缓存；否则清除所有
-        """
-        if user_id:
-            await self._cache.clear_user_cache(user_id)
-        else:
-            await self._cache.clear_user_cache("*")  # 清除所有用户缓存
-            await self._cache.clear_system_cache()
+        return _system_preset_to_dict(cfg)
 
     async def decrypt_api_key(self, encrypted_key: str) -> str:
         """解密 API Key

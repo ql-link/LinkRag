@@ -1,6 +1,6 @@
 """
 缓存管理器
-提供 JSON 序列化/反序列化封装，键前缀管理和 TTL 控制
+提供 JSON 序列化/反序列化封装和 TTL 控制
 
 采用抽象后端设计：
 - CacheBackend: 抽象基类
@@ -82,13 +82,6 @@ class CacheManager:
     - 测试环境：NullCacheBackend
     """
 
-    # 键前缀
-    PREFIX_USER_CONFIG = "llm:user:{user_id}:config"
-    PREFIX_USER_CONFIGS = "llm:user:{user_id}:configs"
-    PREFIX_USER_DEFAULT = "llm:user:{user_id}:default"
-    PREFIX_SYSTEM_PROVIDERS = "llm:system:providers"
-    PREFIX_SYSTEM_PROVIDER = "llm:system:provider:"
-
     # TTL: 10 分钟
     DEFAULT_TTL = 600
 
@@ -138,54 +131,6 @@ class CacheManager:
     async def delete(self, key: str) -> None:
         """删除缓存"""
         await self._backend.delete(key)
-
-    async def clear_user_cache(self, user_id: str) -> None:
-        """清除用户相关的所有缓存
-
-        Args:
-            user_id: 用户 ID
-        """
-        pattern = f"llm:user:{user_id}:*"
-        keys = await self._backend.keys(pattern)
-        if keys:
-            for key in keys:
-                await self._backend.delete(key)
-
-    async def clear_system_cache(self) -> None:
-        """清除系统厂商缓存"""
-        pattern = "llm:system:*"
-        keys = await self._backend.keys(pattern)
-        if keys:
-            for key in keys:
-                await self._backend.delete(key)
-
-    # ---- 辅助方法：生成特定类型的缓存键 ----
-
-    @staticmethod
-    def user_configs_key(user_id: str) -> str:
-        """用户配置列表缓存键"""
-        return CacheManager.PREFIX_USER_CONFIGS.format(user_id=user_id)
-
-    @staticmethod
-    def user_config_key(user_id: str, config_id: str) -> str:
-        """用户单个配置缓存键"""
-        return CacheManager.PREFIX_USER_CONFIG.format(user_id=user_id) + f":{config_id}"
-
-    @staticmethod
-    def user_default_key(user_id: str) -> str:
-        """用户默认配置缓存键"""
-        return CacheManager.PREFIX_USER_DEFAULT.format(user_id=user_id)
-
-    @staticmethod
-    def system_providers_key() -> str:
-        """系统厂商列表缓存键"""
-        return CacheManager.PREFIX_SYSTEM_PROVIDERS
-
-    @staticmethod
-    def system_provider_key(provider_type: str) -> str:
-        """单个系统厂商缓存键"""
-        return CacheManager.PREFIX_SYSTEM_PROVIDER + provider_type
-
 
 # 全局单例 - 默认使用 Redis 后端
 cache_manager = CacheManager()
