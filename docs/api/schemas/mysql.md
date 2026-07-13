@@ -23,7 +23,10 @@ ORM 与 migration 不一致时，以 migration 为准并修正 ORM；scripts/db/
 | [知识索引](#7-知识索引) | `kb_document_chunk` | 10000 |
 | [Workflow 运行记录](#8-workflow-运行记录) | `workflow_run`, `workflow_node_run` | 10000 |
 
-所有表统一：`InnoDB` / `utf8mb4_unicode_ci`，主键自增从 `10000` 起。
+所有表统一：`InnoDB` / `utf8mb4` / `utf8mb4_unicode_ci`，主键自增从 `10000` 起。
+存量库由 migration `0036` 统一执行 `ALTER DATABASE ... CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`
+并对当前库内所有业务表执行 `ALTER TABLE ... CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci`，
+避免跨表字符串 join 因环境默认 collation 不同而失败。
 
 ---
 
