@@ -82,7 +82,8 @@ ParseResult
 
 ## 4. 增强配置
 
-增强开关来自 `src/config.py::Settings`：
+增强开关优先来自数据集 `enhancement_config`；数据集配置行中的 `{}` 表示所有增强关闭，非空
+对象的缺失字段以及无配置行场景才读取 `src/config.py::Settings`：
 
 - `MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT`
 - `MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT`
@@ -97,7 +98,9 @@ ParseResult
 - `MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET`
 - `MARKDOWN_PARSER_HEADING_LLM_MAX_OUTPUT_TOKENS`
 
-表格增强使用文本能力；图片增强使用视觉能力。有 `user_id` 的生产解析路径统一读取发起用户对应能力的默认配置：表格增强使用默认 `CHAT`，图片增强使用默认 `VISION`。无 `user_id` 的调试入口才回退系统级 LLM 配置：
+表格增强使用文本能力；图片增强使用视觉能力。有 `user_id` 的生产解析路径按“用户 active +
+default → LinkRag active + default 系统预设”解析：表格增强使用 `CHAT`，图片增强使用 `VISION`。
+两层都未命中时抛 `EnhancementModelMissingError`。无 `user_id` 的调试入口使用遗留 env 系统配置：
 
 - `SYSTEM_LLM_PROVIDER`
 - `SYSTEM_LLM_API_KEY`

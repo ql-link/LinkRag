@@ -219,7 +219,7 @@ ORM：[`UsageLogDB`](../../../src/models/db_models.py)
 
 ### `dataset_parse_config` — 数据集解析/检索参数配置表
 
-按数据集独立设置解析/检索参数。四个 JSON 列分别承载分块、Markdown 增强、PDF 解析、召回检索四类配置；未配置或缺字段时由 Python 侧回退系统默认值。
+按数据集独立设置解析/检索参数。四个 JSON 列分别承载分块、Markdown 增强、PDF 解析、召回检索四类配置。通常未配置或缺字段时由 Python 侧回退系统默认值；`enhancement_config={}` 例外，明确表示所有增强关闭，非空增强对象的缺失字段仍回退系统默认。
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
@@ -227,7 +227,7 @@ ORM：[`UsageLogDB`](../../../src/models/db_models.py)
 | `user_id` | BIGINT UNSIGNED | 所属用户 ID |
 | `dataset_id` | BIGINT UNSIGNED | 所属数据集 ID，对应 `dataset.id` |
 | `chunking_config` | JSON | 分块配置（3 项：heading_break_level / min_candidate_chunk_tokens / overlap_tokens；旧 percentile 语义切片参数已随 splitter 重写移除） |
-| `enhancement_config` | JSON | Markdown 增强配置（2 项：enable_table_enhancement / enable_image_enhancement）。仅控制是否开启表格/图片增强；增强模型不在此选择，统一用发起用户对应能力（CHAT/VISION）的默认模型。历史数据残留的 table_model / vision_model 键被忽略 |
+| `enhancement_config` | JSON | Markdown 增强配置（enable_table_enhancement / enable_image_enhancement / enable_heading_hierarchy）。`{}` 表示所有增强关闭；非空对象缺失字段继承 Settings。增强模型不在此选择，按用户默认 → LinkRag 系统默认预设解析 CHAT/VISION。历史数据残留的 table_model / vision_model 键被忽略 |
 | `pdf_config` | JSON | PDF 解析配置（1 项：pdf_parser_backend，null 表示用系统默认） |
 | `recall_config` | JSON | 召回检索配置（15 项：recall_result_limit / recall_context_token_budget / bm25_top_k / sparse_top_k / sparse_score_threshold / dense_top_k / dense_score_threshold / recall_enabled_sources / recall_fusion_strategy / rrf_k / fusion_bm25_weight / fusion_sparse_weight / fusion_dense_weight / rerank_top_n / recall_strict；数据库列 COMMENT 由 Alembic 迁移同步维护）。其中 recall_result_limit 为融合后候选池窗口；bm25_top_k / sparse_top_k / dense_top_k 分别控制三路执行期召回深度；recall_enabled_sources 为启用的召回路数组（bm25/sparse/dense，**仅能在系统已装配的召回路集合内收窄**，列出的未装配路被忽略、交集为空时回退全部已装配路）；recall_fusion_strategy 可选 rrf / weighted_score；rrf_k 仅用于 rrf，计算 `1 / (rrf_k + rank)`；三路 fusion 权重仅用于 weighted_score 且允许单项为 0；rerank_top_n 为重排返回条数上限；recall_strict 为召回容错模式（true=任一路失败即整体失败，false=允许单路失败降级） |
 | `sparse_embedding_config_id` | BIGINT UNSIGNED NULL | 数据集绑定的稀疏向量模型配置 ID，指向 `llm_user_config.id`，要求属于当前用户、启用中、`is_system_preset=false`、`capability='SPARSE_EMBEDDING'` |

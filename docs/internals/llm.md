@@ -119,9 +119,9 @@ API Key 不写入文档 / 测试 / 提交；用户密钥库内密文保存，读
 | `/api/v1/llm/embed` | `EMBEDDING` | openai / jina |
 | 用户配置解析 | `SPARSE_EMBEDDING` | doubao_vision / bge_m3（已接入 RAG 稀疏写入/召回）；openai / jina 仅声明能力 |
 | `/api/v1/llm/rerank` | `RERANK` | jina（平铺）/ dashscope（千问原生） |
-| Markdown 表格增强 | `CHAT` | 系统级 openai |
+| Markdown 表格增强 | `CHAT` | 用户默认 → LinkRag 系统默认预设；openai / anthropic / google |
 | Chunk 向量化 | `EMBEDDING` | 系统级 openai |
-| Markdown 图片增强 / `/ocr` | `VISION` | openai / anthropic / google；`/ocr` 为兼容旧 endpoint，读 `VISION` 配置（不再读 `OCR` 默认模型）。图片增强按发起用户 `VISION` 默认配置解析，未配则抛 `EnhancementModelMissingError`（不静默跳过） |
+| Markdown 图片增强 / `/ocr` | `VISION` | openai / anthropic / google；`/ocr` 为兼容旧 endpoint，读 `VISION` 配置（不再读 `OCR` 默认模型）。图片增强按用户默认 → LinkRag 系统默认预设解析，两层都未命中时抛 `EnhancementModelMissingError`（不静默跳过） |
 
 ## 7. 新增 adapter（新增 protocol）
 
