@@ -34,7 +34,7 @@ CODE: 中文业务原因；底层详情
 | `INTERNAL_UNKNOWN_ERROR` | 系统异常，请稍后重试 | 未归类内部异常 |
 | `PARSING_FAILED` | 文件解析阶段失败，请检查文件内容或重新解析 | 文档清洗（解析+上传）阶段统一失败前缀，对应 `failed_stage=CLEANING`（brief 称 `PARSING`） |
 | `SPARSE_VECTORIZING_FAILED` | 稀疏向量化失败，请稍后重试 | 稀疏向量阶段任一 chunk 失败、health-check 总数为 0、Qdrant 写入失败等 |
-| `LLM_CONFIG_MISSING` | 未配置默认大模型，请先在系统中配置后重试 | 发起用户缺少必配能力的默认 LLM 配置：稠密向量化缺 EMBEDDING（仅「确实未配置」时归此码，配置读取失败仍按 `PARSE_ENGINE_FAILED`，LINK-91）。解析增强缺 CHAT/VISION 默认模型现归 `ENHANCEMENT_MODEL_MISSING` |
+| `LLM_CONFIG_MISSING` | 未配置默认大模型，请先在系统中配置后重试 | 必配模型不存在：语义分块缺用户默认 EMBEDDING；标题层级增强门禁命中但用户默认与 LinkRag 系统默认预设均无 CHAT。配置读取失败仍按 `PARSE_ENGINE_FAILED` |
 | `ENHANCEMENT_MODEL_MISSING` | 已开启表格/图片增强，但未配置对应的默认模型，请先配置默认模型后重试 | 数据集开启表格/图片增强，但用户默认和 LinkRag 系统默认预设均未提供对应能力（表格→CHAT，图片→VISION）的模型。数据集层不再选择增强模型；图片增强不静默跳过 |
 | `EMBEDDING_DIMENSION_UNSUPPORTED` | 所选向量模型维度不受支持，请改用系统支持的向量模型 | 稠密向量化阶段，用户 EMBEDDING 模型输出维度 ≠ `DENSE_VECTOR_DIMENSION`（方案 A 维度约束，LINK-91） |
 | `RETRY_VALIDATION_FAILED` | 重试前置校验失败，请确认上次任务状态 | `ParseTaskGuard.validate_retry_context` 任一校验项不满足，或 `mark_superseded` CAS rowcount=0 |

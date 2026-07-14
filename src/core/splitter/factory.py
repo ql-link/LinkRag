@@ -7,6 +7,7 @@ ChunkEmbeddingPipeline。调用方只需注入返回的对象，不需要了解�
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Callable
+from urllib.parse import urlsplit
 
 if TYPE_CHECKING:
     from src.core.dataset_config import ChunkingConfig
@@ -132,6 +133,7 @@ class ModelBoundEmbedder(IEmbedder):
         self._embedder = embedder
         self.model_name = model_name
         self.provider_type = getattr(embedder, "provider_type", None)
+        self.api_base_url = getattr(embedder, "api_base_url", None)
         self.config_id = config_id
 
     def has_capability(self, capability: CapabilityType) -> bool:
@@ -289,22 +291,32 @@ def _resolve_embed_batch_size(
     provider_type: str,
     model_name: str,
     configured_batch_size: int,
+    api_base_url: str | None = None,
 ) -> int:
-    """根据 provider / model 的已知上限，对配置值做保护性 cap。
+    """根据 provider / endpoint / model 的已知上限，对配置值做保护性 cap。
 
     若配置值已经小于等于 provider 上限，直接使用配置值（尊重用户主动调小的意图）。
     若配置值超过 provider 上限，自动降到上限并打印警告日志。
-    对未知 provider / model 不做任何限制，直接返回配置值。
+    LinkRag 系统预设的 ``provider_type`` 固定为 ``linkrag``，不能表示实际上游厂商；此时
+    通过完整 endpoint 识别 DashScope。对未知 provider / endpoint / model 不做限制。
 
     Args:
         provider_type: 当前 LLM provider 类型，如 ``"qwen"``。
         model_name: 当前 embedding 模型名称，如 ``"text-embedding-v4"``。
         configured_batch_size: 来自 ``settings.CHUNK_INDEX_EMBED_BATCH_SIZE`` 的配置值。
+        api_base_url: 实际 embedding 完整端点 URL，用于识别系统预设的真实上游。
 
     Returns:
         int: 实际使用的 batch size，不超过 provider 已知上限。
     """
     provider_limits = _PROVIDER_EMBED_BATCH_LIMITS.get(provider_type)
+    endpoint_host = (urlsplit(api_base_url).hostname or "").lower() if api_base_url else ""
+    if (
+        provider_limits is None
+        and endpoint_host.startswith("dashscope")
+        and endpoint_host.endswith(".aliyuncs.com")
+    ):
+        provider_limits = _DASHSCOPE_EMBED_BATCH_LIMITS
     if provider_limits is None:
         return configured_batch_size
 
@@ -341,6 +353,7 @@ def create_chunk_embedding_pipeline() -> ChunkEmbeddingPipeline:
         provider_type=settings.SYSTEM_LLM_PROVIDER,
         model_name=settings.SYSTEM_LLM_MODEL_EMBEDDING,
         configured_batch_size=settings.CHUNK_INDEX_EMBED_BATCH_SIZE,
+        api_base_url=settings.SYSTEM_LLM_API_BASE,
     )
     return ChunkEmbeddingPipeline(
         chunking_engine=_create_structured_chunking_engine(embedder=embedder),
@@ -507,6 +520,7 @@ async def aresolve_user_chunk_embedding_pipeline(user_id: int) -> ChunkEmbedding
         provider_type=getattr(embedder, "provider_type", settings.SYSTEM_LLM_PROVIDER),
         model_name=model_name or "",
         configured_batch_size=settings.CHUNK_INDEX_EMBED_BATCH_SIZE,
+        api_base_url=getattr(embedder, "api_base_url", None),
     )
     return ChunkEmbeddingPipeline(
         chunking_engine=_create_structured_chunking_engine(embedder=embedder),
@@ -531,6 +545,7 @@ async def aresolve_dataset_chunk_embedding_pipeline(
         provider_type=getattr(embedder, "provider_type", settings.SYSTEM_LLM_PROVIDER),
         model_name=model_name or "",
         configured_batch_size=settings.CHUNK_INDEX_EMBED_BATCH_SIZE,
+        api_base_url=getattr(embedder, "api_base_url", None),
     )
     return ChunkEmbeddingPipeline(
         chunking_engine=_create_structured_chunking_engine(embedder=embedder),

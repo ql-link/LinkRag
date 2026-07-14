@@ -144,6 +144,41 @@ async def test_vision_client_uses_linkrag_system_default(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_table_client_uses_linkrag_system_default(monkeypatch):
+    """用户无默认 CHAT、LinkRag 系统默认存在 → 表格增强使用系统预设。"""
+    _patch_session(monkeypatch)
+    service = _patch_config_service(
+        monkeypatch,
+        config={
+            "id": 9002,
+            "provider_type": "linkrag",
+            "protocol": "openai",
+            "api_key": "enc-system-key",
+            "api_base_url": "https://system.example.com/v1/chat/completions",
+            "model_name": "linkrag-chat",
+            "capability": "CHAT",
+            "config_source": "SYSTEM",
+        },
+    )
+    captured, provider = _patch_model_factory(monkeypatch)
+
+    client = await abuild_table_client(user_id=7)
+
+    assert isinstance(client, ProviderTableClient)
+    assert captured["provider_type"] == "linkrag"
+    assert captured["api_key"] == "decrypted::enc-system-key"
+    assert captured["model_name"] == "linkrag-chat"
+    assert client._config_id is None  # usage_report 系统配置调用不关联 llm_user_config.id
+    provider.has_capability.assert_called_with(CapabilityType.TEXT)
+    service.get_user_default_config_by_capability.assert_awaited_once_with(
+        user_id=7,
+        capability="CHAT",
+        use_cache=False,
+        allow_linkrag_default=True,
+    )
+
+
+@pytest.mark.asyncio
 async def test_table_client_no_user_chat_raises_enhancement_error(monkeypatch):
     """用户和 LinkRag 系统都无默认 CHAT → 抛 EnhancementModelMissingError(kind=table)。"""
     _patch_session(monkeypatch)
@@ -234,9 +269,7 @@ async def test_orchestrator_vision_model_missing_propagates(monkeypatch):
 
     parse_result = _FakeParseResult(tables=[], images=["img.png"])
     orchestrator = MarkdownEnhancementOrchestrator(parser=_FakeParser(parse_result))
-    cfg = EnhancementConfig(
-        enable_table_enhancement=False, enable_image_enhancement=True
-    )
+    cfg = EnhancementConfig(enable_table_enhancement=False, enable_image_enhancement=True)
 
     with pytest.raises(EnhancementModelMissingError):
         await orchestrator.aenhance_parse_result("md", user_id=7, enhancement_config=cfg)

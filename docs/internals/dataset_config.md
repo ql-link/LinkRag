@@ -36,10 +36,11 @@ JSON 的缺失字段仍取运行期 `Settings` 值。数据集配置行不存在
 |---|---|---|---|
 | `enable_table_enhancement` | `bool` | `True` | 是否启用表格 LLM 增强，按用户默认 → LinkRag 系统默认预设解析 `CHAT` 模型 |
 | `enable_image_enhancement` | `bool` | `True` | 是否启用图片 LLM 增强，按用户默认 → LinkRag 系统默认预设解析 `VISION` 模型 |
-| `enable_heading_hierarchy` | `bool` | `False` | 是否启用 LLM 标题层级插入；对缺少标题结构的长文档，自动在段落前补充标题，辅助下游分块与召回定位 |
+| `enable_heading_hierarchy` | `bool` | `False` | 是否启用 LLM 标题层级插入；门禁命中时按用户默认 → LinkRag 系统默认预设解析 `CHAT` 模型 |
 
-> 数据集行中的空对象 `{}` 会关闭上述三个开关，不使用表内静态默认。开启对应增强后，用户默认
-> 和 LinkRag 系统默认预设均无对应能力模型时，解析任务失败（`ENHANCEMENT_MODEL_MISSING`）。
+> 数据集行中的空对象 `{}` 会关闭上述三个开关，不使用表内静态默认。开启表格/图片增强后，
+> 用户默认和 LinkRag 系统默认预设均无对应能力模型时归 `ENHANCEMENT_MODEL_MISSING`；标题层级
+> 增强门禁命中但两层均无 `CHAT` 时归 `LLM_CONFIG_MISSING`。
 
 ---
 
