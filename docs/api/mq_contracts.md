@@ -23,7 +23,7 @@ Java 管理端                          toLink-Rag (Python)
 
 > **parse_result 终态回传 MQ 已下线（LINK-166）**：Python 端不再发送解析终态通知消息。解析终态的权威源是 MySQL `document_parse_pipeline`，前端改由轮询 Java `parse-results` 接口读 DB 获取（LINK-98）。Java 端停止消费见 LINK-165。
 
-> **cache_sync 已下线**：用户 LLM 配置和系统厂商每次直接读取共享 MySQL，不再声明或初始化 `tolink.rag.cache_sync`，也不再提供 `CacheSyncMessage`。Broker 上的历史 topic 不由应用自动物理删除，可在稳定观察期后由运维单独清理。
+> **cache_sync 已下线**：用户 LLM 配置和系统厂商每次直接读取共享 MySQL，不再声明或初始化缓存同步 topic，也不再提供 `CacheSyncMessage`。Broker 上的历史 topic 不由应用自动物理删除，可在稳定观察期后由运维单独清理。
 
 收发 topic 名由消息类的 `MQ_NAME` 常量固定（见 [src/core/mq/messages](../../src/core/mq/messages)），不随 `.env` 改变；环境变量 `PARSE_TASK_TOPIC` 仅用于 Kafka topic 的自动创建（`topic_admin`），不影响实际投递/订阅的 topic。业务方按下方固定值对接即可。
 
