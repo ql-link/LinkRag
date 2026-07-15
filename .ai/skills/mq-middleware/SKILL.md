@@ -33,14 +33,14 @@ when_to_use: "当用户要求接入 Kafka/RabbitMQ、发送或订阅消息、新
 
 当前已落地的 MQ 业务消息有 4 类：
 - `src/core/mq/messages/parse_task.py`：`ParseTaskMessage` / `ParseTaskPayload`，Topic 为 `tolink.rag.parse_task`，用于文档解析任务投递。
-- `src/core/mq/messages/parse_result.py`：`ParseResultMessage` / `ParseResultPayload`，Topic 为 `tolink.rag.parse_result`，用于文档解析终态通知。
-- `src/core/mq/messages/cache_sync.py`：`CacheSyncMessage` / `CacheSyncPayload`，Topic 为 `tolink.rag.cache_sync`，用于缓存刷新、失效、预热。
-- `src/core/mq/messages/usage_report.py`：`UsageReportMessage` / `UsageReportPayload`，Topic 为 `tolink.rag.usage_report`，用于 LLM 用量上报。
+- `src/core/mq/messages/document_delete.py`：`DocumentDeleteMessage` / `DocumentDeletePayload`，Topic 为 `tolink.rag.document_delete`，用于清理解析域衍生产物。
+- `src/core/mq/messages/token_usage.py`：`TokenUsageMessage` / `TokenUsagePayload`，Topic 为 `tolink.rag.usage_report`，用于 LLM 用量上报。
+- `src/core/mq/messages/chat_turn.py`：`ChatTurnMessage` / `ChatTurnPayload`，Topic 为 `tolink.rag.chat_turn`，用于向 Java 上报对话轮次内容。
 
 当前应用启动流程中的 MQ 行为：
 - `src/main.py` lifespan 中会初始化 Redis、数据库后进入 MQ 初始化逻辑。
 - 当 `settings.MQ_VENDOR.lower() == "kafka"` 且 `settings.INIT_KAFKA_TOPICS_ON_STARTUP` 为 `true` 时，调用 `src/core/mq/topic_admin.py::ensure_topics()`。
-- 当前会调用 `start_parse_consumer()` 启动文档解析消费者。
+- 当前组合根订阅 `parse_task` 与 `document_delete` 两个消费者，然后统一启动 `MQService` 消费。
 
 不要把消息模型拆成 `payload.py` / `message.py` 两个文件，也不要把 HTTP DTO 放进 `src/core/mq/messages/`。
 
@@ -67,9 +67,9 @@ when_to_use: "当用户要求接入 Kafka/RabbitMQ、发送或订阅消息、新
 ```text
 src/core/mq/messages/
   parse_task.py
-  parse_result.py
-  cache_sync.py
-  usage_report.py
+  document_delete.py
+  token_usage.py
+  chat_turn.py
   your_event.py
 ```
 
@@ -140,9 +140,9 @@ class YourMessage(AbstractMessage):
 
 当前默认 Topic：
 - `tolink.rag.parse_task`
-- `tolink.rag.parse_result`
-- `tolink.rag.cache_sync`
 - `tolink.rag.usage_report`
+- `tolink.rag.chat_turn`
+- `tolink.rag.document_delete`
 
 ## 6. 配置与维护
 - 厂商切换在 `.env` 的 `MQ_VENDOR` 字段。

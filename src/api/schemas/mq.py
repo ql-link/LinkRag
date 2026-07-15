@@ -48,16 +48,6 @@ class SendParseTaskRequest(BaseModel):
     model_config = ConfigDict(title="发送解析任务请求体", populate_by_name=True)
 
 
-class SendCacheSyncRequest(BaseModel):
-    """缓存同步消息发送请求。"""
-
-    user_id: str = Field(..., title="用户ID", description="需要同步缓存的用户标识")
-    action: str = Field("refresh", title="操作类型", description="refresh / invalidate / warmup")
-    config_id: Optional[str] = Field(None, title="配置ID", description="具体配置标识")
-
-    model_config = ConfigDict(title="发送缓存同步请求体", populate_by_name=True)
-
-
 class SendUsageReportRequest(BaseModel):
     """用量上报消息发送请求。"""
 

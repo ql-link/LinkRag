@@ -165,7 +165,6 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── messages/         # MQ 业务消息
 │   │   │   │   ├── parse_task.py
 │   │   │   │   ├── document_delete.py
-│   │   │   │   ├── cache_sync.py
 │   │   │   │   ├── token_usage.py
 │   │   │   │   └── chat_turn.py       # parse_result.py 已删除（LINK-166）
 │   │   │   └── vendors/          # MQ 厂商适配
@@ -252,7 +251,6 @@ toLink-Rag/                         # 仓库根目录
 │   │   └── user_llm_config.py
 │   ├── services/                 # 服务层
 │   │   ├── mq_service.py
-│   │   ├── cache_sync_service.py
 │   │   ├── config_reader_service.py
 │   │   ├── usage_log_service.py
 │   │   └── storage/              # 对象存储抽象与实现

@@ -13,12 +13,10 @@ from src.services.mq_service import MQService
 from src.core.mq.factory import MQFactory
 from src.core.mq.messages import (
     ParseTaskMessage,
-    CacheSyncMessage,
     TokenUsageMessage,
 )
 from src.api.schemas.mq import (
     SendParseTaskRequest,
-    SendCacheSyncRequest,
     SendUsageReportRequest,
     SendRawMessageRequest,
     MQResponse,
@@ -68,28 +66,6 @@ async def send_parse_task(request: SendParseTaskRequest):
         return MQResponse(success=True, message="解析任务已投递")
     except Exception as e:
         logger.error(f"发送解析任务消息失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post(
-    "/send/cache-sync",
-    response_model=MQResponse,
-    summary="发送缓存同步通知消息",
-    description="通知 RAG 服务刷新/失效指定用户的 LLM 配置缓存。通常由 Java 管理端在修改用户配置后触发。",
-)
-async def send_cache_sync(request: SendCacheSyncRequest):
-    """发送缓存同步通知到 MQ"""
-    try:
-        mq_service = MQService()
-        msg = CacheSyncMessage.build(
-            user_id=request.user_id,
-            action=request.action,
-            config_id=request.config_id,
-        )
-        await mq_service.send(msg)
-        return MQResponse(success=True, message="缓存同步通知已投递")
-    except Exception as e:
-        logger.error(f"发送缓存同步消息失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
