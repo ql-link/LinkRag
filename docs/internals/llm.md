@@ -100,12 +100,12 @@ Gemini 原生把"是否流式"编码在 URL（而非请求体 `stream` 开关）
 | `BaseProvider` | `base_provider.py` | adapter 公共属性、`_capabilities` 与能力判断 |
 | `ModelFactory` | `factory.py` | **协议分发中台**：按 `protocol` 注册 / 查找 / 创建 adapter |
 | `build_provider_from_config` / `aresolve_user_model` | `user_model_resolver.py` | 查配置（支持 `source + configId`）→ protocol 必填 → 分发 → 能力门禁 |
-| `ConfigReaderService` | `src/services/config_reader_service.py` | 读用户配置 / LinkRag 系统默认预设 / 旧 env 兜底配置（含 `protocol`）并管缓存 |
+| `ConfigReaderService` | `src/services/config_reader_service.py` | 直接读取用户配置 / LinkRag 系统默认预设 / 旧 env 兜底配置（含 `protocol`） |
 | adapter 实现 | `providers/*.py` | 各 protocol 的请求构造 / 鉴权 / 响应解析 |
 
 ## 5. 配置来源
 
-运行时配置权威源为 **DB 三层 + Redis 缓存**（`llm_provider_model` 事实源 / `llm_user_config` 用户运行快照 / `llm_system_preset` LinkRag 系统默认预设），均带 `protocol` / `api_base_url`。默认配置解析顺序为：先查用户自己的 active default（排除历史 `is_system_preset=true` 行），未命中时查 `provider_type='linkrag' AND is_default=true AND is_active=true` 的系统预设。Java 返回显式配置时，Python 按 `source + configId` 定位：`USER` 读 `llm_user_config.id`，`SYSTEM` 读 `llm_system_preset.id`。
+运行时配置权威源为 **DB 三层**（`llm_provider_model` 事实源 / `llm_user_config` 用户运行快照 / `llm_system_preset` LinkRag 系统默认预设），均带 `protocol` / `api_base_url`，每次解析直接查询 MySQL。默认配置解析顺序为：先查用户自己的 active default（排除历史 `is_system_preset=true` 行），未命中时查 `provider_type='linkrag' AND is_default=true AND is_active=true` 的系统预设。Java 返回显式配置时，Python 按 `source + configId` 定位：`USER` 读 `llm_user_config.id`，`SYSTEM` 读 `llm_system_preset.id`。
 
 `src/config.py::Settings` 另有一套**系统级 env 配置** `SYSTEM_LLM_*`（embedding / markdown 增强 / `/llm` 兜底用）。它是平行于 DB 的遗留第二事实源，且 env 无 `protocol` 字段——当前由系统三处调用点**写死 `protocol="openai"`** 桥接（系统级只做 embedding+chat，固定 openai 兼容）。收口到 DB 单一事实源见 **issue #191**。
 

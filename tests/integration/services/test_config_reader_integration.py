@@ -2,9 +2,7 @@
 ConfigReaderService 集成测试 - 真实 MySQL 数据库
 测试 get_system_providers 等方法的实际数据库读取
 
-采用缓存后端抽象：
-- 测试时注入 NullCacheBackend，不依赖 Redis
-- 生产时使用 RedisCacheBackend
+配置读取直接访问 MySQL，不依赖 Redis。
 """
 
 import asyncio
@@ -18,7 +16,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_async_session_factory, get_async_engine
 from src.services.config_reader_service import ConfigReaderService
-from src.cache.cache_manager import CacheManager, NullCacheBackend
 from src.config import settings
 
 
@@ -90,10 +87,6 @@ def reset_db_engine():
         pass
 
 
-# 创建测试用的缓存管理器（使用 NullCacheBackend，不依赖 Redis）
-test_cache_manager = CacheManager(backend=NullCacheBackend())
-
-
 class TestConfigReaderServiceIntegration:
     """ConfigReaderService MySQL 集成测试"""
 
@@ -106,8 +99,8 @@ class TestConfigReaderServiceIntegration:
 
     @pytest_asyncio.fixture
     async def service(self, db_session: AsyncSession):
-        """创建 ConfigReaderService 实例（注入测试用缓存管理器）"""
-        svc = ConfigReaderService(db=db_session, cache=test_cache_manager)
+        """创建直接读取 MySQL 的 ConfigReaderService 实例。"""
+        svc = ConfigReaderService(db=db_session)
         return svc
 
     @pytest_asyncio.fixture
@@ -476,7 +469,7 @@ class TestConfigReaderServiceIntegration:
     @pytest.mark.asyncio
     async def test_Service_NoDB_Should_Return_Empty(self):
         """ConfigReaderService 未设置 db 时应返回空列表"""
-        service = ConfigReaderService(db=None, cache=test_cache_manager)
+        service = ConfigReaderService(db=None)
 
         providers = await service.get_system_providers()
         configs = await service.get_user_configs(12345)
