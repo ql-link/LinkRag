@@ -55,6 +55,17 @@ def _patch_config_service(monkeypatch, *, config=None, raises=None):
     return service
 
 
+def _assert_default_config_lookup(service, *, user_id: int, capability: str) -> None:
+    """兼容缓存参数移除前后，并确保旧接口下显式绕过缓存。"""
+    lookup = service.get_user_default_config_by_capability
+    lookup.assert_awaited_once()
+    kwargs = lookup.await_args.kwargs
+    assert kwargs["user_id"] == user_id
+    assert kwargs["capability"] == capability
+    assert kwargs["allow_linkrag_default"] is True
+    assert kwargs.get("use_cache", False) is False
+
+
 def _patch_model_factory(monkeypatch):
     """替换统一解析模块的 ModelFactory 与 decrypt，捕获 create_client 入参并返回假 provider。"""
     import src.core.llm.user_model_resolver as umr
@@ -100,12 +111,7 @@ async def test_table_client_uses_user_default_model(monkeypatch):
     assert captured["api_base_url"] == "https://user.example.com/v1"
     assert captured["model_name"] == "qwen-max"  # 取用户默认配置自身模型名，不依赖数据集
     provider.has_capability.assert_called_with(CapabilityType.TEXT)
-    service.get_user_default_config_by_capability.assert_awaited_once_with(
-        user_id=7,
-        capability="CHAT",
-        use_cache=False,
-        allow_linkrag_default=True,
-    )
+    _assert_default_config_lookup(service, user_id=7, capability="CHAT")
 
 
 @pytest.mark.asyncio
@@ -135,12 +141,7 @@ async def test_vision_client_uses_linkrag_system_default(monkeypatch):
     assert captured["model_name"] == "linkrag-vision"
     assert client._config_id is None  # usage_report 系统配置调用不关联 llm_user_config.id
     provider.has_capability.assert_called_with(CapabilityType.VISION)
-    service.get_user_default_config_by_capability.assert_awaited_once_with(
-        user_id=7,
-        capability="VISION",
-        use_cache=False,
-        allow_linkrag_default=True,
-    )
+    _assert_default_config_lookup(service, user_id=7, capability="VISION")
 
 
 @pytest.mark.asyncio
@@ -170,12 +171,7 @@ async def test_table_client_uses_linkrag_system_default(monkeypatch):
     assert captured["model_name"] == "linkrag-chat"
     assert client._config_id is None  # usage_report 系统配置调用不关联 llm_user_config.id
     provider.has_capability.assert_called_with(CapabilityType.TEXT)
-    service.get_user_default_config_by_capability.assert_awaited_once_with(
-        user_id=7,
-        capability="CHAT",
-        use_cache=False,
-        allow_linkrag_default=True,
-    )
+    _assert_default_config_lookup(service, user_id=7, capability="CHAT")
 
 
 @pytest.mark.asyncio
