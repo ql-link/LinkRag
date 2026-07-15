@@ -28,9 +28,8 @@ class ParseFailureCode(str, Enum):
     # 发起用户缺少必配能力的默认 LLM 配置，无法执行解析增强（CHAT）或稠密向量化（EMBEDDING）。
     # 区别于配置读取失败（按引擎/INTERNAL 异常处理），仅在「确实未配置」时使用。
     LLM_CONFIG_MISSING = "LLM_CONFIG_MISSING"
-    # 数据集开启了表格/图片增强，但发起用户未配置对应能力（表格→CHAT，图片→VISION）的默认
-    # 模型。数据集层已不再选择增强模型，统一用用户默认模型；开启增强即要求用户已配该能力默认
-    # 模型，否则不做兜底直接失败。便于 Java 端提示用户去补对应能力的默认模型配置。
+    # 数据集开启了表格/图片增强，但用户默认和 LinkRag 系统默认预设均未提供对应能力
+    # （表格→CHAT，图片→VISION）的模型。数据集层不再选择增强模型。
     ENHANCEMENT_MODEL_MISSING = "ENHANCEMENT_MODEL_MISSING"
     # 用户 EMBEDDING 模型输出维度与系统统一维度（DENSE_VECTOR_DIMENSION）不一致，
     # 无法写入按 bucket 共享、维度固定的稠密 collection（方案 A 维度约束）。

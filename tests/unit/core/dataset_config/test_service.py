@@ -4,7 +4,7 @@
 覆盖验收契约中映射到配置读取/合并的场景：
 - 数据集有配置记录 → 数据集级值生效；
 - 数据集无配置记录 → 全部系统默认（不写库）；
-- 部分覆盖 → 未覆盖字段取系统默认；
+- 空 enhancement_config → 所有增强关闭；非空部分覆盖 → 未覆盖字段取系统默认；
 - DB 故障 → 降级系统默认、不抛、不阻断；
 - JSON 字段类型非法 → ValidationError 向上传播（不静默降级），错误含字段名。
 """
@@ -43,7 +43,7 @@ def _fake_db(*, row=None, raises=None):
 
 
 def _row(**json_cols):
-    """构造带四个 JSON 列的假 ORM 行；未给的列用空 dict（全取默认）。"""
+    """构造带四个 JSON 列的假 ORM 行；空 enhancement dict 表示所有增强关闭。"""
     row = MagicMock(name="DatasetParseConfig")
     row.chunking_config = json_cols.get("chunking", {})
     row.enhancement_config = json_cols.get("enhancement", {})
@@ -89,6 +89,44 @@ async def test_row_present_applies_dataset_values():
     assert bundle.chunking.overlap_tokens == 32
     assert bundle.recall.recall_result_limit == 10
     assert bundle.recall.dense_score_threshold == 0.5
+
+
+@pytest.mark.asyncio
+async def test_empty_enhancement_config_disables_all_enhancement(monkeypatch):
+    """Java 默认写入 {} 时，不应继承 Settings=true 意外开启增强。"""
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT", True)
+    monkeypatch.setattr(settings, "MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT", True)
+    monkeypatch.setattr(settings, "MARKDOWN_PARSER_ENABLE_HEADING_HIERARCHY", True)
+
+    bundle = await DatasetConfigService().get_config(
+        user_id=1,
+        dataset_id=2,
+        db=_fake_db(row=_row(enhancement={})),
+    )
+
+    assert bundle.enhancement.enable_table_enhancement is False
+    assert bundle.enhancement.enable_image_enhancement is False
+    assert bundle.enhancement.enable_heading_hierarchy is False
+
+
+@pytest.mark.asyncio
+async def test_non_empty_enhancement_config_keeps_partial_settings_fallback(monkeypatch):
+    """非空部分覆盖保持原契约，未提供的开关继续继承 Settings。"""
+    from src.config import settings
+
+    monkeypatch.setattr(settings, "MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT", True)
+    monkeypatch.setattr(settings, "MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT", True)
+
+    bundle = await DatasetConfigService().get_config(
+        user_id=1,
+        dataset_id=2,
+        db=_fake_db(row=_row(enhancement={"enable_image_enhancement": False})),
+    )
+
+    assert bundle.enhancement.enable_table_enhancement is True
+    assert bundle.enhancement.enable_image_enhancement is False
 
 
 @pytest.mark.asyncio

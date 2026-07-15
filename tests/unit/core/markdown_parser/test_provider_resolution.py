@@ -4,10 +4,9 @@
 新契约：
 
 - 数据集层只配「是否开启」表格/图片增强，**不再选择增强模型**；
-- 增强模型统一取发起用户该能力的默认 LLM 配置（表格→CHAT，图片→VISION），含用户自己配置
-  的模型名；
-- 开启增强但用户无该能力默认配置 → 抛 :class:`EnhancementModelMissingError`（按 ``kind`` 区分
-  table / vision），**不做任何兜底**（既不回退系统模型，图片也不再静默跳过）；
+- 增强模型按「发起用户默认 → LinkRag 系统默认预设」解析（表格→CHAT，图片→VISION）；
+- 两层都未命中 → 抛 :class:`EnhancementModelMissingError`（按 ``kind`` 区分 table / vision），
+  图片增强不静默跳过；
 - 配置读取异常（DB/Redis）原样传播，不被误判为「无配置」。
 """
 
@@ -24,6 +23,7 @@ from src.core.markdown_parser.orchestrator import MarkdownEnhancementOrchestrato
 from src.core.markdown_parser.provider_clients import (
     EnhancementModelMissingError,
     ProviderTableClient,
+    ProviderVisionClient,
     abuild_table_client,
     abuild_vision_client,
 )
@@ -55,6 +55,17 @@ def _patch_config_service(monkeypatch, *, config=None, raises=None):
     return service
 
 
+def _assert_default_config_lookup(service, *, user_id: int, capability: str) -> None:
+    """兼容缓存参数移除前后，并确保旧接口下显式绕过缓存。"""
+    lookup = service.get_user_default_config_by_capability
+    lookup.assert_awaited_once()
+    kwargs = lookup.await_args.kwargs
+    assert kwargs["user_id"] == user_id
+    assert kwargs["capability"] == capability
+    assert kwargs["allow_linkrag_default"] is True
+    assert kwargs.get("use_cache", False) is False
+
+
 def _patch_model_factory(monkeypatch):
     """替换统一解析模块的 ModelFactory 与 decrypt，捕获 create_client 入参并返回假 provider。"""
     import src.core.llm.user_model_resolver as umr
@@ -80,7 +91,7 @@ def _patch_model_factory(monkeypatch):
 async def test_table_client_uses_user_default_model(monkeypatch):
     """用户有默认 CHAT 配置 → 用其 provider 凭证 + 自己配置的模型名构造 client。"""
     _patch_session(monkeypatch)
-    _patch_config_service(
+    service = _patch_config_service(
         monkeypatch,
         config={
             "provider_type": "qwen",
@@ -100,11 +111,72 @@ async def test_table_client_uses_user_default_model(monkeypatch):
     assert captured["api_base_url"] == "https://user.example.com/v1"
     assert captured["model_name"] == "qwen-max"  # 取用户默认配置自身模型名，不依赖数据集
     provider.has_capability.assert_called_with(CapabilityType.TEXT)
+    _assert_default_config_lookup(service, user_id=7, capability="CHAT")
+
+
+@pytest.mark.asyncio
+async def test_vision_client_uses_linkrag_system_default(monkeypatch):
+    """用户无默认 VISION、LinkRag 系统默认存在 → 使用系统预设构造 client。"""
+    _patch_session(monkeypatch)
+    service = _patch_config_service(
+        monkeypatch,
+        config={
+            "id": 9001,
+            "provider_type": "linkrag",
+            "protocol": "openai",
+            "api_key": "enc-system-key",
+            "api_base_url": "https://system.example.com/v1/chat/completions",
+            "model_name": "linkrag-vision",
+            "capability": "VISION",
+            "config_source": "SYSTEM",
+        },
+    )
+    captured, provider = _patch_model_factory(monkeypatch)
+
+    client = await abuild_vision_client(user_id=7)
+
+    assert isinstance(client, ProviderVisionClient)
+    assert captured["provider_type"] == "linkrag"
+    assert captured["api_key"] == "decrypted::enc-system-key"
+    assert captured["model_name"] == "linkrag-vision"
+    assert client._config_id is None  # usage_report 系统配置调用不关联 llm_user_config.id
+    provider.has_capability.assert_called_with(CapabilityType.VISION)
+    _assert_default_config_lookup(service, user_id=7, capability="VISION")
+
+
+@pytest.mark.asyncio
+async def test_table_client_uses_linkrag_system_default(monkeypatch):
+    """用户无默认 CHAT、LinkRag 系统默认存在 → 表格增强使用系统预设。"""
+    _patch_session(monkeypatch)
+    service = _patch_config_service(
+        monkeypatch,
+        config={
+            "id": 9002,
+            "provider_type": "linkrag",
+            "protocol": "openai",
+            "api_key": "enc-system-key",
+            "api_base_url": "https://system.example.com/v1/chat/completions",
+            "model_name": "linkrag-chat",
+            "capability": "CHAT",
+            "config_source": "SYSTEM",
+        },
+    )
+    captured, provider = _patch_model_factory(monkeypatch)
+
+    client = await abuild_table_client(user_id=7)
+
+    assert isinstance(client, ProviderTableClient)
+    assert captured["provider_type"] == "linkrag"
+    assert captured["api_key"] == "decrypted::enc-system-key"
+    assert captured["model_name"] == "linkrag-chat"
+    assert client._config_id is None  # usage_report 系统配置调用不关联 llm_user_config.id
+    provider.has_capability.assert_called_with(CapabilityType.TEXT)
+    _assert_default_config_lookup(service, user_id=7, capability="CHAT")
 
 
 @pytest.mark.asyncio
 async def test_table_client_no_user_chat_raises_enhancement_error(monkeypatch):
-    """用户无默认 CHAT 配置 → 抛 EnhancementModelMissingError(kind=table)，不回退系统模型。"""
+    """用户和 LinkRag 系统都无默认 CHAT → 抛 EnhancementModelMissingError(kind=table)。"""
     _patch_session(monkeypatch)
     _patch_config_service(monkeypatch, config=None)
     _patch_model_factory(monkeypatch)
@@ -117,7 +189,7 @@ async def test_table_client_no_user_chat_raises_enhancement_error(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_vision_client_no_user_vision_raises_enhancement_error(monkeypatch):
-    """用户无默认 VISION 配置 → 抛 EnhancementModelMissingError(kind=vision)（图片增强不再静默跳过）。"""
+    """用户和 LinkRag 系统都无默认 VISION → 抛 EnhancementModelMissingError(kind=vision)。"""
     _patch_session(monkeypatch)
     _patch_config_service(monkeypatch, config=None)
     _patch_model_factory(monkeypatch)
@@ -193,9 +265,7 @@ async def test_orchestrator_vision_model_missing_propagates(monkeypatch):
 
     parse_result = _FakeParseResult(tables=[], images=["img.png"])
     orchestrator = MarkdownEnhancementOrchestrator(parser=_FakeParser(parse_result))
-    cfg = EnhancementConfig(
-        enable_table_enhancement=False, enable_image_enhancement=True
-    )
+    cfg = EnhancementConfig(enable_table_enhancement=False, enable_image_enhancement=True)
 
     with pytest.raises(EnhancementModelMissingError):
         await orchestrator.aenhance_parse_result("md", user_id=7, enhancement_config=cfg)
@@ -214,6 +284,29 @@ async def test_orchestrator_table_disabled_skips(monkeypatch):
     cfg = EnhancementConfig(enable_table_enhancement=False, enable_image_enhancement=False)
 
     result = await orchestrator.aenhance_parse_result("md", user_id=7, enhancement_config=cfg)
+
+    assert result is parse_result
+    abuild.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_orchestrator_image_disabled_skips_model_resolution(monkeypatch):
+    """有图片但图片增强关闭时，不读取 VISION 模型。"""
+    import src.core.markdown_parser.orchestrator as orch
+
+    abuild = AsyncMock(side_effect=AssertionError("should not build client when disabled"))
+    monkeypatch.setattr(orch, "abuild_vision_client", abuild)
+
+    parse_result = _FakeParseResult(tables=[], images=["img.png"])
+    orchestrator = MarkdownEnhancementOrchestrator(parser=_FakeParser(parse_result))
+    cfg = EnhancementConfig(enable_table_enhancement=False, enable_image_enhancement=False)
+
+    result = await orchestrator.aenhance_parse_result(
+        "md",
+        user_id=7,
+        enable_image_enhancement=True,
+        enhancement_config=cfg,
+    )
 
     assert result is parse_result
     abuild.assert_not_called()

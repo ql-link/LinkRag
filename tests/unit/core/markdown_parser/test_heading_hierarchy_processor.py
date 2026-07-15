@@ -2,7 +2,7 @@
 """HeadingHierarchyProcessor integration-level unit tests."""
 
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -154,6 +154,7 @@ async def test_gate_match_uses_user_default_chat_model(monkeypatch):
             model_name="qwen-max",
             provider_type="qwen",
             config_id=99,
+            source="user",
         )
     )
     monkeypatch.setattr(resolver, "aresolve_user_model", resolve)
@@ -169,22 +170,63 @@ async def test_gate_match_uses_user_default_chat_model(monkeypatch):
     resolve.assert_awaited_once_with(
         user_id=7,
         capability="CHAT",
-        allow_linkrag_default=False,
+        allow_linkrag_default=True,
     )
     provider.generate.assert_awaited_once()
     assert provider.generate.await_args.kwargs["max_tokens"] == 4096
 
 
 @pytest.mark.asyncio
-async def test_missing_user_default_chat_model_raises_llm_config_missing(monkeypatch):
+async def test_gate_match_uses_linkrag_system_default_chat_model(monkeypatch):
+    import src.core.llm.user_model_resolver as resolver
+
+    provider = SimpleNamespace()
+    provider.generate = AsyncMock(
+        return_value=SimpleNamespace(
+            content='{"insertions":[{"line":0,"level":1,"text":"系统标题"}]}',
+            model="linkrag-chat",
+            usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
+        )
+    )
+    resolve = AsyncMock(
+        return_value=SimpleNamespace(
+            provider=provider,
+            model_name="linkrag-chat",
+            provider_type="linkrag",
+            config_id=9001,
+            source="system",
+        )
+    )
+    monkeypatch.setattr(resolver, "aresolve_user_model", resolve)
+
+    import src.core.markdown_parser.heading_hierarchy as heading
+
+    report = MagicMock()
+    monkeypatch.setattr(heading, "_report_heading_usage", report)
+    processor = HeadingHierarchyProcessor(
+        config=_config(),
+        tokenizer=_TokenCounter(512),
+    )
+
+    result = await processor.aprocess("正文第一段\n\n正文第二段", source_file="x.md", user_id=7)
+
+    assert result.applied is True
+    assert result.markdown.startswith("# 系统标题\n")
+    resolve.assert_awaited_once_with(
+        user_id=7,
+        capability="CHAT",
+        allow_linkrag_default=True,
+    )
+    assert report.call_args.kwargs["config_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_missing_user_and_system_default_chat_model_raises_llm_config_missing(monkeypatch):
     import src.core.llm.user_model_resolver as resolver
     from src.core.llm.exceptions import UserModelConfigMissingError
 
-    monkeypatch.setattr(
-        resolver,
-        "aresolve_user_model",
-        AsyncMock(side_effect=UserModelConfigMissingError("CHAT", 7)),
-    )
+    resolve = AsyncMock(side_effect=UserModelConfigMissingError("CHAT", 7))
+    monkeypatch.setattr(resolver, "aresolve_user_model", resolve)
     processor = HeadingHierarchyProcessor(
         config=_config(),
         tokenizer=_TokenCounter(512),
@@ -192,6 +234,12 @@ async def test_missing_user_default_chat_model_raises_llm_config_missing(monkeyp
 
     with pytest.raises(LLMConfigMissingError):
         await processor.aprocess("正文第一段\n\n正文第二段", source_file="x.md", user_id=7)
+
+    resolve.assert_awaited_once_with(
+        user_id=7,
+        capability="CHAT",
+        allow_linkrag_default=True,
+    )
 
 
 @pytest.mark.asyncio

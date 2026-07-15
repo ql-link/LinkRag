@@ -128,10 +128,12 @@ class ChunkingConfig(BaseModel):
 class EnhancementConfig(BaseModel):
     """Markdown 增强配置（2 项：表格 / 图片增强开关），消费点见 ``markdown_parser/orchestrator.py``。
 
-    数据集层只配置「是否开启」，**不再选择增强模型**：增强使用的模型统一取发起用户该能力
-    （表格→CHAT，图片→VISION）的默认 LLM 配置。开启对应增强但用户未配置该能力默认模型时，
-    解析任务直接失败（:class:`EnhancementModelMissingError` → ``ENHANCEMENT_MODEL_MISSING``），
-    不回退系统兜底模型。
+    数据集层只配置「是否开启」，**不再选择增强模型**：增强使用的模型按「发起用户默认 →
+    LinkRag 系统默认预设」解析（表格→CHAT，图片→VISION）。两层都未配置时，解析任务直接失败
+    （:class:`EnhancementModelMissingError` → ``ENHANCEMENT_MODEL_MISSING``）。
+
+    数据库中显式存在的空对象 ``{}`` 表示所有增强关闭；无配置行才使用 Settings 系统默认。
+    非空对象的缺失字段仍由 Settings 补齐，保持部分覆盖兼容。
 
     历史数据 / 旧 JSON 中可能残留 ``table_model`` / ``vision_model`` 字段，Pydantic 默认忽略
     多余键，反序列化不受影响。

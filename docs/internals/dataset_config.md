@@ -5,7 +5,8 @@
 **权威源**：`src/core/dataset_config/models.py`。本文是对代码的人工整理，模型字段定义以代码为准。
 
 **分层合并语义**：系统级 `Settings` 是 L1 fallback，数据集级 JSON 在其上覆盖。
-未写入数据集配置的字段，消费侧取运行期 `Settings` 值，而非本文列出的静态默认值。
+增强配置是一个例外：数据集行中的 `enhancement_config={}` 明确表示所有增强关闭；非空增强
+JSON 的缺失字段仍取运行期 `Settings` 值。数据集配置行不存在或读取失败时全部使用 Settings。
 
 ---
 
@@ -33,11 +34,13 @@
 
 | 字段 | 类型 | 默认值 | 含义 |
 |---|---|---|---|
-| `enable_table_enhancement` | `bool` | `True` | 是否启用表格 LLM 增强，使用用户 `CHAT` 能力默认模型 |
-| `enable_image_enhancement` | `bool` | `True` | 是否启用图片 LLM 增强，使用用户 `VISION` 能力默认模型 |
-| `enable_heading_hierarchy` | `bool` | `False` | 是否启用 LLM 标题层级插入；对缺少标题结构的长文档，自动在段落前补充标题，辅助下游分块与召回定位 |
+| `enable_table_enhancement` | `bool` | `True` | 是否启用表格 LLM 增强，按用户默认 → LinkRag 系统默认预设解析 `CHAT` 模型 |
+| `enable_image_enhancement` | `bool` | `True` | 是否启用图片 LLM 增强，按用户默认 → LinkRag 系统默认预设解析 `VISION` 模型 |
+| `enable_heading_hierarchy` | `bool` | `False` | 是否启用 LLM 标题层级插入；门禁命中时按用户默认 → LinkRag 系统默认预设解析 `CHAT` 模型 |
 
-> 开启对应增强但用户未配置该能力模型时，解析任务直接失败（`ENHANCEMENT_MODEL_MISSING`），不回退系统兜底。
+> 数据集行中的空对象 `{}` 会关闭上述三个开关，不使用表内静态默认。开启表格/图片增强后，
+> 用户默认和 LinkRag 系统默认预设均无对应能力模型时归 `ENHANCEMENT_MODEL_MISSING`；标题层级
+> 增强门禁命中但两层均无 `CHAT` 时归 `LLM_CONFIG_MISSING`。
 
 ---
 
@@ -101,7 +104,7 @@ dataset_parse_config 表
        ├─ 读行不存在 → DatasetParseConfigBundle.defaults()（全走 Settings L1）
        └─ 读行存在 → from_settings() 为基线，叠加各列 JSON 覆盖
             ├─ chunking_config   → ChunkingConfig
-            ├─ enhancement_config → EnhancementConfig
+            ├─ enhancement_config → {} 时全关闭；非空时叠加 Settings
             ├─ pdf_config        → PDFConfig
             ├─ recall_config     → RecallConfig
             └─ dense/sparse_embedding_config_id → VectorModelBindingConfig（NULL 时降级用户默认）

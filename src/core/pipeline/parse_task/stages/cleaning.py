@@ -114,7 +114,7 @@ class CleaningStage(Stage):
                         source_path, payload, dataset_cfg
                     )
             except EnhancementModelMissingError as exc:
-                # 数据集开启增强但未配 table/vision 模型：按约定不兜底，直接失败，单独归类。
+                # 数据集开启增强，但用户默认和 LinkRag 系统默认均未提供对应模型：单独归类。
                 return self._classified_failure(
                     payload, ParseFailureCode.ENHANCEMENT_MODEL_MISSING, exc
                 )
