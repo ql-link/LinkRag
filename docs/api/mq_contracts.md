@@ -264,6 +264,9 @@ RAG 问答在 Python 端（`/api/v1/rag/stream`）以**后台任务**执行，�
 - **token 由模型返回的取舍**：`sparse` 向量模型若返回 `usage`，Python 会按 `operation='sparse'` 上报并带实际绑定的 `config_id`；未返回 token 时跳过上报。
 - **解析侧粒度**：task 级聚合——每个解析任务每 operation 上报一条（token 在任务内累加），不落 chunk 级明细。全缓存命中（token=0）不上报。
 - **旁路、最终一致**：用量是事后算账的旁路记录。Python 上报失败仅告警、不阻断解析/召回主链路，丢一条用量可接受。
+- **发送观测**：成功日志记录 `message_id`、用户、厂商、模型、`stage`、`operation`、
+  三类 token、任务锚点和发送耗时；失败日志记录同一摘要与异常类型。不会记录模型请求或
+  响应正文。
 - **Java 落库**：字段直映射 `llm_usage_log`；可空字段缺失落 NULL。对话 `generate` 的行也经本消息上报（`stage='chat'`、`operation='generate'`），不再由 `chat_turn` 落 `llm_usage_log`，使本表口径全链路一致（LINK-191）。
 
 ## 协议要点

@@ -7,12 +7,21 @@ MQ Service 服务层
 Pipeline: BusinessCode → MQService.send(msg) → Factory.get_sender() → VendorAdapter.send()
 """
 
+from __future__ import annotations
+
+import time
 from typing import Any, Awaitable, Callable, Dict, Optional
 
 from loguru import logger
 
 from src.core.mq.factory import MQFactory
 from src.core.mq.message import AbstractMessage
+from src.core.mq.observability import (
+    compact_log_value,
+    format_log_fields,
+    message_size_bytes,
+    monotonic_duration_ms,
+)
 from src.observability.tracing import (
     TRACE_ID_HEADER,
     extract_trace_id_from_metadata,
@@ -40,6 +49,26 @@ class MQService:
         self._factory = factory or MQFactory()
 
     @staticmethod
+    def _resolve_log_fields(
+        message: AbstractMessage,
+        *,
+        message_type: str,
+        topic: str,
+    ) -> str:
+        """读取消息白名单摘要；观测代码异常不能阻断实际发送。"""
+        try:
+            return format_log_fields(message.get_log_fields())
+        except Exception as exc:
+            logger.warning(
+                "[MQ] mq_log_fields_failed type={} topic={} error_type={} error={}",
+                message_type,
+                compact_log_value(topic),
+                type(exc).__name__,
+                compact_log_value(exc),
+            )
+            return ""
+
+    @staticmethod
     def _headers_with_current_trace(headers: Dict[str, str] | None = None) -> Dict[str, str] | None:
         trace_id = get_trace_id()
         if not trace_id:
@@ -57,19 +86,58 @@ class MQService:
         Args:
             message: AbstractMessage 的具体子类实例
         """
-        sender = self._factory.get_sender()
         topic = message.get_mq_name()
-        serialized = message.serialize()
+        message_type = message.get_mq_type()
         routing_key = message.get_routing_key()
-
-        await sender.send(
+        log_fields = self._resolve_log_fields(
+            message,
+            message_type=message_type,
             topic=topic,
-            message=serialized,
-            key=routing_key,
-            headers=self._headers_with_current_trace(),
         )
-        mq_type = message.get_mq_type()
-        logger.info(f"[MQService] 消息已发送: type={mq_type}, topic={topic}")
+        started_at = time.monotonic()
+        serialized = ""
+
+        logger.debug(
+            "[MQ] mq_send_started type={} topic={} routing_key={} {}",
+            message_type,
+            compact_log_value(topic),
+            compact_log_value(routing_key),
+            log_fields,
+        )
+        try:
+            serialized = message.serialize()
+            sender = self._factory.get_sender()
+            await sender.send(
+                topic=topic,
+                message=serialized,
+                key=routing_key,
+                headers=self._headers_with_current_trace(),
+            )
+        except Exception as exc:
+            logger.exception(
+                "[MQ] mq_send_failed type={} topic={} routing_key={} duration_ms={} "
+                "message_bytes={} error_type={} error={} {}",
+                message_type,
+                compact_log_value(topic),
+                compact_log_value(routing_key),
+                monotonic_duration_ms(started_at),
+                message_size_bytes(serialized),
+                type(exc).__name__,
+                compact_log_value(exc),
+                log_fields,
+            )
+            raise
+
+        logger.info(
+            "[MQ] mq_send_succeeded type={} topic={} routing_key={} duration_ms={} "
+            "message_bytes={} {}",
+            message_type,
+            compact_log_value(topic),
+            compact_log_value(routing_key),
+            monotonic_duration_ms(started_at),
+            message_size_bytes(serialized),
+            log_fields,
+        )
 
     async def send_raw(
         self,
@@ -83,12 +151,46 @@ class MQService:
 
         适用于对接外部系统的非标准消息格式。
         """
-        sender = self._factory.get_sender()
-        await sender.send(
-            topic=topic,
-            message=message,
-            key=key,
-            headers=self._headers_with_current_trace(headers),
+        started_at = time.monotonic()
+        merged_headers = self._headers_with_current_trace(headers)
+        header_names = ",".join(sorted(merged_headers)) if merged_headers else "-"
+        logger.debug(
+            "[MQ] mq_raw_send_started topic={} routing_key={} message_bytes={} " "header_names={}",
+            compact_log_value(topic),
+            compact_log_value(key),
+            message_size_bytes(message),
+            header_names,
+        )
+        try:
+            sender = self._factory.get_sender()
+            await sender.send(
+                topic=topic,
+                message=message,
+                key=key,
+                headers=merged_headers,
+            )
+        except Exception as exc:
+            logger.exception(
+                "[MQ] mq_raw_send_failed topic={} routing_key={} duration_ms={} "
+                "message_bytes={} header_names={} error_type={} error={}",
+                compact_log_value(topic),
+                compact_log_value(key),
+                monotonic_duration_ms(started_at),
+                message_size_bytes(message),
+                header_names,
+                type(exc).__name__,
+                compact_log_value(exc),
+            )
+            raise
+
+        logger.info(
+            "[MQ] mq_raw_send_succeeded topic={} routing_key={} duration_ms={} "
+            "message_bytes={} header_names={}",
+            compact_log_value(topic),
+            compact_log_value(key),
+            monotonic_duration_ms(started_at),
+            message_size_bytes(message),
+            header_names,
         )
 
     async def subscribe(

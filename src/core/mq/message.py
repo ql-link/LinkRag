@@ -4,6 +4,7 @@ MQ 消息模型抽象
 对应 SKILL.md 中的 AbstractMQ 与 MsgPayload 模式。
 所有业务消息继承 AbstractMessage，只携带 ID + 路由上下文，不携带重业务对象。
 """
+
 import json
 import time
 import uuid
@@ -22,6 +23,7 @@ class MessagePayload(BaseModel):
     - Payload 只携带 ID 和路由上下文
     - 消费者根据 ID 重新加载最新业务状态，避免 schema drift
     """
+
     message_id: str = Field(
         default_factory=lambda: uuid.uuid4().hex,
         title="消息唯一标识",
@@ -80,9 +82,7 @@ class AbstractMessage(ABC):
             }
             return json.dumps(envelope, ensure_ascii=False)
         except Exception as e:
-            raise MQSerializationError(
-                f"消息序列化失败: {e}"
-            ) from e
+            raise MQSerializationError(f"消息序列化失败: {e}") from e
 
     @classmethod
     def deserialize_envelope(cls, raw: str) -> Dict[str, Any]:
@@ -103,12 +103,18 @@ class AbstractMessage(ABC):
                 raise ValueError("消息缺少 mq_type 字段")
             return data
         except json.JSONDecodeError as e:
-            raise MQSerializationError(
-                f"消息 JSON 反序列化失败: {e}"
-            ) from e
+            raise MQSerializationError(f"消息 JSON 反序列化失败: {e}") from e
         except ValueError as e:
             raise MQSerializationError(str(e)) from e
 
     def get_routing_key(self) -> Optional[str]:
         """获取路由键（子类可覆盖以实现定向路由）"""
         return None
+
+    def get_log_fields(self) -> Dict[str, object]:
+        """返回允许写入发送日志的业务摘要字段。
+
+        默认不输出 payload。具体消息类型应按白名单覆写，避免发送层直接打印完整
+        消息体，从而泄漏正文、错误详情、对象存储坐标或其他敏感字段。
+        """
+        return {}

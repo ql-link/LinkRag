@@ -13,8 +13,8 @@ from src.core.pipeline.parse_task.post_process.constants import (
     PIPELINE_STATUS_FAILED,
     PIPELINE_STATUS_SUCCESS,
     POST_PROCESS_STAGE_CHUNKING,
-    POST_PROCESS_STAGE_ES_INDEXING,
     POST_PROCESS_STAGE_CLEANING,
+    POST_PROCESS_STAGE_ES_INDEXING,
     POST_PROCESS_STAGE_PRETOKENIZE,
     POST_PROCESS_STAGE_SPARSE_VECTORIZING,
     POST_PROCESS_STAGE_VECTORIZING,
@@ -27,7 +27,7 @@ from src.models.parse_task import (
     DocumentParseTask,
 )
 
-from ._utils import duration_ms, now
+from ._utils import compact_log_value, duration_ms, now, task_log_context
 from .constants import DUPLICATE_TASK_LOG_NOT_FOUND_DETAIL
 from .error_codes import ParseFailureCode, build_failure_reason
 from .log_repository import ParseLogRepository
@@ -77,9 +77,7 @@ class ParseTaskGuard:
             校验失败时返回可落库的失败原因；校验通过返回 None。
         """
         if parse_task is None:
-            return build_failure_reason(
-                ParseFailureCode.INVALID_TASK_CONTEXT, "文件解析记录不存在"
-            )
+            return build_failure_reason(ParseFailureCode.INVALID_TASK_CONTEXT, "文件解析记录不存在")
         if parse_task.document_original_file_id != payload.original_file_id:
             return build_failure_reason(
                 ParseFailureCode.INVALID_TASK_CONTEXT,
@@ -117,7 +115,8 @@ class ParseTaskGuard:
         if existing is None:
             error = RuntimeError(DUPLICATE_TASK_LOG_NOT_FOUND_DETAIL)
             logger.error(
-                f"[ParseTaskGuard] duplicate task log not found: task_id={payload.task_id}"
+                "[ParseTask] duplicate_resolution_failed {} reason=parse_log_not_found",
+                task_log_context(payload),
             )
             return ParsePipelineResult(
                 status=PipelineStatus.FAILED,
@@ -130,36 +129,57 @@ class ParseTaskGuard:
         if pipeline_record is None:
             # 老数据缺失 pipeline 行：按解析产物是否落库判定 success/failed。
             if existing.parsed_object_key:
-                return ParsePipelineResult(
-                    status=PipelineStatus.SUCCESS, task_id=payload.task_id
+                logger.info(
+                    "[ParseTask] duplicate_resolved {} previous_pipeline_status=missing "
+                    "action=return_success",
+                    task_log_context(payload),
                 )
-            return ParsePipelineResult(
-                status=PipelineStatus.FAILED, task_id=payload.task_id
+                return ParsePipelineResult(status=PipelineStatus.SUCCESS, task_id=payload.task_id)
+            logger.info(
+                "[ParseTask] duplicate_resolved {} previous_pipeline_status=missing "
+                "action=return_failed",
+                task_log_context(payload),
             )
+            return ParsePipelineResult(status=PipelineStatus.FAILED, task_id=payload.task_id)
 
         pipeline_status = pipeline_record.pipeline_status
         if pipeline_status == PIPELINE_STATUS_SUCCESS:
-            return ParsePipelineResult(
-                status=PipelineStatus.SUCCESS, task_id=payload.task_id
+            logger.info(
+                "[ParseTask] duplicate_resolved {} previous_pipeline_status={} "
+                "action=return_success",
+                task_log_context(payload),
+                pipeline_status,
             )
+            return ParsePipelineResult(status=PipelineStatus.SUCCESS, task_id=payload.task_id)
 
         if pipeline_status == PIPELINE_STATUS_FAILED:
-            return ParsePipelineResult(
-                status=PipelineStatus.FAILED, task_id=payload.task_id
+            logger.info(
+                "[ParseTask] duplicate_resolved {} previous_pipeline_status={} "
+                "action=return_failed",
+                task_log_context(payload),
+                pipeline_status,
             )
+            return ParsePipelineResult(status=PipelineStatus.FAILED, task_id=payload.task_id)
 
         # 非终态 pipeline：上次任务执行被中断，在 DB 中收敛为可恢复失败。
         failure_reason = build_failure_reason(ParseFailureCode.INTERRUPTED_TASK)
         finished_at = now()
+        recover_stage = self._infer_recover_stage(pipeline_record)
         await self._mark_incomplete_pipeline_failed(
             db,
             pipeline_record,
             failure_reason,
             finished_at,
         )
-        return ParsePipelineResult(
-            status=PipelineStatus.FAILED, task_id=payload.task_id
+        logger.warning(
+            "[ParseTask] duplicate_resolved {} previous_pipeline_status={} "
+            "action=mark_interrupted_failed recover_from_stage={} reason={}",
+            task_log_context(payload),
+            pipeline_status,
+            recover_stage,
+            compact_log_value(failure_reason),
         )
+        return ParsePipelineResult(status=PipelineStatus.FAILED, task_id=payload.task_id)
 
     async def _mark_incomplete_pipeline_failed(
         self,
@@ -259,9 +279,7 @@ class ParseTaskGuard:
            （CAS 第 1 层快速失败；第 2 层由 mark_superseded rowcount 兜底）
         """
         if not payload.previous_task_id:
-            raise RetryValidationError(
-                _retry_validation_reason("missing_previous_task_id")
-            )
+            raise RetryValidationError(_retry_validation_reason("missing_previous_task_id"))
         if not (payload.md_bucket and payload.md_object_key):
             raise RetryValidationError(
                 _retry_validation_reason("missing_parsed_object_key_in_payload")
@@ -273,52 +291,34 @@ class ParseTaskGuard:
             for_share=True,
         )
         if parse_task is None:
-            raise RetryValidationError(
-                _retry_validation_reason("current_parse_task_not_found")
-            )
+            raise RetryValidationError(_retry_validation_reason("current_parse_task_not_found"))
         if parse_task.document_original_file_id != payload.original_file_id:
-            raise RetryValidationError(
-                _retry_validation_reason("current_task_document_mismatch")
-            )
+            raise RetryValidationError(_retry_validation_reason("current_task_document_mismatch"))
         if parse_task.dataset_id != payload.dataset_id:
-            raise RetryValidationError(
-                _retry_validation_reason("current_task_dataset_mismatch")
-            )
+            raise RetryValidationError(_retry_validation_reason("current_task_dataset_mismatch"))
         if parse_task.user_id != payload.user_id:
-            raise RetryValidationError(
-                _retry_validation_reason("current_task_user_mismatch")
-            )
+            raise RetryValidationError(_retry_validation_reason("current_task_user_mismatch"))
         if parse_task.latest_parse_task_id != payload.task_id:
             raise RetryValidationError(_retry_validation_reason("stale_task"))
 
-        old_log = await self._log_repository.get_by_task_id(
-            payload.previous_task_id, db
-        )
+        old_log = await self._log_repository.get_by_task_id(payload.previous_task_id, db)
         if old_log is None:
-            raise RetryValidationError(
-                _retry_validation_reason("previous_log_not_found")
-            )
+            raise RetryValidationError(_retry_validation_reason("previous_log_not_found"))
 
         old_pipeline = await self._pipeline_repository.get_by_log_id(db, old_log.id)
         if old_pipeline is None:
-            raise RetryValidationError(
-                _retry_validation_reason("previous_pipeline_not_found")
-            )
+            raise RetryValidationError(_retry_validation_reason("previous_pipeline_not_found"))
         if old_pipeline.pipeline_status != PIPELINE_STATUS_FAILED:
             raise RetryValidationError(
                 _retry_validation_reason("previous_pipeline_not_in_failed_state")
             )
         if old_pipeline.recover_from_stage is None:
-            raise RetryValidationError(
-                _retry_validation_reason("missing_recover_from_stage")
-            )
+            raise RetryValidationError(_retry_validation_reason("missing_recover_from_stage"))
         if (
             old_pipeline.recover_from_stage != POST_PROCESS_STAGE_CLEANING
             and not old_log.parsed_object_key
         ):
-            raise RetryValidationError(
-                _retry_validation_reason("previous_markdown_missing")
-            )
+            raise RetryValidationError(_retry_validation_reason("previous_markdown_missing"))
         if old_pipeline.superseded_by_task_id is not None:
             # CAS 第 1 层快速失败：本层 read-only 存在 TOCTOU 窗口，由 mark_superseded
             # 的 rowcount 仲裁做真正原子保证；这里只是体验/早期短路。

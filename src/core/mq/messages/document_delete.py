@@ -65,6 +65,16 @@ class DocumentDeleteMessage(AbstractMessage):
     def get_payload(self) -> DocumentDeletePayload:
         return self._payload
 
+    def get_log_fields(self) -> dict[str, object]:
+        """返回删除通知的业务定位字段。"""
+        return {
+            "message_id": self._payload.message_id,
+            "delete_type": self._payload.delete_type,
+            "dataset_id": self._payload.dataset_id,
+            "user_id": self._payload.user_id,
+            "original_file_id": self._payload.original_file_id,
+        }
+
     @classmethod
     def build(
         cls,

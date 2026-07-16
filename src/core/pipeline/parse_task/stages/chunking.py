@@ -16,7 +16,13 @@ from loguru import logger
 from src.core.dataset_config import DatasetConfigService
 from src.core.splitter.factory import DenseEmbeddingConfigMissingError
 
-from .._utils import coerce_optional_int, duration_ms, now
+from .._utils import (
+    coerce_optional_int,
+    compact_log_value,
+    duration_ms,
+    now,
+    task_log_context,
+)
 from ..error_codes import ParseFailureCode, build_failure_reason
 from ..post_process.constants import POST_PROCESS_STAGE_CHUNKING
 from .base import Stage
@@ -74,11 +80,6 @@ class ChunkingStage(Stage):
             # 分片；否则才是真状态不一致（无产物也无 markdown），落 chunking_failed。
             markdown = await self._load_retry_markdown(ctx)
             if markdown is None:
-                logger.warning(
-                    "[ChunkingStage] retry aborted due to unexpected state: task_id={} reason={}",
-                    ctx.payload.task_id,
-                    _CHUNKING_NOT_SUCCESS_IN_RETRY,
-                )
                 return StageOutcome.failure(
                     _CHUNKING_NOT_SUCCESS_IN_RETRY,
                     error=RuntimeError(_CHUNKING_NOT_SUCCESS_IN_RETRY),
@@ -143,9 +144,10 @@ class ChunkingStage(Stage):
             return await self._services.load_markdown(ctx.payload)
         except Exception as exc:
             logger.warning(
-                "[ChunkingStage] retry markdown reload failed: task_id={} error={}",
-                ctx.payload.task_id,
-                exc,
+                "[ParseTask] retry_markdown_reload_failed {} error_type={} error={}",
+                task_log_context(ctx.payload),
+                type(exc).__name__,
+                compact_log_value(exc),
             )
             return None
 

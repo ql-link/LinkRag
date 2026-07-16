@@ -7,7 +7,9 @@ allow chunk 级中间态；只要不是全部成功即判阶段失败。本阶�
 
 from __future__ import annotations
 
-from .._utils import duration_ms, now
+from loguru import logger
+
+from .._utils import compact_log_value, duration_ms, now, task_log_context
 from ..error_codes import ParseFailureCode, build_failure_reason
 from ..post_process.constants import POST_PROCESS_STAGE_SPARSE_VECTORIZING
 from .base import Stage
@@ -46,10 +48,16 @@ class SparseVectorizingStage(Stage):
         try:
             await self._services.run_sparse_vectorizing(ctx.payload, ctx.db)
         except SparseIndexingError as exc:
-            return StageOutcome.failure(exc.reason, error=RuntimeError(exc.reason))
+            return StageOutcome.failure(exc.reason, error=exc)
         except Exception as exc:
+            logger.exception(
+                "[ParseTask] sparse_vectorizing_request_failed {} error_type={} error={}",
+                task_log_context(ctx.payload),
+                type(exc).__name__,
+                compact_log_value(exc),
+            )
             reason = build_failure_reason(ParseFailureCode.SPARSE_VECTORIZING_FAILED, str(exc))
-            return StageOutcome.failure(reason, error=RuntimeError(reason))
+            return StageOutcome.failure(reason, error=exc)
         return StageOutcome.success()
 
     async def mark_success(self, ctx: StageContext, outcome: StageOutcome, *, started_at) -> None:

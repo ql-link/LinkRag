@@ -6,31 +6,33 @@ es_indexing → sparse_vectorizing）委托给 :mod:`stages` 子包的 :class:`S
 首次执行与重试共用同一条阶段链路，差异只在「建行/校验」准备阶段。
 """
 
+import time
 from typing import Any, Callable
 
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from src.core.storage.chunks.repository import ChunkRepository
-from src.core.storage.index_mutation_guard import get_index_mutation_guard
-from src.core.storage.index_mutation_guard import MutationGuardProtocol
+from src.config import settings
 from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.core.pipeline.parse_task.post_process.repository import ParsePipelineRepository
+from src.core.storage.chunks.repository import ChunkRepository
+from src.core.storage.index_mutation_guard import MutationGuardProtocol, get_index_mutation_guard
 from src.core.storage.vector.draft_factory import ChunkDraftFactory
+from src.core.workflow import RunStatus
 from src.database import get_async_session_factory
 from src.models.parse_task import DocumentParsedLog
 from src.services.mq_service import MQService
 from src.services.storage.base import BaseObjectStorage
 from src.services.storage.factory import StorageFactory
 
-from src.config import settings
-from src.core.workflow import RunStatus
-
 from ._utils import (
     attach_pipeline_to_log,
+    compact_log_value,
     duration_ms,
     get_pipeline_from_log,
+    monotonic_duration_ms,
     now,
+    task_log_context,
 )
 from .error_codes import ParseFailureCode, build_failure_reason
 from .log_repository import ParseLogRepository
@@ -226,8 +228,51 @@ class ParseTaskPipeline:
 
     async def execute(self, payload: ParseTaskPayload) -> ParsePipelineResult:
         """执行单条解析任务消息。"""
-        async with self._session_factory() as db:
-            return await self._run(payload, db)
+        started_at = time.monotonic()
+        task_context = task_log_context(payload)
+        logger.info(
+            "[ParseTask] task_started {} parse_file_id={} user_id={} dataset_id={} "
+            "file_type={} parser_backend={} trigger_mode={} is_retry={} previous_task_id={} "
+            "source_bucket={} source_object_key={} markdown_bucket={} markdown_object_key={}",
+            task_context,
+            payload.document_parse_task_id,
+            payload.user_id,
+            payload.dataset_id,
+            compact_log_value(payload.file_type),
+            compact_log_value(payload.pdf_parser_backend),
+            compact_log_value(payload.trigger_mode),
+            payload.is_retry,
+            compact_log_value(payload.previous_task_id),
+            compact_log_value(payload.source_bucket),
+            compact_log_value(payload.source_object_key),
+            compact_log_value(payload.markdown_bucket),
+            compact_log_value(payload.markdown_object_key),
+        )
+        try:
+            async with self._session_factory() as db:
+                result = await self._run(payload, db)
+        except Exception as exc:
+            logger.exception(
+                "[ParseTask] task_crashed {} total_duration_ms={} error_type={} error={}",
+                task_context,
+                monotonic_duration_ms(started_at),
+                type(exc).__name__,
+                compact_log_value(exc),
+            )
+            raise
+
+        logger.info(
+            "[ParseTask] task_finished {} status={} total_duration_ms={} chunk_count={} "
+            "failed_chunk_count={} skip_reason={} error_type={}",
+            task_context,
+            result.status.value,
+            monotonic_duration_ms(started_at),
+            result.chunk_count,
+            len(result.failed_chunk_ids),
+            compact_log_value(result.skip_reason),
+            type(result.error).__name__ if result.error is not None else "-",
+        )
+        return result
 
     async def _run(self, payload: ParseTaskPayload, db: AsyncSession) -> ParsePipelineResult:
         """按 ``payload.is_retry`` 分流准备，随后委托 :class:`StagePipeline`。
@@ -248,6 +293,10 @@ class ParseTaskPipeline:
         # ---- 首次分支：写 created 日志作为幂等屏障，阻止 Kafka 重投重复解析 ----
         log_record = await self._log_repository.create(payload, db)
         if log_record is None:
+            logger.info(
+                "[ParseTask] duplicate_detected {} action=inspect_existing",
+                task_log_context(payload),
+            )
             return await self._guard.handle_duplicate(payload, db)
 
         pipeline_record = get_pipeline_from_log(log_record)
@@ -273,7 +322,9 @@ class ParseTaskPipeline:
             ctx = StageContext(payload, log_record, pipeline_record, db, is_retry=False)
             return await self._execute_stages(ctx)
         except Exception as exc:
-            return await self._handle_unclassified_failure(payload, log_record, pipeline_record, exc, db)
+            return await self._handle_unclassified_failure(
+                payload, log_record, pipeline_record, exc, db
+            )
 
     # ------------------------------------------------------------------
     # 首次分支的失败收敛
@@ -288,6 +339,11 @@ class ParseTaskPipeline:
         db: AsyncSession,
     ) -> ParsePipelineResult:
         """MQ 上下文校验失败：写 cleaning_failed 终态。"""
+        logger.warning(
+            "[ParseTask] task_rejected {} phase=context_validation reason={}",
+            task_log_context(payload),
+            compact_log_value(validation_error),
+        )
         await self._log_repository.mark_parse_finished(log_record, db)
         if pipeline_record is not None:
             await self._pipeline_repository.mark_cleaning_failed(
@@ -313,6 +369,11 @@ class ParseTaskPipeline:
         failure_reason = build_failure_reason(
             ParseFailureCode.INTERNAL_UNKNOWN_ERROR, "post-process pipeline row not found"
         )
+        logger.error(
+            "[ParseTask] task_rejected {} phase=pipeline_initialization reason={}",
+            task_log_context(payload),
+            compact_log_value(failure_reason),
+        )
         await self._log_repository.mark_parse_finished(log_record, db)
         return ParsePipelineResult(
             status=PipelineStatus.FAILED,
@@ -330,7 +391,12 @@ class ParseTaskPipeline:
     ) -> ParsePipelineResult:
         """阶段链路抛出的未归类异常：收敛为 cleaning 失败终态。"""
         failure_reason = build_failure_reason(ParseFailureCode.INTERNAL_UNKNOWN_ERROR, str(exc))
-        logger.error(f"[ParseTaskPipeline] parse failed: task_id={payload.task_id}, error={exc}")
+        logger.exception(
+            "[ParseTask] unclassified_failure {} error_type={} error={}",
+            task_log_context(payload),
+            type(exc).__name__,
+            compact_log_value(exc),
+        )
         await self._log_repository.mark_parse_finished(log_record, db)
         await self._pipeline_repository.mark_cleaning_failed(
             db,
@@ -362,6 +428,13 @@ class ParseTaskPipeline:
         """
         # 1) 严格校验：失败抛 RetryValidationError（由调用方走 _handle_retry_validation_failure）。
         _old_log, old_pipeline = await self._guard.validate_retry_context(payload, db)
+        recover_from_stage = old_pipeline.recover_from_stage
+        logger.info(
+            "[ParseTask] retry_validated {} previous_task_id={} recover_from_stage={}",
+            task_log_context(payload),
+            compact_log_value(payload.previous_task_id),
+            compact_log_value(recover_from_stage),
+        )
 
         try:
             # 2) CAS 第 2 层：mark_superseded UPDATE WHERE superseded_by_task_id IS NULL；
@@ -395,6 +468,15 @@ class ParseTaskPipeline:
             # 把 pipeline 行挂到 log，便于后续 get_pipeline_from_log 复用。
             attach_pipeline_to_log(new_log, new_pipeline)
             await db.commit()
+            logger.info(
+                "[ParseTask] retry_prepared {} previous_task_id={} recover_from_stage={} "
+                "document_parsed_log_id={} pipeline_id={}",
+                task_log_context(payload),
+                compact_log_value(payload.previous_task_id),
+                compact_log_value(recover_from_stage),
+                new_log.id,
+                new_pipeline.id,
+            )
             return new_log, new_pipeline
         except RetryValidationError:
             raise
@@ -416,10 +498,10 @@ class ParseTaskPipeline:
         - 不更新任何旧表行。终态写入 DB 即为权威，前端通过轮询读取。
         """
         logger.warning(
-            "[ParseTaskPipeline] retry validation failed: task_id={} previous={} reason={}",
-            payload.task_id,
-            payload.previous_task_id,
-            reason,
+            "[ParseTask] retry_validation_failed {} previous_task_id={} reason={}",
+            task_log_context(payload),
+            compact_log_value(payload.previous_task_id),
+            compact_log_value(reason),
         )
         try:
             new_log = await self._log_repository.create_failed_for_retry_validation(
@@ -436,11 +518,11 @@ class ParseTaskPipeline:
             await db.commit()
         except Exception as exc:
             await db.rollback()
-            logger.error(
-                "[ParseTaskPipeline] failed to persist retry validation failure: "
-                "task_id={} error={}",
-                payload.task_id,
-                exc,
+            logger.exception(
+                "[ParseTask] retry_validation_failure_persist_failed {} " "error_type={} error={}",
+                task_log_context(payload),
+                type(exc).__name__,
+                compact_log_value(exc),
             )
 
         return ParsePipelineResult(

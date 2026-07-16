@@ -368,14 +368,59 @@ pdf_parser_backend == "mineru"
 
 失败原因统一写入 `failure_reason`，最大长度按数据库字段控制为 512。
 
-## 7. 修改原则
+## 7. 日志观测
+
+解析任务日志以 `task_id` 为主关联键、`doc_id` 为辅助关联键，主链路统一使用
+`[ParseTask] <event>` 格式。正常任务的关键事件如下：
+
+```text
+ParseTaskConsumer.message_received
+  -> task_started
+  -> stage_started / stage_skipped
+  -> source_downloaded / parse_completed / markdown_uploaded  # cleaning 关键 I/O
+  -> stage_succeeded
+  -> ...其余阶段...
+  -> task_finished
+```
+
+串行 `StagePipeline` 与默认开启的并行 DAG 都输出同一组阶段事件，并通过
+`engine=serial|dag` 区分：
+
+- `stage_started`：阶段入口，包含 `stage`、`is_retry`、`chunk_count`。
+- `stage_succeeded`：阶段成功，包含 `duration_ms` 和最新 `chunk_count`。
+- `stage_skipped`：重试继承已成功阶段，包含 `reason=already_success`。
+- `stage_failed`：已归类的业务或基础设施失败，包含 `reason`、`error_type`、
+  `finalized`。
+- `stage_crashed`：阶段执行或状态写入的未预期异常，包含 `operation` 和 traceback。
+
+任务级事件：
+
+| 事件 | 关键字段 |
+| --- | --- |
+| `message_received` | `task_id`、`doc_id`、`topic`、`partition`、`offset`、`message_key` |
+| `task_started` | `parse_file_id`、`user_id`、`dataset_id`、`file_type`、解析器、触发/重试字段、源文件与 Markdown 对象坐标 |
+| `task_finished` | `status`、`total_duration_ms`、`chunk_count`、`failed_chunk_count`、`skip_reason` |
+| `task_crashed` | `total_duration_ms`、`error_type`、单行异常摘要和 traceback |
+
+日志级别约定：
+
+- `INFO`：任务/阶段生命周期、下载/解析/上传指标、重复任务与重试正常收敛。
+- `WARNING`：上下文拒绝、重试校验拒绝、部分 chunk 失败、旁路用量丢弃。
+- `ERROR`：阶段失败、状态写入失败、逃逸异常。
+- `DEBUG`：底层下载起点、解析服务内部子步骤、成功的底层向量请求。主链路 INFO
+  已覆盖对应阶段，避免同一成功事件在多层重复打印。
+
+异常与失败原因会转义换行并限制单字段长度，保证一条事件保持单行。解析日志不打印
+Markdown 正文或模型请求/响应正文。
+
+## 8. 修改原则
 
 - 不要在 MQ consumer 中直接拼接业务流程，业务编排应留在 `ParseTaskPipeline`。
 - `pipeline_status=SUCCESS` 终态写库必须晚于 Markdown、分片、dense 向量化、预分词、ES 入库和 sparse 向量化全部完成。
 - 新增阶段时应同步更新 `document_parse_pipeline` 表结构、`docs/api/schemas/mysql.md` 和 `docs/api/error_codes.md`。
 - 重投场景必须保持幂等，不应重复解析同一 `task_id`。
 
-## 8. 测试建议
+## 9. 测试建议
 
 ```bash
 .venv/bin/pytest tests/unit/core/pipeline/parse_task tests/unit/core/pipeline/stages -q

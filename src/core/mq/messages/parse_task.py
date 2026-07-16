@@ -108,6 +108,20 @@ class ParseTaskMessage(AbstractMessage):
     def get_routing_key(self) -> Optional[str]:
         return self._payload.file_type
 
+    def get_log_fields(self) -> dict[str, object]:
+        """返回解析任务消息的关联字段，不记录文件名和对象存储坐标。"""
+        return {
+            "message_id": self._payload.message_id,
+            "task_id": self._payload.task_id,
+            "doc_id": self._payload.original_file_id,
+            "parse_file_id": self._payload.document_parse_task_id,
+            "user_id": self._payload.user_id,
+            "dataset_id": self._payload.dataset_id,
+            "file_type": self._payload.file_type,
+            "is_retry": self._payload.is_retry,
+            "previous_task_id": self._payload.previous_task_id,
+        }
+
     @classmethod
     def build(
         cls,

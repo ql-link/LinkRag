@@ -9,6 +9,7 @@ src/core/mq/
 ├── interfaces.py              # IMQSender / IMQReceiver 抽象接口
 ├── factory.py                 # MQFactory 注册式厂商工厂；装配 RetryPolicy / DLQ publisher
 ├── message.py                 # AbstractMessage / MessagePayload 基类
+├── observability.py           # 发送日志字段格式化、耗时与消息大小计算
 ├── topic_admin.py             # Kafka Topic 初始化（含死信 *.DLT 同规格幂等创建）
 ├── exceptions.py              # MQ 异常类型（含 RetriableError 可重试基类）
 ├── retry.py                   # 厂商中立失败兜底编排：有限退避重试 + 死信投递
@@ -143,11 +144,37 @@ Kafka Topic 初始化还会读取：
   - `MQ_RETRY_BACKOFF_SECONDS`（默认 1.0）
   - `MQ_DLQ_SUFFIX`（默认 `.DLT`）
 
+## 4.2 发送侧日志
+
+所有业务消息通过 `MQService.send()` 发送，统一记录：
+
+- `mq_send_started`（DEBUG）
+- `mq_send_succeeded`（INFO）
+- `mq_send_failed`（ERROR，包含 traceback）
+
+通用字段包括 `type`、`topic`、`routing_key`、`duration_ms`、`message_bytes`。
+消息类通过 `AbstractMessage.get_log_fields()` 返回白名单业务摘要：
+
+| 消息 | 日志摘要字段 |
+| --- | --- |
+| `ParseTaskMessage` | `message_id`、`task_id`、`doc_id`、`parse_file_id`、`user_id`、`dataset_id`、`file_type`、重试字段 |
+| `TokenUsageMessage` | `message_id`、`user_id`、厂商/模型、`stage`、`operation`、三类 token、`config_id`、`task_id`、耗时和状态 |
+| `ChatTurnMessage` | `message_id`、`conversation_id`、`request_id`、`turn_id`、`user_id`、模型、状态、引用数量、错误码；不记录 query/answer/title/error_message |
+| `DocumentDeleteMessage` | `message_id`、`delete_type`、`dataset_id`、`user_id`、`original_file_id` |
+
+`MQService.send_raw()` 使用 `mq_raw_send_*` 事件，只记录 topic、routing key、消息
+字节数和 header 名称，不记录 raw body 或 header 值。死信发送绕过 `MQService`，由
+`MQFactory.get_dlq_publisher()` 记录 `mq_dlq_send_*`，同样不打印消息正文和死信
+header 值。
+
+发送日志严禁直接输出完整 payload。新增消息类型时应覆写 `get_log_fields()`，只返回
+排障必需且确认允许记录的字段。trace id 仍按上文约定通过消息 header 透传。
+
 ## 5. 新增消息类型
 
 1. 在 `src/core/mq/messages/` 下新增消息文件。
 2. 定义 `MessagePayload` 子类，使用 Pydantic 字段校验业务 payload。
-3. 定义 `AbstractMessage` 子类，实现 `MQ_NAME`、`MQ_TYPE`、`get_payload()` 和必要的 `parse_msg()`。
+3. 定义 `AbstractMessage` 子类，实现 `MQ_NAME`、`MQ_TYPE`、`get_payload()` 和必要的 `parse_msg()`；覆写 `get_log_fields()` 声明安全日志摘要。
 4. 在 `src/core/mq/messages/__init__.py` 暴露新类型。
 5. 若需要 HTTP 调试入口，同步更新 `src/api/routes/mq.py`、`src/api/schemas/mq.py` 和 `docs/api/http_contracts.md`。
 6. 增加 `tests/unit/core/mq` 单元测试。
