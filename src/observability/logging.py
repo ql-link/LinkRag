@@ -1,11 +1,15 @@
 import logging
 import os
+import re
 import shutil
 import socket
 import sys
+import traceback
+from hashlib import sha256
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 from loguru import logger
 
@@ -27,10 +31,80 @@ _CONSOLE_FORMAT = (
 _INTERCEPT_LOGGER_PREFIXES = ("uvicorn", "gunicorn", "fastapi")
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 _HOSTNAME = socket.gethostname()
+DEFAULT_LOG_VALUE_LIMIT = 1024
+_URL_CREDENTIAL_RE = re.compile(
+    r"(?P<scheme>[a-z][a-z0-9+.-]*://)(?P<credentials>[^/@\s]+)@",
+    re.IGNORECASE,
+)
+_BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
+_SENSITIVE_ASSIGNMENT_RE = re.compile(
+    r"""(?ix)
+    (?P<key>
+        api[_-]?key|password|passwd|secret|access[_-]?token|refresh[_-]?token|
+        authorization|credential|signature
+    )
+    (?P<separator>\s*["']?\s*[:=]\s*["']?\s*)
+    (?P<value>[^"',}\s]+)
+    """
+)
 
 
 def _service_name() -> str:
     return settings.LOG_SERVICE_NAME.strip() or "tolink-rag"
+
+
+def truncate_log_value(value: object, limit: int = DEFAULT_LOG_VALUE_LIMIT) -> str:
+    """将外部错误文本限制为单行定长字符串，避免日志注入与超大响应撑爆 Loki。"""
+    text = str(value)
+    text = _URL_CREDENTIAL_RE.sub(r"\g<scheme><redacted>@", text)
+    text = _BEARER_RE.sub("Bearer <redacted>", text)
+    text = _SENSITIVE_ASSIGNMENT_RE.sub(
+        lambda match: f"{match.group('key')}{match.group('separator')}<redacted>",
+        text,
+    )
+    text = " ".join(text.split())
+    if limit <= 0 or len(text) <= limit:
+        return text
+    return f"{text[:limit]}...(truncated,total_chars={len(text)})"
+
+
+def sanitize_url_for_log(raw_url: object) -> str:
+    """移除 URL 用户密码、query 与 fragment，仅保留安全定位信息。"""
+    text = str(raw_url or "").strip()
+    if not text:
+        return ""
+    try:
+        parsed = urlsplit(text)
+    except ValueError:
+        return "<invalid-url>"
+    if not parsed.scheme or not parsed.netloc:
+        return truncate_log_value(parsed.path or text, 256)
+
+    try:
+        hostname = parsed.hostname or ""
+        parsed_port = parsed.port
+    except ValueError:
+        return f"{parsed.scheme}://<invalid-host>{parsed.path}"
+    if ":" in hostname and not hostname.startswith("["):
+        hostname = f"[{hostname}]"
+    port = f":{parsed_port}" if parsed_port is not None else ""
+    username = "<redacted>@" if parsed.username is not None else ""
+    netloc = f"{username}{hostname}{port}"
+    return urlunsplit((parsed.scheme, netloc, parsed.path, "", ""))
+
+
+def fingerprint_log_value(value: object, *, length: int = 12) -> str:
+    """为不宜明文记录的资源生成稳定短指纹。"""
+    return sha256(str(value or "").encode("utf-8", errors="replace")).hexdigest()[:length]
+
+
+def safe_exception_stack(error: BaseException, *, limit: int = 4096) -> str:
+    """提取不含异常消息和源码变量值的调用栈，适合记录外部系统异常。"""
+    frames = traceback.extract_tb(error.__traceback__) if error.__traceback__ else []
+    stack = " <- ".join(
+        f"{frame.filename}:{frame.lineno} in {frame.name}" for frame in frames
+    )
+    return truncate_log_value(stack, limit)
 
 
 def _patch_log_record(record: dict[str, Any]) -> None:
@@ -198,4 +272,12 @@ def setup_logger():
 # 初始化日志
 setup_logger()
 
-__all__ = ["logger", "setup_logger", "InterceptHandler"]
+__all__ = [
+    "logger",
+    "setup_logger",
+    "InterceptHandler",
+    "truncate_log_value",
+    "sanitize_url_for_log",
+    "fingerprint_log_value",
+    "safe_exception_stack",
+]

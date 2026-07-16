@@ -16,6 +16,7 @@ from src.core.storage.chunks.constants import CHUNK_LIFECYCLE_ACTIVE
 from src.database import get_db_context
 from src.models.chunk_record import ChunkRecordDB
 from src.models.parse_task import DocumentParsePipeline, DocumentParseTask
+from src.observability.logging import safe_exception_stack, truncate_log_value
 from src.utils.logger import logger
 
 DEFAULT_READINESS_BATCH_SIZE = 500
@@ -84,12 +85,23 @@ class MySqlDocumentReadinessGate:
                         )
         except Exception as exc:
             query_ms = int((time.monotonic() - query_started) * 1000)
-            logger.error(
+            logger.bind(
+                event="recall_readiness_query_failed",
+                outcome="failed",
+                user_id=user_id,
+                candidate_count=len(hits),
+                unique_candidate_count=len(chunk_ids),
+                query_ms=query_ms,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).error(
                 "[DocumentReadinessGate] event=query_failed candidate_count={} "
-                "unique_candidate_count={} query_ms={} error_type={}",
+                "unique_candidate_count={} query_ms={} user_id={} error_type={}",
                 len(hits),
                 len(chunk_ids),
                 query_ms,
+                user_id,
                 type(exc).__name__,
             )
             raise

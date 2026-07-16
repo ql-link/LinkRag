@@ -150,8 +150,24 @@ HTTP 请求链路通过 `X-Trace-Id` 头串联：请求带该头时沿用；未�
 
 - 日志在 [src/main.py](../../src/main.py) 顶部**显式初始化**（`setup_logger()`），不依赖 import 副作用；放在其余模块导入之前，确保导入期日志也被捕获。
 - `uvicorn`/`uvicorn.access`/`uvicorn.error`/`gunicorn` 等自带 handler 的 logger 会被显式接管（清空其 handler、打开 propagate），其访问日志与未捕获异常的 500 堆栈因此也进入日期文件。`uvicorn.run` 传 `log_config=None`，不再安装 uvicorn 自己的日志配置。
-- 异常堆栈开启 `backtrace`、关闭 `diagnose`：保留完整调用栈，但不展开局部变量值，避免在生产日志里泄露密钥 / PII。
+- 异常诊断使用安全双字段：`error_message` 先压平、常见敏感赋值脱敏并限制长度；
+  `stack_trace` 只记录文件、行号和函数调用链，不包含异常原文、源码变量值或请求正文。
+  URL 进入日志前移除用户密码、query 和 fragment；图片等不宜明文记录的资源使用稳定短指纹。
+- `truncate_log_value()` 会遮蔽常见 `api_key/password/secret/access_token/authorization/
+  credential/signature` 赋值、Bearer token 和 URL 用户密码。外部 HTTP/CLI 响应只记录
+  定长摘要，禁止记录完整 prompt、query、answer、Markdown、MQ body 或模型响应正文。
 - 全局未捕获异常由 [src/main.py](../../src/main.py) 的 `Exception` handler 兜底：带请求方法 / 路径记录完整堆栈，再返回统一 500 错误体 `{code, message, data}`。
+- 解析任务使用结构化事件 `parse_task_completed` / `parse_stage_failed` /
+  `parse_task_failed` / `parse_task_escaped`。可在 Loki 中按 `event`、`task_id`、
+  `user_id`、`dataset_id`、`source_filename`、`stage`、`outcome` 和
+  `failure_reason` 检索；字段契约见
+  [parse_task_pipeline.md §解析任务结构化日志](../internals/parse_task_pipeline.md#解析任务结构化日志)。
+- MQ 使用 `mq_http_send_failed`、`mq_consume_retry`、`mq_consume_terminal`、
+  `mq_dlq_published`、`mq_dlq_publish_failed`、`kafka_offset_commit_failed`；
+  可按 topic、partition、offset、delivery_tag、retry_count 检索。
+- 召回与增强使用 `recall_source_failed`、`recall_generation_failed`、
+  `rerank_model_failed`、`markdown_enhancement_failed`、`image_enhancement_failed`；
+  只记录数量、模型标识和资源指纹，不记录查询、回答、chunk 正文或图片签名 URL。
 - 应用关闭（lifespan shutdown）时 `await logger.complete()`，等待 `enqueue` 队列里的日志全部落盘，避免退出丢尾部日志。
 - 约定：**应用代码新增日志一律用 Loguru**；遗留的标准库 logging 会被自动桥接，无需改写，但不要再新增标准库 logging 用法。
 

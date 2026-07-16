@@ -15,6 +15,7 @@ from loguru import logger
 
 from src.core.dataset_config import DatasetConfigService
 from src.core.splitter.factory import DenseEmbeddingConfigMissingError
+from src.observability.logging import safe_exception_stack, truncate_log_value
 
 from .._utils import coerce_optional_int, duration_ms, now
 from ..error_codes import ParseFailureCode, build_failure_reason
@@ -142,10 +143,18 @@ class ChunkingStage(Stage):
         try:
             return await self._services.load_markdown(ctx.payload)
         except Exception as exc:
-            logger.warning(
-                "[ChunkingStage] retry markdown reload failed: task_id={} error={}",
+            logger.bind(
+                event="retry_markdown_reload_failed",
+                task_id=ctx.payload.task_id,
+                user_id=ctx.payload.user_id,
+                dataset_id=ctx.payload.dataset_id,
+                source_filename=ctx.payload.source_filename,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).warning(
+                "[ChunkingStage] retry markdown reload failed: task_id={}",
                 ctx.payload.task_id,
-                exc,
             )
             return None
 

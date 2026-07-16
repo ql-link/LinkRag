@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.core.pipeline.parse_task.post_process.repository import ParsePipelineRepository
 from src.models.parse_task import DocumentParsedLog, DocumentParseTask
+from src.observability.logging import safe_exception_stack, truncate_log_value
 
 from ._utils import attach_pipeline_to_log, duration_ms, now
 
@@ -142,9 +143,15 @@ class ParseLogRepository:
             await db.commit()
         except Exception as db_exc:
             await db.rollback()
-            logger.error(
-                f"[ParseLogRepository] failed to write parse finish snapshot: "
-                f"task_id={log_record.task_id}, error={db_exc}"
+            logger.bind(
+                event="parse_log_snapshot_write_failed",
+                task_id=log_record.task_id,
+                error_type=type(db_exc).__name__,
+                error_message=truncate_log_value(db_exc),
+                stack_trace=safe_exception_stack(db_exc),
+            ).error(
+                "[ParseLogRepository] failed to write parse finish snapshot: task_id={}",
+                log_record.task_id,
             )
 
     async def create_for_retry(

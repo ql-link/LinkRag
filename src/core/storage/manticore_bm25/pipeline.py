@@ -21,6 +21,7 @@ from src.core.preprocessor.models import ChunkWithTokens, FilePostIndexPlan
 from src.core.storage.chunks.repository import ChunkRepository
 from src.core.storage.bm25_models import Bm25IndexingResult
 from src.utils.logger import logger
+from src.observability.logging import safe_exception_stack, truncate_log_value
 
 from .store import Bm25Point, ManticoreBm25Store, get_manticore_bm25_store
 
@@ -87,11 +88,14 @@ class ManticoreBm25IndexingPipeline:
             except Exception as exc:
                 reason = f"manticore_bm25_write: {exc}"
                 failed_errors.extend((p.chunk_id, reason) for p in points)
-                logger.error(
-                    "[ManticoreBm25] write failed doc_id={} chunks={} error={}",
+                logger.bind(
+                    error_type=type(exc).__name__,
+                    error_message=truncate_log_value(exc),
+                    stack_trace=safe_exception_stack(exc),
+                ).error(
+                    "[ManticoreBm25] write failed doc_id={} chunks={}",
                     meta.doc_id,
                     len(points),
-                    exc,
                 )
 
         await self._mark_status(db, success_ids, failed_errors)

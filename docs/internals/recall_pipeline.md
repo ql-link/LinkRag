@@ -102,6 +102,12 @@ for retriever in retrievers:
 
 每次门禁输出结构化汇总日志：`candidate_count`、`visible_count`、`filtered_count`、`query_ms`，以及 `filtered_by_routing_or_missing` / `filtered_by_lifecycle` / `filtered_by_pipeline` / `filtered_by_hold`。为保证各原因之和等于过滤总量，同一 hit 同时不满足多个条件时按 `routing_or_missing → lifecycle → pipeline → hold` 选择首个原因；日志不记录 query 或 chunk 正文。
 
+异常与降级日志统一携带 `request_id/user_id/dataset_count/source/model/config_id` 等可用
+业务锚点：单路召回失败为 `recall_source_failed`，生成失败为
+`recall_generation_failed`，rerank 模型失败为 `rerank_model_failed`，并发 Redis
+故障为 `recall_concurrency_guard_failed`。只记录候选数、耗时、部分答案字符数等统计，
+不记录 query、prompt、answer、上下文或 chunk 正文；外部异常使用脱敏摘要和安全调用栈。
+
 ---
 
 ## 4. Retriever 协议

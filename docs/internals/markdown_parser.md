@@ -113,6 +113,11 @@ PDF 解析阶段如果提供了 `image_bytes_by_url`，图片增强会优先使�
 图片增强通过 `ProviderVisionClient` 对同一批图片执行受控并发调用，最大并发数由
 `MARKDOWN_PARSER_VISION_CONCURRENCY` 控制，默认值为 `24`。单张图片加载或视觉模型调用失败时只跳过该图片描述，不阻断基础 Markdown 解析。非内存图片读取会通过线程执行，避免同步文件/URL 读取阻塞事件循环。
 
+增强降级日志使用 `markdown_enhancement_failed` / `image_enhancement_failed`，记录
+`task_id/user_id/dataset_id/source_filename`（生产解析上下文可用时）、失败子阶段、
+模型标识、图片数量或图片短指纹以及安全调用栈。图片 URL 会移除 query/fragment，
+不会记录签名参数；表格正文、图片 base64、prompt 和模型响应正文均不进入日志。
+
 标题层级后处理是可选增强，默认关闭。配置关闭时行为与普通 `MarkdownParser.parse()` 等价，不执行门禁，也不读取模型配置。配置开启且门禁命中时，标题生成器按“发起用户默认 → LinkRag 系统默认预设”解析 `CHAT` 模型并生成标题插入计划；无 `user_id` 的调试入口使用遗留 env 系统级 `CHAT` 配置。该模块不新增标题专用模型选择参数，也不允许 LLM 返回整篇 Markdown。
 
 门禁命中场景：

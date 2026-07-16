@@ -24,6 +24,8 @@ from typing import Any, Awaitable, Callable, Dict, Mapping, Optional
 
 from loguru import logger
 
+from src.observability.logging import safe_exception_stack, truncate_log_value
+
 from .exceptions import RetriableError
 
 # DLQ 投递回调签名：(dlt_topic, body_bytes, headers, original_key) -> None
@@ -132,9 +134,24 @@ async def dispatch_with_retry(
             # 可重试：达上限前 sleep 后重试；达上限后跌入下方"投递死信"路径
             if attempt < policy.max_retries:
                 attempt += 1
-                logger.warning(
-                    f"[MQ retry] topic={original_topic} attempt={attempt}/"
-                    f"{policy.max_retries} exc={type(exc).__name__}: {exc}"
+                logger.bind(
+                    event="mq_consume_retry",
+                    outcome="retrying",
+                    topic=original_topic,
+                    partition=metadata.get("partition"),
+                    offset=metadata.get("offset"),
+                    queue=metadata.get("queue"),
+                    delivery_tag=metadata.get("delivery_tag"),
+                    message_id=metadata.get("message_id"),
+                    retry_count=attempt,
+                    max_retries=policy.max_retries,
+                    error_type=type(exc).__name__,
+                    error_message=truncate_log_value(exc),
+                ).warning(
+                    "MQ 消费失败，准备重试: topic={} attempt={}/{}",
+                    original_topic,
+                    attempt,
+                    policy.max_retries,
                 )
                 await sleep(policy.backoff_seconds)
                 continue
@@ -151,8 +168,24 @@ async def dispatch_with_retry(
             )
         except Exception as exc:
             # 终态：不重试，直接死信（retry_count = 0）
-            logger.error(
-                f"[MQ terminal] topic={original_topic} exc={type(exc).__name__}: {exc}"
+            logger.bind(
+                event="mq_consume_terminal",
+                outcome="failed",
+                topic=original_topic,
+                partition=metadata.get("partition"),
+                offset=metadata.get("offset"),
+                queue=metadata.get("queue"),
+                delivery_tag=metadata.get("delivery_tag"),
+                message_id=metadata.get("message_id"),
+                retry_count=0,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).error(
+                "MQ 消费发生终态异常，准备投递死信: topic={} partition={} offset={}",
+                original_topic,
+                metadata.get("partition"),
+                metadata.get("offset"),
             )
             return await _publish_to_dlq(
                 exc=exc,
@@ -189,15 +222,38 @@ async def _publish_to_dlq(
     )
     try:
         await dlq_publisher(dlt_topic, dlq_body, dlq_headers, original_key)
-        logger.warning(
-            f"[MQ -> DLT] topic={original_topic} -> {dlt_topic} "
-            f"retry_count={retry_count} exc={type(exc).__name__}"
+        logger.bind(
+            event="mq_dlq_published",
+            outcome="dlq_published",
+            topic=original_topic,
+            dlt_topic=dlt_topic,
+            retry_count=retry_count,
+            original_key=original_key or "",
+            error_type=type(exc).__name__,
+        ).warning(
+            "MQ 消息已投递死信: topic={} dlt_topic={} retry_count={}",
+            original_topic,
+            dlt_topic,
+            retry_count,
         )
         return DispatchOutcome.DLQ_PUBLISHED
     except Exception as dlq_exc:
         # 死信本身也发不出去：保留消息（不 ack / 不 commit），让下次重新投递
-        logger.error(
-            f"[MQ DLT publish failed] topic={original_topic} -> {dlt_topic} "
-            f"original_exc={type(exc).__name__} dlq_exc={dlq_exc}"
+        logger.bind(
+            event="mq_dlq_publish_failed",
+            outcome="failed",
+            topic=original_topic,
+            dlt_topic=dlt_topic,
+            retry_count=retry_count,
+            original_key=original_key or "",
+            original_error_type=type(exc).__name__,
+            error_type=type(dlq_exc).__name__,
+            error_message=truncate_log_value(dlq_exc),
+            stack_trace=safe_exception_stack(dlq_exc),
+        ).critical(
+            "MQ 死信投递失败，原消息保持未确认: topic={} dlt_topic={} retry_count={}",
+            original_topic,
+            dlt_topic,
+            retry_count,
         )
         return DispatchOutcome.DLQ_PUBLISH_FAILED

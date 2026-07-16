@@ -14,6 +14,7 @@ from loguru import logger
 
 from src.core.mq.messages import ParseTaskMessage
 from src.core.pipeline import ParseTaskPipeline
+from src.observability.logging import safe_exception_stack, truncate_log_value
 
 PARSE_TASK_TOPIC = ParseTaskMessage.MQ_NAME
 PARSE_TASK_GROUP = "tolink.rag.parse_task"
@@ -26,7 +27,26 @@ async def handle_parse_task(message_body: str, metadata: Dict[str, Any]) -> None
     不再回传 parse_result MQ。``execute`` 逃逸的异常直接抛出交由框架死信兜底
     （Java 端 stuck scanner 最终收敛文件状态）。
     """
-    payload = ParseTaskMessage.parse_msg(message_body)
+    try:
+        payload = ParseTaskMessage.parse_msg(message_body)
+    except Exception as exc:
+        logger.bind(
+            event="parse_task_message_invalid",
+            outcome="failed",
+            stage="MESSAGE_DESERIALIZATION",
+            topic=PARSE_TASK_TOPIC,
+            partition=metadata.get("partition"),
+            offset=metadata.get("offset"),
+            message_size=len(message_body.encode("utf-8")),
+            error_type=type(exc).__name__,
+            error_message=truncate_log_value(exc),
+            stack_trace=safe_exception_stack(exc),
+        ).error(
+            "解析任务消息反序列化失败: partition={} offset={}",
+            metadata.get("partition"),
+            metadata.get("offset"),
+        )
+        raise
     logger.info(
         f"[ParseTaskConsumer] 收到任务: task_id={payload.task_id}, "
         f"file_type={payload.file_type}, offset={metadata.get('offset')}"
@@ -35,11 +55,8 @@ async def handle_parse_task(message_body: str, metadata: Dict[str, Any]) -> None
     pipeline = ParseTaskPipeline()
     try:
         result = await pipeline.execute(payload)
-    except Exception as exc:
-        logger.error(
-            f"[ParseTaskConsumer] 任务执行逃逸异常，交由死信兜底: "
-            f"task_id={payload.task_id}, error={exc}"
-        )
+    except Exception:
+        # ParseTaskPipeline.execute 已记录携带文件/用户/阶段/堆栈的结构化逃逸日志。
         raise
 
     logger.info(

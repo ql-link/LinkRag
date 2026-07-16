@@ -151,6 +151,35 @@ any classified failure
 
 消费者层兜底：`ParseTaskConsumer.handle_parse_task` 在 `execute()` 之外再包一层 catch-all。`execute` 逃逸的未预期异常（pipeline 内部归类兜底之外，如 DB/会话故障）记录日志后直接 `raise`，交由死信兜底（Java 端 stuck scanner 最终收敛文件状态）。终态权威源是 DB，前端轮询读取，Python 不再回发任何 parse_result 通知（LINK-166，见 [mq.md §消费者层异常兜底](mq.md)）。
 
+### 解析任务结构化日志
+
+`src/core/pipeline/parse_task/observability.py` 统一绑定解析任务上下文，所有记录均进入
+Loguru 的 JSON 文件 sink，并由 Promtail 采集到 Loki。公共检索字段包括：
+
+- 任务与归属：`task_id`、`previous_task_id`、`document_parse_file_id`、
+  `original_file_id`、`user_id`、`dataset_id`、`is_retry`、`trigger_mode`。
+- 文件与解析器：`source_filename`、`file_type`、`source_bucket`、
+  `source_object_key`、`markdown_bucket`、`markdown_object_key`、`parser_backend`。
+- 结果与诊断：`event`、`outcome`、`stage`、`duration_ms`、`failure_reason`、
+  `error_type`、`error_message`、`chunk_count`、`page_count`。
+
+日志事件约定：
+
+- `parse_task_completed`：每次完整解析成功只写一条终态汇总 INFO，包含文件、用户、
+  总耗时、解析耗时、页数和 chunk 数。
+- `parse_stage_failed`：任一串行 Stage 或并行 DAG 节点失败即写 ERROR，明确失败阶段、
+  文件、用户、阶段耗时、分类失败原因与安全调用栈。调用栈只保留文件、行号、函数，
+  异常摘要会脱敏并截断；即使后续落失败状态又异常，原始业务
+  异常也不会丢失。
+- `parse_task_failed`：流水线已收敛为 FAILED 后写终态 ERROR，便于按任务检索整体结果。
+- `parse_task_escaped`：DB/会话等未被业务状态机收敛的异常写 CRITICAL 后重新抛出，
+  交给 MQ 死信机制。
+- `parse_task_message_invalid`：MQ 消息在 payload 构造前反序列化失败时记录 partition、
+  offset、消息字节数与去除 input value 的字段错误位置；不记录原始消息正文，且不把
+  Pydantic 原始异常作为 cause 继续输出，避免潜在敏感字段进入日志。
+
+日志不得记录源文件正文、Markdown 内容、模型 API Key 或完整 MQ 原文。
+
 ## 3. 核心职责
 
 ### 编排架构（Stage 类化，LINK-37）

@@ -26,6 +26,7 @@ from src.core.pipeline.chunk_content import fetch_chunk_contents
 from src.core.pipeline.recall.models import RecallHit
 from src.core.pipeline.rerank.models import RerankedHit, RerankRequest, RerankResponse
 from src.services.usage_reporter import report_usage_nowait
+from src.observability.logging import safe_exception_stack, truncate_log_value
 
 # 注入点签名：正文回填 (chunk_ids, user_id) -> {chunk_id: 正文}
 ContentFetcher = Callable[[list[str], int], Awaitable[dict[str, str]]]
@@ -134,10 +135,15 @@ class PostRecallReranker:
                 allow_system_fallback=False,
             )
         except UserModelConfigMissingError as exc:
-            logger.info(
-                "[rerank] user rerank config missing, degrade to fusion order user_id={}: {}",
+            logger.bind(
+                event="rerank_config_missing",
+                outcome="degraded",
+                user_id=request.user_id,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+            ).info(
+                "[rerank] user rerank config missing, degrade to fusion order user_id={}",
                 request.user_id,
-                exc,
             )
             return _resp(self._degrade(scored_hits, top_n), False)
 
@@ -154,10 +160,22 @@ class PostRecallReranker:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 - 调用失败统一降级为当前融合顺序
-            logger.warning(
-                "[rerank] model call failed, degrade to fusion order user_id={}: {}",
+            logger.bind(
+                event="rerank_model_failed",
+                outcome="degraded",
+                user_id=request.user_id,
+                candidate_count=len(scored_hits),
+                top_n=top_n,
+                provider_type=getattr(resolved, "provider_type", "") or "",
+                model_name=resolved.model_name or "",
+                config_id=getattr(resolved, "config_id", None),
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).warning(
+                "[rerank] model call failed, degrade to fusion order user_id={} candidates={}",
                 request.user_id,
-                exc,
+                len(scored_hits),
             )
             return _resp(self._degrade(scored_hits, top_n), False)
 

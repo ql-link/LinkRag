@@ -13,8 +13,9 @@ from typing import TYPE_CHECKING
 
 from loguru import logger
 
-from .._utils import now
+from .._utils import duration_ms, now
 from ..models import ParsePipelineResult
+from ..observability import log_stage_failure
 from ..post_process.constants import STAGE_STATUS_SUCCESS
 from .context import StageContext, StageOutcome
 
@@ -61,12 +62,30 @@ class Stage(ABC):
             return await self.on_skip(ctx)
 
         started_at = now()
-        await self.mark_started(ctx, started_at)
-        outcome = await self.run(ctx)
-        if outcome.ok:
-            await self.mark_success(ctx, outcome, started_at=started_at)
-        elif not outcome.finalized:
-            await self.mark_failed(ctx, outcome, started_at=started_at)
+        try:
+            await self.mark_started(ctx, started_at)
+            outcome = await self.run(ctx)
+            if outcome.ok:
+                await self.mark_success(ctx, outcome, started_at=started_at)
+            else:
+                if not outcome.finalized:
+                    await self.mark_failed(ctx, outcome, started_at=started_at)
+                log_stage_failure(
+                    ctx.payload,
+                    stage=self.name,
+                    failure_reason=outcome.failure_reason,
+                    error=outcome.error,
+                    duration_ms=duration_ms(started_at, now()),
+                )
+        except Exception as exc:
+            log_stage_failure(
+                ctx.payload,
+                stage=self.name,
+                failure_reason=str(exc),
+                error=exc,
+                duration_ms=duration_ms(started_at, now()),
+            )
+            raise
         return outcome
 
     async def on_skip(self, ctx: StageContext) -> StageOutcome:
@@ -107,6 +126,6 @@ class StagePipeline:
                     stage.name,
                     outcome.failure_reason,
                 )
-                return ctx.failure_result(outcome)
+                return ctx.failure_result(outcome, failed_stage=stage.name)
 
         return ctx.success_result()

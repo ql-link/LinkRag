@@ -224,7 +224,4 @@ class CleaningStage(Stage):
     @staticmethod
     def _classified_failure(payload, code: ParseFailureCode, exc: Exception) -> StageOutcome:
         failure_reason = build_failure_reason(code, str(exc))
-        logger.error(
-            f"[CleaningStage] parse failed: task_id={payload.task_id}, reason={failure_reason}"
-        )
         return StageOutcome.failure(failure_reason, error=exc)

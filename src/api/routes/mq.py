@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException
 from loguru import logger
 
 from src.config import settings
+from src.observability.logging import safe_exception_stack, truncate_log_value
 from src.services.mq_service import MQService
 from src.core.mq.factory import MQFactory
 from src.core.mq.messages import (
@@ -64,9 +65,27 @@ async def send_parse_task(request: SendParseTaskRequest):
         )
         await mq_service.send(msg)
         return MQResponse(success=True, message="解析任务已投递")
-    except Exception as e:
-        logger.error(f"发送解析任务消息失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.bind(
+            event="mq_http_send_failed",
+            operation="parse_task",
+            topic=ParseTaskMessage.MQ_NAME,
+            task_id=request.task_id,
+            user_id=request.user_id,
+            dataset_id=request.dataset_id,
+            original_file_id=request.original_file_id,
+            document_parse_file_id=request.document_parse_task_id,
+            source_filename=request.source_filename,
+            error_type=type(exc).__name__,
+            error_message=truncate_log_value(exc),
+            stack_trace=safe_exception_stack(exc),
+        ).error(
+            "MQ 解析任务投递失败: task_id={} file={} user_id={}",
+            request.task_id,
+            request.source_filename,
+            request.user_id,
+        )
+        raise HTTPException(status_code=500, detail="解析任务投递失败") from exc
 
 
 @router.post(
@@ -95,9 +114,29 @@ async def send_usage_report(request: SendUsageReportRequest):
         )
         await mq_service.send(msg)
         return MQResponse(success=True, message="用量上报已投递")
-    except Exception as e:
-        logger.error(f"发送用量上报消息失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.bind(
+            event="mq_http_send_failed",
+            operation="usage_report",
+            topic=TokenUsageMessage.MQ_NAME,
+            user_id=request.user_id,
+            stage=request.stage,
+            usage_operation=request.operation,
+            task_id=request.task_id or "",
+            config_id=request.config_id,
+            provider_type=request.provider_type,
+            model_name=request.model_name,
+            error_type=type(exc).__name__,
+            error_message=truncate_log_value(exc),
+            stack_trace=safe_exception_stack(exc),
+        ).error(
+            "MQ 用量上报投递失败: stage={} operation={} user_id={} task_id={}",
+            request.stage,
+            request.operation,
+            request.user_id,
+            request.task_id or "",
+        )
+        raise HTTPException(status_code=500, detail="用量上报投递失败") from exc
 
 
 @router.post(
@@ -116,9 +155,22 @@ async def send_raw_message(request: SendRawMessageRequest):
             key=request.key,
         )
         return MQResponse(success=True, message="原始消息已投递")
-    except Exception as e:
-        logger.error(f"发送原始消息失败: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception as exc:
+        logger.bind(
+            event="mq_http_send_failed",
+            operation="raw_message",
+            topic=request.topic,
+            routing_key=request.key or "",
+            message_size=len(request.message.encode("utf-8")),
+            error_type=type(exc).__name__,
+            error_message=truncate_log_value(exc),
+            stack_trace=safe_exception_stack(exc),
+        ).error(
+            "MQ 原始消息投递失败: topic={} message_size={}",
+            request.topic,
+            len(request.message.encode("utf-8")),
+        )
+        raise HTTPException(status_code=500, detail="原始消息投递失败") from exc
 
 
 @router.get(

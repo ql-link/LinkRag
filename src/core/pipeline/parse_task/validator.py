@@ -122,6 +122,8 @@ class ParseTaskGuard:
             return ParsePipelineResult(
                 status=PipelineStatus.FAILED,
                 task_id=payload.task_id,
+                failed_stage="IDEMPOTENCY",
+                failure_reason=DUPLICATE_TASK_LOG_NOT_FOUND_DETAIL,
                 error=error,
             )
 
@@ -134,7 +136,10 @@ class ParseTaskGuard:
                     status=PipelineStatus.SUCCESS, task_id=payload.task_id
                 )
             return ParsePipelineResult(
-                status=PipelineStatus.FAILED, task_id=payload.task_id
+                status=PipelineStatus.FAILED,
+                task_id=payload.task_id,
+                failed_stage="IDEMPOTENCY",
+                failure_reason="duplicate task has no pipeline or parsed artifact",
             )
 
         pipeline_status = pipeline_record.pipeline_status
@@ -145,7 +150,11 @@ class ParseTaskGuard:
 
         if pipeline_status == PIPELINE_STATUS_FAILED:
             return ParsePipelineResult(
-                status=PipelineStatus.FAILED, task_id=payload.task_id
+                status=PipelineStatus.FAILED,
+                task_id=payload.task_id,
+                failed_stage=getattr(pipeline_record, "failed_stage", None) or "IDEMPOTENCY",
+                failure_reason=getattr(pipeline_record, "failure_reason", None)
+                or "duplicate task already failed",
             )
 
         # 非终态 pipeline：上次任务执行被中断，在 DB 中收敛为可恢复失败。
@@ -158,7 +167,11 @@ class ParseTaskGuard:
             finished_at,
         )
         return ParsePipelineResult(
-            status=PipelineStatus.FAILED, task_id=payload.task_id
+            status=PipelineStatus.FAILED,
+            task_id=payload.task_id,
+            failed_stage=self._infer_recover_stage(pipeline_record),
+            failure_reason=failure_reason,
+            error=RuntimeError(failure_reason),
         )
 
     async def _mark_incomplete_pipeline_failed(

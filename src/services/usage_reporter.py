@@ -20,6 +20,7 @@ from typing import Optional, Set
 from loguru import logger
 
 from src.core.mq.messages.token_usage import TokenUsageMessage
+from src.observability.logging import safe_exception_stack, truncate_log_value
 from src.services.mq_service import MQService
 
 # 后台上报 task 的强引用集合。asyncio 只持弱引用，若不在别处留引用，task 可能在跑完前被
@@ -67,9 +68,26 @@ async def report_usage(
         )
         await MQService().send(msg)
     except Exception as exc:  # noqa: BLE001 - 旁路上报，任何异常都不得冒泡到主链路
-        logger.warning(
-            f"[usage] 用量上报失败（不影响主链路）: "
-            f"stage={stage} operation={operation} user_id={user_id} err={exc}"
+        logger.bind(
+            event="usage_report_failed",
+            outcome="skipped",
+            stage=stage,
+            operation=operation,
+            user_id=str(user_id),
+            task_id=task_id or "",
+            config_id=config_id,
+            provider_type=provider_type,
+            model_name=model_name,
+            token_count=total_tokens,
+            error_type=type(exc).__name__,
+            error_message=truncate_log_value(exc),
+            stack_trace=safe_exception_stack(exc),
+        ).warning(
+            "模型用量上报失败，不影响主链路: stage={} operation={} user_id={} task_id={}",
+            stage,
+            operation,
+            user_id,
+            task_id or "",
         )
 
 

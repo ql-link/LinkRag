@@ -90,8 +90,15 @@ FastAPI lifespan（src/main.py 组合根装配 _start_mq_consumers）
 
 `consumers/parse_task_consumer.py::handle_parse_task` 在 `ParseTaskPipeline.execute()` 之外再包一层 catch-all：
 
-- **反序列化失败**（`ParseTaskMessage.parse_msg` 抛错）：无 payload / 无解析日志行，直接抛出交由 §4.1 死信兜底（Java 端 stuck scanner 最终收敛文件状态）。
+- **反序列化失败**（`ParseTaskMessage.parse_msg` 抛错）：无 payload / 无解析日志行；
+  先记录 `parse_task_message_invalid`（partition、offset、消息字节数、去除 input value
+  的字段错误位置和堆栈），再抛出交由 §4.1 死信兜底。日志不包含原始 MQ 正文，
+  `MQSerializationError` 也不保留可能带原始字段值的 Pydantic cause（Java 端 stuck
+  scanner 最终收敛文件状态）。
 - **`execute` 逃逸异常**（pipeline 内部兜底之外的未预期错误，如 DB/会话故障）：记录日志后直接 `raise`，交由 §4.1 死信兜底。终态权威源是 DB，前端轮询读取，无需 Python 回发任何通知。
+- `document_delete` 使用同样的坏消息安全日志：`document_delete_message_invalid` 不记录
+  原始 body；清理失败记录 delete scope、user/dataset/file ID 与安全调用栈后包装成
+  `RetriableError`。
 
 ## 4. 配置
 
@@ -138,6 +145,12 @@ Kafka Topic 初始化还会读取：
 - Kafka 位点提交按 `{TopicPartition: offset + 1}` 精确提交（不再使用无参 commit，
   避免坏消息被后续成功消息"静默跳过"导致丢数据）。
 - 重试计数仅存进程内存（不持久化）；进程重启后重新从 0 起算一轮上限内重试。
+- 结构化日志事件依次为 `mq_consume_retry`、`mq_consume_terminal`、
+  `mq_dlq_published`、`mq_dlq_publish_failed`。Kafka 额外记录 partition/offset，
+  RabbitMQ 记录 queue/delivery_tag/message_id；日志只记录消息字节数和路由元数据，
+  不记录原始消息正文。
+- RabbitMQ 连接地址进入日志前移除用户名密码；Kafka/RabbitMQ send 异常不保留可能
+  携带连接串的原始 exception cause。
 - 配置项（来自 `Settings`，无开关项——死信兜底恒启用）：
   - `MQ_MAX_RETRIES`（默认 3）
   - `MQ_RETRY_BACKOFF_SECONDS`（默认 1.0）

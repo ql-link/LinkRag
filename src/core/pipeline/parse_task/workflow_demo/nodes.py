@@ -23,6 +23,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.pipeline.parse_task._utils import now
+from src.core.pipeline.parse_task.observability import log_stage_failure
 from src.core.pipeline.parse_task.post_process.constants import STAGE_STATUS_SUCCESS
 from src.core.pipeline.parse_task.post_process.constants import (
     POST_PROCESS_STAGE_CHUNKING,
@@ -138,9 +139,23 @@ class StatusTrackedParseNode(WorkflowNode):
                     await self.restore(ctx, None)
                 except _StageNodeError as exc:
                     self._record_failure(runtime, exc.outcome.failure_reason)
+                    log_stage_failure(
+                        runtime.payload,
+                        stage=self.stage,
+                        failure_reason=exc.outcome.failure_reason,
+                        error=exc.outcome.error or exc,
+                        duration_ms=None,
+                    )
                     raise
                 except Exception as exc:
                     self._record_failure(runtime, str(exc))
+                    log_stage_failure(
+                        runtime.payload,
+                        stage=self.stage,
+                        failure_reason=str(exc),
+                        error=exc,
+                        duration_ms=None,
+                    )
                     raise
                 return {"skipped": True, "stage": self.stage}
 
@@ -149,12 +164,28 @@ class StatusTrackedParseNode(WorkflowNode):
         try:
             output_ref = await self._execute(ctx)
         except _StageNodeError as exc:
-            await self._mark(runtime, "mark_stage_failed", duration_ms=_elapsed_ms(started))
+            elapsed_ms = _elapsed_ms(started)
+            await self._mark(runtime, "mark_stage_failed", duration_ms=elapsed_ms)
             self._record_failure(runtime, exc.outcome.failure_reason)
+            log_stage_failure(
+                runtime.payload,
+                stage=self.stage or self.key,
+                failure_reason=exc.outcome.failure_reason,
+                error=exc.outcome.error or exc,
+                duration_ms=elapsed_ms,
+            )
             raise
         except Exception as exc:
-            await self._mark(runtime, "mark_stage_failed", duration_ms=_elapsed_ms(started))
+            elapsed_ms = _elapsed_ms(started)
+            await self._mark(runtime, "mark_stage_failed", duration_ms=elapsed_ms)
             self._record_failure(runtime, str(exc))
+            log_stage_failure(
+                runtime.payload,
+                stage=self.stage or self.key,
+                failure_reason=str(exc),
+                error=exc,
+                duration_ms=elapsed_ms,
+            )
             raise
         await self._mark(runtime, "mark_stage_success", duration_ms=_elapsed_ms(started))
         return output_ref
