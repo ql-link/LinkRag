@@ -233,7 +233,7 @@ demo DAG 当前依赖关系为：`cleaning → chunking`；`chunking → ensure_
 
 各阶段的特例（均封装在对应 Stage 子类内，对编排循环透明）：
 
-- **CleaningStage**：`cleaning_status != SUCCESS` 才执行（首次恒执行）；下载/解析/上传失败按错误码归类（`TEMP_DISK_FULL` / `SOURCE_FILE_NOT_FOUND` / `PARSE_ENGINE_FAILED` / `PARSED_FILE_UPLOAD_FAILED`）。**数据集级配置注入（LINK-148）**：解析前按 `(user_id, dataset_id)` 经 `DatasetConfigService.get_config` 读数据集配置（无行/DB 故障降级系统默认，只读不写库），把 PDF 后端（`payload 显式 > 数据集 pdf_config > settings.PDF_PARSER_BACKEND` 三层）与 Markdown 增强配置注入 `parse_file`。Markdown 增强配置 `enhancement_config` 只控制是否开启表格/图片增强（`enable_table_enhancement` / `enable_image_enhancement`），**不再在数据集层选择增强模型**：表格增强统一用发起用户 CHAT 默认模型、图片增强用 VISION 默认模型。开启对应增强但用户未配该能力默认模型 → `ENHANCEMENT_MODEL_MISSING`（**不回退系统兜底模型**，表格与图片对称失败，图片增强不再静默跳过）；数据集 JSON 字段类型非法 → 归 `PARSE_ENGINE_FAILED`（reason 含字段名）。成功在 `mark_success` 写 `mark_parsed + mark_cleaning_success + mark_post_cleaning`。临时文件早删 + `finally` 兜底封装在 `run` 内。
+- **CleaningStage**：`cleaning_status != SUCCESS` 才执行（首次恒执行）；下载/解析/上传失败按错误码归类（`TEMP_DISK_FULL` / `SOURCE_FILE_NOT_FOUND` / `PARSE_ENGINE_FAILED` / `PARSED_FILE_UPLOAD_FAILED`）。**数据集级配置注入（LINK-148）**：解析前按 `(user_id, dataset_id)` 经 `DatasetConfigService.get_config` 读数据集配置（无行/DB 故障降级系统默认，只读不写库），把 PDF 后端（`payload 显式 > 数据集 pdf_config > settings.PDF_PARSER_BACKEND` 三层）与 Markdown 增强配置注入 `parse_file`。`enhancement_config={}` 明确关闭所有增强；非空对象的缺失字段仍从 Settings 补齐。数据集层只控制增强开关，不选择模型：表格与标题层级增强使用 `CHAT`，图片增强使用 `VISION`，均按“用户默认 → LinkRag 系统默认预设”解析。表格/图片两层都未命中时归 `ENHANCEMENT_MODEL_MISSING`；标题层级增强仅在门禁命中后解析模型，两层都未命中时归 `LLM_CONFIG_MISSING`。图片增强不静默跳过。数据集 JSON 字段类型非法 → 归 `PARSE_ENGINE_FAILED`（reason 含字段名）。成功在 `mark_success` 写 `mark_parsed + mark_cleaning_success + mark_post_cleaning`。临时文件早删 + `finally` 兜底封装在 `run` 内。
   - **`md` / `markdown` 透传**：cleaning 的职责是把多源文件「解析为 md」，而 md 源文件本身即目标格式——经 `payload.is_markdown_passthrough` 判定后 `_read_markdown_passthrough` 直接读取已下载的源文件文本作为 markdown 产物（`parse_result=None`，下游 chunking 走纯 markdown 分片路径），**仅跳过解析引擎**；markdown 产物仍会照常上传写入输出桶，不会因文件类型停留在 `source_bucket`。透传仍走完整成功收口（`mark_parsed + mark_cleaning_success + mark_post_cleaning`），`cleaning_status=SUCCESS`，状态语义与正常清洗一致。
     读取文本后、进入 chunking 前，`CleaningStage.run` 调 `StageServices.upload_md_images()` 扫描 markdown 中的 `data:image/...;base64,...` 内联图片，将其上传到 `MINIO_PRIVATE_BUCKET`（私有桶），并替换为对象 URL。**单张失败不阻断整篇**（best-effort）：上传异常时保留原始 base64 并记录 warning，不修改 `cleaning_status`。
   - **markdown 产物坐标解析**：markdown 真实所在位置统一由 `ParseTaskPayload.markdown_bucket`（= `settings.MINIO_PRIVATE_BUCKET`，与 `file_type` 无关）/ `markdown_object_key`（= 消息中的 `md_object_key`）解析。`mark_parsed`（写 `parsed_bucket_name`/`parsed_object_key`）、`StageServices.load_markdown`（重试从 CHUNKING 恢复读回旧 markdown）、重试 `create_for_retry` 的预写坐标三处一致取用，确保「清洗完成、分片失败」重试时按同一坐标读回。
@@ -355,7 +355,7 @@ pdf_parser_backend == "mineru"
 - `PARSED_FILE_UPLOAD_FAILED`
 - `INTERNAL_UNKNOWN_ERROR`
 - `LLM_CONFIG_MISSING`（发起用户缺少必配能力的默认 LLM 配置：稠密向量化缺 EMBEDDING 默认配置（仅「确实未配置」时归此码，读取失败仍走 `PARSE_ENGINE_FAILED`），LINK-91。解析增强缺 CHAT/VISION 默认模型现归 `ENHANCEMENT_MODEL_MISSING`）
-- `ENHANCEMENT_MODEL_MISSING`（数据集开启表格/图片增强，但发起用户未配对应能力（表格→CHAT，图片→VISION）的默认模型；数据集层不再选择增强模型，统一用用户默认模型，开启增强即要求已配。按约定不回退系统兜底模型，直接失败。表格与图片对称——图片增强模型缺失不再静默跳过）
+- `ENHANCEMENT_MODEL_MISSING`（数据集开启表格/图片增强，但用户默认和 LinkRag 系统默认预设均未提供对应能力模型；表格→CHAT，图片→VISION。图片增强模型缺失不静默跳过）
 - `EMBEDDING_DIMENSION_UNSUPPORTED`（稠密向量化：用户模型维度 ≠ `DENSE_VECTOR_DIMENSION`，LINK-91）
 
 后处理阶段还会构造文件级失败原因，并以来源前缀区分（纯内部排障，Java 仅展示不解析）：

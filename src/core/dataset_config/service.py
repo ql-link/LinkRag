@@ -48,6 +48,28 @@ def _load_json_column(value) -> dict:
     return value
 
 
+def _load_enhancement_config(value) -> EnhancementConfig:
+    """读取增强配置；空对象表示数据集未开启任何增强。
+
+    Java 在数据集创建时会写入 ``{}``。该值必须与「无配置行」区分：无配置行仍使用
+    Settings 系统默认，而显式存在的空对象表示该数据集没有开启表格、图片或标题层级增强。
+    非空对象继续按原契约叠加 Settings，使部分覆盖保持向后兼容。
+    """
+    overrides = _load_json_column(value)
+    if overrides == {}:
+        return EnhancementConfig(
+            enable_table_enhancement=False,
+            enable_image_enhancement=False,
+            enable_heading_hierarchy=False,
+        )
+    return EnhancementConfig.model_validate(
+        {
+            **EnhancementConfig.from_settings().model_dump(),
+            **overrides,
+        }
+    )
+
+
 class DatasetConfigService:
     """数据集解析/检索配置只读服务。"""
 
@@ -122,12 +144,7 @@ class DatasetConfigService:
                     **_load_json_column(row.chunking_config),
                 }
             ),
-            enhancement=EnhancementConfig.model_validate(
-                {
-                    **EnhancementConfig.from_settings().model_dump(),
-                    **_load_json_column(row.enhancement_config),
-                }
-            ),
+            enhancement=_load_enhancement_config(row.enhancement_config),
             pdf=PDFConfig.model_validate(
                 {**PDFConfig.from_settings().model_dump(), **_load_json_column(row.pdf_config)}
             ),

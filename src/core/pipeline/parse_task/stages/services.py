@@ -129,8 +129,8 @@ class StageServices:
 
         ``dataset_cfg`` 为数据集级配置（由 CleaningStage 从 DB 读取注入）：PDF 后端按
         ``payload 显式 > 数据集配置 > settings.PDF_PARSER_BACKEND`` 三层优先级选取；
-        Markdown 增强配置（含 table/vision 模型名与开关）透传给增强编排。``None`` 时全部回退
-        系统默认，行为与拆分前一致。
+        Markdown 增强配置（仅含增强开关）透传给增强编排。``None`` 时全部回退系统默认；模型由
+        增强侧按用户默认 → LinkRag 系统默认预设解析。
         """
         enhancement_config = dataset_cfg.enhancement if dataset_cfg is not None else None
 

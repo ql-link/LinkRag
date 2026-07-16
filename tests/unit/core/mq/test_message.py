@@ -2,7 +2,7 @@
 MQ 消息模型单元测试
 
 覆盖 AbstractMessage / MessagePayload 的序列化/反序列化、
-以及三个业务消息的 build/parse/serialize 闭环。
+以及当前业务消息的 build/parse/serialize 闭环。
 """
 
 import json
@@ -16,8 +16,6 @@ from src.core.mq.exceptions import MQSerializationError
 from src.core.mq.messages import (
     ParseTaskMessage,
     ParseTaskPayload,
-    CacheSyncMessage,
-    CacheSyncPayload,
     TokenUsageMessage,
     TokenUsagePayload,
     ChatTurnMessage,
@@ -175,34 +173,6 @@ class TestParseTaskMessage:
 
         assert parsed.task_id == "t-legacy"
         assert parsed.pdf_parser_backend == "naive"
-
-
-class TestCacheSyncMessage:
-    """缓存同步消息测试"""
-
-    def test_build_default_action(self):
-        msg = CacheSyncMessage.build(user_id="u-100")
-        payload = msg.get_payload()
-        assert payload.user_id == "u-100"
-        assert payload.action == "refresh"
-        assert payload.config_id is None
-
-    def test_build_with_all_fields(self):
-        msg = CacheSyncMessage.build(
-            user_id="u-200",
-            action="invalidate",
-            config_id="cfg-001",
-        )
-        payload = msg.get_payload()
-        assert payload.action == "invalidate"
-        assert payload.config_id == "cfg-001"
-
-    def test_roundtrip(self):
-        msg = CacheSyncMessage.build(user_id="u-300", action="warmup")
-        serialized = msg.serialize()
-        parsed = CacheSyncMessage.parse_msg(serialized)
-        assert parsed.user_id == "u-300"
-        assert parsed.action == "warmup"
 
 
 class TestTokenUsageMessage:

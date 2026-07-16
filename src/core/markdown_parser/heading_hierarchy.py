@@ -577,7 +577,7 @@ async def build_default_heading_plan_generator(
             resolved = await aresolve_user_model(
                 user_id=user_id,
                 capability="CHAT",
-                allow_linkrag_default=False,
+                allow_linkrag_default=True,
             )
         except UserModelConfigMissingError as exc:
             raise LLMConfigMissingError("CHAT", user_id) from exc
@@ -587,7 +587,8 @@ async def build_default_heading_plan_generator(
         model_name=resolved.model_name,
         user_id=user_id,
         provider_type=getattr(resolved, "provider_type", None),
-        config_id=getattr(resolved, "config_id", None),
+        # usage_report.config_id 只接受 llm_user_config.id；系统预设调用按契约传 NULL。
+        config_id=(getattr(resolved, "config_id", None) if resolved.source == "user" else None),
         context_token_budget=context_token_budget,
         max_tokens=max_output_tokens,
     )

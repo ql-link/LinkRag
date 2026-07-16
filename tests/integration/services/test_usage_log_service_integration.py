@@ -15,7 +15,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.database import get_async_session_factory
 from src.services.usage_log_service import UsageLogService
-from src.cache.cache_manager import CacheManager, NullCacheBackend
 from src.core.llm.response import UsageInfo
 from src.config import settings
 

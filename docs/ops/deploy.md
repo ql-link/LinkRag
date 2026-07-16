@@ -11,7 +11,7 @@
 | 服务 | 镜像 | 主机端口 | 用途 | 必需 |
 | --- | --- | --- | --- | --- |
 | `mysql` | `mysql:8.0` | 3306 | 用户、LLM 配置、用量记录、Chunk 状态 | ✅ |
-| `redis` | `redis:7.2-alpine` | 6379 | 用户 LLM 配置缓存、共享下发 | ✅ |
+| `redis` | `redis:7.2-alpine` | 6379 | 召回 session 并发槽位等原子协调能力 | ✅ |
 | `minio` | `minio/minio` | 9000 / 9001 | 原始文档、解析产物的对象存储 | 二选一¹ |
 | `qdrant` | `qdrant/qdrant` | 6333 / 6334 | 稠密 / 稀疏 / BM25 索引存储 | ✅ |
 | `manticore` | `manticoresearch/manticore:27.1.5` | 9306 / 9308 | 可选 BM25 全文索引；迁移期与 Qdrant 双写 | 按需 |

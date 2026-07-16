@@ -23,14 +23,13 @@ logger = logging.getLogger(__name__)
 
 
 class LLMConfigMissingError(RuntimeError):
-    """发起用户缺少某项必配能力的默认 LLM 配置。
+    """指定能力没有可用的用户默认或 LinkRag 系统默认配置。
 
-    专用于区分「用户确实未配置」与「配置读取失败」：仅在 ``ConfigReaderService``
-    成功返回且结果为空（用户没有该能力的 ``is_default`` 配置）时抛出。读取本身
+    专用于区分「确实未配置」与「配置读取失败」：仅在 ``ConfigReaderService``
+    成功返回且用户默认、LinkRag 系统默认均为空时抛出。读取本身
     失败（Redis/DB 异常）不在此列，按原异常向上传播，避免被误判为「无配置」。
 
-    解析链路据此把 CHAT（必配）缺失收敛为任务失败（``LLM_CONFIG_MISSING``），
-    而 VISION（非必配）缺失由调用方捕获后跳过图片增强。
+    增强构造器会把该异常转为 ``EnhancementModelMissingError``。
     """
 
     def __init__(self, capability: str, user_id: int) -> None:
@@ -42,19 +41,18 @@ class LLMConfigMissingError(RuntimeError):
 
 
 class EnhancementModelMissingError(RuntimeError):
-    """数据集开启了表格/图片增强，但发起用户未配置对应能力的默认模型。
+    """数据集开启了表格/图片增强，但没有对应能力的有效默认模型。
 
-    数据集层已不再选择增强模型——增强统一使用发起用户该能力（表格→CHAT，图片→VISION）的
-    默认 LLM 配置。本异常专指「增强开启但用户缺该能力默认配置」：按需求约定**不做任何兜底**
-    （既不回退系统模型，也不静默跳过），直接失败——解析链路据此把任务收敛为 FAILED，并通过
-    ``kind`` 区分是表格还是图片增强，便于提示用户去补对应能力的默认模型配置。
+    数据集层已不再选择增强模型——增强按「发起用户默认 → LinkRag 系统默认预设」解析
+    （表格→CHAT，图片→VISION）。两层都未命中时直接失败，解析链路据此把任务收敛为 FAILED，
+    并通过 ``kind`` 区分是表格还是图片增强。
     """
 
     def __init__(self, kind: str) -> None:
         self.kind = kind  # "table" | "vision"
         capability = "CHAT" if kind == "table" else "VISION"
         super().__init__(
-            f"{kind} enhancement enabled but user has no default {capability} model"
+            f"{kind} enhancement enabled but no effective default {capability} model is available"
         )
 
 
@@ -183,9 +181,9 @@ async def _resolve_user_model(capability_str: str, *, user_id: int):
     """按发起用户解析增强用 LLM 模型（provider + 模型名）。
 
     经统一的 :func:`src.core.llm.user_model_resolver.aresolve_user_model` 按
-    ``user_id + capability`` 取该能力的**默认配置**并构造 Provider（含用户自己配置的模型名）。
-    增强不在数据集层选择模型，故不传 ``fallback_model``——一律使用用户默认配置里的模型名。
-    用户无该能力默认配置时统一解析抛 ``UserModelConfigMissingError``，本函数在边界重抛
+    ``user_id + capability`` 按「用户默认 → LinkRag 系统默认预设」取有效配置并构造 Provider。
+    增强不在数据集层选择模型，故不传 ``fallback_model``——使用命中配置自身的模型名。
+    两层均无该能力默认配置时统一解析抛 ``UserModelConfigMissingError``，本函数在边界重抛
     :class:`LLMConfigMissingError`（再由 ``abuild_*`` 转为 :class:`EnhancementModelMissingError`）；
     配置读取异常按原样向上传播（不转成「无配置」）。
 
@@ -194,10 +192,10 @@ async def _resolve_user_model(capability_str: str, *, user_id: int):
         user_id: 发起解析任务的用户 ID。
 
     Returns:
-        ``ResolvedModel``：含 provider 与用户默认配置的模型名。
+        ``ResolvedModel``：含 provider、命中配置的模型名与来源。
 
     Raises:
-        LLMConfigMissingError: 用户无该能力的默认 LLM 配置。
+        LLMConfigMissingError: 用户和 LinkRag 系统均无该能力的默认 LLM 配置。
         ValueError: 配置的 provider 不支持该能力。
     """
     from src.core.llm.exceptions import UserModelConfigMissingError
@@ -207,7 +205,7 @@ async def _resolve_user_model(capability_str: str, *, user_id: int):
         resolved = await aresolve_user_model(
             user_id=user_id,
             capability=capability_str,
-            allow_linkrag_default=False,
+            allow_linkrag_default=True,
         )
     except UserModelConfigMissingError as exc:
         raise LLMConfigMissingError(capability_str, user_id) from exc
@@ -218,8 +216,8 @@ async def abuild_table_client(user_id: int) -> "ProviderTableClient":
     """按发起用户 CHAT 默认配置构造表格增强 client（增强开启时校验默认模型已配）。
 
     表格增强不在数据集层选择模型，统一用发起用户 CHAT 能力的默认 LLM 配置（含其模型名）。
-    用户未配置 CHAT 默认模型时抛 :class:`EnhancementModelMissingError`，**不回退**系统兜底
-    模型（按需求约定：开启增强即要求用户已配对应默认模型，否则任务失败）。
+    用户未配置 CHAT 默认模型时回退 LinkRag 系统默认预设；两层都未命中时抛
+    :class:`EnhancementModelMissingError`。
     """
     try:
         resolved = await _resolve_user_model("CHAT", user_id=user_id)
@@ -230,7 +228,8 @@ async def abuild_table_client(user_id: int) -> "ProviderTableClient":
         model_name=resolved.model_name,
         user_id=user_id,
         provider_type=getattr(resolved, "provider_type", None),
-        config_id=getattr(resolved, "config_id", None),
+        # usage_report.config_id 只接受 llm_user_config.id；系统预设调用按契约传 NULL。
+        config_id=(getattr(resolved, "config_id", None) if resolved.source == "user" else None),
     )
 
 
@@ -238,8 +237,8 @@ async def abuild_vision_client(user_id: int) -> "ProviderVisionClient":
     """按发起用户 VISION 默认配置构造图片增强 client（增强开启时校验默认模型已配）。
 
     图片增强不在数据集层选择模型，统一用发起用户 VISION 能力的默认 LLM 配置（含其模型名）。
-    用户未配置 VISION 默认模型时抛 :class:`EnhancementModelMissingError`，**不回退**系统兜底
-    模型，也不再静默跳过（与表格增强对称）。
+    用户未配置 VISION 默认模型时回退 LinkRag 系统默认预设；两层都未命中时抛
+    :class:`EnhancementModelMissingError`，不静默跳过（与表格增强对称）。
     """
     try:
         resolved = await _resolve_user_model("VISION", user_id=user_id)
@@ -250,7 +249,8 @@ async def abuild_vision_client(user_id: int) -> "ProviderVisionClient":
         model_name=resolved.model_name,
         user_id=user_id,
         provider_type=getattr(resolved, "provider_type", None),
-        config_id=getattr(resolved, "config_id", None),
+        # usage_report.config_id 只接受 llm_user_config.id；系统预设调用按契约传 NULL。
+        config_id=(getattr(resolved, "config_id", None) if resolved.source == "user" else None),
     )
 
 
@@ -283,7 +283,7 @@ class ProviderTableClient(TableClient):
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._model_name = resolved_model_name
-        # 用量归属上下文：仅在按用户构造（abuild_table_client）时有 user_id，系统默认 client 为 None。
+        # 用量归属上下文：DB 系统预设仍归属发起用户，但 config_id 按 MQ 契约传 None。
         self._user_id = user_id
         self._provider_type = provider_type
         self._config_id = config_id
@@ -359,7 +359,7 @@ class ProviderVisionClient(VisionClient):
             self._provider = provider
         self._prompt_template = prompt_template
         self._model_name = resolved_model_name
-        # 用量归属上下文：仅在按用户构造（abuild_vision_client）时有 user_id。
+        # 用量归属上下文：DB 系统预设仍归属发起用户，但 config_id 按 MQ 契约传 None。
         self._user_id = user_id
         self._provider_type = provider_type
         self._config_id = config_id

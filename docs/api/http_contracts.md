@@ -87,7 +87,6 @@
 | Method | Path | 用途 | 请求 | 响应 |
 | --- | --- | --- | --- | --- |
 | `POST` | `/send/parse-task` | 发送文档解析任务 MQ 消息 | `SendParseTaskRequest` | `MQResponse` |
-| `POST` | `/send/cache-sync` | 发送用户 LLM 配置缓存同步消息 | `SendCacheSyncRequest` | `MQResponse` |
 | `POST` | `/send/usage-report` | 发送 LLM 用量上报消息（全链路归属：新增必填 `stage`/`operation`，详见下注） | `SendUsageReportRequest` | `MQResponse` |
 | `POST` | `/send/raw` | 向指定 topic/queue 发送原始消息 | `SendRawMessageRequest` | `MQResponse` |
 | `GET` | `/vendor/info` | 查询当前 MQ vendor 和可用 vendor | 无 | `MQVendorInfoResponse` |
@@ -104,7 +103,6 @@
 | 消息 | Topic/Name | 说明 |
 | --- | --- | --- |
 | ParseTask | `tolink.rag.parse_task` | Java/Python 解析任务输入 |
-| CacheSync | `tolink.rag.cache_sync` | 缓存同步 |
 | UsageReport | `tolink.rag.usage_report` | 用量上报 |
 
 > `SendUsageReportRequest`（用量上报全链路归属）：必填 `user_id` / `provider_type` / `model_name` / `stage`(`parse`/`recall`/`chat`) / `operation`(`embed`/`sparse`/`rerank`/`vision`/`table`/`generate`) / `prompt_tokens` / `completion_tokens` / `total_tokens`；可选 `config_id` / `task_id` / `latency_ms` / `status`（`conversation_id` / `request_id` 已随 `llm_usage_log` 瘦身下线）。字段语义与 MQ 载荷一致，见 [mq_contracts.md §用量上报](mq_contracts.md#用量上报pythonjava统计侧)。

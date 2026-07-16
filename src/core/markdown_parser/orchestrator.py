@@ -40,9 +40,8 @@ class MarkdownEnhancementOrchestrator:
 
         ``enhancement_config`` 来自数据集级配置（``None`` 时取全默认）：``enable_*`` 决定是否
         执行对应增强。数据集层**不再选择增强模型**——表格增强用发起用户 CHAT 默认模型、图片
-        增强用 VISION 默认模型。开启对应增强但用户未配该能力默认模型时，
-        :class:`EnhancementModelMissingError` 向上传播使任务失败——不做任何兜底（既不回退系统
-        模型，图片增强也不再静默跳过）。
+        增强用 VISION 默认模型。模型按「用户默认 → LinkRag 系统默认预设」解析；两层都未命中时
+        :class:`EnhancementModelMissingError` 向上传播使任务失败，图片增强不静默跳过。
 
         ``enable_image_enhancement`` 参数语义是「图片是否实际可用」（由 ``aprocess`` 按是否已
         取到图片字节 / 是否异步上传传入），与 ``enhancement_config.enable_image_enhancement``

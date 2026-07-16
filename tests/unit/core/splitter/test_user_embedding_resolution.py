@@ -18,6 +18,7 @@ from src.core.splitter.factory import (
     aresolve_user_chunk_embedding_pipeline,
     aresolve_user_embedding_client,
 )
+from src.core.splitter.models import Chunk
 
 
 class _FakeSession:
@@ -34,15 +35,18 @@ class _FakeSessionFactory:
 
 
 class _FakeEmbedder:
-    def __init__(self, provider_type: str = "qwen") -> None:
+    def __init__(self, provider_type: str = "qwen", api_base_url: str | None = None) -> None:
         self.provider_type = provider_type
+        self.api_base_url = api_base_url
         self.last_model: str | None = None
+        self.batch_sizes: list[int] = []
 
     def has_capability(self, _cap):
         return True
 
     async def embed(self, texts, model=None, **kwargs):
         self.last_model = model
+        self.batch_sizes.append(len(texts))
         return type("_EmbeddingResponse", (), {"embeddings": [[0.1, 0.2] for _ in texts]})()
 
 
@@ -60,7 +64,6 @@ def _patch_config_reader(monkeypatch, *, config):
             *,
             user_id,
             capability,
-            use_cache=True,
             allow_linkrag_default=True,
         ):
             assert capability == "EMBEDDING"
@@ -80,7 +83,10 @@ def _patch_resolver_model_factory(monkeypatch, created: dict | None = None):
         def create_client(self, **kwargs):
             if created is not None:
                 created.update(kwargs)
-            return _FakeEmbedder(provider_type=kwargs["provider_type"])
+            return _FakeEmbedder(
+                provider_type=kwargs["provider_type"],
+                api_base_url=kwargs.get("api_base_url"),
+            )
 
     monkeypatch.setattr(umr, "ModelFactory", lambda: _FakeMF())
     monkeypatch.setattr(umr, "decrypt_api_key", lambda enc: f"decrypted:{enc}")
@@ -98,8 +104,8 @@ async def test_resolve_user_embedding_client_missing_config_raises(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_resolve_dataset_embedding_client_missing_binding_raises(monkeypatch):
-    from src.core.dataset_config import VectorModelBindingConfig
     import src.core.dataset_config as dataset_config_pkg
+    from src.core.dataset_config import VectorModelBindingConfig
 
     class _FakeDatasetConfigService:
         async def get_vector_model_binding(self, user_id, dataset_id, db):
@@ -192,3 +198,69 @@ async def test_resolve_user_chunk_embedding_pipeline_uses_user_model_and_batch_c
     assert pipeline.embedding_model == "text-embedding-v4"
     assert pipeline.batch_size == 10  # 被 provider 已知上限 cap 到 10
     assert isinstance(pipeline.chunking_engine.chunker, StructuredSemanticChunker)
+
+
+@pytest.mark.asyncio
+async def test_dataset_chunk_embedding_pipeline_caps_linkrag_dashscope_preset(monkeypatch):
+    base_embedder = _FakeEmbedder(
+        provider_type="linkrag",
+        api_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings",
+    )
+    bound_embedder = factory.ModelBoundEmbedder(base_embedder, "text-embedding-v3", config_id=15)
+
+    async def resolve_dataset_embedding_client(user_id, dataset_id, db=None):
+        assert (user_id, dataset_id, db) == (5, 7, None)
+        return bound_embedder, "text-embedding-v3"
+
+    monkeypatch.setattr(
+        factory,
+        "aresolve_dataset_embedding_client",
+        resolve_dataset_embedding_client,
+    )
+    monkeypatch.setattr(factory.settings, "CHUNK_INDEX_EMBED_BATCH_SIZE", 32)
+
+    pipeline = await factory.aresolve_dataset_chunk_embedding_pipeline(user_id=5, dataset_id=7)
+
+    assert pipeline.batch_size == 10
+
+
+@pytest.mark.asyncio
+async def test_linkrag_dashscope_preset_splits_32_chunks_into_batches_of_at_most_10(monkeypatch):
+    base_embedder = _FakeEmbedder(
+        provider_type="linkrag",
+        api_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings",
+    )
+    bound_embedder = factory.ModelBoundEmbedder(base_embedder, "text-embedding-v3", config_id=15)
+
+    async def resolve_dataset_embedding_client(user_id, dataset_id, db=None):
+        assert (user_id, dataset_id, db) == (5, 7, None)
+        return bound_embedder, "text-embedding-v3"
+
+    monkeypatch.setattr(
+        factory,
+        "aresolve_dataset_embedding_client",
+        resolve_dataset_embedding_client,
+    )
+    monkeypatch.setattr(factory.settings, "CHUNK_INDEX_EMBED_BATCH_SIZE", 32)
+    pipeline = await factory.aresolve_dataset_chunk_embedding_pipeline(user_id=5, dataset_id=7)
+    chunks = [
+        Chunk(content=f"chunk-{index}", start_line=index, end_line=index) for index in range(32)
+    ]
+
+    results = await pipeline.aembed_chunks(chunks)
+
+    assert pipeline.batch_size == 10
+    assert base_embedder.batch_sizes == [10, 10, 10, 2]
+    assert len(results) == 32
+    assert pipeline.last_stats.batch_count == 4
+
+
+def test_linkrag_non_dashscope_endpoint_keeps_configured_batch_size():
+    batch_size = factory._resolve_embed_batch_size(
+        provider_type="linkrag",
+        model_name="text-embedding-v3",
+        configured_batch_size=32,
+        api_base_url="https://embedding.example.com/v1/embeddings",
+    )
+
+    assert batch_size == 32
