@@ -6,18 +6,12 @@ MQFactory 注册式工厂
 单例模式，全局共享同一组连接实例。
 """
 
-import time
-from typing import Any, Awaitable, Callable, Dict, Optional, Type
+from typing import Any, Dict, Optional, Type
 
 from loguru import logger
 
 from src.core.mq.exceptions import MQConfigError
 from src.core.mq.interfaces import IMQReceiver, IMQSender, MQVendorType
-from src.core.mq.observability import (
-    compact_log_value,
-    message_size_bytes,
-    monotonic_duration_ms,
-)
 from src.core.mq.retry import DLQPublisher, RetryPolicy
 
 
@@ -252,49 +246,15 @@ class MQFactory:
             headers: Dict[str, str],
             key: Optional[str],
         ) -> None:
-            started_at = time.monotonic()
-            header_names = ",".join(sorted(headers)) if headers else "-"
             # 业务消息默认以 utf-8 文本流转；死信沿用同一序列化路径，便于消费侧统一
             # 处理。极端二进制场景未来需要扩展 IMQSender.send_bytes 接口。
             text = body.decode("utf-8", errors="replace")
-            logger.debug(
-                "[MQ] mq_dlq_send_started topic={} routing_key={} message_bytes={} "
-                "header_names={}",
-                compact_log_value(topic),
-                compact_log_value(key),
-                message_size_bytes(body),
-                header_names,
-            )
-            try:
-                sender = self.get_sender()
-                await sender.send(
-                    topic=topic,
-                    message=text,
-                    key=key,
-                    headers=headers,
-                )
-            except Exception as exc:
-                logger.exception(
-                    "[MQ] mq_dlq_send_failed topic={} routing_key={} duration_ms={} "
-                    "message_bytes={} header_names={} error_type={} error={}",
-                    compact_log_value(topic),
-                    compact_log_value(key),
-                    monotonic_duration_ms(started_at),
-                    message_size_bytes(body),
-                    header_names,
-                    type(exc).__name__,
-                    compact_log_value(exc),
-                )
-                raise
-
-            logger.info(
-                "[MQ] mq_dlq_send_succeeded topic={} routing_key={} duration_ms={} "
-                "message_bytes={} header_names={}",
-                compact_log_value(topic),
-                compact_log_value(key),
-                monotonic_duration_ms(started_at),
-                message_size_bytes(body),
-                header_names,
+            sender = self.get_sender()
+            await sender.send(
+                topic=topic,
+                message=text,
+                key=key,
+                headers=headers,
             )
 
         return _publish

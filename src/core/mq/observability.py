@@ -5,6 +5,8 @@ from __future__ import annotations
 import time
 from collections.abc import Mapping
 
+from src.observability.logging import truncate_log_value
+
 
 def monotonic_duration_ms(started_at: float) -> int:
     """使用单调时钟计算 MQ 调用耗时。"""
@@ -12,13 +14,10 @@ def monotonic_duration_ms(started_at: float) -> int:
 
 
 def compact_log_value(value: object, *, max_length: int = 256) -> str:
-    """将日志字段压成单行并限制长度。"""
+    """将日志字段脱敏、压成单行并限制长度。"""
     if value is None:
         return "-"
-    text = str(value).replace("\r", "\\r").replace("\n", "\\n")
-    if len(text) <= max_length:
-        return text
-    return f"{text[: max_length - 3]}..."
+    return truncate_log_value(value, limit=max_length)
 
 
 def format_log_fields(fields: Mapping[str, object]) -> str:

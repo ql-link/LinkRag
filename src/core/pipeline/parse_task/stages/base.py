@@ -12,8 +12,6 @@ import time
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
-from loguru import logger
-
 from .._utils import (
     compact_log_value,
     monotonic_duration_ms,
@@ -21,6 +19,7 @@ from .._utils import (
     task_log_context,
 )
 from ..models import ParsePipelineResult
+from ..observability import parse_log, safe_error_fields
 from ..post_process.constants import STAGE_STATUS_SUCCESS
 from .context import StageContext, StageOutcome
 
@@ -79,12 +78,23 @@ class Stage(ABC):
                 )
                 raise
             if outcome.ok:
-                logger.info(
+                duration = monotonic_duration_ms(monotonic_started_at)
+                parse_log(
+                    ctx.payload,
+                    event="parse_stage_skipped",
+                    outcome="skipped",
+                    stage=self.name,
+                    engine="serial",
+                    execution_mode="skip",
+                    duration_ms=duration,
+                    chunk_count=ctx.chunk_count,
+                    reason="already_success",
+                ).info(
                     "[ParseTask] stage_skipped {} stage={} engine=serial duration_ms={} "
                     "reason=already_success chunk_count={}",
                     task_context,
                     self.name,
-                    monotonic_duration_ms(monotonic_started_at),
+                    duration,
                     ctx.chunk_count,
                 )
             else:
@@ -97,7 +107,15 @@ class Stage(ABC):
                 )
             return outcome
 
-        logger.info(
+        parse_log(
+            ctx.payload,
+            event="parse_stage_started",
+            outcome="processing",
+            stage=self.name,
+            engine="serial",
+            is_retry=ctx.is_retry,
+            chunk_count=ctx.chunk_count,
+        ).info(
             "[ParseTask] stage_started {} stage={} engine=serial is_retry={} chunk_count={}",
             task_context,
             self.name,
@@ -113,12 +131,21 @@ class Stage(ABC):
             if outcome.ok:
                 operation = "mark_success"
                 await self.mark_success(ctx, outcome, started_at=started_at)
-                logger.info(
+                duration = monotonic_duration_ms(monotonic_started_at)
+                parse_log(
+                    ctx.payload,
+                    event="parse_stage_succeeded",
+                    outcome="success",
+                    stage=self.name,
+                    engine="serial",
+                    duration_ms=duration,
+                    chunk_count=ctx.chunk_count,
+                ).info(
                     "[ParseTask] stage_succeeded {} stage={} engine=serial "
                     "duration_ms={} chunk_count={}",
                     task_context,
                     self.name,
-                    monotonic_duration_ms(monotonic_started_at),
+                    duration,
                     ctx.chunk_count,
                 )
             else:
@@ -169,12 +196,24 @@ class Stage(ABC):
         *,
         execution_mode: str,
     ) -> None:
-        logger.error(
+        duration = monotonic_duration_ms(monotonic_started_at)
+        parse_log(
+            ctx.payload,
+            event="parse_stage_failed",
+            outcome="failed",
+            stage=self.name,
+            engine="serial",
+            execution_mode=execution_mode,
+            duration_ms=duration,
+            chunk_count=ctx.chunk_count,
+            finalized=outcome.finalized,
+            **safe_error_fields(outcome.error, failure_reason=outcome.failure_reason),
+        ).error(
             "[ParseTask] stage_failed {} stage={} engine=serial duration_ms={} "
             "execution_mode={} chunk_count={} finalized={} error_type={} reason={}",
             task_context,
             self.name,
-            monotonic_duration_ms(monotonic_started_at),
+            duration,
             execution_mode,
             ctx.chunk_count,
             outcome.finalized,
@@ -191,12 +230,23 @@ class Stage(ABC):
         *,
         operation: str,
     ) -> None:
-        logger.exception(
+        duration = monotonic_duration_ms(monotonic_started_at)
+        parse_log(
+            ctx.payload,
+            event="parse_stage_crashed",
+            outcome="failed",
+            stage=self.name,
+            engine="serial",
+            operation=operation,
+            duration_ms=duration,
+            chunk_count=ctx.chunk_count,
+            **safe_error_fields(exc, failure_reason=exc),
+        ).error(
             "[ParseTask] stage_crashed {} stage={} engine=serial duration_ms={} "
             "operation={} chunk_count={} error_type={} error={}",
             task_context,
             self.name,
-            monotonic_duration_ms(monotonic_started_at),
+            duration,
             operation,
             ctx.chunk_count,
             type(exc).__name__,
@@ -218,6 +268,6 @@ class StagePipeline:
         for stage in self._stages:
             outcome = await stage.execute(ctx)
             if not outcome.ok:
-                return ctx.failure_result(outcome)
+                return ctx.failure_result(outcome, failed_stage=stage.name)
 
         return ctx.success_result()

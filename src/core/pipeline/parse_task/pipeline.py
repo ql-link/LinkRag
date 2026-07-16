@@ -21,6 +21,7 @@ from src.core.storage.vector.draft_factory import ChunkDraftFactory
 from src.core.workflow import RunStatus
 from src.database import get_async_session_factory
 from src.models.parse_task import DocumentParsedLog
+from src.observability.logging import safe_exception_stack, truncate_log_value
 from src.services.mq_service import MQService
 from src.services.storage.base import BaseObjectStorage
 from src.services.storage.factory import StorageFactory
@@ -37,6 +38,7 @@ from ._utils import (
 from .error_codes import ParseFailureCode, build_failure_reason
 from .log_repository import ParseLogRepository
 from .models import ParsePipelineResult, PipelineStatus
+from .observability import log_task_escape, log_task_result, parse_log
 from .post_process.constants import POST_PROCESS_STAGE_CLEANING, POST_PROCESS_STAGE_ORDER
 from .source import ParseSourceIO
 from .stages import PreprocessorProtocol, StageContext, StageServices, build_stage_pipeline
@@ -210,6 +212,8 @@ class ParseTaskPipeline:
         return ParsePipelineResult(
             status=PipelineStatus.FAILED,
             task_id=ctx.payload.task_id,
+            failed_stage=failed_stage,
+            failure_reason=reason,
             error=RuntimeError(reason),
         )
 
@@ -230,10 +234,13 @@ class ParseTaskPipeline:
         """执行单条解析任务消息。"""
         started_at = time.monotonic()
         task_context = task_log_context(payload)
-        logger.info(
+        parse_log(
+            payload,
+            event="parse_task_started",
+            outcome="processing",
+        ).info(
             "[ParseTask] task_started {} parse_file_id={} user_id={} dataset_id={} "
-            "file_type={} parser_backend={} trigger_mode={} is_retry={} previous_task_id={} "
-            "source_bucket={} source_object_key={} markdown_bucket={} markdown_object_key={}",
+            "file_type={} parser_backend={} trigger_mode={} is_retry={} previous_task_id={}",
             task_context,
             payload.document_parse_task_id,
             payload.user_id,
@@ -243,6 +250,17 @@ class ParseTaskPipeline:
             compact_log_value(payload.trigger_mode),
             payload.is_retry,
             compact_log_value(payload.previous_task_id),
+        )
+        parse_log(
+            payload,
+            event="parse_task_source_debug",
+            source_filename=truncate_log_value(payload.source_filename),
+            source_object_key=truncate_log_value(payload.source_object_key),
+            markdown_object_key=truncate_log_value(payload.markdown_object_key),
+        ).debug(
+            "[ParseTask] source_debug task_id={} source_bucket={} source_object_key={} "
+            "markdown_bucket={} markdown_object_key={}",
+            payload.task_id,
             compact_log_value(payload.source_bucket),
             compact_log_value(payload.source_object_key),
             compact_log_value(payload.markdown_bucket),
@@ -252,25 +270,16 @@ class ParseTaskPipeline:
             async with self._session_factory() as db:
                 result = await self._run(payload, db)
         except Exception as exc:
-            logger.exception(
-                "[ParseTask] task_crashed {} total_duration_ms={} error_type={} error={}",
-                task_context,
-                monotonic_duration_ms(started_at),
-                type(exc).__name__,
-                compact_log_value(exc),
+            log_task_escape(
+                payload,
+                error=exc,
+                duration_ms=monotonic_duration_ms(started_at),
             )
             raise
-
-        logger.info(
-            "[ParseTask] task_finished {} status={} total_duration_ms={} chunk_count={} "
-            "failed_chunk_count={} skip_reason={} error_type={}",
-            task_context,
-            result.status.value,
-            monotonic_duration_ms(started_at),
-            result.chunk_count,
-            len(result.failed_chunk_ids),
-            compact_log_value(result.skip_reason),
-            type(result.error).__name__ if result.error is not None else "-",
+        log_task_result(
+            payload,
+            result,
+            duration_ms=monotonic_duration_ms(started_at),
         )
         return result
 
@@ -356,6 +365,8 @@ class ParseTaskPipeline:
         return ParsePipelineResult(
             status=PipelineStatus.FAILED,
             task_id=payload.task_id,
+            failed_stage="VALIDATION",
+            failure_reason=validation_error,
             error=RuntimeError(validation_error),
         )
 
@@ -378,6 +389,8 @@ class ParseTaskPipeline:
         return ParsePipelineResult(
             status=PipelineStatus.FAILED,
             task_id=payload.task_id,
+            failed_stage="PIPELINE_INIT",
+            failure_reason=failure_reason,
             error=RuntimeError(failure_reason),
         )
 
@@ -391,12 +404,6 @@ class ParseTaskPipeline:
     ) -> ParsePipelineResult:
         """阶段链路抛出的未归类异常：收敛为 cleaning 失败终态。"""
         failure_reason = build_failure_reason(ParseFailureCode.INTERNAL_UNKNOWN_ERROR, str(exc))
-        logger.exception(
-            "[ParseTask] unclassified_failure {} error_type={} error={}",
-            task_log_context(payload),
-            type(exc).__name__,
-            compact_log_value(exc),
-        )
         await self._log_repository.mark_parse_finished(log_record, db)
         await self._pipeline_repository.mark_cleaning_failed(
             db,
@@ -408,6 +415,8 @@ class ParseTaskPipeline:
         return ParsePipelineResult(
             status=PipelineStatus.FAILED,
             task_id=payload.task_id,
+            failed_stage=POST_PROCESS_STAGE_CLEANING,
+            failure_reason=failure_reason,
             error=exc,
         )
 
@@ -518,8 +527,17 @@ class ParseTaskPipeline:
             await db.commit()
         except Exception as exc:
             await db.rollback()
-            logger.exception(
-                "[ParseTask] retry_validation_failure_persist_failed {} " "error_type={} error={}",
+            parse_log(
+                payload,
+                event="retry_validation_persist_failed",
+                outcome="failed",
+                stage="RETRY_VALIDATION",
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).error(
+                "[ParseTask] retry_validation_failure_persist_failed {} "
+                "error_type={} error={}",
                 task_log_context(payload),
                 type(exc).__name__,
                 compact_log_value(exc),
@@ -528,5 +546,7 @@ class ParseTaskPipeline:
         return ParsePipelineResult(
             status=PipelineStatus.FAILED,
             task_id=payload.task_id,
+            failed_stage="RETRY_VALIDATION",
+            failure_reason=reason,
             error=RuntimeError(reason),
         )

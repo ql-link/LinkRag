@@ -63,6 +63,10 @@ Java 管理端                          toLink-Rag (Python)
 | `is_retry` | bool | ⬜ | `false`（默认）表示首次解析；`true` 表示用户触发的重试任务。老消息缺省默认 `false`，与首次解析路径完全等价（migration 0009 新增） |
 | `previous_task_id` | string | ⬜ | `is_retry=true` 时必填，指向上一轮失败任务的 `task_id`；Python 端 `ParseTaskGuard.validate_retry_context` 会严格校验上一轮记录存在、pipeline 失败且可恢复。若恢复点晚于 `CLEANING`，还会要求上一轮 markdown 已成功上传 |
 
+> **反序列化失败的安全诊断**：字段缺失或类型错误时，Python 返回/记录字段错误位置与
+> 错误类型，但会移除 Pydantic 的 input value，也不会附带原始消息片段。消息字段契约
+> 不变；该约束用于防止对象存储路径或未来新增的敏感字段被异常日志原样采集。
+
 > **重试链路约束**（与 [parse_task_pipeline.md §4 重试分支](../internals/parse_task_pipeline.md) 配套）：
 > - 重试请求由 Java 端在判定旧任务 `pipeline_status=FAILED` 后发起；Python 端不计数、不限次。若旧任务 `recover_from_stage=CLEANING`，允许旧 log 没有 `parsed_object_key`，Python 会重新下载源文件、解析并上传 markdown。
 > - 重试请求的 `md_object_key` 是本次 markdown 产物目标 key；bucket 由 Python 侧 `MINIO_PRIVATE_BUCKET` 决定。恢复点晚于 `CLEANING` 时 key 应与上轮一致（Java 直接回填）；从 `CLEANING` 恢复时用于承接重新上传后的 markdown。

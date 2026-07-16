@@ -6,7 +6,7 @@ MQ 能力接口契约 (Capability Interfaces)
 """
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Any, Callable, Awaitable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List
 
 
 class MQVendorType(str, Enum):

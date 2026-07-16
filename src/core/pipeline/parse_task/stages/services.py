@@ -56,6 +56,7 @@ from src.core.storage.vector import compose_vector_storage_facade
 from src.core.storage.vector.draft_factory import ChunkDraftFactory
 from src.core.storage.vector.models import ChunkIndexingResult
 from src.models.chunk_record import ChunkRecordDB
+from src.observability.logging import safe_exception_stack, truncate_log_value
 from src.services.storage.base import BaseObjectStorage
 
 from .._utils import coerce_optional_int, compact_log_value, task_log_context
@@ -157,8 +158,9 @@ class StageServices:
             payload.file_type,
             source_file=payload.source_filename or payload.md_object_key,
             user_id=coerce_optional_int(payload.user_id),
-            enhancement_config=enhancement_config,
+            dataset_id=coerce_optional_int(payload.dataset_id),
             task_id=payload.task_id,
+            enhancement_config=enhancement_config,
             **parser_kwargs,
         )
 
@@ -439,7 +441,17 @@ class StageServices:
             # EMBEDDING_DIMENSION_UNSUPPORTED）并通知 Java，不在此吞成 generic 失败结果。
             raise
         except Exception as exc:
-            logger.exception(
+            logger.bind(
+                event="vector_indexing_request_failed",
+                outcome="failed",
+                task_id=payload.task_id,
+                original_file_id=payload.original_file_id,
+                user_id=payload.user_id,
+                dataset_id=payload.dataset_id,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).error(
                 "[ParseTask] vector_indexing_request_failed {} error_type={} error={}",
                 task_log_context(payload),
                 type(exc).__name__,
@@ -516,15 +528,25 @@ class StageServices:
                 task_id=payload.task_id,
             )
         except Exception as exc:
-            logger.exception(
+            reason = str(exc)
+            if not reason.startswith("pretokenize:"):
+                reason = f"pretokenize: {reason}"
+            logger.bind(
+                event="pretokenize_plan_failed",
+                outcome="failed",
+                task_id=payload.task_id,
+                original_file_id=payload.original_file_id,
+                user_id=payload.user_id,
+                dataset_id=payload.dataset_id,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).error(
                 "[ParseTask] pretokenize_plan_failed {} error_type={} error={}",
                 task_log_context(payload),
                 type(exc).__name__,
                 compact_log_value(exc),
             )
-            reason = str(exc)
-            if not reason.startswith("pretokenize:"):
-                reason = f"pretokenize: {reason}"
             return None, reason
 
         if len(plan.chunks_with_tokens) == 0:
@@ -583,17 +605,34 @@ class StageServices:
             try:
                 await db.rollback()
             except Exception as rollback_exc:
-                logger.warning(
+                logger.bind(
+                    event="bm25_guard_rollback_failed",
+                    outcome="failed",
+                    task_id=task_id,
+                    original_file_id=meta.doc_id,
+                    error_type=type(rollback_exc).__name__,
+                    error_message=truncate_log_value(rollback_exc),
+                    stack_trace=safe_exception_stack(rollback_exc),
+                ).warning(
                     "[StageServices] rollback after BM25 guarded failure also failed: "
-                    "task_id={} error={}",
+                    "task_id={}",
                     task_id,
-                    rollback_exc,
                 )
-            logger.error(
-                "[StageServices] BM25 mutation guard failed: " "task_id={} doc_id={} error={}",
+            logger.bind(
+                event="bm25_mutation_guard_failed",
+                outcome="failed",
+                task_id=task_id,
+                original_file_id=meta.doc_id,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).error(
+                "[StageServices] BM25 mutation guard failed: task_id={} doc_id={} "
+                "error_type={} error={}",
                 task_id,
                 meta.doc_id,
-                exc,
+                type(exc).__name__,
+                truncate_log_value(exc),
             )
             return Bm25IndexingResult(
                 total_items=total,
@@ -619,10 +658,13 @@ class StageServices:
                 doc_id=meta.doc_id,
             )
         except Exception as exc:
-            logger.error(
-                "[StageServices] ES 前置删除失败，判 ES 阶段失败不写入: doc_id={} error={}",
+            logger.bind(
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).error(
+                "[StageServices] ES 前置删除失败，判 ES 阶段失败不写入: doc_id={}",
                 meta.doc_id,
-                exc,
             )
             return Bm25IndexingResult(
                 total_items=total,
@@ -633,10 +675,20 @@ class StageServices:
         try:
             result = await es_pipeline.write_es_index(plan, db=db)
         except Exception as exc:
-            logger.error(
-                "[StageServices] BM25 写入异常，将清理可能半成品: " "doc_id={} error={}",
+            logger.bind(
+                event="bm25_write_failed",
+                outcome="failed",
+                task_id=meta.task_id or "",
+                original_file_id=meta.doc_id,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).error(
+                "[StageServices] BM25 写入异常，将清理可能半成品: doc_id={} "
+                "error_type={} error={}",
                 meta.doc_id,
-                exc,
+                type(exc).__name__,
+                truncate_log_value(exc),
             )
             result = Bm25IndexingResult(
                 total_items=total,
@@ -652,10 +704,13 @@ class StageServices:
                     doc_id=meta.doc_id,
                 )
             except Exception as exc:
-                logger.warning(
-                    "[StageServices] ES 写入失败后清理半成品失败(best-effort): doc_id={} error={}",
+                logger.bind(
+                    error_type=type(exc).__name__,
+                    error_message=truncate_log_value(exc),
+                    stack_trace=safe_exception_stack(exc),
+                ).warning(
+                    "[StageServices] ES 写入失败后清理半成品失败(best-effort): doc_id={}",
                     meta.doc_id,
-                    exc,
                 )
             else:
                 # BM25 是文档级全量重建：一旦半成品已确认清空，
@@ -791,14 +846,17 @@ class StageServices:
                     vector_name=vector_name,
                 )
             except Exception as exc:
-                logger.error(
+                logger.bind(
+                    error_type=type(exc).__name__,
+                    error_message=truncate_log_value(exc),
+                    stack_trace=safe_exception_stack(exc),
+                ).error(
                     "[IndexWriteCleanupAlert] event=cleanup_failed task_id={} "
-                    "branch={} bucket_id={} chunk_count={} error={}",
+                    "branch={} bucket_id={} chunk_count={}",
                     task_id,
                     branch.value,
                     bucket_id,
                     len(chunk_ids),
-                    exc,
                 )
 
     # ------------------------------------------------------------------
@@ -970,8 +1028,16 @@ def _upload_base64_images_sync(
             return f"![{alt}]({url})"
         except Exception as exc:
             failed += 1
-            logger.warning(
-                "[upload_md_images] 图片上传失败，保留原始 base64: mime={} err={}", mime, exc
+            logger.bind(
+                event="markdown_inline_image_upload_failed",
+                outcome="skipped",
+                mime_type=mime,
+                image_size=len(image_bytes) if "image_bytes" in locals() else 0,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).warning(
+                "[upload_md_images] 图片上传失败，保留原始 base64: mime={}", mime
             )
             return match.group(0)
 

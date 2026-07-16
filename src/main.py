@@ -1,3 +1,6 @@
+# ruff: noqa: E402
+# NLTK 与日志必须先于业务模块初始化，因此本文件有意在初始化调用后继续导入。
+
 """
 toLink-RAG API 服务入口
 """
@@ -11,7 +14,12 @@ configure_nltk_data_path()
 # 显式初始化日志：装好 Loguru sink 与标准库 logging 桥接（InterceptHandler），
 # 放在其余 src 导入之前，确保后续模块导入期产生的日志也被统一捕获，
 # 而非依赖某个 core 模块被 import 时的副作用触发。
-from src.observability.logging import logger, setup_logger
+from src.observability.logging import (
+    logger,
+    safe_exception_stack,
+    setup_logger,
+    truncate_log_value,
+)
 
 setup_logger()
 
@@ -178,7 +186,15 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
     框架层异常虽已由 InterceptHandler 桥接的 uvicorn logger 记录，但缺业务上下文；
     此处补记请求方法 / 路径，便于排障，并保证对外错误体格式统一。
     """
-    logger.opt(exception=exc).error(f"未捕获异常 {request.method} {request.url.path}: {exc!r}")
+    logger.bind(
+        event="http_unhandled_exception",
+        outcome="failed",
+        method=request.method,
+        path=request.url.path,
+        error_type=type(exc).__name__,
+        error_message=truncate_log_value(exc),
+        stack_trace=safe_exception_stack(exc),
+    ).error("未捕获 HTTP 异常: method={} path={}", request.method, request.url.path)
     return JSONResponse(
         status_code=500,
         content={"code": "INTERNAL_ERROR", "message": "服务内部错误", "data": None},
@@ -201,7 +217,13 @@ async def readiness_check():
         try:
             await get_manticore_bm25_store().ping()
         except Exception as exc:
-            logger.warning(f"Manticore readiness check failed: {exc}")
+            logger.bind(
+                event="manticore_readiness_failed",
+                outcome="degraded",
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).warning("Manticore readiness check failed")
             return JSONResponse(
                 status_code=503,
                 content={

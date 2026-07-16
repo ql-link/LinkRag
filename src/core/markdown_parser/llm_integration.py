@@ -3,10 +3,12 @@
 
 from __future__ import annotations
 
-import logging
 import re
 from abc import ABC
 from typing import Dict, List
+
+from loguru import logger
+from src.observability.logging import safe_exception_stack, truncate_log_value
 
 from .models import (
     ElementType,
@@ -15,9 +17,6 @@ from .models import (
     build_vision_marker,
     vision_marker_prefix,
 )
-
-logger = logging.getLogger(__name__)
-
 
 def _sanitize_description(desc: str) -> str:
     """把单条增强描述规整为单行单块。
@@ -68,7 +67,20 @@ class ImageDescriber:
                 unique_urls, parse_result.source_file
             )
         except Exception as exc:
-            logger.error("VisionClient request failed, skip image enrichment: %s", exc)
+            logger.bind(
+                event="markdown_enhancement_failed",
+                outcome="skipped",
+                stage="vision_call",
+                source_file=parse_result.source_file or "",
+                image_count=len(unique_urls),
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).warning(
+                "VisionClient 请求失败，跳过图片增强: source_file={} image_count={}",
+                parse_result.source_file or "",
+                len(unique_urls),
+            )
             return parse_result
 
         return self._merge_descriptions(parse_result, descriptions)
@@ -96,7 +108,20 @@ class ImageDescriber:
                     image_bytes_by_url=image_bytes_by_url,
                 )
         except Exception as exc:
-            logger.error("VisionClient async request failed, skip image enrichment: %s", exc)
+            logger.bind(
+                event="markdown_enhancement_failed",
+                outcome="skipped",
+                stage="vision_call",
+                source_file=parse_result.source_file or "",
+                image_count=len(unique_urls),
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).warning(
+                "VisionClient 异步请求失败，跳过图片增强: source_file={} image_count={}",
+                parse_result.source_file or "",
+                len(unique_urls),
+            )
             return parse_result
 
         return self._merge_descriptions(parse_result, descriptions)
@@ -166,7 +191,20 @@ class TableDescriber:
                 unique_tables, parse_result.source_file
             )
         except Exception as exc:
-            logger.error("TableClient request failed, skip table enrichment: %s", exc)
+            logger.bind(
+                event="markdown_enhancement_failed",
+                outcome="skipped",
+                stage="table_call",
+                source_file=parse_result.source_file or "",
+                table_count=len(unique_tables),
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).warning(
+                "TableClient 请求失败，跳过表格增强: source_file={} table_count={}",
+                parse_result.source_file or "",
+                len(unique_tables),
+            )
             return parse_result
 
         return self._merge_descriptions(parse_result, descriptions)
@@ -182,7 +220,20 @@ class TableDescriber:
                 unique_tables, parse_result.source_file
             )
         except Exception as exc:
-            logger.error("TableClient async request failed, skip table enrichment: %s", exc)
+            logger.bind(
+                event="markdown_enhancement_failed",
+                outcome="skipped",
+                stage="table_call",
+                source_file=parse_result.source_file or "",
+                table_count=len(unique_tables),
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).warning(
+                "TableClient 异步请求失败，跳过表格增强: source_file={} table_count={}",
+                parse_result.source_file or "",
+                len(unique_tables),
+            )
             return parse_result
 
         return self._merge_descriptions(parse_result, descriptions)

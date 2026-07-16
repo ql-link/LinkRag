@@ -5,22 +5,33 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import logging
 import mimetypes
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
 from urllib.request import urlopen
+
+from loguru import logger
 
 from src.core.prompts.markdown_enhancement import (
     TABLE_PROMPT_TEMPLATE,
     TABLE_SYSTEM_PROMPT,
     VISION_PROMPT_TEMPLATE,
 )
+from src.observability.logging import (
+    fingerprint_log_value,
+    safe_exception_stack,
+    sanitize_url_for_log,
+    truncate_log_value,
+)
 
 from .llm_integration import TableClient, VisionClient
 
-logger = logging.getLogger(__name__)
-
+if TYPE_CHECKING:
+    from src.core.llm.interfaces import BaseProvider, CapabilityType
+else:
+    BaseProvider = Any
+    CapabilityType = Any
 
 class LLMConfigMissingError(RuntimeError):
     """指定能力没有可用的用户默认或 LinkRag 系统默认配置。
@@ -445,7 +456,19 @@ class ProviderVisionClient(VisionClient):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.warning("Image enhancement failed for %s: %s", image_url, exc)
+                logger.bind(
+                    event="image_enhancement_failed",
+                    outcome="skipped",
+                    stage="image_load",
+                    image_ref=fingerprint_log_value(image_url),
+                    image_location=sanitize_url_for_log(image_url),
+                    error_type=type(exc).__name__,
+                    error_message=truncate_log_value(exc),
+                    stack_trace=safe_exception_stack(exc),
+                ).warning(
+                    "图片增强加载失败，已跳过: image_ref={}",
+                    fingerprint_log_value(image_url),
+                )
                 return image_url, None, None
 
             image_base64 = base64.b64encode(image_bytes).decode("utf-8")
@@ -463,7 +486,20 @@ class ProviderVisionClient(VisionClient):
             except asyncio.CancelledError:
                 raise
             except Exception as exc:
-                logger.warning("Image enhancement failed for %s: %s", image_url, exc)
+                logger.bind(
+                    event="image_enhancement_failed",
+                    outcome="skipped",
+                    stage="vision_call",
+                    image_ref=fingerprint_log_value(image_url),
+                    image_location=sanitize_url_for_log(image_url),
+                    model_name=self._model_name or "",
+                    error_type=type(exc).__name__,
+                    error_message=truncate_log_value(exc),
+                    stack_trace=safe_exception_stack(exc),
+                ).warning(
+                    "图片增强模型调用失败，已跳过: image_ref={}",
+                    fingerprint_log_value(image_url),
+                )
                 return image_url, None, None
 
             description = _clean_llm_text(response.content if response else "")
@@ -474,7 +510,10 @@ class ProviderVisionClient(VisionClient):
         try:
             return max(1, int(value if value is not None else 1))
         except (TypeError, ValueError):
-            logger.warning("Invalid image enhancement concurrency %r, fallback to 1", value)
+            logger.warning(
+                "图片增强并发配置非法，回退为 1: configured_value={}",
+                value,
+            )
             return 1
 
 

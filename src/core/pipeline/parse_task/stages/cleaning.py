@@ -85,12 +85,11 @@ class CleaningStage(Stage):
                     file_size_mb = 0.0
                 logger.info(
                     "[ParseTask] source_downloaded {} file_size_mb={:.1f} download_ms={} "
-                    "source_bucket={} source_object_key={}",
+                    "source_bucket={}",
                     task_log_context(payload),
                     file_size_mb,
                     download_ms,
                     compact_log_value(payload.source_bucket),
-                    compact_log_value(payload.source_object_key),
                 )
 
             parse_started_at = time.monotonic()
@@ -151,12 +150,11 @@ class CleaningStage(Stage):
                 return self._classified_failure(ParseFailureCode.PARSED_FILE_UPLOAD_FAILED, exc)
             logger.info(
                 "[ParseTask] markdown_uploaded {} upload_ms={} markdown_bytes={} "
-                "markdown_bucket={} markdown_object_key={}",
+                "markdown_bucket={}",
                 task_log_context(payload),
                 int((time.monotonic() - upload_started_at) * 1000),
                 len(parse_result["markdown"].encode("utf-8")),
                 compact_log_value(payload.markdown_bucket),
-                compact_log_value(payload.markdown_object_key),
             )
 
             ctx.parse_result = parse_result

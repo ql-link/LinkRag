@@ -107,9 +107,13 @@ class DocumentDeleteMessage(AbstractMessage):
         try:
             return DocumentDeletePayload(**payload_data)
         except Exception as exc:
+            if hasattr(exc, "errors"):
+                details = exc.errors(include_url=False, include_input=False)
+            else:
+                details = [{"type": type(exc).__name__}]
             raise MQSerializationError(
-                f"DocumentDeletePayload 字段校验失败: {exc}，原始消息前200字符: {raw[:200]}"
-            ) from exc
+                f"DocumentDeletePayload 字段校验失败: {details}"
+            ) from None
 
     class MQReceiver(Protocol):
         async def on_document_delete(self, payload: "DocumentDeletePayload") -> None: ...

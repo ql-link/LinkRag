@@ -335,6 +335,11 @@ cleanup 成功后，在同一个 MySQL 事务中把对应分支状态收敛为 `
 
 每次 job 执行完成会记录 `kind`、`branch`、`backend`、结果 `state`、`retry_count`、`job_age_seconds` 与 `last_error`；换行会被压平且不记录正文。mutation guard 对每次取锁记录 `branch`、`wait_ms` 与单次 `timeout_count`，current task 指针缺失单独输出错误事件。BM25 cleanup/rebuild 更新整篇状态时会对账 ACTIVE 行数与 update rowcount，不一致输出 `bm25_status_rowcount_mismatch` 告警。
 
+Embedding HTTP 失败日志只保留去除认证信息与 query 的 endpoint、status、model、batch
+序号/大小，以及定长脱敏响应摘要；不记录输入文本。Qdrant 重试、
+Manticore/Qdrant BM25 写入、稀疏状态回写和 mutation lock 异常均记录操作、资源 ID、
+重试次数与安全调用栈，不直接拼接外部异常原文。
+
 补偿粒度：
 
 | 分支 | scope | cleanup / rebuild | mutation lock |

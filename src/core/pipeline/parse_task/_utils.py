@@ -6,6 +6,7 @@ from typing import Any
 
 from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.models.parse_task import DocumentParsedLog
+from src.observability.logging import truncate_log_value
 
 
 def now() -> datetime:
@@ -48,13 +49,10 @@ def monotonic_duration_ms(started_at: float) -> int:
 
 
 def compact_log_value(value: object, *, max_length: int = 512) -> str:
-    """把日志字段压成单行并限制长度，避免异常文本破坏逐行检索。"""
+    """把日志字段脱敏、压成单行并限制长度。"""
     if value is None:
         return "-"
-    text = str(value).replace("\r", "\\r").replace("\n", "\\n")
-    if len(text) <= max_length:
-        return text
-    return f"{text[: max_length - 3]}..."
+    return truncate_log_value(value, limit=max_length)
 
 
 def task_log_context(payload: ParseTaskPayload | object) -> str:

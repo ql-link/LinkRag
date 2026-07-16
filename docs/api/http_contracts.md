@@ -91,6 +91,10 @@
 | `POST` | `/send/raw` | 向指定 topic/queue 发送原始消息 | `SendRawMessageRequest` | `MQResponse` |
 | `GET` | `/vendor/info` | 查询当前 MQ vendor 和可用 vendor | 无 | `MQVendorInfoResponse` |
 
+MQ 发送失败统一返回不含底层连接地址和异常文本的 `500` 通用说明；服务端通过
+`mq_http_send_failed` 结构化日志记录 topic、业务锚点、消息字节数、脱敏异常摘要和安全调用栈。
+`/send/raw` 不会把 `request.message` 写入日志。
+
 `MQResponse`：
 
 | 字段 | 类型 | 说明 |

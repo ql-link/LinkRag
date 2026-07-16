@@ -5,11 +5,10 @@ RabbitMQ Vendor Adapter
 保持 RabbitMQ 原生语义：Exchange、Queue、Binding、RoutingKey、延迟消息。
 不将 Kafka 的 Partition/Offset 概念强加给 RabbitMQ（遵循 SKILL.md 设计规则）。
 """
-import asyncio
-import json
-from typing import Any, Callable, Awaitable, Dict, List, Optional
+from typing import Any, Callable, Awaitable, Dict, List
 
 from loguru import logger
+from src.observability.logging import sanitize_url_for_log, truncate_log_value
 
 from src.core.mq.interfaces import IMQSender, IMQReceiver
 from src.core.mq.exceptions import (
@@ -85,7 +84,12 @@ class RabbitMQSender(IMQSender):
             else:
                 self._exchange = self._channel.default_exchange
 
-            logger.info(f"[RabbitMQ Producer] 连接成功: {self._url}")
+            logger.bind(
+                event="mq_connection_ready",
+                vendor="rabbitmq",
+                endpoint=sanitize_url_for_log(self._url),
+                exchange=self._exchange_name,
+            ).info("RabbitMQ Producer 连接成功")
         except ImportError:
             raise MQConnectionError(
                 "aio-pika 未安装，请执行: pip install aio-pika",
@@ -94,9 +98,11 @@ class RabbitMQSender(IMQSender):
         except Exception as e:
             self._connection = None
             raise MQConnectionError(
-                f"RabbitMQ 连接失败: {e}",
+                "RabbitMQ 连接失败: "
+                f"endpoint={sanitize_url_for_log(self._url)} "
+                f"error_type={type(e).__name__} error={truncate_log_value(e)}",
                 vendor="rabbitmq",
-            ) from e
+            ) from None
 
     async def send(
         self,
@@ -148,9 +154,10 @@ class RabbitMQSender(IMQSender):
             )
         except Exception as e:
             raise MQSendError(
-                f"RabbitMQ 消息发送失败: routing_key={key or topic}, error={e}",
+                f"RabbitMQ 消息发送失败: routing_key={key or topic}, "
+                f"error_type={type(e).__name__}, error={truncate_log_value(e)}",
                 vendor="rabbitmq",
-            ) from e
+            ) from None
 
     async def send_batch(
         self,
@@ -361,9 +368,11 @@ class RabbitMQReceiver(IMQReceiver):
         except Exception as e:
             self._running = False
             raise MQConnectionError(
-                f"RabbitMQ Consumer 启动失败: {e}",
+                "RabbitMQ Consumer 启动失败: "
+                f"endpoint={sanitize_url_for_log(self._url)} "
+                f"error_type={type(e).__name__} error={truncate_log_value(e)}",
                 vendor="rabbitmq",
-            ) from e
+            ) from None
 
     async def stop(self) -> None:
         """停止消费并关闭连接"""

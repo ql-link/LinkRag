@@ -16,6 +16,7 @@ from src.core.mq.messages import ParseTaskMessage
 from src.core.mq.observability import message_size_bytes
 from src.core.pipeline import ParseTaskPipeline
 from src.core.pipeline.parse_task._utils import compact_log_value, task_log_context
+from src.observability.logging import safe_exception_stack, truncate_log_value
 
 PARSE_TASK_TOPIC = ParseTaskMessage.MQ_NAME
 PARSE_TASK_GROUP = "tolink.rag.parse_task"
@@ -31,7 +32,19 @@ async def handle_parse_task(message_body: str, metadata: Dict[str, Any]) -> None
     try:
         payload = ParseTaskMessage.parse_msg(message_body)
     except Exception as exc:
-        logger.exception(
+        logger.bind(
+            event="parse_task_message_invalid",
+            outcome="failed",
+            stage="MESSAGE_DESERIALIZATION",
+            topic=metadata.get("topic") or PARSE_TASK_TOPIC,
+            partition=metadata.get("partition"),
+            offset=metadata.get("offset"),
+            message_key=truncate_log_value(metadata.get("key")),
+            message_size=message_size_bytes(message_body),
+            error_type=type(exc).__name__,
+            error_message=truncate_log_value(exc),
+            stack_trace=safe_exception_stack(exc),
+        ).error(
             "[ParseTaskConsumer] message_decode_failed topic={} partition={} offset={} "
             "message_key={} message_bytes={} error_type={} error={}",
             compact_log_value(metadata.get("topic")),
@@ -44,7 +57,20 @@ async def handle_parse_task(message_body: str, metadata: Dict[str, Any]) -> None
         )
         raise
 
-    logger.info(
+    logger.bind(
+        event="parse_task_message_received",
+        outcome="received",
+        task_id=payload.task_id,
+        original_file_id=payload.original_file_id,
+        document_parse_file_id=payload.document_parse_task_id,
+        user_id=payload.user_id,
+        dataset_id=payload.dataset_id,
+        file_type=payload.file_type,
+        topic=metadata.get("topic") or PARSE_TASK_TOPIC,
+        partition=metadata.get("partition"),
+        offset=metadata.get("offset"),
+        message_key=truncate_log_value(metadata.get("key")),
+    ).info(
         "[ParseTaskConsumer] message_received {} topic={} partition={} offset={} "
         "message_key={} file_type={}",
         task_log_context(payload),
@@ -56,17 +82,5 @@ async def handle_parse_task(message_body: str, metadata: Dict[str, Any]) -> None
     )
 
     pipeline = ParseTaskPipeline()
-    try:
-        await pipeline.execute(payload)
-    except Exception as exc:
-        logger.exception(
-            "[ParseTaskConsumer] message_dispatch_failed {} topic={} partition={} "
-            "offset={} error_type={} error={}",
-            task_log_context(payload),
-            compact_log_value(metadata.get("topic")),
-            compact_log_value(metadata.get("partition")),
-            compact_log_value(metadata.get("offset")),
-            type(exc).__name__,
-            compact_log_value(exc),
-        )
-        raise
+    # Pipeline 已记录唯一 task_crashed 终态；这里不重复打印同一异常。
+    await pipeline.execute(payload)

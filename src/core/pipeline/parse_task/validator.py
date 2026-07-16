@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.mq.messages.parse_task import ParseTaskPayload
@@ -32,6 +31,7 @@ from .constants import DUPLICATE_TASK_LOG_NOT_FOUND_DETAIL
 from .error_codes import ParseFailureCode, build_failure_reason
 from .log_repository import ParseLogRepository
 from .models import ParsePipelineResult, PipelineStatus
+from .observability import parse_log
 
 # 重试校验失败的统一前缀；具体校验项追加在冒号后，便于 Java 端 / 运维侧排查。
 RETRY_VALIDATION_REASON_PREFIX = ParseFailureCode.RETRY_VALIDATION_FAILED.value
@@ -114,13 +114,20 @@ class ParseTaskGuard:
         existing = await self._log_repository.get_by_task_id(payload.task_id, db)
         if existing is None:
             error = RuntimeError(DUPLICATE_TASK_LOG_NOT_FOUND_DETAIL)
-            logger.error(
+            parse_log(
+                payload,
+                event="parse_duplicate_resolution_failed",
+                outcome="failed",
+                reason="parse_log_not_found",
+            ).error(
                 "[ParseTask] duplicate_resolution_failed {} reason=parse_log_not_found",
                 task_log_context(payload),
             )
             return ParsePipelineResult(
                 status=PipelineStatus.FAILED,
                 task_id=payload.task_id,
+                failed_stage="IDEMPOTENCY",
+                failure_reason=DUPLICATE_TASK_LOG_NOT_FOUND_DETAIL,
                 error=error,
             )
 
@@ -129,22 +136,47 @@ class ParseTaskGuard:
         if pipeline_record is None:
             # 老数据缺失 pipeline 行：按解析产物是否落库判定 success/failed。
             if existing.parsed_object_key:
-                logger.info(
+                parse_log(
+                    payload,
+                    event="parse_duplicate_resolved",
+                    outcome="success",
+                    previous_pipeline_status="missing",
+                    action="return_success",
+                ).info(
                     "[ParseTask] duplicate_resolved {} previous_pipeline_status=missing "
                     "action=return_success",
                     task_log_context(payload),
                 )
                 return ParsePipelineResult(status=PipelineStatus.SUCCESS, task_id=payload.task_id)
-            logger.info(
+            failure_reason = "duplicate task has no pipeline or parsed artifact"
+            parse_log(
+                payload,
+                event="parse_duplicate_resolved",
+                outcome="failed",
+                previous_pipeline_status="missing",
+                action="return_failed",
+                failure_reason=failure_reason,
+            ).info(
                 "[ParseTask] duplicate_resolved {} previous_pipeline_status=missing "
                 "action=return_failed",
                 task_log_context(payload),
             )
-            return ParsePipelineResult(status=PipelineStatus.FAILED, task_id=payload.task_id)
+            return ParsePipelineResult(
+                status=PipelineStatus.FAILED,
+                task_id=payload.task_id,
+                failed_stage="IDEMPOTENCY",
+                failure_reason=failure_reason,
+            )
 
         pipeline_status = pipeline_record.pipeline_status
         if pipeline_status == PIPELINE_STATUS_SUCCESS:
-            logger.info(
+            parse_log(
+                payload,
+                event="parse_duplicate_resolved",
+                outcome="success",
+                previous_pipeline_status=pipeline_status,
+                action="return_success",
+            ).info(
                 "[ParseTask] duplicate_resolved {} previous_pipeline_status={} "
                 "action=return_success",
                 task_log_context(payload),
@@ -153,13 +185,31 @@ class ParseTaskGuard:
             return ParsePipelineResult(status=PipelineStatus.SUCCESS, task_id=payload.task_id)
 
         if pipeline_status == PIPELINE_STATUS_FAILED:
-            logger.info(
+            failed_stage = getattr(pipeline_record, "failed_stage", None) or "IDEMPOTENCY"
+            failure_reason = (
+                getattr(pipeline_record, "failure_reason", None)
+                or "duplicate task already failed"
+            )
+            parse_log(
+                payload,
+                event="parse_duplicate_resolved",
+                outcome="failed",
+                previous_pipeline_status=pipeline_status,
+                action="return_failed",
+                stage=failed_stage,
+                failure_reason=failure_reason,
+            ).info(
                 "[ParseTask] duplicate_resolved {} previous_pipeline_status={} "
                 "action=return_failed",
                 task_log_context(payload),
                 pipeline_status,
             )
-            return ParsePipelineResult(status=PipelineStatus.FAILED, task_id=payload.task_id)
+            return ParsePipelineResult(
+                status=PipelineStatus.FAILED,
+                task_id=payload.task_id,
+                failed_stage=failed_stage,
+                failure_reason=failure_reason,
+            )
 
         # 非终态 pipeline：上次任务执行被中断，在 DB 中收敛为可恢复失败。
         failure_reason = build_failure_reason(ParseFailureCode.INTERRUPTED_TASK)
@@ -171,7 +221,15 @@ class ParseTaskGuard:
             failure_reason,
             finished_at,
         )
-        logger.warning(
+        parse_log(
+            payload,
+            event="parse_duplicate_resolved",
+            outcome="failed",
+            previous_pipeline_status=pipeline_status,
+            action="mark_interrupted_failed",
+            stage=recover_stage,
+            failure_reason=failure_reason,
+        ).warning(
             "[ParseTask] duplicate_resolved {} previous_pipeline_status={} "
             "action=mark_interrupted_failed recover_from_stage={} reason={}",
             task_log_context(payload),
@@ -179,7 +237,13 @@ class ParseTaskGuard:
             recover_stage,
             compact_log_value(failure_reason),
         )
-        return ParsePipelineResult(status=PipelineStatus.FAILED, task_id=payload.task_id)
+        return ParsePipelineResult(
+            status=PipelineStatus.FAILED,
+            task_id=payload.task_id,
+            failed_stage=recover_stage,
+            failure_reason=failure_reason,
+            error=RuntimeError(failure_reason),
+        )
 
     async def _mark_incomplete_pipeline_failed(
         self,

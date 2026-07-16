@@ -8,13 +8,13 @@ from unittest.mock import AsyncMock
 import pytest
 from loguru import logger
 
-from src.core.mq.factory import MQFactory
 from src.core.mq.messages import (
     ChatTurnMessage,
     DocumentDeleteMessage,
     ParseTaskMessage,
     TokenUsageMessage,
 )
+from src.core.mq.retry import DispatchOutcome, RetryPolicy, _publish_to_dlq
 from src.services.mq_service import MQService
 
 
@@ -195,25 +195,27 @@ async def test_raw_send_logs_metadata_without_message_body_or_header_values(capt
 
 @pytest.mark.asyncio
 async def test_dlq_send_logs_metadata_without_message_body_or_header_values(captured_logs):
-    sender = AsyncMock()
-    factory = SimpleNamespace(get_sender=lambda: sender)
-    publisher = MQFactory.get_dlq_publisher(factory)
+    publisher = AsyncMock()
     body = b'{"payload":"do-not-log-this"}'
 
-    await publisher(
-        "tolink.rag.parse_task.DLT",
-        body,
-        {
-            "x-exception-class": "RuntimeError",
-            "x-exception-message": "sensitive failure detail",
-        },
-        "task-key",
+    outcome = await _publish_to_dlq(
+        exc=RuntimeError("api_key=sensitive failure detail"),
+        retry_count=2,
+        original_topic="tolink.rag.parse_task",
+        original_body=body,
+        original_key="task-key",
+        original_headers=None,
+        policy=RetryPolicy(max_retries=2, backoff_seconds=0, dlq_suffix=".DLT"),
+        dlq_publisher=publisher,
     )
 
-    log = captured_logs.find("mq_dlq_send_succeeded")
-    assert "topic=tolink.rag.parse_task.DLT" in log
-    assert "routing_key=task-key" in log
-    assert "header_names=x-exception-class,x-exception-message" in log
+    assert outcome == DispatchOutcome.DLQ_PUBLISHED
+    publisher.assert_awaited_once()
+    log = captured_logs.find("mq_dlq_published")
+    assert "topic=tolink.rag.parse_task" in log
+    assert "dlt_topic=tolink.rag.parse_task.DLT" in log
+    assert "retry_count=2" in log
     assert "message_bytes=" in log
+    assert "header_names=" in log
     assert body.decode() not in log
     assert "sensitive failure detail" not in log

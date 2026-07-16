@@ -4,9 +4,10 @@
 from __future__ import annotations
 
 import asyncio
-import logging
+from loguru import logger
 
 from src.core.dataset_config import EnhancementConfig
+from src.observability.logging import safe_exception_stack, truncate_log_value
 
 from .llm_integration import ImageDescriber, TableDescriber
 from .models import ParseResult
@@ -17,9 +18,6 @@ from .provider_clients import (
     build_default_table_client,
     build_default_vision_client,
 )
-
-logger = logging.getLogger(__name__)
-
 
 class MarkdownEnhancementOrchestrator:
     """Trigger markdown parser enhancement after base markdown is produced."""
@@ -63,7 +61,20 @@ class MarkdownEnhancementOrchestrator:
             try:
                 parse_result = await TableDescriber(table_client).aprocess(parse_result)
             except Exception as exc:
-                logger.warning("Table enhancement skipped: %s", exc)
+                logger.bind(
+                    event="markdown_enhancement_failed",
+                    outcome="skipped",
+                    stage="table",
+                    source_file=source_file or "",
+                    user_id=user_id,
+                    error_type=type(exc).__name__,
+                    error_message=truncate_log_value(exc),
+                    stack_trace=safe_exception_stack(exc),
+                ).warning(
+                    "Markdown 表格增强失败，已降级跳过: source_file={} user_id={}",
+                    source_file or "",
+                    user_id,
+                )
 
         # 用户开关 AND 图片可用性（availability 参数）。
         image_available = True if enable_image_enhancement is None else enable_image_enhancement
@@ -80,7 +91,20 @@ class MarkdownEnhancementOrchestrator:
                     image_bytes_by_url=image_bytes_by_url,
                 )
             except Exception as exc:
-                logger.warning("Image enhancement skipped: %s", exc)
+                logger.bind(
+                    event="markdown_enhancement_failed",
+                    outcome="skipped",
+                    stage="image",
+                    source_file=source_file or "",
+                    user_id=user_id,
+                    error_type=type(exc).__name__,
+                    error_message=truncate_log_value(exc),
+                    stack_trace=safe_exception_stack(exc),
+                ).warning(
+                    "Markdown 图片增强失败，已降级跳过: source_file={} user_id={}",
+                    source_file or "",
+                    user_id,
+                )
 
         return parse_result
 

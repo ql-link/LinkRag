@@ -5,6 +5,7 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from src.config import settings
+from src.observability.logging import safe_exception_stack, truncate_log_value
 from src.utils.logger import logger
 
 from .bucket_router import BucketRouter
@@ -132,13 +133,22 @@ class QdrantIndexStore:
                 if attempt >= max_attempts or not self._is_transient_error(exc):
                     raise
                 delay = backoff * (2 ** (attempt - 1))
-                logger.warning(
-                    "[QdrantIndexStore] transient write failure on {}; retry {}/{} after {:.2f}s: {}",
+                logger.bind(
+                    event="qdrant_write_retry",
+                    outcome="retrying",
+                    operation=op_name,
+                    attempt=attempt,
+                    max_attempts=max_attempts,
+                    retry_delay_seconds=delay,
+                    error_type=type(exc).__name__,
+                    error_message=truncate_log_value(exc),
+                    stack_trace=safe_exception_stack(exc),
+                ).warning(
+                    "[QdrantIndexStore] transient write failure on {}; retry {}/{} after {:.2f}s",
                     op_name,
                     attempt,
                     max_attempts - 1,
                     delay,
-                    exc,
                 )
                 await asyncio.sleep(delay)
 

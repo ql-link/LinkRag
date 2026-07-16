@@ -29,6 +29,35 @@ class ParseTaskService:
         file_type: str,
         source_file: str | None = None,
         user_id: int | None = None,
+        dataset_id: int | None = None,
+        task_id: str | None = None,
+        enhancement_config: "EnhancementConfig | None" = None,
+        **parser_kwargs,
+    ) -> dict:
+        """在统一解析日志上下文中执行格式解析与 Markdown 增强。"""
+        with logger.contextualize(
+            event_domain="document_parse",
+            task_id=task_id or "",
+            user_id=user_id,
+            dataset_id=dataset_id,
+            source_filename=source_file or "",
+            file_type=file_type,
+        ):
+            return await ParseTaskService._aprocess_impl(
+                source_path,
+                file_type,
+                source_file=source_file,
+                user_id=user_id,
+                enhancement_config=enhancement_config,
+                **parser_kwargs,
+            )
+
+    @staticmethod
+    async def _aprocess_impl(
+        source_path: Path | None,
+        file_type: str,
+        source_file: str | None = None,
+        user_id: int | None = None,
         enhancement_config: "EnhancementConfig | None" = None,
         *,
         task_id: str | None = None,

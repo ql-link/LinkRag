@@ -149,7 +149,39 @@ any classified failure
   -> return ParsePipelineResult(status=FAILED)
 ```
 
-消费者层兜底：`ParseTaskConsumer.handle_parse_task` 在 `execute()` 之外再包一层 catch-all。`execute` 逃逸的未预期异常（pipeline 内部归类兜底之外，如 DB/会话故障）记录日志后直接 `raise`，交由死信兜底（Java 端 stuck scanner 最终收敛文件状态）。终态权威源是 DB，前端轮询读取，Python 不再回发任何 parse_result 通知（LINK-166，见 [mq.md §消费者层异常兜底](mq.md)）。
+消费者层负责安全记录反序列化失败；payload 构造成功后直接调用 `execute()`，不再重复
+记录 pipeline 逃逸异常。`execute` 对未预期异常写唯一的 `parse_task_crashed` 后重新
+抛出，交由死信兜底（Java 端 stuck scanner 最终收敛文件状态）。终态权威源是 DB，
+前端轮询读取，Python 不再回发任何 parse_result 通知（LINK-166，见
+[mq.md §消费者层异常兜底](mq.md)）。
+
+### 解析任务结构化日志
+
+`src/core/pipeline/parse_task/observability.py` 统一绑定解析任务上下文，所有记录均进入
+Loguru 的 JSON 文件 sink，并由 Promtail 采集到 Loki。公共检索字段包括：
+
+- 任务与归属：`task_id`、`previous_task_id`、`document_parse_file_id`、
+  `original_file_id`、`user_id`、`dataset_id`、`is_retry`、`trigger_mode`。
+- 文件与解析器：`file_type`、`source_bucket`、`markdown_bucket`、`parser_backend`，
+  以及 `source_filename_fingerprint`、`source_object_fingerprint`、
+  `markdown_object_fingerprint`。原始文件名与对象 key 仅在 DEBUG 日志出现。
+- 结果与诊断：`event`、`outcome`、`stage`、`duration_ms`、`failure_reason`、
+  `error_type`、`error_message`、`chunk_count`、`page_count`。
+
+日志事件约定：
+
+- `parse_task_started`：任务入口 INFO，只记录业务 ID、文件类型、解析器和重试上下文。
+- `parse_task_finished`：每次任务只写一条终态汇总；成功为 INFO，失败为 ERROR，并保留
+  `failed_stage`、`failure_reason`、耗时、页数和 chunk 数。
+- `parse_stage_started/succeeded/skipped/failed/crashed`：串行 Stage 与并行 DAG 使用
+  同一套事件，通过 `engine=serial|dag` 区分。失败与崩溃包含脱敏摘要和安全调用栈。
+- `parse_task_crashed`：DB/会话等未被业务状态机收敛的异常写 CRITICAL 后重新抛出，
+  交给 MQ 死信机制。
+- `parse_task_message_invalid`：MQ 消息在 payload 构造前反序列化失败时记录 partition、
+  offset、消息字节数与去除 input value 的字段错误位置；不记录原始消息正文，且不把
+  Pydantic 原始异常作为 cause 继续输出，避免潜在敏感字段进入日志。
+
+日志不得记录源文件正文、Markdown 内容、模型 API Key 或完整 MQ 原文。
 
 ## 3. 核心职责
 
@@ -391,26 +423,28 @@ ParseTaskConsumer.message_received
 - `stage_skipped`：重试继承已成功阶段，包含 `reason=already_success`。
 - `stage_failed`：已归类的业务或基础设施失败，包含 `reason`、`error_type`、
   `finalized`。
-- `stage_crashed`：阶段执行或状态写入的未预期异常，包含 `operation` 和 traceback。
+- `stage_crashed`：阶段执行或状态写入的未预期异常，包含 `operation`、脱敏错误摘要和
+  安全调用栈，不附带原始异常对象。
 
 任务级事件：
 
 | 事件 | 关键字段 |
 | --- | --- |
 | `message_received` | `task_id`、`doc_id`、`topic`、`partition`、`offset`、`message_key` |
-| `task_started` | `parse_file_id`、`user_id`、`dataset_id`、`file_type`、解析器、触发/重试字段、源文件与 Markdown 对象坐标 |
-| `task_finished` | `status`、`total_duration_ms`、`chunk_count`、`failed_chunk_count`、`skip_reason` |
-| `task_crashed` | `total_duration_ms`、`error_type`、单行异常摘要和 traceback |
+| `task_started` | `parse_file_id`、`user_id`、`dataset_id`、`file_type`、解析器、触发/重试字段；对象坐标仅 DEBUG |
+| `task_finished` | `status`、`total_duration_ms`、`chunk_count`、`failed_chunk_count`、`failed_stage`、`failure_reason` |
+| `task_crashed` | `total_duration_ms`、`error_type`、脱敏异常摘要和安全调用栈 |
 
 日志级别约定：
 
 - `INFO`：任务/阶段生命周期、下载/解析/上传指标、重复任务与重试正常收敛。
 - `WARNING`：上下文拒绝、重试校验拒绝、部分 chunk 失败、旁路用量丢弃。
-- `ERROR`：阶段失败、状态写入失败、逃逸异常。
+- `ERROR`：阶段失败、状态写入失败和已收敛的失败终态。
+- `CRITICAL`：未被业务状态机收敛、将重新抛给 MQ 死信机制的逃逸异常。
 - `DEBUG`：底层下载起点、解析服务内部子步骤、成功的底层向量请求。主链路 INFO
   已覆盖对应阶段，避免同一成功事件在多层重复打印。
 
-异常与失败原因会转义换行并限制单字段长度，保证一条事件保持单行。解析日志不打印
+异常与失败原因会压平换行、脱敏并限制单字段长度，保证一条事件保持单行。解析日志不打印
 Markdown 正文或模型请求/响应正文。
 
 ## 8. 修改原则

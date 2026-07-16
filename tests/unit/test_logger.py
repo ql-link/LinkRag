@@ -11,8 +11,12 @@ from src.observability.logging import (
     _PROJECT_ROOT,
     _resolve_log_dir,
     _service_name,
+    fingerprint_log_value,
     logger,
+    safe_exception_stack,
+    sanitize_url_for_log,
     setup_logger,
+    truncate_log_value,
 )
 from src.observability.tracing import trace_context
 
@@ -49,6 +53,63 @@ def test_should_allow_explicit_log_service_name_override():
         assert _service_name() == "unit-service"
     finally:
         settings.LOG_SERVICE_NAME = original
+
+
+def test_sanitize_url_removes_credentials_query_and_fragment():
+    sanitized = sanitize_url_for_log(
+        "amqp://admin:super-secret@mq.internal:5672/vhost?token=hidden#fragment"
+    )
+
+    assert sanitized == "amqp://<redacted>@mq.internal:5672/vhost"
+    assert "super-secret" not in sanitized
+    assert "token" not in sanitized
+    assert "hidden" not in sanitized
+
+
+def test_truncate_log_value_flattens_and_limits_external_text():
+    value = "first line\nsecond line " + "x" * 100
+
+    result = truncate_log_value(value, 32)
+
+    assert "\n" not in result
+    assert result.startswith("first line second line")
+    assert "truncated,total_chars=" in result
+
+
+def test_truncate_log_value_redacts_common_secret_forms():
+    value = (
+        "amqp://user:password@mq.internal/vhost "
+        'api_key="sk-secret" Authorization=Bearer abc.def.ghi signature=qwerty'
+    )
+
+    result = truncate_log_value(value)
+
+    assert "password" not in result
+    assert "sk-secret" not in result
+    assert "abc.def.ghi" not in result
+    assert "qwerty" not in result
+    assert result.count("<redacted>") >= 4
+
+
+def test_fingerprint_log_value_is_stable_without_exposing_input():
+    secret_url = "https://storage.example/file.png?signature=secret"
+
+    first = fingerprint_log_value(secret_url)
+    second = fingerprint_log_value(secret_url)
+
+    assert first == second
+    assert len(first) == 12
+    assert "secret" not in first
+
+
+def test_safe_exception_stack_keeps_frames_without_secret_message():
+    try:
+        raise RuntimeError("api_key=sk-should-not-appear")
+    except RuntimeError as exc:
+        stack = safe_exception_stack(exc)
+
+    assert "test_safe_exception_stack" in stack
+    assert "sk-should-not-appear" not in stack
 
 
 @pytest.mark.asyncio

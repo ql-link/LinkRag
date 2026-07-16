@@ -29,6 +29,7 @@ from src.application.recall_errors import (
 )
 from src.cache.redis_client import redis_client
 from src.config import settings
+from src.observability.logging import safe_exception_stack, truncate_log_value
 
 # 并发计数 key 前缀；按 user_id 分桶，跨 worker / 实例共享。
 _CONCURRENT_KEY_PREFIX = "recall:concurrent:"
@@ -113,7 +114,13 @@ async def verify_session_token(request: Request) -> SessionAuthContext:
             options={"require": ["exp"]},
         )
     except jwt.PyJWTError as exc:
-        logger.info("[recall-session] JWT rejected request_id={}: {}", request_id, exc)
+        logger.bind(
+            event="recall_session_rejected",
+            outcome="unauthorized",
+            request_id=request_id,
+            error_type=type(exc).__name__,
+            error_message=truncate_log_value(exc),
+        ).info("[recall-session] JWT rejected request_id={}", request_id)
         raise RecallApiError(401, CODE_SESSION_UNAUTHORIZED, "invalid or expired credential")
 
     if claims.get("scope") != settings.RECALL_SESSION_JWT_SCOPE:
@@ -163,9 +170,19 @@ async def acquire_stream_slot(user_id: int) -> bool:
     try:
         count = await redis_client.incr(key)
         await redis_client.expire(key, safety_ttl)
-    except Exception:  # noqa: BLE001 - Redis 故障不阻断召回，fail-open
-        logger.warning(
-            "[recall-session] redis unavailable on acquire, fail-open user_id={}", user_id
+    except Exception as exc:  # noqa: BLE001 - Redis 故障不阻断召回，fail-open
+        logger.bind(
+            event="recall_concurrency_guard_failed",
+            outcome="fail_open",
+            operation="acquire",
+            user_id=user_id,
+            safety_ttl=safety_ttl,
+            error_type=type(exc).__name__,
+            error_message=truncate_log_value(exc),
+            stack_trace=safe_exception_stack(exc),
+        ).warning(
+            "[recall-session] redis unavailable on acquire, fail-open user_id={}",
+            user_id,
         )
         return True
 
@@ -173,8 +190,19 @@ async def acquire_stream_slot(user_id: int) -> bool:
         # 超卖，回退占位并拒绝。
         try:
             await redis_client.decr(key)
-        except Exception:  # noqa: BLE001 - 回退失败由 TTL 兜底
-            logger.warning("[recall-session] redis decr failed on rollback user_id={}", user_id)
+        except Exception as exc:  # noqa: BLE001 - 回退失败由 TTL 兜底
+            logger.bind(
+                event="recall_concurrency_guard_failed",
+                outcome="ttl_recovery",
+                operation="rollback",
+                user_id=user_id,
+                observed_count=count,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).warning(
+                "[recall-session] redis decr failed on rollback user_id={}", user_id
+            )
         return False
     return True
 
@@ -190,5 +218,15 @@ async def release_stream_slot(user_id: int) -> None:
         remaining = await redis_client.decr(key)
         if remaining < 0:
             await redis_client.set(key, "0")
-    except Exception:  # noqa: BLE001 - 释放失败由 TTL 兜底，不影响主流程
-        logger.warning("[recall-session] redis unavailable on release user_id={}", user_id)
+    except Exception as exc:  # noqa: BLE001 - 释放失败由 TTL 兜底，不影响主流程
+        logger.bind(
+            event="recall_concurrency_guard_failed",
+            outcome="ttl_recovery",
+            operation="release",
+            user_id=user_id,
+            error_type=type(exc).__name__,
+            error_message=truncate_log_value(exc),
+            stack_trace=safe_exception_stack(exc),
+        ).warning(
+            "[recall-session] redis unavailable on release user_id={}", user_id
+        )
