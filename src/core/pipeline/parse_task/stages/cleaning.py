@@ -15,8 +15,7 @@ from pathlib import Path
 from loguru import logger
 
 from src.config import settings
-from src.core.dataset_config import DatasetConfigService
-from src.core.markdown_parser import EnhancementModelMissingError, LLMConfigMissingError
+from src.core.markdown_parser import EnhancementModelMissingError
 
 from .. import temp_workspace
 from .._utils import coerce_optional_int, compact_log_value, now, task_log_context
@@ -110,15 +109,14 @@ class CleaningStage(Stage):
                     # except 归类为 PARSE_ENGINE_FAILED（reason 含具体字段名，便于排查）。
                     dataset_cfg = await self._load_dataset_config(payload, ctx)
                     parse_result = await self._services.parse_file(
-                        source_path, payload, dataset_cfg
+                        source_path,
+                        payload,
+                        dataset_cfg,
+                        ctx.execution_context,
                     )
             except EnhancementModelMissingError as exc:
-                # 数据集开启增强，但用户默认和 LinkRag 系统默认均未提供对应模型：单独归类。
+                # 数据集开启增强，但未提供对应能力的精确配置绑定：单独归类。
                 return self._classified_failure(ParseFailureCode.ENHANCEMENT_MODEL_MISSING, exc)
-            except LLMConfigMissingError as exc:
-                # 发起用户缺少必配能力（CHAT）的默认 LLM 配置：单独归类，便于 Java 端提示用户去配置，
-                # 区别于解析引擎本身失败的 PARSE_ENGINE_FAILED。
-                return self._classified_failure(ParseFailureCode.LLM_CONFIG_MISSING, exc)
             except Exception as exc:
                 return self._classified_failure(ParseFailureCode.PARSE_ENGINE_FAILED, exc)
             parse_ms = int((time.monotonic() - parse_started_at) * 1000)
@@ -197,7 +195,9 @@ class CleaningStage(Stage):
         dataset_id = coerce_optional_int(payload.dataset_id)
         if user_id is None or dataset_id is None:
             return None
-        return await DatasetConfigService().get_config(user_id, dataset_id, ctx.db)
+        if ctx.execution_context is None:
+            return None
+        return ctx.execution_context.config
 
     @staticmethod
     async def _read_markdown_passthrough(source_path: Path | None) -> dict:

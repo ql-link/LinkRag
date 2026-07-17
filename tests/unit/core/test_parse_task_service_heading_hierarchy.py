@@ -38,10 +38,13 @@ async def test_parse_task_service_passes_user_id_to_heading_processor(monkeypatc
         def __init__(self, config=None):
             pass
 
-        async def aprocess(self, markdown, *, source_file=None, user_id=None):
+        async def aprocess(
+            self, markdown, *, source_file=None, user_id=None, resolved_model=None
+        ):
             captured["markdown"] = markdown
             captured["source_file"] = source_file
             captured["user_id"] = user_id
+            captured["resolved_model"] = resolved_model
             return SimpleNamespace(
                 markdown=markdown,
                 parse_result=SimpleNamespace(elements=[]),
@@ -69,4 +72,5 @@ async def test_parse_task_service_passes_user_id_to_heading_processor(monkeypatc
         "markdown": "正文第一段\n\n正文第二段",
         "source_file": "x.pdf",
         "user_id": 7,
+        "resolved_model": None,
     }

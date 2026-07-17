@@ -1,12 +1,13 @@
 # MySQL Schema
 
-toLink-Rag 业务表模式参考。**权威来源**：ORM 模型 (`src/models/**.py`) + Alembic migrations (`migrations/versions/*.py`)。
+toLink-Rag 业务表模式参考。**生产 DDL 和种子数据的唯一权威源是 Alembic migrations**
+(`migrations/versions/*.py`)；ORM 和 `scripts/db/init.sql` 是逻辑/测试镜像。
 
 - 冷启动 baseline：[migrations/db.sql](../../../migrations/db.sql)（0001，已冻结）
 - 当前完整结构快照（baseline + 已应用 migration）：[scripts/db/init.sql](../../../scripts/db/init.sql)
 - 本文是按业务域分组的人读摘要视图
 
-ORM 与 migration 不一致时，以 migration 为准并修正 ORM；scripts/db/init.sql 需在每条 schema 演进的 migration 落库时一并同步。
+ORM 或 `scripts/db/init.sql` 与 migration 不一致时，以 migration 为准并修正镜像。
 
 ## 表清单
 
@@ -15,7 +16,7 @@ ORM 与 migration 不一致时，以 migration 为准并修正 ORM；scripts/db/
 | 业务域 | 表 | 主键 ID 起始 |
 | --- | --- | --- |
 | [用户](#1-用户) | `sys_user` | 10000 |
-| [LLM 配置与用量](#2-llm-配置与用量) | `llm_system_provider`, `llm_provider_model`, `llm_system_preset`, `llm_user_config`, `llm_usage_log` | 10000 |
+| [LLM 配置与用量](#2-llm-配置与用量) | `llm_system_provider`, `llm_provider_model`, `llm_model_config`, `llm_capability_default`, `llm_usage_log` | 10000 |
 | [数据集与对话](#3-数据集与对话) | `dataset`, `dataset_parse_config`, `chat_conversation`, `chat_message` | 10000 |
 | [文档解析](#4-文档解析) | `document_original_file`, `document_parse_file`, `document_parsed_log`, `document_parse_pipeline` | 10000 |
 | [博客](#5-博客) | `blog_post`, `blog_asset` | 10000 |
@@ -55,7 +56,9 @@ ORM：（未在 `src/models/` 中映射，由业务侧管理）
 
 > **协议（protocol）与入口（api_base_url）三层语义**（LINK-123）：LLM 调用拆成两个正交维度——`protocol`（API 家族，决定 HTTP 怎么拼）× `capability`（用途，决定调哪个端点）。`protocol` 枚举：`openai` / `anthropic` / `google` / `jina` / `dashscope` / `doubao_vision` / `bge_m3`（小写、大小写敏感；后两个为稀疏向量专用）。同一厂商不同能力可走不同协议（如千问 chat 走 `openai`、rerank 走 `dashscope`），故 `protocol` ≠ `provider_type`。
 >
-> 三层定位：**厂商层**（`llm_system_provider`）= 默认模板，不参与运行决策；**模型能力层**（`llm_provider_model`）= 协议与入口的事实来源；**用户配置层**（`llm_user_config`）= 用户自配运行快照，从模型能力层复制，Python 下游按 `(protocol, capability)` 选 adapter，绝不 fallback 厂商默认。用户某能力没有自配默认时，Python 回退到 `llm_system_preset` 中 `provider_type='linkrag' AND is_default=true AND is_active=true` 的系统默认预设。`api_base_url` 在厂商层保存协议基地址，仅用于管理端预填；在模型能力层、系统预设层和用户配置层保存**完整端点 URL**，Python adapter 直接请求该 URL，不再拼 capability 后缀。`google` 协议例外，保存到 `/v1beta` 为止，由 Python 按模型和流式模式补全 Gemini 原生路径。
+> 运行分层：厂商与模型目录只用于管理和预填；`llm_model_config` 是唯一可执行快照表，
+> `scope=SYSTEM/USER` 只表达授权边界，不再分表路由。所有 HTTP、MQ、数据集绑定和缓存键都只传全局 `config_id`。
+> `llm_capability_default` 只保存“未显式选择时选哪个 config”的指针，不承载密钥或运行参数。
 
 ### `llm_system_provider` — LLM 系统级厂商配置
 
@@ -96,7 +99,37 @@ ORM：[`ProviderModelDB`](../../../src/models/db_models.py)
 - `uk_provider_model_cap(provider_id, model_name, capability)`
 - `idx_provider_cap(provider_id, capability)`
 
-### `llm_system_preset` — 系统预设模板
+### `llm_model_config` — 统一可执行配置
+
+ORM：[`LLMModelConfigDB`](../../../src/models/db_models.py)
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | BIGINT UNSIGNED PK | 全局 `config_id` |
+| `scope` | VARCHAR(16) | `SYSTEM` / `USER` |
+| `owner_user_id` | BIGINT UNSIGNED | SYSTEM 固定 `0`；USER 为所有者 |
+| `provider_id` / `provider_type` | BIGINT / VARCHAR | 厂商目录 ID 与运行快照 |
+| `model_name` / `display_name` | VARCHAR | 模型名与可选展示名 |
+| `capability` | VARCHAR(32) | `CHAT` / `EMBEDDING` / `SPARSE_EMBEDDING` / `VISION` / `RERANK` / `ASR` |
+| `protocol` / `api_base_url` | VARCHAR | adapter 分发协议和完整调用入口 |
+| `api_key` | VARCHAR(512) | 正式加密器密文；不得以明文种子入库 |
+| `is_active` | BOOLEAN | 是否允许精确执行 |
+| `snapshot_version` | BIGINT UNSIGNED | 运行快照版本，更新时递增 |
+
+唯一约束：`uk_llm_model_config_owner_model(scope, owner_user_id, provider_id, model_name, capability)`。
+
+### `llm_capability_default` — 能力默认指针
+
+ORM：[`LLMCapabilityDefaultDB`](../../../src/models/db_models.py)
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `scope` / `owner_user_id` / `capability` | VARCHAR / BIGINT / VARCHAR | 默认关系所属边界 |
+| `config_id` | BIGINT UNSIGNED | 指向 `llm_model_config.id` |
+
+同一 `(scope, owner_user_id, capability)` 最多一条。显式选择、数据集绑定和已建对话不通过本表二次跳转。
+
+### `llm_system_preset` — 历史表（migration 0036 删除）
 
 ORM：[`SystemPresetDB`](../../../src/models/db_models.py)
 
@@ -119,9 +152,9 @@ ORM：[`SystemPresetDB`](../../../src/models/db_models.py)
 - `uk_preset_provider_model_cap(provider_id, model_name, capability)`
 - `idx_preset_provider_cap_default(provider_type, capability, is_active, is_default)`
 
-说明：LinkRag 作为系统服务厂商时，Python 会读取本表中的 LinkRag 默认预设作为用户无自配默认时的兜底。管理端应保证同一 `capability` 下最多一个 `provider_type='linkrag' AND is_active=true AND is_default=true`。
+说明：仅保留字段说明供历史排查；新运行时不读取此表，0036 升级会直接删表。
 
-### `llm_user_config` — 用户级 LLM 配置
+### `llm_user_config` — 历史表（migration 0036 删除）
 
 ORM：[`UserLLMConfigDB`](../../../src/models/db_models.py)
 
@@ -146,7 +179,7 @@ ORM：[`UserLLMConfigDB`](../../../src/models/db_models.py)
 - `idx_user_active_default(user_id, is_active, is_default)`
 - `idx_user_provider_cap(user_id, provider_type, capability)`
 
-运行时读取生效配置：
+下列 SQL 仅是 0035 及以前的历史读取逻辑，0036 后不再执行：
 
 ```sql
 -- 1. 用户自配默认
@@ -177,7 +210,7 @@ ORM：[`UsageLogDB`](../../../src/models/db_models.py)
 | --- | --- | --- |
 | `id` | BIGINT UNSIGNED PK | 记录唯一标识 |
 | `user_id` | BIGINT UNSIGNED | 用户 ID |
-| `config_id` | BIGINT UNSIGNED NULL | 用户配置 ID；走系统配置的调用可空。解析/召回向量编码使用数据集绑定的 `llm_user_config.id` 时必须上报实际绑定 ID |
+| `config_id` | BIGINT UNSIGNED NULL | 全局 `llm_model_config.id`。列保留可空仅为兼容历史行；新 HTTP/MQ 用量上报必须携带正整数 |
 | `provider_type` | VARCHAR(32) | 厂商类型 |
 | `model_name` | VARCHAR(128) | 模型名称 |
 | `prompt_tokens` | INT | 输入 Token 数；向量类调用（embed/sparse/rerank）即此列 |
@@ -227,23 +260,28 @@ ORM：[`UsageLogDB`](../../../src/models/db_models.py)
 | `user_id` | BIGINT UNSIGNED | 所属用户 ID |
 | `dataset_id` | BIGINT UNSIGNED | 所属数据集 ID，对应 `dataset.id` |
 | `chunking_config` | JSON | 分块配置（3 项：heading_break_level / min_candidate_chunk_tokens / overlap_tokens；旧 percentile 语义切片参数已随 splitter 重写移除） |
-| `enhancement_config` | JSON | Markdown 增强配置（enable_table_enhancement / enable_image_enhancement / enable_heading_hierarchy）。`{}` 表示所有增强关闭；非空对象缺失字段继承 Settings。增强模型不在此选择，表格/标题按用户默认 → LinkRag 系统默认预设解析 CHAT，图片按同序解析 VISION。历史数据残留的 table_model / vision_model 键被忽略 |
+| `enhancement_config` | JSON | Markdown 增强开关；开启的表格/标题和图片分别要求下方 CHAT / VISION 绑定 |
 | `pdf_config` | JSON | PDF 解析配置（1 项：pdf_parser_backend，null 表示用系统默认） |
 | `recall_config` | JSON | 召回检索配置（15 项：recall_result_limit / recall_context_token_budget / bm25_top_k / sparse_top_k / sparse_score_threshold / dense_top_k / dense_score_threshold / recall_enabled_sources / recall_fusion_strategy / rrf_k / fusion_bm25_weight / fusion_sparse_weight / fusion_dense_weight / rerank_top_n / recall_strict；数据库列 COMMENT 由 Alembic 迁移同步维护）。其中 recall_result_limit 为融合后候选池窗口；bm25_top_k / sparse_top_k / dense_top_k 分别控制三路执行期召回深度；recall_enabled_sources 为启用的召回路数组（bm25/sparse/dense，**仅能在系统已装配的召回路集合内收窄**，列出的未装配路被忽略、交集为空时回退全部已装配路）；recall_fusion_strategy 可选 rrf / weighted_score；rrf_k 仅用于 rrf，计算 `1 / (rrf_k + rank)`；三路 fusion 权重仅用于 weighted_score 且允许单项为 0；rerank_top_n 为重排返回条数上限；recall_strict 为召回容错模式（true=任一路失败即整体失败，false=允许单路失败降级） |
-| `sparse_embedding_config_id` | BIGINT UNSIGNED NULL | 数据集绑定的稀疏向量模型配置 ID，指向 `llm_user_config.id`，要求属于当前用户、启用中、`is_system_preset=false`、`capability='SPARSE_EMBEDDING'` |
-| `sparse_embedding_config_source` | VARCHAR(16) NOT NULL DEFAULT 'USER' | 稀疏向量模型配置来源：`USER` 或 `SYSTEM`；`source=USER` 时 ID 指向 `llm_user_config.id`，`source=SYSTEM` 时指向 `llm_system_preset.id` |
-| `dense_embedding_config_id` | BIGINT UNSIGNED NULL | 数据集绑定的稠密向量模型配置 ID，指向 `llm_user_config.id`，要求属于当前用户、启用中、`is_system_preset=false`、`capability='EMBEDDING'` |
-| `dense_embedding_config_source` | VARCHAR(16) NOT NULL DEFAULT 'USER' | 稠密向量模型配置来源：`USER` 或 `SYSTEM`；`source=USER` 时 ID 指向 `llm_user_config.id`，`source=SYSTEM` 时指向 `llm_system_preset.id` |
+| `sparse_embedding_config_id` | BIGINT UNSIGNED NULL | 精确绑定 `llm_model_config.id`，能力必须为 `SPARSE_EMBEDDING` |
+| `dense_embedding_config_id` | BIGINT UNSIGNED NULL | 精确绑定 `llm_model_config.id`，能力必须为 `EMBEDDING` |
+| `enhancement_chat_config_id` | BIGINT UNSIGNED NULL | 表格/标题增强 `CHAT` 绑定；只在对应增强开启时必需 |
+| `enhancement_vision_config_id` | BIGINT UNSIGNED NULL | 图片增强 `VISION` 绑定；只在对应增强开启时必需 |
+| `rerank_config_id` | BIGINT UNSIGNED NULL | 召回重排 `RERANK` 绑定；只在 `enable_rerank=true` 时必需 |
 | `is_active` | BOOLEAN | 是否启用，默认 `TRUE` |
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
 
 索引：
 - `uk_user_dataset(user_id, dataset_id)`
 - `idx_dataset_parse_config_dataset(dataset_id)`
-- `idx_dataset_parse_sparse_config(sparse_embedding_config_source, sparse_embedding_config_id)`
-- `idx_dataset_parse_dense_config(dense_embedding_config_source, dense_embedding_config_id)`
+- `idx_dataset_parse_sparse_config(sparse_embedding_config_id)`
+- `idx_dataset_parse_dense_config(dense_embedding_config_id)`
+- `idx_dataset_parse_enhancement_chat_config(enhancement_chat_config_id)`
+- `idx_dataset_parse_enhancement_vision_config(enhancement_vision_config_id)`
+- `idx_dataset_parse_rerank_config(rerank_config_id)`
 
-> 所有权：表结构由 Python 侧 Alembic 迁移管理；**行数据的增删改由 Java 侧负责**，Python 侧只读。JSON 配置无行时使用内存默认；向量模型绑定不做默认模型回退，`sparse_embedding_config_id` / `dense_embedding_config_id` 缺失或无效时解析建向量与召回会明确失败，历史数据集需先回填。
+> 所有权：表结构由 Python Alembic 管理；行数据由 Java 维护，Python 只读。执行前一次性构建
+> `DatasetExecutionContext`，按当前开关校验必需绑定，整个解析/召回执行复用同一 resolved snapshot；不读默认指针、不按 source 分表。
 
 ### `chat_conversation` — 对话表
 

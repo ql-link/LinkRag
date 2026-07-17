@@ -7,7 +7,13 @@ from .models import (
     EnhancementConfig,
     PDFConfig,
     RecallConfig,
+    DatasetModelBindingConfig,
     VectorModelBindingConfig,
+)
+from .execution_context import (
+    DatasetExecutionContext,
+    DatasetExecutionContextLoader,
+    DatasetExecutionPurpose,
 )
 from .service import DatasetConfigService
 
@@ -16,7 +22,11 @@ __all__ = [
     "EnhancementConfig",
     "PDFConfig",
     "RecallConfig",
+    "DatasetModelBindingConfig",
     "VectorModelBindingConfig",
     "DatasetParseConfigBundle",
     "DatasetConfigService",
+    "DatasetExecutionContext",
+    "DatasetExecutionContextLoader",
+    "DatasetExecutionPurpose",
 ]

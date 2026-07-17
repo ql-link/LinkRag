@@ -1,42 +1,35 @@
 # -*- coding: utf-8 -*-
-"""统一用户 LLM 模型解析。
+"""config_id-only LLM 精确解析。
 
-把分散在 splitter、markdown_parser、``/llm`` 路由三处重复的「查配置 → 解密 api_key →
-``ModelFactory.create_client`` → 能力校验」收敛到一处，消除行为漂移（解不解密、兜不兜底、
-异常类型/默认 provider_type 各异），并把 DB 访问从各 core 模块内联中收口到本模块一处。
-
-两个入口：
-
-- :func:`build_provider_from_config`：纯函数，给定配置 dict → 构造 Provider（不碰 DB）。
-- :func:`aresolve_user_model`：按 ``(user_id, capability)``（或 ``config_id``）读配置后构造。
-
-配置读取以共享 MySQL 为唯一事实来源。
+Python 执行面不再选择用户/SYSTEM 默认，也不接受 source、model override
+或环境变量兜底。调用方必须先明确一个全局 ``config_id``。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING
 
 from src.config import settings
 from src.core.llm.encryption import decrypt_api_key
 from src.core.llm.exceptions import (
+    LLMConfigCapabilityMismatchError,
+    LLMConfigForbiddenError,
+    LLMConfigInactiveError,
+    LLMConfigNotFoundError,
     ProviderConnectionError,
-    ProtocolRequiredError,
     UnsupportedProtocolCapabilityError,
-    UserModelConfigMissingError,
 )
 from src.core.llm.factory import ModelFactory
 from src.core.llm.interfaces import CapabilityType
+from src.core.llm.runtime_config import RuntimeModelConfig
+from src.core.llm.runtime_repository import RuntimeConfigRepository
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from src.core.llm.base_provider import BaseProvider
-    from src.services.config_reader_service import ConfigReaderService
 
-# 配置表能力字符串 → CapabilityType（用于 has_capability 校验）。
-# CHAT 对应文本生成 TEXT；OCR 已不再是独立 LLM capability。
 _CAPABILITY_TO_TYPE: dict[str, CapabilityType] = {
     "CHAT": CapabilityType.TEXT,
     "EMBEDDING": CapabilityType.EMBEDDING,
@@ -44,199 +37,98 @@ _CAPABILITY_TO_TYPE: dict[str, CapabilityType] = {
     "RERANK": CapabilityType.RERANK,
     "VISION": CapabilityType.VISION,
 }
-_TYPE_TO_CAPABILITY: dict[CapabilityType, str] = {
-    value: key for key, value in _CAPABILITY_TO_TYPE.items()
-}
+_TYPE_TO_CAPABILITY = {value: key for key, value in _CAPABILITY_TO_TYPE.items()}
 
 
 def normalize_provider_type(provider_type: str | None) -> str:
-    """归一化 Java/DB provider_type 到 Python provider 注册键。"""
     raw = (provider_type or "openai").lower()
     return {"claude": "anthropic", "aliyun": "qwen"}.get(raw, raw)
 
 
-@dataclass
+@dataclass(frozen=True)
 class ResolvedModel:
-    """一次解析的产物：可直接使用的 Provider + 元信息。"""
+    """一次执行中可复用的 provider 与不可变快照。"""
 
     provider: "BaseProvider"
-    model_name: Optional[str]
+    model_name: str
     provider_type: str
-    source: str  # "user" | "system"
-    protocol: Optional[str] = None  # 实际分发用的协议（可追溯）
-    config_id: Optional[int] = None  # 命中的配置 ID；source=system 时指向 llm_system_preset.id
+    protocol: str
+    config_id: int
+    scope: str
+    snapshot_version: int
 
 
-def build_provider_from_config(
-    config: dict[str, Any],
+def build_provider_from_runtime_config(
+    config: RuntimeModelConfig,
     *,
     capability: str,
-    fallback_model: str | None = None,
-    override_model: str | None = None,
 ) -> ResolvedModel:
-    """由配置 dict 构造 Provider（不访问 DB）。
-
-    模型名优先级：``override_model`` > 配置 ``model_name`` > ``fallback_model``。
-
-    Args:
-        config: 配置字典，形如 ``ConfigReaderService`` 返回结构（含 provider_type /
-            api_key / api_base_url / model_name；系统兜底配置带 ``is_system_fallback``）。
-        capability: 能力字符串（CHAT/EMBEDDING/SPARSE_EMBEDDING/RERANK/VISION），
-            用于 ``has_capability`` 校验。
-        fallback_model: 配置未指定 ``model_name`` 时的回退模型名。
-        override_model: 调用方显式指定、优先级最高的模型名（如 ``/llm`` 路由的 ``request.model``）。
-
-    Returns:
-        ResolvedModel: 含可用 Provider、实际模型名、provider_type 与来源。
-
-    Raises:
-        ValueError: 能力字符串未知。
-        UnsupportedProtocolCapabilityError: 所选 protocol 不支持该能力。
-    """
-    capability_type = _CAPABILITY_TO_TYPE.get(capability.upper())
+    """由已校验的 runtime snapshot 构造 adapter，不访问 DB/Redis。"""
+    capability_upper = capability.upper()
+    capability_type = _CAPABILITY_TO_TYPE.get(capability_upper)
     if capability_type is None:
         raise ValueError(f"Unknown capability {capability!r}")
 
-    # 系统兜底配置的 api_key 是明文，免解密；用户配置为加密存储。
-    if config.get("is_system_fallback"):
-        api_key = config.get("api_key", "")
-    else:
-        raw_key = config.get("api_key", "")
-        api_key = decrypt_api_key(raw_key) if raw_key else ""
-
-    # protocol 必填：缺失即 fail fast，不按 provider_type 兜底推导（三层语义"绝不 fallback"）。
-    protocol = (config.get("protocol") or "").strip()
-    if not protocol:
-        raise ProtocolRequiredError(capability=capability)
-    if protocol.lower() != "google" and not (config.get("api_base_url") or "").strip():
+    protocol = config.protocol.strip()
+    provider_type = normalize_provider_type(config.provider_type)
+    if protocol.lower() != "google" and not config.api_base_url.strip():
         raise ProviderConnectionError(
             message=f"api_base_url is required for protocol {protocol!r}.",
-            provider_type=normalize_provider_type(config.get("provider_type")),
+            provider_type=provider_type,
         )
-
-    provider_type = normalize_provider_type(config.get("provider_type"))
-    model_name = override_model or config.get("model_name") or fallback_model
-
-    # 按 protocol 经分发中台造 adapter；provider_type 仅作身份透传，不参与分发。
     provider = ModelFactory().create_client(
         protocol=protocol,
-        provider_type=provider_type or None,
-        api_key=api_key or "",
-        api_base_url=config.get("api_base_url"),
-        model_name=model_name,
+        provider_type=provider_type,
+        api_key=decrypt_api_key(config.api_key_ciphertext),
+        api_base_url=config.api_base_url,
+        model_name=config.model_name,
         timeout_ms=settings.MARKDOWN_PARSER_LLM_TIMEOUT_MS,
     )
-    # (protocol, capability) 门禁：该协议不支持此能力即报错，不静默降级、不猜测。
     if not provider.has_capability(capability_type):
         supported = [
-            f"{protocol}:{_TYPE_TO_CAPABILITY.get(capability, capability.value)}"
-            for capability in provider.get_capabilities()
+            f"{protocol}:{_TYPE_TO_CAPABILITY.get(item, item.value)}"
+            for item in provider.get_capabilities()
         ]
         raise UnsupportedProtocolCapabilityError(
             protocol,
-            capability,
-            model_name=model_name,
-            config_id=config.get("id"),
+            capability_upper,
+            model_name=config.model_name,
+            config_id=config.config_id,
             supported_combinations=sorted(supported),
         )
-    source = (
-        "system"
-        if config.get("is_system_fallback")
-        or str(config.get("config_source") or "").upper() == "SYSTEM"
-        else "user"
-    )
     return ResolvedModel(
         provider=provider,
-        model_name=model_name,
+        model_name=config.model_name,
         provider_type=provider_type,
-        source=source,
         protocol=protocol,
-        config_id=config.get("id"),
+        config_id=config.config_id,
+        scope=config.scope,
+        snapshot_version=config.snapshot_version,
     )
 
 
-async def aresolve_user_model(
+async def aresolve_model(
     *,
     user_id: int,
+    config_id: int,
     capability: str,
-    config_id: int | None = None,
-    config_source: str = "USER",
-    allow_linkrag_default: bool = True,
-    allow_system_fallback: bool = False,
-    fallback_model: str | None = None,
-    override_model: str | None = None,
     db: "AsyncSession | None" = None,
-    config_service: "ConfigReaderService | None" = None,
+    repository: RuntimeConfigRepository | None = None,
 ) -> ResolvedModel:
-    """按发起用户解析指定能力的可用模型。
-
-    解析顺序：``config_id`` 指定 → 按 ``config_source + config_id`` 精确读配置；
-    否则取用户该能力默认配置；``allow_linkrag_default`` 为真时，未命中会回退
-    LinkRag 系统默认预设；仍未命中且 ``allow_system_fallback`` 为真 → 旧系统环境
-    兜底配置。全部未命中抛
-    :class:`UserModelConfigMissingError`。配置读取本身失败（DB/序列化异常）按原样向上传播，
-    便于上层区分「未配置」与「读取失败(可重试)」。
-
-    Args:
-        user_id: 发起用户 ID。
-        capability: 能力字符串（CHAT/EMBEDDING/SPARSE_EMBEDDING/RERANK/VISION）。
-        config_id: 可选，指定具体配置 ID（``/llm`` 路由按 ID 调用场景）。
-        config_source: ``USER`` 或 ``SYSTEM``。``SYSTEM`` 时 ``config_id`` 指向
-            ``llm_system_preset.id``；默认 ``USER`` 兼容旧调用。
-        allow_linkrag_default: 未指定 ``config_id`` 且用户默认缺失时，是否允许读取
-            LinkRag DB 系统默认预设。RAG 内部 rerank 会关闭此项，用户没配 RERANK
-            时直接跳过 rerank。
-        allow_system_fallback: LinkRag DB 预设仍未命中时是否回退旧系统环境兜底。解析写入、
-            召回链路与 ``/llm`` 直调路由默认不启用旧 env 兜底；保留该开关给显式需要
-            env 兜底的内部调用点或测试。
-        fallback_model: 配置未带 ``model_name`` 时的回退模型名。
-        db: 可选注入的 AsyncSession；未注入时自开一次（DB 访问只此一处）。
-        config_service: 可选注入的 ConfigReaderService（主要便于测试）。
-
-    Returns:
-        ResolvedModel。
-
-    Raises:
-        UserModelConfigMissingError: 用户无该能力配置且未启用/未命中系统兜底。
-        ValueError: 能力未知或 provider 不支持该能力。
-    """
-    from src.services.config_reader_service import ConfigReaderService
-
-    async def _resolve(svc: "ConfigReaderService") -> ResolvedModel:
-        if config_id is not None:
-            source_upper = (config_source or "USER").upper()
-            if source_upper == "SYSTEM":
-                config = await svc.get_system_preset_by_id(config_id)
-            elif source_upper == "USER":
-                config = await svc.get_user_config_by_id(user_id, config_id)
-            else:
-                raise ValueError(f"Unknown config_source {config_source!r}")
-            if config and (config.get("capability") or "").upper() != capability.upper():
-                raise UserModelConfigMissingError(capability, user_id)
-        else:
-            config = await svc.get_user_default_config_by_capability(
-                user_id=user_id,
-                capability=capability,
-                allow_linkrag_default=allow_linkrag_default,
-            )
-        if not config and allow_system_fallback:
-            config = svc.get_system_fallback_config_by_capability(capability)
-        if not config:
-            raise UserModelConfigMissingError(capability, user_id)
-        return build_provider_from_config(
-            config,
-            capability=capability,
-            fallback_model=fallback_model,
-            override_model=override_model,
+    """按固定优先级校验物理存在、active、owner 和 capability。"""
+    repo = repository or RuntimeConfigRepository(db=db)
+    config = await repo.get(int(config_id))
+    if config is None:
+        raise LLMConfigNotFoundError(int(config_id))
+    if not config.is_active:
+        raise LLMConfigInactiveError(config.config_id)
+    if config.scope not in {"SYSTEM", "USER"}:
+        raise LLMConfigForbiddenError(config.config_id)
+    if config.scope == "USER" and config.owner_user_id != int(user_id):
+        raise LLMConfigForbiddenError(config.config_id)
+    capability_upper = capability.upper()
+    if config.capability.upper() != capability_upper:
+        raise LLMConfigCapabilityMismatchError(
+            config.config_id, capability_upper, config.capability.upper()
         )
-
-    if config_service is not None:
-        return await _resolve(config_service)
-    if db is not None:
-        return await _resolve(ConfigReaderService(db))
-
-    from src.database import get_async_session_factory
-
-    session_factory = get_async_session_factory()
-    async with session_factory() as session:
-        return await _resolve(ConfigReaderService(session))
+    return build_provider_from_runtime_config(config, capability=capability_upper)

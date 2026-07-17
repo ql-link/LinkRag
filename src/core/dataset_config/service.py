@@ -4,13 +4,11 @@
 按 ``(user_id, dataset_id)`` 只读 ``dataset_parse_config`` 表，反序列化为四类 Pydantic
 配置组成的 :class:`DatasetParseConfigBundle`。
 
-**职责边界**：纯只读。无配置行时返回内存默认 bundle（不写库），DB 读取失败时降级到内存
-默认并记录 warning，不阻断解析 / 召回。配置行的增删改全部由 Java 侧负责。
+**职责边界**：纯只读。无配置行时返回绑定为空的内存 bundle（不写库）；
+DB 读取失败向上抛出，不得伪装成“没有绑定”或运维默认。配置行的增删改全部由 Java 侧负责。
 
-**失败语义区分**：
-- DB 读取失败（连接 / 查询异常）→ 降级为系统默认，任务继续；
-- 已读到行但 JSON 内容非法（字段类型不符）→ Pydantic ``ValidationError`` 向上传播，由解析
-  链路收敛为任务失败，**不静默降级**（明确失败优于错误配置生效）。
+DB 读取失败和 JSON 内容非法均向上传播；执行面不把基础设施故障
+伪装成“无配置”或运维默认。
 """
 
 from __future__ import annotations
@@ -29,7 +27,7 @@ from .models import (
     EnhancementConfig,
     PDFConfig,
     RecallConfig,
-    VectorModelBindingConfig,
+    DatasetModelBindingConfig,
 )
 
 logger = logging.getLogger(__name__)
@@ -75,7 +73,7 @@ class DatasetConfigService:
 
     async def get_vector_model_binding(
         self, user_id: int, dataset_id: int, db: AsyncSession
-    ) -> VectorModelBindingConfig:
+    ) -> DatasetModelBindingConfig:
         """读取数据集绑定的 dense/sparse 向量模型配置 ID。
 
         与 ``get_config`` 的 JSON 配置不同，向量模型绑定不允许回退到系统默认：
@@ -89,18 +87,19 @@ class DatasetConfigService:
         result = await db.execute(stmt)
         row = result.scalar_one_or_none()
         if row is None:
-            return VectorModelBindingConfig()
-        return VectorModelBindingConfig(
+            return DatasetModelBindingConfig()
+        return DatasetModelBindingConfig(
             sparse_embedding_config_id=row.sparse_embedding_config_id,
             dense_embedding_config_id=row.dense_embedding_config_id,
-            sparse_embedding_config_source=row.sparse_embedding_config_source,
-            dense_embedding_config_source=row.dense_embedding_config_source,
+            enhancement_chat_config_id=row.enhancement_chat_config_id,
+            enhancement_vision_config_id=row.enhancement_vision_config_id,
+            rerank_config_id=row.rerank_config_id,
         )
 
     async def get_config(
         self, user_id: int, dataset_id: int, db: AsyncSession
     ) -> DatasetParseConfigBundle:
-        """按 ``(user_id, dataset_id)`` 读取配置；无行 / 读取失败返回系统默认。
+        """按 ``(user_id, dataset_id)`` 读取配置；无行返回绑定为空的默认 bundle。
 
         Args:
             user_id: 发起方用户 ID。
@@ -113,22 +112,12 @@ class DatasetConfigService:
         Raises:
             pydantic.ValidationError: 已读到配置行但 JSON 字段类型非法（不静默降级）。
         """
-        try:
-            stmt = select(DatasetParseConfig).where(
-                DatasetParseConfig.user_id == user_id,
-                DatasetParseConfig.dataset_id == dataset_id,
-            )
-            result = await db.execute(stmt)
-            row = result.scalar_one_or_none()
-        except Exception as exc:  # noqa: BLE001
-            # DB 读取失败：降级为系统默认，不阻断任务。
-            logger.warning(
-                "failed to load dataset config (user_id=%s dataset_id=%s): %s",
-                user_id,
-                dataset_id,
-                exc,
-            )
-            return DatasetParseConfigBundle.defaults()
+        stmt = select(DatasetParseConfig).where(
+            DatasetParseConfig.user_id == user_id,
+            DatasetParseConfig.dataset_id == dataset_id,
+        )
+        result = await db.execute(stmt)
+        row = result.scalar_one_or_none()
 
         if row is None:
             # 无配置行：返回内存默认，不写库（行的写入由 Java 侧负责）。
@@ -154,10 +143,11 @@ class DatasetConfigService:
                     **_load_json_column(row.recall_config),
                 }
             ),
-            vector_models=VectorModelBindingConfig(
+            model_bindings=DatasetModelBindingConfig(
                 sparse_embedding_config_id=row.sparse_embedding_config_id,
                 dense_embedding_config_id=row.dense_embedding_config_id,
-                sparse_embedding_config_source=row.sparse_embedding_config_source,
-                dense_embedding_config_source=row.dense_embedding_config_source,
+                enhancement_chat_config_id=row.enhancement_chat_config_id,
+                enhancement_vision_config_id=row.enhancement_vision_config_id,
+                rerank_config_id=row.rerank_config_id,
             ),
         )

@@ -187,23 +187,18 @@ class Settings(BaseSettings):
     RERANK_DEFAULT_TOP_N: int = 8
 
     # ==========================================
-    # 系统级兜底 LLM 配置 (Platform Default Fallback LLMs)
+    # 精确 LLM runtime cache
     # ==========================================
-    SYSTEM_LLM_PROVIDER: str = "qwen"
-    SYSTEM_LLM_API_KEY: Optional[str] = None
-    SYSTEM_LLM_API_BASE: Optional[str] = None
+    LLM_RUNTIME_CACHE_ENABLED: bool = False
+    LLM_RUNTIME_CACHE_SCHEMA_VERSION: int = 1
+    LLM_RUNTIME_CACHE_TTL_SECONDS: int = 86400
+    LLM_RUNTIME_NEGATIVE_TTL_SECONDS: int = 60
+    LLM_RUNTIME_LOAD_LOCK_TTL_MS: int = 5000
+    LLM_RUNTIME_LOAD_WAIT_MS: int = 50
+    LLM_RUNTIME_FENCE_TTL_SECONDS: int = 2592000
 
-    SYSTEM_LLM_MODEL_CHAT: str = "qwen3.5-flash"
-    SYSTEM_LLM_MODEL_EMBEDDING: str = "text-embedding-v4"
-    # RERANK 不走系统兜底：必须由用户在 RERANK 能力配置里显式指定 provider + rerank 模型
-    # （如硅基流动 BAAI/bge-reranker-v2-m3）。置空后 get_system_fallback_config_by_capability("RERANK")
-    # 返回 None，召回链路 allow_system_fallback=False 时即抛 UserModelConfigMissingError（必配不兜底）。
-    SYSTEM_LLM_MODEL_RERANK: Optional[str] = None
-    SYSTEM_LLM_MODEL_VISION: Optional[str] = None
-    MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT: bool = True
-    MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT: bool = True
-    MARKDOWN_PARSER_TABLE_MODEL: Optional[str] = None
-    MARKDOWN_PARSER_VISION_MODEL: Optional[str] = None
+    MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT: bool = False
+    MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT: bool = False
     MARKDOWN_PARSER_LLM_TIMEOUT_MS: int = 60000
     MARKDOWN_PARSER_VISION_CONCURRENCY: int = 24
     MARKDOWN_PARSER_ENABLE_HEADING_HIERARCHY: bool = False

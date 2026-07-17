@@ -60,6 +60,7 @@ async def test_token_usage_send_log_contains_model_and_token_summary(captured_lo
         prompt_tokens=11,
         completion_tokens=7,
         total_tokens=18,
+        config_id=30,
         task_id="task-1",
     )
 

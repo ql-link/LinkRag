@@ -1,266 +1,86 @@
-"""LINK-91：稠密 embedder 按发起用户解析的单测。
-
-覆盖「查配置 → 解密 api_key → create_client」范式与必配缺失语义：
-- 用户无默认 EMBEDDING 配置 → DenseEmbeddingConfigMissingError。
-- 命中用户配置 → 用用户的 provider/解密后的 key/base_url/model 构造 embedder。
-- pipeline 解析复用用户模型名，并按用户 provider/model cap batch size。
-"""
+"""Splitter 只消费 DatasetExecutionContext 已解析的 EMBEDDING 快照。"""
 
 from __future__ import annotations
+
+from types import SimpleNamespace
 
 import pytest
 
 import src.core.splitter.factory as factory
-from src.core.splitter import StructuredSemanticChunker
-from src.core.splitter.factory import (
-    DenseEmbeddingConfigMissingError,
-    aresolve_dataset_embedding_client,
-    aresolve_user_chunk_embedding_pipeline,
-    aresolve_user_embedding_client,
-)
+from src.core.llm.interfaces import CapabilityType
 from src.core.splitter.models import Chunk
 
 
-class _FakeSession:
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, *exc):
-        return False
-
-
-class _FakeSessionFactory:
-    def __call__(self):
-        return _FakeSession()
-
-
-class _FakeEmbedder:
-    def __init__(self, provider_type: str = "qwen", api_base_url: str | None = None) -> None:
+class _Embedder:
+    def __init__(self, *, provider_type="qwen", api_base_url=None):
         self.provider_type = provider_type
         self.api_base_url = api_base_url
-        self.last_model: str | None = None
-        self.batch_sizes: list[int] = []
+        self.models = []
+        self.batch_sizes = []
 
-    def has_capability(self, _cap):
-        return True
+    def has_capability(self, capability):
+        return capability is CapabilityType.EMBEDDING
 
-    async def embed(self, texts, model=None, **kwargs):
-        self.last_model = model
+    async def embed(self, texts, model=None, **_kwargs):
+        self.models.append(model)
         self.batch_sizes.append(len(texts))
-        return type("_EmbeddingResponse", (), {"embeddings": [[0.1, 0.2] for _ in texts]})()
+        return SimpleNamespace(
+            embeddings=[[0.1, 0.2] for _ in texts],
+            usage=None,
+        )
 
 
-def _patch_session_factory(monkeypatch):
-    monkeypatch.setattr("src.database.get_async_session_factory", lambda: _FakeSessionFactory())
-
-
-def _patch_config_reader(monkeypatch, *, config):
-    class _FakeConfigReader:
-        def __init__(self, db):
-            self.db = db
-
-        async def get_user_default_config_by_capability(
-            self,
-            *,
-            user_id,
-            capability,
-            allow_linkrag_default=True,
-        ):
-            assert capability == "EMBEDDING"
-            return config
-
-    monkeypatch.setattr(
-        "src.services.config_reader_service.ConfigReaderService",
-        lambda db: _FakeConfigReader(db),
+def _resolved(provider, *, model="text-embedding-v4", config_id=42):
+    return SimpleNamespace(
+        provider=provider,
+        provider_type=provider.provider_type,
+        model_name=model,
+        config_id=config_id,
     )
 
 
-def _patch_resolver_model_factory(monkeypatch, created: dict | None = None):
-    """patch 统一解析模块内的 ModelFactory 与 decrypt（解析逻辑已收敛到 user_model_resolver）。"""
-    import src.core.llm.user_model_resolver as umr
-
-    class _FakeMF:
-        def create_client(self, **kwargs):
-            if created is not None:
-                created.update(kwargs)
-            return _FakeEmbedder(
-                provider_type=kwargs["provider_type"],
-                api_base_url=kwargs.get("api_base_url"),
-            )
-
-    monkeypatch.setattr(umr, "ModelFactory", lambda: _FakeMF())
-    monkeypatch.setattr(umr, "decrypt_api_key", lambda enc: f"decrypted:{enc}")
-
-
 @pytest.mark.asyncio
-async def test_resolve_user_embedding_client_missing_config_raises(monkeypatch):
-    _patch_session_factory(monkeypatch)
-    _patch_config_reader(monkeypatch, config=None)
-
-    with pytest.raises(DenseEmbeddingConfigMissingError) as exc_info:
-        await aresolve_user_embedding_client(user_id=7)
-    assert exc_info.value.user_id == 7
-
-
-@pytest.mark.asyncio
-async def test_resolve_dataset_embedding_client_missing_binding_raises(monkeypatch):
-    import src.core.dataset_config as dataset_config_pkg
-    from src.core.dataset_config import VectorModelBindingConfig
-
-    class _FakeDatasetConfigService:
-        async def get_vector_model_binding(self, user_id, dataset_id, db):
-            assert (user_id, dataset_id) == (7, 20)
-            return VectorModelBindingConfig()
-
-    monkeypatch.setattr(
-        dataset_config_pkg,
-        "DatasetConfigService",
-        lambda: _FakeDatasetConfigService(),
-    )
-
-    with pytest.raises(DenseEmbeddingConfigMissingError) as exc_info:
-        await aresolve_dataset_embedding_client(user_id=7, dataset_id=20, db=object())
-
-    message = str(exc_info.value)
-    assert "Dataset 20" in message
-    assert "dense_embedding_config_id" in message
-
-
-@pytest.mark.asyncio
-async def test_resolve_user_embedding_client_uses_user_config(monkeypatch):
-    _patch_session_factory(monkeypatch)
-    _patch_config_reader(
-        monkeypatch,
-        config={
-            "provider_type": "qwen",
-            "protocol": "openai",
-            "api_key": "ENC",
-            "api_base_url": "https://user.example/v1",
-            "model_name": "user-embed-model",
-        },
-    )
-
-    created: dict = {}
-    _patch_resolver_model_factory(monkeypatch, created)
-
-    embedder, model_name = await aresolve_user_embedding_client(user_id=7)
-
-    assert model_name == "user-embed-model"
-    assert created["provider_type"] == "qwen"
-    # api_key 必须是解密后的明文，而不是库里的密文
-    assert created["api_key"] == "decrypted:ENC"
-    assert created["api_base_url"] == "https://user.example/v1"
-    assert created["model_name"] == "user-embed-model"
-    assert embedder.provider_type == "qwen"
-
-
-@pytest.mark.asyncio
-async def test_model_bound_embedder_uses_resolved_model_when_call_omits_model():
-    base = _FakeEmbedder()
-    embedder = factory.ModelBoundEmbedder(base, "text-embedding-v4")
+async def test_model_bound_embedder_forces_snapshot_model_and_keeps_config_id():
+    provider = _Embedder()
+    embedder = factory.build_embedding_client(_resolved(provider))
 
     await embedder.embed(["hello"], model=None)
 
-    assert base.last_model == "text-embedding-v4"
+    assert provider.models == ["text-embedding-v4"]
+    assert embedder.config_id == 42
 
 
-def test_create_chunking_engine_injects_embedder_into_stage_two(monkeypatch):
+def test_semantic_depth_requires_explicit_resolved_embedder(monkeypatch):
     monkeypatch.setattr(factory.settings, "CHUNKING_STAGE_TWO_ALGORITHM", "semantic_depth_window")
-    embedder = _FakeEmbedder()
-
-    engine = factory.create_chunking_engine(embedder=embedder)
-
-    stage_two = engine.chunker.stage_two_router.algorithm
-    assert stage_two._scorer.embedder is embedder
+    with pytest.raises(ValueError, match="requires the dataset dense embedding"):
+        factory.create_chunking_engine(embedder=None)
 
 
 @pytest.mark.asyncio
-async def test_resolve_user_chunk_embedding_pipeline_uses_user_model_and_batch_cap(monkeypatch):
-    _patch_session_factory(monkeypatch)
-    _patch_config_reader(
-        monkeypatch,
-        config={
-            "provider_type": "qwen",
-            "protocol": "openai",
-            "api_key": "ENC",
-            "api_base_url": "https://qwen.example/v1/embeddings",
-            # DashScope text-embedding-v4 已知单次上限 10
-            "model_name": "text-embedding-v4",
-        },
-    )
-
-    _patch_resolver_model_factory(monkeypatch)
-    # 配置一个超过 DashScope 上限的 batch size，验证 cap 生效
-    monkeypatch.setattr(factory.settings, "CHUNK_INDEX_EMBED_BATCH_SIZE", 32)
-
-    pipeline = await aresolve_user_chunk_embedding_pipeline(user_id=7)
-
-    assert pipeline.embedding_model == "text-embedding-v4"
-    assert pipeline.batch_size == 10  # 被 provider 已知上限 cap 到 10
-    assert isinstance(pipeline.chunking_engine.chunker, StructuredSemanticChunker)
-
-
-@pytest.mark.asyncio
-async def test_dataset_chunk_embedding_pipeline_caps_linkrag_dashscope_preset(monkeypatch):
-    base_embedder = _FakeEmbedder(
+async def test_pipeline_uses_exact_snapshot_and_provider_batch_cap(monkeypatch):
+    provider = _Embedder(
         provider_type="linkrag",
         api_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings",
     )
-    bound_embedder = factory.ModelBoundEmbedder(base_embedder, "text-embedding-v3", config_id=15)
-
-    async def resolve_dataset_embedding_client(user_id, dataset_id, db=None):
-        assert (user_id, dataset_id, db) == (5, 7, None)
-        return bound_embedder, "text-embedding-v3"
-
-    monkeypatch.setattr(
-        factory,
-        "aresolve_dataset_embedding_client",
-        resolve_dataset_embedding_client,
-    )
     monkeypatch.setattr(factory.settings, "CHUNK_INDEX_EMBED_BATCH_SIZE", 32)
-
-    pipeline = await factory.aresolve_dataset_chunk_embedding_pipeline(user_id=5, dataset_id=7)
-
-    assert pipeline.batch_size == 10
-
-
-@pytest.mark.asyncio
-async def test_linkrag_dashscope_preset_splits_32_chunks_into_batches_of_at_most_10(monkeypatch):
-    base_embedder = _FakeEmbedder(
-        provider_type="linkrag",
-        api_base_url="https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings",
+    pipeline = factory.build_chunk_embedding_pipeline(
+        _resolved(provider, model="text-embedding-v3", config_id=15)
     )
-    bound_embedder = factory.ModelBoundEmbedder(base_embedder, "text-embedding-v3", config_id=15)
-
-    async def resolve_dataset_embedding_client(user_id, dataset_id, db=None):
-        assert (user_id, dataset_id, db) == (5, 7, None)
-        return bound_embedder, "text-embedding-v3"
-
-    monkeypatch.setattr(
-        factory,
-        "aresolve_dataset_embedding_client",
-        resolve_dataset_embedding_client,
-    )
-    monkeypatch.setattr(factory.settings, "CHUNK_INDEX_EMBED_BATCH_SIZE", 32)
-    pipeline = await factory.aresolve_dataset_chunk_embedding_pipeline(user_id=5, dataset_id=7)
-    chunks = [
-        Chunk(content=f"chunk-{index}", start_line=index, end_line=index) for index in range(32)
-    ]
+    chunks = [Chunk(content=f"chunk-{index}", start_line=index, end_line=index) for index in range(22)]
 
     results = await pipeline.aembed_chunks(chunks)
 
+    assert pipeline.embedding_model == "text-embedding-v3"
     assert pipeline.batch_size == 10
-    assert base_embedder.batch_sizes == [10, 10, 10, 2]
-    assert len(results) == 32
-    assert pipeline.last_stats.batch_count == 4
+    assert provider.models == ["text-embedding-v3"] * 3
+    assert provider.batch_sizes == [10, 10, 2]
+    assert len(results) == 22
 
 
-def test_linkrag_non_dashscope_endpoint_keeps_configured_batch_size():
-    batch_size = factory._resolve_embed_batch_size(
+def test_non_dashscope_linkrag_endpoint_keeps_configured_batch_size():
+    assert factory._resolve_embed_batch_size(
         provider_type="linkrag",
         model_name="text-embedding-v3",
         configured_batch_size=32,
         api_base_url="https://embedding.example.com/v1/embeddings",
-    )
-
-    assert batch_size == 32
+    ) == 32

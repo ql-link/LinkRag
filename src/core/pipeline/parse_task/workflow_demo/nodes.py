@@ -23,6 +23,7 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.mq.messages.parse_task import ParseTaskPayload
+from src.core.dataset_config import DatasetExecutionContext
 from src.core.pipeline.parse_task._utils import (
     compact_log_value,
     monotonic_duration_ms,
@@ -91,6 +92,7 @@ class ParseWorkflowRuntime:
     log_record: Any | None = None
     log_repo: Any | None = None
     is_retry: bool = False
+    execution_context: DatasetExecutionContext | None = None
     # 节点失败时回填 {stage: 干净失败原因}，供编排器汇总聚合终态（避免从引擎记录的
     # "ClassName: reason" 反解）。
     failures: dict[str, str] = field(default_factory=dict)
@@ -365,6 +367,7 @@ class StatusTrackedParseNode(WorkflowNode):
             pipeline_record=runtime.pipeline_record,
             db=db,
             is_retry=runtime.is_retry,
+            execution_context=runtime.execution_context,
             parse_result=runtime.parse_result,
             chunks=runtime.chunks,
             plan=runtime.plan,

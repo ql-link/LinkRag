@@ -15,7 +15,8 @@ class UsageLog(BaseModel):
     """
     id: str = Field(..., description="记录唯一标识")
     user_id: str = Field(..., description="用户 ID")
-    config_id: str = Field(..., description="用户配置 ID")
+    # 历史 llm_usage_log 行允许为空；新 HTTP/MQ 上报契约则要求正整数。
+    config_id: Optional[int] = Field(None, gt=0, description="全局 LLM 配置 ID")
     provider_type: str = Field(..., description="厂商类型")
     model_name: str = Field(..., description="模型名称")
     prompt_tokens: int = Field(0, description="输入 Token 数")

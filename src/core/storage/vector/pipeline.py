@@ -31,7 +31,6 @@ from src.core.encoding.sparse import SparseChunkVectorizationRequest, SparseVect
 from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
 from src.core.splitter.factory import (
     DenseEmbeddingDimensionError,
-    aresolve_dataset_chunk_embedding_pipeline as aresolve_user_chunk_embedding_pipeline,
     validate_dense_dimension,
 )
 from src.utils.logger import logger
@@ -199,11 +198,10 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         if not records:
             return ChunkIndexingResult(total_chunks=0, indexed_chunks=0)
 
-        # 写入链路按数据集绑定解析稠密 embedder（必配 EMBEDDING、无系统兜底）。
-        # 配置缺失（DenseEmbeddingConfigMissingError）在此直接向上抛出，不触碰任何 chunk
-        # 状态，由 VectorizingStage 归类为 LLM_CONFIG_MISSING 并通知 Java，而不是被下方
-        # batch 失败路径吞成 generic VECTORIZING_FAILED。
-        embedding_pipeline = await aresolve_user_chunk_embedding_pipeline(user_id, set_id)
+        # 这个 pipeline 由 DatasetExecutionContext 在进入阶段前显式装配；
+        # 此处禁止再读 DB/default/source，保证语义分块与 dense 写入
+        # 共用同一个 resolved snapshot。
+        embedding_pipeline = self.embedding_pipeline
 
         embedding_model: str | None = None
         indexed_count = 0

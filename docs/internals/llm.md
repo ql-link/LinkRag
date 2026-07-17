@@ -79,14 +79,14 @@ Gemini 原生把"是否流式"编码在 URL（而非请求体 `stream` 开关）
 - `jina` 协议：平铺 `/rerank`（jina / cohere / 硅基流动 同构契约：请求 `{model, query, documents, top_n?, return_documents}`，响应 `{results:[{index, relevance_score, document}], tokens|usage}`），复用 `_rerank.standard_rerank()`，`endpoint=""` 直打 `api_base_url`。现网推荐路径（如硅基流动 `BAAI/bge-reranker-v2-m3`）。
 - `dashscope` 协议：千问原生**嵌套**体（`{model, input:{query,documents}, parameters:{top_n,return_documents}}`），解析 `output.results[*]`，与平铺不同，单独实现。
 - rerank 模型由调用方 `model` 指定，缺省回退 adapter 构造时的 `model_name`；`top_n=None` 不在 provider 侧截断。
-- **RERANK 不走系统兜底**：`SYSTEM_LLM_MODEL_RERANK` 留空，必须由用户在 RERANK 配置里显式指定。
+- **RERANK 不走默认兜底**：数据集开启 rerank 时必须绑定 `rerank_config_id`。
 
 ## 3. 调用链
 
 ```text
-/api/v1/llm/*  或  系统链路（ChunkEmbeddingPipeline / MarkdownEnhancement / 召回 rerank）
-  -> ConfigReaderService           # 读用户配置，未命中时读 LinkRag 系统默认预设（含 protocol）
-  -> user_model_resolver           # protocol 必填校验 + 能力门禁
+/api/v1/llm/*  或  DatasetExecutionContext（Chunk / MarkdownEnhancement / 召回 rerank）
+  -> RuntimeConfigRepository       # 仅按全局 config_id 读 Redis/MySQL 物理行
+  -> aresolve_model                # active + scope/owner + capability 门禁
   -> ModelFactory.create_client    # 协议分发中台：按 protocol 选 adapter
     -> Provider(adapter)
       -> generate / stream / embed / rerank
@@ -99,15 +99,15 @@ Gemini 原生把"是否流式"编码在 URL（而非请求体 `stream` 开关）
 | `CapabilityType` | `interfaces.py` | `TEXT/EMBEDDING/SPARSE_EMBEDDING/RERANK/VISION/TOOL_CALLING` |
 | `BaseProvider` | `base_provider.py` | adapter 公共属性、`_capabilities` 与能力判断 |
 | `ModelFactory` | `factory.py` | **协议分发中台**：按 `protocol` 注册 / 查找 / 创建 adapter |
-| `build_provider_from_config` / `aresolve_user_model` | `user_model_resolver.py` | 查配置（支持 `source + configId`）→ protocol 必填 → 分发 → 能力门禁 |
-| `ConfigReaderService` | `src/services/config_reader_service.py` | 直接读取用户配置 / LinkRag 系统默认预设 / 旧 env 兜底配置（含 `protocol`） |
+| `build_provider_from_config` / `aresolve_model` | `user_model_resolver.py` | 全局 ID 解析 → 授权/能力门禁 → protocol 分发 |
+| `RuntimeConfigRepository` | `runtime_repository.py` | `config_id -> RuntimeModelConfig` 的缓存旁路与 MySQL 回源 |
 | adapter 实现 | `providers/*.py` | 各 protocol 的请求构造 / 鉴权 / 响应解析 |
 
 ## 5. 配置来源
 
-运行时配置权威源为 **DB 三层**（`llm_provider_model` 事实源 / `llm_user_config` 用户运行快照 / `llm_system_preset` LinkRag 系统默认预设），均带 `protocol` / `api_base_url`，每次解析直接查询 MySQL。默认配置解析顺序为：先查用户自己的 active default（排除历史 `is_system_preset=true` 行），未命中时查 `provider_type='linkrag' AND is_default=true AND is_active=true` 的系统预设。Java 返回显式配置时，Python 按 `source + configId` 定位：`USER` 读 `llm_user_config.id`，`SYSTEM` 读 `llm_system_preset.id`。
-
-`src/config.py::Settings` 另有一套**系统级 env 配置** `SYSTEM_LLM_*`（embedding / markdown 增强 / `/llm` 兜底用）。它是平行于 DB 的遗留第二事实源，且 env 无 `protocol` 字段——当前由系统三处调用点**写死 `protocol="openai"`** 桥接（系统级只做 embedding+chat，固定 openai 兼容）。收口到 DB 单一事实源见 **issue #191**。
+运行时配置权威源为 `llm_model_config`。SYSTEM / USER 行共用全局 ID 空间；`scope` 只用于授权。
+`llm_capability_default` 只供创建/选择界面在“未显式指定”时选择 config，执行链路不二次读默认指针。
+`SYSTEM_LLM_*`、`llm_user_config`、`llm_system_preset` 和 `config_source` 运行路由已删除。
 
 API Key 不写入文档 / 测试 / 提交；用户密钥库内密文保存，读取后 `decrypt_api_key()` 解密。
 
@@ -119,9 +119,9 @@ API Key 不写入文档 / 测试 / 提交；用户密钥库内密文保存，读
 | `/api/v1/llm/embed` | `EMBEDDING` | openai / jina |
 | 用户配置解析 | `SPARSE_EMBEDDING` | doubao_vision / bge_m3（已接入 RAG 稀疏写入/召回）；openai / jina 仅声明能力 |
 | `/api/v1/llm/rerank` | `RERANK` | jina（平铺）/ dashscope（千问原生） |
-| Markdown 表格增强 | `CHAT` | 用户默认 → LinkRag 系统默认预设；openai / anthropic / google |
-| Chunk 向量化 | `EMBEDDING` | 系统级 openai |
-| Markdown 图片增强 / `/ocr` | `VISION` | openai / anthropic / google；`/ocr` 为兼容旧 endpoint，读 `VISION` 配置（不再读 `OCR` 默认模型）。图片增强按用户默认 → LinkRag 系统默认预设解析，两层都未命中时抛 `EnhancementModelMissingError`（不静默跳过） |
+| Markdown 表格/标题增强 | `CHAT` | 数据集 `enhancement_chat_config_id` |
+| Chunk 向量化 | `EMBEDDING` | 数据集 `dense_embedding_config_id` |
+| Markdown 图片增强 / `/ocr` | `VISION` | 数据集 `enhancement_vision_config_id`；`/ocr` 使用请求体显式 `config_id` |
 
 ## 7. 新增 adapter（新增 protocol）
 

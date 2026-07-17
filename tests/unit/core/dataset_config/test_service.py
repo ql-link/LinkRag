@@ -5,7 +5,7 @@
 - 数据集有配置记录 → 数据集级值生效；
 - 数据集无配置记录 → 全部系统默认（不写库）；
 - 空 enhancement_config → 所有增强关闭；非空部分覆盖 → 未覆盖字段取系统默认；
-- DB 故障 → 降级系统默认、不抛、不阻断；
+- DB 故障 → 原样向上传播，不伪装成无绑定；
 - JSON 字段类型非法 → ValidationError 向上传播（不静默降级），错误含字段名。
 """
 
@@ -51,13 +51,16 @@ def _row(**json_cols):
     row.recall_config = json_cols.get("recall", {})
     row.sparse_embedding_config_id = None
     row.dense_embedding_config_id = None
-    row.sparse_embedding_config_source = "USER"
-    row.dense_embedding_config_source = "USER"
+    row.enhancement_chat_config_id = None
+    row.enhancement_vision_config_id = None
+    row.rerank_config_id = None
     return row
 
 
 @pytest.mark.asyncio
 async def test_no_row_returns_system_defaults_without_write(monkeypatch):
+    from src.config import settings
+
     _set_link_136_recall_defaults(monkeypatch)
     db = _fake_db(row=None)
     bundle = await DatasetConfigService().get_config(user_id=1, dataset_id=2, db=db)
@@ -68,8 +71,14 @@ async def test_no_row_returns_system_defaults_without_write(monkeypatch):
     assert bundle.recall.sparse_top_k == 50
     assert bundle.recall.dense_top_k == 100
     # 增强配置只剩开关（不再有 table_model / vision_model），默认取系统开关。
-    assert bundle.enhancement.enable_table_enhancement is True
-    assert bundle.enhancement.enable_image_enhancement is True
+    assert (
+        bundle.enhancement.enable_table_enhancement
+        is settings.MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT
+    )
+    assert (
+        bundle.enhancement.enable_image_enhancement
+        is settings.MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT
+    )
     assert not hasattr(bundle.enhancement, "table_model")
     # 只读：绝不写库。
     db.add.assert_not_called()
@@ -130,20 +139,23 @@ async def test_non_empty_enhancement_config_keeps_partial_settings_fallback(monk
 
 
 @pytest.mark.asyncio
-async def test_row_present_applies_vector_model_binding_source():
+async def test_row_present_applies_all_config_id_only_model_bindings():
     row = _row()
     row.sparse_embedding_config_id = 11
-    row.sparse_embedding_config_source = "SYSTEM"
     row.dense_embedding_config_id = 12
-    row.dense_embedding_config_source = "USER"
+    row.enhancement_chat_config_id = 13
+    row.enhancement_vision_config_id = 14
+    row.rerank_config_id = 15
     db = _fake_db(row=row)
 
     bundle = await DatasetConfigService().get_config(user_id=1, dataset_id=2, db=db)
 
     assert bundle.vector_models.sparse_embedding_config_id == 11
-    assert bundle.vector_models.sparse_embedding_config_source == "SYSTEM"
     assert bundle.vector_models.dense_embedding_config_id == 12
-    assert bundle.vector_models.dense_embedding_config_source == "USER"
+    assert bundle.model_bindings.enhancement_chat_config_id == 13
+    assert bundle.model_bindings.enhancement_vision_config_id == 14
+    assert bundle.model_bindings.rerank_config_id == 15
+    assert not hasattr(bundle.model_bindings, "dense_embedding_config_source")
 
 
 @pytest.mark.asyncio
@@ -178,14 +190,10 @@ async def test_enhancement_legacy_model_keys_ignored():
 
 
 @pytest.mark.asyncio
-async def test_db_failure_degrades_to_defaults(monkeypatch):
-    _set_link_136_recall_defaults(monkeypatch)
+async def test_db_failure_propagates_without_default_fallback():
     db = _fake_db(raises=RuntimeError("db down"))
-    bundle = await DatasetConfigService().get_config(user_id=1, dataset_id=2, db=db)
-
-    # 不抛、回退系统默认。
-    assert bundle.chunking.overlap_tokens == 64
-    assert bundle.recall.recall_result_limit == 64
+    with pytest.raises(RuntimeError, match="db down"):
+        await DatasetConfigService().get_config(user_id=1, dataset_id=2, db=db)
 
 
 @pytest.mark.asyncio

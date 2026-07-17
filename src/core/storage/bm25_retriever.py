@@ -38,6 +38,7 @@ class Bm25Retriever:
         user_id: int,
         top_k: int,
         score_threshold_override: float | None = None,
+        dataset_contexts: dict[int, object] | None = None,
     ) -> list[RetrieverHit]:
         if user_id is None or user_id <= 0:
             raise ValueError(f"user_id must be a positive int, got {user_id!r}")

@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from src.core.storage.chunks.constants import (
@@ -134,19 +136,16 @@ async def test_dense_not_success_does_not_block_sparse():
 
 
 @pytest.mark.asyncio
-async def test_run_resolves_sparse_service_per_user_when_not_injected(monkeypatch):
-    # 不注入 service → run() 应按 records[0].user_id 解析（读用户配置，而非 .env）。
+async def test_run_builds_service_from_exact_resolved_snapshot(monkeypatch):
     repo = _RecordingRepo()
     service = _RecordingService()
-    captured: dict[str, object] = {}
+    resolved = SimpleNamespace(config_id=88, model_name="dataset-sparse")
 
-    async def fake_resolve(user_id, dataset_id, *, db):
-        captured["user_id"] = user_id
-        captured["dataset_id"] = dataset_id
-        captured["db"] = db
+    def fake_build(value):
+        assert value is resolved
         return service
 
-    monkeypatch.setattr(indexing_mod, "aresolve_user_sparse_vector_service", fake_resolve)
+    monkeypatch.setattr(indexing_mod, "build_sparse_vector_service", fake_build)
 
     pipeline = SparseIndexingPipeline(
         chunk_repository=repo,
@@ -154,23 +153,18 @@ async def test_run_resolves_sparse_service_per_user_when_not_injected(monkeypatc
     )
 
     rows = [_row(chunk_id="c1", user_id=7)]
-    await pipeline.run(chunks=rows, task_id="t1", db=_FakeDB())
+    await pipeline.run(
+        chunks=rows,
+        task_id="t1",
+        db=_FakeDB(),
+        resolved_model=resolved,
+    )
 
-    assert captured["user_id"] == 7  # 按发起用户解析
-    assert captured["dataset_id"] == 8
-    assert isinstance(captured["db"], _FakeDB)
-    assert service.texts == ["alpha"]  # 确实用解析出的 service 编码
+    assert service.texts == ["alpha"]
 
 
 @pytest.mark.asyncio
-async def test_run_prefers_injected_service_over_per_user_resolution(monkeypatch):
-    # 注入了 service → 绕过 per-user 解析（测试 / 显式装配语义）。
-    async def fail_resolve(user_id, dataset_id, *, db):
-        del user_id, dataset_id, db
-        raise AssertionError("must not resolve per-user when service is injected")
-
-    monkeypatch.setattr(indexing_mod, "aresolve_user_sparse_vector_service", fail_resolve)
-
+async def test_run_prefers_explicitly_injected_service():
     injected = _RecordingService()
     pipeline = SparseIndexingPipeline(
         chunk_repository=_RecordingRepo(),

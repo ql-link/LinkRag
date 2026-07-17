@@ -49,9 +49,24 @@ class RedisClient:
 
     async def set(
         self, key: str, value: str, ex: Optional[int] = None
-    ) -> None:
+    ) -> bool:
         """设置值"""
-        await self.client.set(key, value, ex=ex)
+        return bool(await self.client.set(key, value, ex=ex))
+
+    async def set_if_absent(
+        self,
+        key: str,
+        value: str,
+        *,
+        ex: Optional[int] = None,
+        px: Optional[int] = None,
+    ) -> bool:
+        """SET NX，用于短时加载锁。"""
+        return bool(await self.client.set(key, value, ex=ex, px=px, nx=True))
+
+    async def eval(self, script: str, *, keys: list[str], args: list[object]):
+        """执行 Lua；key 与 arg 分开以保持 Redis Cluster 语义。"""
+        return await self.client.eval(script, len(keys), *keys, *args)
 
     async def delete(self, *keys: str) -> int:
         """删除键"""

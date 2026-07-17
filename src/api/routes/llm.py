@@ -7,13 +7,13 @@ from typing import Optional, List
 
 from fastapi import APIRouter, Header, HTTPException, Depends
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.llm.response import APIResponse
 from src.core.llm.base_provider import BaseProvider
-from src.core.llm.exceptions import UserModelConfigMissingError
-from src.core.llm.user_model_resolver import aresolve_user_model
+from src.core.llm.exceptions import LLMConfigResolutionError
+from src.core.llm.user_model_resolver import aresolve_model
 from src.database import get_db
 
 router = APIRouter(prefix="/api/v1/llm", tags=["llm"])
@@ -51,7 +51,7 @@ def _coerce_int(value: str, field: str) -> int:
     """把请求边界传入的 ID 字符串归一成 int，非法值 → 422。
 
     ``user_id``（来自 ``X-User-Id`` Header）与 ``config_id``（来自请求体）在路由层是
-    字符串，但下游 resolver / ConfigReaderService / ``BigInteger`` 主键都按 int 契约。
+    字符串，但下游 exact resolver / ``BigInteger`` 主键都按 int 契约。
     在此显式转换并校验，避免把弱类型一路下沉到 SQL 靠驱动隐式转换。
     """
     try:
@@ -60,53 +60,29 @@ def _coerce_int(value: str, field: str) -> int:
         raise HTTPException(status_code=422, detail=f"invalid {field}") from exc
 
 
-def _coerce_config_source(value: Optional[str]) -> str:
-    """归一化配置来源，非法值 → 422。"""
-    source = (value or "USER").upper()
-    if source not in {"USER", "SYSTEM"}:
-        raise HTTPException(status_code=422, detail="invalid config_source")
-    return source
-
-
 async def _resolve_provider(
     db: AsyncSession,
     user_id: str,
     capability: str,
     *,
-    config_id: Optional[str] = None,
-    config_source: Optional[str] = None,
-    override_model: Optional[str] = None,
+    config_id: int,
 ) -> BaseProvider:
-    """按用户解析指定能力的 Provider，未命中 → 422。
-
-    统一走 :func:`aresolve_user_model`：config_id 指定优先，否则取用户该能力默认配置。
-    直调 ``/llm`` 路由不启用系统兜底，用户缺对应能力配置时直接返回明确错误。
-    ``user_id`` / ``config_id`` 在边界归一成 int。
-    """
+    """按全局 config_id 精确解析 Provider。"""
     uid = _coerce_int(user_id, "X-User-Id")
-    cid = _coerce_int(config_id, "config_id") if config_id is not None else None
-    source = _coerce_config_source(config_source)
     try:
-        resolved = await aresolve_user_model(
+        resolved = await aresolve_model(
             user_id=uid,
             capability=capability,
-            config_id=cid,
-            config_source=source,
-            allow_system_fallback=False,
-            override_model=override_model,
+            config_id=config_id,
             db=db,
         )
-    except UserModelConfigMissingError as exc:
+    except LLMConfigResolutionError as exc:
         raise HTTPException(
-            status_code=422,
+            status_code=exc.http_status,
             detail={
-                "code": "LLM_CONFIG_MISSING",
-                "message": (
-                    f"user LLM config missing for capability {capability}; "
-                    "please configure the model before calling this API"
-                ),
-                "capability": capability,
-                "user_id": uid,
+                "code": exc.code,
+                "message": str(exc),
+                "config_id": config_id,
             },
         ) from exc
     return resolved.provider
@@ -118,10 +94,10 @@ async def _resolve_provider(
 class GenerateRequest(BaseModel):
     """生成文本请求"""
 
-    config_id: Optional[str] = None
-    config_source: Optional[str] = Field("USER", description="配置来源：USER 或 SYSTEM")
+    model_config = ConfigDict(extra="forbid")
+
+    config_id: int = Field(..., gt=0, description="全局 LLM 配置 ID")
     prompt: str = Field(..., description="输入提示词")
-    model: Optional[str] = Field(None, description="模型名称（覆盖配置）")
     temperature: float = Field(0.7, ge=0, le=2, description="采样温度")
     max_tokens: Optional[int] = Field(None, ge=1, description="最大 token 数")
     system_prompt: Optional[str] = Field(None, description="系统提示词")
@@ -131,28 +107,29 @@ class GenerateRequest(BaseModel):
 class EmbedRequest(BaseModel):
     """向量化请求"""
 
-    config_id: Optional[str] = None
-    config_source: Optional[str] = Field("USER", description="配置来源：USER 或 SYSTEM")
+    model_config = ConfigDict(extra="forbid")
+
+    config_id: int = Field(..., gt=0, description="全局 LLM 配置 ID")
     input: str | List[str] = Field(..., description="待向量化的文本")
-    model: Optional[str] = Field(None, description="指定模型")
 
 
 class RerankRequest(BaseModel):
     """重排请求"""
 
-    config_id: Optional[str] = None
-    config_source: Optional[str] = Field("USER", description="配置来源：USER 或 SYSTEM")
+    model_config = ConfigDict(extra="forbid")
+
+    config_id: int = Field(..., gt=0, description="全局 LLM 配置 ID")
     query: str = Field(..., description="检索查询")
     documents: List[str] = Field(..., description="待重排的文档")
-    model: Optional[str] = None
     top_n: Optional[int] = None
 
 
 class OcrRequest(BaseModel):
     """OCR 请求"""
 
-    config_id: Optional[str] = None
-    config_source: Optional[str] = Field("USER", description="配置来源：USER 或 SYSTEM")
+    model_config = ConfigDict(extra="forbid")
+
+    config_id: int = Field(..., gt=0, description="全局 LLM 配置 ID")
     image_base64: str = Field(..., description="图像 base64 编码")
     prompt: Optional[str] = Field(None, description="分析提示词")
 
@@ -182,8 +159,6 @@ async def generate_text(
             x_user_id,
             "CHAT",
             config_id=request.config_id,
-            config_source=request.config_source,
-            override_model=request.model,
         )
 
         # 调用生成
@@ -230,8 +205,6 @@ async def generate_text_stream(
             x_user_id,
             "CHAT",
             config_id=request.config_id,
-            config_source=request.config_source,
-            override_model=request.model,
         )
 
         async def event_generator():
@@ -273,11 +246,9 @@ async def embed_text(
             x_user_id,
             "EMBEDDING",
             config_id=request.config_id,
-            config_source=request.config_source,
-            override_model=request.model,
         )
 
-        result = await client.embed(texts=request.input, model=request.model)
+        result = await client.embed(texts=request.input)
 
         return APIResponse(
             code=200,
@@ -309,14 +280,11 @@ async def rerank_documents(
             x_user_id,
             "RERANK",
             config_id=request.config_id,
-            config_source=request.config_source,
-            override_model=request.model,
         )
 
         result = await client.rerank(
             query=request.query,
             documents=request.documents,
-            model=request.model,
             top_n=request.top_n,
         )
 
@@ -353,7 +321,6 @@ async def extract_text_from_image(
             x_user_id,
             "VISION",
             config_id=request.config_id,
-            config_source=request.config_source,
         )
 
         result = await client.analyze_image(

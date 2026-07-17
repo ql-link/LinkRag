@@ -34,9 +34,9 @@ JSON 的缺失字段仍取运行期 `Settings` 值。数据集配置行不存在
 
 | 字段 | 类型 | 默认值 | 含义 |
 |---|---|---|---|
-| `enable_table_enhancement` | `bool` | `True` | 是否启用表格 LLM 增强，按用户默认 → LinkRag 系统默认预设解析 `CHAT` 模型 |
-| `enable_image_enhancement` | `bool` | `True` | 是否启用图片 LLM 增强，按用户默认 → LinkRag 系统默认预设解析 `VISION` 模型 |
-| `enable_heading_hierarchy` | `bool` | `False` | 是否启用 LLM 标题层级插入；门禁命中时按用户默认 → LinkRag 系统默认预设解析 `CHAT` 模型 |
+| `enable_table_enhancement` | `bool` | `True` | 是否启用表格 LLM 增强；开启时要求 `enhancement_chat_config_id` |
+| `enable_image_enhancement` | `bool` | `True` | 是否启用图片 LLM 增强；开启时要求 `enhancement_vision_config_id` |
+| `enable_heading_hierarchy` | `bool` | `False` | 是否启用 LLM 标题层级插入；门禁命中时复用 `enhancement_chat_config_id` |
 
 > 数据集行中的空对象 `{}` 会关闭上述三个开关，不使用表内静态默认。开启表格/图片增强后，
 > 用户默认和 LinkRag 系统默认预设均无对应能力模型时归 `ENHANCEMENT_MODEL_MISSING`；标题层级
@@ -82,17 +82,18 @@ JSON 的缺失字段仍取运行期 `Settings` 值。数据集配置行不存在
 
 ---
 
-## 五、VectorModelBindingConfig — 向量模型绑定
+## 五、LLMModelBindingConfig — 五用途模型绑定
 
-> 向量模型绑定不在本 PR 引入，已由数据集向量模型绑定特性落地（见 `dataset_parse_config` 的
-> `dense_embedding_config_id` / `sparse_embedding_config_id` 两列与 `VectorModelBindingConfig`
-> 模型）。此处仅列出读取入口，字段细节见 [mysql.md](../api/schemas/mysql.md) 与
-> [vectorization.md](vectorization.md) / [sparse_vector.md](sparse_vector.md)。
+**DB 列**：`dense_embedding_config_id` / `sparse_embedding_config_id` /
+`enhancement_chat_config_id` / `enhancement_vision_config_id` / `rerank_config_id`（均为全局 `llm_model_config.id`）。
 
-**DB 列**：`dense_embedding_config_id` / `sparse_embedding_config_id`（BIGINT，**nullable**）  
-**读取入口**：`DatasetConfigService.get_vector_model_binding(user_id, dataset_id, db)` 与
-`get_config(...).vector_models`；消费点见写入/召回链路各 factory。`NULL` 表示存量数据集未指定，
-降级到用户默认配置。
+`DatasetExecutionContextBuilder` 在解析的任何 stage 或召回的任何 retriever 之前一次性解析所需绑定：
+
+- dense/sparse 始终必需；
+- CHAT/VISION 只在对应增强开启时必需；
+- RERANK 只在 `enable_rerank=true` 时必需。
+
+必需字段为 `NULL`、配置停用/越权/能力错误都明确失败；不降级到用户或平台默认。整次执行复用同一 snapshot。
 
 ---
 
@@ -107,5 +108,5 @@ dataset_parse_config 表
             ├─ enhancement_config → {} 时全关闭；非空时叠加 Settings
             ├─ pdf_config        → PDFConfig
             ├─ recall_config     → RecallConfig
-            └─ dense/sparse_embedding_config_id → VectorModelBindingConfig（NULL 时降级用户默认）
+            └─ 五个 config_id → DatasetExecutionContext（按开关校验必需，无默认兜底）
 ```

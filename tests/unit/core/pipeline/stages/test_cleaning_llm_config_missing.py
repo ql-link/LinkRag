@@ -1,8 +1,8 @@
 # -*- coding: utf-8 -*-
-"""LINK-75：CleaningStage 把「用户缺必配 CHAT 配置」归类为 LLM_CONFIG_MISSING。
+"""CleaningStage 把 Dataset 缺少必配增强快照归类为明确错误。
 
-验证增强环节抛出的 LLMConfigMissingError 穿透 cleaning 的 parse 容错，被单独归类为
-ParseFailureCode.LLM_CONFIG_MISSING，而非笼统的 PARSE_ENGINE_FAILED。
+验证增强环节抛出的 EnhancementModelMissingError 被单独归类，
+而非笼统的 PARSE_ENGINE_FAILED。
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.core.markdown_parser import LLMConfigMissingError
+from src.core.markdown_parser import EnhancementModelMissingError
 from src.core.pipeline.parse_task.error_codes import ParseFailureCode
 from src.core.pipeline.parse_task.stages.cleaning import CleaningStage
 from src.core.pipeline.parse_task.stages.context import StageContext
@@ -42,14 +42,13 @@ def _build_ctx():
 
 
 @pytest.mark.asyncio
-async def test_cleaning_classifies_llm_config_missing():
-    """parse_file 抛 LLMConfigMissingError → 归类为 LLM_CONFIG_MISSING。"""
-    stage = _build_stage(LLMConfigMissingError("CHAT", 7))
+async def test_cleaning_classifies_enhancement_binding_missing():
+    stage = _build_stage(EnhancementModelMissingError("table"))
     outcome = await stage.run(_build_ctx())
 
     assert outcome.ok is False
-    assert outcome.failure_reason.startswith(ParseFailureCode.LLM_CONFIG_MISSING.value)
-    assert isinstance(outcome.error, LLMConfigMissingError)
+    assert outcome.failure_reason.startswith(ParseFailureCode.ENHANCEMENT_MODEL_MISSING.value)
+    assert isinstance(outcome.error, EnhancementModelMissingError)
 
 
 @pytest.mark.asyncio

@@ -492,12 +492,20 @@ def _run_failure_phase_restore(workflow_state):
     assert workflow_state.result.failure_phase == FailurePhase.RESTORE
 
 
-@then(parsers.parse("{node}.status == SUCCESS"))
+@then(
+    parsers.re(
+        r"^(?P<node>(?!run\.)[A-Za-z_][A-Za-z0-9_]*)\.status == SUCCESS$"
+    )
+)
 def _node_success(workflow_state, node):
     assert workflow_state.result.nodes[node].status == NodeStatus.SUCCESS
 
 
-@then(parsers.parse("{node}.status == FAILED"))
+@then(
+    parsers.re(
+        r"^(?P<node>(?!run\.)[A-Za-z_][A-Za-z0-9_]*)\.status == FAILED$"
+    )
+)
 def _node_failed(workflow_state, node):
     assert workflow_state.result.nodes[node].status == NodeStatus.FAILED
 

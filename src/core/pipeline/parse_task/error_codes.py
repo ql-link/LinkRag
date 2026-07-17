@@ -25,11 +25,10 @@ class ParseFailureCode(str, Enum):
     PARSING_FAILED = "PARSING_FAILED"
     # 稀疏向量阶段失败前缀，与 dense 的 VECTORIZING_FAILED 平级。
     SPARSE_VECTORIZING_FAILED = "SPARSE_VECTORIZING_FAILED"
-    # 发起用户缺少必配能力的默认 LLM 配置，无法执行解析增强（CHAT）或稠密向量化（EMBEDDING）。
-    # 区别于配置读取失败（按引擎/INTERNAL 异常处理），仅在「确实未配置」时使用。
+    # Dataset 缺少解析所需的精确 LLM 配置绑定。保留历史错误码以兼容上游。
     LLM_CONFIG_MISSING = "LLM_CONFIG_MISSING"
-    # 数据集开启了表格/图片增强，但用户默认和 LinkRag 系统默认预设均未提供对应能力
-    # （表格→CHAT，图片→VISION）的模型。数据集层不再选择增强模型。
+    DATASET_MODEL_BINDING_REQUIRED = "DATASET_MODEL_BINDING_REQUIRED"
+    # 数据集开启了表格/图片增强，但对应 CHAT/VISION 精确绑定缺失。
     ENHANCEMENT_MODEL_MISSING = "ENHANCEMENT_MODEL_MISSING"
     # 用户 EMBEDDING 模型输出维度与系统统一维度（DENSE_VECTOR_DIMENSION）不一致，
     # 无法写入按 bucket 共享、维度固定的稠密 collection（方案 A 维度约束）。
@@ -50,8 +49,9 @@ FAILURE_REASON_TEXT: dict[ParseFailureCode, str] = {
     ParseFailureCode.INTERNAL_UNKNOWN_ERROR: "系统异常，请稍后重试",
     ParseFailureCode.PARSING_FAILED: "文件解析阶段失败，请检查文件内容或重新解析",
     ParseFailureCode.SPARSE_VECTORIZING_FAILED: "稀疏向量化失败，请稍后重试",
-    ParseFailureCode.LLM_CONFIG_MISSING: "未配置默认大模型，请先在系统中配置后重试",
-    ParseFailureCode.ENHANCEMENT_MODEL_MISSING: "已开启表格/图片增强，但未配置对应的默认模型，请先配置默认模型后重试",
+    ParseFailureCode.LLM_CONFIG_MISSING: "数据集缺少解析所需的模型绑定，请完成配置后重试",
+    ParseFailureCode.DATASET_MODEL_BINDING_REQUIRED: "数据集缺少当前任务必需的模型绑定",
+    ParseFailureCode.ENHANCEMENT_MODEL_MISSING: "已开启表格/图片增强，但数据集缺少对应模型绑定",
     ParseFailureCode.EMBEDDING_DIMENSION_UNSUPPORTED: "所选向量模型维度不受支持，请改用系统支持的向量模型",
     ParseFailureCode.RETRY_VALIDATION_FAILED: "重试前置校验失败，请确认上次任务状态",
 }

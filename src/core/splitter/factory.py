@@ -1,7 +1,7 @@
-"""splitter 模块的装配入口。
+"""splitter 模块的显式装配入口。
 
-按 ``settings`` 配置一站式构造 ChunkingEngine、系统级 Embedding 客户端，以及
-ChunkEmbeddingPipeline。调用方只需注入返回的对象，不需要了解内部装配细节。
+运行期模型必须由 DatasetExecutionContext 预先精确解析；本模块只把
+``ResolvedModel`` 包装成 embedding client/pipeline，不读 DB、默认关系或环境变量。
 """
 
 from __future__ import annotations
@@ -15,7 +15,6 @@ if TYPE_CHECKING:
 from loguru import logger
 
 from src.config import settings
-from src.core.llm.factory import ModelFactory
 from src.core.llm.interfaces import CapabilityType, IEmbedder
 from src.core.llm.tokenizer import Tokenizer
 
@@ -32,11 +31,10 @@ from .validators import CoarseChunkSetValidator, FinalChunkSetValidator
 
 
 class DenseEmbeddingConfigMissingError(RuntimeError):
-    """发起用户缺少必配的 EMBEDDING 配置。
+    """Dataset 缺少或无法解析必配的 EMBEDDING 精确绑定。
 
-    解析写入链路把稠密 embedding 判为**必配且不保留系统兜底**。旧路径表示用户没有默认
-    EMBEDDING 配置；数据集绑定路径表示 ``dataset_parse_config.dense_embedding_config_id``
-    缺失或指向的 ``llm_user_config`` 不可用。解析流水线据此把缺失收敛为任务失败码
+    解析写入链路要求 ``dataset_parse_config.dense_embedding_config_id``
+    必须存在并指向可用的 ``llm_model_config``。解析流水线据此把缺失收敛为任务失败码
     ``LLM_CONFIG_MISSING``。
     """
 
@@ -54,7 +52,7 @@ class DenseEmbeddingConfigMissingError(RuntimeError):
         self.field_name = field_name
         self.config_id = config_id
         if dataset_id is None:
-            message = f"User {user_id} has no default EMBEDDING config"
+            message = "Dataset EMBEDDING exact binding is required"
         elif config_id is None:
             message = (
                 f"Dataset {dataset_id} missing {field_name or 'dense_embedding_config_id'}; "
@@ -121,14 +119,14 @@ class LazyEmbeddingClient(IEmbedder):
 
 
 class ModelBoundEmbedder(IEmbedder):
-    """Bind a resolved provider to its configured default embedding model."""
+    """Bind a resolved provider to the exact Dataset embedding model snapshot."""
 
     def __init__(
         self,
         embedder: IEmbedder,
         model_name: str | None,
         *,
-        config_id: int | None = None,
+        config_id: int,
     ) -> None:
         self._embedder = embedder
         self.model_name = model_name
@@ -143,35 +141,13 @@ class ModelBoundEmbedder(IEmbedder):
         return await self._embedder.embed(texts=texts, model=model or self.model_name, **kwargs)
 
 
-def create_system_embedding_client() -> Any:
-    """按 ``settings.SYSTEM_LLM_*`` 创建系统级 Embedding 客户端。
-
-    Raises:
-        ValueError: API Key 未配置或所选 provider 不支持 embedding。
-    """
-    if not settings.SYSTEM_LLM_API_KEY:
-        raise ValueError("SYSTEM_LLM_API_KEY is not configured")
-
-    # 系统级 LLM 固定 openai 兼容；env 配的是 base，补 /embeddings 成完整端点 URL。
-    _base = (settings.SYSTEM_LLM_API_BASE or "").rstrip("/")
-    embedder = ModelFactory().create_client(
-        protocol="openai",
-        provider_type=settings.SYSTEM_LLM_PROVIDER,
-        api_key=settings.SYSTEM_LLM_API_KEY,
-        api_base_url=f"{_base}/embeddings" if _base else settings.SYSTEM_LLM_API_BASE,
-        model_name=settings.SYSTEM_LLM_MODEL_EMBEDDING,
-        timeout_ms=settings.MARKDOWN_PARSER_LLM_TIMEOUT_MS,
+def build_embedding_client(resolved: Any) -> ModelBoundEmbedder:
+    """把已精确解析的 EMBEDDING 快照包装为固定模型客户端。"""
+    return ModelBoundEmbedder(
+        resolved.provider,
+        resolved.model_name,
+        config_id=int(resolved.config_id),
     )
-    if not embedder.has_capability(CapabilityType.EMBEDDING):
-        raise ValueError(
-            f"Configured provider '{settings.SYSTEM_LLM_PROVIDER}' does not support embedding"
-        )
-    return embedder
-
-
-def create_lazy_system_embedding_client() -> LazyEmbeddingClient:
-    """对外暴露的懒加载系统 Embedding 客户端。"""
-    return LazyEmbeddingClient(create_system_embedding_client)
 
 
 def _create_structured_chunking_engine(
@@ -227,8 +203,18 @@ def _create_structured_chunking_engine(
     )
 
     stage_two_embedder = embedder
+    if stage_two_algorithm == "semantic_depth_window" and stage_two_embedder is None:
+        raise ValueError(
+            "semantic_depth_window requires the dataset dense embedding resolved model"
+        )
+    # Noop 分支不会调用 embedder；仍给语义算法一个明确失败的
+    # 占位客户端，避免任何 env/default 隐式回落。
     if stage_two_embedder is None:
-        stage_two_embedder = create_lazy_system_embedding_client()
+        stage_two_embedder = LazyEmbeddingClient(
+            lambda: (_ for _ in ()).throw(
+                RuntimeError("dataset dense embedding resolved model is required")
+            )
+        )
     stage_two_router = StageTwoRouter(
         algorithm_name=stage_two_algorithm,
         algorithms=[
@@ -339,135 +325,22 @@ def _resolve_embed_batch_size(
     return provider_max
 
 
-def create_chunk_embedding_pipeline() -> ChunkEmbeddingPipeline:
-    """按配置构建 chunk embedding pipeline。
-
-    分片阶段与向量化阶段复用同一个系统级 embedding 客户端包装器，确保最终写入路径
-    与主分片策略一致。
-
-    batch_size 会根据 provider / model 的已知单次请求上限自动 cap，
-    避免因配置值超限导致 DashScope 等 provider 返回 400。
-    """
-    embedder = create_lazy_system_embedding_client()
+def build_chunk_embedding_pipeline(resolved: Any) -> ChunkEmbeddingPipeline:
+    """仅使用已解析的 Dataset EMBEDDING 快照构建 pipeline。"""
+    embedder = build_embedding_client(resolved)
+    model_name = resolved.model_name
     batch_size = _resolve_embed_batch_size(
-        provider_type=settings.SYSTEM_LLM_PROVIDER,
-        model_name=settings.SYSTEM_LLM_MODEL_EMBEDDING,
+        provider_type=resolved.provider_type,
+        model_name=model_name,
         configured_batch_size=settings.CHUNK_INDEX_EMBED_BATCH_SIZE,
-        api_base_url=settings.SYSTEM_LLM_API_BASE,
+        api_base_url=getattr(embedder, "api_base_url", None),
     )
     return ChunkEmbeddingPipeline(
         chunking_engine=_create_structured_chunking_engine(embedder=embedder),
         embedder=embedder,
-        embedding_model=settings.SYSTEM_LLM_MODEL_EMBEDDING,
+        embedding_model=model_name,
         batch_size=batch_size,
     )
-
-
-async def aresolve_user_embedding_client(
-    user_id: int, db: Any | None = None
-) -> tuple[Any, str | None]:
-    """按发起用户的默认 EMBEDDING 配置构造稠密 embedder（LINK-91）。
-
-    经统一的 :func:`src.core.llm.user_model_resolver.aresolve_user_model` 按
-    ``user_id + "EMBEDDING"`` 取默认配置并构造 embedder。**解析写入链路必配 EMBEDDING、
-    不保留系统兜底**——用户无默认 EMBEDDING 配置时统一解析抛 ``UserModelConfigMissingError``，
-    本函数在边界重抛 :class:`DenseEmbeddingConfigMissingError` 以保留 ``VectorizingStage`` 的
-    ``LLM_CONFIG_MISSING`` 失败码映射；配置读取本身异常按原样向上传播（不转成「无配置」），
-    便于上层区分「未配置」与「读取失败(可重试)」。
-
-    Args:
-        user_id: 发起解析任务的用户 ID。
-
-    Returns:
-        ``(embedder, model_name)``：按用户配置构造的 embedder 与其模型名。
-
-    Raises:
-        DenseEmbeddingConfigMissingError: 用户无默认 EMBEDDING 配置。
-        ValueError: 配置的 provider 不支持 embedding 能力。
-    """
-    from src.core.llm.exceptions import UserModelConfigMissingError
-    from src.core.llm.user_model_resolver import aresolve_user_model
-
-    try:
-        resolved = await aresolve_user_model(
-            user_id=user_id,
-            capability="EMBEDDING",
-            allow_linkrag_default=False,
-            db=db,
-        )
-    except UserModelConfigMissingError as exc:
-        raise DenseEmbeddingConfigMissingError(user_id) from exc
-    return (
-        ModelBoundEmbedder(
-            resolved.provider,
-            resolved.model_name,
-            config_id=resolved.config_id,
-        ),
-        resolved.model_name,
-    )
-
-
-async def aresolve_dataset_embedding_client(
-    user_id: int,
-    dataset_id: int,
-    db: Any | None = None,
-) -> tuple[Any, str | None]:
-    """按数据集绑定的 ``dense_embedding_config_id`` 构造稠密 embedder。
-
-    ``dataset_parse_config.dense_embedding_config_id`` 是解析建库与召回 query 编码的唯一
-    稠密模型来源。字段缺失、配置不存在、停用、非当前用户或能力不匹配均明确失败，不回退
-    用户默认 EMBEDDING 配置。
-    """
-
-    from src.core.dataset_config import DatasetConfigService
-    from src.core.llm.exceptions import UserModelConfigMissingError
-    from src.core.llm.user_model_resolver import aresolve_user_model
-
-    async def _resolve_with_session(session) -> tuple[Any, str | None]:
-        binding = await DatasetConfigService().get_vector_model_binding(
-            user_id, dataset_id, session
-        )
-        config_id = binding.dense_embedding_config_id
-        field_name = "dense_embedding_config_id"
-        if config_id is None:
-            raise DenseEmbeddingConfigMissingError(
-                user_id,
-                dataset_id=dataset_id,
-                field_name=field_name,
-            )
-        try:
-            resolved = await aresolve_user_model(
-                user_id=user_id,
-                capability="EMBEDDING",
-                config_id=config_id,
-                config_source=binding.dense_embedding_config_source,
-                db=session,
-            )
-        except UserModelConfigMissingError as exc:
-            raise DenseEmbeddingConfigMissingError(
-                user_id,
-                dataset_id=dataset_id,
-                field_name=field_name,
-                config_id=config_id,
-                reason="config is missing, inactive, not owned by user, system preset, or not EMBEDDING",
-            ) from exc
-        return (
-            ModelBoundEmbedder(
-                resolved.provider,
-                resolved.model_name,
-                config_id=resolved.config_id,
-            ),
-            resolved.model_name,
-        )
-
-    if db is not None:
-        return await _resolve_with_session(db)
-
-    from src.database import get_async_session_factory
-
-    session_factory = get_async_session_factory()
-    async with session_factory() as session:
-        return await _resolve_with_session(session)
 
 
 def validate_dense_dimension(
@@ -503,53 +376,3 @@ def validate_dense_dimension(
             actual_dim=actual_dim,
             expected_dim=expected_dim,
         )
-
-
-async def aresolve_user_chunk_embedding_pipeline(user_id: int) -> ChunkEmbeddingPipeline:
-    """按发起用户的 EMBEDDING 默认配置构造 chunk embedding pipeline（LINK-91）。
-
-    与进程级 :func:`create_chunk_embedding_pipeline` 的差异：embedder、模型名与 batch 上限
-    均按 ``user_id`` 解析而非系统默认。``batch_size`` 按用户实际 provider/model 的已知单次
-    请求上限做保护性 cap，避免用户用 DashScope 等 provider 时因配置超限触发 400。
-
-    Raises:
-        DenseEmbeddingConfigMissingError: 用户无默认 EMBEDDING 配置。
-    """
-    embedder, model_name = await aresolve_user_embedding_client(user_id)
-    batch_size = _resolve_embed_batch_size(
-        provider_type=getattr(embedder, "provider_type", settings.SYSTEM_LLM_PROVIDER),
-        model_name=model_name or "",
-        configured_batch_size=settings.CHUNK_INDEX_EMBED_BATCH_SIZE,
-        api_base_url=getattr(embedder, "api_base_url", None),
-    )
-    return ChunkEmbeddingPipeline(
-        chunking_engine=_create_structured_chunking_engine(embedder=embedder),
-        embedder=embedder,
-        embedding_model=model_name,
-        batch_size=batch_size,
-    )
-
-
-async def aresolve_dataset_chunk_embedding_pipeline(
-    user_id: int,
-    dataset_id: int,
-    db: Any | None = None,
-) -> ChunkEmbeddingPipeline:
-    """按数据集绑定 EMBEDDING 配置构造 chunk embedding pipeline。"""
-    embedder, model_name = await aresolve_dataset_embedding_client(
-        user_id,
-        dataset_id,
-        db=db,
-    )
-    batch_size = _resolve_embed_batch_size(
-        provider_type=getattr(embedder, "provider_type", settings.SYSTEM_LLM_PROVIDER),
-        model_name=model_name or "",
-        configured_batch_size=settings.CHUNK_INDEX_EMBED_BATCH_SIZE,
-        api_base_url=getattr(embedder, "api_base_url", None),
-    )
-    return ChunkEmbeddingPipeline(
-        chunking_engine=_create_structured_chunking_engine(embedder=embedder),
-        embedder=embedder,
-        embedding_model=model_name,
-        batch_size=batch_size,
-    )

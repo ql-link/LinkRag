@@ -17,7 +17,7 @@ from src.application.recall_errors import RecallApiError
 from src.application.recall_stream_runtime import _rerank_hits
 from src.config import Settings, settings
 from src.core.dataset_config.models import RecallConfig
-from src.core.llm.exceptions import UserModelConfigMissingError
+from src.core.llm.exceptions import LLMConfigNotFoundError
 from src.core.pipeline.recall import (
     SOURCE_BM25,
     SOURCE_DENSE,
@@ -51,6 +51,7 @@ class _FakeRetriever:
         user_id: int,
         top_k: int,
         score_threshold_override: float | None = None,
+        dataset_contexts: dict[int, object] | None = None,
     ) -> list[RetrieverHit]:
         self.calls.append(
             RecallRequest(
@@ -77,7 +78,7 @@ class _CapturingReranker:
     async def rerank(self, request):
         self.captured_request = request
         if self.unavailable:
-            raise UserModelConfigMissingError("RERANK", request.user_id)
+            raise LLMConfigNotFoundError(780)
         hits = [
             RerankedHit(
                 chunk_id=h.chunk_id,
@@ -548,15 +549,17 @@ def _given_dataset_recall_config(weighted_fusion_state: _State, datatable) -> No
 
 @when("RAG 流或纯召回 JSON 入口解析该数据集配置")
 def _when_route_maps_dataset_config(weighted_fusion_state: _State, monkeypatch) -> None:
-    async def _recall_config(_user_id, _dataset_ids):
-        return weighted_fusion_state.dataset_recall_config
+    dataset_contexts = {10: SimpleNamespace()}
+
+    async def _recall_execution(_user_id, _dataset_ids):
+        return weighted_fusion_state.dataset_recall_config, dataset_contexts
 
     async def _run_recall_json(_pipeline, recall_req, _request_id):
         weighted_fusion_state.captured_request = recall_req
         return {"hits": [], "failed_sources": []}
 
     monkeypatch.setattr(recall, "resolve_dataset_scope", lambda _body_ids, _ctx: [10])
-    monkeypatch.setattr(recall, "aresolve_recall_config", _recall_config)
+    monkeypatch.setattr(recall, "aresolve_recall_execution", _recall_execution)
     monkeypatch.setattr(recall, "run_recall_json", _run_recall_json)
     ctx = SimpleNamespace(user_id=123, request_id="rid")
     asyncio.run(recall.recall_json(_request_with_payload({"query": "q"}), ctx, object()))
@@ -673,12 +676,12 @@ def _given_weighted_hits(weighted_fusion_state: _State, order: str) -> None:
     ]
 
 
-@given("用户已配置可用 RERANK 模型")
+@given("Dataset 已绑定可用的精确 RERANK config_id")
 def _given_rerank_available(weighted_fusion_state: _State) -> None:
     weighted_fusion_state.reranker = _CapturingReranker(unavailable=False)
 
 
-@given("用户未配置 RERANK 模型")
+@given("Dataset 精确 RERANK config_id 在执行期不可用")
 def _given_rerank_unavailable(weighted_fusion_state: _State) -> None:
     weighted_fusion_state.reranker = _CapturingReranker(unavailable=True)
 
@@ -692,7 +695,19 @@ def _when_rag_enters_rerank(weighted_fusion_state: _State) -> None:
     hits, applied = asyncio.run(
         _rerank_hits(
             weighted_fusion_state.reranker,
-            RecallRequest(user_id=123, query="q", dataset_ids=[10]),
+            RecallRequest(
+                user_id=123,
+                query="q",
+                dataset_ids=[10],
+                dataset_contexts={
+                    10: SimpleNamespace(
+                        config=SimpleNamespace(
+                            recall=SimpleNamespace(enable_rerank=True)
+                        ),
+                        rerank=SimpleNamespace(config_id=780),
+                    )
+                },
+            ),
             weighted_fusion_state.fusion_hits,
             contents,
             timeout_s=1.0,

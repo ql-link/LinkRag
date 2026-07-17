@@ -12,7 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.llm.response import APIResponse
 from src.core.llm.encryption import mask_api_key
-from src.services.config_reader_service import ConfigReaderService
+from src.services.llm_catalog_reader import LLMCatalogReader
 from src.services.usage_log_service import UsageLogService
 from src.database import get_db
 
@@ -34,7 +34,7 @@ async def get_system_providers(
         系统厂商列表
     """
     try:
-        config_service = ConfigReaderService(db)
+        config_service = LLMCatalogReader(db)
         providers = await config_service.get_system_providers(provider_type)
 
         items = [
@@ -75,21 +75,22 @@ async def get_user_configs(
         用户配置列表
     """
     try:
-        config_service = ConfigReaderService(db)
-        configs = await config_service.get_user_configs(x_user_id)
+        config_service = LLMCatalogReader(db)
+        configs = await config_service.get_visible_configs(int(x_user_id))
 
         items = [
             {
-                "id": c.get("id"),
-                "provider_type": c.get("provider_type"),
-                "model_name": c.get("model_name"),
-                "display_name": c.get("display_name") or c.get("model_name"),
+                "configId": c.get("configId"),
+                "scope": c.get("scope"),
+                "providerType": c.get("providerType"),
+                "modelName": c.get("modelName"),
+                "displayName": c.get("displayName") or c.get("modelName"),
                 "capability": c.get("capability"),
-                "api_key_masked": mask_api_key(c.get("api_key", "")),
-                "api_base_url": c.get("api_base_url"),
-                "is_active": c.get("is_active"),
-                "is_default": c.get("is_default"),
-                "is_system_preset": c.get("is_system_preset"),
+                "apiKeyMasked": mask_api_key(c.get("apiKeyCiphertext", "")),
+                "apiBaseUrl": c.get("apiBaseUrl"),
+                "isActive": c.get("isActive"),
+                "editable": c.get("editable"),
+                "snapshotVersion": c.get("snapshotVersion"),
             }
             for c in configs
         ]

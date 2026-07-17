@@ -1,25 +1,24 @@
-# Redis 基础设施
+# Redis 与 LLM Runtime Cache
 
-`src/cache/` 保留通用异步 Redis 客户端和缓存后端抽象，但 LLM 配置与系统厂商不再使用 Redis 缓存。
+LLM 运行缓存只做 `config_id -> RuntimeModelConfig` 物理行快照，不保存默认选择、授权判定或数据集绑定。
+MySQL `llm_model_config` 始终是最终事实源；Redis 故障时 fail-open 回源 MySQL，不改变缺失、停用、越权或能力不匹配的结果。
 
-```text
-src/cache/
-├── __init__.py
-├── redis_client.py    # 异步 Redis 连接单例
-└── cache_manager.py   # 通用 CacheManager + Redis/Null 后端抽象
-```
+## Key 与版本栅栏
 
-## 当前边界
+- 数据：`cache:llm:runtime-config:{llm-runtime:<config_id>}`
+- 栅栏：`cache:fence:llm:runtime-config:{llm-runtime:<config_id>}`
+- 单飞锁：`cache:lock:llm:runtime-config:{llm-runtime:<config_id>}`
 
-- `ConfigReaderService` 的用户配置、系统预设、系统厂商和模型目录读取均直接执行 MySQL 查询；构造函数不再接受 `CacheManager`，读方法不再接受 `use_cache`。
-- 已删除 LLM 专用 key 常量、key 生成方法、批量失效方法和 `cache_sync_service.py`。
-- 已删除 `CacheSyncMessage`、`tolink.rag.cache_sync` topic 初始化和 `/api/v1/mq/send/cache-sync` HTTP 调试入口。
-- 加密 API Key 只保存在共享 MySQL 中。读取后仅在 `user_model_resolver` 构造模型客户端时解密，不写 Redis、不记录日志。
+引用同一 hash tag 便于 Redis Cluster 上原子 Lua 执行。缓存 envelope 携带 `fence_version` 和数据库
+`snapshot_version`。Java 配置事务提交后执行失效：先递增 fence，再删数据 key。Python 慢回源只有在
+`expected_fence == current_fence` 时才允许回填，因此不能把失效前的旧快照复活。
 
-## 仍在使用 Redis 的能力
+## 一致性边界
 
-- 应用生命周期仍初始化并关闭 `RedisClient`。
-- `src/api/recall_session_auth.py` 使用 Redis 原子计数维护召回 session 并发槽位；这属于跨实例协调，不是 MySQL 数据副本，不能随业务缓存删除。
-- `CacheBackend`、`RedisCacheBackend`、`NullCacheBackend` 与通用 `CacheManager.get/set/delete` 保留，供独立缓存需求复用。
+1. Python 命中缓存后仍由 resolver 检查 `is_active`、`scope/owner_user_id` 和 `capability`。
+2. miss 时用短 TTL 单飞锁抑制穿透；未抢锁者短暂读取已回填值，仍可直接回源。
+3. 缓存读/写/锁任意异常均不吞 MySQL 事实。
+4. 用户密钥在 DB 与缓存中均为密文，只在构造 provider 前解密，不记录日志。
 
-历史 `llm:user:*`、`llm:system:*` key 由 Java 仓发布清理脚本统一清理；不得使用宽泛 `llm:*` 或清空整个 Redis DB，以免误删召回并发计数等其他数据。
+`src/api/recall_session_auth.py` 的并发槽计数也使用 Redis，但与 LLM runtime cache 是独立能力，不得使用
+`llm:*` 宽泛删除或清空整库。

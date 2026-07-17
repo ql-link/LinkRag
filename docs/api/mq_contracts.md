@@ -209,7 +209,7 @@ RAG 问答在 Python 端（`/api/v1/rag/stream`）以**后台任务**执行，�
 | `user_id` | int | ✅ | 用户 ID |
 | `query` | string | ✅ | 用户提问 → `chat_message.query` |
 | `answer` | string | ✅ | LLM 回答 → `chat_message.answer`（`GENERATING`/`FAILED` 可空或半截串） |
-| `config_id` | int | ✅ | 本轮所用 LLM 配置 ID |
+| `config_id` | int (>0) | ✅ | 本轮请求的全局 `llm_model_config.id`；`GENERATING` 和模型解析失败也必须携带 |
 | `provider_type` | string | ⬜ | LLM 厂商类型（`GENERATING` 起点与模型未解析的前置失败时为空串，终态补齐） |
 | `model_name` | string | ⬜ | 模型名快照（可空时为空串） |
 | `references` | string[] | ⬜ | 召回片段 `chunk_id` 列表（仅标识，不含正文）→ `chat_message.references` |
@@ -254,7 +254,7 @@ RAG 问答在 Python 端（`/api/v1/rag/stream`）以**后台任务**执行，�
 | `prompt_tokens` | int | ✅ | 输入 Token；向量类调用即此列 |
 | `completion_tokens` | int | ✅ | 输出 Token；向量类（embed/rerank）恒为 0，vision/table 为真实生成 token |
 | `total_tokens` | int | ✅ | 总 Token |
-| `config_id` | int | ⬜ | 用户配置 ID；系统配置调用缺省 → 落 NULL |
+| `config_id` | int (>0) | ✅ | 全局 `llm_model_config.id`；SYSTEM / USER 都必须携带，不再用 `null` 表达系统预设 |
 | `task_id` | string | ⬜ | 解析任务锚点（parse·embed 带；vision/table 暂不带） |
 | `latency_ms` | int | ⬜ | 调用耗时（毫秒） |
 | `status` | string | ⬜ | `success` / `partial` / `failed`，默认 `success` |
@@ -271,7 +271,7 @@ RAG 问答在 Python 端（`/api/v1/rag/stream`）以**后台任务**执行，�
 - **发送观测**：成功日志记录 `message_id`、用户、厂商、模型、`stage`、`operation`、
   三类 token、任务锚点和发送耗时；失败日志记录同一摘要与异常类型。不会记录模型请求或
   响应正文。
-- **Java 落库**：字段直映射 `llm_usage_log`；可空字段缺失落 NULL。对话 `generate` 的行也经本消息上报（`stage='chat'`、`operation='generate'`），不再由 `chat_turn` 落 `llm_usage_log`，使本表口径全链路一致（LINK-191）。
+- **Java 落库**：字段直映射 `llm_usage_log`；历史表列 `config_id` 仍可空，但新消息必须是正整数。对话 `generate` 的行也经本消息上报（`stage='chat'`、`operation='generate'`），不再由 `chat_turn` 落 `llm_usage_log`。
 
 ## 协议要点
 

@@ -13,7 +13,6 @@ from __future__ import annotations
 
 from loguru import logger
 
-from src.core.dataset_config import DatasetConfigService
 from src.core.splitter.factory import DenseEmbeddingConfigMissingError
 from src.observability.logging import safe_exception_stack, truncate_log_value
 
@@ -104,6 +103,7 @@ class ChunkingStage(Stage):
                 ctx.payload,
                 ctx.db,
                 chunking_config,
+                ctx.execution_context,
             )
         except DenseEmbeddingConfigMissingError as exc:
             return StageOutcome.failure(
@@ -125,8 +125,9 @@ class ChunkingStage(Stage):
         dataset_id = coerce_optional_int(payload.dataset_id)
         if user_id is None or dataset_id is None:
             return None
-        bundle = await DatasetConfigService().get_config(user_id, dataset_id, ctx.db)
-        return bundle.chunking
+        if ctx.execution_context is None:
+            return None
+        return ctx.execution_context.config.chunking
 
     async def _load_retry_markdown(self, ctx: StageContext) -> str | None:
         """重试从 CHUNKING 恢复时读回旧 markdown；坐标缺失或读取失败返回 None。

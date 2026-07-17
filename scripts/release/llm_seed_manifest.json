@@ -1,0 +1,974 @@
+{
+  "schema_version": 1,
+  "providers": [
+    {
+      "provider_type": "linkrag",
+      "provider_name": "LinkRag",
+      "icon_url": "http://103.205.254.30:39000/tolink-public/providerIcon/linkrag.png",
+      "icon_object_key": "providerIcon/linkrag.png",
+      "api_base_url": "https://api.siliconflow.cn/v1",
+      "default_protocol": "openai",
+      "is_active": true,
+      "priority": 100
+    },
+    {
+      "provider_type": "aliyun",
+      "provider_name": "Aliyun",
+      "icon_url": "http://103.205.254.30:39000/tolink-public/providerIcon/aliyun.svg",
+      "icon_object_key": "providerIcon/aliyun.svg",
+      "api_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+      "default_protocol": "openai",
+      "is_active": true,
+      "priority": 99
+    },
+    {
+      "provider_type": "claude",
+      "provider_name": "Anthropic",
+      "icon_url": "http://103.205.254.30:39000/tolink-public/providerIcon/claude.svg",
+      "icon_object_key": "providerIcon/claude.svg",
+      "api_base_url": "https://api.anthropic.com",
+      "default_protocol": "anthropic",
+      "is_active": true,
+      "priority": 99
+    },
+    {
+      "provider_type": "deepseek",
+      "provider_name": "DeepSeek",
+      "icon_url": "http://103.205.254.30:39000/tolink-public/providerIcon/deepseek.svg",
+      "icon_object_key": "providerIcon/deepseek.svg",
+      "api_base_url": "https://api.deepseek.com/v1",
+      "default_protocol": "openai",
+      "is_active": true,
+      "priority": 99
+    },
+    {
+      "provider_type": "gemini",
+      "provider_name": "Google",
+      "icon_url": "http://103.205.254.30:39000/tolink-public/providerIcon/gemini.svg",
+      "icon_object_key": "providerIcon/gemini.svg",
+      "api_base_url": "https://generativelanguage.googleapis.com/v1beta",
+      "default_protocol": "google",
+      "is_active": true,
+      "priority": 99
+    },
+    {
+      "provider_type": "glm",
+      "provider_name": "ZHIPU-AI",
+      "icon_url": "http://103.205.254.30:39000/tolink-public/providerIcon/glm.svg",
+      "icon_object_key": "providerIcon/glm.svg",
+      "api_base_url": "https://open.bigmodel.cn/api/paas/v4",
+      "default_protocol": "openai",
+      "is_active": true,
+      "priority": 99
+    },
+    {
+      "provider_type": "moonshot",
+      "provider_name": "Moonshot",
+      "icon_url": "http://103.205.254.30:39000/tolink-public/providerIcon/moonshot.svg",
+      "icon_object_key": "providerIcon/moonshot.svg",
+      "api_base_url": "https://api.moonshot.cn/v1",
+      "default_protocol": "openai",
+      "is_active": true,
+      "priority": 99
+    },
+    {
+      "provider_type": "openai",
+      "provider_name": "OpenAI",
+      "icon_url": "http://103.205.254.30:39000/tolink-public/providerIcon/openai.svg",
+      "icon_object_key": "providerIcon/openai.svg",
+      "api_base_url": "https://api.openai.com/v1",
+      "default_protocol": "openai",
+      "is_active": true,
+      "priority": 99
+    },
+    {
+      "provider_type": "xai",
+      "provider_name": "xAI",
+      "icon_url": "http://103.205.254.30:39000/tolink-public/providerIcon/xai.svg",
+      "icon_object_key": "providerIcon/xai.svg",
+      "api_base_url": "https://api.x.ai/v1",
+      "default_protocol": "openai",
+      "is_active": true,
+      "priority": 99
+    },
+    {
+      "provider_type": "minimax",
+      "provider_name": "MiniMax",
+      "icon_url": "http://103.205.254.30:39000/tolink-public/providerIcon/minimax.svg",
+      "icon_object_key": "providerIcon/minimax.svg",
+      "api_base_url": "https://api.minimaxi.com/",
+      "default_protocol": "openai",
+      "is_active": true,
+      "priority": 98
+    },
+    {
+      "provider_type": "huggingface",
+      "provider_name": "HuggingFace",
+      "icon_url": "http://103.205.254.30:39000/tolink-public/providerIcon/huggingface.svg",
+      "icon_object_key": "providerIcon/huggingface.svg",
+      "api_base_url": "https://router.huggingface.co/v1",
+      "default_protocol": "openai",
+      "is_active": true,
+      "priority": 98
+    },
+    {
+      "provider_type": "openrouter",
+      "provider_name": "OpenRouter",
+      "icon_url": "http://103.205.254.30:39000/tolink-public/providerIcon/openrouter.svg",
+      "icon_object_key": "providerIcon/openrouter.svg",
+      "api_base_url": "https://openrouter.ai/api/v1",
+      "default_protocol": "openai",
+      "is_active": true,
+      "priority": 98
+    },
+    {
+      "provider_type": "hunyuan",
+      "provider_name": "HunYuan",
+      "icon_url": "http://103.205.254.30:39000/tolink-public/providerIcon/hunyuan.svg",
+      "icon_object_key": "providerIcon/hunyuan.svg",
+      "api_base_url": "https://api.hunyuan.cloud.tencent.com/v1",
+      "default_protocol": "openai",
+      "is_active": true,
+      "priority": 50
+    },
+    {
+      "provider_type": "jina",
+      "provider_name": "Jina",
+      "icon_url": "http://103.205.254.30:39000/tolink-public/providerIcon/jina.svg",
+      "icon_object_key": "providerIcon/jina.svg",
+      "api_base_url": "https://api.jina.ai/v1",
+      "default_protocol": "jina",
+      "is_active": true,
+      "priority": 50
+    },
+    {
+      "provider_type": "volcengine",
+      "provider_name": "VolcEngine",
+      "icon_url": "http://103.205.254.30:39000/tolink-public/providerIcon/volcengine.svg",
+      "icon_object_key": "providerIcon/volcengine.svg",
+      "api_base_url": "https://ark.cn-beijing.volces.com/api/v3",
+      "default_protocol": "openai",
+      "is_active": true,
+      "priority": 50
+    },
+    {
+      "provider_type": "mimo",
+      "provider_name": "Xiaomi MiMo Token Plan",
+      "icon_url": "http://103.205.254.30:39000/tolink-public/providerIcon/mimo.svg",
+      "icon_object_key": "providerIcon/mimo.svg",
+      "api_base_url": "https://token-plan-cn.xiaomimimo.com/v1",
+      "default_protocol": "openai",
+      "is_active": true,
+      "priority": 50
+    },
+    {
+      "provider_type": "siliconflow",
+      "provider_name": "SiliconFlow",
+      "icon_url": "http://103.205.254.30:39000/tolink-public/providerIcon/siliconflow.svg",
+      "icon_object_key": "providerIcon/siliconflow.svg",
+      "api_base_url": "https://api.siliconflow.cn/v1",
+      "default_protocol": "openai",
+      "is_active": true,
+      "priority": 50
+    }
+  ],
+  "provider_models": [
+    {
+      "provider_type": "aliyun",
+      "model_name": "qwen3-asr-flash",
+      "display_name": "Qwen 3 ASR Flash",
+      "capability": "ASR",
+      "protocol": "dashscope",
+      "api_base_url": "https://dashscope.aliyuncs.com/api/v1",
+      "is_active": true
+    },
+    {
+      "provider_type": "aliyun",
+      "model_name": "qwen3-max",
+      "display_name": "Qwen 3 Max",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "aliyun",
+      "model_name": "qwen3-rerank",
+      "display_name": "Qwen 3 Rerank",
+      "capability": "RERANK",
+      "protocol": "dashscope",
+      "api_base_url": "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
+      "is_active": true
+    },
+    {
+      "provider_type": "aliyun",
+      "model_name": "qwen3.5-flash",
+      "display_name": "Qwen 3.5 Flash",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "aliyun",
+      "model_name": "qwen3.5-flash",
+      "display_name": "Qwen 3.5 Flash",
+      "capability": "VISION",
+      "protocol": "openai",
+      "api_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "aliyun",
+      "model_name": "qwen3.5-plus",
+      "display_name": "Qwen 3.5 Plus",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "aliyun",
+      "model_name": "qwen3.5-plus",
+      "display_name": "Qwen 3.5 Plus",
+      "capability": "VISION",
+      "protocol": "openai",
+      "api_base_url": "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "claude",
+      "model_name": "claude-haiku-4-5-20251001",
+      "display_name": "Claude Haiku 4.5",
+      "capability": "CHAT",
+      "protocol": "anthropic",
+      "api_base_url": "https://api.anthropic.com/v1/messages",
+      "is_active": true
+    },
+    {
+      "provider_type": "claude",
+      "model_name": "claude-haiku-4-5-20251001",
+      "display_name": "Claude Haiku 4.5",
+      "capability": "VISION",
+      "protocol": "anthropic",
+      "api_base_url": "https://api.anthropic.com/v1/messages",
+      "is_active": true
+    },
+    {
+      "provider_type": "claude",
+      "model_name": "claude-opus-4-7",
+      "display_name": "Claude Opus 4.7",
+      "capability": "CHAT",
+      "protocol": "anthropic",
+      "api_base_url": "https://api.anthropic.com/v1/messages",
+      "is_active": true
+    },
+    {
+      "provider_type": "claude",
+      "model_name": "claude-opus-4-7",
+      "display_name": "Claude Opus 4.7",
+      "capability": "VISION",
+      "protocol": "anthropic",
+      "api_base_url": "https://api.anthropic.com/v1/messages",
+      "is_active": true
+    },
+    {
+      "provider_type": "claude",
+      "model_name": "claude-opus-4-8",
+      "display_name": "Claude Opus 4.8",
+      "capability": "CHAT",
+      "protocol": "anthropic",
+      "api_base_url": "https://api.anthropic.com/v1/messages",
+      "is_active": true
+    },
+    {
+      "provider_type": "claude",
+      "model_name": "claude-opus-4-8",
+      "display_name": "Claude Opus 4.8",
+      "capability": "VISION",
+      "protocol": "anthropic",
+      "api_base_url": "https://api.anthropic.com/v1/messages",
+      "is_active": true
+    },
+    {
+      "provider_type": "claude",
+      "model_name": "claude-sonnet-4-5-20250929",
+      "display_name": "Claude Sonnet 4.5",
+      "capability": "CHAT",
+      "protocol": "anthropic",
+      "api_base_url": "https://api.anthropic.com/v1/messages",
+      "is_active": true
+    },
+    {
+      "provider_type": "claude",
+      "model_name": "claude-sonnet-4-5-20250929",
+      "display_name": "Claude Sonnet 4.5",
+      "capability": "VISION",
+      "protocol": "anthropic",
+      "api_base_url": "https://api.anthropic.com/v1/messages",
+      "is_active": true
+    },
+    {
+      "provider_type": "claude",
+      "model_name": "claude-sonnet-4-6",
+      "display_name": "Claude Sonnet 4.6",
+      "capability": "CHAT",
+      "protocol": "anthropic",
+      "api_base_url": "https://api.anthropic.com/v1/messages",
+      "is_active": true
+    },
+    {
+      "provider_type": "claude",
+      "model_name": "claude-sonnet-4-6",
+      "display_name": "Claude Sonnet 4.6",
+      "capability": "VISION",
+      "protocol": "anthropic",
+      "api_base_url": "https://api.anthropic.com/v1/messages",
+      "is_active": true
+    },
+    {
+      "provider_type": "deepseek",
+      "model_name": "deepseek-v4-flash",
+      "display_name": "DeepSeek V4 Flash",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://api.deepseek.com/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "deepseek",
+      "model_name": "deepseek-v4-pro",
+      "display_name": "DeepSeek V4 Pro",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://api.deepseek.com/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "gemini",
+      "model_name": "gemini-2.5-flash",
+      "display_name": "Gemini 2.5 Flash",
+      "capability": "CHAT",
+      "protocol": "google",
+      "api_base_url": "https://generativelanguage.googleapis.com/v1beta",
+      "is_active": true
+    },
+    {
+      "provider_type": "gemini",
+      "model_name": "gemini-2.5-flash",
+      "display_name": "Gemini 2.5 Flash",
+      "capability": "VISION",
+      "protocol": "google",
+      "api_base_url": "https://generativelanguage.googleapis.com/v1beta",
+      "is_active": true
+    },
+    {
+      "provider_type": "gemini",
+      "model_name": "gemini-2.5-pro",
+      "display_name": "Gemini 2.5 Pro",
+      "capability": "VISION",
+      "protocol": "google",
+      "api_base_url": "https://generativelanguage.googleapis.com/v1beta",
+      "is_active": true
+    },
+    {
+      "provider_type": "gemini",
+      "model_name": "gemini-3-pro-preview",
+      "display_name": "Gemini 3 Pro",
+      "capability": "VISION",
+      "protocol": "google",
+      "api_base_url": "https://generativelanguage.googleapis.com/v1beta",
+      "is_active": true
+    },
+    {
+      "provider_type": "gemini",
+      "model_name": "gemini-embedding-001",
+      "display_name": "Gemini Embedding",
+      "capability": "EMBEDDING",
+      "protocol": "google",
+      "api_base_url": "https://generativelanguage.googleapis.com/v1beta",
+      "is_active": true
+    },
+    {
+      "provider_type": "glm",
+      "model_name": "embedding-3",
+      "display_name": "GLM Embedding 3",
+      "capability": "EMBEDDING",
+      "protocol": "openai",
+      "api_base_url": "https://open.bigmodel.cn/api/paas/v4/embeddings",
+      "is_active": true
+    },
+    {
+      "provider_type": "glm",
+      "model_name": "glm-5",
+      "display_name": "GLM 5",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "glm",
+      "model_name": "glm-5-turbo",
+      "display_name": "GLM 5 Turbo",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "glm",
+      "model_name": "glm-5v-turbo",
+      "display_name": "GLM 5V Turbo",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "glm",
+      "model_name": "glm-asr-2512",
+      "display_name": "GLM ASR",
+      "capability": "ASR",
+      "protocol": "openai",
+      "api_base_url": "https://open.bigmodel.cn/api/paas/v4/audio/transcriptions",
+      "is_active": true
+    },
+    {
+      "provider_type": "moonshot",
+      "model_name": "kimi-k2-thinking",
+      "display_name": "Kimi K2 Thinking",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://api.moonshot.cn/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "moonshot",
+      "model_name": "kimi-k2-thinking-turbo",
+      "display_name": "Kimi K2 Thinking Turbo",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://api.moonshot.cn/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "moonshot",
+      "model_name": "kimi-k2.6",
+      "display_name": "Kimi K2.6",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://api.moonshot.cn/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "moonshot",
+      "model_name": "kimi-k2.6",
+      "display_name": "Kimi K2.6",
+      "capability": "VISION",
+      "protocol": "openai",
+      "api_base_url": "https://api.moonshot.cn/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "moonshot",
+      "model_name": "kimi-latest",
+      "display_name": "Kimi",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://api.moonshot.cn/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "openai",
+      "model_name": "gpt-5-mini",
+      "display_name": "GPT 5 Mini",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://api.openai.com/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "openai",
+      "model_name": "gpt-5-mini",
+      "display_name": "GPT 5 Mini",
+      "capability": "VISION",
+      "protocol": "openai",
+      "api_base_url": "https://api.openai.com/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "openai",
+      "model_name": "gpt-5.1-chat-latest",
+      "display_name": "GPT 5.1 Chat",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://api.openai.com/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "openai",
+      "model_name": "gpt-5.1-chat-latest",
+      "display_name": "GPT 5.1 Chat",
+      "capability": "VISION",
+      "protocol": "openai",
+      "api_base_url": "https://api.openai.com/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "openai",
+      "model_name": "gpt-5.4",
+      "display_name": "GPT 5.4",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://api.openai.com/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "openai",
+      "model_name": "gpt-5.4",
+      "display_name": "GPT 5.4",
+      "capability": "VISION",
+      "protocol": "openai",
+      "api_base_url": "https://api.openai.com/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "openai",
+      "model_name": "gpt-5.5",
+      "display_name": "GPT 5.5",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://api.openai.com/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "openai",
+      "model_name": "gpt-5.5",
+      "display_name": "GPT 5.5",
+      "capability": "VISION",
+      "protocol": "openai",
+      "api_base_url": "https://api.openai.com/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "openai",
+      "model_name": "text-embedding-3-large",
+      "display_name": "OpenAI Embedding 3 Large",
+      "capability": "EMBEDDING",
+      "protocol": "openai",
+      "api_base_url": "https://api.openai.com/v1/embeddings",
+      "is_active": true
+    },
+    {
+      "provider_type": "xai",
+      "model_name": "grok-3-fast",
+      "display_name": "Grok 3 Fast",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://api.x.ai/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "xai",
+      "model_name": "grok-4",
+      "display_name": "Grok 4",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://api.x.ai/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "minimax",
+      "model_name": "minimax-m2.5",
+      "display_name": "MiniMax M2.5",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://api.minimaxi.com/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "huggingface",
+      "model_name": "zai-org/GLM-5.2",
+      "display_name": "GLM 5.2",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://router.huggingface.co/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "huggingface",
+      "model_name": "deepseek-ai/DeepSeek-V4-Pro",
+      "display_name": "DeepSeek V4 Pro",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://router.huggingface.co/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "huggingface",
+      "model_name": "Qwen/Qwen3.6-27B",
+      "display_name": "Qwen 3.6 27B",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://router.huggingface.co/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "huggingface",
+      "model_name": "Qwen/Qwen3.6-27B",
+      "display_name": "Qwen 3.6 27B",
+      "capability": "VISION",
+      "protocol": "openai",
+      "api_base_url": "https://router.huggingface.co/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "huggingface",
+      "model_name": "MiniMaxAI/MiniMax-M3",
+      "display_name": "MiniMax M3",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://router.huggingface.co/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "huggingface",
+      "model_name": "MiniMaxAI/MiniMax-M3",
+      "display_name": "MiniMax M3",
+      "capability": "VISION",
+      "protocol": "openai",
+      "api_base_url": "https://router.huggingface.co/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "huggingface",
+      "model_name": "moonshotai/Kimi-K2.7-Code",
+      "display_name": "Kimi K2.7 Code",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://router.huggingface.co/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "huggingface",
+      "model_name": "moonshotai/Kimi-K2.7-Code",
+      "display_name": "Kimi K2.7 Code",
+      "capability": "VISION",
+      "protocol": "openai",
+      "api_base_url": "https://router.huggingface.co/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "openrouter",
+      "model_name": "anthropic/claude-sonnet-5",
+      "display_name": "Claude Sonnet 5",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://openrouter.ai/api/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "openrouter",
+      "model_name": "anthropic/claude-sonnet-5",
+      "display_name": "Claude Sonnet 5",
+      "capability": "VISION",
+      "protocol": "openai",
+      "api_base_url": "https://openrouter.ai/api/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "openrouter",
+      "model_name": "openai/gpt-5.5",
+      "display_name": "GPT 5.5",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://openrouter.ai/api/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "openrouter",
+      "model_name": "deepseek/deepseek-v4-pro",
+      "display_name": "DeepSeek V4 Pro",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://openrouter.ai/api/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "openrouter",
+      "model_name": "z-ai/glm-5.2",
+      "display_name": "GLM 5.2",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://openrouter.ai/api/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "openrouter",
+      "model_name": "x-ai/grok-4.3",
+      "display_name": "Grok 4.3",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://openrouter.ai/api/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "hunyuan",
+      "model_name": "hunyuan-embedding",
+      "display_name": "Hunyuan Embedding",
+      "capability": "EMBEDDING",
+      "protocol": "openai",
+      "api_base_url": "https://api.hunyuan.cloud.tencent.com/v1/embeddings",
+      "is_active": true
+    },
+    {
+      "provider_type": "hunyuan",
+      "model_name": "hunyuan-lite",
+      "display_name": "Hunyuan lite",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "hunyuan",
+      "model_name": "hunyuan-pro",
+      "display_name": "Hunyuan Pro",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "hunyuan",
+      "model_name": "hunyuan-standard",
+      "display_name": "Hunyuan standard",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "hunyuan",
+      "model_name": "hunyuan-standard-256K",
+      "display_name": "Hunyuan standard 256k",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://api.hunyuan.cloud.tencent.com/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "jina",
+      "model_name": "jina-embeddings-v5-omni-nano",
+      "display_name": "Jina Embedding 5 Omni Nano",
+      "capability": "EMBEDDING",
+      "protocol": "jina",
+      "api_base_url": "https://api.jina.ai/v1/embeddings",
+      "is_active": true
+    },
+    {
+      "provider_type": "jina",
+      "model_name": "jina-embeddings-v5-omni-small",
+      "display_name": "Jina Embedding 5 Omni Small",
+      "capability": "EMBEDDING",
+      "protocol": "jina",
+      "api_base_url": "https://api.jina.ai/v1/embeddings",
+      "is_active": true
+    },
+    {
+      "provider_type": "jina",
+      "model_name": "jina-embeddings-v5-text-nano",
+      "display_name": "Jina Embedding 5 Text Nano",
+      "capability": "EMBEDDING",
+      "protocol": "jina",
+      "api_base_url": "https://api.jina.ai/v1/embeddings",
+      "is_active": true
+    },
+    {
+      "provider_type": "jina",
+      "model_name": "jina-embeddings-v5-text-small",
+      "display_name": "Jina Embedding 5 Text Small",
+      "capability": "EMBEDDING",
+      "protocol": "jina",
+      "api_base_url": "https://api.jina.ai/v1/embeddings",
+      "is_active": true
+    },
+    {
+      "provider_type": "jina",
+      "model_name": "jina-reranker-v3",
+      "display_name": "Jina Reranker 3",
+      "capability": "RERANK",
+      "protocol": "jina",
+      "api_base_url": "https://api.jina.ai/v1/rerank",
+      "is_active": true
+    },
+    {
+      "provider_type": "volcengine",
+      "model_name": "doubao-embedding-vision-251215",
+      "display_name": "Doubao Vision Embedding",
+      "capability": "EMBEDDING",
+      "protocol": "openai",
+      "api_base_url": "https://ark.cn-beijing.volces.com/api/v3/embeddings",
+      "is_active": true
+    },
+    {
+      "provider_type": "volcengine",
+      "model_name": "doubao-embedding-vision-251215",
+      "display_name": "Doubao Vision Embedding",
+      "capability": "SPARSE_EMBEDDING",
+      "protocol": "doubao_vision",
+      "api_base_url": "https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal",
+      "is_active": true
+    },
+    {
+      "provider_type": "volcengine",
+      "model_name": "doubao-seed-2-0-pro-260215",
+      "display_name": "Doubao Seed 2.0 Pro",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://ark.cn-beijing.volces.com/api/v3/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "mimo",
+      "model_name": "mimo-v2.5",
+      "display_name": "MiMo 2.5",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://token-plan-cn.xiaomimimo.com/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "mimo",
+      "model_name": "mimo-v2.5",
+      "display_name": "MiMo 2.5",
+      "capability": "VISION",
+      "protocol": "openai",
+      "api_base_url": "https://token-plan-cn.xiaomimimo.com/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "mimo",
+      "model_name": "mimo-v2.5-asr",
+      "display_name": "MiMo 2.5 ASR",
+      "capability": "ASR",
+      "protocol": "openai",
+      "api_base_url": "https://token-plan-cn.xiaomimimo.com/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "mimo",
+      "model_name": "mimo-v2.5-pro",
+      "display_name": "MiMo 2.5 Pro",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://token-plan-cn.xiaomimimo.com/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "siliconflow",
+      "model_name": "BAAI/bge-reranker-v2-m3",
+      "display_name": "BGE Reranker M3",
+      "capability": "RERANK",
+      "protocol": "jina",
+      "api_base_url": "https://api.siliconflow.cn/v1/rerank",
+      "is_active": true
+    },
+    {
+      "provider_type": "siliconflow",
+      "model_name": "Pro/deepseek-ai/DeepSeek-V4-Flash",
+      "display_name": "DeepSeek V4 Flash",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://api.siliconflow.cn/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "siliconflow",
+      "model_name": "Pro/deepseek-ai/DeepSeek-V4-Pro",
+      "display_name": "DeepSeek V4 Pro",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://api.siliconflow.cn/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "siliconflow",
+      "model_name": "Pro/moonshotai/Kimi-K2.6",
+      "display_name": "Kimi K2.6",
+      "capability": "CHAT",
+      "protocol": "openai",
+      "api_base_url": "https://api.siliconflow.cn/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "siliconflow",
+      "model_name": "Pro/moonshotai/Kimi-K2.6",
+      "display_name": "Kimi K2.6",
+      "capability": "VISION",
+      "protocol": "openai",
+      "api_base_url": "https://api.siliconflow.cn/v1/chat/completions",
+      "is_active": true
+    },
+    {
+      "provider_type": "siliconflow",
+      "model_name": "Qwen/Qwen3-Embedding-0.6B",
+      "display_name": "Qwen 3 Embedding 0.6b",
+      "capability": "EMBEDDING",
+      "protocol": "openai",
+      "api_base_url": "https://api.siliconflow.cn/v1/embeddings",
+      "is_active": true
+    }
+  ],
+  "system_configs": [
+    {
+      "capability": "ASR",
+      "model_name": "qwen3-asr-flash",
+      "display_name": "Qwen ASR Flash",
+      "protocol": "dashscope",
+      "api_base_url": "https://dashscope.aliyuncs.com/api/v1",
+      "ciphertext_ref": "ASR"
+    },
+    {
+      "capability": "CHAT",
+      "model_name": "deepseek-ai/DeepSeek-V4-Flash",
+      "display_name": "DeepSeek V4 Flash",
+      "protocol": "openai",
+      "api_base_url": "https://api.siliconflow.cn/v1/chat/completions",
+      "ciphertext_ref": "CHAT"
+    },
+    {
+      "capability": "EMBEDDING",
+      "model_name": "BAAI/bge-m3",
+      "display_name": "BGE-M3",
+      "protocol": "openai",
+      "api_base_url": "https://api.siliconflow.cn/v1/embeddings",
+      "ciphertext_ref": "EMBEDDING"
+    },
+    {
+      "capability": "SPARSE_EMBEDDING",
+      "model_name": "doubao-embedding-vision-251215",
+      "display_name": "Doubao Sparse",
+      "protocol": "doubao_vision",
+      "api_base_url": "https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal",
+      "ciphertext_ref": "SPARSE_EMBEDDING"
+    },
+    {
+      "capability": "RERANK",
+      "model_name": "BAAI/bge-reranker-v2-m3",
+      "display_name": "BGE Reranker M3",
+      "protocol": "jina",
+      "api_base_url": "https://api.siliconflow.cn/v1/rerank",
+      "ciphertext_ref": "RERANK"
+    },
+    {
+      "capability": "VISION",
+      "model_name": "Qwen/Qwen3.6-27B",
+      "display_name": "Qwen 3.6 27B",
+      "protocol": "openai",
+      "api_base_url": "https://api.siliconflow.cn/v1/chat/completions",
+      "ciphertext_ref": "VISION"
+    }
+  ]
+}

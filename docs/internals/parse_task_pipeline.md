@@ -90,6 +90,11 @@ src/core/pipeline/
 
 > **终态回传 MQ 已下线（LINK-166）**：流水线只把终态写入 `document_parse_pipeline`（DB 权威源），不再发送 `tolink.rag.parse_result`。原 `ParseResultNotifier` 协作者已删除；前端通过轮询 Java `parse-results` 接口读 DB 获取终态。
 
+> **LLM 执行上下文前置**：任务通过基础门禁后、进入 cleaning 或 DAG 任何节点前，先读取
+> `dataset_parse_config` 的五个全局 config ID，按开关构建 `DatasetExecutionContext`。dense/sparse 始终必需，
+> 表格/标题、图片、rerank 分别只在对应开关开启时必需。任一必需绑定缺失或失效，任务在任何可观测 stage
+> 启动前失败；后续所有 stage 复用同一 resolved snapshot，不重读默认或按 source 分表。
+
 `ChunkingEngine` 与 `VectorStorageFacade` 由各自模块的工厂入口装配，不再由 pipeline 自己组装：
 
 | 工厂入口 | 位置 |

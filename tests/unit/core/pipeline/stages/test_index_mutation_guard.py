@@ -82,7 +82,7 @@ class _SparsePipeline:
         self._events = events
         self._fail = fail
 
-    async def run(self, *, chunks, task_id, db):
+    async def run(self, *, chunks, task_id, db, resolved_model=None):
         self._events.append("sparse.write")
         if self._fail:
             raise RuntimeError("sparse status confirmation failed")
