@@ -45,6 +45,8 @@ def _fake_db(*, row=None, raises=None):
 def _row(**json_cols):
     """构造带四个 JSON 列的假 ORM 行；空 enhancement dict 表示所有增强关闭。"""
     row = MagicMock(name="DatasetParseConfig")
+    row.user_id = 1
+    row.dataset_id = 2
     row.chunking_config = json_cols.get("chunking", {})
     row.enhancement_config = json_cols.get("enhancement", {})
     row.pdf_config = json_cols.get("pdf", {})
@@ -54,6 +56,7 @@ def _row(**json_cols):
     row.enhancement_chat_config_id = None
     row.enhancement_vision_config_id = None
     row.rerank_config_id = None
+    row.is_active = True
     return row
 
 

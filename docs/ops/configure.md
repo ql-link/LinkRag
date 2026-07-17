@@ -13,6 +13,7 @@
 | 缓存 | `REDIS_*` | 始终 |
 | 安全 | `API_KEY_ENCRYPTION_SECRET` | 始终（必须与 Java 管理端一致） |
 | LLM runtime cache | `LLM_RUNTIME_CACHE_*` | 可选缓存旁路；MySQL 仍是事实源 |
+| Dataset 原始快照缓存 | `DATASET_PARSE_CONFIG_CACHE_*` | Java/Python 共用；仅在 Java CDC health READY 后开启 |
 | Markdown 增强 | `MARKDOWN_PARSER_*` | 调整解析增强行为时 |
 | 分块策略 | `CHUNKING_*` | 调整分块参数时 |
 | 流程编排 | `WORKFLOW_*` | 使用轻量流程编排引擎时 |
@@ -34,6 +35,8 @@
 | `REDIS_HOST` / `REDIS_PORT` | Redis 连接 |
 | `API_KEY_ENCRYPTION_SECRET` | API Key 加密 Secret，必须与 Java 管理端一致；64 位 hex，解码后 32 字节，用于 AES-256-GCM |
 | `LLM_RUNTIME_CACHE_ENABLED` / `LLM_RUNTIME_CACHE_TTL_SECONDS` | 全局 `config_id` runtime cache 开关与 TTL |
+| `DATASET_PARSE_CONFIG_CACHE_ENABLED` / `DATASET_PARSE_CONFIG_CACHE_TTL_SECONDS` | `dataset_parse_config` 共享原始快照开关与 TTL；默认关闭，正常值默认 7 天 |
+| `DATASET_PARSE_CONFIG_NEGATIVE_TTL_SECONDS` | 数据集当前没有配置行时的 NOT_FOUND TTL，默认 60 秒 |
 | `KAFKA_BOOTSTRAP_SERVERS` 等（若 `MQ_VENDOR=kafka`） | Kafka 接入信息 |
 | `MINIO_*`（若 `STORAGE_TYPE=minio`） | 对象存储凭据 |
 | `MINIO_RAW_BUCKET`（若 `STORAGE_TYPE=minio`） | 原文件桶：用户上传的源文件，由 Java 写入，Python 只读；默认 `tolink-rag-raw`，需在 MinIO 控制台预建 |
