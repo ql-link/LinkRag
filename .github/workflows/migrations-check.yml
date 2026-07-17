@@ -43,7 +43,7 @@ jobs:
 
       - name: Prepare CI migration evidence and encrypted seed
         env:
-          API_KEY_ENCRYPTION_SECRET: 0101010101010101010101010101010101010101010101010101010101010101
+          API_KEY_ENCRYPTION_SECRET: "0101010101010101010101010101010101010101010101010101010101010101"
           PYTHONPATH: ${{ github.workspace }}
         run: |
           python - <<'PY'
@@ -106,7 +106,7 @@ jobs:
       - name: Run alembic upgrade head through migration preflight
         env:
           ALEMBIC_DATABASE_URL: mysql+pymysql://root:root@127.0.0.1:3306/tolink_rag_db
-          API_KEY_ENCRYPTION_SECRET: 0101010101010101010101010101010101010101010101010101010101010101
+          API_KEY_ENCRYPTION_SECRET: "0101010101010101010101010101010101010101010101010101010101010101"
           PYTHONPATH: ${{ github.workspace }}
           TOLINK_LLM_MIGRATION_AUTH_SECRET: ci-only-migration-authorization-secret
         run: |
