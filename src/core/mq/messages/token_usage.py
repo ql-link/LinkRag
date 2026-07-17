@@ -68,6 +68,24 @@ class TokenUsageMessage(AbstractMessage):
     def get_routing_key(self) -> Optional[str]:
         return self._payload.user_id
 
+    def get_log_fields(self) -> dict[str, object]:
+        """返回用量消息摘要，不包含任何模型请求或响应正文。"""
+        return {
+            "message_id": self._payload.message_id,
+            "user_id": self._payload.user_id,
+            "provider_type": self._payload.provider_type,
+            "model_name": self._payload.model_name,
+            "stage": self._payload.stage,
+            "operation": self._payload.operation,
+            "prompt_tokens": self._payload.prompt_tokens,
+            "completion_tokens": self._payload.completion_tokens,
+            "total_tokens": self._payload.total_tokens,
+            "config_id": self._payload.config_id,
+            "task_id": self._payload.task_id,
+            "latency_ms": self._payload.latency_ms,
+            "status": self._payload.status,
+        }
+
     @classmethod
     def build(
         cls,

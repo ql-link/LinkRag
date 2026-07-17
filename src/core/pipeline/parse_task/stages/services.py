@@ -26,11 +26,6 @@ if TYPE_CHECKING:
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
-from src.core.storage.index_mutation_models import IndexBranch
-from src.core.storage.index_mutation_guard import (
-    MutationGuardProtocol,
-    NoopIndexMutationGuard,
-)
 from src.core.markdown_parser import ParseResult
 from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.core.parse_task_service import ParseTaskService
@@ -43,28 +38,33 @@ from src.core.splitter.factory import (
 )
 from src.core.splitter.models import Chunk
 from src.core.storage.bm25_backend import build_indexing_pipeline
+from src.core.storage.bm25_models import Bm25IndexingResult
 from src.core.storage.chunks.constants import (
     CHUNK_LIFECYCLE_ACTIVE,
     CHUNK_STATUS_INDEXED,
     SPARSE_VECTOR_STATUS_INDEXED,
 )
 from src.core.storage.chunks.repository import ChunkRepository
-from src.core.storage.bm25_models import Bm25IndexingResult
+from src.core.storage.index_mutation_guard import (
+    MutationGuardProtocol,
+    NoopIndexMutationGuard,
+)
+from src.core.storage.index_mutation_models import IndexBranch
 from src.core.storage.qdrant import BucketRouter
 from src.core.storage.qdrant.constants import DEFAULT_BUCKET_COUNT, DEFAULT_COLLECTION_PREFIX
 from src.core.storage.vector import compose_vector_storage_facade
 from src.core.storage.vector.draft_factory import ChunkDraftFactory
 from src.core.storage.vector.models import ChunkIndexingResult
 from src.models.chunk_record import ChunkRecordDB
+from src.observability.logging import safe_exception_stack, truncate_log_value
 from src.services.storage.base import BaseObjectStorage
 
-from .._utils import coerce_optional_int
+from .._utils import coerce_optional_int, compact_log_value, task_log_context
 from ..post_process.constants import (
     PIPELINE_STATUS_PENDING,
     PIPELINE_STATUS_PROCESSING,
 )
 from ..source import ParseSourceIO
-
 
 _NORMAL_MUTATION_PIPELINE_STATUSES = (
     PIPELINE_STATUS_PENDING,
@@ -158,6 +158,8 @@ class StageServices:
             payload.file_type,
             source_file=payload.source_filename or payload.md_object_key,
             user_id=coerce_optional_int(payload.user_id),
+            dataset_id=coerce_optional_int(payload.dataset_id),
+            task_id=payload.task_id,
             enhancement_config=enhancement_config,
             **parser_kwargs,
         )
@@ -256,12 +258,7 @@ class StageServices:
         await self._persist_chunk_facts(chunks, payload, db)
 
         # commit 后立即反查 ORM 行作为返回值（与 retry 路径形态一致）。
-        records = await self._reload_chunks_from_db(payload, db)
-        logger.info(
-            f"[StageServices] chunking completed: task_id={payload.task_id}, "
-            f"chunk_count={len(records)}"
-        )
-        return records
+        return await self._reload_chunks_from_db(payload, db)
 
     async def _reload_chunks_from_db(
         self,
@@ -382,8 +379,8 @@ class StageServices:
         owner = self.resolve_chunk_owner(payload)
         if owner is None:
             logger.warning(
-                "[StageServices] skip vector indexing because owner is missing: task_id={}",
-                payload.task_id,
+                "[ParseTask] vector_indexing_skipped {} reason=owner_missing",
+                task_log_context(payload),
             )
             return ChunkIndexingResult(
                 total_chunks=len(chunks),
@@ -434,9 +431,7 @@ class StageServices:
                 if result.failed_chunk_ids:
                     failed_ids = set(result.failed_chunk_ids)
                     await self._cleanup_qdrant_branch(
-                        chunks=[
-                            chunk for chunk in dense_chunks if chunk.chunk_id in failed_ids
-                        ],
+                        chunks=[chunk for chunk in dense_chunks if chunk.chunk_id in failed_ids],
                         vector_name=str(settings.DENSE_VECTOR_QDRANT_VECTOR_NAME),
                         task_id=payload.task_id,
                         branch=IndexBranch.DENSE,
@@ -446,10 +441,21 @@ class StageServices:
             # EMBEDDING_DIMENSION_UNSUPPORTED）并通知 Java，不在此吞成 generic 失败结果。
             raise
         except Exception as exc:
-            logger.error(
-                "[StageServices] vector indexing failed: task_id={} error={}",
-                payload.task_id,
-                exc,
+            logger.bind(
+                event="vector_indexing_request_failed",
+                outcome="failed",
+                task_id=payload.task_id,
+                original_file_id=payload.original_file_id,
+                user_id=payload.user_id,
+                dataset_id=payload.dataset_id,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).error(
+                "[ParseTask] vector_indexing_request_failed {} error_type={} error={}",
+                task_log_context(payload),
+                type(exc).__name__,
+                compact_log_value(exc),
             )
             return ChunkIndexingResult(
                 total_chunks=len(chunks),
@@ -459,19 +465,20 @@ class StageServices:
 
         if result.failed_chunk_ids:
             logger.warning(
-                "[StageServices] vector indexing has failed chunks: "
-                "task_id={} total={} indexed={} failed={}",
-                payload.task_id,
+                "[ParseTask] vector_indexing_partial_failure {} total_chunks={} "
+                "indexed_chunks={} failed_chunk_count={} failed_chunk_ids_sample={}",
+                task_log_context(payload),
                 result.total_chunks,
                 result.indexed_chunks,
-                result.failed_chunk_ids,
+                len(result.failed_chunk_ids),
+                compact_log_value(result.failed_chunk_ids[:10]),
             )
         else:
-            logger.info(
-                "[StageServices] vector indexing completed: task_id={} indexed={} model={}",
-                payload.task_id,
+            logger.debug(
+                "[ParseTask] vector_indexing_request_succeeded {} indexed_chunks={} model={}",
+                task_log_context(payload),
                 result.indexed_chunks,
-                result.embedding_model,
+                compact_log_value(result.embedding_model),
             )
         return result
 
@@ -524,6 +531,22 @@ class StageServices:
             reason = str(exc)
             if not reason.startswith("pretokenize:"):
                 reason = f"pretokenize: {reason}"
+            logger.bind(
+                event="pretokenize_plan_failed",
+                outcome="failed",
+                task_id=payload.task_id,
+                original_file_id=payload.original_file_id,
+                user_id=payload.user_id,
+                dataset_id=payload.dataset_id,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).error(
+                "[ParseTask] pretokenize_plan_failed {} error_type={} error={}",
+                task_log_context(payload),
+                type(exc).__name__,
+                compact_log_value(exc),
+            )
             return None, reason
 
         if len(plan.chunks_with_tokens) == 0:
@@ -582,18 +605,34 @@ class StageServices:
             try:
                 await db.rollback()
             except Exception as rollback_exc:
-                logger.warning(
+                logger.bind(
+                    event="bm25_guard_rollback_failed",
+                    outcome="failed",
+                    task_id=task_id,
+                    original_file_id=meta.doc_id,
+                    error_type=type(rollback_exc).__name__,
+                    error_message=truncate_log_value(rollback_exc),
+                    stack_trace=safe_exception_stack(rollback_exc),
+                ).warning(
                     "[StageServices] rollback after BM25 guarded failure also failed: "
-                    "task_id={} error={}",
+                    "task_id={}",
                     task_id,
-                    rollback_exc,
                 )
-            logger.error(
-                "[StageServices] BM25 mutation guard failed: "
-                "task_id={} doc_id={} error={}",
+            logger.bind(
+                event="bm25_mutation_guard_failed",
+                outcome="failed",
+                task_id=task_id,
+                original_file_id=meta.doc_id,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).error(
+                "[StageServices] BM25 mutation guard failed: task_id={} doc_id={} "
+                "error_type={} error={}",
                 task_id,
                 meta.doc_id,
-                exc,
+                type(exc).__name__,
+                truncate_log_value(exc),
             )
             return Bm25IndexingResult(
                 total_items=total,
@@ -619,10 +658,13 @@ class StageServices:
                 doc_id=meta.doc_id,
             )
         except Exception as exc:
-            logger.error(
-                "[StageServices] ES 前置删除失败，判 ES 阶段失败不写入: doc_id={} error={}",
+            logger.bind(
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).error(
+                "[StageServices] ES 前置删除失败，判 ES 阶段失败不写入: doc_id={}",
                 meta.doc_id,
-                exc,
             )
             return Bm25IndexingResult(
                 total_items=total,
@@ -633,11 +675,20 @@ class StageServices:
         try:
             result = await es_pipeline.write_es_index(plan, db=db)
         except Exception as exc:
-            logger.error(
-                "[StageServices] BM25 写入异常，将清理可能半成品: "
-                "doc_id={} error={}",
+            logger.bind(
+                event="bm25_write_failed",
+                outcome="failed",
+                task_id=meta.task_id or "",
+                original_file_id=meta.doc_id,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).error(
+                "[StageServices] BM25 写入异常，将清理可能半成品: doc_id={} "
+                "error_type={} error={}",
                 meta.doc_id,
-                exc,
+                type(exc).__name__,
+                truncate_log_value(exc),
             )
             result = Bm25IndexingResult(
                 total_items=total,
@@ -653,10 +704,13 @@ class StageServices:
                     doc_id=meta.doc_id,
                 )
             except Exception as exc:
-                logger.warning(
-                    "[StageServices] ES 写入失败后清理半成品失败(best-effort): doc_id={} error={}",
+                logger.bind(
+                    error_type=type(exc).__name__,
+                    error_message=truncate_log_value(exc),
+                    stack_trace=safe_exception_stack(exc),
+                ).warning(
+                    "[StageServices] ES 写入失败后清理半成品失败(best-effort): doc_id={}",
                     meta.doc_id,
-                    exc,
                 )
             else:
                 # BM25 是文档级全量重建：一旦半成品已确认清空，
@@ -728,9 +782,7 @@ class StageServices:
             # sparse 与 dense 解耦：不再要求 dense=SUCCESS，只挑还没成功的 sparse chunk。
             fresh_chunks = await self._reload_chunks_from_db(payload, db)
             sparse_chunks = [
-                c
-                for c in fresh_chunks
-                if c.sparse_vector_status != SPARSE_VECTOR_STATUS_INDEXED
+                c for c in fresh_chunks if c.sparse_vector_status != SPARSE_VECTOR_STATUS_INDEXED
             ]
             try:
                 await sparse_pipeline.run(
@@ -794,16 +846,18 @@ class StageServices:
                     vector_name=vector_name,
                 )
             except Exception as exc:
-                logger.error(
+                logger.bind(
+                    error_type=type(exc).__name__,
+                    error_message=truncate_log_value(exc),
+                    stack_trace=safe_exception_stack(exc),
+                ).error(
                     "[IndexWriteCleanupAlert] event=cleanup_failed task_id={} "
-                    "branch={} bucket_id={} chunk_count={} error={}",
+                    "branch={} bucket_id={} chunk_count={}",
                     task_id,
                     branch.value,
                     bucket_id,
                     len(chunk_ids),
-                    exc,
                 )
-
 
     # ------------------------------------------------------------------
     # ensure points（dense/sparse 解耦的前置建点）
@@ -974,8 +1028,16 @@ def _upload_base64_images_sync(
             return f"![{alt}]({url})"
         except Exception as exc:
             failed += 1
-            logger.warning(
-                "[upload_md_images] 图片上传失败，保留原始 base64: mime={} err={}", mime, exc
+            logger.bind(
+                event="markdown_inline_image_upload_failed",
+                outcome="skipped",
+                mime_type=mime,
+                image_size=len(image_bytes) if "image_bytes" in locals() else 0,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).warning(
+                "[upload_md_images] 图片上传失败，保留原始 base64: mime={}", mime
             )
             return match.group(0)
 

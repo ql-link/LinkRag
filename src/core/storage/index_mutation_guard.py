@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine
 
 from src.config import settings
 from src.database import get_async_engine
+from src.observability.logging import safe_exception_stack, truncate_log_value
 from src.utils.logger import logger
 
 from .index_mutation_models import IndexBranch
@@ -116,7 +117,11 @@ class IndexMutationGuard:
                 )
             except Exception as exc:
                 wait_ms = int((time.monotonic() - wait_started) * 1000)
-                logger.error(
+                logger.bind(
+                    error_type=type(exc).__name__,
+                    error_message=truncate_log_value(exc),
+                    stack_trace=safe_exception_stack(exc),
+                ).error(
                     "[IndexMutationGuard] event=lock_error doc_id={} branch={} "
                     "wait_ms={} timeout_seconds={} timeout_count=0 error_type={}",
                     doc_id,

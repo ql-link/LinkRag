@@ -13,6 +13,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 
 import pytest
+from loguru import logger
 
 from src.core.pipeline.parse_task.pipeline import ParseTaskPipeline
 from src.core.pipeline.parse_task.post_process.constants import (
@@ -113,6 +114,30 @@ async def test_template_success_writes_processing_then_success():
 
 
 @pytest.mark.asyncio
+async def test_template_success_logs_dag_stage_lifecycle():
+    messages: list[str] = []
+    sink_id = logger.add(
+        lambda message: messages.append(message.record["message"]),
+        level="INFO",
+    )
+    try:
+        repo = _RecordingStatusRepo()
+        runtime = _runtime(status_repo=repo)
+
+        await _FakeNode().run(_ctx(runtime))
+    finally:
+        logger.remove(sink_id)
+
+    started = next(message for message in messages if "stage_started" in message)
+    succeeded = next(message for message in messages if "stage_succeeded" in message)
+    assert "task_id=t1" in started
+    assert "doc_id=9" in started
+    assert "stage=VECTORIZING" in started
+    assert "engine=dag" in started
+    assert "duration_ms=" in succeeded
+
+
+@pytest.mark.asyncio
 async def test_template_failure_marks_failed_and_records_reason():
     repo = _RecordingStatusRepo()
     runtime = _runtime(status_repo=repo)
@@ -153,8 +178,9 @@ class _FakeSkipFailNode(StatusTrackedParseNode):
     stage = POST_PROCESS_STAGE_VECTORIZING
 
     def __init__(self):
-        super().__init__(key="dense_vectorizing", requires=(products.SOURCE,),
-                         provides=(products.DENSE_VECTORS,))
+        super().__init__(
+            key="dense_vectorizing", requires=(products.SOURCE,), provides=(products.DENSE_VECTORS,)
+        )
         self.executed = False
 
     async def _execute(self, ctx):

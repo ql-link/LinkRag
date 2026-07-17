@@ -71,7 +71,9 @@ class StageContext:
             failed_chunk_ids=self.vector_result.failed_chunk_ids if self.vector_result else [],
         )
 
-    def failure_result(self, outcome: "StageOutcome") -> ParsePipelineResult:
+    def failure_result(
+        self, outcome: "StageOutcome", *, failed_stage: str
+    ) -> ParsePipelineResult:
         """某阶段失败后的整体结果（失败阶段已自行落库 + 通知 Java）。"""
         return ParsePipelineResult(
             status=PipelineStatus.FAILED,
@@ -79,6 +81,8 @@ class StageContext:
             chunk_count=self.chunk_count,
             vector_indexing_completed=self.vector_indexing_completed,
             failed_chunk_ids=self.vector_result.failed_chunk_ids if self.vector_result else [],
+            failed_stage=failed_stage,
+            failure_reason=outcome.failure_reason,
             error=outcome.error,
         )
 

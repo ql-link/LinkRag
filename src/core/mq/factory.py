@@ -5,12 +5,13 @@ MQFactory 注册式工厂
 根据配置 (MQ_VENDOR) 自动创建对应厂商的 Sender/Receiver 实例。
 单例模式，全局共享同一组连接实例。
 """
-from typing import Awaitable, Callable, Dict, Optional, Type, Any
+
+from typing import Any, Dict, Optional, Type
 
 from loguru import logger
 
-from src.core.mq.interfaces import IMQSender, IMQReceiver, MQVendorType
 from src.core.mq.exceptions import MQConfigError
+from src.core.mq.interfaces import IMQReceiver, IMQSender, MQVendorType
 from src.core.mq.retry import DLQPublisher, RetryPolicy
 
 
@@ -54,8 +55,8 @@ class MQFactory:
 
     def _register_defaults(self) -> None:
         """注册内置的厂商适配器"""
-        from src.core.mq.vendors.kafka.kafka_adapter import KafkaSender, KafkaReceiver
-        from src.core.mq.vendors.rabbitmq_adapter import RabbitMQSender, RabbitMQReceiver
+        from src.core.mq.vendors.kafka.kafka_adapter import KafkaReceiver, KafkaSender
+        from src.core.mq.vendors.rabbitmq_adapter import RabbitMQReceiver, RabbitMQSender
 
         self._sender_registry[MQVendorType.KAFKA] = KafkaSender
         self._receiver_registry[MQVendorType.KAFKA] = KafkaReceiver
@@ -94,44 +95,23 @@ class MQFactory:
             config["bootstrap_servers"] = getattr(
                 settings, "KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"
             )
-            config["sasl_mechanism"] = getattr(
-                settings, "KAFKA_SASL_MECHANISM", None
-            )
-            config["sasl_plain_username"] = getattr(
-                settings, "KAFKA_SASL_USERNAME", None
-            )
-            config["sasl_plain_password"] = getattr(
-                settings, "KAFKA_SASL_PASSWORD", None
-            )
-            config["security_protocol"] = getattr(
-                settings, "KAFKA_SECURITY_PROTOCOL", "PLAINTEXT"
-            )
-            config["max_poll_interval_ms"] = getattr(
-                settings, "KAFKA_MAX_POLL_INTERVAL_MS", 900000
-            )
-            config["session_timeout_ms"] = getattr(
-                settings, "KAFKA_SESSION_TIMEOUT_MS", 45000
-            )
+            config["sasl_mechanism"] = getattr(settings, "KAFKA_SASL_MECHANISM", None)
+            config["sasl_plain_username"] = getattr(settings, "KAFKA_SASL_USERNAME", None)
+            config["sasl_plain_password"] = getattr(settings, "KAFKA_SASL_PASSWORD", None)
+            config["security_protocol"] = getattr(settings, "KAFKA_SECURITY_PROTOCOL", "PLAINTEXT")
+            config["max_poll_interval_ms"] = getattr(settings, "KAFKA_MAX_POLL_INTERVAL_MS", 900000)
+            config["session_timeout_ms"] = getattr(settings, "KAFKA_SESSION_TIMEOUT_MS", 45000)
             config["heartbeat_interval_ms"] = getattr(
                 settings, "KAFKA_HEARTBEAT_INTERVAL_MS", 15000
             )
         elif vendor == MQVendorType.RABBITMQ:
-            config["url"] = getattr(
-                settings, "RABBITMQ_URL", "amqp://guest:guest@localhost:5672/"
-            )
-            config["exchange_name"] = getattr(
-                settings, "RABBITMQ_EXCHANGE_NAME", ""
-            )
-            config["exchange_type"] = getattr(
-                settings, "RABBITMQ_EXCHANGE_TYPE", "direct"
-            )
-            config["prefetch_count"] = getattr(
-                settings, "RABBITMQ_PREFETCH_COUNT", 10
-            )
+            config["url"] = getattr(settings, "RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
+            config["exchange_name"] = getattr(settings, "RABBITMQ_EXCHANGE_NAME", "")
+            config["exchange_type"] = getattr(settings, "RABBITMQ_EXCHANGE_TYPE", "direct")
+            config["prefetch_count"] = getattr(settings, "RABBITMQ_PREFETCH_COUNT", 10)
         else:
             raise MQConfigError(
-                f"不支持的 MQ 厂商: {vendor}，"
-                f"可选: {list(self._sender_registry.keys())}",
+                f"不支持的 MQ 厂商: {vendor}，" f"可选: {list(self._sender_registry.keys())}",
                 vendor=vendor,
             )
 
@@ -161,9 +141,7 @@ class MQFactory:
 
         sender_cls = self._sender_registry.get(vendor)
         if not sender_cls:
-            raise MQConfigError(
-                f"厂商 {vendor} 未注册 Sender", vendor=vendor
-            )
+            raise MQConfigError(f"厂商 {vendor} 未注册 Sender", vendor=vendor)
 
         # 构建厂商特定参数
         if vendor == MQVendorType.KAFKA:
@@ -211,9 +189,7 @@ class MQFactory:
 
         receiver_cls = self._receiver_registry.get(vendor)
         if not receiver_cls:
-            raise MQConfigError(
-                f"厂商 {vendor} 未注册 Receiver", vendor=vendor
-            )
+            raise MQConfigError(f"厂商 {vendor} 未注册 Receiver", vendor=vendor)
 
         if vendor == MQVendorType.KAFKA:
             kwargs = {
@@ -249,6 +225,7 @@ class MQFactory:
         if self._retry_policy_cache is not None:
             return self._retry_policy_cache
         from src.config import settings
+
         self._retry_policy_cache = RetryPolicy(
             max_retries=int(getattr(settings, "MQ_MAX_RETRIES", 3)),
             backoff_seconds=float(getattr(settings, "MQ_RETRY_BACKOFF_SECONDS", 1.0)),
@@ -262,17 +239,23 @@ class MQFactory:
         签名见 :data:`src.core.mq.retry.DLQPublisher`：
         ``(dlt_topic, body_bytes, headers, original_key) -> Awaitable[None]``。
         """
+
         async def _publish(
             topic: str,
             body: bytes,
             headers: Dict[str, str],
             key: Optional[str],
         ) -> None:
-            sender = self.get_sender()
             # 业务消息默认以 utf-8 文本流转；死信沿用同一序列化路径，便于消费侧统一
             # 处理。极端二进制场景未来需要扩展 IMQSender.send_bytes 接口。
             text = body.decode("utf-8", errors="replace")
-            await sender.send(topic=topic, message=text, key=key, headers=headers)
+            sender = self.get_sender()
+            await sender.send(
+                topic=topic,
+                message=text,
+                key=key,
+                headers=headers,
+            )
 
         return _publish
 

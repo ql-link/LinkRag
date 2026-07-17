@@ -122,7 +122,7 @@ Feature: 解析任务源文件流式下载与临时文件治理
   Scenario: 下载完成日志包含文件大小与下载耗时字段
     Given payload.file_type == "docx" size=100MB
     When ParseTaskPipeline 完成流式下载
-    Then loguru 日志中存在一条匹配 "source downloaded" 的记录
+    Then loguru 日志中存在一条匹配 "source_downloaded" 的记录
     And 该记录包含字段 task_id
     And 该记录包含字段 file_size_mb 数值 ≈ 100
     And 该记录包含字段 download_ms 数值 > 0
@@ -130,7 +130,7 @@ Feature: 解析任务源文件流式下载与临时文件治理
   Scenario: 解析完成日志包含解析耗时与 markdown 字符数字段
     Given payload.file_type == "docx" size=100MB
     When ParseTaskPipeline 完成 _parse_file
-    Then loguru 日志中存在一条匹配 "parse completed" 的记录
+    Then loguru 日志中存在一条匹配 "parse_completed" 的记录
     And 该记录包含字段 task_id
     And 该记录包含字段 parse_ms 数值 > 0
     And 该记录包含字段 markdown_chars 数值 > 0

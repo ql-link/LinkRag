@@ -108,6 +108,20 @@ class ParseTaskMessage(AbstractMessage):
     def get_routing_key(self) -> Optional[str]:
         return self._payload.file_type
 
+    def get_log_fields(self) -> dict[str, object]:
+        """返回解析任务消息的关联字段，不记录文件名和对象存储坐标。"""
+        return {
+            "message_id": self._payload.message_id,
+            "task_id": self._payload.task_id,
+            "doc_id": self._payload.original_file_id,
+            "parse_file_id": self._payload.document_parse_task_id,
+            "user_id": self._payload.user_id,
+            "dataset_id": self._payload.dataset_id,
+            "file_type": self._payload.file_type,
+            "is_retry": self._payload.is_retry,
+            "previous_task_id": self._payload.previous_task_id,
+        }
+
     @classmethod
     def build(
         cls,
@@ -167,9 +181,13 @@ class ParseTaskMessage(AbstractMessage):
         try:
             return ParseTaskPayload(**payload_data)
         except Exception as exc:
+            if hasattr(exc, "errors"):
+                details = exc.errors(include_url=False, include_input=False)
+            else:
+                details = [{"type": type(exc).__name__}]
             raise MQSerializationError(
-                f"ParseTaskPayload 字段校验失败: {exc}，原始消息前200字符: {raw[:200]}"
-            ) from exc
+                f"ParseTaskPayload 字段校验失败: {details}"
+            ) from None
 
     class MQReceiver(Protocol):
         async def on_parse_task(self, payload: "ParseTaskPayload") -> None: ...

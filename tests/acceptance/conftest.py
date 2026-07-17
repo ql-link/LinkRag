@@ -279,6 +279,10 @@ def pipeline_factory(
     设置正确的 failure_reason"，不需要走完整后处理链路；因此把成功路径在 markdown 上传
     完成后立即短路掉。
     """
+    # 本 feature 验证源文件下载、临时文件和 cleaning 日志，不验证并行 DAG 状态机。
+    # 明确走串行回退引擎，避免测试桩需要额外模拟 DAG 的多 session / begin_pipeline。
+    monkeypatch.setattr("src.config.settings.PARSE_USE_WORKFLOW_DAG", False)
+
     from src.core.pipeline import ParseTaskPipeline
     from src.core.pipeline.parse_task.models import ParsePipelineResult, PipelineStatus
 

@@ -26,6 +26,11 @@ from loguru import logger
 
 from src.core.parser.pdf.base import BasePdfBackend
 from src.core.parser.pdf.models import PdfBinaryAsset
+from src.observability.logging import (
+    safe_exception_stack,
+    sanitize_url_for_log,
+    truncate_log_value,
+)
 
 _DEFAULT_TIMEOUT_SECONDS = 300  # 长文档解析可能需要较长时间
 _MAX_CONSECUTIVE_POLL_ERRORS = 5  # 轮询连续返回 code != 0 的熔断阈值，避免硬等满超时
@@ -76,17 +81,44 @@ class MinerUBackend(BasePdfBackend):
         try:
             markdown, assets = self._call_cloud_api(source_file_url, model_version)
             return markdown, assets
-        except httpx.TimeoutException:
+        except httpx.TimeoutException as exc:
             self.metadata["mineru_backend_error"] = "API 请求超时"
-            logger.error(f"[MinerU Cloud] API 请求超时 (timeout={self._timeout}s)")
+            logger.bind(
+                event="pdf_backend_failed",
+                outcome="failed",
+                backend=self.name,
+                stage="cloud_request",
+                timeout_seconds=self._timeout,
+                endpoint=sanitize_url_for_log(self._api_url),
+                error_type=type(exc).__name__,
+                stack_trace=safe_exception_stack(exc),
+            ).error("MinerU API 请求超时")
             return "", []
         except httpx.ConnectError as exc:
             self.metadata["mineru_backend_error"] = f"无法连接 API: {exc}"
-            logger.error(f"[MinerU Cloud] 无法连接 MinerU API: {self._api_url}")
+            logger.bind(
+                event="pdf_backend_failed",
+                outcome="failed",
+                backend=self.name,
+                stage="cloud_connect",
+                endpoint=sanitize_url_for_log(self._api_url),
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).error("无法连接 MinerU API")
             return "", []
         except Exception as exc:
             self.metadata["mineru_backend_error"] = str(exc)
-            logger.error(f"[MinerU Cloud] 解析异常: {exc}")
+            logger.bind(
+                event="pdf_backend_failed",
+                outcome="failed",
+                backend=self.name,
+                stage="cloud_parse",
+                endpoint=sanitize_url_for_log(self._api_url),
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).error("MinerU 云端解析异常")
             return "", []
 
     def _call_cloud_api(
@@ -112,7 +144,12 @@ class MinerUBackend(BasePdfBackend):
                 "url": source_file_url,
                 "model_version": model_version,
             }
-            logger.info(f"[MinerU Cloud] 正在创建精准解析任务: {task_url}")
+            logger.bind(
+                event="mineru_task_create",
+                backend=self.name,
+                endpoint=sanitize_url_for_log(task_url),
+                model_version=model_version,
+            ).info("正在创建 MinerU 精准解析任务")
             create_resp = client.post(task_url, headers=headers, json=create_data)
             create_resp.raise_for_status()
             create_res = create_resp.json()
@@ -130,6 +167,7 @@ class MinerUBackend(BasePdfBackend):
             markdown_url = None
             poll_interval = 1.0
             consecutive_errors = 0
+            last_logged_pages = -1
 
             while time.time() - start_time < self._timeout:
                 poll_resp = client.get(poll_url, headers=poll_headers)
@@ -139,8 +177,10 @@ class MinerUBackend(BasePdfBackend):
                 if poll_res.get("code") != 0:
                     consecutive_errors += 1
                     logger.warning(
-                        f"轮询警告 ({consecutive_errors}/{_MAX_CONSECUTIVE_POLL_ERRORS}): "
-                        f"{poll_res.get('msg')}"
+                        "MinerU 轮询返回异常状态: consecutive_errors={}/{} message={}",
+                        consecutive_errors,
+                        _MAX_CONSECUTIVE_POLL_ERRORS,
+                        truncate_log_value(poll_res.get("msg"), 256),
                     )
                     if consecutive_errors >= _MAX_CONSECUTIVE_POLL_ERRORS:
                         raise Exception(
@@ -163,9 +203,26 @@ class MinerUBackend(BasePdfBackend):
                     raise Exception(f"云端解析失败: {task_state.get('err_msg')}")
                 else:
                     progress = task_state.get("extract_progress", {})
-                    logger.info(
-                        f"[MinerU Cloud] 解析中 ({progress.get('extracted_pages', 0)}/{progress.get('total_pages', 0)})..."
-                    )
+                    extracted_pages = int(progress.get("extracted_pages", 0) or 0)
+                    total_pages = int(progress.get("total_pages", 0) or 0)
+                    log_step = max(1, total_pages // 10) if total_pages else 10
+                    if (
+                        last_logged_pages < 0
+                        or extracted_pages >= total_pages > 0
+                        or extracted_pages - last_logged_pages >= log_step
+                    ):
+                        logger.bind(
+                            event="mineru_task_progress",
+                            backend=self.name,
+                            mineru_task_id=task_id,
+                            extracted_pages=extracted_pages,
+                            total_pages=total_pages,
+                        ).info(
+                            "MinerU 解析进度: extracted_pages={} total_pages={}",
+                            extracted_pages,
+                            total_pages,
+                        )
+                        last_logged_pages = extracted_pages
                     self._backoff(poll_interval, start_time)
                     poll_interval = min(poll_interval * 1.5, 5.0)
 

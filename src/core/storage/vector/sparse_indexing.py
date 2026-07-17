@@ -28,15 +28,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import settings
 from src.core.storage.chunks import ChunkRepository
 from src.core.storage.chunks.constants import (
-    CHUNK_STATUS_INDEXED,
     SPARSE_VECTOR_STATUS_FAILED,
-    SPARSE_VECTOR_STATUS_INDEXED,
     SPARSE_VECTOR_STATUS_INDEXING,
     SPARSE_VECTOR_STATUS_PENDING,
 )
 from src.core.storage.qdrant import QdrantIndexStore
 from src.core.storage.qdrant.point_factory import sparse_indexed_point_from_record
 from src.models.chunk_record import ChunkRecordDB
+from src.observability.logging import safe_exception_stack, truncate_log_value
 
 from src.core.encoding.sparse.exceptions import SparseVectorError
 from src.core.encoding.sparse.factory import (
@@ -263,12 +262,15 @@ class SparseIndexingPipeline:
             await db.commit()
         except Exception as bookkeeping_exc:
             await db.rollback()
-            logger.error(
+            logger.bind(
+                error_type=type(bookkeeping_exc).__name__,
+                error_message=truncate_log_value(bookkeeping_exc),
+                stack_trace=safe_exception_stack(bookkeeping_exc),
+            ).error(
                 "[SparseIndexingPipeline] failed to mark sparse_vector_status=FAILED: "
-                "task_id={} chunks={} error={}",
+                "task_id={} chunk_count={}",
                 task_id,
-                list(chunk_ids),
-                bookkeeping_exc,
+                len(chunk_ids),
             )
 
     async def _resolve_sparse_vector_service(

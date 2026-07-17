@@ -1,9 +1,12 @@
 """Parse task 子包内部共享工具。"""
 
+import time
 from datetime import datetime, timezone
 from typing import Any
 
+from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.models.parse_task import DocumentParsedLog
+from src.observability.logging import truncate_log_value
 
 
 def now() -> datetime:
@@ -38,6 +41,26 @@ def duration_ms(started_at: datetime | None, finished_at: datetime) -> int | Non
         return None
     delta = _to_utc_aware(finished_at) - _to_utc_aware(started_at)
     return int(delta.total_seconds() * 1000)
+
+
+def monotonic_duration_ms(started_at: float) -> int:
+    """用单调时钟计算耗时，避免系统时间校准影响运行态日志。"""
+    return max(0, int((time.monotonic() - started_at) * 1000))
+
+
+def compact_log_value(value: object, *, max_length: int = 512) -> str:
+    """把日志字段脱敏、压成单行并限制长度。"""
+    if value is None:
+        return "-"
+    return truncate_log_value(value, limit=max_length)
+
+
+def task_log_context(payload: ParseTaskPayload | object) -> str:
+    """返回解析链路日志统一使用的最小关联字段。"""
+    return (
+        f"task_id={compact_log_value(getattr(payload, 'task_id', None))} "
+        f"doc_id={compact_log_value(getattr(payload, 'original_file_id', None))}"
+    )
 
 
 def coerce_optional_int(value: object) -> int | None:

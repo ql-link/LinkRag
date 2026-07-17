@@ -19,7 +19,7 @@ from src.core.dataset_config import DatasetConfigService
 from src.core.markdown_parser import EnhancementModelMissingError, LLMConfigMissingError
 
 from .. import temp_workspace
-from .._utils import coerce_optional_int, now
+from .._utils import coerce_optional_int, compact_log_value, now, task_log_context
 from ..error_codes import ParseFailureCode, build_failure_reason
 from ..post_process.constants import POST_PROCESS_STAGE_CLEANING
 from .base import Stage
@@ -50,8 +50,8 @@ class CleaningStage(Stage):
         try:
             if self._services.source_io.should_skip_source_download(payload):
                 logger.info(
-                    f"[CleaningStage] skip source download for MinerU URL API: "
-                    f"task_id={payload.task_id}"
+                    "[ParseTask] source_download_skipped {} reason=mineru_url_api",
+                    task_log_context(payload),
                 )
             else:
                 source_path = temp_workspace.create_temp_file(
@@ -72,13 +72,11 @@ class CleaningStage(Stage):
                         if exc.errno == errno.ENOSPC
                         else ParseFailureCode.SOURCE_FILE_NOT_FOUND
                     )
-                    return self._classified_failure(payload, code, exc)
+                    return self._classified_failure(code, exc)
                 except Exception as exc:
                     temp_workspace.safe_unlink(source_path)
                     source_path = None
-                    return self._classified_failure(
-                        payload, ParseFailureCode.SOURCE_FILE_NOT_FOUND, exc
-                    )
+                    return self._classified_failure(ParseFailureCode.SOURCE_FILE_NOT_FOUND, exc)
 
                 download_ms = int((time.monotonic() - download_started_at) * 1000)
                 try:
@@ -86,11 +84,12 @@ class CleaningStage(Stage):
                 except OSError:
                     file_size_mb = 0.0
                 logger.info(
-                    "[CleaningStage] source downloaded: task_id={} "
-                    "file_size_mb={:.1f} download_ms={}",
-                    payload.task_id,
+                    "[ParseTask] source_downloaded {} file_size_mb={:.1f} download_ms={} "
+                    "source_bucket={}",
+                    task_log_context(payload),
                     file_size_mb,
                     download_ms,
+                    compact_log_value(payload.source_bucket),
                 )
 
             parse_started_at = time.monotonic()
@@ -115,25 +114,22 @@ class CleaningStage(Stage):
                     )
             except EnhancementModelMissingError as exc:
                 # 数据集开启增强，但用户默认和 LinkRag 系统默认均未提供对应模型：单独归类。
-                return self._classified_failure(
-                    payload, ParseFailureCode.ENHANCEMENT_MODEL_MISSING, exc
-                )
+                return self._classified_failure(ParseFailureCode.ENHANCEMENT_MODEL_MISSING, exc)
             except LLMConfigMissingError as exc:
                 # 发起用户缺少必配能力（CHAT）的默认 LLM 配置：单独归类，便于 Java 端提示用户去配置，
                 # 区别于解析引擎本身失败的 PARSE_ENGINE_FAILED。
-                return self._classified_failure(
-                    payload, ParseFailureCode.LLM_CONFIG_MISSING, exc
-                )
+                return self._classified_failure(ParseFailureCode.LLM_CONFIG_MISSING, exc)
             except Exception as exc:
-                return self._classified_failure(
-                    payload, ParseFailureCode.PARSE_ENGINE_FAILED, exc
-                )
+                return self._classified_failure(ParseFailureCode.PARSE_ENGINE_FAILED, exc)
             parse_ms = int((time.monotonic() - parse_started_at) * 1000)
             logger.info(
-                "[CleaningStage] parse completed: task_id={} parse_ms={} markdown_chars={}",
-                payload.task_id,
+                "[ParseTask] parse_completed {} parse_ms={} markdown_chars={} "
+                "file_type={} parser_backend={}",
+                task_log_context(payload),
                 parse_ms,
                 len(parse_result["markdown"] or ""),
+                compact_log_value(payload.file_type),
+                compact_log_value(payload.pdf_parser_backend),
             )
 
             # 早删：拿到 markdown 后原文件已无下游用途；finally 兜底幂等。
@@ -143,6 +139,7 @@ class CleaningStage(Stage):
             # markdown 产物统一写入 Python 配置的 RAG 文档私有桶（MINIO_PRIVATE_BUCKET）；
             # md/markdown 只跳过解析引擎转换（is_markdown_passthrough），不跳过落盘，
             # 避免产物停留在 source_bucket。坐标由 payload.markdown_bucket/markdown_object_key 统一解析。
+            upload_started_at = time.monotonic()
             try:
                 await asyncio.to_thread(
                     self._services.source_io.upload_markdown,
@@ -150,9 +147,15 @@ class CleaningStage(Stage):
                     parse_result["markdown"],
                 )
             except Exception as exc:
-                return self._classified_failure(
-                    payload, ParseFailureCode.PARSED_FILE_UPLOAD_FAILED, exc
-                )
+                return self._classified_failure(ParseFailureCode.PARSED_FILE_UPLOAD_FAILED, exc)
+            logger.info(
+                "[ParseTask] markdown_uploaded {} upload_ms={} markdown_bytes={} "
+                "markdown_bucket={}",
+                task_log_context(payload),
+                int((time.monotonic() - upload_started_at) * 1000),
+                len(parse_result["markdown"].encode("utf-8")),
+                compact_log_value(payload.markdown_bucket),
+            )
 
             ctx.parse_result = parse_result
             return StageOutcome.success()
@@ -207,9 +210,7 @@ class CleaningStage(Stage):
         if source_path is None:
             raise ValueError("md/markdown 源文件路径不能为空，无法透传")
         started_at = time.monotonic()
-        markdown = await asyncio.to_thread(
-            Path(source_path).read_text, "utf-8", "ignore"
-        )
+        markdown = await asyncio.to_thread(Path(source_path).read_text, "utf-8", "ignore")
         return {
             "markdown": markdown,
             "parse_result": None,
@@ -222,9 +223,6 @@ class CleaningStage(Stage):
         }
 
     @staticmethod
-    def _classified_failure(payload, code: ParseFailureCode, exc: Exception) -> StageOutcome:
+    def _classified_failure(code: ParseFailureCode, exc: Exception) -> StageOutcome:
         failure_reason = build_failure_reason(code, str(exc))
-        logger.error(
-            f"[CleaningStage] parse failed: task_id={payload.task_id}, reason={failure_reason}"
-        )
         return StageOutcome.failure(failure_reason, error=exc)

@@ -29,7 +29,38 @@ class ParseTaskService:
         file_type: str,
         source_file: str | None = None,
         user_id: int | None = None,
+        dataset_id: int | None = None,
+        task_id: str | None = None,
         enhancement_config: "EnhancementConfig | None" = None,
+        **parser_kwargs,
+    ) -> dict:
+        """在统一解析日志上下文中执行格式解析与 Markdown 增强。"""
+        with logger.contextualize(
+            event_domain="document_parse",
+            task_id=task_id or "",
+            user_id=user_id,
+            dataset_id=dataset_id,
+            source_filename=source_file or "",
+            file_type=file_type,
+        ):
+            return await ParseTaskService._aprocess_impl(
+                source_path,
+                file_type,
+                source_file=source_file,
+                user_id=user_id,
+                enhancement_config=enhancement_config,
+                **parser_kwargs,
+            )
+
+    @staticmethod
+    async def _aprocess_impl(
+        source_path: Path | None,
+        file_type: str,
+        source_file: str | None = None,
+        user_id: int | None = None,
+        enhancement_config: "EnhancementConfig | None" = None,
+        *,
+        task_id: str | None = None,
         **parser_kwargs,
     ) -> dict:
         start_time = time.time()
@@ -42,8 +73,9 @@ class ParseTaskService:
             parser_kwargs,
         )
         parse_elapsed = time.monotonic() - parse_started_at
-        logger.info(
-            "[ParseTaskService] parser produced markdown: elapsed={:.2f}s chars={}",
+        logger.debug(
+            "[ParseTaskService] parser_markdown_ready task_id={} elapsed={:.2f}s chars={}",
+            task_id or "-",
             parse_elapsed,
             len(raw_markdown or ""),
         )
@@ -63,9 +95,10 @@ class ParseTaskService:
             enhancement_config=enhancement_config,
         )
         enhance_elapsed = time.monotonic() - enhance_started_at
-        logger.info(
-            "[ParseTaskService] markdown enhancement completed: elapsed={:.2f}s "
+        logger.debug(
+            "[ParseTaskService] markdown_enhancement_completed task_id={} elapsed={:.2f}s "
             "tables={} images={} image_bytes={}",
+            task_id or "-",
             enhance_elapsed,
             len(enhanced_parse_result.tables),
             len(enhanced_parse_result.images),
@@ -94,9 +127,10 @@ class ParseTaskService:
         final_markdown = heading_result.markdown
         final_parse_result = heading_result.parse_result
         final_parse_elapsed = time.monotonic() - final_parse_started_at
-        logger.info(
-            "[ParseTaskService] final markdown parsed: elapsed={:.2f}s chars={} "
+        logger.debug(
+            "[ParseTaskService] final_markdown_parsed task_id={} elapsed={:.2f}s chars={} "
             "heading_hierarchy_applied={} reason={}",
+            task_id or "-",
             final_parse_elapsed,
             len(final_markdown or ""),
             heading_result.applied,
@@ -123,6 +157,8 @@ class ParseTaskService:
         file_type: str,
         source_file: str | None = None,
         user_id: int | None = None,
+        *,
+        task_id: str | None = None,
         **parser_kwargs,
     ) -> dict:
         try:
@@ -134,6 +170,7 @@ class ParseTaskService:
                     file_type,
                     source_file=source_file,
                     user_id=user_id,
+                    task_id=task_id,
                     **parser_kwargs,
                 )
             )

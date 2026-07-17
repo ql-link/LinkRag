@@ -73,6 +73,23 @@ class ChatTurnMessage(AbstractMessage):
         # 以 conversation_id 为分区键，保证同一对话的轮次有序投递。
         return str(self._payload.conversation_id)
 
+    def get_log_fields(self) -> dict[str, object]:
+        """返回对话消息摘要，不记录 query、answer、title 和错误正文。"""
+        return {
+            "message_id": self._payload.message_id,
+            "conversation_id": self._payload.conversation_id,
+            "request_id": self._payload.request_id,
+            "turn_id": self._payload.turn_id,
+            "user_id": self._payload.user_id,
+            "config_id": self._payload.config_id,
+            "provider_type": self._payload.provider_type,
+            "model_name": self._payload.model_name,
+            "status": self._payload.status,
+            "reference_count": len(self._payload.references),
+            "latency_ms": self._payload.latency_ms,
+            "error_code": self._payload.error_code,
+        }
+
     @classmethod
     def build(
         cls,

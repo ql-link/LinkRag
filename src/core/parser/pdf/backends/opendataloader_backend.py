@@ -11,6 +11,7 @@ from loguru import logger
 
 from src.core.parser.pdf.base import BasePdfBackend
 from src.core.parser.pdf.models import PdfBinaryAsset
+from src.observability.logging import safe_exception_stack, truncate_log_value
 
 
 class OpenDataLoaderBackend(BasePdfBackend):
@@ -34,7 +35,15 @@ class OpenDataLoaderBackend(BasePdfBackend):
             self.metadata["opendataloader_backend_error"] = (
                 "opendataloader-pdf 未安装，请先安装该依赖"
             )
-            logger.warning(f"[OpenDataLoader] Python 包未安装: {exc}")
+            logger.bind(
+                event="pdf_backend_unavailable",
+                outcome="skipped",
+                backend=self.name,
+                stage="python_dependency",
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).warning("OpenDataLoader Python 包未安装")
             return "", []
 
         java_check = self._ensure_java_11_plus()
@@ -75,16 +84,40 @@ class OpenDataLoaderBackend(BasePdfBackend):
                 return markdown, assets
         except FileNotFoundError as exc:
             self.metadata["opendataloader_backend_error"] = str(exc)
-            logger.error(f"[OpenDataLoader] Java 不可用: {exc}")
+            logger.bind(
+                event="pdf_backend_failed",
+                outcome="failed",
+                backend=self.name,
+                stage="java_runtime",
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).error("OpenDataLoader Java 不可用")
             return "", []
         except subprocess.CalledProcessError as exc:
             error_text = (exc.stderr or exc.stdout or exc.output or str(exc)).strip()
             self.metadata["opendataloader_backend_error"] = error_text or str(exc)
-            logger.error(f"[OpenDataLoader] CLI 执行失败: {error_text or exc}")
+            logger.bind(
+                event="pdf_backend_failed",
+                outcome="failed",
+                backend=self.name,
+                stage="cli_convert",
+                cli_output=truncate_log_value(error_text or exc),
+                error_type=type(exc).__name__,
+                stack_trace=safe_exception_stack(exc),
+            ).error("OpenDataLoader CLI 执行失败")
             return "", []
         except Exception as exc:
             self.metadata["opendataloader_backend_error"] = str(exc)
-            logger.error(f"[OpenDataLoader] 解析异常: {exc}")
+            logger.bind(
+                event="pdf_backend_failed",
+                outcome="failed",
+                backend=self.name,
+                stage="local_parse",
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).error("OpenDataLoader 解析异常")
             return "", []
 
     def _ensure_java_11_plus(self) -> str | None:

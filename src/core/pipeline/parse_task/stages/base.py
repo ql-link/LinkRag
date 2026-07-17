@@ -8,13 +8,18 @@
 
 from __future__ import annotations
 
+import time
 from abc import ABC, abstractmethod
 from typing import TYPE_CHECKING
 
-from loguru import logger
-
-from .._utils import now
+from .._utils import (
+    compact_log_value,
+    monotonic_duration_ms,
+    now,
+    task_log_context,
+)
 from ..models import ParsePipelineResult
+from ..observability import parse_log, safe_error_fields
 from ..post_process.constants import STAGE_STATUS_SUCCESS
 from .context import StageContext, StageOutcome
 
@@ -57,17 +62,113 @@ class Stage(ABC):
         - 需执行 → ``mark_started`` → ``run`` → 成功 ``mark_success`` /
           失败 ``mark_failed``（``finalized`` 的失败已自行处理）。
         """
-        if not self.should_run(ctx):
-            return await self.on_skip(ctx)
+        task_context = task_log_context(ctx.payload)
+        monotonic_started_at = time.monotonic()
 
+        if not self.should_run(ctx):
+            try:
+                outcome = await self.on_skip(ctx)
+            except Exception as exc:
+                self._log_stage_crashed(
+                    ctx,
+                    task_context,
+                    monotonic_started_at,
+                    exc,
+                    operation="on_skip",
+                )
+                raise
+            if outcome.ok:
+                duration = monotonic_duration_ms(monotonic_started_at)
+                parse_log(
+                    ctx.payload,
+                    event="parse_stage_skipped",
+                    outcome="skipped",
+                    stage=self.name,
+                    engine="serial",
+                    execution_mode="skip",
+                    duration_ms=duration,
+                    chunk_count=ctx.chunk_count,
+                    reason="already_success",
+                ).info(
+                    "[ParseTask] stage_skipped {} stage={} engine=serial duration_ms={} "
+                    "reason=already_success chunk_count={}",
+                    task_context,
+                    self.name,
+                    duration,
+                    ctx.chunk_count,
+                )
+            else:
+                self._log_stage_failed(
+                    ctx,
+                    outcome,
+                    task_context,
+                    monotonic_started_at,
+                    execution_mode="skip",
+                )
+            return outcome
+
+        parse_log(
+            ctx.payload,
+            event="parse_stage_started",
+            outcome="processing",
+            stage=self.name,
+            engine="serial",
+            is_retry=ctx.is_retry,
+            chunk_count=ctx.chunk_count,
+        ).info(
+            "[ParseTask] stage_started {} stage={} engine=serial is_retry={} chunk_count={}",
+            task_context,
+            self.name,
+            ctx.is_retry,
+            ctx.chunk_count,
+        )
         started_at = now()
-        await self.mark_started(ctx, started_at)
-        outcome = await self.run(ctx)
-        if outcome.ok:
-            await self.mark_success(ctx, outcome, started_at=started_at)
-        elif not outcome.finalized:
-            await self.mark_failed(ctx, outcome, started_at=started_at)
-        return outcome
+        operation = "mark_started"
+        try:
+            await self.mark_started(ctx, started_at)
+            operation = "run"
+            outcome = await self.run(ctx)
+            if outcome.ok:
+                operation = "mark_success"
+                await self.mark_success(ctx, outcome, started_at=started_at)
+                duration = monotonic_duration_ms(monotonic_started_at)
+                parse_log(
+                    ctx.payload,
+                    event="parse_stage_succeeded",
+                    outcome="success",
+                    stage=self.name,
+                    engine="serial",
+                    duration_ms=duration,
+                    chunk_count=ctx.chunk_count,
+                ).info(
+                    "[ParseTask] stage_succeeded {} stage={} engine=serial "
+                    "duration_ms={} chunk_count={}",
+                    task_context,
+                    self.name,
+                    duration,
+                    ctx.chunk_count,
+                )
+            else:
+                self._log_stage_failed(
+                    ctx,
+                    outcome,
+                    task_context,
+                    monotonic_started_at,
+                    execution_mode="run",
+                )
+                if not outcome.finalized:
+                    operation = "mark_failed"
+                    await self.mark_failed(ctx, outcome, started_at=started_at)
+            return outcome
+        except Exception as exc:
+            self._log_stage_crashed(
+                ctx,
+                task_context,
+                monotonic_started_at,
+                exc,
+                operation=operation,
+            )
+            raise
 
     async def on_skip(self, ctx: StageContext) -> StageOutcome:
         """阶段被跳过（继承 SUCCESS）时的钩子，默认无副作用直接成功。"""
@@ -86,6 +187,72 @@ class Stage(ABC):
     async def mark_failed(self, ctx: StageContext, outcome: StageOutcome, *, started_at) -> None:
         """默认无 failed 标记，子类按需覆写。"""
 
+    def _log_stage_failed(
+        self,
+        ctx: StageContext,
+        outcome: StageOutcome,
+        task_context: str,
+        monotonic_started_at: float,
+        *,
+        execution_mode: str,
+    ) -> None:
+        duration = monotonic_duration_ms(monotonic_started_at)
+        parse_log(
+            ctx.payload,
+            event="parse_stage_failed",
+            outcome="failed",
+            stage=self.name,
+            engine="serial",
+            execution_mode=execution_mode,
+            duration_ms=duration,
+            chunk_count=ctx.chunk_count,
+            finalized=outcome.finalized,
+            **safe_error_fields(outcome.error, failure_reason=outcome.failure_reason),
+        ).error(
+            "[ParseTask] stage_failed {} stage={} engine=serial duration_ms={} "
+            "execution_mode={} chunk_count={} finalized={} error_type={} reason={}",
+            task_context,
+            self.name,
+            duration,
+            execution_mode,
+            ctx.chunk_count,
+            outcome.finalized,
+            type(outcome.error).__name__ if outcome.error is not None else "-",
+            compact_log_value(outcome.failure_reason),
+        )
+
+    def _log_stage_crashed(
+        self,
+        ctx: StageContext,
+        task_context: str,
+        monotonic_started_at: float,
+        exc: Exception,
+        *,
+        operation: str,
+    ) -> None:
+        duration = monotonic_duration_ms(monotonic_started_at)
+        parse_log(
+            ctx.payload,
+            event="parse_stage_crashed",
+            outcome="failed",
+            stage=self.name,
+            engine="serial",
+            operation=operation,
+            duration_ms=duration,
+            chunk_count=ctx.chunk_count,
+            **safe_error_fields(exc, failure_reason=exc),
+        ).error(
+            "[ParseTask] stage_crashed {} stage={} engine=serial duration_ms={} "
+            "operation={} chunk_count={} error_type={} error={}",
+            task_context,
+            self.name,
+            duration,
+            operation,
+            ctx.chunk_count,
+            type(exc).__name__,
+            compact_log_value(exc),
+        )
+
 
 class StagePipeline:
     """按固定顺序执行一组 :class:`Stage`，首个失败即终态。
@@ -101,12 +268,6 @@ class StagePipeline:
         for stage in self._stages:
             outcome = await stage.execute(ctx)
             if not outcome.ok:
-                logger.info(
-                    "[StagePipeline] stage failed, abort remaining: task_id={} stage={} reason={}",
-                    ctx.payload.task_id,
-                    stage.name,
-                    outcome.failure_reason,
-                )
-                return ctx.failure_result(outcome)
+                return ctx.failure_result(outcome, failed_stage=stage.name)
 
         return ctx.success_result()

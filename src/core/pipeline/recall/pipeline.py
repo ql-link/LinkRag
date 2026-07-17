@@ -13,6 +13,7 @@ import asyncio
 import time
 
 from loguru import logger
+from src.observability.logging import safe_exception_stack, truncate_log_value
 
 from src.core.pipeline.recall.exceptions import (
     RecallError,
@@ -337,10 +338,16 @@ class RecallPipeline:
             result = per_source_results[source]
             if isinstance(result, BaseException):
                 failed.append((source, result))
-                logger.warning(
-                    "[RecallPipeline] retriever source={} failed: {}",
+                logger.bind(
+                    event="recall_source_failed",
+                    outcome="degraded",
+                    source=source,
+                    error_type=type(result).__name__,
+                    error_message=truncate_log_value(result),
+                    stack_trace=safe_exception_stack(result),
+                ).warning(
+                    "[RecallPipeline] retriever source={} failed",
                     source,
-                    result,
                 )
             else:
                 success_hits[source] = result

@@ -9,6 +9,7 @@ src/core/mq/
 ├── interfaces.py              # IMQSender / IMQReceiver 抽象接口
 ├── factory.py                 # MQFactory 注册式厂商工厂；装配 RetryPolicy / DLQ publisher
 ├── message.py                 # AbstractMessage / MessagePayload 基类
+├── observability.py           # 发送日志字段格式化、耗时与消息大小计算
 ├── topic_admin.py             # Kafka Topic 初始化（含死信 *.DLT 同规格幂等创建）
 ├── exceptions.py              # MQ 异常类型（含 RetriableError 可重试基类）
 ├── retry.py                   # 厂商中立失败兜底编排：有限退避重试 + 死信投递
@@ -90,8 +91,15 @@ FastAPI lifespan（src/main.py 组合根装配 _start_mq_consumers）
 
 `consumers/parse_task_consumer.py::handle_parse_task` 在 `ParseTaskPipeline.execute()` 之外再包一层 catch-all：
 
-- **反序列化失败**（`ParseTaskMessage.parse_msg` 抛错）：无 payload / 无解析日志行，直接抛出交由 §4.1 死信兜底（Java 端 stuck scanner 最终收敛文件状态）。
+- **反序列化失败**（`ParseTaskMessage.parse_msg` 抛错）：无 payload / 无解析日志行；
+  先记录 `parse_task_message_invalid`（partition、offset、消息字节数、去除 input value
+  的字段错误位置和堆栈），再抛出交由 §4.1 死信兜底。日志不包含原始 MQ 正文，
+  `MQSerializationError` 也不保留可能带原始字段值的 Pydantic cause（Java 端 stuck
+  scanner 最终收敛文件状态）。
 - **`execute` 逃逸异常**（pipeline 内部兜底之外的未预期错误，如 DB/会话故障）：记录日志后直接 `raise`，交由 §4.1 死信兜底。终态权威源是 DB，前端轮询读取，无需 Python 回发任何通知。
+- `document_delete` 使用同样的坏消息安全日志：`document_delete_message_invalid` 不记录
+  原始 body；清理失败记录 delete scope、user/dataset/file ID 与安全调用栈后包装成
+  `RetriableError`。
 
 ## 4. 配置
 
@@ -138,16 +146,49 @@ Kafka Topic 初始化还会读取：
 - Kafka 位点提交按 `{TopicPartition: offset + 1}` 精确提交（不再使用无参 commit，
   避免坏消息被后续成功消息"静默跳过"导致丢数据）。
 - 重试计数仅存进程内存（不持久化）；进程重启后重新从 0 起算一轮上限内重试。
+- 结构化日志事件依次为 `mq_consume_retry`、`mq_consume_terminal`、
+  `mq_dlq_published`、`mq_dlq_publish_failed`。Kafka 额外记录 partition/offset，
+  RabbitMQ 记录 queue/delivery_tag/message_id；日志只记录消息字节数和路由元数据，
+  不记录原始消息正文。
+- RabbitMQ 连接地址进入日志前移除用户名密码；Kafka/RabbitMQ send 异常不保留可能
+  携带连接串的原始 exception cause。
 - 配置项（来自 `Settings`，无开关项——死信兜底恒启用）：
   - `MQ_MAX_RETRIES`（默认 3）
   - `MQ_RETRY_BACKOFF_SECONDS`（默认 1.0）
   - `MQ_DLQ_SUFFIX`（默认 `.DLT`）
 
+## 4.2 发送侧日志
+
+所有业务消息通过 `MQService.send()` 发送，统一记录：
+
+- `mq_send_started`（DEBUG）
+- `mq_send_succeeded`（INFO）
+- `mq_send_failed`（ERROR，包含脱敏错误摘要与安全调用栈）
+
+通用字段包括 `type`、`topic`、`routing_key`、`duration_ms`、`message_bytes`。
+消息类通过 `AbstractMessage.get_log_fields()` 返回白名单业务摘要：
+
+| 消息 | 日志摘要字段 |
+| --- | --- |
+| `ParseTaskMessage` | `message_id`、`task_id`、`doc_id`、`parse_file_id`、`user_id`、`dataset_id`、`file_type`、重试字段 |
+| `TokenUsageMessage` | `message_id`、`user_id`、厂商/模型、`stage`、`operation`、三类 token、`config_id`、`task_id`、耗时和状态 |
+| `ChatTurnMessage` | `message_id`、`conversation_id`、`request_id`、`turn_id`、`user_id`、模型、状态、引用数量、错误码；不记录 query/answer/title/error_message |
+| `DocumentDeleteMessage` | `message_id`、`delete_type`、`dataset_id`、`user_id`、`original_file_id` |
+
+`MQService.send_raw()` 使用 `mq_raw_send_*` 事件，只记录 topic、routing key、消息
+字节数和 header 名称，不记录 raw body 或 header 值。死信发送绕过 `MQService`，由
+`retry._publish_to_dlq()` 记录唯一的 `mq_dlq_publish_started`（DEBUG）及
+`mq_dlq_published/mq_dlq_publish_failed` 终态；Factory 只负责实际发送，不重复记录
+成功或失败。死信日志同样不打印消息正文和 header 值。
+
+发送日志严禁直接输出完整 payload。新增消息类型时应覆写 `get_log_fields()`，只返回
+排障必需且确认允许记录的字段。trace id 仍按上文约定通过消息 header 透传。
+
 ## 5. 新增消息类型
 
 1. 在 `src/core/mq/messages/` 下新增消息文件。
 2. 定义 `MessagePayload` 子类，使用 Pydantic 字段校验业务 payload。
-3. 定义 `AbstractMessage` 子类，实现 `MQ_NAME`、`MQ_TYPE`、`get_payload()` 和必要的 `parse_msg()`。
+3. 定义 `AbstractMessage` 子类，实现 `MQ_NAME`、`MQ_TYPE`、`get_payload()` 和必要的 `parse_msg()`；覆写 `get_log_fields()` 声明安全日志摘要。
 4. 在 `src/core/mq/messages/__init__.py` 暴露新类型。
 5. 若需要 HTTP 调试入口，同步更新 `src/api/routes/mq.py`、`src/api/schemas/mq.py` 和 `docs/api/http_contracts.md`。
 6. 增加 `tests/unit/core/mq` 单元测试。

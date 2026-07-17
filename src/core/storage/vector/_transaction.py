@@ -8,6 +8,7 @@ from typing import TypeVar
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.core.storage.chunks.constants import CHUNK_LIFECYCLE_INACTIVE_STATUSES
+from src.observability.logging import safe_exception_stack, truncate_log_value
 from src.utils.logger import logger
 
 ResultT = TypeVar("ResultT")
@@ -87,12 +88,25 @@ class TransactionalPipelineMixin:
             try:
                 await self.qdrant_store.delete_points(bucket_id=bucket_id, chunk_ids=[chunk_id])
             except Exception as exc:
-                logger.warning(
-                    "[TransactionalPipelineMixin] Failed to cleanup stale Qdrant point "
-                    f"for deleted chunk {chunk_id}: {exc}"
+                logger.bind(
+                    event="stale_vector_cleanup_failed",
+                    outcome="skipped",
+                    chunk_id=chunk_id,
+                    bucket_id=bucket_id,
+                    error_type=type(exc).__name__,
+                    error_message=truncate_log_value(exc),
+                    stack_trace=safe_exception_stack(exc),
+                ).warning(
+                    "[TransactionalPipelineMixin] Failed to cleanup stale Qdrant point"
                 )
         except Exception as exc:
-            logger.warning(
-                "[TransactionalPipelineMixin] Failed to inspect delete state before "
-                f"stale Qdrant cleanup for chunk {chunk_id}: {exc}"
+            logger.bind(
+                event="stale_vector_cleanup_inspection_failed",
+                outcome="skipped",
+                chunk_id=chunk_id,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).warning(
+                "[TransactionalPipelineMixin] Failed to inspect delete state before cleanup"
             )
