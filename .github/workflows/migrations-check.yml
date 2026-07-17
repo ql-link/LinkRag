@@ -41,6 +41,44 @@ jobs:
                       "pydantic>=2.5.0" "pydantic-settings>=2.1.0" "loguru>=0.7.0" \
                       "cryptography>=42.0.0"
 
+      - name: Prepare CI migration evidence and encrypted seed
+        env:
+          API_KEY_ENCRYPTION_SECRET: 0101010101010101010101010101010101010101010101010101010101010101
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          from src.core.llm.encryption import encrypt_api_key
+
+          capabilities = (
+              "CHAT",
+              "EMBEDDING",
+              "SPARSE_EMBEDDING",
+              "VISION",
+              "RERANK",
+              "ASR",
+          )
+          ciphertexts = {
+              capability: encrypt_api_key(f"ci-only-{capability.lower()}")
+              for capability in capabilities
+          }
+          evidence = {
+              "maintenance_lock": "HELD",
+              "legacy_llm_writer_count": 0,
+              "legacy_llm_message_lag": 0,
+              "seed_ciphertext_count": len(capabilities),
+              "seed_capability_set": list(capabilities),
+          }
+          Path("/tmp/llm-ci-ciphertexts.json").write_text(
+              json.dumps({"ciphertexts": ciphertexts}), encoding="utf-8"
+          )
+          Path("/tmp/llm-ci-evidence.json").write_text(
+              json.dumps(evidence), encoding="utf-8"
+          )
+          PY
+
       - name: Wait for MySQL
         run: |
           for i in {1..30}; do
@@ -65,11 +103,18 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
         run: alembic stamp 0001
 
-      - name: Run alembic upgrade head
+      - name: Run alembic upgrade head through migration preflight
         env:
           ALEMBIC_DATABASE_URL: mysql+pymysql://root:root@127.0.0.1:3306/tolink_rag_db
+          API_KEY_ENCRYPTION_SECRET: 0101010101010101010101010101010101010101010101010101010101010101
           PYTHONPATH: ${{ github.workspace }}
-        run: alembic upgrade head
+          TOLINK_LLM_MIGRATION_AUTH_SECRET: ci-only-migration-authorization-secret
+        run: |
+          python scripts/release/llm_config_migration_preflight.py \
+            --evidence /tmp/llm-ci-evidence.json \
+            --ciphertexts /tmp/llm-ci-ciphertexts.json \
+            --authorization-file /tmp/llm-ci-authorization.json \
+            --run-migration
 
       - name: Run alembic upgrade head again (idempotency)
         env:
