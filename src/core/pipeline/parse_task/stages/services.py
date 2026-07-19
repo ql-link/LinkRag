@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -30,7 +31,12 @@ if TYPE_CHECKING:
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
-from src.core.markdown_parser import ParseResult
+from src.core.markdown_parser import (
+    ImageDescriber,
+    MarkdownParser,
+    ParseResult,
+    abuild_vision_client,
+)
 from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.core.parse_task_service import ParseTaskService
 from src.core.preprocessor.models import FilePostIndexPlan
@@ -103,6 +109,7 @@ class StageServices:
         chunk_draft_factory: ChunkDraftFactory | None = None,
         sparse_indexing_pipeline: Any | None = None,
         mutation_guard: MutationGuardProtocol | None = None,
+        raw_asset_loader: Any | None = None,
     ) -> None:
         self._storage = storage
         self.source_io = source_io
@@ -112,6 +119,7 @@ class StageServices:
         self._preprocessor = preprocessor
         self._chunk_draft_factory = chunk_draft_factory
         self._sparse_indexing_pipeline = sparse_indexing_pipeline
+        self._raw_asset_loader = raw_asset_loader
         # StageServices is also instantiated directly by focused unit tests.  Keep
         # that boundary lightweight, while production ParseTaskPipeline injects
         # the shared MySQL-backed guard explicitly.
@@ -191,6 +199,71 @@ class StageServices:
             image_bucket,
             image_prefix,
         )
+
+    async def enhance_markdown_raw_images(
+        self,
+        markdown: str,
+        payload: ParseTaskPayload,
+        enhancement_config,
+    ) -> str:
+        """按批读取当前文件 RAW 图片，并复用现有 Vision 描述合并逻辑。"""
+
+        if enhancement_config is None or not enhancement_config.enable_image_enhancement:
+            return markdown
+
+        from ..raw_markdown_assets import RawMarkdownAssetLoader, raw_image_urls
+
+        urls = raw_image_urls(markdown)
+        if not urls:
+            return markdown
+
+        loader = self._raw_asset_loader or RawMarkdownAssetLoader(self._storage)
+        parse_result = MarkdownParser().parse(
+            markdown,
+            source_file=payload.source_filename or payload.source_object_key,
+        )
+        describer = None
+        batch_size = settings.RAW_MARKDOWN_IMAGE_BATCH_SIZE
+        for offset in range(0, len(urls), batch_size):
+            batch = urls[offset : offset + batch_size]
+            started_at = time.monotonic()
+            loaded = await loader.load_batch(batch, payload)
+            download_ms = int((time.monotonic() - started_at) * 1000)
+            vision_started_at = time.monotonic()
+            if loaded:
+                if describer is None:
+                    user_id = coerce_optional_int(payload.user_id)
+                    client = await abuild_vision_client(user_id) if user_id is not None else None
+                    if client is None:
+                        # 该分支仅用于无用户上下文的内部调试；生产 MQ 始终带 user_id。
+                        from src.core.markdown_parser import build_default_vision_client
+
+                        client = build_default_vision_client()
+                    describer = ImageDescriber(client)
+                parse_result = await describer.aprocess(
+                    parse_result,
+                    image_bytes_by_url=loaded,
+                    target_urls=list(loaded),
+                )
+            vision_ms = int((time.monotonic() - vision_started_at) * 1000)
+            logger.bind(
+                event="raw_markdown_image_batch",
+                task_id=payload.task_id,
+                requested=len(batch),
+                succeeded=len(loaded),
+                failed=len(batch) - len(loaded),
+                download_ms=download_ms,
+                vision_ms=vision_ms,
+            ).info(
+                "RAW Markdown 图片批次完成: task_id={} requested={} succeeded={} failed={}",
+                payload.task_id,
+                len(batch),
+                len(loaded),
+                len(batch) - len(loaded),
+            )
+            del loaded
+
+        return parse_result.to_markdown()
 
     async def load_markdown(self, payload: ParseTaskPayload) -> str:
         """从对象存储读回已上传的 Markdown 文本（重试从 CHUNKING 恢复时使用）。

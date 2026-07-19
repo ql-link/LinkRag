@@ -645,6 +645,11 @@ class Settings(BaseSettings):
     MINIO_PRIVATE_BUCKET: str = "tolink-rag-docs"
     MINIO_PUBLIC_BUCKET: str = "tolink-public"
     MINIO_USE_SSL: bool = False
+    # Java 规范化 Markdown 中的 ``tolink-raw://`` 图片按批读取。单图上限必须不高于
+    # Java 上传侧限制，避免两个服务对同一资源包作出不同判断。
+    RAW_MARKDOWN_IMAGE_MAX_BYTES: int = 20 * 1024 * 1024
+    RAW_MARKDOWN_IMAGE_BATCH_SIZE: int = 4
+    RAW_MARKDOWN_IMAGE_DOWNLOAD_CONCURRENCY: int = 4
     # Optional external/public HTTP(S) endpoint used only when generating object URLs
     # for cloud parsers and browser-facing resources. S3 SDK traffic still uses
     # MINIO_ENDPOINT.
@@ -659,6 +664,23 @@ class Settings(BaseSettings):
     MINERU_API_KEY: Optional[str] = None  # MinerU 云服务专属 Token
     MINERU_TIMEOUT: int = 300  # MinerU API 请求超时（秒）
     MINERU_MODEL_VERSION: str = "vlm"  # pipeline / vlm / MinerU-HTML
+
+    @field_validator("RAW_MARKDOWN_IMAGE_MAX_BYTES")
+    @classmethod
+    def validate_raw_markdown_image_max_bytes(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("RAW_MARKDOWN_IMAGE_MAX_BYTES must be > 0")
+        return value
+
+    @field_validator(
+        "RAW_MARKDOWN_IMAGE_BATCH_SIZE",
+        "RAW_MARKDOWN_IMAGE_DOWNLOAD_CONCURRENCY",
+    )
+    @classmethod
+    def validate_raw_markdown_image_batch_limits(cls, value: int) -> int:
+        if value < 1 or value > 20:
+            raise ValueError("RAW markdown image batch/concurrency values must be in [1, 20]")
+        return value
 
     # ==========================================
     # MQ 消息中台配置 (Message Queue)
