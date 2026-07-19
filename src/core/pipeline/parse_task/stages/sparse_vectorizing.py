@@ -44,7 +44,9 @@ class SparseVectorizingStage(Stage):
         from src.core.storage.vector.sparse_indexing import SparseIndexingError
 
         try:
-            await self._services.run_sparse_vectorizing(ctx.payload, ctx.db)
+            await self._services.run_sparse_vectorizing(
+                ctx.payload, ctx.db, ctx.execution_context
+            )
         except SparseIndexingError as exc:
             return StageOutcome.failure(exc.reason, error=exc)
         except Exception as exc:

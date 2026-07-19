@@ -71,8 +71,10 @@ async def test_recall_json_body_rejects_fusion_fields(field: str):
 async def test_recall_json_maps_dataset_fusion_config_to_internal_request(monkeypatch):
     captured = {}
 
-    async def _recall_config(user_id, dataset_ids):
-        return SimpleNamespace(
+    dataset_contexts = {7: object()}
+
+    async def _recall_execution(user_id, dataset_ids):
+        config = SimpleNamespace(
             recall_result_limit=20,
             bm25_top_k=100,
             sparse_top_k=50,
@@ -87,13 +89,14 @@ async def test_recall_json_maps_dataset_fusion_config_to_internal_request(monkey
             fusion_sparse_weight=0.2,
             fusion_dense_weight=0.7,
         )
+        return config, dataset_contexts
 
     async def _run_recall_json(_pipeline, recall_req, _request_id):
         captured["request"] = recall_req
         return {"hits": [], "failed_sources": []}
 
     monkeypatch.setattr(recall, "resolve_dataset_scope", lambda _body_ids, _ctx: [7])
-    monkeypatch.setattr(recall, "aresolve_recall_config", _recall_config)
+    monkeypatch.setattr(recall, "aresolve_recall_execution", _recall_execution)
     monkeypatch.setattr(recall, "run_recall_json", _run_recall_json)
 
     ctx = SimpleNamespace(user_id=42, request_id="rid")
@@ -112,3 +115,4 @@ async def test_recall_json_maps_dataset_fusion_config_to_internal_request(monkey
     assert recall_req.fusion_bm25_weight_override == 0.1
     assert recall_req.fusion_sparse_weight_override == 0.2
     assert recall_req.fusion_dense_weight_override == 0.7
+    assert recall_req.dataset_contexts is dataset_contexts

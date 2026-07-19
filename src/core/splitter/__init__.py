@@ -16,10 +16,9 @@ from .embedding_pipeline import ChunkEmbeddingPipeline
 from .factory import (
     LazyEmbeddingClient,
     ModelBoundEmbedder,
-    create_chunk_embedding_pipeline,
+    build_chunk_embedding_pipeline,
+    build_embedding_client,
     create_chunking_engine,
-    create_lazy_system_embedding_client,
-    create_system_embedding_client,
 )
 from .input_adapter import InputAdapter
 from .models import Chunk, EmbeddedChunk, EmbeddingPipelineStats
@@ -73,8 +72,7 @@ __all__ = [
     "ChunkEmbeddingPipeline",
     "LazyEmbeddingClient",
     "ModelBoundEmbedder",
-    "create_chunk_embedding_pipeline",
+    "build_chunk_embedding_pipeline",
+    "build_embedding_client",
     "create_chunking_engine",
-    "create_lazy_system_embedding_client",
-    "create_system_embedding_client",
 ]

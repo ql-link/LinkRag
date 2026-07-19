@@ -227,10 +227,10 @@
 
   # ==== embedder 注入与退化（方案 B）====
 
-  场景: Stage 2 复用与存储一致的 qwen embedder 且懒加载
-    假如 factory 装配选中 semantic_depth_window
-    那么 切分引擎被注入与 chunk 存储向量化同一套 qwen embedder 实例
-    并且 该 embedder 在首次真正调用 embed 前不创建底层客户端
+  场景: Stage 2 与存储复用 Dataset 精确 EMBEDDING 快照
+    假如 factory 使用 Dataset 精确 EMBEDDING 快照装配 semantic_depth_window
+    那么 切分引擎与 chunk 存储向量化复用 Dataset 精确 embedder 快照
+    并且 装配期间不执行 embed 请求
     当 Stage 2 算法为 "noop"
     那么 factory 保持不注入 embedder 的现有装配行为
 

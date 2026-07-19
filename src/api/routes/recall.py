@@ -30,14 +30,22 @@ from src.api.recall_session_auth import (
     resolve_dataset_scope,
     verify_session_token,
 )
-from src.application.recall_errors import CODE_INVALID_REQUEST, RecallApiError
+from src.application.recall_errors import (
+    CODE_DATASET_MODEL_BINDING_REQUIRED,
+    CODE_INVALID_REQUEST,
+    RecallApiError,
+)
 from src.application.recall_json_runtime import run_recall_json
 from src.application.recall_pipeline_provider import (
-    aresolve_recall_config,
+    aresolve_recall_execution,
     build_recall_request_from_config,
     get_recall_pipeline,
 )
 from src.core.pipeline.recall import RecallPipeline
+from src.core.llm.exceptions import (
+    DatasetModelBindingRequiredError,
+    LLMConfigResolutionError,
+)
 
 router = APIRouter(prefix="/api/v1/recall", tags=["recall"])
 
@@ -87,13 +95,23 @@ async def recall_json(
 
     # 与 RAG 流入口一致：融合候选池 / per-route top_k / 分数阈值 / 融合策略取数据集级
     # recall 配置（多数据集取首个，空则系统默认）。
-    recall_cfg = await aresolve_recall_config(ctx.user_id, dataset_ids)
+    try:
+        recall_cfg, dataset_contexts = await aresolve_recall_execution(
+            ctx.user_id, dataset_ids
+        )
+    except DatasetModelBindingRequiredError as exc:
+        raise RecallApiError(
+            409, CODE_DATASET_MODEL_BINDING_REQUIRED, str(exc)
+        ) from exc
+    except LLMConfigResolutionError as exc:
+        raise RecallApiError(exc.http_status, exc.code, str(exc)) from exc
 
     recall_req = build_recall_request_from_config(
         query=body.query,
         user_id=ctx.user_id,  # 身份以凭证 claims 为准，不信任 body
         dataset_ids=dataset_ids,
         recall_cfg=recall_cfg,
+        dataset_contexts=dataset_contexts,
     )
 
     payload = await run_recall_json(pipeline, recall_req, ctx.request_id)

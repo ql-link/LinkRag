@@ -281,6 +281,7 @@ class RecallPipeline:
                 user_id=request.user_id,
                 top_k=self._top_k_for_source(r.source, request),
                 score_threshold_override=self._score_threshold_override_for(r.source, request),
+                dataset_contexts=request.dataset_contexts,
             )
             for r in retrievers
         ]
@@ -312,6 +313,7 @@ class RecallPipeline:
                     score_threshold_override=self._score_threshold_override_for(
                         retriever.source, request
                     ),
+                    dataset_contexts=request.dataset_contexts,
                 )
                 results[retriever.source] = hits
             except Exception as exc:

@@ -171,7 +171,7 @@ Kafka Topic 初始化还会读取：
 | 消息 | 日志摘要字段 |
 | --- | --- |
 | `ParseTaskMessage` | `message_id`、`task_id`、`doc_id`、`parse_file_id`、`user_id`、`dataset_id`、`file_type`、重试字段 |
-| `TokenUsageMessage` | `message_id`、`user_id`、厂商/模型、`stage`、`operation`、三类 token、`config_id`、`task_id`、耗时和状态 |
+| `TokenUsageMessage` | `message_id`、`user_id`、厂商/模型、`stage`、`operation`、三类 token、必填正整数全局 `config_id`、`task_id`、耗时和状态 |
 | `ChatTurnMessage` | `message_id`、`conversation_id`、`request_id`、`turn_id`、`user_id`、模型、状态、引用数量、错误码；不记录 query/answer/title/error_message |
 | `DocumentDeleteMessage` | `message_id`、`delete_type`、`dataset_id`、`user_id`、`original_file_id` |
 

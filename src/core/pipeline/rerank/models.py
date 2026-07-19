@@ -33,6 +33,7 @@ class RerankRequest:
     hits: list[RecallHit]
     top_n: int | None = None
     contents: dict[str, str] | None = None
+    dataset_contexts: dict[int, object] | None = None
 
 
 @dataclass(frozen=True)

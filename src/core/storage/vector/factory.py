@@ -20,6 +20,20 @@ from .management_pipeline import VectorStorageManagementPipeline
 from .pipeline import VectorStoragePipeline
 
 
+class _UnconfiguredEmbeddingPipeline:
+    """只为纯召回 facade 完成底层装配，不提供模型回落。"""
+
+    batch_size = 1
+    embedding_model = None
+    embedder = None
+
+    async def aembed_query(self, _query):
+        raise RuntimeError("dataset dense embedding resolved model is required")
+
+    async def aembed_chunks(self, _chunks):
+        raise RuntimeError("dataset dense embedding resolved model is required")
+
+
 def create_vector_storage_facade(
     *,
     embedding_pipeline: ChunkEmbeddingPipeline,
@@ -28,8 +42,6 @@ def create_vector_storage_facade(
     repository: ChunkRepository | None = None,
     qdrant_store: QdrantIndexStore | None = None,
     qdrant_client: Any | None = None,
-    query_embedding_resolver: Any | None = None,
-    query_sparse_resolver: Any | None = None,
 ) -> VectorStorageFacade:
     """
     使用项目默认配置装配向量存储统一入口。
@@ -55,9 +67,8 @@ def create_vector_storage_facade(
         client=qdrant_client,
         bucket_router=resolved_bucket_router,
     )
-    # 稀疏链路统一按用户解析：召回经 query_sparse_resolver、写入三路径经 per-record
-    # aresolve_user_sparse_vector_service（见各 pipeline 的 _resolve_sparse_vector_service）。
-    # 系统级 service 已移除，此处不再构造；显式注入的 sparse_vector_service 仅用于测试 / 显式装配。
+    # 模型由 DatasetExecutionContext 在阶段/召回入口精确解析。工厂不构造
+    # 隐式 service；显式 service 仅用于专用维护/测试装配。
     sparse_vector_service = None
 
     storage_service = VectorStoragePipeline(
@@ -90,8 +101,6 @@ def create_vector_storage_facade(
         qdrant_store=resolved_qdrant_store,
         sparse_vector_service=sparse_vector_service,
         embedding_pipeline=embedding_pipeline,
-        query_embedding_resolver=query_embedding_resolver,
-        query_sparse_resolver=query_sparse_resolver,
     )
 
 
@@ -103,21 +112,14 @@ def compose_vector_storage_facade(
     repository: ChunkRepository | None = None,
     qdrant_store: QdrantIndexStore | None = None,
     qdrant_client: Any | None = None,
-    query_embedding_resolver: Any | None = None,
-    query_sparse_resolver: Any | None = None,
 ) -> VectorStorageFacade:
-    """一站式装配：未传 embedding_pipeline 时按系统配置自动构造。
+    """一站式装配：运行时模型必须由 Dataset context 显式提供。
 
     适合调用方只关心"我要一个开箱即用的 VectorStorageFacade"的场景。
-    ``query_embedding_resolver``：召回路径传入「按 user_id 解析 query embedding pipeline」回调，
-    使 dense 召回 query 编码按发起用户模型解析（写入侧已按用户解析，两侧同源）。
-    ``query_sparse_resolver``：sparse 侧对偶回调，传入「按 user_id 解析 sparse 向量服务」，
-    使 sparse 召回 query 编码同样按用户模型解析。
+    Dense/Sparse 召回模型由每次请求的 ``DatasetExecutionContext`` 显式传入 facade。
     """
     if embedding_pipeline is None:
-        from src.core.splitter.factory import create_chunk_embedding_pipeline
-
-        embedding_pipeline = create_chunk_embedding_pipeline()
+        embedding_pipeline = _UnconfiguredEmbeddingPipeline()
     return create_vector_storage_facade(
         embedding_pipeline=embedding_pipeline,
         session_factory=session_factory,
@@ -125,6 +127,4 @@ def compose_vector_storage_facade(
         repository=repository,
         qdrant_store=qdrant_store,
         qdrant_client=qdrant_client,
-        query_embedding_resolver=query_embedding_resolver,
-        query_sparse_resolver=query_sparse_resolver,
     )

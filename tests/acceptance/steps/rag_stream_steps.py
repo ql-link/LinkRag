@@ -29,7 +29,8 @@ from src.application import recall_stream_runtime
 from src.application.recall_pipeline_provider import get_recall_pipeline, get_reranker
 from src.cache.redis_client import redis_client
 from src.config import settings
-from src.core.llm.exceptions import UserModelConfigMissingError
+from src.core.dataset_config.models import RecallConfig
+from src.core.llm.exceptions import LLMConfigNotFoundError
 from src.core.llm.response import StreamChunk
 from src.core.pipeline.recall import RecallHit, RecallRequest, RecallResponse
 from src.core.pipeline.rerank import RerankedHit, RerankResponse
@@ -91,7 +92,8 @@ class _FakeReranker:
     - 默认（``unavailable=False``）：把融合候选**按相关性反序**后逐条编号、给出递减
       ``rerank_score``，``rerank_applied=True``——反序是为了让最终顺序明显区别于
       ``fused_score`` 降序，证明终态排序由 rerank 决定；
-    - ``unavailable=True``：模拟用户未配 RERANK 模型，抛 ``UserModelConfigMissingError``，
+    - ``unavailable=True``：模拟 Dataset 精确 RERANK ``config_id`` 在执行期不可用，
+      抛 ``LLMConfigNotFoundError``，
       由 runtime 兜底降级为当前融合顺序（``rerank_applied=False``、rerank 字段为 null）；
     - 空候选：与真实 reranker 一致，不调模型、``rerank_applied=False``。
     """
@@ -103,7 +105,7 @@ class _FakeReranker:
         if not request.hits:
             return RerankResponse(request.query, [], False, 1)
         if self._unavailable:
-            raise UserModelConfigMissingError(capability="RERANK", user_id=request.user_id)
+            raise LLMConfigNotFoundError(78)
         ordered = list(reversed(request.hits))
         hits = [
             RerankedHit(
@@ -164,6 +166,7 @@ class _State:
     _settings_snapshot: dict = field(default_factory=dict)
     _redis_snapshot: dict = field(default_factory=dict)
     _runtime_snapshot: dict = field(default_factory=dict)
+    _route_snapshot: dict = field(default_factory=dict)
 
     def set_setting(self, name: str, value) -> None:
         if name not in self._settings_snapshot:
@@ -177,26 +180,45 @@ class _State:
 
     def install_generation_stubs(self) -> None:
         # 模型解析与正文回填用状态可控替身，隔离 DB / LLM。
-        self._runtime_snapshot["aresolve_user_model"] = recall_stream_runtime.aresolve_user_model
+        self._runtime_snapshot["aresolve_model"] = recall_stream_runtime.aresolve_model
         self._runtime_snapshot["fetch_chunk_contents"] = recall_stream_runtime.fetch_chunk_contents
+        self._runtime_snapshot["MQService"] = recall_stream_runtime.MQService
+        self._route_snapshot["aresolve_recall_execution"] = rag.aresolve_recall_execution
 
         async def _resolve(*args, **kwargs):
             if not self.model_available:
-                raise UserModelConfigMissingError(capability="CHAT", user_id=123)
+                raise LLMConfigNotFoundError(int(kwargs["config_id"]))
             return SimpleNamespace(
                 provider=_FakeProvider(self),
                 model_name="fake",
                 provider_type="openai",
-                source="user",
+                config_id=int(kwargs["config_id"]),
             )
+
+        async def _recall_execution(user_id, dataset_ids):
+            cfg = RecallConfig.from_settings().model_copy(update={"enable_rerank": True})
+            contexts = {
+                dataset_id: SimpleNamespace(
+                    config=SimpleNamespace(recall=cfg),
+                    rerank=SimpleNamespace(config_id=78),
+                )
+                for dataset_id in dataset_ids
+            }
+            return cfg, contexts
+
+        class _NoopMQ:
+            async def send(self, message):
+                return None
 
         async def _fetch(chunk_ids, user_id):
             if self.no_content:
                 return {}
             return {cid: f"片段正文 {cid}" for cid in chunk_ids}
 
-        recall_stream_runtime.aresolve_user_model = _resolve
+        recall_stream_runtime.aresolve_model = _resolve
         recall_stream_runtime.fetch_chunk_contents = _fetch
+        recall_stream_runtime.MQService = _NoopMQ
+        rag.aresolve_recall_execution = _recall_execution
 
     def restore(self) -> None:
         for name, value in self._settings_snapshot.items():
@@ -205,6 +227,8 @@ class _State:
             setattr(redis_client, name, value)
         for name, value in self._runtime_snapshot.items():
             setattr(recall_stream_runtime, name, value)
+        for name, value in self._route_snapshot.items():
+            setattr(rag, name, value)
 
 
 @pytest.fixture
@@ -436,7 +460,7 @@ def _model_unavailable(rag_acc_state):
     rag_acc_state.model_available = False
 
 
-@given(parsers.parse("用户 123 未配置 RERANK 模型"))
+@given(parsers.parse("Dataset 精确 RERANK config_id 在执行期不可用"))
 def _rerank_unavailable(rag_acc_state):
     rag_acc_state.rerank_unavailable = True
 
@@ -475,11 +499,11 @@ def _generation_raises(rag_acc_state):
     rag_acc_state.generation_raises = True
 
 
-@given(parsers.parse("用户 123 无默认 EMBEDDING 配置"))
+@given(parsers.parse("Dataset dense_embedding_config_id 在召回执行期不可用"))
 def _embedding_missing(rag_acc_state):
     from src.core.pipeline.recall import RecallFatalError
 
-    rag_acc_state.fake.exc = RecallFatalError("user embedding config missing")
+    rag_acc_state.fake.exc = RecallFatalError("dataset dense embedding config unavailable")
 
 
 @given(parsers.parse("bm25 与 sparse 两路均执行抛异常"))

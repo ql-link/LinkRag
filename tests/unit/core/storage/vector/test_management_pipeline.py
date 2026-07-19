@@ -26,28 +26,19 @@ def _pipeline(**over):
 
 
 @pytest.mark.asyncio
-async def test_resolve_sparse_service_prefers_injected(monkeypatch):
-    async def fail_resolve(user_id):
-        raise AssertionError("must not resolve per-user when service is injected")
-
-    monkeypatch.setattr(mgmt_module, "aresolve_user_sparse_vector_service", fail_resolve)
-
+async def test_resolve_sparse_service_prefers_explicit_dataset_service():
     injected = SimpleNamespace(model_name="injected")
     pipe = _pipeline(sparse_vector_service=injected)
 
-    assert await pipe._resolve_sparse_vector_service(5) is injected
+    assert await pipe._resolve_sparse_vector_service(5, 9) is injected
 
 
 @pytest.mark.asyncio
-async def test_resolve_sparse_service_per_dataset_when_not_injected(monkeypatch):
-    resolved = SimpleNamespace(model_name="user-bge-m3")
-    resolver = AsyncMock(return_value=resolved)
-    monkeypatch.setattr(mgmt_module, "aresolve_user_sparse_vector_service", resolver)
+async def test_resolve_sparse_service_rejects_implicit_runtime_resolution():
+    pipe = _pipeline()
 
-    pipe = _pipeline()  # 不注入 → 按 user_id + dataset_id 解析
-
-    assert await pipe._resolve_sparse_vector_service(42, 9) is resolved
-    resolver.assert_awaited_once_with(42, 9)
+    with pytest.raises(RuntimeError, match="explicitly injected dataset sparse"):
+        await pipe._resolve_sparse_vector_service(42, 9)
 
 
 @pytest.mark.parametrize("chunk_type", ["text", "hr", "unknown"])

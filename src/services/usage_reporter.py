@@ -39,7 +39,7 @@ async def report_usage(
     prompt_tokens: int = 0,
     completion_tokens: int = 0,
     total_tokens: int = 0,
-    config_id: Optional[int] = None,
+    config_id: int,
     task_id: Optional[str] = None,
     latency_ms: Optional[int] = None,
     status: str = "success",
@@ -102,7 +102,21 @@ async def report_usage(
         )
 
 
-def report_usage_nowait(**kwargs) -> None:
+def report_usage_nowait(
+    *,
+    user_id: int | str,
+    provider_type: str,
+    model_name: str,
+    stage: str,
+    operation: str,
+    config_id: int,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    total_tokens: int = 0,
+    task_id: Optional[str] = None,
+    latency_ms: Optional[int] = None,
+    status: str = "success",
+) -> None:
     """非阻塞上报：调度后台 task 发送，立即返回，**绝不阻塞调用方**。
 
     这是埋点的默认入口。用量是旁路遥测，不能让 MQ 的慢 / 卡 / 超时反向拖慢召回、解析等主
@@ -112,6 +126,40 @@ def report_usage_nowait(**kwargs) -> None:
     参数与 `report_usage` 一致，按关键字透传。无运行中的事件循环时（同步上下文调用）只记日志、
     不抛——旁路允许丢这一条。
     """
+    if isinstance(config_id, bool) or not isinstance(config_id, int) or config_id <= 0:
+        logger.bind(
+            event="usage_report_skipped",
+            outcome="skipped",
+            reason="invalid_config_id",
+            stage=stage,
+            operation=operation,
+            user_id=str(user_id),
+            config_id=config_id,
+        ).error(
+            "[MQ] usage_report_skipped reason=invalid_config_id stage={} "
+            "operation={} user_id={} config_id={}",
+            compact_log_value(stage),
+            compact_log_value(operation),
+            compact_log_value(user_id),
+            compact_log_value(config_id),
+        )
+        return
+
+    kwargs = {
+        "user_id": user_id,
+        "provider_type": provider_type,
+        "model_name": model_name,
+        "stage": stage,
+        "operation": operation,
+        "config_id": config_id,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+        "task_id": task_id,
+        "latency_ms": latency_ms,
+        "status": status,
+    }
+
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:

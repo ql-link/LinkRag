@@ -21,7 +21,11 @@ from typing import TYPE_CHECKING, Any, Protocol
 from loguru import logger
 
 if TYPE_CHECKING:
-    from src.core.dataset_config import ChunkingConfig, DatasetParseConfigBundle
+    from src.core.dataset_config import (
+        ChunkingConfig,
+        DatasetExecutionContext,
+        DatasetParseConfigBundle,
+    )
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -34,7 +38,8 @@ from src.core.splitter import create_chunking_engine
 from src.core.splitter.factory import (
     DenseEmbeddingConfigMissingError,
     DenseEmbeddingDimensionError,
-    aresolve_user_embedding_client,
+    build_chunk_embedding_pipeline,
+    build_embedding_client,
 )
 from src.core.splitter.models import Chunk
 from src.core.storage.bm25_backend import build_indexing_pipeline
@@ -121,6 +126,7 @@ class StageServices:
         source_path: Path | None,
         payload: ParseTaskPayload,
         dataset_cfg: "DatasetParseConfigBundle | None" = None,
+        execution_context: "DatasetExecutionContext | None" = None,
     ) -> dict:
         """调用解析服务生成 Markdown 与结构化解析结果。
 
@@ -129,8 +135,8 @@ class StageServices:
 
         ``dataset_cfg`` 为数据集级配置（由 CleaningStage 从 DB 读取注入）：PDF 后端按
         ``payload 显式 > 数据集配置 > settings.PDF_PARSER_BACKEND`` 三层优先级选取；
-        Markdown 增强配置（仅含增强开关）透传给增强编排。``None`` 时全部回退系统默认；模型由
-        增强侧按用户默认 → LinkRag 系统默认预设解析。
+        Markdown 增强配置（仅含增强开关）透传给增强编排；所有模型都从
+        ``execution_context`` 中的精确 ``config_id`` 快照取得。
         """
         enhancement_config = dataset_cfg.enhancement if dataset_cfg is not None else None
 
@@ -161,6 +167,7 @@ class StageServices:
             dataset_id=coerce_optional_int(payload.dataset_id),
             task_id=payload.task_id,
             enhancement_config=enhancement_config,
+            execution_context=execution_context,
             **parser_kwargs,
         )
 
@@ -221,6 +228,7 @@ class StageServices:
         payload: ParseTaskPayload,
         db: AsyncSession,
         chunking_config: "ChunkingConfig | None" = None,
+        execution_context: "DatasetExecutionContext | None" = None,
     ) -> list[ChunkRecordDB]:
         """分片并在单事务内写入 chunk 真值记录；返回当前文档完整 chunk truth set（ORM 行）。
 
@@ -242,10 +250,9 @@ class StageServices:
         )
         embedder = None
         if stage_two_algorithm == "semantic_depth_window":
-            user_id = coerce_optional_int(payload.user_id)
-            if user_id is None:
-                raise RuntimeError("chunking semantic stage requires payload.user_id")
-            embedder, _ = await aresolve_user_embedding_client(user_id, db=db)
+            if execution_context is None:
+                raise RuntimeError("chunking semantic stage requires dataset execution context")
+            embedder = build_embedding_client(execution_context.dense_embedding)
 
         chunks = await asyncio.to_thread(
             self._chunk_markdown,
@@ -264,6 +271,7 @@ class StageServices:
         self,
         payload: ParseTaskPayload,
         db: AsyncSession,
+        execution_context: "DatasetExecutionContext | None" = None,
     ) -> list[ChunkRecordDB]:
         """按 ``doc_id`` 反查当前文档完整 chunk truth set（仅 ACTIVE，按 ``chunk_index`` 升序）。
 
@@ -364,6 +372,7 @@ class StageServices:
         chunks: list[ChunkRecordDB],
         payload: ParseTaskPayload,
         db: AsyncSession,
+        execution_context: "DatasetExecutionContext | None" = None,
     ) -> ChunkIndexingResult:
         """将 chunk 写入向量存储（dense/Qdrant）。
 
@@ -412,7 +421,13 @@ class StageServices:
                     require_unsuperseded=True,
                 )
                 try:
-                    result = await self._get_vector_storage().index_chunks(
+                    if execution_context is None and self._vector_storage is None:
+                        raise DenseEmbeddingConfigMissingError(
+                            user_id,
+                            dataset_id=set_id,
+                            field_name="dense_embedding_config_id",
+                        )
+                    result = await self._get_vector_storage(execution_context).index_chunks(
                         user_id=user_id,
                         set_id=set_id,
                         doc_id=doc_id,
@@ -515,6 +530,7 @@ class StageServices:
         self,
         payload: ParseTaskPayload,
         db: AsyncSession,
+        execution_context: "DatasetExecutionContext | None" = None,
     ) -> tuple[FilePostIndexPlan | None, str | None]:
         """构建内存态 ``FilePostIndexPlan``（不持久化、不写阶段状态）。
 
@@ -754,6 +770,7 @@ class StageServices:
         self,
         payload: ParseTaskPayload,
         db: AsyncSession,
+        execution_context: "DatasetExecutionContext | None" = None,
     ) -> None:
         """调用 SparseIndexingPipeline.run；失败抛出（由 SparseVectorizingStage 归类）。
 
@@ -789,6 +806,11 @@ class StageServices:
                     chunks=sparse_chunks,
                     task_id=payload.task_id,
                     db=db,
+                    resolved_model=(
+                        execution_context.sparse_embedding
+                        if execution_context is not None
+                        else None
+                    ),
                 )
             except Exception:
                 # pipeline 会把失败批次收敛为 FAILED；重新读取后仅清理这些
@@ -948,10 +970,14 @@ class StageServices:
             self._chunk_draft_factory = ChunkDraftFactory(bucket_router=bucket_router)
         return self._chunk_draft_factory
 
-    def _get_vector_storage(self):
-        if self._vector_storage is None:
-            self._vector_storage = compose_vector_storage_facade()
-        return self._vector_storage
+    def _get_vector_storage(self, execution_context: "DatasetExecutionContext"):
+        if self._vector_storage is not None:
+            return self._vector_storage
+        return compose_vector_storage_facade(
+            embedding_pipeline=build_chunk_embedding_pipeline(
+                execution_context.dense_embedding
+            )
+        )
 
     def _get_es_indexing_pipeline(self):
         if self._es_indexing_pipeline is None:

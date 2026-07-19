@@ -1429,6 +1429,9 @@ def pipeline_overlap_runs(splitter_texttiling_context: dict[str, Any]) -> None:
         stage_one_router=SimpleNamespace(),
         stage_two_algorithm=NoopStageTwoAlgorithm(),
         overlapper=ChunkOverlapper(WordTokenizer(), ChunkOverlapConfig(tokens=1)),
+        protected_neighbor_overlap=bool(
+            splitter_texttiling_context.get("protected_overlap_enabled", False)
+        ),
     )
     chunks = [
         Chunk(chunk.content, chunk.start_line, chunk.end_line, dict(chunk.metadata))
@@ -1457,7 +1460,7 @@ def overlap_does_not_enter_protected_body(splitter_texttiling_context: dict[str,
     assert table in protected_chunk.content
 
 
-@given("factory 装配选中 semantic_depth_window")
+@given("factory 使用 Dataset 精确 EMBEDDING 快照装配 semantic_depth_window")
 def factory_selects_semantic_depth(
     splitter_texttiling_context: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
@@ -1468,38 +1471,37 @@ def factory_selects_semantic_depth(
     monkeypatch.setattr(factory.settings, "CHUNKING_MAX_CHUNK_TOKENS", 512)
     monkeypatch.setattr(factory.settings, "CHUNKING_HARD_MAX_TOKENS", 1024)
     monkeypatch.setattr(factory.settings, "CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS", 128)
-    monkeypatch.setattr(factory.settings, "SYSTEM_LLM_PROVIDER", "qwen")
-    monkeypatch.setattr(factory.settings, "SYSTEM_LLM_MODEL_EMBEDDING", "text-embedding-v4")
     monkeypatch.setattr(factory.settings, "CHUNK_INDEX_EMBED_BATCH_SIZE", 32)
-    monkeypatch.setattr(factory, "create_lazy_system_embedding_client", lambda: fake_embedder)
-    pipeline = factory.create_chunk_embedding_pipeline()
+    resolved = SimpleNamespace(
+        provider=fake_embedder,
+        model_name="text-embedding-v4",
+        provider_type="qwen",
+        protocol="openai",
+        config_id=701,
+        scope="USER",
+        snapshot_version=1,
+    )
+    pipeline = factory.build_chunk_embedding_pipeline(resolved)
     splitter_texttiling_context["factory_pipeline"] = pipeline
     splitter_texttiling_context["factory_embedder"] = fake_embedder
+    splitter_texttiling_context["factory_resolved"] = resolved
 
 
-@then("切分引擎被注入与 chunk 存储向量化同一套 qwen embedder 实例")
+@then("切分引擎与 chunk 存储向量化复用 Dataset 精确 embedder 快照")
 def factory_reuses_same_embedder(splitter_texttiling_context: dict[str, Any]) -> None:
     pipeline = splitter_texttiling_context["factory_pipeline"]
     stage_two = pipeline.chunking_engine.chunker.stage_two_algorithm
-    assert pipeline.embedder is splitter_texttiling_context["factory_embedder"]
+    assert pipeline.embedder._embedder is splitter_texttiling_context["factory_embedder"]
+    assert pipeline.embedder.config_id == 701
+    assert pipeline.embedding_model == "text-embedding-v4"
     assert stage_two._scorer.embedder is pipeline.embedder
 
 
-@then("该 embedder 在首次真正调用 embed 前不创建底层客户端")
+@then("装配期间不执行 embed 请求")
 def lazy_embedder_not_materialized(
     splitter_texttiling_context: dict[str, Any],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    created = {"count": 0}
-
-    def fail_if_materialized():
-        created["count"] += 1
-        raise AssertionError("lazy embedder should not materialize during wiring")
-
-    monkeypatch.setattr(factory, "create_system_embedding_client", fail_if_materialized)
-    monkeypatch.setattr(factory.settings, "CHUNKING_STAGE_TWO_ALGORITHM", "semantic_depth_window")
-    factory.create_chunking_engine()
-    assert created["count"] == 0
+    assert splitter_texttiling_context["factory_embedder"].calls == []
 
 
 @when(parsers.parse('Stage 2 算法为 "{algorithm}"'))
@@ -1515,18 +1517,9 @@ def stage_two_algorithm_runtime_is(
 @then("factory 保持不注入 embedder 的现有装配行为")
 def factory_noop_keeps_selected_noop(
     splitter_texttiling_context: dict[str, Any],
-    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    created = {"count": 0}
-
-    def fail_if_materialized():
-        created["count"] += 1
-        raise AssertionError("noop path should not materialize embedder")
-
-    monkeypatch.setattr(factory, "create_system_embedding_client", fail_if_materialized)
     engine = factory.create_chunking_engine()
     assert isinstance(engine.chunker.stage_two_algorithm, NoopStageTwoAlgorithm)
-    assert created["count"] == 0
 
 
 @given("一个超限 mixed 块的 atom embedding 分多批进行")

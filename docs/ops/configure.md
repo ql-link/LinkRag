@@ -12,7 +12,8 @@
 | 数据库 | `DB_*` | 始终 |
 | 缓存 | `REDIS_*` | 始终 |
 | 安全 | `API_KEY_ENCRYPTION_SECRET` | 始终（必须与 Java 管理端一致） |
-| 系统级 LLM | `SYSTEM_LLM_*` | 始终（兜底 LLM 调用） |
+| LLM runtime cache | `LLM_RUNTIME_CACHE_*` | 可选缓存旁路；MySQL 仍是事实源 |
+| Dataset 原始快照缓存 | `DATASET_PARSE_CONFIG_CACHE_*` | Java/Python 共用；仅在 Java CDC health READY 后开启 |
 | Markdown 增强 | `MARKDOWN_PARSER_*` | 调整解析增强行为时 |
 | 分块策略 | `CHUNKING_*` | 调整分块参数时 |
 | 流程编排 | `WORKFLOW_*` | 使用轻量流程编排引擎时 |
@@ -33,7 +34,9 @@
 | `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` | MySQL 连接 |
 | `REDIS_HOST` / `REDIS_PORT` | Redis 连接 |
 | `API_KEY_ENCRYPTION_SECRET` | API Key 加密 Secret，必须与 Java 管理端一致；64 位 hex，解码后 32 字节，用于 AES-256-GCM |
-| `SYSTEM_LLM_PROVIDER` / `SYSTEM_LLM_API_KEY` / `SYSTEM_LLM_API_BASE` | 系统级兜底 LLM |
+| `LLM_RUNTIME_CACHE_ENABLED` / `LLM_RUNTIME_CACHE_TTL_SECONDS` | 全局 `config_id` runtime cache 开关与 TTL |
+| `DATASET_PARSE_CONFIG_CACHE_ENABLED` / `DATASET_PARSE_CONFIG_CACHE_TTL_SECONDS` | `dataset_parse_config` 共享原始快照开关与 TTL；默认关闭，正常值默认 7 天 |
+| `DATASET_PARSE_CONFIG_NEGATIVE_TTL_SECONDS` | 数据集当前没有配置行时的 NOT_FOUND TTL，默认 60 秒 |
 | `KAFKA_BOOTSTRAP_SERVERS` 等（若 `MQ_VENDOR=kafka`） | Kafka 接入信息 |
 | `MINIO_*`（若 `STORAGE_TYPE=minio`） | 对象存储凭据 |
 | `MINIO_RAW_BUCKET`（若 `STORAGE_TYPE=minio`） | 原文件桶：用户上传的源文件，由 Java 写入，Python 只读；默认 `tolink-rag-raw`，需在 MinIO 控制台预建 |
@@ -248,7 +251,9 @@ HOST_VPN_IP=<loki-vpn-host> docker compose -f deploy/cloud-server/docker-compose
 
 稀疏向量与稠密向量在同一个 chunk 向量化阶段执行，模型输入是 chunk 原文，不使用 ES 分词结果。
 
-稀疏/稠密编码模型**不再由系统级配置项或用户当前默认配置决定**：写入与召回都读取 `dataset_parse_config.sparse_embedding_config_id` / `dense_embedding_config_id` 指向的 `llm_user_config.id`，并校验属于当前用户、启用中、`is_system_preset=false`、能力分别为 `SPARSE_EMBEDDING` / `EMBEDDING`。字段缺失或配置无效时解析/召回明确失败，不回退用户默认模型。历史数据集可先执行 [backfill_dataset_vector_model_bindings.sql](../../scripts/db/backfill_dataset_vector_model_bindings.sql)，按每个用户当前启用的默认 EMBEDDING / SPARSE_EMBEDDING 配置补齐绑定。
+稀疏/稠密编码模型由 `dataset_parse_config.sparse_embedding_config_id` /
+`dense_embedding_config_id` 精确指向全局 `llm_model_config.id`。表格/标题、图片与 rerank 分别使用
+`enhancement_chat_config_id`、`enhancement_vision_config_id`、`rerank_config_id`。必需字段缺失或配置无效时明确失败，不回退默认。
 
 当前可选的稀疏 provider 为 `doubao_vision`（火山方舟 doubao-embedding-vision 多模态端点）/ `bge_m3`（自部署 `bge-m3-service` 端点）。原先用 `SPARSE_VECTOR_PROVIDER` 在本地 / HTTP / 远程 BGE-M3 间切换的整套机制已移除。详见 [vectorization.md §6.6](../internals/vectorization.md) 与 [sparse_vector.md](../internals/sparse_vector.md)。
 

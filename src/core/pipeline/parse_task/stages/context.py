@@ -15,6 +15,7 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.core.dataset_config import DatasetExecutionContext
 from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.core.preprocessor.models import FilePostIndexPlan
 from src.core.storage.vector.models import ChunkIndexingResult
@@ -38,6 +39,7 @@ class StageContext:
     pipeline_record: Any
     db: AsyncSession
     is_retry: bool = False
+    execution_context: DatasetExecutionContext | None = None
 
     # 阶段产物（按执行顺序逐步填充）。
     parse_result: dict | None = None

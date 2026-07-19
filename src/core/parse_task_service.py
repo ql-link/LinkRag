@@ -13,7 +13,7 @@ from src.core.markdown_parser.text_formatter import TextFormatter
 from src.core.parser.factory import ParserFactory
 
 if TYPE_CHECKING:
-    from src.core.dataset_config import EnhancementConfig
+    from src.core.dataset_config import DatasetExecutionContext, EnhancementConfig
 
 
 class ParseTaskService:
@@ -32,6 +32,7 @@ class ParseTaskService:
         dataset_id: int | None = None,
         task_id: str | None = None,
         enhancement_config: "EnhancementConfig | None" = None,
+        execution_context: "DatasetExecutionContext | None" = None,
         **parser_kwargs,
     ) -> dict:
         """在统一解析日志上下文中执行格式解析与 Markdown 增强。"""
@@ -49,6 +50,7 @@ class ParseTaskService:
                 source_file=source_file,
                 user_id=user_id,
                 enhancement_config=enhancement_config,
+                execution_context=execution_context,
                 **parser_kwargs,
             )
 
@@ -59,6 +61,7 @@ class ParseTaskService:
         source_file: str | None = None,
         user_id: int | None = None,
         enhancement_config: "EnhancementConfig | None" = None,
+        execution_context: "DatasetExecutionContext | None" = None,
         *,
         task_id: str | None = None,
         **parser_kwargs,
@@ -93,6 +96,16 @@ class ParseTaskService:
             image_bytes_by_url=image_bytes_by_url,
             user_id=user_id,
             enhancement_config=enhancement_config,
+            enhancement_chat=(
+                execution_context.enhancement_chat
+                if execution_context is not None
+                else None
+            ),
+            enhancement_vision=(
+                execution_context.enhancement_vision
+                if execution_context is not None
+                else None
+            ),
         )
         enhance_elapsed = time.monotonic() - enhance_started_at
         logger.debug(
@@ -123,6 +136,11 @@ class ParseTaskService:
             final_markdown,
             source_file=source_file,
             user_id=user_id,
+            resolved_model=(
+                execution_context.enhancement_chat
+                if execution_context is not None
+                else None
+            ),
         )
         final_markdown = heading_result.markdown
         final_parse_result = heading_result.parse_result

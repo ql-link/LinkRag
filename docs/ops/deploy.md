@@ -71,7 +71,7 @@ uvicorn src.main:app --host 0.0.0.0 --port 8000
 常见失败：
 
 - **应用启动卡在 Kafka**：通常是 `KAFKA_BOOTSTRAP_SERVERS` 配置错或 broker 未起来。本地用 docker-compose 时此地址应为 `127.0.0.1:9092`（容器内部连接用 `tolink-kafka:29092`）。
-- **API 调用 LLM 报解密失败**：`API_KEY_ENCRYPTION_SECRET` 必须与 Java 管理端的加密 Secret 一致，格式为 64 位 hex（解码后 32 字节），否则 `llm_user_config` 表中的密文无法解密。
+- **API 调用 LLM 报解密失败**：`API_KEY_ENCRYPTION_SECRET` 必须与 Java 管理端的加密 Secret 一致，否则 `llm_model_config.api_key` 密文无法解密。
 - **解析任务消费不到**：检查 `INIT_KAFKA_TOPICS_ON_STARTUP` 是否被关闭，且 topic（`tolink.rag.parse_task`）是否已存在。
 
 ## 生产部署注意事项
@@ -113,7 +113,8 @@ mammoth；否则 HTML / Word 文件解析会在导入期失败。无需额外系
 alembic upgrade head
 ```
 
-该命令一步完成建表（0001 读取 db.sql，幂等 IF NOT EXISTS）和后续增量迁移。叠加全部迁移后的当前完整结构可查阅 `scripts/db/init.sql`。
+该命令一步完成 0001 baseline 和后续增量迁移。**Alembic migration 是生产 DDL 与种子数据的唯一权威源**；
+`scripts/db/init.sql` 只是叠加全部迁移后的逻辑/测试快照，不得作为部署入口。
 
 > 对于已有表的存量库（老库升级）：先 `alembic stamp 0001` 标记基线，再 `alembic upgrade head`。
 

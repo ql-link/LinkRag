@@ -34,9 +34,9 @@ from src.application.recall_serialization import (
     serialize_reranked_hits,
 )
 from src.config import settings
-from src.core.llm.exceptions import UserModelConfigMissingError
+from src.core.llm.exceptions import LLMConfigResolutionError
 from src.core.llm.response import UsageInfo
-from src.core.llm.user_model_resolver import aresolve_user_model
+from src.core.llm.user_model_resolver import aresolve_model
 from src.core.mq.messages import ChatTurnMessage
 from src.core.pipeline.recall import (
     RecallDiagnostics,
@@ -163,7 +163,6 @@ async def recall_event_stream(
     token_budget: int,
     rerank_top_n: int,
     is_first_turn: bool = False,
-    config_source: str = "USER",
 ) -> AsyncGenerator[str, None]:
     """流内执行召回 + 重排 + 生成，把结果/异常映射为 SSE 终态事件。
 
@@ -171,7 +170,7 @@ async def recall_event_stream(
     上限，二者均来自数据集级 ``recall_config``（分别为 ``recall_context_token_budget`` /
     ``rerank_top_n``，无数据集配置时为系统默认）。
 
-    先按 ``(user_id, CHAT, config_source, config_id)`` 前置校验模型——不可用即 ``error``
+    先按 ``(user_id, CHAT, config_id)`` 前置校验模型——不可用即 ``error``
     MODEL_CONFIG_MISSING、**不进入召回**；通过后执行召回融合，一次性回填片段正文（供
     rerank 与生成共用），对融合候选做 rerank 精排（不可用即降级为当前融合顺序，见
     ``_rerank_hits``；与召回共享同一条流超时预算），用重排后的最终候选按 token 预算拼装
@@ -218,14 +217,12 @@ async def recall_event_stream(
     try:
         # 召回前置校验用户模型；不可用即硬失败、不进入召回。
         try:
-            resolved = await aresolve_user_model(
+            resolved = await aresolve_model(
                 user_id=recall_req.user_id,
                 capability="CHAT",
                 config_id=config_id,
-                config_source=config_source,
-                allow_system_fallback=False,
             )
-        except (UserModelConfigMissingError, ValueError) as exc:
+        except LLMConfigResolutionError as exc:
             logger.bind(
                 event="recall_model_config_unavailable",
                 outcome="failed",
@@ -234,7 +231,6 @@ async def recall_event_stream(
                 conversation_id=conversation_id,
                 user_id=recall_req.user_id,
                 config_id=config_id,
-                config_source=config_source,
                 error_type=type(exc).__name__,
                 error_message=truncate_log_value(exc),
                 stack_trace=safe_exception_stack(exc),
@@ -246,8 +242,8 @@ async def recall_event_stream(
             yield recall_event(
                 "error",
                 {
-                    "code": CODE_MODEL_CONFIG_MISSING,
-                    "message": "selected model is not configured or unavailable",
+                    "code": exc.code,
+                    "message": str(exc),
                 },
             )
             await _emit_chat_turn(
@@ -262,8 +258,8 @@ async def recall_event_stream(
                 references=[],
                 latency_ms=_elapsed_ms(),
                 status="FAILED",
-                error_code=CODE_MODEL_CONFIG_MISSING,
-                error_message="selected model is not configured or unavailable",
+                error_code=exc.code,
+                error_message=str(exc),
                 title=fallback_title,  # 模型未解析无法调 LLM，首轮直接用首问截断兜底
             )
             return
@@ -465,8 +461,7 @@ async def _rerank_hits(
     降级覆盖：
     - 软降级（模型调用失败 / 返回不可用）：reranker 内部已返回当前融合顺序候选且
       ``rerank_applied=False``，原样透出；
-    - 硬失败（未配 RERANK 模型 → ``UserModelConfigMissingError`` / provider 不支持 →
-      ``ValueError``）、rerank 超时、预算耗尽：此处兜底降级。
+    - provider 不可用、rerank 超时、预算耗尽：此处兜底降级。
 
     只 catch 已知运维失败；其它未预期异常**向上抛**，由顶层收敛为 ``INTERNAL_ERROR``
     （带堆栈），不被静默吞成"降级"而掩盖真实缺陷。``CancelledError``（客户端断连）向上传播。
@@ -484,6 +479,10 @@ async def _rerank_hits(
         )
         return _degrade()
 
+    contexts = recall_req.dataset_contexts or {}
+    if not any(ctx.config.recall.enable_rerank for ctx in contexts.values()):
+        return _degrade()
+
     try:
         resp = await asyncio.wait_for(
             reranker.rerank(
@@ -493,6 +492,7 @@ async def _rerank_hits(
                     hits=fusion_hits,
                     top_n=top_n,
                     contents=contents,
+                    dataset_contexts=recall_req.dataset_contexts,
                 )
             ),
             timeout=timeout_s,
@@ -500,7 +500,7 @@ async def _rerank_hits(
         return resp.hits, resp.rerank_applied
     except asyncio.CancelledError:
         raise
-    except (UserModelConfigMissingError, ValueError, asyncio.TimeoutError) as exc:
+    except (LLMConfigResolutionError, ValueError, asyncio.TimeoutError) as exc:
         logger.bind(
             event="recall_rerank_unavailable",
             outcome="degraded",
@@ -579,7 +579,7 @@ async def _generate_answer(
             request_id=request_id,
             turn_id=turn_id,
             conversation_id=conversation_id,
-            config_id=config_id,
+            config_id=int(config_id),
             resolved=resolved,
             answer="",
             usage=UsageInfo(),
@@ -623,7 +623,7 @@ async def _generate_answer(
             request_id=request_id,
             turn_id=turn_id,
             conversation_id=conversation_id,
-            config_id=config_id,
+            config_id=int(config_id),
             resolved=resolved,
             answer="",
             usage=UsageInfo(),
@@ -846,7 +846,7 @@ async def _emit_chat_turn(
             user_id=recall_req.user_id,
             query=recall_req.query,
             answer=answer,
-            config_id=config_id,
+            config_id=int(config_id),
             provider_type=resolved.provider_type if resolved is not None else "",
             model_name=(resolved.model_name or "") if resolved is not None else "",
             status=status,
@@ -893,7 +893,7 @@ async def _emit_chat_turn(
             prompt_tokens=usage.prompt_tokens,
             completion_tokens=usage.completion_tokens,
             total_tokens=usage.total_tokens,
-            config_id=config_id,
+            config_id=int(config_id),
             latency_ms=latency_ms,
             # chat_turn 的 GENERATING/COMPLETED/FAILED 映射到用量口径的 success/failed。
             status="failed" if status == "FAILED" else "success",

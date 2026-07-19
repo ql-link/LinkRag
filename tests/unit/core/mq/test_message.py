@@ -188,6 +188,7 @@ class TestTokenUsageMessage:
             prompt_tokens=100,
             completion_tokens=50,
             total_tokens=150,
+            config_id=501,
         )
         payload = msg.get_payload()
         assert payload.prompt_tokens == 100
@@ -207,6 +208,7 @@ class TestTokenUsageMessage:
             stage="parse",
             operation="embed",
             total_tokens=200,
+            config_id=601,
             task_id="task-9",
         )
         parsed = TokenUsageMessage.parse_msg(msg.serialize())

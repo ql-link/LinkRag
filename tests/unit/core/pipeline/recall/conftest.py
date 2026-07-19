@@ -46,6 +46,7 @@ class FakeRetriever:
         user_id: int,
         top_k: int,
         score_threshold_override: float | None = None,
+        dataset_contexts: dict[int, object] | None = None,
     ) -> list[RetrieverHit]:
         import time as _time
         self.calls.append((query, list(dataset_ids), list(doc_ids) if doc_ids else None))

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any
 
 from src.config import settings
@@ -54,8 +54,6 @@ class VectorStorageFacade:
         qdrant_store: Any | None = None,
         sparse_vector_service: "SparseVectorService | None" = None,
         embedding_pipeline: "ChunkEmbeddingPipeline | None" = None,
-        query_embedding_resolver: "Callable[..., Awaitable[ChunkEmbeddingPipeline]] | None" = None,
-        query_sparse_resolver: "Callable[..., Awaitable[SparseVectorService]] | None" = None,
     ) -> None:
         """
         初始化统一入口，并注入已经装配好的底层服务。
@@ -68,19 +66,8 @@ class VectorStorageFacade:
             sparse_vector_service: 可选的稀疏向量服务；用于召回入口
                 ``search_sparse_chunks``。``SPARSE_VECTOR_ENABLED=False`` 时
                 由工厂传入 ``None``，召回入口会抛 ``VectorRetrievalConfigurationError``。
-            embedding_pipeline: 可选的 chunk embedding 管线；进程级系统 embedder，
-                作为 ``search_dense_chunks`` 在**未注入** ``query_embedding_resolver`` 时的
-                回退（写入 / management / 单测路径）。
-            query_embedding_resolver: 可选的「按 user_id + dataset_id 解析 query embedding pipeline」回调。
-                召回装配（``recall_pipeline_provider``）注入
-                ``aresolve_dataset_chunk_embedding_pipeline``，使 dense 召回 query 编码与写入侧
-                同源、按数据集绑定模型解析；注入后 ``search_dense_chunks`` 优先用它而非进程级
-                ``embedding_pipeline``。
-            query_sparse_resolver: 可选的「按 user_id + dataset_id 解析 sparse 向量服务」回调（sparse 侧
-                与 ``query_embedding_resolver`` 对偶）。召回装配注入
-                ``aresolve_dataset_sparse_vector_service``，使 sparse 召回 query 编码与写入侧
-                同源、按数据集绑定模型解析；注入后 ``search_sparse_chunks`` 优先用它而非进程级
-                ``sparse_vector_service``。
+            embedding_pipeline: 显式注入的 chunk embedding 管线。召回路径优先使用
+                ``DatasetExecutionContext`` 传入的 ``resolved_model``。
 
         Returns:
             None.
@@ -92,8 +79,6 @@ class VectorStorageFacade:
         # 命名前置 ``_`` 表达"内部状态"语义；外部不直接访问。
         self._sparse_vector_service = sparse_vector_service
         self._embedding_pipeline = embedding_pipeline
-        self._query_embedding_resolver = query_embedding_resolver
-        self._query_sparse_resolver = query_sparse_resolver
 
     async def store_chunks(
         self,
@@ -248,6 +233,7 @@ class VectorStorageFacade:
         doc_id: list[int] | None = None,
         top_k: int | None = None,
         score_threshold: float | None = None,
+        resolved_model: object | None = None,
     ) -> VectorSearchResult:
         """基于 BGE-M3 稀疏向量在用户 / 知识集范围内召回最多 top-k 个 chunk。
 
@@ -346,12 +332,12 @@ class VectorStorageFacade:
             )
 
         # ───────────────────── ③ 配置就绪检查 ───────────────────────────────────
-        # SPARSE_VECTOR_ENABLED=False / 既无 resolver 也无 service → 部署侧配置问题，
+        # SPARSE_VECTOR_ENABLED=False / 既无 resolved snapshot 也无 service → 部署侧配置问题，
         # 静默返空会让运维找不到原因，必须显式抛配置异常（acceptance 已断言）。
-        # query 编码来源二选一（与 dense 的 ③ 段对偶）：注入了 query_sparse_resolver
-        # （召回路径，按用户模型解析）走它；否则回退进程级 sparse_vector_service。
+        # query 编码来源二选一（与 dense 的 ③ 段对偶）：召回使用 Dataset context
+        # 中的 resolved_model；显式维护/测试路径可注入 sparse_vector_service。
         if not bool(getattr(settings, "SPARSE_VECTOR_ENABLED", False)) or (
-            self._query_sparse_resolver is None and self._sparse_vector_service is None
+            resolved_model is None and self._sparse_vector_service is None
         ):
             raise VectorRetrievalConfigurationError(
                 "Sparse vector recall is unavailable: "
@@ -371,15 +357,10 @@ class VectorStorageFacade:
         # 按数据集绑定解析 sparse 向量服务（与写入侧同源），绑定缺失 / 无效 →
         # 翻成 VectorRetrievalUserConfigMissingError（上层据此硬失败，不做宽松降级，
         # 与 dense 的 DenseEmbeddingConfigMissingError 翻译对偶）。
-        if self._query_sparse_resolver is not None:
-            from src.core.encoding.sparse.factory import (
-                SparseEmbeddingConfigMissingError,
-            )
+        if resolved_model is not None:
+            from src.core.encoding.sparse.factory import build_sparse_vector_service
 
-            try:
-                service = await self._call_sparse_resolver(user_id, set_id)
-            except SparseEmbeddingConfigMissingError as exc:
-                raise VectorRetrievalUserConfigMissingError(str(exc)) from exc
+            service = build_sparse_vector_service(resolved_model)
         else:
             service = self._sparse_vector_service
 
@@ -449,6 +430,7 @@ class VectorStorageFacade:
         doc_id: list[int] | None = None,
         top_k: int | None = None,
         score_threshold: float | None = None,
+        resolved_model: object | None = None,
     ) -> VectorSearchResult:
         """基于数据集绑定的稠密向量模型在用户 / 知识集范围内召回最多 top-k 个 chunk。
 
@@ -563,9 +545,9 @@ class VectorStorageFacade:
         # ───────────────────── ③ 配置就绪检查（dense 与 sparse 字面差异点）─────
         # dense 没有 enable 开关（dense 写入是必备链路）；只检查 query 编码来源与
         # qdrant_store 注入状态。两者都是工厂层 invariant；正常路径下不会触发。
-        # query 编码来源二选一：注入了 query_embedding_resolver（召回路径，按用户模型解析）
-        # 走它；否则回退进程级 embedding_pipeline（写入 / management / 单测路径）。
-        if self._query_embedding_resolver is None and self._embedding_pipeline is None:
+        # query 编码来源二选一：召回使用 Dataset context 的 resolved_model；
+        # 显式写入 / management / 测试路径可注入 embedding_pipeline。
+        if resolved_model is None and self._embedding_pipeline is None:
             raise VectorRetrievalConfigurationError(
                 "Dense vector recall is unavailable: "
                 "embedding_pipeline is not configured."
@@ -587,15 +569,10 @@ class VectorStorageFacade:
 
         # 按数据集绑定解析 query embedding pipeline（与写入侧同源），绑定缺失 / 无效 →
         # 翻成 VectorRetrievalUserConfigMissingError（上层据此硬失败，不做宽松降级）。
-        if self._query_embedding_resolver is not None:
-            from src.core.splitter.factory import DenseEmbeddingConfigMissingError
+        if resolved_model is not None:
+            from src.core.splitter.factory import build_chunk_embedding_pipeline
 
-            try:
-                embedding_pipeline = await self._call_embedding_resolver(
-                    user_id, set_id
-                )
-            except DenseEmbeddingConfigMissingError as exc:
-                raise VectorRetrievalUserConfigMissingError(str(exc)) from exc
+            embedding_pipeline = build_chunk_embedding_pipeline(resolved_model)
         else:
             embedding_pipeline = self._embedding_pipeline
 
@@ -627,9 +604,7 @@ class VectorStorageFacade:
                 prompt_tokens=int(getattr(_q_usage, "prompt_tokens", 0) or 0),
                 completion_tokens=0,
                 total_tokens=int(getattr(_q_usage, "total_tokens", 0) or 0),
-                config_id=getattr(
-                    getattr(embedding_pipeline, "embedder", None), "config_id", None
-                ),
+                config_id=int(embedding_pipeline.embedder.config_id),
             )
 
         # ───────────────────── ⑤ bucket 路由（与写入侧共用 BucketRouter）────────
@@ -671,29 +646,6 @@ class VectorStorageFacade:
             vector_kind="dense",
         )
 
-    async def _call_embedding_resolver(self, user_id: int, set_id: int):
-        """调用 query embedding resolver。
-
-        生产 resolver 接受 ``(user_id, dataset_id)``；保留一参 fallback 兼容单测和旧显式注入。
-        """
-        try:
-            return await self._query_embedding_resolver(user_id, set_id)
-        except TypeError as exc:
-            try:
-                return await self._query_embedding_resolver(user_id)
-            except TypeError:
-                raise exc
-
-    async def _call_sparse_resolver(self, user_id: int, set_id: int):
-        """调用 query sparse resolver，兼容旧的一参测试替身。"""
-        try:
-            return await self._query_sparse_resolver(user_id, set_id)
-        except TypeError as exc:
-            try:
-                return await self._query_sparse_resolver(user_id)
-            except TypeError:
-                raise exc
-
     @staticmethod
     def _report_sparse_query_usage(
         *, service: "SparseVectorService", user_id: int
@@ -713,7 +665,7 @@ class VectorStorageFacade:
             prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
             completion_tokens=0,
             total_tokens=total_tokens,
-            config_id=getattr(service, "config_id", None),
+            config_id=int(service.config_id),
         )
 
     def _sparse_vector_name(self) -> str:

@@ -128,9 +128,8 @@ class ChunkingConfig(BaseModel):
 class EnhancementConfig(BaseModel):
     """Markdown 增强配置（2 项：表格 / 图片增强开关），消费点见 ``markdown_parser/orchestrator.py``。
 
-    数据集层只配置「是否开启」，**不再选择增强模型**：增强使用的模型按「发起用户默认 →
-    LinkRag 系统默认预设」解析（表格→CHAT，图片→VISION）。两层都未配置时，解析任务直接失败
-    （:class:`EnhancementModelMissingError` → ``ENHANCEMENT_MODEL_MISSING``）。
+    数据集层只配置「是否开启」；模型由同行的
+    ``enhancement_chat_config_id`` / ``enhancement_vision_config_id`` 精确绑定。
 
     数据库中显式存在的空对象 ``{}`` 表示所有增强关闭；无配置行才使用 Settings 系统默认。
     非空对象的缺失字段仍由 Settings 补齐，保持部分覆盖兼容。
@@ -139,8 +138,8 @@ class EnhancementConfig(BaseModel):
     多余键，反序列化不受影响。
     """
 
-    enable_table_enhancement: bool = True
-    enable_image_enhancement: bool = True
+    enable_table_enhancement: bool = False
+    enable_image_enhancement: bool = False
     enable_heading_hierarchy: bool = False
 
     @classmethod
@@ -204,6 +203,7 @@ class RecallConfig(BaseModel):
     fusion_sparse_weight: float = 0.3
     fusion_dense_weight: float = 0.5
     rerank_top_n: int = 8
+    enable_rerank: bool = False
     recall_strict: bool = False
 
     @field_validator(
@@ -268,18 +268,18 @@ class RecallConfig(BaseModel):
         )
 
 
-class VectorModelBindingConfig(BaseModel):
-    """数据集绑定的向量模型配置 ID。
-
-    四个字段（ID + source）共同定位 Java 库的模型配置。``source=USER`` 时 ID 指向
-    ``llm_user_config.id``，``source=SYSTEM`` 时指向 ``llm_system_preset.id``。Python 侧
-    不在此模型中校验配置行有效性，只承载绑定信息；解析/召回消费点会按能力分别精确读取并校验。
-    """
+class DatasetModelBindingConfig(BaseModel):
+    """数据集五个用途的全局 LLM config_id。"""
 
     sparse_embedding_config_id: int | None = None
-    sparse_embedding_config_source: str = "USER"
     dense_embedding_config_id: int | None = None
-    dense_embedding_config_source: str = "USER"
+    enhancement_chat_config_id: int | None = None
+    enhancement_vision_config_id: int | None = None
+    rerank_config_id: int | None = None
+
+
+# 保留 Python 类名别名，但对象中已不存在 source 语义。
+VectorModelBindingConfig = DatasetModelBindingConfig
 
 
 class DatasetParseConfigBundle(BaseModel):
@@ -292,7 +292,12 @@ class DatasetParseConfigBundle(BaseModel):
     enhancement: EnhancementConfig = EnhancementConfig()
     pdf: PDFConfig = PDFConfig()
     recall: RecallConfig = RecallConfig()
-    vector_models: VectorModelBindingConfig = VectorModelBindingConfig()
+    model_bindings: DatasetModelBindingConfig = DatasetModelBindingConfig()
+
+    @property
+    def vector_models(self) -> DatasetModelBindingConfig:
+        """向量链路过渡访问器；返回的仍是 config_id-only 绑定。"""
+        return self.model_bindings
 
     @classmethod
     def defaults(cls) -> "DatasetParseConfigBundle":
@@ -302,5 +307,5 @@ class DatasetParseConfigBundle(BaseModel):
             enhancement=EnhancementConfig.from_settings(),
             pdf=PDFConfig.from_settings(),
             recall=RecallConfig.from_settings(),
-            vector_models=VectorModelBindingConfig(),
+            model_bindings=DatasetModelBindingConfig(),
         )

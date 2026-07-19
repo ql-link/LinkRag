@@ -284,7 +284,38 @@ def pipeline_factory(
     monkeypatch.setattr("src.config.settings.PARSE_USE_WORKFLOW_DAG", False)
 
     from src.core.pipeline import ParseTaskPipeline
+    from src.core.dataset_config.models import (
+        DatasetModelBindingConfig,
+        DatasetParseConfigBundle,
+    )
     from src.core.pipeline.parse_task.models import ParsePipelineResult, PipelineStatus
+
+    async def _load_execution_context(payload, _db):
+        """为 OOM 验收链路注入 Dataset 精确模型快照，避免访问真实 MySQL。"""
+        config = DatasetParseConfigBundle.defaults().model_copy(
+            update={
+                "model_bindings": DatasetModelBindingConfig(
+                    dense_embedding_config_id=701,
+                    sparse_embedding_config_id=702,
+                )
+            }
+        )
+        return SimpleNamespace(
+            user_id=int(payload.user_id),
+            dataset_id=int(payload.dataset_id),
+            config=config,
+            dense_embedding=SimpleNamespace(config_id=701),
+            sparse_embedding=SimpleNamespace(config_id=702),
+            enhancement_chat=None,
+            enhancement_vision=None,
+            rerank=None,
+        )
+
+    monkeypatch.setattr(
+        ParseTaskPipeline,
+        "_load_execution_context",
+        staticmethod(_load_execution_context),
+    )
 
     def _factory():
         session = _FakeSession()

@@ -54,35 +54,67 @@ class ConfigNotFoundError(ConfigurationException):
     pass
 
 
-class UserModelConfigMissingError(ConfigurationException):
-    """发起用户缺少指定能力的默认 LLM 配置。
+class LLMConfigResolutionError(ConfigurationException):
+    """精确 config_id 解析失败基类。"""
 
-    统一用户模型解析（``user_model_resolver``）在「未启用系统兜底且用户无该能力默认配置」时
-    抛出。各领域调用点可在边界捕获后重抛自己的领域异常（如 ``DenseEmbeddingConfigMissingError`` /
-    ``LLMConfigMissingError``）以保留既有失败码映射。``capability`` 为配置表能力字符串
-    （CHAT / EMBEDDING / SPARSE_EMBEDDING / RERANK / VISION）。
-    """
+    code = "LLM_CONFIG_ERROR"
+    http_status = 400
 
-    def __init__(self, capability: str, user_id: int) -> None:
-        self.capability = capability
-        self.user_id = user_id
+    def __init__(self, config_id: int, message: str) -> None:
+        self.config_id = config_id
+        super().__init__(message)
+
+
+class LLMConfigNotFoundError(LLMConfigResolutionError):
+    code = "LLM_CONFIG_NOT_FOUND"
+    http_status = 404
+
+    def __init__(self, config_id: int) -> None:
+        super().__init__(config_id, f"LLM config {config_id} does not exist")
+
+
+class LLMConfigInactiveError(LLMConfigResolutionError):
+    code = "LLM_CONFIG_INACTIVE"
+    http_status = 409
+
+    def __init__(self, config_id: int) -> None:
+        super().__init__(config_id, f"LLM config {config_id} is inactive")
+
+
+class LLMConfigForbiddenError(LLMConfigResolutionError):
+    code = "LLM_CONFIG_FORBIDDEN"
+    http_status = 403
+
+    def __init__(self, config_id: int) -> None:
+        super().__init__(config_id, f"LLM config {config_id} is not accessible by this user")
+
+
+class LLMConfigCapabilityMismatchError(LLMConfigResolutionError):
+    code = "LLM_CONFIG_CAPABILITY_MISMATCH"
+    http_status = 400
+
+    def __init__(self, config_id: int, expected: str, actual: str) -> None:
+        self.expected_capability = expected
+        self.actual_capability = actual
         super().__init__(
-            f"User {user_id} has no default {capability} config",
+            config_id,
+            f"LLM config {config_id} capability mismatch: expected {expected}, got {actual}",
         )
 
 
-class ProtocolRequiredError(ConfigurationException):
-    """用户配置缺少必填的 protocol 字段。
+class DatasetModelBindingRequiredError(ConfigurationException):
+    """Dataset 在当前用途下缺少必要的精确配置绑定。"""
 
-    协议化分发以 ``protocol`` 为必填事实列：运行期读到空 / NULL 直接 fail fast，
-    **不按 provider_type 兜底推导**（与三层语义"绝不 fallback"一致）。存量缺
-    protocol 的行应由运维上线前清理 / 回填。对应 acceptance 的 ``PROTOCOL_REQUIRED``。
-    """
+    code = "DATASET_MODEL_BINDING_REQUIRED"
+    http_status = 409
 
-    def __init__(self, capability: str | None = None, user_id: int | None = None) -> None:
-        self.capability = capability
-        self.user_id = user_id
-        super().__init__("LLM config missing required 'protocol'")
+    def __init__(self, dataset_id: int, missing_bindings: list[str]) -> None:
+        self.dataset_id = dataset_id
+        self.missing_bindings = missing_bindings
+        super().__init__(
+            f"Dataset {dataset_id} is missing required model bindings: "
+            + ",".join(missing_bindings)
+        )
 
 
 class UnsupportedProtocolCapabilityError(ConfigurationException):

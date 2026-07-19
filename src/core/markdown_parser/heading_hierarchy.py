@@ -502,6 +502,7 @@ class HeadingHierarchyProcessor:
         *,
         source_file: str | None = None,
         user_id: int | None = None,
+        resolved_model=None,
     ) -> HeadingHierarchyResult:
         parse_result = self.parser.parse(markdown, source_file=source_file)
         if not self.config.enabled:
@@ -521,11 +522,19 @@ class HeadingHierarchyProcessor:
                 applied=False,
             )
 
-        generator = self.generator or await build_default_heading_plan_generator(
-            user_id,
-            context_token_budget=self.config.llm_context_token_budget,
-            max_output_tokens=self.config.llm_max_output_tokens,
-        )
+        if self.generator is not None:
+            generator = self.generator
+        else:
+            if user_id is None or resolved_model is None:
+                raise HeadingPlanGenerationError(
+                    "heading hierarchy requires the dataset enhancement CHAT model"
+                )
+            generator = build_heading_plan_generator(
+                resolved_model,
+                user_id=user_id,
+                context_token_budget=self.config.llm_context_token_budget,
+                max_output_tokens=self.config.llm_max_output_tokens,
+            )
         plan = await generator.agenerate(
             markdown=markdown,
             parse_result=parse_result,
@@ -553,42 +562,20 @@ class HeadingHierarchyProcessor:
         )
 
 
-async def build_default_heading_plan_generator(
-    user_id: int | None,
+def build_heading_plan_generator(
+    resolved,
     *,
+    user_id: int,
     context_token_budget: int,
     max_output_tokens: int,
 ) -> LLMHeadingPlanGenerator:
-    """Build the production heading generator from the default CHAT model."""
-    if user_id is None:
-        from src.core.llm.user_model_resolver import build_provider_from_config
-        from src.services.config_reader_service import ConfigReaderService
-
-        config = ConfigReaderService().get_system_fallback_config_by_capability("CHAT")
-        if not config:
-            raise HeadingPlanGenerationError("system default CHAT model is not configured")
-        resolved = build_provider_from_config(config, capability="CHAT")
-    else:
-        from src.core.llm.exceptions import UserModelConfigMissingError
-        from src.core.llm.user_model_resolver import aresolve_user_model
-        from src.core.markdown_parser.provider_clients import LLMConfigMissingError
-
-        try:
-            resolved = await aresolve_user_model(
-                user_id=user_id,
-                capability="CHAT",
-                allow_linkrag_default=True,
-            )
-        except UserModelConfigMissingError as exc:
-            raise LLMConfigMissingError("CHAT", user_id) from exc
-
+    """Build a heading generator from the already resolved dataset CHAT snapshot."""
     return LLMHeadingPlanGenerator(
         provider=resolved.provider,
         model_name=resolved.model_name,
         user_id=user_id,
-        provider_type=getattr(resolved, "provider_type", None),
-        # usage_report.config_id 只接受 llm_user_config.id；系统预设调用按契约传 NULL。
-        config_id=(getattr(resolved, "config_id", None) if resolved.source == "user" else None),
+        provider_type=resolved.provider_type,
+        config_id=int(resolved.config_id),
         context_token_budget=context_token_budget,
         max_tokens=max_output_tokens,
     )

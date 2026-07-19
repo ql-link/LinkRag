@@ -13,6 +13,14 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.config import settings
+from src.core.dataset_config import (
+    DatasetExecutionContextLoader,
+    DatasetExecutionPurpose,
+)
+from src.core.llm.exceptions import (
+    DatasetModelBindingRequiredError,
+    LLMConfigResolutionError,
+)
 from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.core.pipeline.parse_task.post_process.repository import ParsePipelineRepository
 from src.core.storage.chunks.repository import ChunkRepository
@@ -172,6 +180,7 @@ class ParseTaskPipeline:
             log_record=ctx.log_record,
             log_repo=self._log_repository,
             is_retry=ctx.is_retry,
+            execution_context=ctx.execution_context,
             failures=failures,
         )
         return await self._finalize_dag_result(ctx, run_record, failures, started_at)
@@ -296,8 +305,21 @@ class ParseTaskPipeline:
                 log_record, pipeline_record = await self._handle_retry_branch(payload, db)
             except RetryValidationError as exc:
                 return await self._handle_retry_validation_failure(payload, exc.reason, db)
-            ctx = StageContext(payload, log_record, pipeline_record, db, is_retry=True)
-            return await self._execute_stages(ctx)
+            try:
+                execution_context = await self._load_execution_context(payload, db)
+                ctx = StageContext(
+                    payload,
+                    log_record,
+                    pipeline_record,
+                    db,
+                    is_retry=True,
+                    execution_context=execution_context,
+                )
+                return await self._execute_stages(ctx)
+            except Exception as exc:
+                return await self._handle_unclassified_failure(
+                    payload, log_record, pipeline_record, exc, db
+                )
 
         # ---- 首次分支：写 created 日志作为幂等屏障，阻止 Kafka 重投重复解析 ----
         log_record = await self._log_repository.create(payload, db)
@@ -328,7 +350,15 @@ class ParseTaskPipeline:
         # 首次执行保留一层兜底 except：阶段内部已对可归类失败 mark 并 return，
         # 这里只捕获少数未归类异常，收敛为 cleaning 失败终态（与历史行为一致）。
         try:
-            ctx = StageContext(payload, log_record, pipeline_record, db, is_retry=False)
+            execution_context = await self._load_execution_context(payload, db)
+            ctx = StageContext(
+                payload,
+                log_record,
+                pipeline_record,
+                db,
+                is_retry=False,
+                execution_context=execution_context,
+            )
             return await self._execute_stages(ctx)
         except Exception as exc:
             return await self._handle_unclassified_failure(
@@ -403,7 +433,14 @@ class ParseTaskPipeline:
         db: AsyncSession,
     ) -> ParsePipelineResult:
         """阶段链路抛出的未归类异常：收敛为 cleaning 失败终态。"""
-        failure_reason = build_failure_reason(ParseFailureCode.INTERNAL_UNKNOWN_ERROR, str(exc))
+        code = (
+            ParseFailureCode.DATASET_MODEL_BINDING_REQUIRED
+            if isinstance(exc, DatasetModelBindingRequiredError)
+            else ParseFailureCode.LLM_CONFIG_MISSING
+            if isinstance(exc, LLMConfigResolutionError)
+            else ParseFailureCode.INTERNAL_UNKNOWN_ERROR
+        )
+        failure_reason = build_failure_reason(code, str(exc))
         await self._log_repository.mark_parse_finished(log_record, db)
         await self._pipeline_repository.mark_cleaning_failed(
             db,
@@ -418,6 +455,17 @@ class ParseTaskPipeline:
             failed_stage=POST_PROCESS_STAGE_CLEANING,
             failure_reason=failure_reason,
             error=exc,
+        )
+
+    @staticmethod
+    async def _load_execution_context(payload: ParseTaskPayload, db: AsyncSession):
+        """在任何 parse stage/provider 之前一次加载 Dataset 模型快照。"""
+        user_id = int(payload.user_id)
+        dataset_id = int(payload.dataset_id)
+        return await DatasetExecutionContextLoader(db).load(
+            user_id,
+            dataset_id,
+            DatasetExecutionPurpose.PARSE,
         )
 
     # ------------------------------------------------------------------

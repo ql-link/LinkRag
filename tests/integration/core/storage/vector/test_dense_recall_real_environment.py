@@ -3,8 +3,8 @@
 覆盖范围（仅本期 dense-vector-recall issue 相关模块）：
 1. **真实 MySQL** —— 写入 chunk 真值（fixture 准备 + lifecycle_status=ACTIVE 过滤验证）
 2. **真实 Qdrant** —— ``query_points(query=list[float], using=None)`` 返回 ScoredPoint
-3. **真实 system embedding HTTP** —— 调用 ``ChunkEmbeddingPipeline.aembed_query``
-   到 ``settings.SYSTEM_LLM_MODEL_EMBEDDING``（当前 ``text-embedding-v4``）
+3. **真实 Dataset 精确 embedding HTTP** —— 以显式 ``config_id`` 解析模型快照后调用
+   ``ChunkEmbeddingPipeline.aembed_query``
 
 不包含 ES / sparse / BGE-M3 / pretokenize（这些不属于 dense 召回链路）。
 
@@ -15,7 +15,8 @@
 需同时设置以下环境变量（避免误触生产）::
 
     TOLINK_RUN_REAL_DENSE_RECALL_TESTS=1   # 本测试模块独占
-    SYSTEM_LLM_API_KEY=<...>               # 真实 system embedding HTTP 凭证
+    TOLINK_REAL_DENSE_CONFIG_ID=<id>        # 精确 EMBEDDING config_id
+    TOLINK_REAL_DENSE_CONFIG_USER_ID=<id>   # USER scope owner / SYSTEM scope 调用用户
     DATABASE_URL=mysql+pymysql://...        # 真实 MySQL
     QDRANT_HOST / QDRANT_PORT               # 真实 Qdrant
 
@@ -27,6 +28,7 @@ from __future__ import annotations
 
 import os
 from contextlib import suppress
+from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -34,8 +36,9 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 from src.config import settings
+from src.core.llm.user_model_resolver import aresolve_model
 from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
-from src.core.splitter.factory import create_lazy_system_embedding_client
+from src.core.splitter.factory import build_chunk_embedding_pipeline
 from src.core.splitter.models import Chunk, EmbeddedChunk
 from src.core.storage.chunks import ChunkRepository
 from src.core.storage.chunks.constants import (
@@ -78,7 +81,7 @@ pytestmark = [
         not _enabled_real_dense_tests(),
         reason=(
             "Set TOLINK_RUN_REAL_DENSE_RECALL_TESTS=1 to run real MySQL / Qdrant / "
-            "system embedding HTTP integration tests for dense recall."
+            "exact Dataset-bound embedding HTTP integration tests for dense recall."
         ),
     ),
 ]
@@ -129,20 +132,36 @@ def real_qdrant_store(isolation_namespace):
     yield store
 
 
+def _embedding_config_id() -> int:
+    raw = os.getenv("TOLINK_REAL_DENSE_CONFIG_ID", "").strip()
+    if not raw:
+        pytest.skip("Set TOLINK_REAL_DENSE_CONFIG_ID to an exact EMBEDDING config_id")
+    return int(raw)
+
+
+def _embedding_config_user_id() -> int:
+    raw = os.getenv("TOLINK_REAL_DENSE_CONFIG_USER_ID", "").strip()
+    if not raw:
+        pytest.skip("Set TOLINK_REAL_DENSE_CONFIG_USER_ID to the config access user")
+    return int(raw)
+
+
 @pytest.fixture
-def real_embedding_pipeline():
-    """构造真实 ChunkEmbeddingPipeline，使用 system embedding HTTP client。
+async def real_resolved_embedding():
+    return await aresolve_model(
+        user_id=_embedding_config_user_id(),
+        config_id=_embedding_config_id(),
+        capability="EMBEDDING",
+    )
+
+
+@pytest.fixture
+async def real_embedding_pipeline(real_resolved_embedding):
+    """由精确配置快照构造真实 ``ChunkEmbeddingPipeline``。
 
     注意：本 fixture 的 chunking_engine 用 None 占位（aembed_query 不依赖它）。
     """
-    if not settings.SYSTEM_LLM_API_KEY:
-        pytest.skip("SYSTEM_LLM_API_KEY is not configured for real embedding HTTP test")
-    embedder = create_lazy_system_embedding_client()
-    pipeline = ChunkEmbeddingPipeline(
-        chunking_engine=None,  # type: ignore[arg-type]  # aembed_query 不调
-        embedder=embedder,
-        embedding_model=settings.SYSTEM_LLM_MODEL_EMBEDDING,
-    )
+    pipeline = build_chunk_embedding_pipeline(real_resolved_embedding)
     yield pipeline
 
 
@@ -159,10 +178,10 @@ async def test_dense_query_should_hit_real_qdrant_and_return_active_chunks(
     real_qdrant_store: QdrantIndexStore,
     real_embedding_pipeline: ChunkEmbeddingPipeline,
 ):
-    """端到端：真实 Qdrant + 真实 system embedding HTTP + 真实 MySQL。
+    """端到端：真实 Qdrant + 精确配置的 embedding HTTP + 真实 MySQL。
 
     流程：
-    1. 真实 system embedding 把一段 chunk 文本向量化 → 得到 1024 维向量。
+    1. 精确 ``config_id`` 的 embedding provider 把一段 chunk 文本向量化。
     2. 真实 Qdrant 写入该向量到 isolation namespace 下的 bucket collection。
     3. MySQL 写入 chunk 真值（lifecycle_status=ACTIVE）。
     4. 调 facade.search_dense_chunks(query=同样文本) → 应命中刚写入的 chunk_id。
@@ -197,10 +216,10 @@ async def test_dense_query_should_hit_real_qdrant_and_return_active_chunks(
         await session.commit()
 
     try:
-        # 真实 system embedding HTTP：把 chunk_text 向量化（写入用）
+        # Dataset 精确 embedding HTTP：把 chunk_text 向量化（写入用）
         write_vector = await real_embedding_pipeline.aembed_query(chunk_text)
         assert isinstance(write_vector, list)
-        assert len(write_vector) > 0, "real system embedding returned empty vector"
+        assert len(write_vector) > 0, "real exact embedding config returned empty vector"
         write_dim = len(write_vector)
 
         # 真实 Qdrant：建 collection 并写入 point
@@ -215,7 +234,7 @@ async def test_dense_query_should_hit_real_qdrant_and_return_active_chunks(
                 chunk_index=0,
             ),
             embedding=write_vector,
-            embedding_model=settings.SYSTEM_LLM_MODEL_EMBEDDING,
+            embedding_model=real_embedding_pipeline.embedding_model,
         )
         # 重新读出 record 让 indexed_point_from_record 拿到完整字段
         async with session_factory() as session:
@@ -254,9 +273,9 @@ async def test_dense_query_should_hit_real_qdrant_and_return_active_chunks(
         # cosine 自相似度应 >= 0.99（query 与 chunk 文本完全一致）
         assert target_hit.score >= 0.99, f"self-similarity score too low: {target_hit.score}"
         # result 元信息
-        assert result.vector_name is None  # dense 是 unnamed
+        assert result.vector_name == settings.DENSE_VECTOR_QDRANT_VECTOR_NAME
         assert result.vector_kind == "dense"
-        assert result.model_name == settings.SYSTEM_LLM_MODEL_EMBEDDING
+        assert result.model_name == real_embedding_pipeline.embedding_model
 
         # ===========================================================
         # §4.4.3 鬼影 hit 边界验证：MySQL flip → REMOVED 但 Qdrant 还在
@@ -439,6 +458,7 @@ async def test_dense_retriever_should_integrate_with_real_pipeline_provider(
     isolation_namespace,
     real_qdrant_store: QdrantIndexStore,
     real_embedding_pipeline: ChunkEmbeddingPipeline,
+    real_resolved_embedding,
 ):
     """provider 装配真实 facade 后 DenseRetriever 应能跑通端到端。
 
@@ -485,6 +505,11 @@ async def test_dense_retriever_should_integrate_with_real_pipeline_provider(
             doc_ids=None,
             user_id=ns["user_id"],
             top_k=10,
+            dataset_contexts={
+                ns["set_id"]: SimpleNamespace(
+                    dense_embedding=real_resolved_embedding
+                )
+            },
         )
 
         assert len(retrieved) >= 1

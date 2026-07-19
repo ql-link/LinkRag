@@ -109,7 +109,8 @@ MQ 发送失败统一返回不含底层连接地址和异常文本的 `500` 通�
 | ParseTask | `tolink.rag.parse_task` | Java/Python 解析任务输入 |
 | UsageReport | `tolink.rag.usage_report` | 用量上报 |
 
-> `SendUsageReportRequest`（用量上报全链路归属）：必填 `user_id` / `provider_type` / `model_name` / `stage`(`parse`/`recall`/`chat`) / `operation`(`embed`/`sparse`/`rerank`/`vision`/`table`/`generate`) / `prompt_tokens` / `completion_tokens` / `total_tokens`；可选 `config_id` / `task_id` / `latency_ms` / `status`（`conversation_id` / `request_id` 已随 `llm_usage_log` 瘦身下线）。字段语义与 MQ 载荷一致，见 [mq_contracts.md §用量上报](mq_contracts.md#用量上报pythonjava统计侧)。
+> `SendUsageReportRequest`（用量上报全链路归属）：必填 `user_id` / `provider_type` / `model_name` / `stage` / `operation` /
+> 正整数全局 `config_id`；token 计数默认 0。可选 `task_id` / `latency_ms` / `status`。字段语义与 MQ 载荷一致。
 
 > parse_result 终态回传 topic（Python→Java 解析终态通知）已下线（LINK-166）：终态只写 DB，前端轮询 Java 查询读取，见下方「解析终态读取」。
 
@@ -136,10 +137,9 @@ parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权�
 
 配置解析规则：
 
-- `config_id` 为空时，按 `X-User-Id + capability` 读取该用户默认配置；用户没有自配默认时，回退 LinkRag 系统默认预设。
-- `config_id` 非空时，按 `config_source + config_id` 精确读取配置：`USER` 指向 `llm_user_config.id`，`SYSTEM` 指向 `llm_system_preset.id`。
-- 直调 LLM 接口不使用旧环境变量兜底；用户缺少对应能力配置且没有 LinkRag 系统默认预设时，不会读取 `SYSTEM_LLM_*` 环境变量。
-- 缺配置返回 HTTP `422`，响应体 `detail.code` 为 `LLM_CONFIG_MISSING`，`detail.message` 会说明缺少的能力（如 `CHAT` / `EMBEDDING` / `RERANK` / `VISION`）。
+- 请求体必须携带正整数 `config_id`，精确读取 `llm_model_config.id`。
+- 不再接受 `config_source`、`model`、`override_model` 等旧路由/覆盖字段，未知字段返回 `422`。
+- resolver 统一校验存在、启用、SYSTEM 或归属 `X-User-Id`，以及 capability 匹配；不读默认指针或环境变量兜底。
 
 | Method | Path | 用途 | 请求 |
 | --- | --- | --- | --- |
@@ -151,10 +151,8 @@ parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权�
 
 `GenerateRequest`：
 
-- `config_id`: 可选配置 ID；与 `config_source` 配合定位。
-- `config_source`: 可选，`USER` 或 `SYSTEM`，默认 `USER`。
+- `config_id`: 必填正整数，全局配置 ID。
 - `prompt`: 必填提示词。
-- `model`: 可选模型覆盖。
 - `temperature`: 默认 `0.7`，范围 `0-2`。
 - `max_tokens`: 可选，最小 `1`。
 - `system_prompt`: 可选系统提示词。
@@ -162,24 +160,19 @@ parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权�
 
 `EmbedRequest`：
 
-- `config_id`: 可选；与 `config_source` 配合定位。
-- `config_source`: 可选，`USER` 或 `SYSTEM`，默认 `USER`。
+- `config_id`: 必填正整数，全局配置 ID。
 - `input`: string 或 string 列表。
-- `model`: 可选。
 
 `RerankRequest`：
 
-- `config_id`: 可选；与 `config_source` 配合定位。
-- `config_source`: 可选，`USER` 或 `SYSTEM`，默认 `USER`。
+- `config_id`: 必填正整数，全局配置 ID。
 - `query`: 检索查询。
 - `documents`: 待重排文档列表。
-- `model`: 可选。
 - `top_n`: 可选。
 
 `OcrRequest`：
 
-- `config_id`: 可选；与 `config_source` 配合定位。
-- `config_source`: 可选，`USER` 或 `SYSTEM`，默认 `USER`。
+- `config_id`: 必填正整数，全局配置 ID。
 - `image_base64`: 图片 base64。
 - `prompt`: 可选提示词。
 
@@ -232,8 +225,7 @@ session token 由 Java 签发、Python 用**独立专用密钥**验签；claims�
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `query` | string | 是 | 用户问题，不能为空或纯空白 |
-| `config_id` | int | 是 | 本次生成所用 CHAT 模型配置 id。缺失 `422`；按 `config_source` 定位后非 CHAT / 已停用 / 不存在 / 不属本用户（仅 `USER`）→ 召回前置失败 `RECALL_MODEL_CONFIG_MISSING` |
-| `config_source` | string | 否 | 配置来源：`USER` 指向 `llm_user_config.id`，`SYSTEM` 指向 LinkRag `llm_system_preset.id`；默认 `USER` |
+| `config_id` | int (>0) | 是 | 本次生成所用 CHAT 全局配置 ID。缺失/非正数 `422`；非 CHAT、已停用、不存在或 USER 配置不属本用户时在召回前失败 |
 | `conversation_id` | int | 是 | 本轮所属对话 id（Java 预先创建），作为对话落库挂载锚点。缺失 `422`，不进入召回生成、不发对话轮次消息 |
 | `turn_id` | string | 是 | 本轮落库幂等键：前端每轮生成的稳定 UUID（断连重连不变）。缺失 `422`。Java 据此 upsert 同一行，断连续跑/重连不重复落库 |
 | `is_first_turn` | bool | 否 | 是否会话首条用户消息，默认 `false`。为 `true` 时触发服务端基于 `query` 生成会话标题（SSE `conversation_title` 即时回前端 + `chat_turn.title` 落库），见下文 |
@@ -251,7 +243,7 @@ session token 由 Java 签发、Python 用**独立专用密钥**验签；claims�
 `RECALL_FUSION_STRATEGY` / `RECALL_RRF_K` / `RECALL_FUSION_*_WEIGHT` /
 `RECALL_STRICT_DEFAULT` / `RERANK_DEFAULT_TOP_N` 等系统默认）；均不接受
 请求覆盖。其中 `recall_enabled_sources` **只能在系统已装配的召回路集合内收窄**（不能启用系统未
-装配的路）。模型按 `(user_id, config_source, config_id)` 解析；`config_source=SYSTEM` 时只读取 LinkRag 系统预设。
+装配的路）。模型按 `(user_id, capability, config_id)` 精确解析，SYSTEM / USER 配置使用同一 ID 空间。
 
 并发：按 `user_id` 限并发流数（`RECALL_SESSION_MAX_CONCURRENT`），超限返回 `429`。
 

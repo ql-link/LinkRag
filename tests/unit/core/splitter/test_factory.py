@@ -22,12 +22,6 @@ def test_create_chunking_engine_should_pass_stage_algorithm_settings(monkeypatch
     monkeypatch.setattr(factory.settings, "CHUNKING_STAGE_TWO_ALGORITHM", "noop")
     monkeypatch.setattr(factory.settings, "CHUNKING_OVERLAP_TOKENS", 7)
     monkeypatch.setattr(factory.settings, "CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS", 192)
-    monkeypatch.setattr(
-        factory,
-        "create_system_embedding_client",
-        lambda: (_ for _ in ()).throw(AssertionError("should use lazy embedder")),
-    )
-
     engine = factory.create_chunking_engine()
 
     assert isinstance(engine.chunker, StructuredSemanticChunker)
@@ -55,24 +49,14 @@ def test_create_chunking_engine_should_route_noop_stage_two(monkeypatch):
     assert isinstance(engine.chunker.stage_two_algorithm, NoopStageTwoAlgorithm)
 
 
-def test_create_chunking_engine_should_route_semantic_depth_with_lazy_embedder(monkeypatch):
-    created = {"count": 0}
-
-    def fail_if_materialized():
-        created["count"] += 1
-        raise AssertionError("lazy embedder should not materialize during factory wiring")
-
+def test_create_chunking_engine_semantic_depth_requires_exact_embedder(monkeypatch):
     monkeypatch.setattr(factory.settings, "CHUNKING_STAGE_ONE_ALGORITHM", "candidate_boundary")
     monkeypatch.setattr(factory.settings, "CHUNKING_STAGE_TWO_ALGORITHM", "semantic_depth_window")
     monkeypatch.setattr(factory.settings, "CHUNKING_MAX_CHUNK_TOKENS", 512)
     monkeypatch.setattr(factory.settings, "CHUNKING_HARD_MAX_TOKENS", 1024)
     monkeypatch.setattr(factory.settings, "CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS", 128)
-    monkeypatch.setattr(factory, "create_system_embedding_client", fail_if_materialized)
-
-    engine = factory.create_chunking_engine()
-
-    assert isinstance(engine.chunker.stage_two_algorithm, SemanticDepthWindowStageTwo)
-    assert created["count"] == 0
+    with pytest.raises(ValueError, match="dataset dense embedding resolved model"):
+        factory.create_chunking_engine()
 
 
 def test_create_chunking_engine_should_prefer_dataset_chunking_config(monkeypatch):
@@ -149,39 +133,48 @@ def test_create_chunking_engine_dataset_noop_should_override_global_semantic(mon
     assert engine.chunker._protected_neighbor_overlap is False
 
 
-def test_create_chunk_embedding_pipeline_reuses_embedder_for_stage_two(monkeypatch):
+def test_build_chunk_embedding_pipeline_reuses_exact_embedder_for_stage_two(monkeypatch):
+    from types import SimpleNamespace
+
     fake_embedder = FakeEmbedder()
     monkeypatch.setattr(factory.settings, "CHUNKING_STAGE_ONE_ALGORITHM", "candidate_boundary")
     monkeypatch.setattr(factory.settings, "CHUNKING_STAGE_TWO_ALGORITHM", "semantic_depth_window")
-    monkeypatch.setattr(factory.settings, "SYSTEM_LLM_PROVIDER", "qwen")
-    monkeypatch.setattr(factory.settings, "SYSTEM_LLM_MODEL_EMBEDDING", "text-embedding-v4")
     monkeypatch.setattr(factory.settings, "CHUNK_INDEX_EMBED_BATCH_SIZE", 32)
-    monkeypatch.setattr(factory, "create_lazy_system_embedding_client", lambda: fake_embedder)
+    resolved = SimpleNamespace(
+        provider=fake_embedder,
+        model_name="text-embedding-v4",
+        provider_type="qwen",
+        config_id=42,
+    )
 
-    pipeline = factory.create_chunk_embedding_pipeline()
+    pipeline = factory.build_chunk_embedding_pipeline(resolved)
 
     stage_two = pipeline.chunking_engine.chunker.stage_two_algorithm
-    assert pipeline.embedder is fake_embedder
+    assert pipeline.embedder._embedder is fake_embedder
+    assert pipeline.embedder.config_id == 42
     assert isinstance(stage_two, SemanticDepthWindowStageTwo)
-    assert stage_two._scorer.embedder is fake_embedder
+    assert stage_two._scorer.embedder is pipeline.embedder
 
 
-@pytest.mark.asyncio
-async def test_user_chunk_embedding_pipeline_reuses_user_embedder(monkeypatch):
+def test_build_chunk_embedding_pipeline_preserves_global_config_id(monkeypatch):
+    from types import SimpleNamespace
+
     fake_embedder = FakeEmbedder()
-
-    async def resolve_user_embedding_client(user_id: int):
-        assert user_id == 42
-        return fake_embedder, "text-embedding-v4"
 
     monkeypatch.setattr(factory.settings, "CHUNKING_STAGE_ONE_ALGORITHM", "candidate_boundary")
     monkeypatch.setattr(factory.settings, "CHUNKING_STAGE_TWO_ALGORITHM", "semantic_depth_window")
     monkeypatch.setattr(factory.settings, "CHUNK_INDEX_EMBED_BATCH_SIZE", 32)
-    monkeypatch.setattr(factory, "aresolve_user_embedding_client", resolve_user_embedding_client)
+    resolved = SimpleNamespace(
+        provider=fake_embedder,
+        model_name="text-embedding-v4",
+        provider_type="qwen",
+        config_id=9001,
+    )
 
-    pipeline = await factory.aresolve_user_chunk_embedding_pipeline(42)
+    pipeline = factory.build_chunk_embedding_pipeline(resolved)
 
     stage_two = pipeline.chunking_engine.chunker.stage_two_algorithm
-    assert pipeline.embedder is fake_embedder
+    assert pipeline.embedder._embedder is fake_embedder
+    assert pipeline.embedder.config_id == 9001
     assert isinstance(stage_two, SemanticDepthWindowStageTwo)
-    assert stage_two._scorer.embedder is fake_embedder
+    assert stage_two._scorer.embedder is pipeline.embedder
