@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <flow-definition plugin="workflow-job">
   <actions/>
-  <description>Cloud Jenkins 调度；在 Primary 拉取 LinkRag-Web dev、构建并部署前端测试服务。</description>
+  <description>Cloud Jenkins 调度；在 Primary 拉取 LinkRag dev、构建并部署 Python/RAG 开发环境服务。</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty><abortPrevious>false</abortPrevious></org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty>
@@ -11,8 +11,8 @@
     <script><![CDATA[
 node {
     timestamps {
-        stage('Build and deploy Web dev on Primary') {
-            sh "ssh -o BatchMode=yes -o UserKnownHostsFile=/var/jenkins_home/.ssh/known_hosts -i /var/jenkins_home/.ssh/primary_test root@100.86.10.52 '/opt/tolink/test/build-component-on-primary.sh web ${env.BUILD_NUMBER}'"
+        stage('Build and deploy RAG dev on Primary') {
+            sh "ssh -o BatchMode=yes -o UserKnownHostsFile=/var/jenkins_home/.ssh/known_hosts -i /var/jenkins_home/.ssh/primary_test root@100.86.10.52 '/opt/tolink/test/build-component-on-primary.sh rag ${env.BUILD_NUMBER}'"
         }
         currentBuild.description = "dev / Primary / test-dev-b${env.BUILD_NUMBER}"
     }
