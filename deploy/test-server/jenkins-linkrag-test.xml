@@ -1,0 +1,138 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job">
+  <actions/>
+  <description>从三个仓库的 dev 分支构建，并通过 Tailscale 部署到 Primary 隔离测试环境。</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty>
+      <abortPrevious>false</abortPrevious>
+    </org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty>
+    <jenkins.model.BuildDiscarderProperty>
+      <strategy class="hudson.tasks.LogRotator">
+        <daysToKeep>-1</daysToKeep>
+        <numToKeep>20</numToKeep>
+        <artifactDaysToKeep>-1</artifactDaysToKeep>
+        <artifactNumToKeep>-1</artifactNumToKeep>
+      </strategy>
+    </jenkins.model.BuildDiscarderProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
+    <script><![CDATA[
+node {
+    timestamps {
+        def primary = 'root@100.86.10.52'
+        def sshArgs = '-o BatchMode=yes -o UserKnownHostsFile=/var/jenkins_home/.ssh/known_hosts -i /var/jenkins_home/.ssh/primary_test'
+        def ragTag
+        def serviceTag
+        def webTag
+
+        stage('Checkout dev') {
+            deleteDir()
+            sh '''
+                set -e
+                fetch_dev() {
+                    repo="$1"
+                    target="$2"
+                    archive="${target}.tgz"
+                    mkdir -p "$target"
+                    curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 --connect-timeout 15 --max-time 900 \
+                        "https://codeload.github.com/ql-link/${repo}/tar.gz/refs/heads/dev" -o "$archive"
+                    tar -xzf "$archive" --strip-components=1 -C "$target"
+                    rm -f "$archive"
+                }
+                fetch_dev LinkRag toLink-Rag
+                fetch_dev LinkRag-Service toLink-Service
+                fetch_dev LinkRag-Web LinkRag-Web
+            '''
+            ragTag = "test-dev-b${env.BUILD_NUMBER}"
+            serviceTag = "test-dev-b${env.BUILD_NUMBER}"
+            webTag = "test-dev-b${env.BUILD_NUMBER}"
+        }
+
+        stage('Build images') {
+            dir('toLink-Rag') {
+                sh "DOCKER_BUILDKIT=1 docker build -t tolink-rag:${ragTag} ."
+            }
+            dir('toLink-Service') {
+                sh "DOCKER_BUILDKIT=1 docker build -t tolink-service:${serviceTag} ."
+            }
+            dir('LinkRag-Web') {
+                sh '''
+                    docker run --rm -u 0:0 -v "$PWD:/workspace" -w /workspace node:20-alpine sh -lc '
+                        HUSKY=0 npm ci --prefer-offline --no-audit --registry=https://registry.npmmirror.com &&
+                        npm run typecheck &&
+                        npm run test &&
+                        VITE_GITHUB_URL=https://github.com/ql-link/LinkRag npm run build
+                    '
+                '''
+                sh "docker build -t linkrag-web:${webTag} ."
+            }
+        }
+
+        stage('Sync test configuration') {
+            dir('toLink-Rag') {
+                sh """
+                    if [ -f deploy/test-server/docker-compose.yml ]; then
+                        tar -cf - \\
+                            deploy/test-server/docker-compose.yml \\
+                            deploy/test-server/loki-config.yml \\
+                            deploy/test-server/promtail-config.yml \\
+                            deploy/test-server/nginx.conf \\
+                            deploy/test-server/rag.env.test \\
+                            deploy/test-server/app.env.test \\
+                            deploy/test-server/configure-test-env.sh | \\
+                            ssh ${sshArgs} ${primary} 'tar -xf - -C /opt/tolink/test --strip-components=2'
+                    else
+                        echo 'dev 尚未包含 test-server 模板，本次沿用 Primary 已安装配置'
+                    fi
+                """
+            }
+            sh "scp ${sshArgs} toLink-Service/link-api/src/main/resources/application-dev.yml ${primary}:/opt/tolink/test/toLink-Service/config/application-test.yml"
+            sh "ssh ${sshArgs} ${primary} 'chmod 700 /opt/tolink/test/configure-test-env.sh && /opt/tolink/test/configure-test-env.sh'"
+        }
+
+        stage('Transfer images') {
+            sh "docker save tolink-rag:${ragTag} tolink-service:${serviceTag} linkrag-web:${webTag} | gzip -1 | ssh ${sshArgs} ${primary} 'gzip -d | docker load'"
+        }
+
+        stage('Migrate and deploy test') {
+            sh """
+                ssh ${sshArgs} ${primary} '
+                    set -e
+                    cd /opt/tolink/test
+                    docker run --rm \\
+                        --network tolink-test-net \\
+                        --env-file /opt/tolink/test/toLink-Rag/.env.test \\
+                        -v /opt/tolink/test/toLink-Rag/logs:/app/logs \\
+                        tolink-rag:${ragTag} alembic upgrade head
+                    RAG_TAG=${ragTag} SERVICE_TAG=${serviceTag} WEB_TAG=${webTag} \\
+                        docker compose --env-file .env.test --profile apps up -d
+                '
+            """
+        }
+
+        stage('Verify') {
+            sh """
+                ssh ${sshArgs} ${primary} '
+                    set -e
+                    for n in \$(seq 1 30); do
+                        curl -fsS http://100.86.10.52:18000/health >/dev/null &&
+                        curl -fsS http://100.86.10.52:18080/ >/dev/null && exit 0
+                        sleep 5
+                    done
+                    docker logs --tail 100 tolink-test-rag
+                    docker logs --tail 100 tolink-test-service
+                    exit 1
+                '
+            """
+        }
+
+        currentBuild.description = "RAG ${ragTag}, Service ${serviceTag}, Web ${webTag}"
+    }
+}
+]]></script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>

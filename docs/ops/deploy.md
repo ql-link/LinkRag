@@ -31,8 +31,35 @@
 | `deploy/host-server/docker-compose.yml` | 主机服务器中间件栈的 deploy 目录版本 |
 | `deploy/cloud-server/docker-compose.yml` | 云服务器应用栈：Java、Python RAG、Web、Promtail |
 | `deploy/docker-compose.yml` | 保留的 Python RAG 单服务部署入口 |
+| `deploy/test-server/docker-compose.yml` | Primary 测试栈：隔离的 MySQL、Redis、Kafka、Qdrant、Manticore、Loki，以及 dev 应用 |
 
 Promtail 必须部署在产生日志文件的云服务器上；Loki 部署在主机服务器中间件栈中。
+
+## Primary 测试环境
+
+测试环境通过 `deploy/test-server/docker-compose.yml` 部署，所有容器、网络、端口和数据卷均使用
+`tolink-test-*` 命名，不修改生产栈。测试 MySQL、Redis、Kafka、Qdrant、Manticore 和 Loki 独立运行；
+MinIO 仍复用主机实例，但必须使用独立测试账号和 `tolink-test-*` bucket。
+测试账号的策略只允许访问 `tolink-test-raw`、`tolink-test-docs` 和 `tolink-test-public`。
+
+测试端口只绑定 Tailscale 地址 `100.86.10.52`，不得通过 FRP 或公网安全组暴露。首次部署时从
+`.env.test.example` 生成服务器本地 `.env.test`，随机密钥不得提交到 Git：
+
+```bash
+cd /opt/tolink/test
+docker compose --env-file .env.test up -d mysql redis kafka qdrant manticore loki
+docker compose --env-file .env.test --profile apps up -d
+```
+
+测试配置采用两层结构：`rag.env.test` 与 `app.env.test` 是 Git 管理的非敏感配置，Jenkins 每次部署自动同步；
+`/opt/tolink/test/secrets/rag.env` 与 `secrets/app.env` 只保存在 Primary，保存密码、JWT 和第三方 API Key。
+`configure-test-env.sh` 首次生成并在后续部署保留这些密钥，避免构建时轮换密钥或手工上传整份配置。
+
+当前业务 topic 和 consumer group 由代码常量固定，因此测试环境使用独立 Kafka broker，不能只依赖
+topic 前缀与生产共用 broker。测试 Loki 独立保存日志并保留 7 天。
+
+Jenkins 新增聚合测试作业 `linkrag-test`，固定从 RAG、Service、Web 三个仓库的 `dev` 分支构建，
+镜像使用 `test-dev-b<build>` 标签，经 Tailscale SSH 传输到 Primary；现有 `master` 生产作业保持不变。
 
 ## 启动顺序
 
