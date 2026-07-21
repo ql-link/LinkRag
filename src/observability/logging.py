@@ -47,7 +47,7 @@ class InterceptHandler(logging.Handler):
     """把标准库 logging 的记录转发到 Loguru。
 
     项目自身代码统一用 Loguru，但第三方库（uvicorn / SQLAlchemy / kafka /
-    transformers 等）以及少数遗留模块仍走标准库 logging。装上本 handler 后，
+    SQLAlchemy 等）以及少数遗留模块仍走标准库 logging。装上本 handler 后，
     所有标准库日志都会被路由进 Loguru，运行时只剩一条输出管道、统一格式与落盘。
     """
 

@@ -33,7 +33,6 @@ src/core/encoding/sparse/
 ├── adapter_encoder.py   # AdapterSparseVectorEncoder：llm adapter 输出 → SparseVector 的唯一桥接点
 ├── factory.py           # 按用户默认或数据集绑定配置解析 provider 装配 SparseVectorService
 ├── pipeline.py          # SparseVectorService：对编排层暴露的稳定服务接口
-└── deploy_bge_m3.py     # 本地模型部署与冒烟脚本
 ```
 
 > 索引侧 `sparse_indexing.py`（SparseIndexingPipeline）与召回适配器 `sparse_retriever.py` 位于 `src/core/storage/vector/`。
@@ -158,13 +157,7 @@ backend.search_sparse_chunks(query, user_id, set_id, doc_id, top_k, score_thresh
 
 ---
 
-## 9. `deploy_bge_m3.py`
-
-独立可执行脚本（`argparse` 入口），用于在目标机器上**部署并冒烟验证**本地 BGE-M3 模型：拉取/定位模型、按 `DeploymentConfig` 加载、对样例文本跑一次编码、报告耗时与非零维度。它是离线运维 / 冒烟工具，不参与运行时调用链（运行时编码走 per-user adapter 解析，见 §3）。
-
----
-
-## 10. 测试约定
+## 9. 测试约定
 
 | 测试目标 | 入口 |
 | --- | --- |

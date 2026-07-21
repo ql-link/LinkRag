@@ -138,7 +138,6 @@ toLink-Rag/                         # 仓库根目录
 │   │   │       ├── adapter_encoder.py # llm adapter 输出 → SparseVector 桥接
 │   │   │       ├── factory.py     # 按用户配置解析 provider 装配 SparseVectorService
 │   │   │       ├── pipeline.py    # SparseVectorService 服务接口
-│   │   │       ├── deploy_bge_m3.py # 本地模型部署/冒烟脚本
 │   │   │       └── constants.py / models.py / exceptions.py
 │   │   ├── prompts/              # LLM 提示词模板
 │   │   │   ├── markdown_enhancement.py
