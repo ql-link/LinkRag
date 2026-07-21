@@ -1,0 +1,25 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<flow-definition plugin="workflow-job">
+  <actions/>
+  <description>Cloud Jenkins 调度；在 Primary 拉取 LinkRag-Service dev、构建并部署 Java 测试服务。</description>
+  <keepDependencies>false</keepDependencies>
+  <properties>
+    <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty><abortPrevious>false</abortPrevious></org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty>
+    <jenkins.model.BuildDiscarderProperty><strategy class="hudson.tasks.LogRotator"><daysToKeep>-1</daysToKeep><numToKeep>20</numToKeep><artifactDaysToKeep>-1</artifactDaysToKeep><artifactNumToKeep>-1</artifactNumToKeep></strategy></jenkins.model.BuildDiscarderProperty>
+  </properties>
+  <definition class="org.jenkinsci.plugins.workflow.cps.CpsFlowDefinition" plugin="workflow-cps">
+    <script><![CDATA[
+node {
+    timestamps {
+        stage('Build and deploy Service dev on Primary') {
+            sh "ssh -o BatchMode=yes -o UserKnownHostsFile=/var/jenkins_home/.ssh/known_hosts -i /var/jenkins_home/.ssh/primary_test root@100.86.10.52 '/opt/tolink/test/build-component-on-primary.sh service ${env.BUILD_NUMBER}'"
+        }
+        currentBuild.description = "dev / Primary / test-dev-b${env.BUILD_NUMBER}"
+    }
+}
+]]></script>
+    <sandbox>true</sandbox>
+  </definition>
+  <triggers/>
+  <disabled>false</disabled>
+</flow-definition>
