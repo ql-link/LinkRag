@@ -78,7 +78,7 @@ app_tmp=$(mktemp "$secrets_dir/app.env.XXXXXX")
   printf 'SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG=org.apache.kafka.common.security.plain.PlainLoginModule required username="%s" password="%s";\n' "$TEST_KAFKA_USER" "$TEST_KAFKA_PASSWORD"
   printf 'TOLINK_OSS_MINIO_SECRET_KEY=%s\n' "$TEST_MINIO_SECRET_KEY"
   printf 'RECALL_INTERNAL_JWT_SECRET=%s\n' "$recall_internal_secret"
-  printf 'RECALL_SESSION_JWT_SECRET=%s\n' "$recall_session_secret"
+  printf 'TOLINK_RECALL_SESSION_JWT_SECRET=%s\n' "$recall_session_secret"
   printf 'TOLINK_LLM_API_KEY_SECRET=%s\n' "$api_key_secret"
 } >"$app_tmp"
 mv "$app_tmp" "$app_secrets"

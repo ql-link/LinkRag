@@ -184,15 +184,13 @@ services:
     environment:
       TZ: Asia/Shanghai
       SPRING_PROFILES_ACTIVE: test
-      SPRING_CONFIG_ADDITIONAL_LOCATION: file:/app/config/
-      RECALL_SESSION_STREAM_BASE_URL: http://${TAILSCALE_IP:-100.86.10.52}:${TEST_RAG_PORT:-18000}
+      TOLINK_RECALL_SESSION_STREAM_BASE_URL: http://${TAILSCALE_IP:-100.86.10.52}:${TEST_RAG_PORT:-18000}
       OBSERVABILITY_LOKI_BASE_URL: http://tolink-test-loki:3100
     extra_hosts:
       - host.docker.internal:host-gateway
     ports:
       - "${TAILSCALE_IP:-100.86.10.52}:${TEST_SERVICE_PORT:-18081}:8080"
     volumes:
-      - ${SERVICE_CONFIG_PATH:-/opt/tolink/test/toLink-Service/config}:/app/config:ro
       - ${SERVICE_LOG_PATH:-/opt/tolink/test/toLink-Service/logs}:/app/logs
     networks: [tolink-test-net]
     depends_on:
