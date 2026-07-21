@@ -169,7 +169,7 @@ def build_recall_request_from_config(
 def get_recall_pipeline() -> RecallPipeline:
     """返回进程内单例 ``RecallPipeline``，作为 FastAPI 依赖。
 
-    首次调用装配（含本地 BGE-M3 加载），后续复用缓存实例。
+    首次调用装配稀疏向量远程 provider，后续复用缓存实例。
     """
     return _build_pipeline()
 
