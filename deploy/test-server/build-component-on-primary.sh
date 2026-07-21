@@ -53,10 +53,14 @@ trap 'rm -f "$archive"; rm -rf "$next_dir"' EXIT
 echo "[$component] fetch ql-link/$github_repo dev on Primary"
 rm -rf "$next_dir"
 mkdir -p "$next_dir"
-curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 \
-  --connect-timeout 15 --max-time 1200 \
-  "https://codeload.github.com/ql-link/${github_repo}/tar.gz/refs/heads/dev" \
-  -o "$archive"
+archive_url="https://codeload.github.com/ql-link/${github_repo}/tar.gz/refs/heads/dev"
+if ! curl -fsSL --retry 3 --retry-all-errors --retry-delay 3 \
+  --connect-timeout 15 --max-time 300 \
+  "https://gh-proxy.com/${archive_url}" -o "$archive"; then
+  echo "[$component] GitHub proxy unavailable, fallback to codeload"
+  curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 \
+    --connect-timeout 15 --max-time 1200 "$archive_url" -o "$archive"
+fi
 tar -xzf "$archive" --strip-components=1 -C "$next_dir"
 rm -f "$archive"
 rm -rf "$source_dir"
