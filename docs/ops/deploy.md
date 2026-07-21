@@ -58,8 +58,10 @@ docker compose --env-file .env.test --profile apps up -d
 当前业务 topic 和 consumer group 由代码常量固定，因此测试环境使用独立 Kafka broker，不能只依赖
 topic 前缀与生产共用 broker。测试 Loki 独立保存日志并保留 7 天。
 
-Jenkins 新增聚合测试作业 `linkrag-test`，固定从 RAG、Service、Web 三个仓库的 `dev` 分支构建，
-镜像使用 `test-dev-b<build>` 标签，经 Tailscale SSH 传输到 Primary；现有 `master` 生产作业保持不变。
+Cloud Jenkins 新增三个独立测试作业：`linkrag-rag-test`、`linkrag-service-test`、
+`linkrag-web-test`。Jenkins 只负责调度和保留日志，三个作业均通过 Tailscale SSH 在 Primary
+拉取对应仓库的 `dev` 分支、构建镜像并部署，镜像使用 `test-dev-b<build>` 标签；现有 `master`
+生产作业保持不变。Primary 通过构建锁避免三个测试作业同时占用 Docker 构建资源。
 
 ## 启动顺序
 
