@@ -102,7 +102,8 @@ node {
                     cd /opt/tolink/test
                     docker run --rm \\
                         --network tolink-test-net \\
-                        --env-file /opt/tolink/test/toLink-Rag/.env.test \\
+                        --env-file /opt/tolink/test/rag.env.test \\
+                        --env-file /opt/tolink/test/secrets/rag.env \\
                         -v /opt/tolink/test/toLink-Rag/logs:/app/logs \\
                         tolink-rag:${ragTag} alembic upgrade head
                     RAG_TAG=${ragTag} SERVICE_TAG=${serviceTag} WEB_TAG=${webTag} \\
