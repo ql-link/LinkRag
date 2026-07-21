@@ -2,7 +2,7 @@
 
 部署痛点：NLTK 默认优先搜索 ``~/nltk_data``，本机能跑但服务器家目录无数据，会触发
 运行时联网下载或直接失败。本模块在应用启动早期把项目内数据目录注入 ``nltk.data.path``
-最前端，保证依赖（deepdoc/infinity-sdk/langchain）请求资源时优先命中项目目录。
+最前端，保证依赖（deepdoc/infinity-sdk/langchain/transformers）请求资源时优先命中项目目录。
 
 解析顺序：
 1. 环境变量 ``NLTK_DATA``（Docker 镜像里设为 ``/app/nltk_data``）；
