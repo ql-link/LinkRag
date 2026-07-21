@@ -1,0 +1,24 @@
+# syntax=docker/dockerfile:1
+
+FROM maven:3.9-eclipse-temurin-17 AS build
+WORKDIR /build
+
+COPY . .
+RUN --mount=type=cache,target=/root/.m2 \
+    mvn -B \
+      -Daether.connector.http.connectTimeout=10000 \
+      -Daether.connector.http.requestTimeout=30000 \
+      -Dmaven.test.skip=true clean package
+
+FROM eclipse-temurin:17-jre AS runtime
+WORKDIR /app
+
+ENV TZ=Asia/Shanghai
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime \
+    && echo $TZ > /etc/timezone
+
+COPY --from=build /build/link-api/target/*.jar app.jar
+
+EXPOSE 8080
+ENV JAVA_OPTS="-Xms512m -Xmx1g -Duser.timezone=Asia/Shanghai"
+ENTRYPOINT ["sh", "-c", "java $JAVA_OPTS -jar /app/app.jar"]

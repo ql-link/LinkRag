@@ -49,18 +49,26 @@ source_dir="$workspace_root/$workspace_name"
 next_dir="$workspace_root/.${workspace_name}.next"
 archive=$(mktemp "$jenkins_root/${workspace_name}.XXXXXX.tgz")
 trap 'rm -f "$archive"; rm -rf "$next_dir"' EXIT
+incoming_archive="$jenkins_root/incoming/${workspace_name}-dev.tgz"
 
 echo "[$component] fetch ql-link/$github_repo dev on Primary"
 rm -rf "$next_dir"
 mkdir -p "$next_dir"
 archive_url="https://codeload.github.com/ql-link/${github_repo}/tar.gz/refs/heads/dev"
-if ! curl -fsSL --retry 3 --retry-all-errors --retry-delay 3 \
-  --connect-timeout 15 --max-time 300 \
-  "https://gh-proxy.com/${archive_url}" -o "$archive"; then
-  echo "[$component] GitHub proxy unavailable, fallback to codeload"
-  curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 \
-    --connect-timeout 15 --max-time 1200 "$archive_url" -o "$archive"
+if [[ -s "$incoming_archive" ]]; then
+  echo "[$component] use preloaded dev archive"
+  mv "$incoming_archive" "$archive"
+else
+  if ! curl -fsSL --retry 3 --retry-all-errors --retry-delay 3 \
+    --connect-timeout 15 --speed-time 30 --speed-limit 1024 --max-time 300 \
+    "https://gh-proxy.com/${archive_url}" -o "$archive"; then
+    echo "[$component] GitHub proxy unavailable, fallback to codeload"
+    curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 \
+      --connect-timeout 15 --speed-time 30 --speed-limit 1024 --max-time 1200 \
+      "$archive_url" -o "$archive"
+  fi
 fi
+tar -tzf "$archive" >/dev/null
 tar -xzf "$archive" --strip-components=1 -C "$next_dir"
 rm -f "$archive"
 rm -rf "$source_dir"
@@ -69,13 +77,48 @@ mv "$next_dir" "$source_dir"
 image_tag="test-dev-b${build_number}"
 echo "[$component] build $image_name:$image_tag on Primary"
 case "$component" in
-  rag|service)
+  rag)
     DOCKER_BUILDKIT=1 docker build -t "$image_name:$image_tag" "$source_dir"
     ;;
+  service)
+    # Maven Central occasionally leaves an established connection without
+    # returning data on the Primary route. Bound each request and retry the
+    # Docker build; BuildKit keeps the downloaded .m2 cache between attempts.
+    for attempt in 1 2 3; do
+      if DOCKER_BUILDKIT=1 docker build \
+        -f "$test_root/Dockerfile.service" \
+        -t "$image_name:$image_tag" "$source_dir"; then
+        break
+      fi
+      if [[ "$attempt" == 3 ]]; then
+        echo "[service] Docker build failed after $attempt attempts" >&2
+        exit 1
+      fi
+      echo "[service] Docker build attempt $attempt failed; retrying with cached dependencies" >&2
+      sleep 5
+    done
+    ;;
   web)
+    install -d -m 700 "$jenkins_root/npm-cache"
     docker run --rm -u 0:0 \
-      -v "$source_dir:/workspace" -w /workspace node:20-alpine sh -lc '
-        HUSKY=0 npm ci --prefer-offline --no-audit --registry=https://registry.npmmirror.com
+      -v "$source_dir:/workspace" \
+      -v "$jenkins_root/npm-cache:/root/.npm" \
+      -w /workspace node:20-alpine sh -lc '
+        set -eu
+        for attempt in 1 2 3; do
+          if HUSKY=0 npm ci --prefer-offline --no-audit \
+            --fetch-retries=5 --fetch-retry-mintimeout=1000 \
+            --fetch-retry-maxtimeout=20000 --fetch-timeout=60000 \
+            --registry=https://registry.npmmirror.com; then
+            break
+          fi
+          if [ "$attempt" -eq 3 ]; then
+            echo "npm ci failed after $attempt attempts" >&2
+            exit 1
+          fi
+          echo "npm ci attempt $attempt failed; retrying with cache" >&2
+          sleep 3
+        done
         npm run typecheck
         npm run test
         VITE_GITHUB_URL=https://github.com/ql-link/LinkRag npm run build
@@ -97,7 +140,7 @@ update_tag() {
 
 if [[ "$component" == rag ]]; then
   config_source="$source_dir/deploy/test-server"
-  for name in docker-compose.yml loki-config.yml promtail-config.yml nginx.conf \
+  for name in docker-compose.yml Dockerfile.service loki-config.yml promtail-config.yml nginx.conf \
     rag.env.test app.env.test configure-test-env.sh build-component-on-primary.sh \
     generate-test-llm-migration-inputs.py; do
     install -m 600 "$config_source/$name" "$test_root/$name"
@@ -105,10 +148,10 @@ if [[ "$component" == rag ]]; then
   chmod 700 "$test_root/configure-test-env.sh" "$test_root/build-component-on-primary.sh"
   "$test_root/configure-test-env.sh"
 elif [[ "$component" == service ]]; then
-  install -d -m 700 "$test_root/toLink-Service/config"
-  install -m 600 \
-    "$source_dir/link-api/src/main/resources/application-dev.yml" \
-    "$test_root/toLink-Service/config/application-test.yml"
+  # The current Service dev branch uses packaged application.yml plus
+  # environment variables. Remove the legacy copied profile file because it
+  # contains production-oriented endpoints and would break test isolation.
+  rm -f "$test_root/toLink-Service/config/application-test.yml"
   "$test_root/configure-test-env.sh"
 fi
 

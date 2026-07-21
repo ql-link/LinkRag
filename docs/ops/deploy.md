@@ -54,6 +54,8 @@ docker compose --env-file .env.test --profile apps up -d
 测试配置采用两层结构：`rag.env.test` 与 `app.env.test` 是 Git 管理的非敏感配置，Jenkins 每次部署自动同步；
 `/opt/tolink/test/secrets/rag.env` 与 `secrets/app.env` 只保存在 Primary，保存密码、JWT 和第三方 API Key。
 `configure-test-env.sh` 首次生成并在后续部署保留这些密钥，避免构建时轮换密钥或手工上传整份配置。
+Java 测试服务使用镜像内的基础 `application.yml`，测试差异全部由上述环境变量覆盖，不再复制仓库中的
+`application-dev.yml`，从而避免旧配置中的生产数据库、中间件地址或本地密钥进入测试容器。
 
 当前业务 topic 和 consumer group 由代码常量固定，因此测试环境使用独立 Kafka broker，不能只依赖
 topic 前缀与生产共用 broker。测试 Loki 独立保存日志并保留 7 天。
@@ -62,6 +64,13 @@ Cloud Jenkins 新增三个独立测试作业：`linkrag-rag-test`、`linkrag-ser
 `linkrag-web-test`。Jenkins 只负责调度和保留日志，三个作业均通过 Tailscale SSH 在 Primary
 拉取对应仓库的 `dev` 分支、构建镜像并部署，镜像使用 `test-dev-b<build>` 标签；现有 `master`
 生产作业保持不变。Primary 通过构建锁避免三个测试作业同时占用 Docker 构建资源。
+Java 测试镜像使用 `deploy/test-server/Dockerfile.service` 构建；Maven 下载设置请求超时，Docker
+构建失败时最多自动重试三次，并复用 BuildKit 的 `.m2` 缓存，避免单条公网连接长期挂起。
+Web 构建把 npm 缓存持久化到 `/opt/tolink/test/jenkins/npm-cache`，`npm ci` 设置超时并最多重试三次；
+安装失败会立即终止，不再继续执行 typecheck、测试和打包。
+公网源码下载不稳定时，可将完整 tar 包预置到
+`/opt/tolink/test/jenkins/incoming/<workspace>-dev.tgz`；下一次对应构建会校验并消费该文件，随后仍在
+Primary 完成镜像构建。
 
 ## 启动顺序
 
