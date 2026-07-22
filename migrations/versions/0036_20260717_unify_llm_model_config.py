@@ -11,11 +11,8 @@ MySQL DDL 可能自动提交，因此每个 phase 都先 introspect，允许中�
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import os
-import time
 from pathlib import Path
 from typing import Any, Sequence, Union
 
@@ -36,21 +33,6 @@ _CAPABILITIES = {
     "RERANK",
     "ASR",
 }
-_BUSINESS_TABLES = (
-    "sys_user",
-    "dataset",
-    "dataset_parse_config",
-    "document_original_file",
-    "document_parse_file",
-    "document_parsed_log",
-    "document_parse_pipeline",
-    "kb_document_chunk",
-    "chat_conversation",
-    "chat_message",
-    "llm_usage_log",
-    "llm_user_config",
-    "llm_system_preset",
-)
 
 
 def _inspector():
@@ -98,10 +80,10 @@ def _manifest() -> dict[str, Any]:
     return value
 
 
-def _ciphertexts() -> dict[str, str]:
+def _ciphertexts_from_file() -> dict[str, str]:
     raw_path = os.environ.get("TOLINK_LLM_SEED_CIPHERTEXT_FILE")
     if not raw_path:
-        raise RuntimeError("TOLINK_LLM_SEED_CIPHERTEXT_FILE is required")
+        return {}
     value = _load_json(Path(raw_path))
     raw = value.get("ciphertexts", value)
     if not isinstance(raw, dict):
@@ -111,8 +93,64 @@ def _ciphertexts() -> dict[str, str]:
         ciphertext = item.get("ciphertext") if isinstance(item, dict) else item
         if isinstance(ciphertext, str) and ciphertext.strip():
             result[str(capability).upper()] = ciphertext.strip()
+    return result
+
+
+def _stored_ciphertexts(manifest: dict[str, Any]) -> dict[str, str]:
+    """复用已落库或旧系统预设的密文，避免存量库额外准备迁移文件。"""
+    bind = op.get_bind()
+    result: dict[str, str] = {}
+
+    # MySQL DDL 中断后重跑时，新表可能已经写入部分或全部系统配置。
+    if _table_exists("llm_model_config"):
+        rows = bind.execute(sa.text("""SELECT capability, api_key
+                   FROM llm_model_config
+                   WHERE scope = 'SYSTEM' AND owner_user_id = 0 AND is_active = 1""")).mappings()
+        for row in rows:
+            if row["capability"] in _CAPABILITIES and row["api_key"]:
+                result[row["capability"]] = row["api_key"]
+
+    if not _table_exists("llm_system_preset"):
+        return result
+
+    expected_models = {
+        item["capability"]: item["model_name"] for item in manifest["system_configs"]
+    }
+    rows = bind.execute(sa.text("""SELECT capability, model_name, api_key, is_default, is_active, id
+               FROM llm_system_preset
+               WHERE is_active = 1
+               ORDER BY capability, id""")).mappings()
+    candidates: dict[str, list[Any]] = {}
+    for row in rows:
+        capability = str(row["capability"]).upper()
+        if capability in _CAPABILITIES and row["api_key"]:
+            candidates.setdefault(capability, []).append(row)
+    for capability, items in candidates.items():
+        if capability in result:
+            continue
+        expected_model = expected_models[capability]
+        selected = min(
+            items,
+            key=lambda row: (
+                0 if row["model_name"] == expected_model else 1,
+                0 if row["is_default"] else 1,
+                int(row["id"]),
+            ),
+        )
+        result[capability] = selected["api_key"]
+    return result
+
+
+def _ciphertexts(manifest: dict[str, Any]) -> dict[str, str]:
+    result = _stored_ciphertexts(manifest)
+    # 显式文件用于空库初始化，也允许发布时覆盖自动选择的旧密文。
+    result.update(_ciphertexts_from_file())
     if set(result) != _CAPABILITIES:
-        raise RuntimeError("LLM seed ciphertext capability set is incomplete")
+        missing = ", ".join(sorted(_CAPABILITIES - set(result)))
+        raise RuntimeError(
+            "LLM seed ciphertext is unavailable for capabilities: "
+            f"{missing}; set TOLINK_LLM_SEED_CIPHERTEXT_FILE for an empty database"
+        )
     for capability, ciphertext in result.items():
         lowered = ciphertext.lower()
         if "change_me" in lowered or "demo-encrypted-key" in lowered:
@@ -128,31 +166,6 @@ def _ciphertexts() -> dict[str, str]:
     except Exception as exc:  # noqa: BLE001
         raise RuntimeError("LLM seed ciphertext validation failed") from exc
     return result
-
-
-def _has_business_rows() -> bool:
-    bind = op.get_bind()
-    for table in _BUSINESS_TABLES:
-        if _table_exists(table):
-            count = bind.execute(sa.text(f"SELECT COUNT(*) FROM `{table}`")).scalar_one()
-            if int(count) > 0:
-                return True
-    return False
-
-
-def _verify_legacy_authorization() -> None:
-    path = os.environ.get("TOLINK_LLM_MIGRATION_AUTH_FILE")
-    secret = os.environ.get("TOLINK_LLM_MIGRATION_AUTH_SECRET", "")
-    if not path or len(secret) < 32:
-        raise RuntimeError("legacy LLM cutover authorization is required")
-    value = _load_json(Path(path))
-    signature = value.pop("signature", None)
-    canonical = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    expected = hmac.new(secret.encode(), canonical, hashlib.sha256).hexdigest()
-    if not isinstance(signature, str) or not hmac.compare_digest(signature, expected):
-        raise RuntimeError("legacy LLM cutover authorization signature is invalid")
-    if value.get("revision") != revision or int(value.get("expiresAt", 0)) < int(time.time()):
-        raise RuntimeError("legacy LLM cutover authorization is expired")
 
 
 def _clear_legacy_references() -> None:
@@ -203,9 +216,16 @@ def _create_new_schema() -> None:
     if not _table_exists("llm_model_config"):
         op.create_table(
             "llm_model_config",
-            sa.Column("id", _unsigned_bigint(), primary_key=True, autoincrement=True, comment="全局配置ID"),
+            sa.Column(
+                "id", _unsigned_bigint(), primary_key=True, autoincrement=True, comment="全局配置ID"
+            ),
             sa.Column("scope", sa.String(16), nullable=False, comment="配置范围：SYSTEM/USER"),
-            sa.Column("owner_user_id", _unsigned_bigint(), nullable=False, comment="SYSTEM=0；USER=所有者ID"),
+            sa.Column(
+                "owner_user_id",
+                _unsigned_bigint(),
+                nullable=False,
+                comment="SYSTEM=0；USER=所有者ID",
+            ),
             sa.Column("provider_id", _unsigned_bigint(), nullable=False, comment="厂商目录ID"),
             sa.Column("provider_type", sa.String(32), nullable=False, comment="厂商类型快照"),
             sa.Column("model_name", sa.String(128), nullable=False, comment="运行模型名"),
@@ -214,11 +234,42 @@ def _create_new_schema() -> None:
             sa.Column("protocol", sa.String(32), nullable=False, comment="adapter分发协议"),
             sa.Column("api_base_url", sa.String(512), nullable=False, comment="完整调用入口"),
             sa.Column("api_key", sa.String(512), nullable=False, comment="正式加密器密文"),
-            sa.Column("is_active", sa.Boolean(), nullable=False, server_default=sa.true(), comment="是否允许精确执行"),
-            sa.Column("snapshot_version", _unsigned_bigint(), nullable=False, server_default="1", comment="运行快照版本"),
-            sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP"), comment="创建时间"),
-            sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"), comment="更新时间"),
-            sa.UniqueConstraint("scope", "owner_user_id", "provider_id", "model_name", "capability", name="uk_llm_model_config_owner_model"),
+            sa.Column(
+                "is_active",
+                sa.Boolean(),
+                nullable=False,
+                server_default=sa.true(),
+                comment="是否允许精确执行",
+            ),
+            sa.Column(
+                "snapshot_version",
+                _unsigned_bigint(),
+                nullable=False,
+                server_default="1",
+                comment="运行快照版本",
+            ),
+            sa.Column(
+                "created_at",
+                sa.DateTime(),
+                nullable=False,
+                server_default=sa.text("CURRENT_TIMESTAMP"),
+                comment="创建时间",
+            ),
+            sa.Column(
+                "updated_at",
+                sa.DateTime(),
+                nullable=False,
+                server_default=sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+                comment="更新时间",
+            ),
+            sa.UniqueConstraint(
+                "scope",
+                "owner_user_id",
+                "provider_id",
+                "model_name",
+                "capability",
+                name="uk_llm_model_config_owner_model",
+            ),
             mysql_engine="InnoDB",
             mysql_charset="utf8mb4",
             mysql_collate="utf8mb4_unicode_ci",
@@ -234,14 +285,32 @@ def _create_new_schema() -> None:
     if not _table_exists("llm_capability_default"):
         op.create_table(
             "llm_capability_default",
-            sa.Column("id", _unsigned_bigint(), primary_key=True, autoincrement=True, comment="默认关系ID"),
+            sa.Column(
+                "id", _unsigned_bigint(), primary_key=True, autoincrement=True, comment="默认关系ID"
+            ),
             sa.Column("scope", sa.String(16), nullable=False, comment="SYSTEM/USER"),
-            sa.Column("owner_user_id", _unsigned_bigint(), nullable=False, comment="SYSTEM=0；USER=用户ID"),
+            sa.Column(
+                "owner_user_id", _unsigned_bigint(), nullable=False, comment="SYSTEM=0；USER=用户ID"
+            ),
             sa.Column("capability", sa.String(32), nullable=False, comment="能力"),
             sa.Column("config_id", _unsigned_bigint(), nullable=False, comment="全局LLM配置ID"),
-            sa.Column("created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP"), comment="创建时间"),
-            sa.Column("updated_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"), comment="更新时间"),
-            sa.UniqueConstraint("scope", "owner_user_id", "capability", name="uk_llm_capability_default_owner_cap"),
+            sa.Column(
+                "created_at",
+                sa.DateTime(),
+                nullable=False,
+                server_default=sa.text("CURRENT_TIMESTAMP"),
+                comment="创建时间",
+            ),
+            sa.Column(
+                "updated_at",
+                sa.DateTime(),
+                nullable=False,
+                server_default=sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+                comment="更新时间",
+            ),
+            sa.UniqueConstraint(
+                "scope", "owner_user_id", "capability", name="uk_llm_capability_default_owner_cap"
+            ),
             mysql_engine="InnoDB",
             mysql_charset="utf8mb4",
             mysql_collate="utf8mb4_unicode_ci",
@@ -249,7 +318,9 @@ def _create_new_schema() -> None:
             comment="LLM能力默认指针",
         )
     if "idx_llm_capability_default_config" not in _indexes("llm_capability_default"):
-        op.create_index("idx_llm_capability_default_config", "llm_capability_default", ["config_id"])
+        op.create_index(
+            "idx_llm_capability_default_config", "llm_capability_default", ["config_id"]
+        )
 
     if _table_exists("dataset_parse_config"):
         additions = {
@@ -309,7 +380,9 @@ def _seed(manifest: dict[str, Any], ciphertexts: dict[str, str]) -> None:
     provider_ids = dict(
         bind.execute(
             sa.select(provider_table.c.provider_type, provider_table.c.id).where(
-                provider_table.c.provider_type.in_(list(item["provider_type"] for item in manifest["providers"]))
+                provider_table.c.provider_type.in_(
+                    list(item["provider_type"] for item in manifest["providers"])
+                )
             )
         ).all()
     )
@@ -416,12 +489,12 @@ def _validate_final(manifest: dict[str, Any]) -> None:
     for table_name, expected in required_columns.items():
         if not _table_exists(table_name):
             raise RuntimeError(f"required LLM table missing: {table_name}")
-        actual = {item["name"]: bool(item["nullable"]) for item in inspector.get_columns(table_name)}
+        actual = {
+            item["name"]: bool(item["nullable"]) for item in inspector.get_columns(table_name)
+        }
         for column_name, nullable in expected.items():
             if column_name not in actual or actual[column_name] != nullable:
-                raise RuntimeError(
-                    f"invalid LLM schema column: {table_name}.{column_name}"
-                )
+                raise RuntimeError(f"invalid LLM schema column: {table_name}.{column_name}")
 
     expected_uniques = {
         "llm_model_config": {
@@ -459,18 +532,12 @@ def _validate_final(manifest: dict[str, Any]) -> None:
                 "is_active",
             )
         },
-        "llm_capability_default": {
-            "idx_llm_capability_default_config": ("config_id",)
-        },
+        "llm_capability_default": {"idx_llm_capability_default_config": ("config_id",)},
         "dataset_parse_config": {
             "idx_dataset_parse_dense_config": ("dense_embedding_config_id",),
             "idx_dataset_parse_sparse_config": ("sparse_embedding_config_id",),
-            "idx_dataset_parse_enhancement_chat_config": (
-                "enhancement_chat_config_id",
-            ),
-            "idx_dataset_parse_enhancement_vision_config": (
-                "enhancement_vision_config_id",
-            ),
+            "idx_dataset_parse_enhancement_chat_config": ("enhancement_chat_config_id",),
+            "idx_dataset_parse_enhancement_vision_config": ("enhancement_vision_config_id",),
             "idx_dataset_parse_rerank_config": ("rerank_config_id",),
         },
     }
@@ -478,8 +545,7 @@ def _validate_final(manifest: dict[str, Any]) -> None:
         if not _table_exists(table_name):
             raise RuntimeError(f"required schema table missing: {table_name}")
         actual = {
-            item["name"]: tuple(item["column_names"])
-            for item in inspector.get_indexes(table_name)
+            item["name"]: tuple(item["column_names"]) for item in inspector.get_indexes(table_name)
         }
         for name, columns in expected.items():
             if actual.get(name) != columns:
@@ -568,16 +634,16 @@ def _validate_final(manifest: dict[str, Any]) -> None:
 
 
 def upgrade() -> None:
-    # 在任何 DDL/DML 前完成 manifest、密文和存量授权校验。
     manifest = _manifest()
-    ciphertexts = _ciphertexts()
-    if _has_business_rows():
-        _verify_legacy_authorization()
+    ciphertexts = _ciphertexts(manifest)
 
-    _clear_legacy_references()
-    _drop_legacy_schema()
+    # 先把可恢复的新结构与 seed 落库，再删除旧表；MySQL DDL 中断后可直接重跑。
     _create_new_schema()
     _seed(manifest, ciphertexts)
+    _clear_legacy_references()
+    _drop_legacy_schema()
+    # 删除旧 source 列时会连带删除部分索引，再次收敛到最终 schema。
+    _create_new_schema()
     _validate_final(manifest)
 
 

@@ -176,6 +176,10 @@ alembic upgrade head
 `scripts/db/init.sql` 只是叠加全部迁移后的逻辑/测试快照，不得作为部署入口。
 
 > 对于已有表的存量库（老库升级）：先 `alembic stamp 0001` 标记基线，再 `alembic upgrade head`。
+>
+> 0036 会自动复用旧 `llm_system_preset` 中六类系统配置的加密 API Key，存量库不需要额外的
+> preflight 或授权文件。全新空库没有可复用密钥时，需通过
+> `TOLINK_LLM_SEED_CIPHERTEXT_FILE` 指定包含六类能力密文的 JSON 文件。
 
 应用进程**不会**自动建表，必须先执行 DDL。
 

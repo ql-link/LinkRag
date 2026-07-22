@@ -218,11 +218,7 @@ if [[ "$component" == rag ]]; then
     -v "$llm_migration_dir:/run/llm-migration" \
     -v "$test_root/toLink-Rag/logs:/app/logs" \
     "$image_name:$image_tag" \
-    python scripts/release/llm_config_migration_preflight.py \
-      --evidence /run/llm-migration/evidence.json \
-      --ciphertexts /run/llm-migration/ciphertexts.json \
-      --authorization-file /run/llm-migration/authorization.json \
-      --run-migration
+    python -m alembic upgrade head
 fi
 
 docker compose --env-file .env.test --profile apps up -d "$compose_service"

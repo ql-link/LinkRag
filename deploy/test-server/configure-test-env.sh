@@ -46,7 +46,6 @@ existing_or_random_hex() {
 
 api_key_secret=$(existing_or_random_hex "$rag_secrets" API_KEY_ENCRYPTION_SECRET "$legacy_rag_env")
 recall_session_secret=$(existing_or_random_hex "$rag_secrets" RECALL_SESSION_JWT_SECRET "$legacy_rag_env")
-llm_migration_auth_secret=$(existing_or_random_hex "$rag_secrets" TOLINK_LLM_MIGRATION_AUTH_SECRET)
 recall_internal_secret=$(existing_or_random_hex "$app_secrets" RECALL_INTERNAL_JWT_SECRET)
 
 system_llm_api_key=$(read_env_value "$rag_secrets" SYSTEM_LLM_API_KEY)
@@ -63,7 +62,6 @@ rag_tmp=$(mktemp "$secrets_dir/rag.env.XXXXXX")
   printf 'DB_PASSWORD=%s\n' "$TEST_MYSQL_PASSWORD"
   printf 'DATABASE_URL=mysql+pymysql://%s:%s@tolink-test-mysql:3306/%s\n' "$TEST_MYSQL_USER" "$TEST_MYSQL_PASSWORD" "$TEST_MYSQL_DATABASE"
   printf 'ALEMBIC_DATABASE_URL=mysql+pymysql://%s:%s@tolink-test-mysql:3306/%s\n' "$TEST_MYSQL_USER" "$TEST_MYSQL_PASSWORD" "$TEST_MYSQL_DATABASE"
-  printf 'TOLINK_LLM_MIGRATION_AUTH_SECRET=%s\n' "$llm_migration_auth_secret"
   printf 'REDIS_PASSWORD=%s\n' "$TEST_REDIS_PASSWORD"
   printf 'REDIS_URL=redis://:%s@tolink-test-redis:6379/0\n' "$TEST_REDIS_PASSWORD"
   printf 'QDRANT_API_KEY=%s\n' "$TEST_QDRANT_API_KEY"

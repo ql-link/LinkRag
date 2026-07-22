@@ -32,20 +32,9 @@ def main() -> int:
         capability: encrypt_api_key(f"test-only-{capability.lower()}")
         for capability in CAPABILITIES
     }
-    evidence = {
-        "maintenance_lock": "HELD",
-        "legacy_llm_writer_count": 0,
-        "legacy_llm_message_lag": 0,
-        "seed_ciphertext_count": len(CAPABILITIES),
-        "seed_capability_set": list(CAPABILITIES),
-    }
-    for name, payload in (
-        ("ciphertexts.json", {"ciphertexts": ciphertexts}),
-        ("evidence.json", evidence),
-    ):
-        path = output_dir / name
-        path.write_text(json.dumps(payload), encoding="utf-8")
-        path.chmod(0o600)
+    path = output_dir / "ciphertexts.json"
+    path.write_text(json.dumps({"ciphertexts": ciphertexts}), encoding="utf-8")
+    path.chmod(0o600)
     return 0
 
 
