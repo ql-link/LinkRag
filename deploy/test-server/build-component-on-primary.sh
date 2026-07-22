@@ -49,12 +49,22 @@ source_dir="$workspace_root/$workspace_name"
 next_dir="$workspace_root/.${workspace_name}.next"
 archive=$(mktemp "$jenkins_root/${workspace_name}.XXXXXX.tgz")
 trap 'rm -f "$archive"; rm -rf "$next_dir"' EXIT
-incoming_archive="$jenkins_root/incoming/${workspace_name}-dev.tgz"
+source_ref_file="$test_root/source-refs/$component"
+source_ref=dev
+if [[ -f "$source_ref_file" ]]; then
+  source_ref=$(tr -d '[:space:]' <"$source_ref_file")
+fi
+if [[ ! "$source_ref" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+  echo "invalid source ref for $component: $source_ref" >&2
+  exit 2
+fi
+source_ref_slug=${source_ref//\//-}
+incoming_archive="$jenkins_root/incoming/${workspace_name}-${source_ref_slug}.tgz"
 
-echo "[$component] fetch ql-link/$github_repo dev on Primary"
+echo "[$component] fetch ql-link/$github_repo $source_ref on Primary"
 rm -rf "$next_dir"
 mkdir -p "$next_dir"
-archive_url="https://codeload.github.com/ql-link/${github_repo}/tar.gz/refs/heads/dev"
+archive_url="https://codeload.github.com/ql-link/${github_repo}/tar.gz/refs/heads/${source_ref}"
 if [[ -s "$incoming_archive" ]]; then
   echo "[$component] use preloaded dev archive"
   mv "$incoming_archive" "$archive"
