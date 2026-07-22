@@ -6,13 +6,10 @@
 
 from __future__ import annotations
 
-import hashlib
-import hmac
 import json
 import os
 import subprocess
 import sys
-import time
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
@@ -23,10 +20,12 @@ from sqlalchemy.engine import make_url
 
 from src.core.llm.encryption import decrypt_api_key, encrypt_api_key
 
-
 ROOT = Path(__file__).resolve().parents[3]
 ADMIN_URL = os.environ.get("TEST_MYSQL_ADMIN_URL")
-pytestmark = [pytest.mark.integration, pytest.mark.skipif(not ADMIN_URL, reason="TEST_MYSQL_ADMIN_URL is not set")]
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(not ADMIN_URL, reason="TEST_MYSQL_ADMIN_URL is not set"),
+]
 
 
 @contextmanager
@@ -56,14 +55,17 @@ def mysql_database():
 
 @pytest.fixture
 def migration_files(tmp_path):
-    plaintexts = {capability: f"secret-{capability.lower()}" for capability in (
-        "CHAT",
-        "EMBEDDING",
-        "SPARSE_EMBEDDING",
-        "VISION",
-        "RERANK",
-        "ASR",
-    )}
+    plaintexts = {
+        capability: f"secret-{capability.lower()}"
+        for capability in (
+            "CHAT",
+            "EMBEDDING",
+            "SPARSE_EMBEDDING",
+            "VISION",
+            "RERANK",
+            "ASR",
+        )
+    }
     ciphertext_path = tmp_path / "ciphertexts.json"
     ciphertext_path.write_text(
         json.dumps(
@@ -84,7 +86,6 @@ def _run_alembic(
     revision: str,
     *,
     ciphertext_path=None,
-    auth_path=None,
     fail_after: str | None = None,
     expect_success: bool = True,
 ):
@@ -92,8 +93,6 @@ def _run_alembic(
     env["ALEMBIC_DATABASE_URL"] = database_url
     if ciphertext_path is not None:
         env["TOLINK_LLM_SEED_CIPHERTEXT_FILE"] = str(ciphertext_path)
-    if auth_path is not None:
-        env["TOLINK_LLM_MIGRATION_AUTH_FILE"] = str(auth_path)
     if fail_after is not None:
         env["TOLINK_LLM_MIGRATION_FAIL_AFTER"] = fail_after
     else:
@@ -114,25 +113,8 @@ def _run_alembic(
     return completed
 
 
-def _authorization(path: Path, secret: str):
-    payload = {
-        "schemaVersion": 1,
-        "revision": "0036",
-        "issuedAt": int(time.time()),
-        "expiresAt": int(time.time()) + 600,
-        "nonce": uuid.uuid4().hex,
-        "evidenceSha256": hashlib.sha256(b"integration-test").hexdigest(),
-    }
-    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
-    payload["signature"] = hmac.new(secret.encode(), canonical, hashlib.sha256).hexdigest()
-    path.write_text(json.dumps(payload), encoding="utf-8")
-
-
 def _index_map(inspector, table: str):
-    return {
-        item["name"]: tuple(item["column_names"])
-        for item in inspector.get_indexes(table)
-    }
+    return {item["name"]: tuple(item["column_names"]) for item in inspector.get_indexes(table)}
 
 
 def _unique_map(inspector, table: str):
@@ -143,7 +125,10 @@ def _unique_map(inspector, table: str):
 
 
 def _rows(connection, table: str):
-    return [dict(row) for row in connection.execute(sa.text(f"SELECT * FROM `{table}` ORDER BY id")).mappings()]
+    return [
+        dict(row)
+        for row in connection.execute(sa.text(f"SELECT * FROM `{table}` ORDER BY id")).mappings()
+    ]
 
 
 def _schema_fingerprint(engine):
@@ -167,7 +152,7 @@ def _schema_fingerprint(engine):
     return result
 
 
-def _seed_complete_legacy_snapshot(connection, fixed_time: str):
+def _seed_complete_legacy_snapshot(connection, fixed_time: str, ciphertexts: dict[str, str]):
     statements = [
         """
         INSERT INTO sys_user
@@ -288,11 +273,29 @@ def _seed_complete_legacy_snapshot(connection, fixed_time: str):
     ]
     for statement in statements:
         connection.execute(sa.text(statement), {"fixed_time": fixed_time})
+    manifest = json.loads(
+        (ROOT / "scripts" / "release" / "llm_seed_manifest.json").read_text(encoding="utf-8")
+    )
+    for offset, item in enumerate(manifest["system_configs"], start=200):
+        connection.execute(
+            sa.text("""INSERT INTO llm_system_preset
+                       (id, provider_id, model_name, capability, api_key, is_active,
+                        provider_type, protocol, api_base_url, is_default, created_at, updated_at)
+                   VALUES (:id, 8001, :model_name, :capability, :api_key, 1,
+                           'linkrag', :protocol, :api_base_url, 1, :fixed_time, :fixed_time)"""),
+            {
+                "id": offset,
+                "model_name": item["model_name"],
+                "capability": item["capability"],
+                "api_key": ciphertexts[item["ciphertext_ref"]],
+                "protocol": item["protocol"],
+                "api_base_url": item["api_base_url"],
+                "fixed_time": fixed_time,
+            },
+        )
 
 
-def test_empty_database_upgrade_has_authoritative_schema_and_seed(
-    mysql_database, migration_files
-):
+def test_empty_database_upgrade_has_authoritative_schema_and_seed(mysql_database, migration_files):
     ciphertext_path, plaintexts = migration_files
     manifest = json.loads(
         (ROOT / "scripts" / "release" / "llm_seed_manifest.json").read_text(encoding="utf-8")
@@ -319,55 +322,87 @@ def test_empty_database_upgrade_has_authoritative_schema_and_seed(
         "dense_embedding_config_source",
         "sparse_embedding_config_source",
     }.isdisjoint(dataset_columns)
-    assert _unique_map(inspector, "llm_model_config")[
-        "uk_llm_model_config_owner_model"
-    ] == ("scope", "owner_user_id", "provider_id", "model_name", "capability")
+    assert _unique_map(inspector, "llm_model_config")["uk_llm_model_config_owner_model"] == (
+        "scope",
+        "owner_user_id",
+        "provider_id",
+        "model_name",
+        "capability",
+    )
     assert _unique_map(inspector, "llm_capability_default")[
         "uk_llm_capability_default_owner_cap"
     ] == ("scope", "owner_user_id", "capability")
-    assert _index_map(inspector, "llm_model_config")[
-        "idx_llm_model_config_owner_capability"
-    ] == ("scope", "owner_user_id", "capability", "is_active")
-    assert _index_map(inspector, "dataset_parse_config")[
-        "idx_dataset_parse_rerank_config"
-    ] == ("rerank_config_id",)
+    assert _index_map(inspector, "llm_model_config")["idx_llm_model_config_owner_capability"] == (
+        "scope",
+        "owner_user_id",
+        "capability",
+        "is_active",
+    )
+    assert _index_map(inspector, "dataset_parse_config")["idx_dataset_parse_rerank_config"] == (
+        "rerank_config_id",
+    )
     with engine.connect() as connection:
-        assert connection.execute(sa.text("SELECT version_num FROM alembic_version")).scalar_one() == "0036"
-        provider_rows = connection.execute(sa.text(
-            """SELECT provider_type, provider_name, icon_url, icon_object_key,
+        assert (
+            connection.execute(sa.text("SELECT version_num FROM alembic_version")).scalar_one()
+            == "0036"
+        )
+        provider_rows = (
+            connection.execute(
+                sa.text("""SELECT provider_type, provider_name, icon_url, icon_object_key,
                       api_base_url, default_protocol, is_active, priority
-               FROM llm_system_provider ORDER BY provider_type"""
-        )).mappings().all()
+               FROM llm_system_provider ORDER BY provider_type""")
+            )
+            .mappings()
+            .all()
+        )
         assert len(provider_rows) == 17
         expected_providers = {item["provider_type"]: item for item in manifest["providers"]}
         for row in provider_rows:
             expected = expected_providers[row["provider_type"]]
             for field in (
-                "provider_name", "icon_url", "icon_object_key", "api_base_url",
-                "default_protocol", "is_active", "priority",
+                "provider_name",
+                "icon_url",
+                "icon_object_key",
+                "api_base_url",
+                "default_protocol",
+                "is_active",
+                "priority",
             ):
                 assert row[field] == expected[field]
 
-        model_rows = connection.execute(sa.text(
-            """SELECT p.provider_type, m.model_name, m.display_name, m.capability,
+        model_rows = (
+            connection.execute(
+                sa.text("""SELECT p.provider_type, m.model_name, m.display_name, m.capability,
                       m.protocol, m.api_base_url, m.is_active
                FROM llm_provider_model m
-               JOIN llm_system_provider p ON p.id = m.provider_id"""
-        )).mappings().all()
+               JOIN llm_system_provider p ON p.id = m.provider_id""")
+            )
+            .mappings()
+            .all()
+        )
         model_fields = (
-            "provider_type", "model_name", "display_name", "capability",
-            "protocol", "api_base_url", "is_active",
+            "provider_type",
+            "model_name",
+            "display_name",
+            "capability",
+            "protocol",
+            "api_base_url",
+            "is_active",
         )
         assert len(model_rows) == 83
         assert {tuple(row[field] for field in model_fields) for row in model_rows} == {
             tuple(item[field] for field in model_fields) for item in manifest["provider_models"]
         }
 
-        config_rows = connection.execute(sa.text(
-            """SELECT scope, owner_user_id, provider_type, model_name, display_name,
+        config_rows = (
+            connection.execute(
+                sa.text("""SELECT scope, owner_user_id, provider_type, model_name, display_name,
                       capability, protocol, api_base_url, api_key, is_active, snapshot_version
-               FROM llm_model_config WHERE scope='SYSTEM'"""
-        )).mappings().all()
+               FROM llm_model_config WHERE scope='SYSTEM'""")
+            )
+            .mappings()
+            .all()
+        )
         expected_configs = {item["capability"]: item for item in manifest["system_configs"]}
         assert len(config_rows) == 6
         for row in config_rows:
@@ -380,13 +415,17 @@ def test_empty_database_upgrade_has_authoritative_schema_and_seed(
             assert row["api_key"] == ciphertexts[expected["ciphertext_ref"]]
             assert decrypt_api_key(row["api_key"]) == plaintexts[row["capability"]]
 
-        defaults = connection.execute(sa.text(
-            """SELECT d.capability, d.config_id, c.capability AS config_capability,
+        defaults = (
+            connection.execute(
+                sa.text("""SELECT d.capability, d.config_id, c.capability AS config_capability,
                       c.is_active, c.scope, c.owner_user_id
                FROM llm_capability_default d
                LEFT JOIN llm_model_config c ON c.id = d.config_id
-               WHERE d.scope='SYSTEM' AND d.owner_user_id=0"""
-        )).mappings().all()
+               WHERE d.scope='SYSTEM' AND d.owner_user_id=0""")
+            )
+            .mappings()
+            .all()
+        )
         assert len(defaults) == 6
         assert {row["capability"] for row in defaults} == set(plaintexts)
         assert all(
@@ -401,14 +440,15 @@ def test_empty_database_upgrade_has_authoritative_schema_and_seed(
 
 
 def test_legacy_upgrade_clears_only_identity_fields_and_preserves_updated_at(
-    mysql_database, migration_files, tmp_path, monkeypatch
+    mysql_database, migration_files
 ):
     ciphertext_path, _ = migration_files
+    ciphertexts = json.loads(ciphertext_path.read_text(encoding="utf-8"))["ciphertexts"]
     _run_alembic(mysql_database, "0035")
     engine = sa.create_engine(mysql_database)
     fixed_time = "2025-01-02 03:04:05"
     with engine.begin() as connection:
-        _seed_complete_legacy_snapshot(connection, fixed_time)
+        _seed_complete_legacy_snapshot(connection, fixed_time, ciphertexts)
         untouched_tables = (
             "sys_user",
             "dataset",
@@ -423,16 +463,8 @@ def test_legacy_upgrade_clears_only_identity_fields_and_preserves_updated_at(
         before_conversation = _rows(connection, "chat_conversation")[0]
         before_message = _rows(connection, "chat_message")[0]
         before_usage = _rows(connection, "llm_usage_log")[0]
-    secret = "integration-test-auth-secret-at-least-32-bytes"
-    auth_path = tmp_path / "authorization.json"
-    _authorization(auth_path, secret)
-    monkeypatch.setenv("TOLINK_LLM_MIGRATION_AUTH_SECRET", secret)
-    _run_alembic(
-        mysql_database,
-        "head",
-        ciphertext_path=ciphertext_path,
-        auth_path=auth_path,
-    )
+    # 存量库直接复用旧系统预设的密文，不需要迁移文件或短期授权。
+    _run_alembic(mysql_database, "head")
 
     with engine.connect() as connection:
         for table in untouched_tables:
@@ -468,12 +500,18 @@ def test_legacy_upgrade_clears_only_identity_fields_and_preserves_updated_at(
         before_usage.pop("config_id")
         assert usage == before_usage
 
-        assert connection.execute(
-            sa.text("SELECT COUNT(*) FROM llm_model_config WHERE id IN (101, 102)")
-        ).scalar_one() == 0
-        assert connection.execute(
-            sa.text("SELECT COUNT(*) FROM llm_capability_default WHERE config_id IN (101, 102)")
-        ).scalar_one() == 0
+        assert (
+            connection.execute(
+                sa.text("SELECT COUNT(*) FROM llm_model_config WHERE id IN (101, 102)")
+            ).scalar_one()
+            == 0
+        )
+        assert (
+            connection.execute(
+                sa.text("SELECT COUNT(*) FROM llm_capability_default WHERE config_id IN (101, 102)")
+            ).scalar_one()
+            == 0
+        )
     engine.dispose()
 
 
@@ -482,33 +520,23 @@ def test_legacy_upgrade_clears_only_identity_fields_and_preserves_updated_at(
     ["cleanup_references", "drop_legacy_tables", "create_new_schema", "partial_seed"],
 )
 def test_interrupted_migration_reruns_to_same_schema_and_third_run_is_noop(
-    mysql_database, migration_files, tmp_path, monkeypatch, checkpoint
+    mysql_database, migration_files, checkpoint
 ):
     ciphertext_path, _ = migration_files
     _run_alembic(mysql_database, "0035")
     engine = sa.create_engine(mysql_database)
     with engine.begin() as connection:
-        connection.execute(
-            sa.text(
-                """
+        connection.execute(sa.text("""
                 INSERT INTO sys_user
                     (id, username, password_hash, role, status)
                 VALUES (7001, 'retry-marker-user', 'retry-marker-hash', 'USER', 1)
-                """
-            )
-        )
+                """))
         user_before = _rows(connection, "sys_user")
-
-    secret = "integration-test-auth-secret-at-least-32-bytes"
-    auth_path = tmp_path / "authorization.json"
-    _authorization(auth_path, secret)
-    monkeypatch.setenv("TOLINK_LLM_MIGRATION_AUTH_SECRET", secret)
 
     _run_alembic(
         mysql_database,
         "head",
         ciphertext_path=ciphertext_path,
-        auth_path=auth_path,
         fail_after=checkpoint,
         expect_success=False,
     )
@@ -516,7 +544,6 @@ def test_interrupted_migration_reruns_to_same_schema_and_third_run_is_noop(
         mysql_database,
         "head",
         ciphertext_path=ciphertext_path,
-        auth_path=auth_path,
     )
     second_fingerprint = _schema_fingerprint(engine)
 
@@ -532,29 +559,30 @@ def test_interrupted_migration_reruns_to_same_schema_and_third_run_is_noop(
 
     with engine.connect() as connection:
         assert _rows(connection, "sys_user") == user_before
-        assert connection.execute(
-            sa.text("SELECT COUNT(*) FROM llm_model_config WHERE scope='SYSTEM'")
-        ).scalar_one() == 6
-        assert connection.execute(
-            sa.text("SELECT COUNT(*) FROM llm_capability_default WHERE scope='SYSTEM'")
-        ).scalar_one() == 6
-        assert connection.execute(
-            sa.text(
-                """
+        assert (
+            connection.execute(
+                sa.text("SELECT COUNT(*) FROM llm_model_config WHERE scope='SYSTEM'")
+            ).scalar_one()
+            == 6
+        )
+        assert (
+            connection.execute(
+                sa.text("SELECT COUNT(*) FROM llm_capability_default WHERE scope='SYSTEM'")
+            ).scalar_one()
+            == 6
+        )
+        assert connection.execute(sa.text("""
                 SELECT COUNT(*) FROM (
                     SELECT capability, COUNT(*) AS n
                     FROM llm_model_config WHERE scope='SYSTEM'
                     GROUP BY capability HAVING n <> 1
                 ) duplicate_capability
-                """
-            )
-        ).scalar_one() == 0
+                """)).scalar_one() == 0
 
     _run_alembic(
         mysql_database,
         "head",
         ciphertext_path=ciphertext_path,
-        auth_path=auth_path,
     )
     assert _schema_fingerprint(engine) == second_fingerprint
     engine.dispose()
