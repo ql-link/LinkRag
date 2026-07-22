@@ -177,9 +177,10 @@ alembic upgrade head
 
 > 对于已有表的存量库（老库升级）：先 `alembic stamp 0001` 标记基线，再 `alembic upgrade head`。
 >
-> 0036 会自动复用旧 `llm_system_preset` 中六类系统配置的加密 API Key，存量库不需要额外的
-> preflight 或授权文件。全新空库没有可复用密钥时，需通过
-> `TOLINK_LLM_SEED_CIPHERTEXT_FILE` 指定包含六类能力密文的 JSON 文件。
+LLM 配置切换迁移 `0036` 不需要 API Key、密文文件或额外 preflight，直接由上述
+`alembic upgrade head` 执行。它会初始化公开的厂商/模型目录，但不会创建
+`llm_model_config` 可执行配置或 `llm_capability_default` 默认指针。迁移后由 Java
+管理端录入真实 API Key，加密后写入配置表，再设置所需的能力默认项。
 
 应用进程**不会**自动建表，必须先执行 DDL。
 

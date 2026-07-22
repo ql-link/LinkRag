@@ -59,6 +59,8 @@ ORM：（未在 `src/models/` 中映射，由业务侧管理）
 > 运行分层：厂商与模型目录只用于管理和预填；`llm_model_config` 是唯一可执行快照表，
 > `scope=SYSTEM/USER` 只表达授权边界，不再分表路由。所有 HTTP、MQ、数据集绑定和缓存键都只传全局 `config_id`。
 > `llm_capability_default` 只保存“未显式选择时选哪个 config”的指针，不承载密钥或运行参数。
+> Migration 0036 只种子化 17 个厂商和 83 个模型目录项；两张可执行配置相关表初始为空，
+> 由管理端后续写入密文 API Key 和默认指针。
 
 ### `llm_system_provider` — LLM 系统级厂商配置
 

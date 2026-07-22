@@ -110,6 +110,8 @@ Gemini 原生把"是否流式"编码在 URL（而非请求体 `stream` 开关）
 `SYSTEM_LLM_*`、`llm_user_config`、`llm_system_preset` 和 `config_source` 运行路由已删除。
 
 API Key 不写入文档 / 测试 / 提交；用户密钥库内密文保存，读取后 `decrypt_api_key()` 解密。
+Migration 0036 只初始化公开的 provider/model 目录，不种子化任何 SYSTEM/USER
+可执行配置或能力默认指针；真实配置由 Java 管理端使用正式加密器写入。
 
 ## 6. 能力映射
 

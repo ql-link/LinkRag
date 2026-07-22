@@ -151,8 +151,7 @@ update_tag() {
 if [[ "$component" == rag ]]; then
   config_source="$source_dir/deploy/test-server"
   for name in docker-compose.yml Dockerfile.service loki-config.yml promtail-config.yml nginx.conf \
-    rag.env.test app.env.test configure-test-env.sh build-component-on-primary.sh \
-    generate-test-llm-migration-inputs.py; do
+    rag.env.test app.env.test configure-test-env.sh build-component-on-primary.sh; do
     install -m 600 "$config_source/$name" "$test_root/$name"
   done
   chmod 700 "$test_root/configure-test-env.sh" "$test_root/build-component-on-primary.sh"
@@ -199,26 +198,14 @@ if [[ -n "$required_secret_config" && ! -f "$required_secret_config" ]]; then
 fi
 
 if [[ "$component" == rag ]]; then
-  llm_migration_dir="$test_root/secrets/llm-migration"
-  install -d -m 700 "$llm_migration_dir"
-  docker run --rm \
-    --env-file "$test_root/config/rag/.env.development" \
-    --env-file "$test_root/config/rag/.env.development.local" \
-    -e PYTHONPATH=/app \
-    -v "$test_root/generate-test-llm-migration-inputs.py:/run/generate-test-llm-migration-inputs.py:ro" \
-    -v "$llm_migration_dir:/run/llm-migration" \
-    "$image_name:$image_tag" \
-    python /run/generate-test-llm-migration-inputs.py /run/llm-migration
   docker run --rm \
     --network tolink-test-net \
     --env-file "$test_root/config/rag/.env.development" \
     --env-file "$test_root/config/rag/.env.development.local" \
     -e PYTHONPATH=/app \
-    -e TOLINK_LLM_SEED_CIPHERTEXT_FILE=/run/llm-migration/ciphertexts.json \
-    -v "$llm_migration_dir:/run/llm-migration" \
     -v "$test_root/toLink-Rag/logs:/app/logs" \
     "$image_name:$image_tag" \
-    python -m alembic upgrade head
+    alembic upgrade head
 fi
 
 docker compose --env-file .env.test --profile apps up -d "$compose_service"

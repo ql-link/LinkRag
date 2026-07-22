@@ -920,55 +920,5 @@
       "api_base_url": "https://api.siliconflow.cn/v1/embeddings",
       "is_active": true
     }
-  ],
-  "system_configs": [
-    {
-      "capability": "ASR",
-      "model_name": "qwen3-asr-flash",
-      "display_name": "Qwen ASR Flash",
-      "protocol": "dashscope",
-      "api_base_url": "https://dashscope.aliyuncs.com/api/v1",
-      "ciphertext_ref": "ASR"
-    },
-    {
-      "capability": "CHAT",
-      "model_name": "deepseek-ai/DeepSeek-V4-Flash",
-      "display_name": "DeepSeek V4 Flash",
-      "protocol": "openai",
-      "api_base_url": "https://api.siliconflow.cn/v1/chat/completions",
-      "ciphertext_ref": "CHAT"
-    },
-    {
-      "capability": "EMBEDDING",
-      "model_name": "BAAI/bge-m3",
-      "display_name": "BGE-M3",
-      "protocol": "openai",
-      "api_base_url": "https://api.siliconflow.cn/v1/embeddings",
-      "ciphertext_ref": "EMBEDDING"
-    },
-    {
-      "capability": "SPARSE_EMBEDDING",
-      "model_name": "doubao-embedding-vision-251215",
-      "display_name": "Doubao Sparse",
-      "protocol": "doubao_vision",
-      "api_base_url": "https://ark.cn-beijing.volces.com/api/v3/embeddings/multimodal",
-      "ciphertext_ref": "SPARSE_EMBEDDING"
-    },
-    {
-      "capability": "RERANK",
-      "model_name": "BAAI/bge-reranker-v2-m3",
-      "display_name": "BGE Reranker M3",
-      "protocol": "jina",
-      "api_base_url": "https://api.siliconflow.cn/v1/rerank",
-      "ciphertext_ref": "RERANK"
-    },
-    {
-      "capability": "VISION",
-      "model_name": "Qwen/Qwen3.6-27B",
-      "display_name": "Qwen 3.6 27B",
-      "protocol": "openai",
-      "api_base_url": "https://api.siliconflow.cn/v1/chat/completions",
-      "ciphertext_ref": "VISION"
-    }
   ]
 }

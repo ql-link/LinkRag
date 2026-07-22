@@ -25,15 +25,6 @@ down_revision: Union[str, None] = "0035"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-_CAPABILITIES = {
-    "CHAT",
-    "EMBEDDING",
-    "SPARSE_EMBEDDING",
-    "VISION",
-    "RERANK",
-    "ASR",
-}
-
 
 def _inspector():
     return sa.inspect(op.get_bind())
@@ -74,98 +65,7 @@ def _manifest() -> dict[str, Any]:
         raise RuntimeError("LLM seed provider manifest must contain 17 rows")
     if len(value.get("provider_models", [])) != 83:
         raise RuntimeError("LLM seed model manifest must contain 83 rows")
-    configs = value.get("system_configs", [])
-    if len(configs) != 6 or {item.get("capability") for item in configs} != _CAPABILITIES:
-        raise RuntimeError("LLM system config manifest must contain all six capabilities")
     return value
-
-
-def _ciphertexts_from_file() -> dict[str, str]:
-    raw_path = os.environ.get("TOLINK_LLM_SEED_CIPHERTEXT_FILE")
-    if not raw_path:
-        return {}
-    value = _load_json(Path(raw_path))
-    raw = value.get("ciphertexts", value)
-    if not isinstance(raw, dict):
-        raise RuntimeError("LLM seed ciphertext file must contain an object")
-    result: dict[str, str] = {}
-    for capability, item in raw.items():
-        ciphertext = item.get("ciphertext") if isinstance(item, dict) else item
-        if isinstance(ciphertext, str) and ciphertext.strip():
-            result[str(capability).upper()] = ciphertext.strip()
-    return result
-
-
-def _stored_ciphertexts(manifest: dict[str, Any]) -> dict[str, str]:
-    """复用已落库或旧系统预设的密文，避免存量库额外准备迁移文件。"""
-    bind = op.get_bind()
-    result: dict[str, str] = {}
-
-    # MySQL DDL 中断后重跑时，新表可能已经写入部分或全部系统配置。
-    if _table_exists("llm_model_config"):
-        rows = bind.execute(sa.text("""SELECT capability, api_key
-                   FROM llm_model_config
-                   WHERE scope = 'SYSTEM' AND owner_user_id = 0 AND is_active = 1""")).mappings()
-        for row in rows:
-            if row["capability"] in _CAPABILITIES and row["api_key"]:
-                result[row["capability"]] = row["api_key"]
-
-    if not _table_exists("llm_system_preset"):
-        return result
-
-    expected_models = {
-        item["capability"]: item["model_name"] for item in manifest["system_configs"]
-    }
-    rows = bind.execute(sa.text("""SELECT capability, model_name, api_key, is_default, is_active, id
-               FROM llm_system_preset
-               WHERE is_active = 1
-               ORDER BY capability, id""")).mappings()
-    candidates: dict[str, list[Any]] = {}
-    for row in rows:
-        capability = str(row["capability"]).upper()
-        if capability in _CAPABILITIES and row["api_key"]:
-            candidates.setdefault(capability, []).append(row)
-    for capability, items in candidates.items():
-        if capability in result:
-            continue
-        expected_model = expected_models[capability]
-        selected = min(
-            items,
-            key=lambda row: (
-                0 if row["model_name"] == expected_model else 1,
-                0 if row["is_default"] else 1,
-                int(row["id"]),
-            ),
-        )
-        result[capability] = selected["api_key"]
-    return result
-
-
-def _ciphertexts(manifest: dict[str, Any]) -> dict[str, str]:
-    result = _stored_ciphertexts(manifest)
-    # 显式文件用于空库初始化，也允许发布时覆盖自动选择的旧密文。
-    result.update(_ciphertexts_from_file())
-    if set(result) != _CAPABILITIES:
-        missing = ", ".join(sorted(_CAPABILITIES - set(result)))
-        raise RuntimeError(
-            "LLM seed ciphertext is unavailable for capabilities: "
-            f"{missing}; set TOLINK_LLM_SEED_CIPHERTEXT_FILE for an empty database"
-        )
-    for capability, ciphertext in result.items():
-        lowered = ciphertext.lower()
-        if "change_me" in lowered or "demo-encrypted-key" in lowered:
-            raise RuntimeError(f"LLM seed ciphertext is a placeholder for {capability}")
-    try:
-        from src.core.llm.encryption import decrypt_api_key
-
-        for capability, ciphertext in result.items():
-            if not decrypt_api_key(ciphertext):
-                raise RuntimeError(f"LLM seed ciphertext decrypts to empty for {capability}")
-    except RuntimeError:
-        raise
-    except Exception as exc:  # noqa: BLE001
-        raise RuntimeError("LLM seed ciphertext validation failed") from exc
-    return result
 
 
 def _clear_legacy_references() -> None:
@@ -360,7 +260,7 @@ def _upsert(table: sa.Table, key_fields: tuple[str, ...], rows: list[dict[str, A
                 bind.execute(table.update().where(where).values(**updates))
 
 
-def _seed(manifest: dict[str, Any], ciphertexts: dict[str, str]) -> None:
+def _seed(manifest: dict[str, Any]) -> None:
     bind = op.get_bind()
     provider_table = sa.Table("llm_system_provider", sa.MetaData(), autoload_with=bind)
     provider_rows = [
@@ -377,6 +277,7 @@ def _seed(manifest: dict[str, Any], ciphertexts: dict[str, str]) -> None:
         for item in manifest["providers"]
     ]
     _upsert(provider_table, ("provider_type",), provider_rows)
+    _checkpoint("partial_seed")
     provider_ids = dict(
         bind.execute(
             sa.select(provider_table.c.provider_type, provider_table.c.id).where(
@@ -402,59 +303,8 @@ def _seed(manifest: dict[str, Any], ciphertexts: dict[str, str]) -> None:
     ]
     _upsert(provider_model_table, ("provider_id", "model_name", "capability"), model_rows)
 
-    config_table = sa.Table("llm_model_config", sa.MetaData(), autoload_with=bind)
-    linkrag_id = provider_ids["linkrag"]
-    config_rows = [
-        {
-            "scope": "SYSTEM",
-            "owner_user_id": 0,
-            "provider_id": linkrag_id,
-            "provider_type": "linkrag",
-            "model_name": item["model_name"],
-            "display_name": item["display_name"],
-            "capability": item["capability"],
-            "protocol": item["protocol"],
-            "api_base_url": item["api_base_url"],
-            "api_key": ciphertexts[item["ciphertext_ref"]],
-            "is_active": True,
-            "snapshot_version": 1,
-        }
-        for item in manifest["system_configs"]
-    ]
-    midpoint = len(config_rows) // 2
-    _upsert(
-        config_table,
-        ("scope", "owner_user_id", "provider_id", "model_name", "capability"),
-        config_rows[:midpoint],
-    )
-    _checkpoint("partial_seed")
-    _upsert(
-        config_table,
-        ("scope", "owner_user_id", "provider_id", "model_name", "capability"),
-        config_rows[midpoint:],
-    )
-    config_ids = dict(
-        bind.execute(
-            sa.select(config_table.c.capability, config_table.c.id).where(
-                config_table.c.scope == "SYSTEM",
-                config_table.c.owner_user_id == 0,
-            )
-        ).all()
-    )
-    default_table = sa.Table("llm_capability_default", sa.MetaData(), autoload_with=bind)
-    default_rows = [
-        {
-            "scope": "SYSTEM",
-            "owner_user_id": 0,
-            "capability": capability,
-            "config_id": config_ids[capability],
-        }
-        for capability in sorted(_CAPABILITIES)
-    ]
-    _upsert(default_table, ("scope", "owner_user_id", "capability"), default_rows)
 
-
-def _validate_final(manifest: dict[str, Any]) -> None:
+def _validate_final() -> None:
     bind = op.get_bind()
     inspector = _inspector()
 
@@ -569,82 +419,21 @@ def _validate_final(manifest: dict[str, Any]) -> None:
     if _table_exists("llm_user_config") or _table_exists("llm_system_preset"):
         raise RuntimeError("legacy LLM config tables still exist")
 
-    configs = sa.Table("llm_model_config", sa.MetaData(), autoload_with=bind)
-    defaults = sa.Table("llm_capability_default", sa.MetaData(), autoload_with=bind)
-    system_rows = bind.execute(
-        sa.select(
-            configs.c.id,
-            configs.c.capability,
-            configs.c.provider_type,
-            configs.c.model_name,
-            configs.c.display_name,
-            configs.c.protocol,
-            configs.c.api_base_url,
-            configs.c.is_active,
-            configs.c.snapshot_version,
-            configs.c.api_key,
-        ).where(configs.c.scope == "SYSTEM", configs.c.owner_user_id == 0)
-    ).all()
-    if len(system_rows) != len(manifest["system_configs"]):
-        raise RuntimeError("LLM system config seed cardinality mismatch")
-    if {row.capability for row in system_rows} != _CAPABILITIES:
-        raise RuntimeError("LLM system config capability set mismatch")
-    expected_configs = {item["capability"]: item for item in manifest["system_configs"]}
-    for row in system_rows:
-        lowered = (row.api_key or "").lower()
-        if not row.api_key or "change_me" in lowered or "demo-encrypted-key" in lowered:
-            raise RuntimeError("LLM system config contains an invalid ciphertext")
-        expected = expected_configs[row.capability]
-        if (
-            row.provider_type != "linkrag"
-            or row.model_name != expected["model_name"]
-            or row.display_name != expected["display_name"]
-            or row.protocol != expected["protocol"]
-            or row.api_base_url != expected["api_base_url"]
-            or not row.is_active
-            or int(row.snapshot_version) != 1
-        ):
-            raise RuntimeError(f"LLM system config seed mismatch: {row.capability}")
-
-    joined = bind.execute(
-        sa.select(
-            defaults.c.scope,
-            defaults.c.owner_user_id,
-            defaults.c.capability,
-            configs.c.id,
-            configs.c.scope,
-            configs.c.owner_user_id,
-            configs.c.capability,
-            configs.c.is_active,
-        ).select_from(defaults.outerjoin(configs, defaults.c.config_id == configs.c.id))
-    ).all()
-    if len(joined) != len(_CAPABILITIES):
-        raise RuntimeError("LLM system default seed cardinality mismatch")
-    for row in joined:
-        if (
-            row[0] != "SYSTEM"
-            or row[1] != 0
-            or row[3] is None
-            or row[0] != row[4]
-            or row[1] != row[5]
-            or row[2] != row[6]
-            or not row[7]
-        ):
-            raise RuntimeError("LLM default points to an invalid runtime config")
+    for table_name in ("llm_model_config", "llm_capability_default"):
+        row_count = bind.execute(sa.text(f"SELECT COUNT(*) FROM `{table_name}`")).scalar_one()
+        if int(row_count) != 0:
+            raise RuntimeError(f"LLM executable seed table must start empty: {table_name}")
 
 
 def upgrade() -> None:
+    # 迁移只初始化公开目录，可执行配置由管理端事后写入密文 API Key。
     manifest = _manifest()
-    ciphertexts = _ciphertexts(manifest)
 
-    # 先把可恢复的新结构与 seed 落库，再删除旧表；MySQL DDL 中断后可直接重跑。
-    _create_new_schema()
-    _seed(manifest, ciphertexts)
     _clear_legacy_references()
     _drop_legacy_schema()
-    # 删除旧 source 列时会连带删除部分索引，再次收敛到最终 schema。
     _create_new_schema()
-    _validate_final(manifest)
+    _seed(manifest)
+    _validate_final()
 
 
 def downgrade() -> None:

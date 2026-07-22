@@ -9,9 +9,10 @@
 --   - 修改字段或种子数据必须先新增 migration，再同步 ORM 与本文件。
 -- 同步时机：每条会改动表结构的 migration 落库时一并更新本文件。
 -- 末次同步：migration 0036_20260717_unify_llm_model_config
--- 0036 存量升级自动复用旧系统预设密文；本快照仅表达升级后的最终结构与种子目录。
 -- 备注：0032_20260702_provider_icon_fields 兼容历史 dev 库中 provider icon 误用 0031 revision 的状态；
---      本快照只表达叠加全部 migration 后的最终结构。
+--      本快照只表达叠加全部 migration 后的最终结构。0036 只种子化公开的
+--      provider/model 目录；本文件不内置可执行配置种子，
+--      llm_model_config 与 llm_capability_default 初始为空。
 -- ===============================================
 
 CREATE DATABASE IF NOT EXISTS tolink_rag_db DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

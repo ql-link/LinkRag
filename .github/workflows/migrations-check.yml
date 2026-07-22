@@ -38,36 +38,7 @@ jobs:
           python -m pip install --upgrade pip
           # 只装 migration 运行所需的最小集合，避免装整个 RAG 重依赖
           pip install "alembic>=1.13.0" "SQLAlchemy>=2.0.0" "pymysql>=1.1.0" \
-                      "pydantic>=2.5.0" "pydantic-settings>=2.1.0" "loguru>=0.7.0" \
-                      "cryptography>=42.0.0"
-
-      - name: Prepare CI migration evidence and encrypted seed
-        env:
-          API_KEY_ENCRYPTION_SECRET: "0101010101010101010101010101010101010101010101010101010101010101"
-          PYTHONPATH: ${{ github.workspace }}
-        run: |
-          python - <<'PY'
-          import json
-          from pathlib import Path
-
-          from src.core.llm.encryption import encrypt_api_key
-
-          capabilities = (
-              "CHAT",
-              "EMBEDDING",
-              "SPARSE_EMBEDDING",
-              "VISION",
-              "RERANK",
-              "ASR",
-          )
-          ciphertexts = {
-              capability: encrypt_api_key(f"ci-only-{capability.lower()}")
-              for capability in capabilities
-          }
-          Path("/tmp/llm-ci-ciphertexts.json").write_text(
-              json.dumps({"ciphertexts": ciphertexts}), encoding="utf-8"
-          )
-          PY
+                      "pydantic>=2.5.0" "pydantic-settings>=2.1.0" "loguru>=0.7.0"
 
       - name: Wait for MySQL
         run: |
@@ -96,9 +67,7 @@ jobs:
       - name: Run alembic upgrade head
         env:
           ALEMBIC_DATABASE_URL: mysql+pymysql://root:root@127.0.0.1:3306/tolink_rag_db
-          API_KEY_ENCRYPTION_SECRET: "0101010101010101010101010101010101010101010101010101010101010101"
           PYTHONPATH: ${{ github.workspace }}
-          TOLINK_LLM_SEED_CIPHERTEXT_FILE: /tmp/llm-ci-ciphertexts.json
         run: alembic upgrade head
 
       - name: Run alembic upgrade head again (idempotency)

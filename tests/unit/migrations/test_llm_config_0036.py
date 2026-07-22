@@ -6,7 +6,6 @@ import importlib.util
 import json
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[3]
 MIGRATION_PATH = ROOT / "migrations/versions/0036_20260717_unify_llm_model_config.py"
 
@@ -61,15 +60,7 @@ def test_public_seed_manifest_is_complete_and_naturally_unique():
     )
     assert len(manifest["providers"]) == 17
     assert len(manifest["provider_models"]) == 83
-    assert len(manifest["system_configs"]) == 6
-    assert {row["capability"] for row in manifest["system_configs"]} == {
-        "CHAT",
-        "EMBEDDING",
-        "SPARSE_EMBEDDING",
-        "VISION",
-        "RERANK",
-        "ASR",
-    }
+    assert "system_configs" not in manifest
     assert len({row["provider_type"] for row in manifest["providers"]}) == 17
     model_keys = {
         (row["provider_type"], row["model_name"], row["capability"])
@@ -80,3 +71,17 @@ def test_public_seed_manifest_is_complete_and_naturally_unique():
     assert "change_me" not in serialized
     assert "demo-encrypted-key" not in serialized
     assert "api_key" not in serialized
+
+
+def test_migration_has_no_secret_or_preflight_dependency():
+    source = MIGRATION_PATH.read_text(encoding="utf-8")
+
+    for forbidden in (
+        "TOLINK_LLM_SEED_CIPHERTEXT_FILE",
+        "TOLINK_LLM_MIGRATION_AUTH_FILE",
+        "TOLINK_LLM_MIGRATION_AUTH_SECRET",
+        "decrypt_api_key",
+        "_ciphertexts",
+        "_verify_legacy_authorization",
+    ):
+        assert forbidden not in source

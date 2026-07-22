@@ -18,8 +18,6 @@ import pytest
 import sqlalchemy as sa
 from sqlalchemy.engine import make_url
 
-from src.core.llm.encryption import decrypt_api_key, encrypt_api_key
-
 ROOT = Path(__file__).resolve().parents[3]
 ADMIN_URL = os.environ.get("TEST_MYSQL_ADMIN_URL")
 pytestmark = [
@@ -53,46 +51,22 @@ def mysql_database():
         yield database_url
 
 
-@pytest.fixture
-def migration_files(tmp_path):
-    plaintexts = {
-        capability: f"secret-{capability.lower()}"
-        for capability in (
-            "CHAT",
-            "EMBEDDING",
-            "SPARSE_EMBEDDING",
-            "VISION",
-            "RERANK",
-            "ASR",
-        )
-    }
-    ciphertext_path = tmp_path / "ciphertexts.json"
-    ciphertext_path.write_text(
-        json.dumps(
-            {
-                "ciphertexts": {
-                    capability: encrypt_api_key(plaintext)
-                    for capability, plaintext in plaintexts.items()
-                }
-            }
-        ),
-        encoding="utf-8",
-    )
-    return ciphertext_path, plaintexts
-
-
 def _run_alembic(
     database_url: str,
     revision: str,
     *,
-    ciphertext_path=None,
     fail_after: str | None = None,
     expect_success: bool = True,
 ):
     env = os.environ.copy()
     env["ALEMBIC_DATABASE_URL"] = database_url
-    if ciphertext_path is not None:
-        env["TOLINK_LLM_SEED_CIPHERTEXT_FILE"] = str(ciphertext_path)
+    for name in (
+        "API_KEY_ENCRYPTION_SECRET",
+        "TOLINK_LLM_SEED_CIPHERTEXT_FILE",
+        "TOLINK_LLM_MIGRATION_AUTH_FILE",
+        "TOLINK_LLM_MIGRATION_AUTH_SECRET",
+    ):
+        env.pop(name, None)
     if fail_after is not None:
         env["TOLINK_LLM_MIGRATION_FAIL_AFTER"] = fail_after
     else:
@@ -152,7 +126,7 @@ def _schema_fingerprint(engine):
     return result
 
 
-def _seed_complete_legacy_snapshot(connection, fixed_time: str, ciphertexts: dict[str, str]):
+def _seed_complete_legacy_snapshot(connection, fixed_time: str):
     statements = [
         """
         INSERT INTO sys_user
@@ -273,37 +247,15 @@ def _seed_complete_legacy_snapshot(connection, fixed_time: str, ciphertexts: dic
     ]
     for statement in statements:
         connection.execute(sa.text(statement), {"fixed_time": fixed_time})
+
+
+def test_empty_database_upgrade_has_authoritative_schema_and_public_catalog(
+    mysql_database,
+):
     manifest = json.loads(
         (ROOT / "scripts" / "release" / "llm_seed_manifest.json").read_text(encoding="utf-8")
     )
-    for offset, item in enumerate(manifest["system_configs"], start=200):
-        connection.execute(
-            sa.text("""INSERT INTO llm_system_preset
-                       (id, provider_id, model_name, capability, api_key, is_active,
-                        provider_type, protocol, api_base_url, is_default, created_at, updated_at)
-                   VALUES (:id, 8001, :model_name, :capability, :api_key, 1,
-                           'linkrag', :protocol, :api_base_url, 1, :fixed_time, :fixed_time)"""),
-            {
-                "id": offset,
-                "model_name": item["model_name"],
-                "capability": item["capability"],
-                "api_key": ciphertexts[item["ciphertext_ref"]],
-                "protocol": item["protocol"],
-                "api_base_url": item["api_base_url"],
-                "fixed_time": fixed_time,
-            },
-        )
-
-
-def test_empty_database_upgrade_has_authoritative_schema_and_seed(mysql_database, migration_files):
-    ciphertext_path, plaintexts = migration_files
-    manifest = json.loads(
-        (ROOT / "scripts" / "release" / "llm_seed_manifest.json").read_text(encoding="utf-8")
-    )
-    ciphertexts = json.loads(ciphertext_path.read_text(encoding="utf-8"))["ciphertexts"]
-    completed = _run_alembic(mysql_database, "head", ciphertext_path=ciphertext_path)
-    output = completed.stdout + completed.stderr
-    assert all(plaintext not in output for plaintext in plaintexts.values())
+    _run_alembic(mysql_database, "head")
 
     engine = sa.create_engine(mysql_database)
     inspector = sa.inspect(engine)
@@ -394,61 +346,24 @@ def test_empty_database_upgrade_has_authoritative_schema_and_seed(mysql_database
             tuple(item[field] for field in model_fields) for item in manifest["provider_models"]
         }
 
-        config_rows = (
-            connection.execute(
-                sa.text("""SELECT scope, owner_user_id, provider_type, model_name, display_name,
-                      capability, protocol, api_base_url, api_key, is_active, snapshot_version
-               FROM llm_model_config WHERE scope='SYSTEM'""")
-            )
-            .mappings()
-            .all()
+        assert (
+            connection.execute(sa.text("SELECT COUNT(*) FROM llm_model_config")).scalar_one() == 0
         )
-        expected_configs = {item["capability"]: item for item in manifest["system_configs"]}
-        assert len(config_rows) == 6
-        for row in config_rows:
-            expected = expected_configs[row["capability"]]
-            assert row["scope"] == "SYSTEM" and row["owner_user_id"] == 0
-            assert row["provider_type"] == "linkrag"
-            for field in ("model_name", "display_name", "capability", "protocol", "api_base_url"):
-                assert row[field] == expected[field]
-            assert bool(row["is_active"]) is True and row["snapshot_version"] == 1
-            assert row["api_key"] == ciphertexts[expected["ciphertext_ref"]]
-            assert decrypt_api_key(row["api_key"]) == plaintexts[row["capability"]]
-
-        defaults = (
-            connection.execute(
-                sa.text("""SELECT d.capability, d.config_id, c.capability AS config_capability,
-                      c.is_active, c.scope, c.owner_user_id
-               FROM llm_capability_default d
-               LEFT JOIN llm_model_config c ON c.id = d.config_id
-               WHERE d.scope='SYSTEM' AND d.owner_user_id=0""")
-            )
-            .mappings()
-            .all()
-        )
-        assert len(defaults) == 6
-        assert {row["capability"] for row in defaults} == set(plaintexts)
-        assert all(
-            row["config_id"] is not None
-            and row["capability"] == row["config_capability"]
-            and bool(row["is_active"])
-            and row["scope"] == "SYSTEM"
-            and row["owner_user_id"] == 0
-            for row in defaults
+        assert (
+            connection.execute(sa.text("SELECT COUNT(*) FROM llm_capability_default")).scalar_one()
+            == 0
         )
     engine.dispose()
 
 
 def test_legacy_upgrade_clears_only_identity_fields_and_preserves_updated_at(
-    mysql_database, migration_files
+    mysql_database,
 ):
-    ciphertext_path, _ = migration_files
-    ciphertexts = json.loads(ciphertext_path.read_text(encoding="utf-8"))["ciphertexts"]
     _run_alembic(mysql_database, "0035")
     engine = sa.create_engine(mysql_database)
     fixed_time = "2025-01-02 03:04:05"
     with engine.begin() as connection:
-        _seed_complete_legacy_snapshot(connection, fixed_time, ciphertexts)
+        _seed_complete_legacy_snapshot(connection, fixed_time)
         untouched_tables = (
             "sys_user",
             "dataset",
@@ -463,7 +378,6 @@ def test_legacy_upgrade_clears_only_identity_fields_and_preserves_updated_at(
         before_conversation = _rows(connection, "chat_conversation")[0]
         before_message = _rows(connection, "chat_message")[0]
         before_usage = _rows(connection, "llm_usage_log")[0]
-    # 存量库直接复用旧系统预设的密文，不需要迁移文件或短期授权。
     _run_alembic(mysql_database, "head")
 
     with engine.connect() as connection:
@@ -520,9 +434,8 @@ def test_legacy_upgrade_clears_only_identity_fields_and_preserves_updated_at(
     ["cleanup_references", "drop_legacy_tables", "create_new_schema", "partial_seed"],
 )
 def test_interrupted_migration_reruns_to_same_schema_and_third_run_is_noop(
-    mysql_database, migration_files, checkpoint
+    mysql_database, checkpoint
 ):
-    ciphertext_path, _ = migration_files
     _run_alembic(mysql_database, "0035")
     engine = sa.create_engine(mysql_database)
     with engine.begin() as connection:
@@ -536,21 +449,16 @@ def test_interrupted_migration_reruns_to_same_schema_and_third_run_is_noop(
     _run_alembic(
         mysql_database,
         "head",
-        ciphertext_path=ciphertext_path,
         fail_after=checkpoint,
         expect_success=False,
     )
-    _run_alembic(
-        mysql_database,
-        "head",
-        ciphertext_path=ciphertext_path,
-    )
+    _run_alembic(mysql_database, "head")
     second_fingerprint = _schema_fingerprint(engine)
 
     # 与另一个全新数据库的无故障一次升级对比，防止“重跑只与自己一致”
     # 却遗留了不完整 schema。
     with _temporary_database() as clean_database_url:
-        _run_alembic(clean_database_url, "head", ciphertext_path=ciphertext_path)
+        _run_alembic(clean_database_url, "head")
         clean_engine = sa.create_engine(clean_database_url)
         try:
             assert second_fingerprint == _schema_fingerprint(clean_engine)
@@ -563,26 +471,15 @@ def test_interrupted_migration_reruns_to_same_schema_and_third_run_is_noop(
             connection.execute(
                 sa.text("SELECT COUNT(*) FROM llm_model_config WHERE scope='SYSTEM'")
             ).scalar_one()
-            == 6
+            == 0
         )
         assert (
             connection.execute(
                 sa.text("SELECT COUNT(*) FROM llm_capability_default WHERE scope='SYSTEM'")
             ).scalar_one()
-            == 6
+            == 0
         )
-        assert connection.execute(sa.text("""
-                SELECT COUNT(*) FROM (
-                    SELECT capability, COUNT(*) AS n
-                    FROM llm_model_config WHERE scope='SYSTEM'
-                    GROUP BY capability HAVING n <> 1
-                ) duplicate_capability
-                """)).scalar_one() == 0
 
-    _run_alembic(
-        mysql_database,
-        "head",
-        ciphertext_path=ciphertext_path,
-    )
+    _run_alembic(mysql_database, "head")
     assert _schema_fingerprint(engine) == second_fingerprint
     engine.dispose()
