@@ -16,11 +16,11 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:-prod}
-      - SPRING_CONFIG_ADDITIONAL_LOCATION=file:/app/config/
       - RECALL_SESSION_STREAM_BASE_URL=${RECALL_SESSION_STREAM_BASE_URL:-http://117.72.214.40:8000}
       - OBSERVABILITY_LOKI_BASE_URL=${OBSERVABILITY_LOKI_BASE_URL:-http://${HOST_VPN_IP:-100.86.10.52}:3100}
     volumes:
-      - ${SERVICE_CONFIG_PATH:-/opt/tolink/toLink-Service/config}:/app/config:ro
+      # application-prod.yml 已打入镜像；这里只挂载服务器长期保存的密钥覆盖文件。
+      - ${SERVICE_SECRET_CONFIG_FILE:-/opt/tolink/toLink-Service/config/application-prod-local.yml}:/app/config/${SERVICE_SECRET_CONFIG_NAME:-application-prod-local.yml}:ro
       - ${SERVICE_LOG_PATH:-/opt/tolink/toLink-Service/logs}:/app/logs
     ports:
       - "${SERVICE_HTTP_PORT:-8080}:8080"
@@ -33,6 +33,7 @@ services:
     restart: always
     env_file:
       - ${RAG_ENV_FILE:-/opt/tolink/toLink-Rag/.env.production}
+      - ${RAG_SECRET_ENV_FILE:-/opt/tolink/toLink-Rag/.env.production.local}
     environment:
       TZ: Asia/Shanghai
       LOG_SERVICE_NAME: tolink-rag

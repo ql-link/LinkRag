@@ -35,6 +35,25 @@
 
 Promtail 必须部署在产生日志文件的云服务器上；Loki 部署在主机服务器中间件栈中。
 
+## 生产 Jenkins 与容器配置注入
+
+生产部署采用两层配置：仓库中的 `.env.production` 只包含可提交配置，云服务器上的
+`/opt/tolink/toLink-Rag/.env.production.local` 只包含账号、密码、JWT 与 API Key。
+Jenkins 每次部署会自动更新基础配置和 `deploy/docker-compose.yml`，但不会覆盖密钥文件；
+Compose 按基础文件、密钥文件的顺序加载，后者覆盖前者中的空值。
+
+云服务器首次部署只需创建一次密钥文件并限制权限：
+
+```bash
+install -m 0600 /path/to/.env.production.local \
+  /opt/tolink/toLink-Rag/.env.production.local
+```
+
+缺少密钥文件或权限不是 `600` 时，Jenkins 会在启动容器之前直接失败，避免以空密码启动。
+Java 的 `application-prod.yml` 随镜像发布，并通过 `spring.config.import` 加载服务器上的
+`application-prod-local.yml`；Cloud Compose 只读挂载该密钥文件，不再用服务器目录覆盖镜像中的
+基础配置。
+
 ## Primary 测试环境
 
 测试环境通过 `deploy/test-server/docker-compose.yml` 部署，所有容器、网络、端口和数据卷均使用

@@ -14,8 +14,9 @@ pipeline {
     environment {
         IMAGE      = 'tolink-rag'
         TAG        = "${env.GIT_COMMIT?.take(8) ?: env.BUILD_NUMBER}"
-        DEPLOY_DIR = '/opt/tolink/toLink-Rag'   // TODO: 本机部署目录，内含 .env.production 和 deploy/docker-compose.yml
+        DEPLOY_DIR = '/opt/tolink/toLink-Rag'   // 基础配置由 Jenkins 更新，本机密钥文件长期保留
         RAG_ENV_FILE = '/opt/tolink/toLink-Rag/.env.production'
+        RAG_SECRET_ENV_FILE = '/opt/tolink/toLink-Rag/.env.production.local'
     }
 
     stages {
@@ -48,13 +49,26 @@ pipeline {
 
         stage('Deploy') {
             steps {
-                sh """
-                    cd ${DEPLOY_DIR}
-                    export TAG=${TAG}
-                    export RAG_ENV_FILE=${RAG_ENV_FILE}
-                    test -f "${RAG_ENV_FILE}" || { echo "Missing RAG env file: ${RAG_ENV_FILE}"; exit 14; }
+                sh '''
+                    test -f .env.production || { echo "Missing tracked RAG base config: .env.production"; exit 13; }
+                    install -d "$DEPLOY_DIR/deploy" "$DEPLOY_DIR/logs"
+                    cmp -s .env.production "$RAG_ENV_FILE" || install -m 0644 .env.production "$RAG_ENV_FILE"
+                    cmp -s deploy/docker-compose.yml "$DEPLOY_DIR/deploy/docker-compose.yml" || \
+                        install -m 0644 deploy/docker-compose.yml "$DEPLOY_DIR/deploy/docker-compose.yml"
+
+                    test -r "$RAG_SECRET_ENV_FILE" || {
+                        echo "Missing or unreadable RAG secret env file: $RAG_SECRET_ENV_FILE"
+                        exit 14
+                    }
+                    test "$(stat -c '%a' "$RAG_SECRET_ENV_FILE")" = "600" || {
+                        echo "RAG secret env file must use mode 600: $RAG_SECRET_ENV_FILE"
+                        exit 15
+                    }
+
+                    cd "$DEPLOY_DIR"
+                    export TAG RAG_ENV_FILE RAG_SECRET_ENV_FILE
                     docker compose -f deploy/docker-compose.yml up -d
-                """
+                '''
             }
         }
     }
