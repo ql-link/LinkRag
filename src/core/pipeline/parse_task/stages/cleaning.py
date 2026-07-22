@@ -20,6 +20,7 @@ from src.core.markdown_parser import EnhancementModelMissingError
 from .. import temp_workspace
 from .._utils import coerce_optional_int, compact_log_value, now, task_log_context
 from ..error_codes import ParseFailureCode, build_failure_reason
+from ..raw_markdown_assets import RawMarkdownAssetLoader
 from ..post_process.constants import POST_PROCESS_STAGE_CLEANING
 from .base import Stage
 from .context import StageContext, StageOutcome
@@ -96,13 +97,26 @@ class CleaningStage(Stage):
                 if payload.is_markdown_passthrough:
                     # md/markdown 源文件本身即目标格式：cleaning 阶段的职责是把多源文件
                     # 「解析为 md」，md 无需任何引擎转换，直接读取源文件文本透传，跳过解析。
-                    # 透传不经增强/PDF，无需数据集配置。
                     parse_result = await self._read_markdown_passthrough(source_path)
                     # 提取 MD 中 base64 内嵌图片并上传到 MinIO，替换为对象 URL；
                     # 单张失败不阻断整篇（best-effort），修改后的 markdown 用于后续分片。
                     parse_result["markdown"] = await self._services.upload_md_images(
                         parse_result["markdown"], payload
                     )
+                    # Java v1 资源包的 source_object_key 指向 normalized.md。仅该路径读取
+                    # 数据集图片增强开关；关闭时不扫描 URI、不下载 RAW、不构建 Vision client。
+                    if RawMarkdownAssetLoader.is_v1_source(payload):
+                        dataset_cfg = await self._load_dataset_config(payload, ctx)
+                        enhancement_config = (
+                            dataset_cfg.enhancement if dataset_cfg is not None else None
+                        )
+                        parse_result["markdown"] = (
+                            await self._services.enhance_markdown_raw_images(
+                                parse_result["markdown"],
+                                payload,
+                                enhancement_config,
+                            )
+                        )
                 else:
                     # 读取数据集级配置（PDF 后端 + 增强模型/开关）注入解析。get_config 内部已对
                     # DB 故障降级为默认；JSON 内容非法时 ValidationError 在此向上抛，由下方

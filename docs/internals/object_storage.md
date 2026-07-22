@@ -64,6 +64,7 @@ build_object_url(bucket: str, object_key: str) -> str
 - `MINIO_ACCESS_KEY`
 - `MINIO_SECRET_KEY`
 - `MINIO_PRIVATE_BUCKET`
+- `MINIO_RAW_BUCKET`
 - `MINIO_PUBLIC_BUCKET`
 - `MINIO_USE_SSL`
 - `MINIO_PUBLIC_ENDPOINT`
@@ -72,6 +73,7 @@ build_object_url(bucket: str, object_key: str) -> str
 MinIO endpoint 可带 `http://` 或 `https://`；不带 scheme 时由 `MINIO_USE_SSL` 决定。
 `MINIO_PUBLIC_ENDPOINT` 可选，仅用于 `build_object_url` 生成给云端解析器或浏览器访问的对象 URL；为空时复用 `MINIO_ENDPOINT`。S3 SDK 读写仍固定使用 `MINIO_ENDPOINT`，避免公网反向代理影响签名请求。
 `MINIO_PRIVATE_BUCKET` 是 RAG 文档默认桶，也是 Python 侧全部格式（含 `md`/`markdown`）解析产物的实际写入桶；
+`MINIO_RAW_BUCKET` 是 Java 写、Python 只读的原文件桶。Markdown v1 的规范化源文件和配套图片都在此桶，Python 不通过 Java HTTP 或预签名 URL 取图；
 `MINIO_PUBLIC_BUCKET` 对齐 Java 端公开读桶（默认 `tolink-public`，需配匿名读），承载博客与反馈附件等不敏感资源（由 Java 写入，Python 侧不写）。原博客专用桶 `tolink-blog` 已并入该公开桶。
 
 ## 5. 在解析链路中的使用
@@ -100,6 +102,19 @@ Markdown 输出：
 ParseTaskPipeline._upload_markdown()
   -> storage.upload_bytes(MINIO_PRIVATE_BUCKET, md_object_key, markdown, "text/markdown")
 ```
+
+Markdown v1 RAW 图片读取：
+
+```text
+CleaningStage (仅 enable_image_enhancement=true)
+  -> 校验 source_object_key == markdown-assets/v1/user-{u}/dataset-{d}/file-{f}/source/normalized.md
+  -> 校验 tolink-raw://raw/... 仅指向同一 fileId 的 images/image-{sha256}.{ext}
+  -> download_to_path(MINIO_RAW_BUCKET, image_object_key, task_temp_path)
+  -> jpg/png/gif/webp 保留原字节；bmp/tiff 解码后转 image/png
+  -> 当前 Vision batch 完成后释放字节；临时文件始终 safe_unlink
+```
+
+逻辑 URI 不含真实桶名、凭据或预签名参数。任何范围校验失败都不得调用存储接口；单图读取失败不阻断文本清洗和分片。
 
 PDF 图片资产：
 

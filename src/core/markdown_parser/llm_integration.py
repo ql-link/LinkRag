@@ -89,11 +89,19 @@ class ImageDescriber:
         self,
         parse_result: ParseResult,
         image_bytes_by_url: dict[str, tuple[bytes, str]] | None = None,
+        target_urls: list[str] | None = None,
     ) -> ParseResult:
         if not parse_result.images:
             return parse_result
 
-        unique_urls = list(dict.fromkeys(img.url for img in parse_result.images))
+        document_urls = list(dict.fromkeys(img.url for img in parse_result.images))
+        if target_urls is None:
+            unique_urls = document_urls
+        else:
+            allowed = set(document_urls)
+            unique_urls = list(dict.fromkeys(url for url in target_urls if url in allowed))
+        if not unique_urls:
+            return parse_result
 
         try:
             if image_bytes_by_url is None:

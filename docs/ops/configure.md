@@ -63,6 +63,9 @@
 | `MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT` | `true` | 是否启用表格 LLM 增强 |
 | `MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT` | `true` | 是否启用图片 LLM 增强 |
 | `MARKDOWN_PARSER_VISION_CONCURRENCY` | `24` | 图片视觉增强最大并发数，可降为 `16` / `8` / `1` 控制限流风险 |
+| `RAW_MARKDOWN_IMAGE_MAX_BYTES` | `20971520` | Java v1 RAW Markdown 单张图片读取上限，必须大于0且部署值不得高于 Java 上传侧上限 |
+| `RAW_MARKDOWN_IMAGE_BATCH_SIZE` | `4` | RAW 图片 Vision 批大小，范围 `1..20`；每批结束释放图片字节 |
+| `RAW_MARKDOWN_IMAGE_DOWNLOAD_CONCURRENCY` | `4` | RAW 图片流式下载并发，范围 `1..20` |
 | `MARKDOWN_PARSER_ENABLE_HEADING_HIERARCHY` | `false` | 是否启用 Markdown 标题层级后处理；默认关闭；开启且门禁命中时按用户默认 → LinkRag 系统默认预设解析 `CHAT` 模型 |
 | `MARKDOWN_PARSER_HEADING_NO_HEADING_MIN_TOKENS` | `512` | 全文无 heading 时进入标题生成门禁的最小 token 数 |
 | `MARKDOWN_PARSER_HEADING_FLAT_MIN_HEADINGS` | `5` | 全篇只有同级 heading 时进入扁平标题门禁的最小 heading 数；下限为 `5` |

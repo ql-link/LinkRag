@@ -110,6 +110,8 @@ default → LinkRag active + default 系统预设”解析：表格增强使用 
 
 PDF 解析阶段如果提供了 `image_bytes_by_url`，图片增强会优先使用内存图片 bytes；缺失时才回退读取 Markdown 中的图片 URL 或本地路径。
 
+Java 规范化 Markdown 的 RAW 图片由 parse-task 层先完成对象存储范围校验和下载，再调用 `ImageDescriber.aprocess(..., image_bytes_by_url=..., target_urls=...)`。`target_urls` 只允许选择当前 `ParseResult.images` 中的 URL，使一个批次只调用成功加载的图片，同时仍把描述合并回同一个完整 `ParseResult`。对象存储读取不放入 provider client，Vision provider 继续只负责字节分析和单图失败降级。
+
 图片增强通过 `ProviderVisionClient` 对同一批图片执行受控并发调用，最大并发数由
 `MARKDOWN_PARSER_VISION_CONCURRENCY` 控制，默认值为 `24`。单张图片加载或视觉模型调用失败时只跳过该图片描述，不阻断基础 Markdown 解析。非内存图片读取会通过线程执行，避免同步文件/URL 读取阻塞事件循环。
 
