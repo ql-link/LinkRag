@@ -158,6 +158,22 @@ fi
 update_tag "$tag_key" "$image_tag"
 
 cd "$test_root"
+case "$component" in
+  rag)
+    required_dev_config=${RAG_DEV_ENV_FILE:-$test_root/config/rag/.env.development}
+    ;;
+  service)
+    required_dev_config=${SERVICE_DEV_CONFIG_FILE:-$test_root/config/service/application-dev.yml}
+    ;;
+  *)
+    required_dev_config=
+    ;;
+esac
+if [[ -n "$required_dev_config" && ! -f "$required_dev_config" ]]; then
+  echo "missing required dev config: $required_dev_config" >&2
+  exit 2
+fi
+
 if [[ "$component" == rag ]]; then
   llm_migration_dir="$test_root/secrets/llm-migration"
   install -d -m 700 "$llm_migration_dir"
