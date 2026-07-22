@@ -52,12 +52,12 @@ docker compose --env-file .env.test --profile apps up -d
 ```
 
 开发服务使用各项目既有的开发 profile：Python 设置 `APP_ENV=development`，并从
-`/opt/tolink/test/config/rag/.env.development` 加载开发配置；Java 设置
-`SPRING_PROFILES_ACTIVE=dev`，并挂载 `/opt/tolink/test/config/service/application-dev.yml`。
-两份开发配置由运维侧放置在 Primary，不进入镜像。`rag.env.test`、`app.env.test` 以及服务器现有
-`secrets/rag.env`、`secrets/app.env` 继续作为部署覆盖层，强制把数据库、Redis、Kafka、Qdrant、
-Manticore 和 MinIO 指向 `tolink-test-*` 隔离资源，避免既有开发配置中的旧地址误连生产环境。
-Compose 注入的环境变量优先级高于 Python env 文件和 Spring YAML，因此最终连接信息以隔离覆盖层为准。
+`/opt/tolink/test/config/rag/.env.development` 加载可提交的基础配置，再由权限为 `600` 的
+`.env.development.local` 注入账号、密码、JWT 与 API Key。Java 设置
+`SPRING_PROFILES_ACTIVE=dev`，挂载 `/opt/tolink/test/config/service/`，其中
+`application-dev.yml` 是可提交基础配置，`application-dev-local.yml` 只保存敏感字段并由前者导入。
+Compose 和构建迁移任务都按“基础配置 → 本机密钥覆盖”的顺序加载，两个 `.local` 文件不得进入
+Git 或 Docker 镜像。测试环境的基础配置固定指向 `tolink-test-*` 隔离资源，避免误连生产环境。
 
 当前业务 topic 和 consumer group 由代码常量固定，因此测试环境使用独立 Kafka broker，不能只依赖
 topic 前缀与生产共用 broker。测试 Loki 独立保存日志并保留 7 天。

@@ -18,4 +18,6 @@ tests
 .env
 .env.*
 !.env.example
+!.env.development
+!.env.production
 nltk_data

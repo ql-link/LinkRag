@@ -15,8 +15,12 @@ MARKDOWN_HEADING_LLM_MAX_OUTPUT_TOKEN_MAX = 65536
 PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
 
 
-def _settings_env_file() -> str:
-    return os.getenv("TOLINK_ENV_FILE") or os.path.join(PROJECT_ROOT, ".env")
+def _settings_env_files() -> tuple[str, ...]:
+    base_env_file = os.getenv("TOLINK_ENV_FILE") or os.path.join(PROJECT_ROOT, ".env")
+    local_env_file = f"{base_env_file}.local"
+    if os.path.isfile(local_env_file):
+        return base_env_file, local_env_file
+    return (base_env_file,)
 
 
 class Settings(BaseSettings):
@@ -711,7 +715,7 @@ class Settings(BaseSettings):
         raise ValueError(v)
 
     model_config = SettingsConfigDict(
-        env_file=_settings_env_file(),
+        env_file=_settings_env_files(),
         env_file_encoding="utf-8",
         extra="ignore",
     )
