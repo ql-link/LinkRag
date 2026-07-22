@@ -1,6 +1,6 @@
 # Configuration
 
-所有运行时配置通过 [src/config.py](../../src/config.py) 的 `Settings` 加载，默认读取项目根目录 `.env`；也可以用 `TOLINK_ENV_FILE=/path/to/env` 显式指定配置文件。Docker 部署层通过 `env_file` 选择 `.env.production` / `.env.development`；单服务部署入口默认读取 `.env.production`，也可以用 `RAG_ENV_FILE=/path/to/env` 显式覆盖。不要把环境 IP 写进代码。本文按域解读 [.env.example](../../.env.example) 中的配置项，标注**必填**与典型值。
+所有运行时配置通过 [src/config.py](../../src/config.py) 的 `Settings` 加载，默认读取项目根目录 `.env`；也可以用 `TOLINK_ENV_FILE=/path/to/env` 显式指定配置文件。若同目录存在 `<配置文件>.local`，加载器会在基础配置之后自动叠加该本机文件，例如 `.env.development` + `.env.development.local`，或 `.env.production` + `.env.production.local`。基础配置可以进入 Git，本机覆盖文件只保存账号、密码、JWT 和 API Key，必须保持忽略。Docker 部署层按顺序加载 `RAG_ENV_FILE` 与 `RAG_SECRET_ENV_FILE`，后者覆盖前者；单服务生产部署默认使用 `.env.production` + `.env.production.local`。不要把环境 IP 写进代码。本文按域解读 [.env.example](../../.env.example) 中的配置项，标注**必填**与典型值。
 
 > 不要硬编码密钥，不要把真实 `.env` 提交到仓库。
 
