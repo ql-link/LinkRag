@@ -153,10 +153,11 @@ services:
     container_name: tolink-test-rag
     restart: unless-stopped
     env_file:
-      - ./rag.env.test
-      - ${RAG_SECRET_ENV_FILE:-/opt/tolink/test/secrets/rag.env}
+      - ${RAG_DEV_ENV_FILE:-/opt/tolink/test/config/rag/.env.development}
+      - ${RAG_DEV_SECRET_ENV_FILE:-/opt/tolink/test/config/rag/.env.development.local}
     environment:
       TZ: Asia/Shanghai
+      APP_ENV: development
       LOG_SERVICE_NAME: tolink-rag-test
     extra_hosts:
       - host.docker.internal:host-gateway
@@ -178,12 +179,10 @@ services:
     image: tolink-service:${SERVICE_TAG:-test-latest}
     container_name: tolink-test-service
     restart: unless-stopped
-    env_file:
-      - ./app.env.test
-      - ${APP_SECRET_ENV_FILE:-/opt/tolink/test/secrets/app.env}
     environment:
       TZ: Asia/Shanghai
-      SPRING_PROFILES_ACTIVE: test
+      SPRING_PROFILES_ACTIVE: dev
+      SPRING_CONFIG_ADDITIONAL_LOCATION: optional:file:/app/config/
       TOLINK_RECALL_SESSION_STREAM_BASE_URL: http://${TAILSCALE_IP:-100.86.10.52}:${TEST_RAG_PORT:-18000}
       OBSERVABILITY_LOKI_BASE_URL: http://tolink-test-loki:3100
     extra_hosts:
@@ -191,6 +190,7 @@ services:
     ports:
       - "${TAILSCALE_IP:-100.86.10.52}:${TEST_SERVICE_PORT:-18081}:8080"
     volumes:
+      - ${SERVICE_DEV_CONFIG_DIR:-/opt/tolink/test/config/service}:/app/config:ro
       - ${SERVICE_LOG_PATH:-/opt/tolink/test/toLink-Service/logs}:/app/logs
     networks: [tolink-test-net]
     depends_on:

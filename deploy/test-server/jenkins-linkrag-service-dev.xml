@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <flow-definition plugin="workflow-job">
   <actions/>
-  <description>Cloud Jenkins 调度；在 Primary 拉取 LinkRag-Service dev、构建并部署 Java 测试服务。</description>
+  <description>Cloud Jenkins 调度；在 Primary 拉取 LinkRag-Service dev、构建并部署 Java 开发环境服务。</description>
   <keepDependencies>false</keepDependencies>
   <properties>
     <org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty><abortPrevious>false</abortPrevious></org.jenkinsci.plugins.workflow.job.properties.DisableConcurrentBuildsJobProperty>

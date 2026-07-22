@@ -49,12 +49,22 @@ source_dir="$workspace_root/$workspace_name"
 next_dir="$workspace_root/.${workspace_name}.next"
 archive=$(mktemp "$jenkins_root/${workspace_name}.XXXXXX.tgz")
 trap 'rm -f "$archive"; rm -rf "$next_dir"' EXIT
-incoming_archive="$jenkins_root/incoming/${workspace_name}-dev.tgz"
+source_ref_file="$test_root/source-refs/$component"
+source_ref=dev
+if [[ -f "$source_ref_file" ]]; then
+  source_ref=$(tr -d '[:space:]' <"$source_ref_file")
+fi
+if [[ ! "$source_ref" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+  echo "invalid source ref for $component: $source_ref" >&2
+  exit 2
+fi
+source_ref_slug=${source_ref//\//-}
+incoming_archive="$jenkins_root/incoming/${workspace_name}-${source_ref_slug}.tgz"
 
-echo "[$component] fetch ql-link/$github_repo dev on Primary"
+echo "[$component] fetch ql-link/$github_repo $source_ref on Primary"
 rm -rf "$next_dir"
 mkdir -p "$next_dir"
-archive_url="https://codeload.github.com/ql-link/${github_repo}/tar.gz/refs/heads/dev"
+archive_url="https://codeload.github.com/ql-link/${github_repo}/tar.gz/refs/heads/${source_ref}"
 if [[ -s "$incoming_archive" ]]; then
   echo "[$component] use preloaded dev archive"
   mv "$incoming_archive" "$archive"
@@ -146,24 +156,54 @@ if [[ "$component" == rag ]]; then
     install -m 600 "$config_source/$name" "$test_root/$name"
   done
   chmod 700 "$test_root/configure-test-env.sh" "$test_root/build-component-on-primary.sh"
+  install -d -m 700 "$test_root/config/rag"
+  install -m 0644 "$source_dir/.env.development" "$test_root/config/rag/.env.development"
   "$test_root/configure-test-env.sh"
 elif [[ "$component" == service ]]; then
   # The current Service dev branch uses packaged application.yml plus
   # environment variables. Remove the legacy copied profile file because it
   # contains production-oriented endpoints and would break test isolation.
   rm -f "$test_root/toLink-Service/config/application-test.yml"
+  install -d -m 700 "$test_root/config/service"
+  if [[ -f "$source_dir/link-api/src/main/resources/application-dev.yml" ]]; then
+    install -m 0644 "$source_dir/link-api/src/main/resources/application-dev.yml" \
+      "$test_root/config/service/application-dev.yml"
+  fi
   "$test_root/configure-test-env.sh"
 fi
 
 update_tag "$tag_key" "$image_tag"
 
 cd "$test_root"
+case "$component" in
+  rag)
+    required_dev_config=${RAG_DEV_ENV_FILE:-$test_root/config/rag/.env.development}
+    required_secret_config=${RAG_DEV_SECRET_ENV_FILE:-$test_root/config/rag/.env.development.local}
+    ;;
+  service)
+    required_dev_config=${SERVICE_DEV_CONFIG_FILE:-$test_root/config/service/application-dev.yml}
+    required_secret_config=${SERVICE_DEV_SECRET_CONFIG_FILE:-$test_root/config/service/application-dev-local.yml}
+    ;;
+  *)
+    required_dev_config=
+    required_secret_config=
+    ;;
+esac
+if [[ -n "$required_dev_config" && ! -f "$required_dev_config" ]]; then
+  echo "missing required dev config: $required_dev_config" >&2
+  exit 2
+fi
+if [[ -n "$required_secret_config" && ! -f "$required_secret_config" ]]; then
+  echo "missing required dev secret config: $required_secret_config" >&2
+  exit 2
+fi
+
 if [[ "$component" == rag ]]; then
   llm_migration_dir="$test_root/secrets/llm-migration"
   install -d -m 700 "$llm_migration_dir"
   docker run --rm \
-    --env-file "$test_root/rag.env.test" \
-    --env-file "$test_root/secrets/rag.env" \
+    --env-file "$test_root/config/rag/.env.development" \
+    --env-file "$test_root/config/rag/.env.development.local" \
     -e PYTHONPATH=/app \
     -v "$test_root/generate-test-llm-migration-inputs.py:/run/generate-test-llm-migration-inputs.py:ro" \
     -v "$llm_migration_dir:/run/llm-migration" \
@@ -171,8 +211,8 @@ if [[ "$component" == rag ]]; then
     python /run/generate-test-llm-migration-inputs.py /run/llm-migration
   docker run --rm \
     --network tolink-test-net \
-    --env-file "$test_root/rag.env.test" \
-    --env-file "$test_root/secrets/rag.env" \
+    --env-file "$test_root/config/rag/.env.development" \
+    --env-file "$test_root/config/rag/.env.development.local" \
     -e PYTHONPATH=/app \
     -e TOLINK_LLM_SEED_CIPHERTEXT_FILE=/run/llm-migration/ciphertexts.json \
     -v "$llm_migration_dir:/run/llm-migration" \
