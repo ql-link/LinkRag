@@ -216,8 +216,8 @@ if [[ "$component" == rag ]]; then
     "$image_name:$image_tag" \
     python scripts/release/run_alembic.py \
       --expected-app-env development \
-      --expected-host 100.86.10.52 \
-      --expected-port 13306 \
+      --expected-host tolink-dev-mysql \
+      --expected-port 3306 \
       --expected-database tolink_rag_dev \
       --seed-ciphertext-file /run/llm-migration/ciphertexts.json
 fi

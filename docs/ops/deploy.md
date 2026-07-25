@@ -94,7 +94,9 @@ Cloud Jenkins 使用三个独立 dev 作业：`linkrag-rag-dev`、`linkrag-servi
 生产作业保持不变。Primary 通过构建锁避免三个开发作业同时占用 Docker 构建资源。
 其中 `linkrag-rag-dev` 在启动新 RAG 容器前自动执行 Alembic，固定加载
 `.env.development` + `.env.development.local`，并输出最终 revision；迁移失败时不会部署新镜像。
-执行前会校验目标必须是 `development / 100.86.10.52:13306 / tolink_rag_dev`，不满足时直接阻断。
+执行前会校验迁移容器实际连接目标必须是
+`development / tolink-dev-mysql:3306 / tolink_rag_dev`，不满足时直接阻断。宿主机暴露的
+`100.86.10.52:13306` 只用于 Tailscale 客户端访问，不是容器内 Alembic 的连接地址。
 0036 升级时优先复用库内已有的六类系统密文；只有全新开发库或能力不完整时，才使用部署任务
 自动生成的 dev-only 密文，避免日常 dev 发布覆盖已有可用 Key。
 Java 开发镜像使用 `deploy/dev-server/Dockerfile.service` 构建；Maven 下载设置请求超时，Docker

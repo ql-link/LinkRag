@@ -21,18 +21,19 @@ def test_production_jenkins_migrates_before_deploy_with_production_env() -> None
 
 
 def test_dev_deploy_migrates_with_development_env() -> None:
-    source = (ROOT / "deploy/test-server/build-component-on-primary.sh").read_text(encoding="utf-8")
+    source = (ROOT / "deploy/dev-server/build-component-on-primary.sh").read_text(encoding="utf-8")
 
     migration = source.index("python scripts/release/run_alembic.py")
     deploy = source.index(
-        'docker compose --env-file .env.test --profile apps up -d "$compose_service"'
+        'docker compose --env-file .env.dev --profile apps up -d "$compose_service"'
     )
 
     assert migration < deploy
-    assert '--env-file "$test_root/config/rag/.env.development"' in source
-    assert '--env-file "$test_root/config/rag/.env.development.local"' in source
+    assert '--env-file "$dev_root/config/rag/.env.development"' in source
+    assert '--env-file "$dev_root/config/rag/.env.development.local"' in source
     assert "--expected-app-env development" in source
-    assert "--expected-port 13306" in source
-    assert "--expected-database tolink_rag_test" in source
+    assert "--expected-host tolink-dev-mysql" in source
+    assert "--expected-port 3306" in source
+    assert "--expected-database tolink_rag_dev" in source
     assert "--seed-ciphertext-file /run/llm-migration/ciphertexts.json" in source
     assert "-e TOLINK_LLM_SEED_CIPHERTEXT_FILE=" not in source
