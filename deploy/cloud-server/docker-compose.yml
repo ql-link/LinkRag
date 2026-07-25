@@ -17,7 +17,7 @@ services:
     environment:
       - TZ=Asia/Shanghai
       - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:-prod}
-      - RECALL_SESSION_STREAM_BASE_URL=${RECALL_SESSION_STREAM_BASE_URL:-http://117.72.214.40:8000}
+      - RECALL_SESSION_STREAM_BASE_URL=${RECALL_SESSION_STREAM_BASE_URL:-https://linkrag.cn}
       - OBSERVABILITY_LOKI_BASE_URL=${OBSERVABILITY_LOKI_BASE_URL:-http://tolink-loki:3100}
     volumes:
       # application-prod.yml 已打入镜像；这里只挂载服务器长期保存的密钥覆盖文件。

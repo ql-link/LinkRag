@@ -87,7 +87,7 @@ mq-all = [
     "aio-pika>=9.4.0",
 ]
 pretokenization = [
-    "infinity-sdk>=0.7.0; python_version >= '3.11'",
+    "infinity-sdk>=0.7.0; python_version >= '3.11' and python_version < '3.13'",
 ]
 all = [
     "pytest>=7.4.0",
@@ -102,7 +102,7 @@ all = [
     "aiokafka>=0.11.0",
     "confluent-kafka>=2.6.0",
     "aio-pika>=9.4.0",
-    "infinity-sdk>=0.7.0; python_version >= '3.11'",
+    "infinity-sdk>=0.7.0; python_version >= '3.11' and python_version < '3.13'",
 ]
 
 [build-system]
