@@ -5,6 +5,15 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[3]
 
 
+def _read_env(path: Path) -> dict[str, str]:
+    return {
+        key: value
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#") and "=" in line
+        for key, value in [line.split("=", 1)]
+    }
+
+
 def test_production_jenkins_migrates_before_deploy_with_production_env() -> None:
     source = (ROOT / "Jenkinsfile").read_text(encoding="utf-8")
 
@@ -37,3 +46,18 @@ def test_dev_deploy_migrates_with_development_env() -> None:
     assert "--expected-database tolink_rag_dev" in source
     assert "--seed-ciphertext-file /run/llm-migration/ciphertexts.json" in source
     assert "-e TOLINK_LLM_SEED_CIPHERTEXT_FILE=" not in source
+
+
+def test_dev_base_config_targets_isolated_dev_resources() -> None:
+    env = _read_env(ROOT / ".env.development")
+
+    assert env["APP_ENV"] == "development"
+    assert env["LOG_SERVICE_NAME"] == "tolink-rag-dev"
+    assert env["DB_NAME"] == "tolink_rag_dev"
+    assert env["QDRANT_COLLECTION_NAME"] == "tolink_dev_collection"
+    assert env["QDRANT_BM25_COLLECTION"] == "tolink_dev_bm25"
+    assert env["CHUNK_INDEX_COLLECTION_PREFIX"] == "dev_kb_bucket"
+    assert env["MANTICORE_BM25_TABLE_PREFIX"] == "dev_bm25_ds_v2"
+    assert env["MINIO_RAW_BUCKET"] == "tolink-dev-raw"
+    assert env["MINIO_PRIVATE_BUCKET"] == "tolink-dev-docs"
+    assert env["MINIO_PUBLIC_BUCKET"] == "tolink-dev-public"
