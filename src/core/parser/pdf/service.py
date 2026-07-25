@@ -15,6 +15,7 @@ import numpy as np
 from loguru import logger as timing_logger
 
 from src.config import settings
+from src.observability.logging import truncate_log_value
 from src.core.parser.pdf.models import (
     PdfBinaryAsset,
     PdfImageAsset,
@@ -84,11 +85,24 @@ class PdfParserService:
             backend_started_at = time.monotonic()
             markdown, binary_assets = backend_instance.parse(source, options)
             backend_elapsed = time.monotonic() - backend_started_at
-            timing_logger.info(
-                "[PdfParserService] backend parse completed: backend={} elapsed={:.2f}s "
+            backend_success = bool(markdown and markdown.strip())
+            backend_reason = backend_instance.metadata.get(
+                f"{backend_name}_backend_error", ""
+            )
+            timing_logger.bind(
+                event="pdf_backend_attempt_completed",
+                outcome="success" if backend_success else "failed",
+                backend=backend_name,
+                duration_ms=int(backend_elapsed * 1000),
+                markdown_chars=len(markdown or ""),
+                binary_asset_count=len(binary_assets),
+                failure_reason=truncate_log_value(backend_reason, 512),
+            ).info(
+                "PDF backend 尝试完成: backend={} success={} duration_ms={} "
                 "markdown_chars={} binary_assets={}",
                 backend_name,
-                backend_elapsed,
+                backend_success,
+                int(backend_elapsed * 1000),
                 len(markdown or ""),
                 len(binary_assets),
             )

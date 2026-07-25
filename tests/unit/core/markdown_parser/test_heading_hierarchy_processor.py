@@ -11,11 +11,11 @@ from src.core.markdown_parser.heading_hierarchy import (
     HeadingHierarchyProcessor,
     HeadingInsertion,
     HeadingPlan,
+    HeadingPlanGenerationError,
     HeadingPlanValidationError,
     LLMHeadingPlanGenerator,
 )
 from src.core.markdown_parser.models import ElementType
-from src.core.markdown_parser.provider_clients import LLMConfigMissingError
 
 
 class _TokenCounter:
@@ -123,8 +123,8 @@ async def test_invalid_plan_raises_when_gate_matches():
 async def test_gate_miss_does_not_build_default_chat_generator(monkeypatch):
     import src.core.markdown_parser.heading_hierarchy as hierarchy
 
-    build = AsyncMock(side_effect=AssertionError("should not resolve CHAT model"))
-    monkeypatch.setattr(hierarchy, "build_default_heading_plan_generator", build)
+    build = MagicMock(side_effect=AssertionError("should not build CHAT generator"))
+    monkeypatch.setattr(hierarchy, "build_heading_plan_generator", build)
     processor = HeadingHierarchyProcessor(
         config=_config(),
         tokenizer=_TokenCounter(511),
@@ -137,9 +137,7 @@ async def test_gate_miss_does_not_build_default_chat_generator(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_gate_match_uses_user_default_chat_model(monkeypatch):
-    import src.core.llm.user_model_resolver as resolver
-
+async def test_gate_match_uses_exact_dataset_chat_model(monkeypatch):
     provider = SimpleNamespace()
     provider.generate = AsyncMock(
         return_value=SimpleNamespace(
@@ -148,38 +146,32 @@ async def test_gate_match_uses_user_default_chat_model(monkeypatch):
             usage=SimpleNamespace(prompt_tokens=0, completion_tokens=0, total_tokens=0),
         )
     )
-    resolve = AsyncMock(
-        return_value=SimpleNamespace(
-            provider=provider,
-            model_name="qwen-max",
-            provider_type="qwen",
-            config_id=99,
-            source="user",
-        )
+    resolved = SimpleNamespace(
+        provider=provider,
+        model_name="qwen-max",
+        provider_type="qwen",
+        config_id=99,
     )
-    monkeypatch.setattr(resolver, "aresolve_user_model", resolve)
     processor = HeadingHierarchyProcessor(
         config=_config(),
         tokenizer=_TokenCounter(512),
     )
 
-    result = await processor.aprocess("正文第一段\n\n正文第二段", source_file="x.md", user_id=7)
+    result = await processor.aprocess(
+        "正文第一段\n\n正文第二段",
+        source_file="x.md",
+        user_id=7,
+        resolved_model=resolved,
+    )
 
     assert result.applied is True
     assert result.markdown.startswith("# 文档概览\n")
-    resolve.assert_awaited_once_with(
-        user_id=7,
-        capability="CHAT",
-        allow_linkrag_default=True,
-    )
     provider.generate.assert_awaited_once()
     assert provider.generate.await_args.kwargs["max_tokens"] == 4096
 
 
 @pytest.mark.asyncio
-async def test_gate_match_uses_linkrag_system_default_chat_model(monkeypatch):
-    import src.core.llm.user_model_resolver as resolver
-
+async def test_gate_match_preserves_global_config_id_in_usage(monkeypatch):
     provider = SimpleNamespace()
     provider.generate = AsyncMock(
         return_value=SimpleNamespace(
@@ -188,16 +180,12 @@ async def test_gate_match_uses_linkrag_system_default_chat_model(monkeypatch):
             usage=SimpleNamespace(prompt_tokens=1, completion_tokens=1, total_tokens=2),
         )
     )
-    resolve = AsyncMock(
-        return_value=SimpleNamespace(
-            provider=provider,
-            model_name="linkrag-chat",
-            provider_type="linkrag",
-            config_id=9001,
-            source="system",
-        )
+    resolved = SimpleNamespace(
+        provider=provider,
+        model_name="linkrag-chat",
+        provider_type="linkrag",
+        config_id=9001,
     )
-    monkeypatch.setattr(resolver, "aresolve_user_model", resolve)
 
     import src.core.markdown_parser.heading_hierarchy as heading
 
@@ -208,38 +196,27 @@ async def test_gate_match_uses_linkrag_system_default_chat_model(monkeypatch):
         tokenizer=_TokenCounter(512),
     )
 
-    result = await processor.aprocess("正文第一段\n\n正文第二段", source_file="x.md", user_id=7)
+    result = await processor.aprocess(
+        "正文第一段\n\n正文第二段",
+        source_file="x.md",
+        user_id=7,
+        resolved_model=resolved,
+    )
 
     assert result.applied is True
     assert result.markdown.startswith("# 系统标题\n")
-    resolve.assert_awaited_once_with(
-        user_id=7,
-        capability="CHAT",
-        allow_linkrag_default=True,
-    )
-    assert report.call_args.kwargs["config_id"] is None
+    assert report.call_args.kwargs["config_id"] == 9001
 
 
 @pytest.mark.asyncio
-async def test_missing_user_and_system_default_chat_model_raises_llm_config_missing(monkeypatch):
-    import src.core.llm.user_model_resolver as resolver
-    from src.core.llm.exceptions import UserModelConfigMissingError
-
-    resolve = AsyncMock(side_effect=UserModelConfigMissingError("CHAT", 7))
-    monkeypatch.setattr(resolver, "aresolve_user_model", resolve)
+async def test_gate_match_without_exact_dataset_chat_model_raises():
     processor = HeadingHierarchyProcessor(
         config=_config(),
         tokenizer=_TokenCounter(512),
     )
 
-    with pytest.raises(LLMConfigMissingError):
+    with pytest.raises(HeadingPlanGenerationError, match="dataset enhancement CHAT"):
         await processor.aprocess("正文第一段\n\n正文第二段", source_file="x.md", user_id=7)
-
-    resolve.assert_awaited_once_with(
-        user_id=7,
-        capability="CHAT",
-        allow_linkrag_default=True,
-    )
 
 
 @pytest.mark.asyncio

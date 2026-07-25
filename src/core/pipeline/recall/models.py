@@ -206,6 +206,7 @@ class RecallRequest:
     fusion_sparse_weight_override: float | None = None
     fusion_dense_weight_override: float | None = None
     rrf_k_override: int | None = None
+    dataset_contexts: dict[int, object] | None = None
 
 
 @dataclass

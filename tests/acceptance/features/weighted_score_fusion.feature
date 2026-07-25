@@ -266,7 +266,7 @@ Feature: weighted_score 召回融合策略
   Scenario: rerank 生效时消费 weighted_score 融合后的 RecallHit
     Given fusion_strategy 配置为 "weighted_score"
     And weighted_score 融合后 hits 顺序为 "cDense,cSparse,cBm25"
-    And 用户已配置可用 RERANK 模型
+    And Dataset 已绑定可用的精确 RERANK config_id
     When RAG 流进入 rerank 阶段
     Then RerankRequest.hits 顺序为 "cDense,cSparse,cBm25"
     And RerankRequest.hits 中每个 hit 保留 fused_score 与 scores
@@ -275,7 +275,7 @@ Feature: weighted_score 召回融合策略
   Scenario: rerank 不可用时按当前融合策略顺序降级
     Given fusion_strategy 配置为 "weighted_score"
     And weighted_score 融合后 hits 顺序为 "cDense,cSparse,cBm25"
-    And 用户未配置 RERANK 模型
+    And Dataset 精确 RERANK config_id 在执行期不可用
     When RAG 流进入 rerank 阶段
     Then 终态事件 data 的 rerank_applied 为 false
     And 终态事件 data 中 hits 顺序为 "cDense,cSparse,cBm25"

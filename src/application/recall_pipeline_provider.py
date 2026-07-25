@@ -13,7 +13,12 @@ from __future__ import annotations
 from functools import lru_cache
 
 from src.config import settings
-from src.core.dataset_config import DatasetConfigService, RecallConfig
+from src.core.dataset_config import (
+    DatasetExecutionContext,
+    DatasetExecutionContextLoader,
+    DatasetExecutionPurpose,
+    RecallConfig,
+)
 from src.core.pipeline.recall import RecallPipeline, RecallPipelineConfig, RecallRequest
 from src.core.pipeline.recall.document_readiness import MySqlDocumentReadinessGate
 from src.core.pipeline.recall.protocols import (
@@ -40,26 +45,15 @@ def _build_bm25_retriever() -> Retriever:
 
 
 def _build_sparse_retriever() -> Retriever:
-    # sparse 召回 query 编码按数据集绑定的 SPARSE_EMBEDDING 配置解析（与写入侧
-    # sparse_indexing 同源）。
-    from src.core.encoding.sparse.factory import aresolve_dataset_sparse_vector_service
-
     return SparseRetriever(
-        backend=compose_vector_storage_facade(
-            query_sparse_resolver=aresolve_dataset_sparse_vector_service,
-        ),
+        backend=compose_vector_storage_facade(),
         score_threshold=settings.SPARSE_RETRIEVAL_SCORE_THRESHOLD,
     )
 
 
 def _build_dense_retriever() -> Retriever:
-    # dense 召回 query 编码按数据集绑定的 EMBEDDING 配置解析（与写入侧 index_chunks 同源）。
-    from src.core.splitter.factory import aresolve_dataset_chunk_embedding_pipeline
-
     return DenseRetriever(
-        backend=compose_vector_storage_facade(
-            query_embedding_resolver=aresolve_dataset_chunk_embedding_pipeline,
-        ),
+        backend=compose_vector_storage_facade(),
         score_threshold=settings.DENSE_RETRIEVAL_SCORE_THRESHOLD,
     )
 
@@ -107,8 +101,10 @@ def _build_pipeline() -> RecallPipeline:
     )
 
 
-async def aresolve_recall_config(user_id: int, dataset_ids: list[int]) -> RecallConfig:
-    """取本次召回生效的数据集级 recall 配置（RAG 流 / 纯召回 JSON 两入口共用）。
+async def aresolve_recall_execution(
+    user_id: int, dataset_ids: list[int]
+) -> tuple[RecallConfig, dict[int, DatasetExecutionContext]]:
+    """在召回前一次加载每个 Dataset 的独立执行快照。
 
     多数据集混合召回时取 **第一个** dataset_id 的配置（各数据集召回深度/阈值无法同时生效，
     取首个是确定性且可解释的选择）；``dataset_ids`` 为空（全库召回）时返回系统默认
@@ -118,13 +114,17 @@ async def aresolve_recall_config(user_id: int, dataset_ids: list[int]) -> Recall
     不依赖请求级 session。
     """
     if not dataset_ids:
-        return RecallConfig.from_settings()
+        return RecallConfig.from_settings(), {}
     # 延迟导入避免与 database 模块的潜在循环依赖。
     from src.database import get_db_context
 
     async with get_db_context() as db:
-        bundle = await DatasetConfigService().get_config(user_id, dataset_ids[0], db)
-    return bundle.recall
+        contexts = await DatasetExecutionContextLoader(db).load_many(
+            user_id,
+            dataset_ids,
+            DatasetExecutionPurpose.RECALL,
+        )
+    return contexts[dataset_ids[0]].config.recall, contexts
 
 
 def build_recall_request_from_config(
@@ -133,6 +133,7 @@ def build_recall_request_from_config(
     user_id: int,
     dataset_ids: list[int],
     recall_cfg: RecallConfig,
+    dataset_contexts: dict[int, DatasetExecutionContext] | None = None,
     doc_ids: list[int] | None = None,
 ) -> RecallRequest:
     """把数据集级召回配置映射为 pipeline 入参。
@@ -157,6 +158,7 @@ def build_recall_request_from_config(
         strict_override=recall_cfg.recall_strict,
         fusion_strategy_override=recall_cfg.recall_fusion_strategy,
         rrf_k_override=recall_cfg.rrf_k,
+        dataset_contexts=dataset_contexts or {},
         fusion_bm25_weight_override=recall_cfg.fusion_bm25_weight,
         fusion_sparse_weight_override=recall_cfg.fusion_sparse_weight,
         fusion_dense_weight_override=recall_cfg.fusion_dense_weight,
@@ -167,7 +169,7 @@ def build_recall_request_from_config(
 def get_recall_pipeline() -> RecallPipeline:
     """返回进程内单例 ``RecallPipeline``，作为 FastAPI 依赖。
 
-    首次调用装配（含本地 BGE-M3 加载），后续复用缓存实例。
+    首次调用装配稀疏向量远程 provider，后续复用缓存实例。
     """
     return _build_pipeline()
 

@@ -99,6 +99,7 @@ class ParseWorkflowRunner:
         log_record: Any | None = None,
         log_repo: Any | None = None,
         is_retry: bool = False,
+        execution_context: Any | None = None,
         failures: dict[str, str] | None = None,
     ) -> RunRecord:
         """Execute a parse DAG for ``payload``.
@@ -130,6 +131,7 @@ class ParseWorkflowRunner:
             log_record=log_record,
             log_repo=log_repo,
             is_retry=is_retry,
+            execution_context=execution_context,
             failures=failures if failures is not None else {},
         )
         return await WorkflowEngine().run(

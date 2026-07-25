@@ -22,6 +22,7 @@ from src.application.recall_errors import (
 )
 from src.application.recall_serialization import serialize_hits, serialize_recall_diagnostics
 from src.config import settings
+from src.observability.logging import safe_exception_stack, truncate_log_value
 from src.core.pipeline.recall import (
     RecallError,
     RecallFatalError,
@@ -50,22 +51,44 @@ async def run_recall_json(
     超时上限复用 ``RECALL_STREAM_TIMEOUT_MS``（语义为召回执行超时，与 SSE 端点一致）。
     """
     timeout_seconds = settings.RECALL_STREAM_TIMEOUT_MS / 1000
+    request_logger = logger.bind(
+        event_domain="recall_json",
+        request_id=request_id,
+        user_id=recall_req.user_id,
+        dataset_count=len(getattr(recall_req, "dataset_ids", None) or []),
+        enabled_sources=getattr(recall_req, "enabled_sources", None) or [],
+    )
     try:
         response = await asyncio.wait_for(pipeline.execute(recall_req), timeout=timeout_seconds)
     except RecallValidationError as exc:
-        logger.info("[recall-json] validation error request_id={}: {}", request_id, exc)
+        request_logger.bind(
+            error_type=type(exc).__name__,
+            error_message=truncate_log_value(exc),
+        ).info("[recall-json] validation error")
         raise RecallApiError(422, CODE_INVALID_REQUEST, str(exc))
     except RecallFatalError as exc:
-        logger.warning("[recall-json] embedding config missing request_id={}: {}", request_id, exc)
+        request_logger.bind(
+            error_type=type(exc).__name__,
+            error_message=truncate_log_value(exc),
+            stack_trace=safe_exception_stack(exc),
+        ).warning("[recall-json] embedding config missing")
         raise RecallApiError(422, CODE_EMBEDDING_CONFIG_MISSING, "user embedding config missing")
     except RecallError as exc:
-        logger.warning("[recall-json] all sources failed request_id={}: {}", request_id, exc)
+        request_logger.bind(
+            error_type=type(exc).__name__,
+            error_message=truncate_log_value(exc),
+            stack_trace=safe_exception_stack(exc),
+        ).warning("[recall-json] all sources failed")
         raise RecallApiError(500, CODE_ALL_SOURCES_FAILED, "all retrievers failed")
     except asyncio.TimeoutError:
-        logger.warning("[recall-json] timeout request_id={}", request_id)
+        request_logger.warning("[recall-json] timeout")
         raise RecallApiError(504, CODE_TIMEOUT, "recall timeout")
-    except Exception:  # noqa: BLE001 - 兜底，避免未预期异常泄露堆栈给调用方
-        logger.exception("[recall-json] unexpected error request_id={}", request_id)
+    except Exception as exc:  # noqa: BLE001 - 兜底，避免未预期异常泄露堆栈给调用方
+        request_logger.bind(
+            error_type=type(exc).__name__,
+            error_message=truncate_log_value(exc),
+            stack_trace=safe_exception_stack(exc),
+        ).error("[recall-json] unexpected error")
         raise RecallApiError(500, CODE_INTERNAL_ERROR, "internal error")
 
     payload = {

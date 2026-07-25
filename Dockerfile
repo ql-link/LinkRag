@@ -11,9 +11,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # opencv-python-headless 等需要的系统库；OpenDataLoader PDF 后端需要 Java 11+
-# 换国内 apt 镜像（清华），避免 deb.debian.org 在国内龟速
-RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true; \
-    sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.list 2>/dev/null || true; \
+# 换国内 apt 镜像（阿里云），避免 deb.debian.org 在国内龟速
+RUN sed -i 's|http://deb.debian.org|https://mirrors.aliyun.com|g; s|https://deb.debian.org|https://mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || true; \
+    sed -i 's|http://deb.debian.org|https://mirrors.aliyun.com|g; s|https://deb.debian.org|https://mirrors.aliyun.com|g' /etc/apt/sources.list 2>/dev/null || true; \
     apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         curl \
@@ -28,8 +28,8 @@ RUN sed -i 's|deb.debian.org|mirrors.tuna.tsinghua.edu.cn|g' /etc/apt/sources.li
 COPY pyproject.toml README.md ./
 RUN mkdir -p src && touch src/__init__.py
 RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install --upgrade pip -i https://pypi.tuna.tsinghua.edu.cn/simple && \
-    pip install '.[all]' -i https://pypi.tuna.tsinghua.edu.cn/simple --timeout 120
+    pip install --upgrade pip -i https://mirrors.aliyun.com/pypi/simple && \
+    pip install '.[all]' -i https://mirrors.aliyun.com/pypi/simple --timeout 120
 
 # 再拷入真实源码与其余文件（迁移、脚本、alembic 配置等）；
 # 这层变动不影响上面的依赖层缓存。运行时 uvicorn 从 /app/src 直接加载。

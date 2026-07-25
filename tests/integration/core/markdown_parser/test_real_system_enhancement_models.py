@@ -1,15 +1,17 @@
-"""解析增强系统预设模型的真实环境冒烟测试。
+"""解析增强 Dataset 精确模型配置的真实环境冒烟测试。
 
-本模块会读取 ``DATABASE_URL`` 指向数据库中的 LinkRag 系统默认 CHAT / VISION 预设，
+本模块按显式 ``config_id`` 读取 ``DATABASE_URL`` 指向数据库中的 CHAT / VISION 配置，
 并真实调用外部模型接口。默认跳过，仅在显式设置以下开关时运行：
 
     TOLINK_RUN_REAL_ENHANCEMENT_MODEL_TESTS=1 \
       TOLINK_REAL_ENHANCEMENT_USER_ID=<user_id> \
+      TOLINK_REAL_ENHANCEMENT_CHAT_CONFIG_ID=<config_id> \
+      TOLINK_REAL_ENHANCEMENT_VISION_CONFIG_ID=<config_id> \
       pytest --run-integration -m real_env \
       tests/integration/core/markdown_parser/test_real_system_enhancement_models.py
 
-必须通过 ``TOLINK_REAL_ENHANCEMENT_USER_ID`` 指定没有个人默认 CHAT / VISION 配置的用户。
-测试只读数据库、不写业务数据，并屏蔽用量 MQ 上报。
+USER scope 配置必须归属于 ``TOLINK_REAL_ENHANCEMENT_USER_ID``；SYSTEM scope 配置可由任意
+用户使用。测试只读数据库、不写业务数据，并屏蔽用量 MQ 上报。
 """
 
 from __future__ import annotations
@@ -24,13 +26,14 @@ import pytest
 from src.core.markdown_parser.heading_hierarchy import (
     HeadingHierarchyConfig,
     HeadingHierarchyProcessor,
-    build_default_heading_plan_generator,
+    build_heading_plan_generator,
 )
 from src.core.markdown_parser.provider_clients import (
     abuild_table_client,
     abuild_vision_client,
 )
 from src.database import close_database
+from src.core.llm.user_model_resolver import aresolve_model
 
 
 def _enabled() -> bool:
@@ -45,8 +48,24 @@ def _enabled() -> bool:
 def _user_id() -> int:
     raw = os.getenv("TOLINK_REAL_ENHANCEMENT_USER_ID", "").strip()
     if not raw:
-        pytest.skip("Set TOLINK_REAL_ENHANCEMENT_USER_ID to a real fallback test user.")
+        pytest.skip("Set TOLINK_REAL_ENHANCEMENT_USER_ID to the config access user.")
     return int(raw)
+
+
+def _config_id(capability: str) -> int:
+    name = f"TOLINK_REAL_ENHANCEMENT_{capability}_CONFIG_ID"
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        pytest.skip(f"Set {name} to an exact llm_model_config id.")
+    return int(raw)
+
+
+async def _resolved(capability: str):
+    return await aresolve_model(
+        user_id=_user_id(),
+        config_id=_config_id(capability),
+        capability=capability,
+    )
 
 
 def _png_chunk(chunk_type: bytes, payload: bytes) -> bytes:
@@ -90,18 +109,19 @@ pytestmark = [
         not _enabled(),
         reason=(
             "Set TOLINK_RUN_REAL_ENHANCEMENT_MODEL_TESTS=1 to call real CHAT / VISION "
-            "system preset models."
+            "exact Dataset-bound models."
         ),
     ),
 ]
 
 
 @pytest.mark.asyncio
-async def test_real_system_chat_model_describes_table(monkeypatch):
+async def test_real_exact_chat_model_describes_table(monkeypatch):
     import src.core.markdown_parser.provider_clients as provider_clients
 
     monkeypatch.setattr(provider_clients, "_report_enhancement_usage", lambda **_kwargs: None)
-    client = await abuild_table_client(_user_id())
+    resolved = await _resolved("CHAT")
+    client = await abuild_table_client(resolved, user_id=_user_id())
     await close_database()
     table = "| 产品 | 数量 |\n| --- | ---: |\n| A | 2 |\n| B | 3 |"
     try:
@@ -110,16 +130,17 @@ async def test_real_system_chat_model_describes_table(monkeypatch):
         await _close_provider(client._provider)
 
     assert descriptions.get(table, "").strip()
-    assert client._provider_type == "linkrag"
-    assert client._config_id is None
+    assert client._provider_type == resolved.provider_type
+    assert client._config_id == _config_id("CHAT")
 
 
 @pytest.mark.asyncio
-async def test_real_system_vision_model_describes_image(monkeypatch):
+async def test_real_exact_vision_model_describes_image(monkeypatch):
     import src.core.markdown_parser.provider_clients as provider_clients
 
     monkeypatch.setattr(provider_clients, "_report_enhancement_usage", lambda **_kwargs: None)
-    client = await abuild_vision_client(_user_id())
+    resolved = await _resolved("VISION")
+    client = await abuild_vision_client(resolved, user_id=_user_id())
     await close_database()
     image_url = "memory://red-blue.png"
     try:
@@ -132,18 +153,20 @@ async def test_real_system_vision_model_describes_image(monkeypatch):
         await _close_provider(client._provider)
 
     assert descriptions.get(image_url, "").strip()
-    assert client._provider_type == "linkrag"
-    assert client._config_id is None
+    assert client._provider_type == resolved.provider_type
+    assert client._config_id == _config_id("VISION")
 
 
 @pytest.mark.asyncio
-async def test_real_system_chat_model_generates_heading_plan(monkeypatch):
+async def test_real_exact_chat_model_generates_heading_plan(monkeypatch):
     import src.core.markdown_parser.heading_hierarchy as heading_hierarchy
 
     report = MagicMock()
     monkeypatch.setattr(heading_hierarchy, "_report_heading_usage", report)
-    generator = await build_default_heading_plan_generator(
-        _user_id(),
+    resolved = await _resolved("CHAT")
+    generator = build_heading_plan_generator(
+        resolved,
+        user_id=_user_id(),
         context_token_budget=65536,
         max_output_tokens=4096,
     )
@@ -169,5 +192,5 @@ async def test_real_system_chat_model_generates_heading_plan(monkeypatch):
 
     assert result.decision.should_generate is True
     report.assert_called_once()
-    assert generator._provider_type == "linkrag"
-    assert generator._config_id is None
+    assert generator._provider_type == resolved.provider_type
+    assert generator._config_id == _config_id("CHAT")

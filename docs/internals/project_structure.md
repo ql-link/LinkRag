@@ -100,10 +100,14 @@ toLink-Rag/                         # 仓库根目录
 │   │   └── recall_serialization.py     # 召回结果序列化
 │   ├── cache/                    # 缓存客户端与缓存基础设施
 │   │   ├── redis_client.py       # 异步 Redis 连接单例
-│   │   └── cache_manager.py      # CacheManager + 后端抽象（Redis / Null）
+│   │   ├── cache_manager.py      # CacheManager + 后端抽象（Redis / Null）
+│   │   ├── fenced_json_cache.py  # data/fence/lock 原子 JSON 缓存原语
+│   │   ├── llm_runtime_cache.py  # Python 独占的 LLM 运行配置 envelope
+│   │   └── dataset_parse_config_cache.py # Java/Python 共享 Dataset 原始快照 envelope
 │   ├── core/                     # 核心能力与基础设施
 │   │   ├── parse_task_service.py # 解析 + Markdown 增强编排服务（ParseTaskService）
 │   │   ├── workflow/             # 轻量流程编排引擎（业务零耦合）
+│   │   ├── dataset_config/       # Dataset 原始快照 repository、Settings 合并与执行上下文
 │   │   ├── llm/                  # LLM 抽象、工厂与厂商适配
 │   │   │   ├── factory.py
 │   │   │   ├── interfaces.py
@@ -138,7 +142,6 @@ toLink-Rag/                         # 仓库根目录
 │   │   │       ├── adapter_encoder.py # llm adapter 输出 → SparseVector 桥接
 │   │   │       ├── factory.py     # 按用户配置解析 provider 装配 SparseVectorService
 │   │   │       ├── pipeline.py    # SparseVectorService 服务接口
-│   │   │       ├── deploy_bge_m3.py # 本地模型部署/冒烟脚本
 │   │   │       └── constants.py / models.py / exceptions.py
 │   │   ├── prompts/              # LLM 提示词模板
 │   │   │   ├── markdown_enhancement.py

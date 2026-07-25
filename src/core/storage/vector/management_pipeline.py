@@ -14,13 +14,7 @@ from src.core.encoding.sparse import (
     SparseVector,
     SparseVectorService,
 )
-from src.core.encoding.sparse.factory import (
-    aresolve_dataset_sparse_vector_service as aresolve_user_sparse_vector_service,
-)
 from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
-from src.core.splitter.factory import (
-    aresolve_dataset_chunk_embedding_pipeline as aresolve_user_chunk_embedding_pipeline,
-)
 from src.core.splitter.factory import (
     validate_dense_dimension,
 )
@@ -561,11 +555,9 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
 
         if self.sparse_vector_service is not None:
             return self.sparse_vector_service
-        if dataset_id is None:
-            from src.core.encoding.sparse.factory import aresolve_user_sparse_vector_service as _old
-
-            return await _old(user_id)
-        return await aresolve_user_sparse_vector_service(user_id, dataset_id)
+        raise RuntimeError(
+            "chunk update requires an explicitly injected dataset sparse vector service"
+        )
 
     async def _mark_sparse_indexing(
         self,
@@ -648,10 +640,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
             end_line=end_line,
             chunk_index=chunk_index,
         )
-        embedding_pipeline = await aresolve_user_chunk_embedding_pipeline(
-            record.user_id,
-            record.set_id,
-        )
+        embedding_pipeline = self.embedding_pipeline
         embedded_chunks = await embedding_pipeline.aembed_chunks([chunk])
         if len(embedded_chunks) != 1:
             raise ValueError(

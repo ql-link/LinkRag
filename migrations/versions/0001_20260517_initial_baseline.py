@@ -31,10 +31,14 @@ _DB_SQL = Path(__file__).parent.parent / "db.sql"
 
 def upgrade() -> None:
     sql = _DB_SQL.read_text(encoding="utf-8")
+    # 不能用 ``stmt.startswith('--')`` 丢弃整个分号片段：baseline 中每个
+    # CREATE TABLE 前都有标题注释，旧实现会连同紧随其后的 DDL 一起跳过，
+    # 导致空库 ``alembic upgrade head`` 最终只执行 ALTER TABLE 而失败。
+    sql = re.sub(r"(?m)^\s*--.*$", "", sql)
     bind = op.get_bind()
     for stmt in re.split(r";\s*\n", sql):
         stmt = stmt.strip()
-        if not stmt or stmt.startswith("--"):
+        if not stmt:
             continue
         # 跳过 CREATE DATABASE / USE：alembic 已连到目标库
         if re.match(r"(CREATE\s+DATABASE|USE\s+)", stmt, re.IGNORECASE):

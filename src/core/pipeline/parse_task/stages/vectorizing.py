@@ -35,10 +35,10 @@ class VectorizingStage(Stage):
     async def run(self, ctx: StageContext) -> StageOutcome:
         try:
             vector_result = await self._services.store_chunk_vectors(
-                ctx.chunks or [], ctx.payload, ctx.db
+                ctx.chunks or [], ctx.payload, ctx.db, getattr(ctx, "execution_context", None)
             )
         except DenseEmbeddingConfigMissingError as exc:
-            # 发起用户无默认 EMBEDDING 配置：稠密向量必配，单独归类便于 Java 提示用户去配置，
+            # Dataset 缺少或无法解析 EMBEDDING 精确绑定：稠密向量必配，
             # 区别于普通向量化失败的 VECTORIZING_FAILED。
             return StageOutcome.failure(
                 build_failure_reason(ParseFailureCode.LLM_CONFIG_MISSING, str(exc)),
@@ -79,7 +79,7 @@ class VectorizingStage(Stage):
                 completion_tokens=0,
                 total_tokens=vector_result.embed_total_tokens,
                 task_id=str(ctx.payload.task_id),
-                config_id=vector_result.embed_config_id,
+                config_id=int(vector_result.embed_config_id),
             )
 
     async def mark_success(self, ctx: StageContext, outcome: StageOutcome, *, started_at) -> None:

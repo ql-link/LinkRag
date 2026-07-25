@@ -4,7 +4,7 @@
 #       rerank 精排（不可用即降级当前融合顺序）→ 正文回填 → 上下文组装 → CHAT 流式生成。
 # 说明：在原对外直连 SSE 行为基础上，补回 #165 删除 recall_http_api.feature 后悬空的召回执行
 #       语义断言（候选融合、命中字段形状、failed_sources 降级），并覆盖 rerank 精排终态与
-#       未配置 RERANK 模型时降级为当前融合顺序的契约。
+#       Dataset 精确 RERANK config_id 在执行期不可用时的降级契约。
 # token 策略：短期可复用（仅校验 exp），不做一次性消费 / 防重放 / 撤销；
 #       资源滥用由按 user_id 的并发上限封顶。
 
@@ -93,10 +93,10 @@ Feature: 对外 RAG 问答流 SSE
     And hits 中每个 hit 含字段 chunk_id 与 doc_id 与 dataset_id 与 fused_score 与 scores 与 rerank_score 与 rerank_rank
     And hits 中每个 hit 含字段 content
 
-  Scenario: 用户未配置 RERANK 模型时降级为当前融合顺序候选且不报错
+  Scenario: Dataset 精确 RERANK config_id 执行期不可用时降级为当前融合顺序
     Given session token claims sub=123 dataset_ids=[1] scope=recall:stream 未过期
     And config_id 指向的 CHAT 模型对用户 123 可用
-    And 用户 123 未配置 RERANK 模型
+    And Dataset 精确 RERANK config_id 在执行期不可用
     And bm25 与 sparse 两路均返回命中
     When 前端携带该 token 调用 POST /api/v1/rag/stream body query="任意" dataset_ids=[1]
     Then 最终收到 SSE 事件 "answer_done"
@@ -120,7 +120,7 @@ Feature: 对外 RAG 问答流 SSE
     And config_id 指向的 CHAT 模型对用户 123 不可用
     When 前端携带该 token 调用 POST /api/v1/rag/stream body query="任意" dataset_ids=[1]
     Then 收到 SSE 事件 "error"
-    And error.data 的 code 等于 "RECALL_MODEL_CONFIG_MISSING"
+    And error.data 的 code 等于 "LLM_CONFIG_NOT_FOUND"
     And 不调用 RecallPipeline
     And 发送 error 后关闭 SSE 流
 
@@ -134,10 +134,10 @@ Feature: 对外 RAG 问答流 SSE
     And 不收到 SSE 事件 "answer_done"
     And error.data 的 message 不含内部堆栈
 
-  Scenario: 发起用户无默认 EMBEDDING 配置时以 error RECALL_EMBEDDING_CONFIG_MISSING 返回
+  Scenario: Dataset dense_embedding_config_id 执行期不可用时以明确错误返回
     Given session token claims sub=123 dataset_ids=[1] scope=recall:stream 未过期
     And config_id 指向的 CHAT 模型对用户 123 可用
-    And 用户 123 无默认 EMBEDDING 配置
+    And Dataset dense_embedding_config_id 在召回执行期不可用
     When 前端携带该 token 调用 POST /api/v1/rag/stream body query="任意" dataset_ids=[1]
     Then 收到 SSE 事件 "error"
     And error.data 的 code 等于 "RECALL_EMBEDDING_CONFIG_MISSING"

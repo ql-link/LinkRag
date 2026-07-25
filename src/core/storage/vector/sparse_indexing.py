@@ -28,20 +28,18 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.config import settings
 from src.core.storage.chunks import ChunkRepository
 from src.core.storage.chunks.constants import (
-    CHUNK_STATUS_INDEXED,
     SPARSE_VECTOR_STATUS_FAILED,
-    SPARSE_VECTOR_STATUS_INDEXED,
     SPARSE_VECTOR_STATUS_INDEXING,
     SPARSE_VECTOR_STATUS_PENDING,
 )
 from src.core.storage.qdrant import QdrantIndexStore
 from src.core.storage.qdrant.point_factory import sparse_indexed_point_from_record
 from src.models.chunk_record import ChunkRecordDB
+from src.observability.logging import safe_exception_stack, truncate_log_value
 
 from src.core.encoding.sparse.exceptions import SparseVectorError
-from src.core.encoding.sparse.factory import (
-    aresolve_dataset_sparse_vector_service as aresolve_user_sparse_vector_service,
-)
+from src.core.encoding.sparse.factory import build_sparse_vector_service
+from src.core.llm.user_model_resolver import ResolvedModel
 from src.core.encoding.sparse.pipeline import SparseVectorService
 from src.services.usage_reporter import report_usage_nowait
 
@@ -96,6 +94,7 @@ class SparseIndexingPipeline:
         chunks: Sequence[ChunkRecordDB],
         task_id: str,
         db: AsyncSession,
+        resolved_model: ResolvedModel | None = None,
     ) -> None:
         """执行单文档的稀疏向量阶段。
 
@@ -142,7 +141,14 @@ class SparseIndexingPipeline:
         # （解析函数取自 settings），保证所有用户写进同一个稀疏向量命名空间。
         user_id = int(records[0].user_id)
         dataset_id = int(records[0].set_id)
-        service = await self._resolve_sparse_vector_service(user_id, dataset_id, db=db)
+        if self._sparse_vector_service is not None:
+            service = self._sparse_vector_service
+        elif resolved_model is not None:
+            service = build_sparse_vector_service(resolved_model)
+        else:
+            raise SparseIndexingError(
+                "SPARSE_VECTORIZING_FAILED:dataset execution context is required"
+            )
         store = self._get_qdrant_store()
         model_name = service.model_name
         vector_name = service.vector_name
@@ -263,35 +269,16 @@ class SparseIndexingPipeline:
             await db.commit()
         except Exception as bookkeeping_exc:
             await db.rollback()
-            logger.error(
+            logger.bind(
+                error_type=type(bookkeeping_exc).__name__,
+                error_message=truncate_log_value(bookkeeping_exc),
+                stack_trace=safe_exception_stack(bookkeeping_exc),
+            ).error(
                 "[SparseIndexingPipeline] failed to mark sparse_vector_status=FAILED: "
-                "task_id={} chunks={} error={}",
+                "task_id={} chunk_count={}",
                 task_id,
-                list(chunk_ids),
-                bookkeeping_exc,
+                len(chunk_ids),
             )
-
-    async def _resolve_sparse_vector_service(
-        self,
-        user_id: int,
-        dataset_id: int,
-        *,
-        db: AsyncSession,
-    ) -> SparseVectorService:
-        """按数据集绑定解析稀疏向量服务（必配不兜底）；显式注入的 service 优先（测试 / 复用）。
-
-        注入的 ``self._sparse_vector_service`` 一旦提供即对所有 user 生效（绕过解析），服务于
-        测试与显式装配；生产路径不注入，每次 run() 按 ``user_id`` 解析一次。**不缓存**到实例
-        属性——per-user 解析结果不可跨 user 复用。
-
-        Raises:
-            SparseEmbeddingConfigMissingError: 数据集缺少有效 SPARSE_EMBEDDING 绑定配置（由解析函数透传，
-                上层 ``SparseVectorizingStage`` 据此归类失败）。
-        """
-
-        if self._sparse_vector_service is not None:
-            return self._sparse_vector_service
-        return await aresolve_user_sparse_vector_service(user_id, dataset_id, db=db)
 
     @staticmethod
     def _report_sparse_usage(
@@ -314,7 +301,7 @@ class SparseIndexingPipeline:
             completion_tokens=0,
             total_tokens=total_tokens,
             task_id=task_id,
-            config_id=getattr(service, "config_id", None),
+            config_id=int(service.config_id),
         )
 
     def _get_qdrant_store(self) -> QdrantIndexStore:

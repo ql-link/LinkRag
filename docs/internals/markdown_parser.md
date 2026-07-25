@@ -110,8 +110,15 @@ default → LinkRag active + default 系统预设”解析：表格增强使用 
 
 PDF 解析阶段如果提供了 `image_bytes_by_url`，图片增强会优先使用内存图片 bytes；缺失时才回退读取 Markdown 中的图片 URL 或本地路径。
 
+Java 规范化 Markdown 的 RAW 图片由 parse-task 层先完成对象存储范围校验和下载，再调用 `ImageDescriber.aprocess(..., image_bytes_by_url=..., target_urls=...)`。`target_urls` 只允许选择当前 `ParseResult.images` 中的 URL，使一个批次只调用成功加载的图片，同时仍把描述合并回同一个完整 `ParseResult`。对象存储读取不放入 provider client，Vision provider 继续只负责字节分析和单图失败降级。
+
 图片增强通过 `ProviderVisionClient` 对同一批图片执行受控并发调用，最大并发数由
 `MARKDOWN_PARSER_VISION_CONCURRENCY` 控制，默认值为 `24`。单张图片加载或视觉模型调用失败时只跳过该图片描述，不阻断基础 Markdown 解析。非内存图片读取会通过线程执行，避免同步文件/URL 读取阻塞事件循环。
+
+增强降级日志使用 `markdown_enhancement_failed` / `image_enhancement_failed`，记录
+`task_id/user_id/dataset_id/source_filename`（生产解析上下文可用时）、失败子阶段、
+模型标识、图片数量或图片短指纹以及安全调用栈。图片 URL 会移除 query/fragment，
+不会记录签名参数；表格正文、图片 base64、prompt 和模型响应正文均不进入日志。
 
 标题层级后处理是可选增强，默认关闭。配置关闭时行为与普通 `MarkdownParser.parse()` 等价，不执行门禁，也不读取模型配置。配置开启且门禁命中时，标题生成器按“发起用户默认 → LinkRag 系统默认预设”解析 `CHAT` 模型并生成标题插入计划；无 `user_id` 的调试入口使用遗留 env 系统级 `CHAT` 配置。该模块不新增标题专用模型选择参数，也不允许 LLM 返回整篇 Markdown。
 

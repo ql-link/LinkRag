@@ -37,6 +37,7 @@ class _SparseSearchBackend(Protocol):
         doc_id: list[int] | None = None,
         top_k: int | None = None,
         score_threshold: float | None = None,
+        resolved_model: object | None = None,
     ) -> Any: ...
 
 
@@ -70,6 +71,7 @@ class SparseRetriever:
         user_id: int,
         top_k: int,
         score_threshold_override: float | None = None,
+        dataset_contexts: dict[int, object] | None = None,
     ) -> list[RetrieverHit]:
         """按稀疏向量召回一组候选 chunk。
 
@@ -108,6 +110,18 @@ class SparseRetriever:
 
         accumulated: list[RetrieverHit] = []
         for dataset_id in dataset_ids:
+            context = (
+                dataset_contexts.get(dataset_id)
+                if dataset_contexts is not None
+                else None
+            )
+            if dataset_contexts is not None and context is None:
+                raise RecallFatalError(
+                    f"Dataset {dataset_id} execution context is required"
+                )
+            search_kwargs = {}
+            if context is not None:
+                search_kwargs["resolved_model"] = context.sparse_embedding
             try:
                 result = await self._backend.search_sparse_chunks(
                     query=query,
@@ -116,6 +130,7 @@ class SparseRetriever:
                     doc_id=list(doc_ids) if doc_ids else None,
                     top_k=top_k,
                     score_threshold=effective_threshold,
+                    **search_kwargs,
                 )
             except VectorRetrievalUserConfigMissingError as exc:
                 raise RecallFatalError(str(exc)) from exc

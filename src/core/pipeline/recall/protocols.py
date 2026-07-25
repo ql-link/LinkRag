@@ -47,6 +47,7 @@ class Retriever(Protocol):
         user_id: int,
         top_k: int,
         score_threshold_override: float | None = None,
+        dataset_contexts: dict[int, object] | None = None,
     ) -> list[RetrieverHit]: ...
 
 

@@ -87,13 +87,7 @@ mq-all = [
     "aio-pika>=9.4.0",
 ]
 pretokenization = [
-    "infinity-sdk>=0.7.0; python_version >= '3.11'",
-]
-# 本地稀疏向量推理（会引入 torch/CUDA，体积大）。仅当 SPARSE_VECTOR_PROVIDER=bge_m3（本地）时需要；
-# 用远程 bge_m3_http 时无需安装。装法：pip install ".[local-embedding]"
-local-embedding = [
-    "FlagEmbedding>=1.4.0",
-    "sentence-transformers>=2.3.0",
+    "infinity-sdk>=0.7.0; python_version >= '3.11' and python_version < '3.13'",
 ]
 all = [
     "pytest>=7.4.0",
@@ -108,9 +102,7 @@ all = [
     "aiokafka>=0.11.0",
     "confluent-kafka>=2.6.0",
     "aio-pika>=9.4.0",
-    "infinity-sdk>=0.7.0; python_version >= '3.11'",
-    "FlagEmbedding>=1.4.0",
-    "sentence-transformers>=2.3.0",
+    "infinity-sdk>=0.7.0; python_version >= '3.11' and python_version < '3.13'",
 ]
 
 [build-system]

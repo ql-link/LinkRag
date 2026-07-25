@@ -1,15 +1,4 @@
-# -*- coding: utf-8 -*-
-"""统一用户模型解析模块单测（协议化后）。
-
-覆盖：
-- 命中用户默认配置 → 解密 + create_client（按 protocol 分发）+ 来源 user；
-- 系统兜底配置（is_system_fallback）→ 免解密 + 来源 system；
-- config_id 指定路径；
-- 缺配置且不兜底 → UserModelConfigMissingError；allow_system_fallback 命中兜底；
-- protocol 缺失 → ProtocolRequiredError（fail fast，不回退 provider_type）；
-- 能力不支持 → UnsupportedProtocolCapabilityError；能力字符串未知 → ValueError；
-- override_model 优先级最高；provider_type 仅作身份透传、不参与分发。
-"""
+"""全局 config_id 精确解析单测。"""
 
 from __future__ import annotations
 
@@ -17,374 +6,159 @@ from unittest.mock import MagicMock
 
 import pytest
 
-import src.core.llm.user_model_resolver as umr
+import src.core.llm.user_model_resolver as resolver
 from src.core.llm.exceptions import (
+    LLMConfigCapabilityMismatchError,
+    LLMConfigForbiddenError,
+    LLMConfigInactiveError,
+    LLMConfigNotFoundError,
     ProviderConnectionError,
-    ProtocolRequiredError,
     UnsupportedProtocolCapabilityError,
-    UserModelConfigMissingError,
 )
-from src.core.llm.factory import ModelFactory
 from src.core.llm.interfaces import CapabilityType
-from src.core.llm.user_model_resolver import (
-    aresolve_user_model,
-    build_provider_from_config,
-)
+from src.core.llm.runtime_config import RuntimeModelConfig
 
 
-def _patch_factory(monkeypatch, *, supports=True):
+def _runtime(**overrides) -> RuntimeModelConfig:
+    values = {
+        "configId": 101,
+        "scope": "USER",
+        "ownerUserId": 7,
+        "providerId": 3,
+        "providerType": "aliyun",
+        "modelName": "qwen-plus",
+        "displayName": "Qwen Plus",
+        "capability": "CHAT",
+        "protocol": "openai",
+        "apiBaseUrl": "https://example.test/v1/chat/completions",
+        "apiKeyCiphertext": "ciphertext",
+        "isActive": True,
+        "snapshotVersion": 4,
+    }
+    values.update(overrides)
+    return RuntimeModelConfig.model_validate(values)
+
+
+class _Repository:
+    def __init__(self, value):
+        self.value = value
+        self.calls: list[int] = []
+
+    async def get(self, config_id: int):
+        self.calls.append(config_id)
+        return self.value
+
+
+def _patch_factory(monkeypatch, *, supports: bool = True):
     captured: dict = {}
     provider = MagicMock(name="provider")
-    provider.provider_type = "qwen"
     provider.has_capability.return_value = supports
-
-    factory = MagicMock(name="ModelFactory")
+    provider.get_capabilities.return_value = {CapabilityType.TEXT}
+    factory = MagicMock(name="factory")
 
     def _create_client(**kwargs):
         captured.update(kwargs)
         return provider
 
     factory.create_client.side_effect = _create_client
-    monkeypatch.setattr(umr, "ModelFactory", lambda: factory)
-    monkeypatch.setattr(umr, "decrypt_api_key", lambda key: f"dec::{key}")
+    monkeypatch.setattr(resolver, "ModelFactory", lambda: factory)
+    monkeypatch.setattr(resolver, "decrypt_api_key", lambda value: f"plain::{value}")
     return captured, provider
 
 
-class _FakeConfigService:
-    def __init__(self, *, default=None, by_id=None, system_by_id=None, fallback=None):
-        self._default = default
-        self._by_id = by_id
-        self._system_by_id = system_by_id
-        self._fallback = fallback
-
-    async def get_user_default_config_by_capability(
-        self,
-        *,
-        user_id,
-        capability,
-        allow_linkrag_default=True,
-    ):
-        if not allow_linkrag_default and self._default is None:
-            return None
-        return self._default
-
-    async def get_user_config_by_id(self, user_id, config_id):
-        return self._by_id
-
-    async def get_system_preset_by_id(self, config_id):
-        return self._system_by_id
-
-    def get_system_fallback_config_by_capability(self, capability):
-        return self._fallback
-
-
-def test_build_provider_from_config_user_decrypts(monkeypatch):
+def test_build_provider_uses_runtime_snapshot_without_override(monkeypatch):
     captured, provider = _patch_factory(monkeypatch)
-    rm = build_provider_from_config(
-        {
-            "provider_type": "qwen",
-            "protocol": "openai",
-            "api_key": "ENC",
-            "api_base_url": "https://u/v1/chat/completions",
-            "model_name": "m-user",
-        },
-        capability="CHAT",
-    )
-    assert rm.source == "user"
-    assert rm.model_name == "m-user"
-    assert rm.protocol == "openai"
-    assert captured["protocol"] == "openai"  # 按 protocol 分发
-    assert captured["api_key"] == "dec::ENC"
-    assert captured["api_base_url"] == "https://u/v1/chat/completions"
-    provider.has_capability.assert_called_with(CapabilityType.TEXT)
+
+    resolved = resolver.build_provider_from_runtime_config(_runtime(), capability="CHAT")
+
+    assert resolved.config_id == 101
+    assert resolved.scope == "USER"
+    assert resolved.snapshot_version == 4
+    assert resolved.model_name == "qwen-plus"
+    assert resolved.provider_type == "qwen"
+    assert captured == {
+        "protocol": "openai",
+        "provider_type": "qwen",
+        "api_key": "plain::ciphertext",
+        "api_base_url": "https://example.test/v1/chat/completions",
+        "model_name": "qwen-plus",
+        "timeout_ms": resolver.settings.MARKDOWN_PARSER_LLM_TIMEOUT_MS,
+    }
+    provider.has_capability.assert_called_once_with(CapabilityType.TEXT)
 
 
-def test_build_provider_from_config_sparse_embedding(monkeypatch):
-    captured, provider = _patch_factory(monkeypatch)
-    rm = build_provider_from_config(
-        {
-            "id": 42,
-            "provider_type": "jina",
-            "protocol": "jina",
-            "api_key": "ENC",
-            "api_base_url": "https://api.jina.ai/v1/embeddings",
-            "model_name": "jina-sparse",
-        },
-        capability="SPARSE_EMBEDDING",
-    )
-    assert rm.protocol == "jina"
-    assert captured["protocol"] == "jina"
-    provider.has_capability.assert_called_with(CapabilityType.SPARSE_EMBEDDING)
-
-
-def test_build_provider_keeps_provider_type_identity_alias(monkeypatch):
-    # provider_type 仍归一化作身份（aliyun→qwen），但不参与分发（分发看 protocol）。
-    captured, _ = _patch_factory(monkeypatch)
-    rm = build_provider_from_config(
-        {
-            "provider_type": "aliyun",
-            "protocol": "openai",
-            "api_key": "ENC",
-            "api_base_url": "https://dashscope.example/compatible-mode/v1/chat/completions",
-            "model_name": "qwen-plus",
-        },
-        capability="CHAT",
-    )
-    assert rm.provider_type == "qwen"
-    assert captured["provider_type"] == "qwen"
-    assert captured["protocol"] == "openai"
-
-
-def test_create_client_dispatches_by_protocol_not_provider_type():
-    # 分发依据 protocol；provider_type 仅作身份透传。
-    from src.core.llm.providers.anthropic import AnthropicProvider
-
-    factory = ModelFactory()
-    client = factory.create_client(protocol="anthropic", api_key="k", provider_type="claude")
-    assert isinstance(client, AnthropicProvider)
-    assert client.provider_type == "claude"
-
-
-def test_build_provider_from_config_system_fallback_skips_decrypt(monkeypatch):
-    captured, _ = _patch_factory(monkeypatch)
-    rm = build_provider_from_config(
-        {
-            "provider_type": "openai",
-            "protocol": "openai",
-            "api_key": "plain",
-            "api_base_url": "https://system.example/v1/embeddings",
-            "model_name": "gpt",
-            "is_system_fallback": True,
-        },
-        capability="EMBEDDING",
-    )
-    assert rm.source == "system"
-    assert captured["api_key"] == "plain"  # 未解密
-
-
-def test_build_provider_override_model_wins(monkeypatch):
-    captured, _ = _patch_factory(monkeypatch)
-    build_provider_from_config(
-        {
-            "provider_type": "qwen",
-            "protocol": "openai",
-            "api_key": "ENC",
-            "api_base_url": "https://qwen.example/v1/chat/completions",
-            "model_name": "cfg-model",
-        },
-        capability="CHAT",
-        fallback_model="fb",
-        override_model="override",
-    )
-    assert captured["model_name"] == "override"
-
-
-def test_build_provider_unknown_capability(monkeypatch):
-    _patch_factory(monkeypatch)
-    with pytest.raises(ValueError, match="Unknown capability"):
-        build_provider_from_config(
-            {"provider_type": "qwen", "protocol": "openai", "api_key": "x"}, capability="NOPE"
-        )
-
-
-def test_build_provider_missing_protocol_raises(monkeypatch):
-    # protocol 缺失即 fail fast，不读 provider_type 兜底，不造任何 client。
-    captured, _ = _patch_factory(monkeypatch)
-    with pytest.raises(ProtocolRequiredError):
-        build_provider_from_config(
-            {"provider_type": "openai", "api_key": "x", "model_name": "m"}, capability="CHAT"
-        )
-    assert captured == {}  # 未触达 create_client
-
-
-def test_build_provider_missing_api_base_url_raises(monkeypatch):
+def test_build_provider_rejects_missing_endpoint_before_factory(monkeypatch):
     captured, _ = _patch_factory(monkeypatch)
     with pytest.raises(ProviderConnectionError):
-        build_provider_from_config(
-            {
-                "provider_type": "openai",
-                "protocol": "openai",
-                "api_key": "x",
-                "model_name": "m",
-            },
-            capability="CHAT",
+        resolver.build_provider_from_runtime_config(
+            _runtime().model_copy(update={"api_base_url": ""}), capability="CHAT"
         )
     assert captured == {}
 
 
-def test_build_provider_capability_unsupported(monkeypatch):
-    provider = MagicMock(name="provider")
-    provider.has_capability.return_value = False
-    provider.get_capabilities.return_value = {CapabilityType.TEXT}
-    factory = MagicMock(name="ModelFactory")
-    factory.create_client.return_value = provider
-    monkeypatch.setattr(umr, "ModelFactory", lambda: factory)
-    monkeypatch.setattr(umr, "decrypt_api_key", lambda key: key)
-
+def test_build_provider_rejects_unsupported_capability(monkeypatch):
+    _patch_factory(monkeypatch, supports=False)
     with pytest.raises(UnsupportedProtocolCapabilityError) as exc:
-        build_provider_from_config(
-            {
-                "id": 99,
-                "provider_type": "google",
-                "protocol": "google",
-                "api_key": "x",
-                "model_name": "gemini-embedding-001",
-            },
-            capability="SPARSE_EMBEDDING",
-        )
-    assert exc.value.protocol == "google"
-    assert exc.value.capability == "SPARSE_EMBEDDING"
-    assert exc.value.model_name == "gemini-embedding-001"
-    assert exc.value.config_id == 99
-    assert "google:CHAT" in exc.value.supported_combinations
+        resolver.build_provider_from_runtime_config(_runtime(), capability="CHAT")
+    assert exc.value.config_id == 101
+    assert exc.value.protocol == "openai"
+    assert exc.value.capability == "CHAT"
 
 
 @pytest.mark.asyncio
-async def test_resolve_user_default_hit(monkeypatch):
-    captured, _ = _patch_factory(monkeypatch)
-    svc = _FakeConfigService(
-        default={
-            "provider_type": "qwen",
-            "protocol": "openai",
-            "api_key": "ENC",
-            "api_base_url": "https://qwen.example/v1/embeddings",
-            "model_name": "m-user",
-        }
-    )
-    rm = await aresolve_user_model(user_id=7, capability="EMBEDDING", config_service=svc)
-    assert rm.source == "user"
-    assert rm.model_name == "m-user"
-    assert captured["api_key"] == "dec::ENC"
-
-
-@pytest.mark.asyncio
-async def test_resolve_sparse_embedding_uses_sparse_capability(monkeypatch):
-    captured, provider = _patch_factory(monkeypatch)
-    svc = _FakeConfigService(
-        default={
-            "provider_type": "openai",
-            "protocol": "openai",
-            "api_key": "ENC",
-            "api_base_url": "https://openai.example/v1/embeddings",
-            "model_name": "sparse-model",
-        }
-    )
-    rm = await aresolve_user_model(user_id=7, capability="SPARSE_EMBEDDING", config_service=svc)
-    assert rm.model_name == "sparse-model"
-    assert captured["protocol"] == "openai"
-    provider.has_capability.assert_called_with(CapabilityType.SPARSE_EMBEDDING)
-
-
-@pytest.mark.asyncio
-async def test_resolve_by_config_id(monkeypatch):
+async def test_exact_resolve_user_config(monkeypatch):
     _patch_factory(monkeypatch)
-    svc = _FakeConfigService(
-        by_id={
-            "provider_type": "qwen",
-            "protocol": "openai",
-            "capability": "CHAT",
-            "api_key": "ENC",
-            "api_base_url": "https://qwen.example/v1/chat/completions",
-            "model_name": "by-id",
-        }
-    )
-    rm = await aresolve_user_model(
-        user_id=7, capability="CHAT", config_id="cfg-1", config_service=svc
-    )
-    assert rm.model_name == "by-id"
+    repository = _Repository(_runtime())
 
-
-@pytest.mark.asyncio
-async def test_resolve_by_system_config_id(monkeypatch):
-    _patch_factory(monkeypatch)
-    svc = _FakeConfigService(
-        system_by_id={
-            "id": 88,
-            "provider_type": "linkrag",
-            "protocol": "openai",
-            "capability": "CHAT",
-            "api_key": "ENC-SYS",
-            "api_base_url": "https://linkrag.example/v1/chat/completions",
-            "model_name": "linkrag-chat",
-            "config_source": "SYSTEM",
-        }
-    )
-    rm = await aresolve_user_model(
+    resolved = await resolver.aresolve_model(
         user_id=7,
+        config_id=101,
         capability="CHAT",
-        config_id=88,
-        config_source="SYSTEM",
-        config_service=svc,
+        repository=repository,
     )
-    assert rm.source == "system"
-    assert rm.config_id == 88
-    assert rm.model_name == "linkrag-chat"
+
+    assert resolved.config_id == 101
+    assert repository.calls == [101]
 
 
 @pytest.mark.asyncio
-async def test_resolve_rejects_unknown_config_source(monkeypatch):
+async def test_system_config_is_visible_to_any_user(monkeypatch):
     _patch_factory(monkeypatch)
-    svc = _FakeConfigService(by_id=None)
+    repository = _Repository(_runtime(scope="SYSTEM", ownerUserId=0))
 
-    with pytest.raises(ValueError, match="Unknown config_source"):
-        await aresolve_user_model(
+    resolved = await resolver.aresolve_model(
+        user_id=999,
+        config_id=101,
+        capability="CHAT",
+        repository=repository,
+    )
+
+    assert resolved.scope == "SYSTEM"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("value", "capability", "error_type"),
+    [
+        (None, "CHAT", LLMConfigNotFoundError),
+        (_runtime(isActive=False), "CHAT", LLMConfigInactiveError),
+        (
+            _runtime(scope="TENANT", capability="EMBEDDING"),
+            "CHAT",
+            LLMConfigForbiddenError,
+        ),
+        (_runtime(ownerUserId=8), "CHAT", LLMConfigForbiddenError),
+        (_runtime(capability="EMBEDDING"), "CHAT", LLMConfigCapabilityMismatchError),
+    ],
+)
+async def test_exact_resolve_has_no_default_or_source_fallback(
+    monkeypatch, value, capability, error_type
+):
+    _patch_factory(monkeypatch)
+    with pytest.raises(error_type):
+        await resolver.aresolve_model(
             user_id=7,
-            capability="CHAT",
-            config_id=1,
-            config_source="NOPE",
-            config_service=svc,
+            config_id=101,
+            capability=capability,
+            repository=_Repository(value),
         )
-
-
-@pytest.mark.asyncio
-async def test_resolve_by_config_id_rejects_capability_mismatch(monkeypatch):
-    _patch_factory(monkeypatch)
-    svc = _FakeConfigService(
-        by_id={
-            "provider_type": "qwen",
-            "protocol": "openai",
-            "capability": "EMBEDDING",
-            "api_key": "ENC",
-            "api_base_url": "https://qwen.example/v1/embeddings",
-            "model_name": "embedding-model",
-        }
-    )
-
-    with pytest.raises(UserModelConfigMissingError) as ei:
-        await aresolve_user_model(
-            user_id=7, capability="CHAT", config_id="cfg-1", config_service=svc
-        )
-
-    assert ei.value.capability == "CHAT"
-    assert ei.value.user_id == 7
-
-
-@pytest.mark.asyncio
-async def test_resolve_missing_no_fallback_raises(monkeypatch):
-    _patch_factory(monkeypatch)
-    svc = _FakeConfigService(default=None)
-    with pytest.raises(UserModelConfigMissingError) as ei:
-        await aresolve_user_model(user_id=7, capability="EMBEDDING", config_service=svc)
-    assert ei.value.capability == "EMBEDDING"
-    assert ei.value.user_id == 7
-
-
-@pytest.mark.asyncio
-async def test_resolve_system_fallback_used(monkeypatch):
-    captured, _ = _patch_factory(monkeypatch)
-    svc = _FakeConfigService(
-        default=None,
-        fallback={
-            "provider_type": "qwen",
-            "protocol": "openai",
-            "api_key": "plain",
-            "api_base_url": "https://system.example/v1/chat/completions",
-            "model_name": "sys",
-            "is_system_fallback": True,
-        },
-    )
-    rm = await aresolve_user_model(
-        user_id=7, capability="CHAT", allow_system_fallback=True, config_service=svc
-    )
-    assert rm.source == "system"
-    assert captured["api_key"] == "plain"

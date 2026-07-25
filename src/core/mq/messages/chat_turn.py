@@ -25,7 +25,7 @@ class ChatTurnPayload(MessagePayload):
     user_id: int = Field(..., title="用户ID")
     query: str = Field(..., title="用户提问")
     answer: str = Field("", title="LLM回答（GENERATING/FAILED 可空或半截）")
-    config_id: int = Field(..., title="本轮所用 LLM 配置ID")
+    config_id: int = Field(..., gt=0, title="本轮请求的全局 LLM 配置ID")
     # provider_type 放宽默认空：GENERATING 起点与前置失败（模型未解析）时无厂商信息，
     # 由终态消息补齐（chat-stream-resilient-persist）。
     provider_type: str = Field("", title="LLM厂商类型")
@@ -47,7 +47,6 @@ class ChatTurnPayload(MessagePayload):
     # token 已从对话消息剥离（LINK-191）：generate 用量改走统一 TokenUsageMessage。
 
     model_config = {"title": "对话轮次完成载荷"}
-
 
 class ChatTurnMessage(AbstractMessage):
     """对话轮次完成 MQ 消息（Python -> Java，供 Java 落库）。"""
@@ -72,6 +71,23 @@ class ChatTurnMessage(AbstractMessage):
     def get_routing_key(self) -> Optional[str]:
         # 以 conversation_id 为分区键，保证同一对话的轮次有序投递。
         return str(self._payload.conversation_id)
+
+    def get_log_fields(self) -> dict[str, object]:
+        """返回对话消息摘要，不记录 query、answer、title 和错误正文。"""
+        return {
+            "message_id": self._payload.message_id,
+            "conversation_id": self._payload.conversation_id,
+            "request_id": self._payload.request_id,
+            "turn_id": self._payload.turn_id,
+            "user_id": self._payload.user_id,
+            "config_id": self._payload.config_id,
+            "provider_type": self._payload.provider_type,
+            "model_name": self._payload.model_name,
+            "status": self._payload.status,
+            "reference_count": len(self._payload.references),
+            "latency_ms": self._payload.latency_ms,
+            "error_code": self._payload.error_code,
+        }
 
     @classmethod
     def build(

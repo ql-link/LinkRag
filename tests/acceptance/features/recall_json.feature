@@ -118,9 +118,9 @@ Feature: 对外纯召回 JSON
 
   # ==== 执行期错误：走 HTTP 状态码而非 SSE error 帧 ====
 
-  Scenario: 发起用户无默认 EMBEDDING 配置时返回 422 RECALL_EMBEDDING_CONFIG_MISSING
+  Scenario: Dataset 精确绑定的 EMBEDDING 配置在召回时不可用则返回 422 RECALL_EMBEDDING_CONFIG_MISSING
     Given session token claims sub=123 dataset_ids=[1] scope=recall:stream 未过期
-    And 用户 123 无默认 EMBEDDING 配置
+    And Dataset 1 绑定的 dense_embedding_config_id 在召回时不可用
     When 前端携带该 token 调用 POST /api/v1/recall body query="任意" dataset_ids=[1]
     Then HTTP 响应状态为 422
     And 响应体 code 等于 "RECALL_EMBEDDING_CONFIG_MISSING"

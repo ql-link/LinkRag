@@ -14,7 +14,7 @@ import pytest
 
 from src.application import recall_stream_runtime as rt
 from src.config import settings
-from src.core.llm.exceptions import UserModelConfigMissingError
+from src.core.llm.exceptions import LLMConfigNotFoundError
 from src.core.llm.response import StreamChunk
 from src.core.pipeline.recall import RecallDiagnostics, RecallHit, RecallRequest, RecallResponse
 from src.core.pipeline.rerank import RerankedHit, RerankResponse
@@ -133,8 +133,23 @@ def _response(hits, diagnostics=None):
     )
 
 
-def _req():
-    return RecallRequest(query="问题", user_id=123, dataset_ids=[1], top_k=20)
+def _dataset_context(*, enable_rerank: bool = True):
+    """构造仅包含 runtime 本测试所需字段的数据集执行快照。"""
+    return SimpleNamespace(
+        config=SimpleNamespace(
+            recall=SimpleNamespace(enable_rerank=enable_rerank),
+        )
+    )
+
+
+def _req(*, enable_rerank: bool = True):
+    return RecallRequest(
+        query="问题",
+        user_id=123,
+        dataset_ids=[1],
+        top_k=20,
+        dataset_contexts={1: _dataset_context(enable_rerank=enable_rerank)},
+    )
 
 
 async def _collect(gen):
@@ -162,13 +177,16 @@ def stub_generation(monkeypatch):
 
     async def _resolve(*a, **k):
         return SimpleNamespace(
-            provider=provider, model_name="m", provider_type="openai", source="user"
+            provider=provider,
+            model_name="m",
+            provider_type="openai",
+            config_id=k["config_id"],
         )
 
     async def _contents(chunk_ids, user_id):
         return {cid: f"正文-{cid}" for cid in chunk_ids}
 
-    monkeypatch.setattr(rt, "aresolve_user_model", _resolve)
+    monkeypatch.setattr(rt, "aresolve_model", _resolve)
     monkeypatch.setattr(rt, "fetch_chunk_contents", _contents)
     return provider
 
@@ -200,7 +218,7 @@ async def test_happy_streams_answer_delta_then_done(stub_generation):
 
 
 @pytest.mark.asyncio
-async def test_system_config_source_resolves_chat_model_by_system_preset(monkeypatch):
+async def test_global_config_id_resolves_chat_model_without_source(monkeypatch):
     provider = _FakeProvider()
     captured: dict = {}
 
@@ -210,14 +228,13 @@ async def test_system_config_source_resolves_chat_model_by_system_preset(monkeyp
             provider=provider,
             model_name="linkrag-chat",
             provider_type="linkrag",
-            source="system",
             config_id=10,
         )
 
     async def _contents(chunk_ids, user_id):
         return {cid: f"正文-{cid}" for cid in chunk_ids}
 
-    monkeypatch.setattr(rt, "aresolve_user_model", _resolve)
+    monkeypatch.setattr(rt, "aresolve_model", _resolve)
     monkeypatch.setattr(rt, "fetch_chunk_contents", _contents)
 
     events = await _collect(
@@ -226,7 +243,6 @@ async def test_system_config_source_resolves_chat_model_by_system_preset(monkeyp
             _req(),
             "rid",
             config_id=10,
-            config_source="SYSTEM",
             conversation_id=1,
             turn_id="t-system",
             reranker=_FakeReranker(),
@@ -240,8 +256,6 @@ async def test_system_config_source_resolves_chat_model_by_system_preset(monkeyp
         "user_id": 123,
         "capability": "CHAT",
         "config_id": 10,
-        "config_source": "SYSTEM",
-        "allow_system_fallback": False,
     }
 
 
@@ -354,7 +368,7 @@ async def test_rerank_hard_fail_falls_back_to_fusion_order_truncated(stub_genera
     """硬失败（未配 RERANK 模型，reranker 抛错）：降级当前融合顺序，截断到 top_n，不报错。"""
     n = settings.RERANK_DEFAULT_TOP_N + 3
     pipe = _FakePipeline(_response(_hits(*[f"c{i}" for i in range(n)])))
-    reranker = _FakeReranker(exc=UserModelConfigMissingError("RERANK", 123))
+    reranker = _FakeReranker(exc=LLMConfigNotFoundError(78))
     events = await _collect(
         rt.recall_event_stream(
             pipe,
@@ -380,7 +394,7 @@ async def test_rerank_hard_fail_falls_back_to_fusion_order_truncated(stub_genera
 async def test_rerank_unavailable_falls_back_to_weighted_score_order(stub_generation):
     """rerank 不可用时按当前 weighted_score 融合顺序降级。"""
     pipe = _FakePipeline(_response(_weighted_hits()))
-    reranker = _FakeReranker(exc=UserModelConfigMissingError("RERANK", 123))
+    reranker = _FakeReranker(exc=LLMConfigNotFoundError(78))
 
     events = await _collect(
         rt.recall_event_stream(
@@ -413,10 +427,10 @@ async def test_content_fetched_once_and_injected_into_reranker(monkeypatch):
 
     async def _resolve(*a, **k):
         return SimpleNamespace(
-            provider=_FakeProvider(), model_name="m", provider_type="openai", source="user"
+            provider=_FakeProvider(), model_name="m", provider_type="openai", config_id=k["config_id"]
         )
 
-    monkeypatch.setattr(rt, "aresolve_user_model", _resolve)
+    monkeypatch.setattr(rt, "aresolve_model", _resolve)
     monkeypatch.setattr(rt, "fetch_chunk_contents", _counting_fetch)
     reranker = _FakeReranker()
     pipe = _FakePipeline(_response(_hits("c1", "c2")))
@@ -445,13 +459,13 @@ async def test_reranker_receives_expanded_rrf_candidate_pool(monkeypatch):
 
     async def _resolve(*a, **k):
         return SimpleNamespace(
-            provider=_FakeProvider(), model_name="m", provider_type="openai", source="user"
+            provider=_FakeProvider(), model_name="m", provider_type="openai", config_id=k["config_id"]
         )
 
     async def _contents(chunk_ids, user_id):
         return {cid: f"正文-{cid}" for cid in chunk_ids}
 
-    monkeypatch.setattr(rt, "aresolve_user_model", _resolve)
+    monkeypatch.setattr(rt, "aresolve_model", _resolve)
     monkeypatch.setattr(rt, "fetch_chunk_contents", _contents)
 
     reranker = _FakeReranker()
@@ -459,7 +473,13 @@ async def test_reranker_receives_expanded_rrf_candidate_pool(monkeypatch):
     await _collect(
         rt.recall_event_stream(
             pipe,
-            RecallRequest(query="问题", user_id=123, dataset_ids=[1], top_k=64),
+            RecallRequest(
+                query="问题",
+                user_id=123,
+                dataset_ids=[1],
+                top_k=64,
+                dataset_contexts={1: _dataset_context()},
+            ),
             "rid",
             config_id=77,
             conversation_id=1,
@@ -479,16 +499,16 @@ async def test_hard_fail_degrade_drops_no_content_hits(monkeypatch):
 
     async def _resolve(*a, **k):
         return SimpleNamespace(
-            provider=_FakeProvider(), model_name="m", provider_type="openai", source="user"
+            provider=_FakeProvider(), model_name="m", provider_type="openai", config_id=k["config_id"]
         )
 
     # c0 有正文、c1 无正文、c2 有正文。
     async def _partial_content(chunk_ids, user_id):
         return {cid: f"正文-{cid}" for cid in chunk_ids if cid in ("c0", "c2")}
 
-    monkeypatch.setattr(rt, "aresolve_user_model", _resolve)
+    monkeypatch.setattr(rt, "aresolve_model", _resolve)
     monkeypatch.setattr(rt, "fetch_chunk_contents", _partial_content)
-    reranker = _FakeReranker(exc=UserModelConfigMissingError("RERANK", 123))
+    reranker = _FakeReranker(exc=LLMConfigNotFoundError(78))
     pipe = _FakePipeline(_response(_hits("c0", "c1", "c2")))
     events = await _collect(
         rt.recall_event_stream(
@@ -512,9 +532,9 @@ async def test_hard_fail_degrade_drops_no_content_hits(monkeypatch):
 @pytest.mark.asyncio
 async def test_model_config_missing_blocks_recall(monkeypatch):
     async def _missing(*a, **k):
-        raise UserModelConfigMissingError("CHAT", 123)
+        raise LLMConfigNotFoundError(77)
 
-    monkeypatch.setattr(rt, "aresolve_user_model", _missing)
+    monkeypatch.setattr(rt, "aresolve_model", _missing)
     pipe = _FakePipeline(_response(_hits("c1")))
     events = await _collect(
         rt.recall_event_stream(
@@ -530,7 +550,7 @@ async def test_model_config_missing_blocks_recall(monkeypatch):
         )
     )
     assert events == [("error", events[0][1])]
-    assert events[0][1]["code"] == "RECALL_MODEL_CONFIG_MISSING"
+    assert events[0][1]["code"] == "LLM_CONFIG_NOT_FOUND"
     assert pipe.calls == []  # 前置失败，不进入召回
 
 
@@ -597,7 +617,7 @@ async def test_all_chunks_missing_content_returns_recall_done(monkeypatch, stub_
         )
     )
     assert [e for e, _ in events] == ["recall_done"]
-    assert len(events[0][1]["hits"]) == 2  # 召回到了，只是无正文不生成
+    assert len(events[0][1]["hits"]) == 2  # 召回到了，只是无正文不生成。
 
 
 @pytest.mark.asyncio
@@ -633,13 +653,13 @@ async def test_generation_failure_fails_whole_request(monkeypatch):
 
     async def _resolve(*a, **k):
         return SimpleNamespace(
-            provider=provider, model_name="m", provider_type="openai", source="user"
+            provider=provider, model_name="m", provider_type="openai", config_id=k["config_id"]
         )
 
     async def _contents(chunk_ids, user_id):
         return {cid: f"正文-{cid}" for cid in chunk_ids}
 
-    monkeypatch.setattr(rt, "aresolve_user_model", _resolve)
+    monkeypatch.setattr(rt, "aresolve_model", _resolve)
     monkeypatch.setattr(rt, "fetch_chunk_contents", _contents)
     pipe = _FakePipeline(_response(_hits("c1")))
     events = await _collect(

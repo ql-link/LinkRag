@@ -14,14 +14,17 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import jwt
 import pytest
 from fastapi.testclient import TestClient
 from pytest_bdd import given, parsers, then, when
 
+from src.api.routes import recall
 from src.application.recall_pipeline_provider import get_recall_pipeline
 from src.config import settings
+from src.core.dataset_config.models import RecallConfig
 from src.core.pipeline.recall import RecallHit, RecallRequest, RecallResponse
 from src.main import app
 
@@ -73,7 +76,7 @@ class _State:
 
 
 @pytest.fixture
-def recall_json_state():
+def recall_json_state(monkeypatch):
     state = _State()
     state.claims = {"sub": "123", "dataset_ids": [1, 2]}
     state.fake.response = RecallResponse(
@@ -86,6 +89,21 @@ def recall_json_state():
         failed_sources=[],
         elapsed_ms=12,
     )
+
+    async def _recall_execution(_user_id: int, dataset_ids: list[int]):
+        recall_cfg = RecallConfig.from_settings()
+        contexts = {
+            dataset_id: SimpleNamespace(
+                config=SimpleNamespace(recall=recall_cfg),
+                dense_embedding=SimpleNamespace(config_id=701),
+                sparse_embedding=SimpleNamespace(config_id=702),
+                rerank=None,
+            )
+            for dataset_id in dataset_ids
+        }
+        return recall_cfg, contexts
+
+    monkeypatch.setattr(recall, "aresolve_recall_execution", _recall_execution)
     yield state
     state.restore()
     app.dependency_overrides.pop(get_recall_pipeline, None)
@@ -182,11 +200,13 @@ def _partial_degrade(recall_json_state):
     )
 
 
-@given(parsers.parse("用户 123 无默认 EMBEDDING 配置"))
+@given(parsers.parse("Dataset 1 绑定的 dense_embedding_config_id 在召回时不可用"))
 def _embedding_missing(recall_json_state):
     from src.core.pipeline.recall import RecallFatalError
 
-    recall_json_state.fake.exc = RecallFatalError("user embedding config missing")
+    recall_json_state.fake.exc = RecallFatalError(
+        "Dataset 1 exact dense embedding config 701 is unavailable"
+    )
 
 
 @given(parsers.parse("bm25 与 sparse 两路均执行抛异常"))

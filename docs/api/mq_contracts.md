@@ -63,6 +63,10 @@ Java 管理端                          toLink-Rag (Python)
 | `is_retry` | bool | ⬜ | `false`（默认）表示首次解析；`true` 表示用户触发的重试任务。老消息缺省默认 `false`，与首次解析路径完全等价（migration 0009 新增） |
 | `previous_task_id` | string | ⬜ | `is_retry=true` 时必填，指向上一轮失败任务的 `task_id`；Python 端 `ParseTaskGuard.validate_retry_context` 会严格校验上一轮记录存在、pipeline 失败且可恢复。若恢复点晚于 `CLEANING`，还会要求上一轮 markdown 已成功上传 |
 
+> **反序列化失败的安全诊断**：字段缺失或类型错误时，Python 返回/记录字段错误位置与
+> 错误类型，但会移除 Pydantic 的 input value，也不会附带原始消息片段。消息字段契约
+> 不变；该约束用于防止对象存储路径或未来新增的敏感字段被异常日志原样采集。
+
 > **重试链路约束**（与 [parse_task_pipeline.md §4 重试分支](../internals/parse_task_pipeline.md) 配套）：
 > - 重试请求由 Java 端在判定旧任务 `pipeline_status=FAILED` 后发起；Python 端不计数、不限次。若旧任务 `recover_from_stage=CLEANING`，允许旧 log 没有 `parsed_object_key`，Python 会重新下载源文件、解析并上传 markdown。
 > - 重试请求的 `md_object_key` 是本次 markdown 产物目标 key；bucket 由 Python 侧 `MINIO_PRIVATE_BUCKET` 决定。恢复点晚于 `CLEANING` 时 key 应与上轮一致（Java 直接回填）；从 `CLEANING` 恢复时用于承接重新上传后的 markdown。
@@ -205,7 +209,7 @@ RAG 问答在 Python 端（`/api/v1/rag/stream`）以**后台任务**执行，�
 | `user_id` | int | ✅ | 用户 ID |
 | `query` | string | ✅ | 用户提问 → `chat_message.query` |
 | `answer` | string | ✅ | LLM 回答 → `chat_message.answer`（`GENERATING`/`FAILED` 可空或半截串） |
-| `config_id` | int | ✅ | 本轮所用 LLM 配置 ID |
+| `config_id` | int (>0) | ✅ | 本轮请求的全局 `llm_model_config.id`；`GENERATING` 和模型解析失败也必须携带 |
 | `provider_type` | string | ⬜ | LLM 厂商类型（`GENERATING` 起点与模型未解析的前置失败时为空串，终态补齐） |
 | `model_name` | string | ⬜ | 模型名快照（可空时为空串） |
 | `references` | string[] | ⬜ | 召回片段 `chunk_id` 列表（仅标识，不含正文）→ `chat_message.references` |
@@ -250,7 +254,7 @@ RAG 问答在 Python 端（`/api/v1/rag/stream`）以**后台任务**执行，�
 | `prompt_tokens` | int | ✅ | 输入 Token；向量类调用即此列 |
 | `completion_tokens` | int | ✅ | 输出 Token；向量类（embed/rerank）恒为 0，vision/table 为真实生成 token |
 | `total_tokens` | int | ✅ | 总 Token |
-| `config_id` | int | ⬜ | 用户配置 ID；系统配置调用缺省 → 落 NULL |
+| `config_id` | int (>0) | ✅ | 全局 `llm_model_config.id`；SYSTEM / USER 都必须携带，不再用 `null` 表达系统预设 |
 | `task_id` | string | ⬜ | 解析任务锚点（parse·embed 带；vision/table 暂不带） |
 | `latency_ms` | int | ⬜ | 调用耗时（毫秒） |
 | `status` | string | ⬜ | `success` / `partial` / `failed`，默认 `success` |
@@ -264,7 +268,10 @@ RAG 问答在 Python 端（`/api/v1/rag/stream`）以**后台任务**执行，�
 - **token 由模型返回的取舍**：`sparse` 向量模型若返回 `usage`，Python 会按 `operation='sparse'` 上报并带实际绑定的 `config_id`；未返回 token 时跳过上报。
 - **解析侧粒度**：task 级聚合——每个解析任务每 operation 上报一条（token 在任务内累加），不落 chunk 级明细。全缓存命中（token=0）不上报。
 - **旁路、最终一致**：用量是事后算账的旁路记录。Python 上报失败仅告警、不阻断解析/召回主链路，丢一条用量可接受。
-- **Java 落库**：字段直映射 `llm_usage_log`；可空字段缺失落 NULL。对话 `generate` 的行也经本消息上报（`stage='chat'`、`operation='generate'`），不再由 `chat_turn` 落 `llm_usage_log`，使本表口径全链路一致（LINK-191）。
+- **发送观测**：成功日志记录 `message_id`、用户、厂商、模型、`stage`、`operation`、
+  三类 token、任务锚点和发送耗时；失败日志记录同一摘要与异常类型。不会记录模型请求或
+  响应正文。
+- **Java 落库**：字段直映射 `llm_usage_log`；历史表列 `config_id` 仍可空，但新消息必须是正整数。对话 `generate` 的行也经本消息上报（`stage='chat'`、`operation='generate'`），不再由 `chat_turn` 落 `llm_usage_log`。
 
 ## 协议要点
 

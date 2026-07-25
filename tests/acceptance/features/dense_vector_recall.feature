@@ -7,17 +7,17 @@
 Feature: 稠密向量召回入口
   作为召回链路的调用方
   我希望通过 VectorStorageFacade.search_dense_chunks 给定 query + user_id + set_id（可选 doc_id / top_k / score_threshold）召回 chunk
-  以便基于 system embedding 稠密向量检索拿到候选命中，由我自行回填 chunk 真值并参与后续融合或 rerank
+  以便基于 Dataset 精确 EMBEDDING config_id 的稠密向量检索拿到候选命中，由我自行回填 chunk 真值并参与后续融合或 rerank
   并通过 DenseRetriever 自动接入多路召回 pipeline，让 SSE 流式 API 自动产出 dense 路命中
 
   Background:
-    Given 配置 SYSTEM_LLM_MODEL_EMBEDDING="text-embedding-v4"
+    Given Dataset 精确 EMBEDDING config_id 对应模型="text-embedding-v4"
     And 配置 DENSE_RETRIEVAL_TOP_K=10
     And 配置 DENSE_RETRIEVAL_SCORE_THRESHOLD=0.0
     And 配置 RECALL_ENABLED_SOURCES="bm25,sparse,dense"
     And 配置 RECALL_RESULT_LIMIT=20
-    And 写入链路使用 unnamed dense vector 写入 chunk 的 dense embedding
-    And system embedding HTTP 客户端可用
+    And 写入链路使用配置的 named dense vector 写入 chunk embedding
+    And Dataset 精确 embedding provider 可用
 
   # ==== 主流程 ====
 
@@ -63,11 +63,11 @@ Feature: 稠密向量召回入口
     Then Qdrant 搜索使用 bucket_id 等于 42
     And VectorSearchResult 不含字段 bucket_id
 
-  Scenario: 查询使用与写入完全相同的 unnamed dense vector 形态
+  Scenario: 查询使用与写入完全相同的 named dense vector 形态
     When 调用 search_dense_chunks 传入 query "任意" user_id 10002 set_id 10003
     Then Qdrant 搜索的 query_vector_spec 类型为 DenseQueryVectorSpec
     And Qdrant 搜索的 query_vector_spec 不带 vector_name
-    And 返回 VectorSearchResult.vector_name 为 None
+    And 返回 VectorSearchResult.vector_name 等于配置的 dense vector name
 
   Scenario: query 与 chunk 写入使用同一份 embedding 客户端实例
     When 调用 search_dense_chunks 传入 query "任意" user_id 10002 set_id 10003
@@ -177,8 +177,8 @@ Feature: 稠密向量召回入口
     And 不抛任何异常
     And 调用 ChunkEmbeddingPipeline.aembed_query 一次
 
-  Scenario: system embedding 推理失败传播为 VectorRetrievalEncodingError
-    Given system embedding HTTP 客户端对任意输入抛 httpx.HTTPStatusError
+  Scenario: Dataset 精确 embedding provider 推理失败传播为 VectorRetrievalEncodingError
+    Given Dataset 精确 embedding provider 对任意输入抛 httpx.HTTPStatusError
     When 调用 search_dense_chunks 传入 query "任意" user_id 10002 set_id 10003
     Then 抛出 VectorRetrievalEncodingError
     And 不调用 Qdrant 客户端
@@ -212,7 +212,7 @@ Feature: 稠密向量召回入口
     When 直接调用 ChunkEmbeddingPipeline.aembed_query 传入 query "原始 query"
     Then 底层 embedder.embed 被调用一次
     And embedder.embed 入参 texts 等于 "原始 query"
-    And embedder.embed 入参 model 等于 settings.SYSTEM_LLM_MODEL_EMBEDDING
+    And embedder.embed 入参 model 等于 Dataset 精确 EMBEDDING 模型
     And aembed_query 不写入 embedding_cache
     And aembed_query 不更新 last_stats
 

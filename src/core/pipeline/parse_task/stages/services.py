@@ -14,6 +14,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
+import time
 from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol
@@ -21,17 +22,21 @@ from typing import TYPE_CHECKING, Any, Protocol
 from loguru import logger
 
 if TYPE_CHECKING:
-    from src.core.dataset_config import ChunkingConfig, DatasetParseConfigBundle
+    from src.core.dataset_config import (
+        ChunkingConfig,
+        DatasetExecutionContext,
+        DatasetParseConfigBundle,
+    )
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
-from src.core.storage.index_mutation_models import IndexBranch
-from src.core.storage.index_mutation_guard import (
-    MutationGuardProtocol,
-    NoopIndexMutationGuard,
+from src.core.markdown_parser import (
+    ImageDescriber,
+    MarkdownParser,
+    ParseResult,
+    abuild_vision_client,
 )
-from src.core.markdown_parser import ParseResult
 from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.core.parse_task_service import ParseTaskService
 from src.core.preprocessor.models import FilePostIndexPlan
@@ -39,32 +44,38 @@ from src.core.splitter import create_chunking_engine
 from src.core.splitter.factory import (
     DenseEmbeddingConfigMissingError,
     DenseEmbeddingDimensionError,
-    aresolve_user_embedding_client,
+    build_chunk_embedding_pipeline,
+    build_embedding_client,
 )
 from src.core.splitter.models import Chunk
 from src.core.storage.bm25_backend import build_indexing_pipeline
+from src.core.storage.bm25_models import Bm25IndexingResult
 from src.core.storage.chunks.constants import (
     CHUNK_LIFECYCLE_ACTIVE,
     CHUNK_STATUS_INDEXED,
     SPARSE_VECTOR_STATUS_INDEXED,
 )
 from src.core.storage.chunks.repository import ChunkRepository
-from src.core.storage.bm25_models import Bm25IndexingResult
+from src.core.storage.index_mutation_guard import (
+    MutationGuardProtocol,
+    NoopIndexMutationGuard,
+)
+from src.core.storage.index_mutation_models import IndexBranch
 from src.core.storage.qdrant import BucketRouter
 from src.core.storage.qdrant.constants import DEFAULT_BUCKET_COUNT, DEFAULT_COLLECTION_PREFIX
 from src.core.storage.vector import compose_vector_storage_facade
 from src.core.storage.vector.draft_factory import ChunkDraftFactory
 from src.core.storage.vector.models import ChunkIndexingResult
 from src.models.chunk_record import ChunkRecordDB
+from src.observability.logging import safe_exception_stack, truncate_log_value
 from src.services.storage.base import BaseObjectStorage
 
-from .._utils import coerce_optional_int
+from .._utils import coerce_optional_int, compact_log_value, task_log_context
 from ..post_process.constants import (
     PIPELINE_STATUS_PENDING,
     PIPELINE_STATUS_PROCESSING,
 )
 from ..source import ParseSourceIO
-
 
 _NORMAL_MUTATION_PIPELINE_STATUSES = (
     PIPELINE_STATUS_PENDING,
@@ -98,6 +109,7 @@ class StageServices:
         chunk_draft_factory: ChunkDraftFactory | None = None,
         sparse_indexing_pipeline: Any | None = None,
         mutation_guard: MutationGuardProtocol | None = None,
+        raw_asset_loader: Any | None = None,
     ) -> None:
         self._storage = storage
         self.source_io = source_io
@@ -107,6 +119,7 @@ class StageServices:
         self._preprocessor = preprocessor
         self._chunk_draft_factory = chunk_draft_factory
         self._sparse_indexing_pipeline = sparse_indexing_pipeline
+        self._raw_asset_loader = raw_asset_loader
         # StageServices is also instantiated directly by focused unit tests.  Keep
         # that boundary lightweight, while production ParseTaskPipeline injects
         # the shared MySQL-backed guard explicitly.
@@ -121,6 +134,7 @@ class StageServices:
         source_path: Path | None,
         payload: ParseTaskPayload,
         dataset_cfg: "DatasetParseConfigBundle | None" = None,
+        execution_context: "DatasetExecutionContext | None" = None,
     ) -> dict:
         """调用解析服务生成 Markdown 与结构化解析结果。
 
@@ -129,8 +143,8 @@ class StageServices:
 
         ``dataset_cfg`` 为数据集级配置（由 CleaningStage 从 DB 读取注入）：PDF 后端按
         ``payload 显式 > 数据集配置 > settings.PDF_PARSER_BACKEND`` 三层优先级选取；
-        Markdown 增强配置（仅含增强开关）透传给增强编排。``None`` 时全部回退系统默认；模型由
-        增强侧按用户默认 → LinkRag 系统默认预设解析。
+        Markdown 增强配置（仅含增强开关）透传给增强编排；所有模型都从
+        ``execution_context`` 中的精确 ``config_id`` 快照取得。
         """
         enhancement_config = dataset_cfg.enhancement if dataset_cfg is not None else None
 
@@ -158,7 +172,10 @@ class StageServices:
             payload.file_type,
             source_file=payload.source_filename or payload.md_object_key,
             user_id=coerce_optional_int(payload.user_id),
+            dataset_id=coerce_optional_int(payload.dataset_id),
+            task_id=payload.task_id,
             enhancement_config=enhancement_config,
+            execution_context=execution_context,
             **parser_kwargs,
         )
 
@@ -182,6 +199,71 @@ class StageServices:
             image_bucket,
             image_prefix,
         )
+
+    async def enhance_markdown_raw_images(
+        self,
+        markdown: str,
+        payload: ParseTaskPayload,
+        enhancement_config,
+    ) -> str:
+        """按批读取当前文件 RAW 图片，并复用现有 Vision 描述合并逻辑。"""
+
+        if enhancement_config is None or not enhancement_config.enable_image_enhancement:
+            return markdown
+
+        from ..raw_markdown_assets import RawMarkdownAssetLoader, raw_image_urls
+
+        urls = raw_image_urls(markdown)
+        if not urls:
+            return markdown
+
+        loader = self._raw_asset_loader or RawMarkdownAssetLoader(self._storage)
+        parse_result = MarkdownParser().parse(
+            markdown,
+            source_file=payload.source_filename or payload.source_object_key,
+        )
+        describer = None
+        batch_size = settings.RAW_MARKDOWN_IMAGE_BATCH_SIZE
+        for offset in range(0, len(urls), batch_size):
+            batch = urls[offset : offset + batch_size]
+            started_at = time.monotonic()
+            loaded = await loader.load_batch(batch, payload)
+            download_ms = int((time.monotonic() - started_at) * 1000)
+            vision_started_at = time.monotonic()
+            if loaded:
+                if describer is None:
+                    user_id = coerce_optional_int(payload.user_id)
+                    client = await abuild_vision_client(user_id) if user_id is not None else None
+                    if client is None:
+                        # 该分支仅用于无用户上下文的内部调试；生产 MQ 始终带 user_id。
+                        from src.core.markdown_parser import build_default_vision_client
+
+                        client = build_default_vision_client()
+                    describer = ImageDescriber(client)
+                parse_result = await describer.aprocess(
+                    parse_result,
+                    image_bytes_by_url=loaded,
+                    target_urls=list(loaded),
+                )
+            vision_ms = int((time.monotonic() - vision_started_at) * 1000)
+            logger.bind(
+                event="raw_markdown_image_batch",
+                task_id=payload.task_id,
+                requested=len(batch),
+                succeeded=len(loaded),
+                failed=len(batch) - len(loaded),
+                download_ms=download_ms,
+                vision_ms=vision_ms,
+            ).info(
+                "RAW Markdown 图片批次完成: task_id={} requested={} succeeded={} failed={}",
+                payload.task_id,
+                len(batch),
+                len(loaded),
+                len(batch) - len(loaded),
+            )
+            del loaded
+
+        return parse_result.to_markdown()
 
     async def load_markdown(self, payload: ParseTaskPayload) -> str:
         """从对象存储读回已上传的 Markdown 文本（重试从 CHUNKING 恢复时使用）。
@@ -219,6 +301,7 @@ class StageServices:
         payload: ParseTaskPayload,
         db: AsyncSession,
         chunking_config: "ChunkingConfig | None" = None,
+        execution_context: "DatasetExecutionContext | None" = None,
     ) -> list[ChunkRecordDB]:
         """分片并在单事务内写入 chunk 真值记录；返回当前文档完整 chunk truth set（ORM 行）。
 
@@ -240,10 +323,9 @@ class StageServices:
         )
         embedder = None
         if stage_two_algorithm == "semantic_depth_window":
-            user_id = coerce_optional_int(payload.user_id)
-            if user_id is None:
-                raise RuntimeError("chunking semantic stage requires payload.user_id")
-            embedder, _ = await aresolve_user_embedding_client(user_id, db=db)
+            if execution_context is None:
+                raise RuntimeError("chunking semantic stage requires dataset execution context")
+            embedder = build_embedding_client(execution_context.dense_embedding)
 
         chunks = await asyncio.to_thread(
             self._chunk_markdown,
@@ -256,17 +338,13 @@ class StageServices:
         await self._persist_chunk_facts(chunks, payload, db)
 
         # commit 后立即反查 ORM 行作为返回值（与 retry 路径形态一致）。
-        records = await self._reload_chunks_from_db(payload, db)
-        logger.info(
-            f"[StageServices] chunking completed: task_id={payload.task_id}, "
-            f"chunk_count={len(records)}"
-        )
-        return records
+        return await self._reload_chunks_from_db(payload, db)
 
     async def _reload_chunks_from_db(
         self,
         payload: ParseTaskPayload,
         db: AsyncSession,
+        execution_context: "DatasetExecutionContext | None" = None,
     ) -> list[ChunkRecordDB]:
         """按 ``doc_id`` 反查当前文档完整 chunk truth set（仅 ACTIVE，按 ``chunk_index`` 升序）。
 
@@ -367,6 +445,7 @@ class StageServices:
         chunks: list[ChunkRecordDB],
         payload: ParseTaskPayload,
         db: AsyncSession,
+        execution_context: "DatasetExecutionContext | None" = None,
     ) -> ChunkIndexingResult:
         """将 chunk 写入向量存储（dense/Qdrant）。
 
@@ -382,8 +461,8 @@ class StageServices:
         owner = self.resolve_chunk_owner(payload)
         if owner is None:
             logger.warning(
-                "[StageServices] skip vector indexing because owner is missing: task_id={}",
-                payload.task_id,
+                "[ParseTask] vector_indexing_skipped {} reason=owner_missing",
+                task_log_context(payload),
             )
             return ChunkIndexingResult(
                 total_chunks=len(chunks),
@@ -415,7 +494,13 @@ class StageServices:
                     require_unsuperseded=True,
                 )
                 try:
-                    result = await self._get_vector_storage().index_chunks(
+                    if execution_context is None and self._vector_storage is None:
+                        raise DenseEmbeddingConfigMissingError(
+                            user_id,
+                            dataset_id=set_id,
+                            field_name="dense_embedding_config_id",
+                        )
+                    result = await self._get_vector_storage(execution_context).index_chunks(
                         user_id=user_id,
                         set_id=set_id,
                         doc_id=doc_id,
@@ -434,9 +519,7 @@ class StageServices:
                 if result.failed_chunk_ids:
                     failed_ids = set(result.failed_chunk_ids)
                     await self._cleanup_qdrant_branch(
-                        chunks=[
-                            chunk for chunk in dense_chunks if chunk.chunk_id in failed_ids
-                        ],
+                        chunks=[chunk for chunk in dense_chunks if chunk.chunk_id in failed_ids],
                         vector_name=str(settings.DENSE_VECTOR_QDRANT_VECTOR_NAME),
                         task_id=payload.task_id,
                         branch=IndexBranch.DENSE,
@@ -446,10 +529,21 @@ class StageServices:
             # EMBEDDING_DIMENSION_UNSUPPORTED）并通知 Java，不在此吞成 generic 失败结果。
             raise
         except Exception as exc:
-            logger.error(
-                "[StageServices] vector indexing failed: task_id={} error={}",
-                payload.task_id,
-                exc,
+            logger.bind(
+                event="vector_indexing_request_failed",
+                outcome="failed",
+                task_id=payload.task_id,
+                original_file_id=payload.original_file_id,
+                user_id=payload.user_id,
+                dataset_id=payload.dataset_id,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).error(
+                "[ParseTask] vector_indexing_request_failed {} error_type={} error={}",
+                task_log_context(payload),
+                type(exc).__name__,
+                compact_log_value(exc),
             )
             return ChunkIndexingResult(
                 total_chunks=len(chunks),
@@ -459,19 +553,20 @@ class StageServices:
 
         if result.failed_chunk_ids:
             logger.warning(
-                "[StageServices] vector indexing has failed chunks: "
-                "task_id={} total={} indexed={} failed={}",
-                payload.task_id,
+                "[ParseTask] vector_indexing_partial_failure {} total_chunks={} "
+                "indexed_chunks={} failed_chunk_count={} failed_chunk_ids_sample={}",
+                task_log_context(payload),
                 result.total_chunks,
                 result.indexed_chunks,
-                result.failed_chunk_ids,
+                len(result.failed_chunk_ids),
+                compact_log_value(result.failed_chunk_ids[:10]),
             )
         else:
-            logger.info(
-                "[StageServices] vector indexing completed: task_id={} indexed={} model={}",
-                payload.task_id,
+            logger.debug(
+                "[ParseTask] vector_indexing_request_succeeded {} indexed_chunks={} model={}",
+                task_log_context(payload),
                 result.indexed_chunks,
-                result.embedding_model,
+                compact_log_value(result.embedding_model),
             )
         return result
 
@@ -508,6 +603,7 @@ class StageServices:
         self,
         payload: ParseTaskPayload,
         db: AsyncSession,
+        execution_context: "DatasetExecutionContext | None" = None,
     ) -> tuple[FilePostIndexPlan | None, str | None]:
         """构建内存态 ``FilePostIndexPlan``（不持久化、不写阶段状态）。
 
@@ -524,6 +620,22 @@ class StageServices:
             reason = str(exc)
             if not reason.startswith("pretokenize:"):
                 reason = f"pretokenize: {reason}"
+            logger.bind(
+                event="pretokenize_plan_failed",
+                outcome="failed",
+                task_id=payload.task_id,
+                original_file_id=payload.original_file_id,
+                user_id=payload.user_id,
+                dataset_id=payload.dataset_id,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).error(
+                "[ParseTask] pretokenize_plan_failed {} error_type={} error={}",
+                task_log_context(payload),
+                type(exc).__name__,
+                compact_log_value(exc),
+            )
             return None, reason
 
         if len(plan.chunks_with_tokens) == 0:
@@ -582,18 +694,34 @@ class StageServices:
             try:
                 await db.rollback()
             except Exception as rollback_exc:
-                logger.warning(
+                logger.bind(
+                    event="bm25_guard_rollback_failed",
+                    outcome="failed",
+                    task_id=task_id,
+                    original_file_id=meta.doc_id,
+                    error_type=type(rollback_exc).__name__,
+                    error_message=truncate_log_value(rollback_exc),
+                    stack_trace=safe_exception_stack(rollback_exc),
+                ).warning(
                     "[StageServices] rollback after BM25 guarded failure also failed: "
-                    "task_id={} error={}",
+                    "task_id={}",
                     task_id,
-                    rollback_exc,
                 )
-            logger.error(
-                "[StageServices] BM25 mutation guard failed: "
-                "task_id={} doc_id={} error={}",
+            logger.bind(
+                event="bm25_mutation_guard_failed",
+                outcome="failed",
+                task_id=task_id,
+                original_file_id=meta.doc_id,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).error(
+                "[StageServices] BM25 mutation guard failed: task_id={} doc_id={} "
+                "error_type={} error={}",
                 task_id,
                 meta.doc_id,
-                exc,
+                type(exc).__name__,
+                truncate_log_value(exc),
             )
             return Bm25IndexingResult(
                 total_items=total,
@@ -619,10 +747,13 @@ class StageServices:
                 doc_id=meta.doc_id,
             )
         except Exception as exc:
-            logger.error(
-                "[StageServices] ES 前置删除失败，判 ES 阶段失败不写入: doc_id={} error={}",
+            logger.bind(
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).error(
+                "[StageServices] ES 前置删除失败，判 ES 阶段失败不写入: doc_id={}",
                 meta.doc_id,
-                exc,
             )
             return Bm25IndexingResult(
                 total_items=total,
@@ -633,11 +764,20 @@ class StageServices:
         try:
             result = await es_pipeline.write_es_index(plan, db=db)
         except Exception as exc:
-            logger.error(
-                "[StageServices] BM25 写入异常，将清理可能半成品: "
-                "doc_id={} error={}",
+            logger.bind(
+                event="bm25_write_failed",
+                outcome="failed",
+                task_id=meta.task_id or "",
+                original_file_id=meta.doc_id,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).error(
+                "[StageServices] BM25 写入异常，将清理可能半成品: doc_id={} "
+                "error_type={} error={}",
                 meta.doc_id,
-                exc,
+                type(exc).__name__,
+                truncate_log_value(exc),
             )
             result = Bm25IndexingResult(
                 total_items=total,
@@ -653,10 +793,13 @@ class StageServices:
                     doc_id=meta.doc_id,
                 )
             except Exception as exc:
-                logger.warning(
-                    "[StageServices] ES 写入失败后清理半成品失败(best-effort): doc_id={} error={}",
+                logger.bind(
+                    error_type=type(exc).__name__,
+                    error_message=truncate_log_value(exc),
+                    stack_trace=safe_exception_stack(exc),
+                ).warning(
+                    "[StageServices] ES 写入失败后清理半成品失败(best-effort): doc_id={}",
                     meta.doc_id,
-                    exc,
                 )
             else:
                 # BM25 是文档级全量重建：一旦半成品已确认清空，
@@ -700,6 +843,7 @@ class StageServices:
         self,
         payload: ParseTaskPayload,
         db: AsyncSession,
+        execution_context: "DatasetExecutionContext | None" = None,
     ) -> None:
         """调用 SparseIndexingPipeline.run；失败抛出（由 SparseVectorizingStage 归类）。
 
@@ -728,15 +872,18 @@ class StageServices:
             # sparse 与 dense 解耦：不再要求 dense=SUCCESS，只挑还没成功的 sparse chunk。
             fresh_chunks = await self._reload_chunks_from_db(payload, db)
             sparse_chunks = [
-                c
-                for c in fresh_chunks
-                if c.sparse_vector_status != SPARSE_VECTOR_STATUS_INDEXED
+                c for c in fresh_chunks if c.sparse_vector_status != SPARSE_VECTOR_STATUS_INDEXED
             ]
             try:
                 await sparse_pipeline.run(
                     chunks=sparse_chunks,
                     task_id=payload.task_id,
                     db=db,
+                    resolved_model=(
+                        execution_context.sparse_embedding
+                        if execution_context is not None
+                        else None
+                    ),
                 )
             except Exception:
                 # pipeline 会把失败批次收敛为 FAILED；重新读取后仅清理这些
@@ -794,16 +941,18 @@ class StageServices:
                     vector_name=vector_name,
                 )
             except Exception as exc:
-                logger.error(
+                logger.bind(
+                    error_type=type(exc).__name__,
+                    error_message=truncate_log_value(exc),
+                    stack_trace=safe_exception_stack(exc),
+                ).error(
                     "[IndexWriteCleanupAlert] event=cleanup_failed task_id={} "
-                    "branch={} bucket_id={} chunk_count={} error={}",
+                    "branch={} bucket_id={} chunk_count={}",
                     task_id,
                     branch.value,
                     bucket_id,
                     len(chunk_ids),
-                    exc,
                 )
-
 
     # ------------------------------------------------------------------
     # ensure points（dense/sparse 解耦的前置建点）
@@ -894,10 +1043,14 @@ class StageServices:
             self._chunk_draft_factory = ChunkDraftFactory(bucket_router=bucket_router)
         return self._chunk_draft_factory
 
-    def _get_vector_storage(self):
-        if self._vector_storage is None:
-            self._vector_storage = compose_vector_storage_facade()
-        return self._vector_storage
+    def _get_vector_storage(self, execution_context: "DatasetExecutionContext"):
+        if self._vector_storage is not None:
+            return self._vector_storage
+        return compose_vector_storage_facade(
+            embedding_pipeline=build_chunk_embedding_pipeline(
+                execution_context.dense_embedding
+            )
+        )
 
     def _get_es_indexing_pipeline(self):
         if self._es_indexing_pipeline is None:
@@ -974,8 +1127,16 @@ def _upload_base64_images_sync(
             return f"![{alt}]({url})"
         except Exception as exc:
             failed += 1
-            logger.warning(
-                "[upload_md_images] 图片上传失败，保留原始 base64: mime={} err={}", mime, exc
+            logger.bind(
+                event="markdown_inline_image_upload_failed",
+                outcome="skipped",
+                mime_type=mime,
+                image_size=len(image_bytes) if "image_bytes" in locals() else 0,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).warning(
+                "[upload_md_images] 图片上传失败，保留原始 base64: mime={}", mime
             )
             return match.group(0)
 

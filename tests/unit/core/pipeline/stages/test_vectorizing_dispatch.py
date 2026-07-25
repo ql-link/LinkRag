@@ -68,7 +68,7 @@ class _RecordingSparsePipeline:
     def __init__(self):
         self.run_calls = []
 
-    async def run(self, *, chunks, task_id, db):
+    async def run(self, *, chunks, task_id, db, resolved_model=None):
         self.run_calls.append(list(chunks))
 
 

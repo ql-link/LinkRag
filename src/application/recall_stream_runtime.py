@@ -34,9 +34,9 @@ from src.application.recall_serialization import (
     serialize_reranked_hits,
 )
 from src.config import settings
-from src.core.llm.exceptions import UserModelConfigMissingError
+from src.core.llm.exceptions import LLMConfigResolutionError
 from src.core.llm.response import UsageInfo
-from src.core.llm.user_model_resolver import aresolve_user_model
+from src.core.llm.user_model_resolver import aresolve_model
 from src.core.mq.messages import ChatTurnMessage
 from src.core.pipeline.recall import (
     RecallDiagnostics,
@@ -65,6 +65,7 @@ from src.core.prompts import (
 from src.core.prompts.conversation_title import TITLE_MAX_OUTPUT_TOKENS
 from src.services.mq_service import MQService
 from src.services.usage_reporter import report_usage_nowait
+from src.observability.logging import safe_exception_stack, truncate_log_value
 
 
 def recall_event(name: str, payload: dict) -> str:
@@ -93,7 +94,19 @@ async def _try_llm_title(resolved, query: str, request_id: str) -> str | None:
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 - 标题为增强项，失败回落兜底
-        logger.warning("[recall] title generation failed request_id={}: {}", request_id, exc)
+        logger.bind(
+            event="recall_title_generation_failed",
+            outcome="degraded",
+            request_id=request_id,
+            provider_type=getattr(resolved, "provider_type", "") or "",
+            model_name=getattr(resolved, "model_name", "") or "",
+            config_id=getattr(resolved, "config_id", None),
+            error_type=type(exc).__name__,
+            error_message=truncate_log_value(exc),
+            stack_trace=safe_exception_stack(exc),
+        ).warning(
+            "[recall] title generation failed request_id={}", request_id
+        )
         return None
 
 
@@ -150,7 +163,6 @@ async def recall_event_stream(
     token_budget: int,
     rerank_top_n: int,
     is_first_turn: bool = False,
-    config_source: str = "USER",
 ) -> AsyncGenerator[str, None]:
     """流内执行召回 + 重排 + 生成，把结果/异常映射为 SSE 终态事件。
 
@@ -158,7 +170,7 @@ async def recall_event_stream(
     上限，二者均来自数据集级 ``recall_config``（分别为 ``recall_context_token_budget`` /
     ``rerank_top_n``，无数据集配置时为系统默认）。
 
-    先按 ``(user_id, CHAT, config_source, config_id)`` 前置校验模型——不可用即 ``error``
+    先按 ``(user_id, CHAT, config_id)`` 前置校验模型——不可用即 ``error``
     MODEL_CONFIG_MISSING、**不进入召回**；通过后执行召回融合，一次性回填片段正文（供
     rerank 与生成共用），对融合候选做 rerank 精排（不可用即降级为当前融合顺序，见
     ``_rerank_hits``；与召回共享同一条流超时预算），用重排后的最终候选按 token 预算拼装
@@ -205,25 +217,33 @@ async def recall_event_stream(
     try:
         # 召回前置校验用户模型；不可用即硬失败、不进入召回。
         try:
-            resolved = await aresolve_user_model(
+            resolved = await aresolve_model(
                 user_id=recall_req.user_id,
                 capability="CHAT",
                 config_id=config_id,
-                config_source=config_source,
-                allow_system_fallback=False,
             )
-        except (UserModelConfigMissingError, ValueError) as exc:
-            logger.warning(
-                "[recall] model config unavailable request_id={} config_id={}: {}",
+        except LLMConfigResolutionError as exc:
+            logger.bind(
+                event="recall_model_config_unavailable",
+                outcome="failed",
+                request_id=request_id,
+                turn_id=turn_id,
+                conversation_id=conversation_id,
+                user_id=recall_req.user_id,
+                config_id=config_id,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).warning(
+                "[recall] model config unavailable request_id={} config_id={}",
                 request_id,
                 config_id,
-                exc,
             )
             yield recall_event(
                 "error",
                 {
-                    "code": CODE_MODEL_CONFIG_MISSING,
-                    "message": "selected model is not configured or unavailable",
+                    "code": exc.code,
+                    "message": str(exc),
                 },
             )
             await _emit_chat_turn(
@@ -238,8 +258,8 @@ async def recall_event_stream(
                 references=[],
                 latency_ms=_elapsed_ms(),
                 status="FAILED",
-                error_code=CODE_MODEL_CONFIG_MISSING,
-                error_message="selected model is not configured or unavailable",
+                error_code=exc.code,
+                error_message=str(exc),
                 title=fallback_title,  # 模型未解析无法调 LLM，首轮直接用首问截断兜底
             )
             return
@@ -288,7 +308,13 @@ async def recall_event_stream(
             yield event
     except RecallValidationError as exc:
         # 正常已在握手前拦截；此处为 pipeline 自身安全网的兜底。
-        logger.info("[recall] validation error request_id={}: {}", request_id, exc)
+        logger.bind(
+            event="recall_validation_failed",
+            request_id=request_id,
+            user_id=recall_req.user_id,
+            error_type=type(exc).__name__,
+            error_message=truncate_log_value(exc),
+        ).info("[recall] validation error request_id={}", request_id)
         yield recall_event("error", {"code": CODE_INVALID_REQUEST, "message": str(exc)})
         await _drain_title_task(title_task)
         await _emit_failed_turn(
@@ -306,7 +332,16 @@ async def recall_event_stream(
     except RecallFatalError as exc:
         # 必备前置缺失（当前：发起用户无默认 EMBEDDING 配置，dense 路无法编码 query）。
         # 须置于 RecallError 之前——RecallFatalError 是其子类。整请求硬失败，不做宽松降级。
-        logger.warning("[recall] embedding config missing request_id={}: {}", request_id, exc)
+        logger.bind(
+            event="recall_embedding_config_missing",
+            outcome="failed",
+            request_id=request_id,
+            user_id=recall_req.user_id,
+            config_id=config_id,
+            error_type=type(exc).__name__,
+            error_message=truncate_log_value(exc),
+            stack_trace=safe_exception_stack(exc),
+        ).warning("[recall] embedding config missing request_id={}", request_id)
         yield recall_event(
             "error",
             {"code": CODE_EMBEDDING_CONFIG_MISSING, "message": "user embedding config missing"},
@@ -325,7 +360,16 @@ async def recall_event_stream(
             fallback_title,
         )
     except RecallError as exc:
-        logger.warning("[recall] all sources failed request_id={}: {}", request_id, exc)
+        logger.bind(
+            event="recall_all_sources_failed",
+            outcome="failed",
+            request_id=request_id,
+            user_id=recall_req.user_id,
+            dataset_count=len(getattr(recall_req, "dataset_ids", None) or []),
+            error_type=type(exc).__name__,
+            error_message=truncate_log_value(exc),
+            stack_trace=safe_exception_stack(exc),
+        ).warning("[recall] all sources failed request_id={}", request_id)
         yield recall_event(
             "error", {"code": CODE_ALL_SOURCES_FAILED, "message": "all retrievers failed"}
         )
@@ -365,8 +409,20 @@ async def recall_event_stream(
         if title_task is not None and not title_task.done():
             title_task.cancel()
         raise
-    except Exception:  # noqa: BLE001 - 兜底，避免未预期异常泄露堆栈给调用方
-        logger.exception("[recall] unexpected error request_id={}", request_id)
+    except Exception as exc:  # noqa: BLE001 - 兜底，避免未预期异常泄露堆栈给调用方
+        logger.bind(
+            event="recall_unexpected_error",
+            outcome="failed",
+            request_id=request_id,
+            turn_id=turn_id,
+            conversation_id=conversation_id,
+            user_id=recall_req.user_id,
+            config_id=config_id,
+            duration_ms=_elapsed_ms(),
+            error_type=type(exc).__name__,
+            error_message=truncate_log_value(exc),
+            stack_trace=safe_exception_stack(exc),
+        ).error("[recall] unexpected error request_id={}", request_id)
         yield recall_event("error", {"code": CODE_INTERNAL_ERROR, "message": "internal error"})
         await _drain_title_task(title_task)
         await _emit_failed_turn(
@@ -405,8 +461,7 @@ async def _rerank_hits(
     降级覆盖：
     - 软降级（模型调用失败 / 返回不可用）：reranker 内部已返回当前融合顺序候选且
       ``rerank_applied=False``，原样透出；
-    - 硬失败（未配 RERANK 模型 → ``UserModelConfigMissingError`` / provider 不支持 →
-      ``ValueError``）、rerank 超时、预算耗尽：此处兜底降级。
+    - provider 不可用、rerank 超时、预算耗尽：此处兜底降级。
 
     只 catch 已知运维失败；其它未预期异常**向上抛**，由顶层收敛为 ``INTERNAL_ERROR``
     （带堆栈），不被静默吞成"降级"而掩盖真实缺陷。``CancelledError``（客户端断连）向上传播。
@@ -424,6 +479,10 @@ async def _rerank_hits(
         )
         return _degrade()
 
+    contexts = recall_req.dataset_contexts or {}
+    if not any(ctx.config.recall.enable_rerank for ctx in contexts.values()):
+        return _degrade()
+
     try:
         resp = await asyncio.wait_for(
             reranker.rerank(
@@ -433,6 +492,7 @@ async def _rerank_hits(
                     hits=fusion_hits,
                     top_n=top_n,
                     contents=contents,
+                    dataset_contexts=recall_req.dataset_contexts,
                 )
             ),
             timeout=timeout_s,
@@ -440,11 +500,20 @@ async def _rerank_hits(
         return resp.hits, resp.rerank_applied
     except asyncio.CancelledError:
         raise
-    except (UserModelConfigMissingError, ValueError, asyncio.TimeoutError) as exc:
-        logger.info(
-            "[recall] rerank unavailable, fallback to fusion order request_id={}: {}",
+    except (LLMConfigResolutionError, ValueError, asyncio.TimeoutError) as exc:
+        logger.bind(
+            event="recall_rerank_unavailable",
+            outcome="degraded",
+            request_id=request_id,
+            user_id=recall_req.user_id,
+            candidate_count=len(fusion_hits),
+            top_n=top_n,
+            error_type=type(exc).__name__,
+            error_message=truncate_log_value(exc),
+            stack_trace=safe_exception_stack(exc),
+        ).info(
+            "[recall] rerank unavailable, fallback to fusion order request_id={}",
             request_id,
-            exc,
         )
         return _degrade()
 
@@ -510,7 +579,7 @@ async def _generate_answer(
             request_id=request_id,
             turn_id=turn_id,
             conversation_id=conversation_id,
-            config_id=config_id,
+            config_id=int(config_id),
             resolved=resolved,
             answer="",
             usage=UsageInfo(),
@@ -554,7 +623,7 @@ async def _generate_answer(
             request_id=request_id,
             turn_id=turn_id,
             conversation_id=conversation_id,
-            config_id=config_id,
+            config_id=int(config_id),
             resolved=resolved,
             answer="",
             usage=UsageInfo(),
@@ -626,7 +695,29 @@ async def _generate_answer(
         )
         return
     except Exception as exc:  # noqa: BLE001 - 生成失败统一收敛为 GENERATION_FAILED
-        logger.warning("[recall] generation failed request_id={}: {}", request_id, exc)
+        logger.bind(
+            event="recall_generation_failed",
+            outcome="failed",
+            request_id=request_id,
+            turn_id=turn_id,
+            conversation_id=conversation_id,
+            user_id=recall_req.user_id,
+            dataset_count=len(getattr(recall_req, "dataset_ids", None) or []),
+            config_id=config_id,
+            provider_type=getattr(resolved, "provider_type", "") or "",
+            model_name=getattr(resolved, "model_name", "") or "",
+            duration_ms=_elapsed_ms(),
+            partial_answer_chars=sum(len(part) for part in answer_parts),
+            reference_count=len(references),
+            error_type=type(exc).__name__,
+            error_message=truncate_log_value(exc),
+            stack_trace=safe_exception_stack(exc),
+        ).error(
+            "[recall] generation failed request_id={} turn_id={} user_id={}",
+            request_id,
+            turn_id,
+            recall_req.user_id,
+        )
         yield recall_event(
             "error",
             {"code": CODE_GENERATION_FAILED, "message": "answer generation failed"},
@@ -755,7 +846,7 @@ async def _emit_chat_turn(
             user_id=recall_req.user_id,
             query=recall_req.query,
             answer=answer,
-            config_id=config_id,
+            config_id=int(config_id),
             provider_type=resolved.provider_type if resolved is not None else "",
             model_name=(resolved.model_name or "") if resolved is not None else "",
             status=status,
@@ -767,12 +858,27 @@ async def _emit_chat_turn(
         )
         await MQService().send(msg)
     except Exception as exc:  # noqa: BLE001 - 落库通知失败不影响问答主流程
-        logger.warning(
-            "[recall] chat_turn emit failed request_id={} turn_id={} status={}: {}",
+        logger.bind(
+            event="chat_turn_emit_failed",
+            outcome="skipped",
+            request_id=request_id,
+            turn_id=turn_id,
+            conversation_id=conversation_id,
+            user_id=recall_req.user_id,
+            status=status,
+            config_id=config_id,
+            provider_type=resolved.provider_type if resolved is not None else "",
+            model_name=(resolved.model_name or "") if resolved is not None else "",
+            answer_chars=len(answer),
+            reference_count=len(references),
+            error_type=type(exc).__name__,
+            error_message=truncate_log_value(exc),
+            stack_trace=safe_exception_stack(exc),
+        ).warning(
+            "[recall] chat_turn emit failed request_id={} turn_id={} status={}",
             request_id,
             turn_id,
             status,
-            exc,
         )
 
     # generate token 用量统一上报（旁路、非阻塞）：与 chat_turn 解耦，发送独立于上面的落库通知。
@@ -787,7 +893,7 @@ async def _emit_chat_turn(
             prompt_tokens=usage.prompt_tokens,
             completion_tokens=usage.completion_tokens,
             total_tokens=usage.total_tokens,
-            config_id=config_id,
+            config_id=int(config_id),
             latency_ms=latency_ms,
             # chat_turn 的 GENERATING/COMPLETED/FAILED 映射到用量口径的 success/failed。
             status="failed" if status == "FAILED" else "success",

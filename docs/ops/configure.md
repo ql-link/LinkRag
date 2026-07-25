@@ -1,6 +1,6 @@
 # Configuration
 
-所有运行时配置通过 [src/config.py](../../src/config.py) 的 `Settings` 加载，默认读取项目根目录 `.env`；也可以用 `TOLINK_ENV_FILE=/path/to/env` 显式指定配置文件。Docker 部署层通过 `env_file` 选择 `.env.production` / `.env.development`；单服务部署入口默认读取 `.env.production`，也可以用 `RAG_ENV_FILE=/path/to/env` 显式覆盖。不要把环境 IP 写进代码。本文按域解读 [.env.example](../../.env.example) 中的配置项，标注**必填**与典型值。
+所有运行时配置通过 [src/config.py](../../src/config.py) 的 `Settings` 加载，默认读取项目根目录 `.env`；也可以用 `TOLINK_ENV_FILE=/path/to/env` 显式指定配置文件。若同目录存在 `<配置文件>.local`，加载器会在基础配置之后自动叠加该本机文件，例如 `.env.development` + `.env.development.local`，或 `.env.production` + `.env.production.local`。基础配置可以进入 Git，本机覆盖文件只保存账号、密码、JWT 和 API Key，必须保持忽略。Docker 部署层按顺序加载 `RAG_ENV_FILE` 与 `RAG_SECRET_ENV_FILE`，后者覆盖前者；单服务生产部署默认使用 `.env.production` + `.env.production.local`。不要把环境 IP 写进代码。本文按域解读 [.env.example](../../.env.example) 中的配置项，标注**必填**与典型值。
 
 > 不要硬编码密钥，不要把真实 `.env` 提交到仓库。
 
@@ -12,7 +12,8 @@
 | 数据库 | `DB_*` | 始终 |
 | 缓存 | `REDIS_*` | 始终 |
 | 安全 | `API_KEY_ENCRYPTION_SECRET` | 始终（必须与 Java 管理端一致） |
-| 系统级 LLM | `SYSTEM_LLM_*` | 始终（兜底 LLM 调用） |
+| LLM runtime cache | `LLM_RUNTIME_CACHE_*` | 可选缓存旁路；MySQL 仍是事实源 |
+| Dataset 原始快照缓存 | `DATASET_PARSE_CONFIG_CACHE_*` | Java/Python 共用；仅在 Java CDC health READY 后开启 |
 | Markdown 增强 | `MARKDOWN_PARSER_*` | 调整解析增强行为时 |
 | 分块策略 | `CHUNKING_*` | 调整分块参数时 |
 | 流程编排 | `WORKFLOW_*` | 使用轻量流程编排引擎时 |
@@ -33,7 +34,9 @@
 | `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` | MySQL 连接 |
 | `REDIS_HOST` / `REDIS_PORT` | Redis 连接 |
 | `API_KEY_ENCRYPTION_SECRET` | API Key 加密 Secret，必须与 Java 管理端一致；64 位 hex，解码后 32 字节，用于 AES-256-GCM |
-| `SYSTEM_LLM_PROVIDER` / `SYSTEM_LLM_API_KEY` / `SYSTEM_LLM_API_BASE` | 系统级兜底 LLM |
+| `LLM_RUNTIME_CACHE_ENABLED` / `LLM_RUNTIME_CACHE_TTL_SECONDS` | 全局 `config_id` runtime cache 开关与 TTL |
+| `DATASET_PARSE_CONFIG_CACHE_ENABLED` / `DATASET_PARSE_CONFIG_CACHE_TTL_SECONDS` | `dataset_parse_config` 共享原始快照开关与 TTL；默认关闭，正常值默认 7 天 |
+| `DATASET_PARSE_CONFIG_NEGATIVE_TTL_SECONDS` | 数据集当前没有配置行时的 NOT_FOUND TTL，默认 60 秒 |
 | `KAFKA_BOOTSTRAP_SERVERS` 等（若 `MQ_VENDOR=kafka`） | Kafka 接入信息 |
 | `MINIO_*`（若 `STORAGE_TYPE=minio`） | 对象存储凭据 |
 | `MINIO_RAW_BUCKET`（若 `STORAGE_TYPE=minio`） | 原文件桶：用户上传的源文件，由 Java 写入，Python 只读；默认 `tolink-rag-raw`，需在 MinIO 控制台预建 |
@@ -60,6 +63,9 @@
 | `MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT` | `true` | 是否启用表格 LLM 增强 |
 | `MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT` | `true` | 是否启用图片 LLM 增强 |
 | `MARKDOWN_PARSER_VISION_CONCURRENCY` | `24` | 图片视觉增强最大并发数，可降为 `16` / `8` / `1` 控制限流风险 |
+| `RAW_MARKDOWN_IMAGE_MAX_BYTES` | `20971520` | Java v1 RAW Markdown 单张图片读取上限，必须大于0且部署值不得高于 Java 上传侧上限 |
+| `RAW_MARKDOWN_IMAGE_BATCH_SIZE` | `4` | RAW 图片 Vision 批大小，范围 `1..20`；每批结束释放图片字节 |
+| `RAW_MARKDOWN_IMAGE_DOWNLOAD_CONCURRENCY` | `4` | RAW 图片流式下载并发，范围 `1..20` |
 | `MARKDOWN_PARSER_ENABLE_HEADING_HIERARCHY` | `false` | 是否启用 Markdown 标题层级后处理；默认关闭；开启且门禁命中时按用户默认 → LinkRag 系统默认预设解析 `CHAT` 模型 |
 | `MARKDOWN_PARSER_HEADING_NO_HEADING_MIN_TOKENS` | `512` | 全文无 heading 时进入标题生成门禁的最小 token 数 |
 | `MARKDOWN_PARSER_HEADING_FLAT_MIN_HEADINGS` | `5` | 全篇只有同级 heading 时进入扁平标题门禁的最小 heading 数；下限为 `5` |
@@ -144,20 +150,41 @@ HTTP 请求链路通过 `X-Trace-Id` 头串联：请求带该头时沿用；未�
 
 ### 统一日志管道（标准库 logging 桥接）
 
-项目自身代码统一用 Loguru。新代码优先从 `src.observability.logging` 引入；历史代码中的 `from src.utils.logger import logger` 仍由兼容层转发。uvicorn、SQLAlchemy、kafka、transformers 等第三方库以及少数遗留模块仍走 Python 标准库 `logging`，[src/observability/logging.py](../../src/observability/logging.py) 通过 `InterceptHandler` 把标准库 logging 全量桥接进 Loguru，使运行时**只有一条输出管道**：所有日志（无论来自 Loguru 还是标准库）都进同一份日期文件、同一种 JSON 结构、由 `LOG_LEVEL` 统一过滤。
+项目自身代码统一用 Loguru。新代码优先从 `src.observability.logging` 引入；历史代码中的 `from src.utils.logger import logger` 仍由兼容层转发。uvicorn、SQLAlchemy、kafka、transformers 等第三方库以及少数遗留模块仍走 Python 标准库 `logging`，[src/observability/logging.py](../../src/observability/logging.py) 通过 `InterceptHandler` 把标准库 logging 全量桥接进 Loguru，使运行时**只有一条输出管道**：所有日志（无论来自 Loguru、标准库或第三方库）都进同一份日期文件、同一种 JSON 结构、由 `LOG_LEVEL` 统一过滤。
 
 要点：
 
 - 日志在 [src/main.py](../../src/main.py) 顶部**显式初始化**（`setup_logger()`），不依赖 import 副作用；放在其余模块导入之前，确保导入期日志也被捕获。
 - `uvicorn`/`uvicorn.access`/`uvicorn.error`/`gunicorn` 等自带 handler 的 logger 会被显式接管（清空其 handler、打开 propagate），其访问日志与未捕获异常的 500 堆栈因此也进入日期文件。`uvicorn.run` 传 `log_config=None`，不再安装 uvicorn 自己的日志配置。
-- 异常堆栈开启 `backtrace`、关闭 `diagnose`：保留完整调用栈，但不展开局部变量值，避免在生产日志里泄露密钥 / PII。
-- 全局未捕获异常由 [src/main.py](../../src/main.py) 的 `Exception` handler 兜底：带请求方法 / 路径记录完整堆栈，再返回统一 500 错误体 `{code, message, data}`。
+- 异常诊断使用安全双字段：`error_message` 先压平、常见敏感赋值脱敏并限制长度；
+  `stack_trace` 只记录文件、行号和函数调用链，不包含异常原文、源码变量值或请求正文。
+  URL 进入日志前移除用户密码、query 和 fragment；图片等不宜明文记录的资源使用稳定短指纹。
+- `truncate_log_value()` 会遮蔽常见 `api_key/password/secret/access_token/authorization/
+  credential/signature` 赋值、Bearer token 和 URL 用户密码。外部 HTTP/CLI 响应只记录
+  定长摘要，禁止记录完整 prompt、query、answer、Markdown、MQ body 或模型响应正文。
+- 全局未捕获异常由 [src/main.py](../../src/main.py) 的 `Exception` handler 兜底：带请求方法 / 路径记录脱敏错误摘要和安全调用栈，再返回统一 500 错误体 `{code, message, data}`。
+- 解析任务使用结构化事件 `parse_task_started` / `parse_task_finished` /
+  `parse_task_crashed` 以及 `parse_stage_started/succeeded/skipped/failed/crashed`。
+  可在 Loki 中按 `event`、`task_id`、`user_id`、`dataset_id`、`stage`、`engine`、
+  `outcome` 和 `failure_reason` 检索；文件名与对象 key 只记录稳定短指纹，原始坐标仅
+  在 DEBUG 日志出现。字段契约见
+  [parse_task_pipeline.md §解析任务结构化日志](../internals/parse_task_pipeline.md#解析任务结构化日志)。
+- MQ 使用 `mq_http_send_failed`、`mq_consume_retry`、`mq_consume_terminal`、
+  `mq_dlq_published`、`mq_dlq_publish_failed`、`kafka_offset_commit_failed`；
+  可按 topic、partition、offset、delivery_tag、retry_count 检索。
+- 召回与增强使用 `recall_source_failed`、`recall_generation_failed`、
+  `rerank_model_failed`、`markdown_enhancement_failed`、`image_enhancement_failed`；
+  只记录数量、模型标识和资源指纹，不记录查询、回答、chunk 正文或图片签名 URL。
 - 应用关闭（lifespan shutdown）时 `await logger.complete()`，等待 `enqueue` 队列里的日志全部落盘，避免退出丢尾部日志。
 - 约定：**应用代码新增日志一律用 Loguru**；遗留的标准库 logging 会被自动桥接，无需改写，但不要再新增标准库 logging 用法。
 
 ### 集中日志部署（Loki + Promtail）
 
 生产环境按分布式拓扑部署：Loki 放在中间件服务器，Promtail 放在产生日志文件的应用服务器。Promtail 需要直接读取本机日志文件，不建议通过远程挂载读取另一台机器上的日志。
+
+Promtail 只采集 Java/Python 的全量主日志文件，不再采集独立的 `*-error*.log`，避免同一
+条 ERROR 在 Loki 和前端出现两次；同时从 JSON 日志中提取业务原始时间作为 Loki
+timestamp，避免首次启动或位置文件丢失后把历史日志错误显示为当前时间。
 
 ```text
 应用服务器（Java / Python）
@@ -227,7 +254,9 @@ HOST_VPN_IP=<loki-vpn-host> docker compose -f deploy/cloud-server/docker-compose
 
 稀疏向量与稠密向量在同一个 chunk 向量化阶段执行，模型输入是 chunk 原文，不使用 ES 分词结果。
 
-稀疏/稠密编码模型**不再由系统级配置项或用户当前默认配置决定**：写入与召回都读取 `dataset_parse_config.sparse_embedding_config_id` / `dense_embedding_config_id` 指向的 `llm_user_config.id`，并校验属于当前用户、启用中、`is_system_preset=false`、能力分别为 `SPARSE_EMBEDDING` / `EMBEDDING`。字段缺失或配置无效时解析/召回明确失败，不回退用户默认模型。历史数据集可先执行 [backfill_dataset_vector_model_bindings.sql](../../scripts/db/backfill_dataset_vector_model_bindings.sql)，按每个用户当前启用的默认 EMBEDDING / SPARSE_EMBEDDING 配置补齐绑定。
+稀疏/稠密编码模型由 `dataset_parse_config.sparse_embedding_config_id` /
+`dense_embedding_config_id` 精确指向全局 `llm_model_config.id`。表格/标题、图片与 rerank 分别使用
+`enhancement_chat_config_id`、`enhancement_vision_config_id`、`rerank_config_id`。必需字段缺失或配置无效时明确失败，不回退默认。
 
 当前可选的稀疏 provider 为 `doubao_vision`（火山方舟 doubao-embedding-vision 多模态端点）/ `bge_m3`（自部署 `bge-m3-service` 端点）。原先用 `SPARSE_VECTOR_PROVIDER` 在本地 / HTTP / 远程 BGE-M3 间切换的整套机制已移除。详见 [vectorization.md §6.6](../internals/vectorization.md) 与 [sparse_vector.md](../internals/sparse_vector.md)。
 

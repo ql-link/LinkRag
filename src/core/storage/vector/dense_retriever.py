@@ -47,6 +47,7 @@ class _DenseSearchBackend(Protocol):
         doc_id: list[int] | None = None,
         top_k: int | None = None,
         score_threshold: float | None = None,
+        resolved_model: object | None = None,
     ) -> Any: ...
 
 
@@ -94,6 +95,7 @@ class DenseRetriever:
         user_id: int,
         top_k: int,
         score_threshold_override: float | None = None,
+        dataset_contexts: dict[int, object] | None = None,
     ) -> list[RetrieverHit]:
         """按稠密向量召回一组候选 chunk。
 
@@ -140,7 +142,7 @@ class DenseRetriever:
             else self._score_threshold
         )
 
-        # 发起用户缺默认 EMBEDDING 配置 → dense 路无法编码 query：翻成 recall 层
+        # Dataset 精确 EMBEDDING 配置不可用 → dense 路无法编码 query：翻成 recall 层
         # RecallFatalError，让 pipeline 绕过宽松降级、整请求硬失败（区别于普通单路失败）。
         from src.core.pipeline.recall.exceptions import RecallFatalError
         from src.core.storage.vector.exceptions import (
@@ -149,6 +151,18 @@ class DenseRetriever:
 
         accumulated: list[RetrieverHit] = []
         for dataset_id in dataset_ids:
+            context = (
+                dataset_contexts.get(dataset_id)
+                if dataset_contexts is not None
+                else None
+            )
+            if dataset_contexts is not None and context is None:
+                raise RecallFatalError(
+                    f"Dataset {dataset_id} execution context is required"
+                )
+            search_kwargs = {}
+            if context is not None:
+                search_kwargs["resolved_model"] = context.dense_embedding
             try:
                 result = await self._backend.search_dense_chunks(
                     query=query,
@@ -157,6 +171,7 @@ class DenseRetriever:
                     doc_id=list(doc_ids) if doc_ids else None,
                     top_k=top_k,
                     score_threshold=effective_threshold,
+                    **search_kwargs,
                 )
             except VectorRetrievalUserConfigMissingError as exc:
                 raise RecallFatalError(str(exc)) from exc

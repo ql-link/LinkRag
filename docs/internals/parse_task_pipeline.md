@@ -60,6 +60,7 @@ src/core/pipeline/
 │   ├── log_repository.py        # ParseLogRepository: document_parsed_log 仓储与终态写入
 │   # notifier.py 已删除（LINK-166：parse_result 终态回传 MQ 下线，终态只写 DB）
 │   ├── source.py                # ParseSourceIO: 对象存储侧源文件流式下载到 Path / Markdown 上传
+│   ├── raw_markdown_assets.py   # tolink-raw URI 范围校验、批量下载与 BMP/TIFF 转 PNG
 │   ├── temp_workspace.py        # PARSE_TEMP_DIR 启动清理、临时文件分配、safe_unlink 幂等
 │   ├── validator.py             # ParseTaskGuard: 前置校验、MQ 重投与中断状态收敛
 │   ├── _utils.py                # 子包内部共享小工具（now / duration_ms / 等）
@@ -89,6 +90,11 @@ src/core/pipeline/
 | `ParseTaskGuard` | 消息载荷一致性校验（含 `latest_parse_task_id == payload.task_id` 当前任务门禁）、重复 task_id 的终态收敛、中断 pipeline 的失败收敛 |
 
 > **终态回传 MQ 已下线（LINK-166）**：流水线只把终态写入 `document_parse_pipeline`（DB 权威源），不再发送 `tolink.rag.parse_result`。原 `ParseResultNotifier` 协作者已删除；前端通过轮询 Java `parse-results` 接口读 DB 获取终态。
+
+> **LLM 执行上下文前置**：任务通过基础门禁后、进入 cleaning 或 DAG 任何节点前，先读取
+> `dataset_parse_config` 的五个全局 config ID，按开关构建 `DatasetExecutionContext`。dense/sparse 始终必需，
+> 表格/标题、图片、rerank 分别只在对应开关开启时必需。任一必需绑定缺失或失效，任务在任何可观测 stage
+> 启动前失败；后续所有 stage 复用同一 resolved snapshot，不重读默认或按 source 分表。
 
 `ChunkingEngine` 与 `VectorStorageFacade` 由各自模块的工厂入口装配，不再由 pipeline 自己组装：
 
@@ -149,7 +155,39 @@ any classified failure
   -> return ParsePipelineResult(status=FAILED)
 ```
 
-消费者层兜底：`ParseTaskConsumer.handle_parse_task` 在 `execute()` 之外再包一层 catch-all。`execute` 逃逸的未预期异常（pipeline 内部归类兜底之外，如 DB/会话故障）记录日志后直接 `raise`，交由死信兜底（Java 端 stuck scanner 最终收敛文件状态）。终态权威源是 DB，前端轮询读取，Python 不再回发任何 parse_result 通知（LINK-166，见 [mq.md §消费者层异常兜底](mq.md)）。
+消费者层负责安全记录反序列化失败；payload 构造成功后直接调用 `execute()`，不再重复
+记录 pipeline 逃逸异常。`execute` 对未预期异常写唯一的 `parse_task_crashed` 后重新
+抛出，交由死信兜底（Java 端 stuck scanner 最终收敛文件状态）。终态权威源是 DB，
+前端轮询读取，Python 不再回发任何 parse_result 通知（LINK-166，见
+[mq.md §消费者层异常兜底](mq.md)）。
+
+### 解析任务结构化日志
+
+`src/core/pipeline/parse_task/observability.py` 统一绑定解析任务上下文，所有记录均进入
+Loguru 的 JSON 文件 sink，并由 Promtail 采集到 Loki。公共检索字段包括：
+
+- 任务与归属：`task_id`、`previous_task_id`、`document_parse_file_id`、
+  `original_file_id`、`user_id`、`dataset_id`、`is_retry`、`trigger_mode`。
+- 文件与解析器：`file_type`、`source_bucket`、`markdown_bucket`、`parser_backend`，
+  以及 `source_filename_fingerprint`、`source_object_fingerprint`、
+  `markdown_object_fingerprint`。原始文件名与对象 key 仅在 DEBUG 日志出现。
+- 结果与诊断：`event`、`outcome`、`stage`、`duration_ms`、`failure_reason`、
+  `error_type`、`error_message`、`chunk_count`、`page_count`。
+
+日志事件约定：
+
+- `parse_task_started`：任务入口 INFO，只记录业务 ID、文件类型、解析器和重试上下文。
+- `parse_task_finished`：每次任务只写一条终态汇总；成功为 INFO，失败为 ERROR，并保留
+  `failed_stage`、`failure_reason`、耗时、页数和 chunk 数。
+- `parse_stage_started/succeeded/skipped/failed/crashed`：串行 Stage 与并行 DAG 使用
+  同一套事件，通过 `engine=serial|dag` 区分。失败与崩溃包含脱敏摘要和安全调用栈。
+- `parse_task_crashed`：DB/会话等未被业务状态机收敛的异常写 CRITICAL 后重新抛出，
+  交给 MQ 死信机制。
+- `parse_task_message_invalid`：MQ 消息在 payload 构造前反序列化失败时记录 partition、
+  offset、消息字节数与去除 input value 的字段错误位置；不记录原始消息正文，且不把
+  Pydantic 原始异常作为 cause 继续输出，避免潜在敏感字段进入日志。
+
+日志不得记录源文件正文、Markdown 内容、模型 API Key 或完整 MQ 原文。
 
 ## 3. 核心职责
 
@@ -236,6 +274,7 @@ demo DAG 当前依赖关系为：`cleaning → chunking`；`chunking → ensure_
 - **CleaningStage**：`cleaning_status != SUCCESS` 才执行（首次恒执行）；下载/解析/上传失败按错误码归类（`TEMP_DISK_FULL` / `SOURCE_FILE_NOT_FOUND` / `PARSE_ENGINE_FAILED` / `PARSED_FILE_UPLOAD_FAILED`）。**数据集级配置注入（LINK-148）**：解析前按 `(user_id, dataset_id)` 经 `DatasetConfigService.get_config` 读数据集配置（无行/DB 故障降级系统默认，只读不写库），把 PDF 后端（`payload 显式 > 数据集 pdf_config > settings.PDF_PARSER_BACKEND` 三层）与 Markdown 增强配置注入 `parse_file`。`enhancement_config={}` 明确关闭所有增强；非空对象的缺失字段仍从 Settings 补齐。数据集层只控制增强开关，不选择模型：表格与标题层级增强使用 `CHAT`，图片增强使用 `VISION`，均按“用户默认 → LinkRag 系统默认预设”解析。表格/图片两层都未命中时归 `ENHANCEMENT_MODEL_MISSING`；标题层级增强仅在门禁命中后解析模型，两层都未命中时归 `LLM_CONFIG_MISSING`。图片增强不静默跳过。数据集 JSON 字段类型非法 → 归 `PARSE_ENGINE_FAILED`（reason 含字段名）。成功在 `mark_success` 写 `mark_parsed + mark_cleaning_success + mark_post_cleaning`。临时文件早删 + `finally` 兜底封装在 `run` 内。
   - **`md` / `markdown` 透传**：cleaning 的职责是把多源文件「解析为 md」，而 md 源文件本身即目标格式——经 `payload.is_markdown_passthrough` 判定后 `_read_markdown_passthrough` 直接读取已下载的源文件文本作为 markdown 产物（`parse_result=None`，下游 chunking 走纯 markdown 分片路径），**仅跳过解析引擎**；markdown 产物仍会照常上传写入输出桶，不会因文件类型停留在 `source_bucket`。透传仍走完整成功收口（`mark_parsed + mark_cleaning_success + mark_post_cleaning`），`cleaning_status=SUCCESS`，状态语义与正常清洗一致。
     读取文本后、进入 chunking 前，`CleaningStage.run` 调 `StageServices.upload_md_images()` 扫描 markdown 中的 `data:image/...;base64,...` 内联图片，将其上传到 `MINIO_PRIVATE_BUCKET`（私有桶），并替换为对象 URL。**单张失败不阻断整篇**（best-effort）：上传异常时保留原始 base64 并记录 warning，不修改 `cleaning_status`。
+    Java Markdown v1 资源包的 `source_object_key` 指向 `markdown-assets/v1/.../source/normalized.md`。该分支额外读取数据集 `enhancement.enable_image_enhancement`：关闭时不扫描、不下载 RAW 图片、不构建 Vision client；开启时 `StageServices.enhance_markdown_raw_images()` 按批处理 `tolink-raw://raw/...`。`RawMarkdownAssetLoader` 在 storage 调用前核对 RAW 桶、source key、user/dataset/fileId 与 `images/image-{sha256}.{ext}` 精确前缀；越权、404、超限或 BMP/TIFF 解码失败只记录结构化 `image_enhancement_failed` 并跳过单图。成功图片按批传给 `ImageDescriber(target_urls=...)`，模型未配置仍按 `ENHANCEMENT_MODEL_MISSING` 使任务失败。Cleaning 成功后的 CHUNKING 恢复只读取 DOCS Markdown，不重复下载 RAW 或调用 Vision。
   - **markdown 产物坐标解析**：markdown 真实所在位置统一由 `ParseTaskPayload.markdown_bucket`（= `settings.MINIO_PRIVATE_BUCKET`，与 `file_type` 无关）/ `markdown_object_key`（= 消息中的 `md_object_key`）解析。`mark_parsed`（写 `parsed_bucket_name`/`parsed_object_key`）、`StageServices.load_markdown`（重试从 CHUNKING 恢复读回旧 markdown）、重试 `create_for_retry` 的预写坐标三处一致取用，确保「清洗完成、分片失败」重试时按同一坐标读回。
 - **ChunkingStage**：`chunking_status == SUCCESS` → `on_skip` 调 `StageServices.load_all_chunks_from_db` 反查完整 chunk truth set；反查为空按历史语义落 `vectorizing_failed` 终态（`finalized`）。否则进入 `run`：有本轮 cleaning 产物用其分片；无 cleaning 产物但旧 markdown 坐标可用（**重试从 CHUNKING 恢复**，LINK-32）则经 `StageServices.load_markdown` 读回旧 markdown 重新分片；二者皆无（无产物也无 markdown 坐标）才视为状态不一致落 `chunking_failed`（`failure_reason` 含 `chunking_not_success_in_retry`）。
 - **VectorizingStage / PretokenizeStage / SparseVectorizingStage**：`*_status != SUCCESS` 才执行。SparseVectorizingStage 是 `pipeline_status=SUCCESS` 的**唯一**翻转点——即便继承 SUCCESS 被跳过，也在 `on_skip` 翻转整体终态。
@@ -368,14 +407,61 @@ pdf_parser_backend == "mineru"
 
 失败原因统一写入 `failure_reason`，最大长度按数据库字段控制为 512。
 
-## 7. 修改原则
+## 7. 日志观测
+
+解析任务日志以 `task_id` 为主关联键、`doc_id` 为辅助关联键，主链路统一使用
+`[ParseTask] <event>` 格式。正常任务的关键事件如下：
+
+```text
+ParseTaskConsumer.message_received
+  -> task_started
+  -> stage_started / stage_skipped
+  -> source_downloaded / parse_completed / markdown_uploaded  # cleaning 关键 I/O
+  -> stage_succeeded
+  -> ...其余阶段...
+  -> task_finished
+```
+
+串行 `StagePipeline` 与默认开启的并行 DAG 都输出同一组阶段事件，并通过
+`engine=serial|dag` 区分：
+
+- `stage_started`：阶段入口，包含 `stage`、`is_retry`、`chunk_count`。
+- `stage_succeeded`：阶段成功，包含 `duration_ms` 和最新 `chunk_count`。
+- `stage_skipped`：重试继承已成功阶段，包含 `reason=already_success`。
+- `stage_failed`：已归类的业务或基础设施失败，包含 `reason`、`error_type`、
+  `finalized`。
+- `stage_crashed`：阶段执行或状态写入的未预期异常，包含 `operation`、脱敏错误摘要和
+  安全调用栈，不附带原始异常对象。
+
+任务级事件：
+
+| 事件 | 关键字段 |
+| --- | --- |
+| `message_received` | `task_id`、`doc_id`、`topic`、`partition`、`offset`、`message_key` |
+| `task_started` | `parse_file_id`、`user_id`、`dataset_id`、`file_type`、解析器、触发/重试字段；对象坐标仅 DEBUG |
+| `task_finished` | `status`、`total_duration_ms`、`chunk_count`、`failed_chunk_count`、`failed_stage`、`failure_reason` |
+| `task_crashed` | `total_duration_ms`、`error_type`、脱敏异常摘要和安全调用栈 |
+
+日志级别约定：
+
+- `INFO`：任务/阶段生命周期、下载/解析/上传指标、重复任务与重试正常收敛。
+- `WARNING`：上下文拒绝、重试校验拒绝、部分 chunk 失败、旁路用量丢弃。
+- `ERROR`：阶段失败、状态写入失败和已收敛的失败终态。
+- `CRITICAL`：未被业务状态机收敛、将重新抛给 MQ 死信机制的逃逸异常。
+- `DEBUG`：底层下载起点、解析服务内部子步骤、成功的底层向量请求。主链路 INFO
+  已覆盖对应阶段，避免同一成功事件在多层重复打印。
+
+异常与失败原因会压平换行、脱敏并限制单字段长度，保证一条事件保持单行。解析日志不打印
+Markdown 正文或模型请求/响应正文。
+
+## 8. 修改原则
 
 - 不要在 MQ consumer 中直接拼接业务流程，业务编排应留在 `ParseTaskPipeline`。
 - `pipeline_status=SUCCESS` 终态写库必须晚于 Markdown、分片、dense 向量化、预分词、ES 入库和 sparse 向量化全部完成。
 - 新增阶段时应同步更新 `document_parse_pipeline` 表结构、`docs/api/schemas/mysql.md` 和 `docs/api/error_codes.md`。
 - 重投场景必须保持幂等，不应重复解析同一 `task_id`。
 
-## 8. 测试建议
+## 9. 测试建议
 
 ```bash
 .venv/bin/pytest tests/unit/core/pipeline/parse_task tests/unit/core/pipeline/stages -q

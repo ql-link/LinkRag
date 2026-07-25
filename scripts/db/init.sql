@@ -2,13 +2,14 @@
 -- toLink-Rag 数据库完整表结构快照
 -- ===============================================
 -- 本文件是「migrations/db.sql (0001 baseline) + 全部 Alembic migration」叠加后的
--- 当前表结构快照，仅用于人/工具查阅与代码评审参考。
+-- 逻辑结构快照，仅用于人/工具查阅、代码评审和本地测试参考。
 -- ⚠️ 不是部署入口：
---   - 冷启动以 migrations/db.sql 为准（已 stamp 为 0001 baseline）；
---   - schema 演进的唯一权威源是 src/models/**.py + migrations/versions/*.py；
---   - 修改字段必须先改 ORM 模型并新增 migration，再同步本文件。
+--   - 生产 DDL 与种子数据的唯一权威源是 Alembic migrations；
+--   - ORM 模型与本文件都是逻辑/测试镜像，不能反向替代 migration；
+--   - 修改字段或种子数据必须先新增 migration，再同步 ORM 与本文件。
 -- 同步时机：每条会改动表结构的 migration 落库时一并更新本文件。
--- 末次同步：migration 0035_20260711_add_parse_stage_error_code
+-- 末次同步：migration 0036_20260717_unify_llm_model_config
+-- 0036 存量升级自动复用旧系统预设密文；本快照仅表达升级后的最终结构与种子目录。
 -- 备注：0032_20260702_provider_icon_fields 兼容历史 dev 库中 provider icon 误用 0031 revision 的状态；
 --      本快照只表达叠加全部 migration 后的最终结构。
 -- ===============================================
@@ -81,47 +82,41 @@ CREATE TABLE IF NOT EXISTS llm_provider_model (
     INDEX idx_provider_cap (provider_id, capability)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '厂商模型能力目录表';
 
--- 2.2 系统预设表
-CREATE TABLE IF NOT EXISTS llm_system_preset (
-    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '主键',
-    provider_id     BIGINT UNSIGNED NOT NULL COMMENT '关联 llm_system_provider.id',
-    model_name      VARCHAR(128)    NOT NULL COMMENT '模型名',
-    display_name    VARCHAR(64)     COMMENT '模型展示名',
-    capability      VARCHAR(32)     NOT NULL COMMENT '能力标识',
-    provider_type   VARCHAR(32)     COMMENT '厂商类型（与用户配置对齐，镜像免 join）',
-    protocol        VARCHAR(32)     COMMENT '调用协议（创建预设时复制自模型能力层）',
-    api_base_url    VARCHAR(512)    COMMENT '调用入口完整端点 URL（复制自模型能力层）',
-    api_key         VARCHAR(512)    NOT NULL COMMENT '平台 Key（加密）',
-    is_active       BOOLEAN         NOT NULL DEFAULT TRUE COMMENT '是否对新用户下发',
-    is_default      BOOLEAN         NOT NULL DEFAULT FALSE COMMENT '是否为该能力当前生效的 LinkRag 系统默认预设',
-    created_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    updated_at      DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-
-    UNIQUE KEY uk_preset_provider_model_cap (provider_id, model_name, capability),
-    INDEX idx_preset_provider_cap_default (provider_type, capability, is_active, is_default)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '系统预设表';
-
--- 3. 用户级 LLM 配置表（下游唯一生效源）
-CREATE TABLE IF NOT EXISTS llm_user_config (
-    id                  BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '配置唯一标识',
-    user_id             BIGINT UNSIGNED NOT NULL COMMENT '用户 ID',
-    provider_id         BIGINT UNSIGNED NOT NULL COMMENT '关联 SystemProvider ID',
-    provider_type       VARCHAR(32)     NOT NULL COMMENT '厂商类型快照，下游路由 SDK',
-    api_key             VARCHAR(512)    NOT NULL COMMENT '厂商级 API Key（加密存储）',
-    api_base_url        VARCHAR(512)    COMMENT '实际生效地址：完整端点 URL，复制自模型能力层事实（不 fallback 厂商默认），Python 直打',
-    protocol            VARCHAR(32)     COMMENT '调用协议快照：复制自模型能力层，下游按 protocol+capability 选 adapter',
-    model_name          VARCHAR(128)    NOT NULL COMMENT '具体模型名',
-    capability          VARCHAR(32)     NOT NULL DEFAULT 'CHAT' COMMENT '专用能力标识：CHAT/EMBEDDING/RERANK/OCR 等',
-    is_active           BOOLEAN         NOT NULL DEFAULT TRUE COMMENT '模型启停 + 生效过滤',
-    is_default          BOOLEAN         NOT NULL DEFAULT FALSE COMMENT '该能力是否生效（单用户单能力唯一）',
-    is_system_preset    BOOLEAN         NOT NULL DEFAULT FALSE COMMENT '系统预设行（只读）',
+-- 2.2 统一可执行 LLM 配置表
+CREATE TABLE IF NOT EXISTS llm_model_config (
+    id                  BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '全局配置 ID',
+    scope               VARCHAR(16)     NOT NULL COMMENT '配置范围：SYSTEM/USER',
+    owner_user_id       BIGINT UNSIGNED NOT NULL COMMENT 'SYSTEM=0；USER=所有者 ID',
+    provider_id         BIGINT UNSIGNED NOT NULL COMMENT '厂商目录 ID',
+    provider_type       VARCHAR(32)     NOT NULL COMMENT '厂商类型快照',
+    model_name          VARCHAR(128)    NOT NULL COMMENT '运行模型名',
+    display_name        VARCHAR(64)     COMMENT '展示名快照',
+    capability          VARCHAR(32)     NOT NULL COMMENT 'CHAT/EMBEDDING/SPARSE_EMBEDDING/VISION/RERANK/ASR',
+    protocol            VARCHAR(32)     NOT NULL COMMENT 'adapter 分发协议',
+    api_base_url        VARCHAR(512)    NOT NULL COMMENT '完整调用入口',
+    api_key             VARCHAR(512)    NOT NULL COMMENT '正式加密器密文',
+    is_active           BOOLEAN         NOT NULL DEFAULT TRUE COMMENT '是否允许精确执行',
+    snapshot_version    BIGINT UNSIGNED NOT NULL DEFAULT 1 COMMENT '运行快照版本',
     created_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
-    UNIQUE KEY uk_user_provider_model_capability (user_id, provider_id, model_name, capability, is_system_preset),
-    INDEX idx_user_active_default (user_id, is_active, is_default),
-    INDEX idx_user_provider_cap (user_id, provider_type, capability)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '用户级 LLM 配置表';
+    UNIQUE KEY uk_llm_model_config_owner_model (scope, owner_user_id, provider_id, model_name, capability),
+    INDEX idx_llm_model_config_owner_capability (scope, owner_user_id, capability, is_active)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '统一 LLM 可执行配置';
+
+-- 2.3 LLM 能力默认指针表
+CREATE TABLE IF NOT EXISTS llm_capability_default (
+    id                  BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '默认关系 ID',
+    scope               VARCHAR(16)     NOT NULL COMMENT 'SYSTEM/USER',
+    owner_user_id       BIGINT UNSIGNED NOT NULL COMMENT 'SYSTEM=0；USER=用户 ID',
+    capability          VARCHAR(32)     NOT NULL COMMENT '能力',
+    config_id           BIGINT UNSIGNED NOT NULL COMMENT '全局 LLM 配置 ID',
+    created_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at          DATETIME        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+
+    UNIQUE KEY uk_llm_capability_default_owner_cap (scope, owner_user_id, capability),
+    INDEX idx_llm_capability_default_config (config_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT 'LLM 能力默认指针';
 
 -- 4. 数据集表
 CREATE TABLE IF NOT EXISTS dataset (
@@ -179,7 +174,7 @@ CREATE TABLE IF NOT EXISTS chat_message (
 CREATE TABLE IF NOT EXISTS llm_usage_log (
     id                  BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '记录唯一标识',
     user_id             BIGINT UNSIGNED NOT NULL COMMENT '用户 ID',
-    config_id           BIGINT UNSIGNED COMMENT '用户配置 ID；系统配置调用可缺省',
+    config_id           BIGINT UNSIGNED COMMENT '全局 LLM 配置 ID；历史行可空',
     provider_type       VARCHAR(32)     NOT NULL COMMENT '厂商类型',
     model_name          VARCHAR(128)    NOT NULL COMMENT '模型名称',
     prompt_tokens       INT             NOT NULL COMMENT '输入 Token 数',
@@ -412,7 +407,7 @@ CREATE TABLE IF NOT EXISTS kb_document_chunk (
 
 -- 17. 数据集级解析/检索参数配置表（migration 0017 引入，LINK-148）
 -- 四个 JSON 列承载分块 / Markdown 增强 / PDF / 召回四类配置；行数据增删改由 Java 侧负责，
--- Python 侧只读（无行/读取失败降级系统默认）。
+-- Python 侧只读；DB 失败向上抛，必要模型绑定缺失时明确拒绝执行。
 CREATE TABLE IF NOT EXISTS dataset_parse_config (
     id                  BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '配置唯一标识',
     user_id             BIGINT UNSIGNED NOT NULL COMMENT '所属用户 ID',
@@ -420,19 +415,23 @@ CREATE TABLE IF NOT EXISTS dataset_parse_config (
     chunking_config     JSON NOT NULL COMMENT '分块配置（3 项：heading_break_level / min_candidate_chunk_tokens / overlap_tokens）',
     enhancement_config  JSON NOT NULL COMMENT 'Markdown 增强配置（2 项：enable_table_enhancement / enable_image_enhancement）',
     pdf_config          JSON NOT NULL COMMENT 'PDF 解析配置（1 项：pdf_parser_backend）',
-    recall_config       JSON NOT NULL COMMENT '召回检索配置（15 项：recall_result_limit / recall_context_token_budget / bm25_top_k / sparse_top_k / sparse_score_threshold / dense_top_k / dense_score_threshold / recall_enabled_sources / recall_fusion_strategy / rrf_k / fusion_bm25_weight / fusion_sparse_weight / fusion_dense_weight / rerank_top_n / recall_strict）',
-    sparse_embedding_config_id BIGINT UNSIGNED DEFAULT NULL COMMENT '稀疏向量模型配置 ID，对应 llm_user_config.id',
-    sparse_embedding_config_source VARCHAR(16) NOT NULL DEFAULT 'USER' COMMENT '稀疏向量模型配置来源：USER/SYSTEM',
-    dense_embedding_config_id  BIGINT UNSIGNED DEFAULT NULL COMMENT '稠密向量模型配置 ID，对应 llm_user_config.id',
-    dense_embedding_config_source  VARCHAR(16) NOT NULL DEFAULT 'USER' COMMENT '稠密向量模型配置来源：USER/SYSTEM',
+    recall_config       JSON NOT NULL COMMENT '召回检索配置，含 enable_rerank',
+    sparse_embedding_config_id BIGINT UNSIGNED DEFAULT NULL COMMENT '稀疏向量全局 LLM 配置 ID',
+    dense_embedding_config_id  BIGINT UNSIGNED DEFAULT NULL COMMENT '稠密向量全局 LLM 配置 ID',
+    enhancement_chat_config_id BIGINT UNSIGNED DEFAULT NULL COMMENT '表格/标题增强 CHAT 配置 ID',
+    enhancement_vision_config_id BIGINT UNSIGNED DEFAULT NULL COMMENT '图片增强 VISION 配置 ID',
+    rerank_config_id    BIGINT UNSIGNED DEFAULT NULL COMMENT '召回重排 RERANK 配置 ID',
     is_active           TINYINT(1) NOT NULL DEFAULT 1 COMMENT '是否启用',
     created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
     updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
 
     UNIQUE KEY uk_user_dataset (user_id, dataset_id),
     KEY idx_dataset_parse_config_dataset (dataset_id),
-    KEY idx_dataset_parse_sparse_config (sparse_embedding_config_source, sparse_embedding_config_id),
-    KEY idx_dataset_parse_dense_config (dense_embedding_config_source, dense_embedding_config_id)
+    KEY idx_dataset_parse_sparse_config (sparse_embedding_config_id),
+    KEY idx_dataset_parse_dense_config (dense_embedding_config_id),
+    KEY idx_dataset_parse_enhancement_chat_config (enhancement_chat_config_id),
+    KEY idx_dataset_parse_enhancement_vision_config (enhancement_vision_config_id),
+    KEY idx_dataset_parse_rerank_config (rerank_config_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '数据集解析/检索参数配置';
 
 -- 18. 通用流程编排运行记录表（migration 0024 引入，LINK-102）
@@ -487,8 +486,8 @@ CREATE TABLE IF NOT EXISTS workflow_node_run (
 ALTER TABLE sys_user AUTO_INCREMENT = 10000;
 ALTER TABLE llm_system_provider AUTO_INCREMENT = 10000;
 ALTER TABLE llm_provider_model AUTO_INCREMENT = 10000;
-ALTER TABLE llm_system_preset AUTO_INCREMENT = 10000;
-ALTER TABLE llm_user_config AUTO_INCREMENT = 10000;
+ALTER TABLE llm_model_config AUTO_INCREMENT = 10000;
+ALTER TABLE llm_capability_default AUTO_INCREMENT = 10000;
 ALTER TABLE dataset AUTO_INCREMENT = 10000;
 ALTER TABLE chat_conversation AUTO_INCREMENT = 10000;
 ALTER TABLE chat_message AUTO_INCREMENT = 10000;

@@ -9,6 +9,8 @@ from loguru import logger
 from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.services.storage.base import BaseObjectStorage
 
+from ._utils import compact_log_value, task_log_context
+
 
 class ParseSourceIO:
     """封装对象存储侧的源文件下载与 Markdown 上传。
@@ -34,9 +36,13 @@ class ParseSourceIO:
             Exception: 对象存储侧 404 / 网络异常，由 pipeline 分类为
                 ``SOURCE_FILE_NOT_FOUND``。
         """
-        logger.info(
-            f"[ParseSourceIO] download file: bucket={payload.source_bucket}, "
-            f"object_key={payload.source_object_key}, dst={dst}"
+        logger.debug(
+            "[ParseTask] source_download_started {} source_bucket={} "
+            "source_object_key={} dst={}",
+            task_log_context(payload),
+            compact_log_value(payload.source_bucket),
+            compact_log_value(payload.source_object_key),
+            compact_log_value(dst),
         )
         self._storage.download_to_path(
             bucket=payload.source_bucket,

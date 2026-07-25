@@ -6,10 +6,10 @@ Kafka Vendor Adapter
 不将 RabbitMQ 的 Exchange/Binding 概念强加给 Kafka（遵循 SKILL.md 设计规则）。
 """
 import asyncio
-import json
 from typing import Any, Callable, Awaitable, Dict, List, Optional
 
 from loguru import logger
+from src.observability.logging import safe_exception_stack, truncate_log_value
 
 from src.core.mq.interfaces import IMQSender, IMQReceiver
 from src.core.mq.exceptions import (
@@ -133,9 +133,10 @@ class KafkaSender(IMQSender):
             logger.debug(f"[Kafka] 消息已发送 -> topic={topic}, key={key}")
         except Exception as e:
             raise MQSendError(
-                f"Kafka 消息发送失败: topic={topic}, error={e}",
+                f"Kafka 消息发送失败: topic={topic}, "
+                f"error_type={type(e).__name__}, error={truncate_log_value(e)}",
                 vendor="kafka",
-            ) from e
+            ) from None
 
     async def send_batch(
         self,
@@ -181,9 +182,10 @@ class KafkaSender(IMQSender):
             raise
         except Exception as e:
             raise MQSendError(
-                f"Kafka 批量发送失败: topic={topic}, error={e}",
+                f"Kafka 批量发送失败: topic={topic}, "
+                f"error_type={type(e).__name__}, error={truncate_log_value(e)}",
                 vendor="kafka",
-            ) from e
+            ) from None
 
     async def close(self) -> None:
         """关闭 Producer"""
@@ -401,7 +403,15 @@ class KafkaReceiver(IMQReceiver):
             logger.info("[Kafka Consumer] 消费循环被取消")
         except Exception as e:
             if self._running:
-                logger.error(f"[Kafka Consumer] 消费循环异常退出: {e}")
+                logger.bind(
+                    event="kafka_consume_loop_failed",
+                    outcome="failed",
+                    vendor="kafka",
+                    subscriptions=[sub["topic"] for sub in self._subscriptions],
+                    error_type=type(e).__name__,
+                    error_message=truncate_log_value(e),
+                    stack_trace=safe_exception_stack(e),
+                ).critical("Kafka Consumer 消费循环异常退出")
 
     async def _commit_partition_offset(self, msg: Any) -> None:
         """按 (topic, partition) 精确提交本条消息的下一个 offset。
@@ -417,9 +427,21 @@ class KafkaReceiver(IMQReceiver):
         except Exception as e:
             # 提交失败仅记日志，循环继续；下次成功消息会再次尝试提交，at-least-once
             # 语义对此类瞬时失败具备容忍能力。
-            logger.error(
-                f"[Kafka] commit 失败 topic={msg.topic} partition={msg.partition} "
-                f"offset={msg.offset}: {e}"
+            logger.bind(
+                event="kafka_offset_commit_failed",
+                outcome="failed",
+                topic=msg.topic,
+                partition=msg.partition,
+                offset=msg.offset,
+                commit_offset=msg.offset + 1,
+                error_type=type(e).__name__,
+                error_message=truncate_log_value(e),
+                stack_trace=safe_exception_stack(e),
+            ).error(
+                "Kafka offset 提交失败: topic={} partition={} offset={}",
+                msg.topic,
+                msg.partition,
+                msg.offset,
             )
 
     async def stop(self) -> None:

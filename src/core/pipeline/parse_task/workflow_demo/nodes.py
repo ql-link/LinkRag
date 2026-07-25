@@ -22,8 +22,19 @@ from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.core.pipeline.parse_task._utils import now
-from src.core.pipeline.parse_task.post_process.constants import STAGE_STATUS_SUCCESS
+from src.core.mq.messages.parse_task import ParseTaskPayload
+from src.core.dataset_config import DatasetExecutionContext
+from src.core.pipeline.parse_task._utils import (
+    compact_log_value,
+    monotonic_duration_ms,
+    now,
+    task_log_context,
+)
+from src.core.pipeline.parse_task.observability import (
+    log_stage_failure,
+    parse_log,
+    safe_error_fields,
+)
 from src.core.pipeline.parse_task.post_process.constants import (
     POST_PROCESS_STAGE_CHUNKING,
     POST_PROCESS_STAGE_CLEANING,
@@ -31,6 +42,7 @@ from src.core.pipeline.parse_task.post_process.constants import (
     POST_PROCESS_STAGE_PRETOKENIZE,
     POST_PROCESS_STAGE_SPARSE_VECTORIZING,
     POST_PROCESS_STAGE_VECTORIZING,
+    STAGE_STATUS_SUCCESS,
 )
 from src.core.pipeline.parse_task.post_process.repository import ParsePipelineRepository
 from src.core.pipeline.parse_task.stages.chunking import ChunkingStage
@@ -43,7 +55,6 @@ from src.core.pipeline.parse_task.stages.sparse_vectorizing import SparseVectori
 from src.core.pipeline.parse_task.stages.vectorizing import VectorizingStage
 from src.core.workflow.context import WorkflowContext
 from src.core.workflow.node import WorkflowNode
-from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.models.parse_task import DocumentParsedLog
 
 from . import product_keys as products
@@ -81,6 +92,7 @@ class ParseWorkflowRuntime:
     log_record: Any | None = None
     log_repo: Any | None = None
     is_retry: bool = False
+    execution_context: DatasetExecutionContext | None = None
     # 节点失败时回填 {stage: 干净失败原因}，供编排器汇总聚合终态（避免从引擎记录的
     # "ClassName: reason" 反解）。
     failures: dict[str, str] = field(default_factory=dict)
@@ -129,6 +141,9 @@ class StatusTrackedParseNode(WorkflowNode):
 
     async def run(self, ctx: WorkflowContext) -> Any:
         runtime = _runtime(ctx)
+        task_context = task_log_context(runtime.payload)
+        stage_name = self.stage or self.key
+        started = time.monotonic()
         if self._status_enabled(runtime) and self.stage is not None:
             if runtime.inherited_status.get(self.stage) == STAGE_STATUS_SUCCESS:
                 # 重试继承的已成功阶段：回放产物供下游用，不重跑、不重写状态。
@@ -138,25 +153,178 @@ class StatusTrackedParseNode(WorkflowNode):
                     await self.restore(ctx, None)
                 except _StageNodeError as exc:
                     self._record_failure(runtime, exc.outcome.failure_reason)
+                    log_stage_failure(
+                        runtime.payload,
+                        stage=stage_name,
+                        failure_reason=exc.outcome.failure_reason,
+                        error=exc.outcome.error or exc,
+                        duration_ms=monotonic_duration_ms(started),
+                        engine="dag",
+                        execution_mode="restore",
+                        chunk_count=len(runtime.chunks or []),
+                        finalized=exc.outcome.finalized,
+                    )
                     raise
                 except Exception as exc:
                     self._record_failure(runtime, str(exc))
+                    duration = monotonic_duration_ms(started)
+                    parse_log(
+                        runtime.payload,
+                        event="parse_stage_crashed",
+                        outcome="failed",
+                        stage=stage_name,
+                        engine="dag",
+                        operation="restore",
+                        duration_ms=duration,
+                        chunk_count=len(runtime.chunks or []),
+                        **safe_error_fields(exc, failure_reason=exc),
+                    ).error(
+                        "[ParseTask] stage_crashed {} stage={} engine=dag duration_ms={} "
+                        "operation=restore chunk_count={} error_type={} error={}",
+                        task_context,
+                        stage_name,
+                        duration,
+                        len(runtime.chunks or []),
+                        type(exc).__name__,
+                        compact_log_value(exc),
+                    )
                     raise
+                duration = monotonic_duration_ms(started)
+                parse_log(
+                    runtime.payload,
+                    event="parse_stage_skipped",
+                    outcome="skipped",
+                    stage=stage_name,
+                    engine="dag",
+                    execution_mode="restore",
+                    duration_ms=duration,
+                    chunk_count=len(runtime.chunks or []),
+                    reason="already_success",
+                ).info(
+                    "[ParseTask] stage_skipped {} stage={} engine=dag duration_ms={} "
+                    "reason=already_success chunk_count={}",
+                    task_context,
+                    stage_name,
+                    duration,
+                    len(runtime.chunks or []),
+                )
                 return {"skipped": True, "stage": self.stage}
 
-        started = time.monotonic()
-        await self._mark(runtime, "mark_stage_processing")
+        parse_log(
+            runtime.payload,
+            event="parse_stage_started",
+            outcome="processing",
+            stage=stage_name,
+            engine="dag",
+            is_retry=runtime.is_retry,
+            chunk_count=len(runtime.chunks or []),
+        ).info(
+            "[ParseTask] stage_started {} stage={} engine=dag is_retry={} chunk_count={}",
+            task_context,
+            stage_name,
+            runtime.is_retry,
+            len(runtime.chunks or []),
+        )
+        operation = "mark_stage_processing"
         try:
+            await self._mark(runtime, "mark_stage_processing")
+            operation = "execute"
             output_ref = await self._execute(ctx)
         except _StageNodeError as exc:
-            await self._mark(runtime, "mark_stage_failed", duration_ms=_elapsed_ms(started))
+            operation = "mark_stage_failed"
+            duration = _elapsed_ms(started)
+            await self._mark(runtime, "mark_stage_failed", duration_ms=duration)
             self._record_failure(runtime, exc.outcome.failure_reason)
+            log_stage_failure(
+                runtime.payload,
+                stage=stage_name,
+                failure_reason=exc.outcome.failure_reason,
+                error=exc.outcome.error or exc,
+                duration_ms=duration,
+                engine="dag",
+                execution_mode="run",
+                chunk_count=len(runtime.chunks or []),
+                finalized=exc.outcome.finalized,
+            )
             raise
         except Exception as exc:
-            await self._mark(runtime, "mark_stage_failed", duration_ms=_elapsed_ms(started))
+            if operation == "execute":
+                await self._mark(
+                    runtime,
+                    "mark_stage_failed",
+                    duration_ms=_elapsed_ms(started),
+                )
             self._record_failure(runtime, str(exc))
+            duration = monotonic_duration_ms(started)
+            parse_log(
+                runtime.payload,
+                event="parse_stage_crashed",
+                outcome="failed",
+                stage=stage_name,
+                engine="dag",
+                operation=operation,
+                duration_ms=duration,
+                chunk_count=len(runtime.chunks or []),
+                **safe_error_fields(exc, failure_reason=exc),
+            ).error(
+                "[ParseTask] stage_crashed {} stage={} engine=dag duration_ms={} "
+                "operation={} chunk_count={} error_type={} error={}",
+                task_context,
+                stage_name,
+                duration,
+                operation,
+                len(runtime.chunks or []),
+                type(exc).__name__,
+                compact_log_value(exc),
+            )
             raise
-        await self._mark(runtime, "mark_stage_success", duration_ms=_elapsed_ms(started))
+        operation = "mark_stage_success"
+        try:
+            await self._mark(
+                runtime,
+                "mark_stage_success",
+                duration_ms=_elapsed_ms(started),
+            )
+        except Exception as exc:
+            duration = monotonic_duration_ms(started)
+            parse_log(
+                runtime.payload,
+                event="parse_stage_crashed",
+                outcome="failed",
+                stage=stage_name,
+                engine="dag",
+                operation=operation,
+                duration_ms=duration,
+                chunk_count=len(runtime.chunks or []),
+                **safe_error_fields(exc, failure_reason=exc),
+            ).error(
+                "[ParseTask] stage_crashed {} stage={} engine=dag duration_ms={} "
+                "operation={} chunk_count={} error_type={} error={}",
+                task_context,
+                stage_name,
+                duration,
+                operation,
+                len(runtime.chunks or []),
+                type(exc).__name__,
+                compact_log_value(exc),
+            )
+            raise
+        duration = monotonic_duration_ms(started)
+        parse_log(
+            runtime.payload,
+            event="parse_stage_succeeded",
+            outcome="success",
+            stage=stage_name,
+            engine="dag",
+            duration_ms=duration,
+            chunk_count=len(runtime.chunks or []),
+        ).info(
+            "[ParseTask] stage_succeeded {} stage={} engine=dag duration_ms={} " "chunk_count={}",
+            task_context,
+            stage_name,
+            duration,
+            len(runtime.chunks or []),
+        )
         return output_ref
 
     def _status_enabled(self, runtime: ParseWorkflowRuntime) -> bool:
@@ -185,7 +353,9 @@ class StatusTrackedParseNode(WorkflowNode):
             return None
         return await db.get(DocumentParsedLog, runtime.log_record.id)
 
-    def _make_stage_ctx(self, runtime: ParseWorkflowRuntime, db: AsyncSession, *, log_record=None) -> StageContext:
+    def _make_stage_ctx(
+        self, runtime: ParseWorkflowRuntime, db: AsyncSession, *, log_record=None
+    ) -> StageContext:
         """构建本节点会话的 StageContext，复用串行 Stage.run() 的产物读写约定。
 
         ``parse_result`` / ``chunks`` / ``plan`` 从 ``runtime`` 注入（上游节点沿依赖边
@@ -197,6 +367,7 @@ class StatusTrackedParseNode(WorkflowNode):
             pipeline_record=runtime.pipeline_record,
             db=db,
             is_retry=runtime.is_retry,
+            execution_context=runtime.execution_context,
             parse_result=runtime.parse_result,
             chunks=runtime.chunks,
             plan=runtime.plan,

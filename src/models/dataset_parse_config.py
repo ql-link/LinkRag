@@ -28,16 +28,11 @@ class DatasetParseConfig(Base):
     __table_args__ = (
         UniqueConstraint("user_id", "dataset_id", name="uk_user_dataset"),
         Index("idx_dataset_parse_config_dataset", "dataset_id"),
-        Index(
-            "idx_dataset_parse_sparse_config",
-            "sparse_embedding_config_source",
-            "sparse_embedding_config_id",
-        ),
-        Index(
-            "idx_dataset_parse_dense_config",
-            "dense_embedding_config_source",
-            "dense_embedding_config_id",
-        ),
+        Index("idx_dataset_parse_sparse_config", "sparse_embedding_config_id"),
+        Index("idx_dataset_parse_dense_config", "dense_embedding_config_id"),
+        Index("idx_dataset_parse_enhancement_chat_config", "enhancement_chat_config_id"),
+        Index("idx_dataset_parse_enhancement_vision_config", "enhancement_vision_config_id"),
+        Index("idx_dataset_parse_rerank_config", "rerank_config_id"),
     )
 
     id = Column(BIGINT(unsigned=True), primary_key=True, autoincrement=True)
@@ -52,20 +47,21 @@ class DatasetParseConfig(Base):
     sparse_embedding_config_id = Column(
         BIGINT(unsigned=True),
         nullable=True,
-        comment="稀疏向量模型配置 ID，source=USER 对应 llm_user_config.id，source=SYSTEM 对应 llm_system_preset.id",
-    )
-    sparse_embedding_config_source = Column(
-        VARCHAR(16), nullable=False, default="USER",
-        comment="稀疏向量模型配置来源：USER/SYSTEM",
+        comment="稀疏向量全局 LLM 配置 ID",
     )
     dense_embedding_config_id = Column(
         BIGINT(unsigned=True),
         nullable=True,
-        comment="稠密向量模型配置 ID，source=USER 对应 llm_user_config.id，source=SYSTEM 对应 llm_system_preset.id",
+        comment="稠密向量全局 LLM 配置 ID",
     )
-    dense_embedding_config_source = Column(
-        VARCHAR(16), nullable=False, default="USER",
-        comment="稠密向量模型配置来源：USER/SYSTEM",
+    enhancement_chat_config_id = Column(
+        BIGINT(unsigned=True), nullable=True, comment="Markdown 表格/标题增强 CHAT 配置 ID"
+    )
+    enhancement_vision_config_id = Column(
+        BIGINT(unsigned=True), nullable=True, comment="Markdown 图片增强 VISION 配置 ID"
+    )
+    rerank_config_id = Column(
+        BIGINT(unsigned=True), nullable=True, comment="召回重排 RERANK 配置 ID"
     )
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, default=utc_now, nullable=False)

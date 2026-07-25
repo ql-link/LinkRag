@@ -15,10 +15,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 import src.core.storage.vector.pipeline as pipeline_module
-from src.core.splitter.factory import (
-    DenseEmbeddingConfigMissingError,
-    DenseEmbeddingDimensionError,
-)
+from src.core.splitter.factory import DenseEmbeddingDimensionError
 from src.core.splitter.models import EmbeddedChunk
 from src.core.storage.vector.pipeline import VectorStoragePipeline
 
@@ -26,13 +23,23 @@ from src.core.storage.vector.pipeline import VectorStoragePipeline
 class _FakeUserPipeline:
     """伪装按用户解析出的 ChunkEmbeddingPipeline，控制输出向量维度与模型名。"""
 
-    def __init__(self, *, dim: int, model: str = "user-embed", batch_size: int = 32) -> None:
+    def __init__(
+        self,
+        *,
+        dim: int,
+        model: str = "dataset-embed",
+        batch_size: int = 32,
+        exc: Exception | None = None,
+    ) -> None:
         self.batch_size = batch_size
         self.embedding_model = model
         self._dim = dim
         self.last_stats = SimpleNamespace(embedding_model=model)
+        self._exc = exc
 
     async def aembed_chunks(self, chunks):
+        if self._exc is not None:
+            raise self._exc
         return [
             EmbeddedChunk(
                 chunk=chunk,
@@ -44,43 +51,19 @@ class _FakeUserPipeline:
 
 
 def _build_pipeline(
-    mock_session_factory, mock_draft_factory, mock_repository, mock_qdrant_store
+    mock_session_factory,
+    mock_draft_factory,
+    mock_repository,
+    mock_qdrant_store,
+    embedding_pipeline,
 ) -> VectorStoragePipeline:
     return VectorStoragePipeline(
         session_factory=mock_session_factory,
         draft_factory=mock_draft_factory,
         repository=mock_repository,
         qdrant_store=mock_qdrant_store,
-        embedding_pipeline=SimpleNamespace(batch_size=32),  # 系统管线，写入路径不再使用
+        embedding_pipeline=embedding_pipeline,
     )
-
-
-@pytest.mark.asyncio
-async def test_index_chunks_config_missing_propagates_without_touching_chunks(
-    monkeypatch,
-    mock_session_factory,
-    mock_draft_factory,
-    mock_repository,
-    mock_qdrant_store,
-    failed_chunk_record,
-):
-    monkeypatch.setattr(
-        pipeline_module,
-        "aresolve_user_chunk_embedding_pipeline",
-        AsyncMock(side_effect=DenseEmbeddingConfigMissingError(7)),
-    )
-    pipeline = _build_pipeline(
-        mock_session_factory, mock_draft_factory, mock_repository, mock_qdrant_store
-    )
-
-    with pytest.raises(DenseEmbeddingConfigMissingError):
-        await pipeline.index_chunks(
-            user_id=7, set_id=1, doc_id=2, chunks=[failed_chunk_record]
-        )
-
-    # 配置缺失在 embed 前抛出：不触碰任何 chunk 状态，也不写 Qdrant。
-    mock_repository.mark_indexing.assert_not_called()
-    mock_qdrant_store.ensure_collection.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -92,15 +75,14 @@ async def test_index_chunks_dimension_mismatch_raises_and_marks_failed(
     mock_qdrant_store,
     failed_chunk_record,
 ):
-    monkeypatch.setattr(
-        pipeline_module,
-        "aresolve_user_chunk_embedding_pipeline",
-        AsyncMock(return_value=_FakeUserPipeline(dim=2)),
-    )
     monkeypatch.setattr(pipeline_module.settings, "DENSE_VECTOR_DIMENSION", 1024)
     mock_repository.mark_indexing = AsyncMock(return_value=1)
     pipeline = _build_pipeline(
-        mock_session_factory, mock_draft_factory, mock_repository, mock_qdrant_store
+        mock_session_factory,
+        mock_draft_factory,
+        mock_repository,
+        mock_qdrant_store,
+        _FakeUserPipeline(dim=2),
     )
 
     with pytest.raises(DenseEmbeddingDimensionError):
@@ -122,16 +104,15 @@ async def test_index_chunks_dimension_match_indexes_with_user_model(
     mock_qdrant_store,
     failed_chunk_record,
 ):
-    monkeypatch.setattr(
-        pipeline_module,
-        "aresolve_user_chunk_embedding_pipeline",
-        AsyncMock(return_value=_FakeUserPipeline(dim=2, model="user-embed-model")),
-    )
     monkeypatch.setattr(pipeline_module.settings, "DENSE_VECTOR_DIMENSION", 2)
     mock_repository.mark_indexing = AsyncMock(return_value=1)
     mock_repository.mark_indexed = AsyncMock(return_value=1)
     pipeline = _build_pipeline(
-        mock_session_factory, mock_draft_factory, mock_repository, mock_qdrant_store
+        mock_session_factory,
+        mock_draft_factory,
+        mock_repository,
+        mock_qdrant_store,
+        _FakeUserPipeline(dim=2, model="dataset-embed-model"),
     )
 
     result = await pipeline.index_chunks(
@@ -140,6 +121,6 @@ async def test_index_chunks_dimension_match_indexes_with_user_model(
 
     assert result.indexed_chunks == 1
     assert result.total_chunks == 1
-    assert result.embedding_model == "user-embed-model"
+    assert result.embedding_model == "dataset-embed-model"
     mock_qdrant_store.ensure_collection.assert_awaited()
     mock_qdrant_store.upsert_points.assert_awaited()

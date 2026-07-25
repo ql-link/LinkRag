@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.core.pipeline.parse_task.post_process.repository import ParsePipelineRepository
 from src.models.parse_task import DocumentParsedLog, DocumentParseTask
+from src.observability.logging import safe_exception_stack, truncate_log_value
 
 from ._utils import attach_pipeline_to_log, duration_ms, now
 
@@ -56,9 +57,6 @@ class ParseLogRepository:
             await db.commit()
         except IntegrityError:
             await db.rollback()
-            logger.info(
-                f"[ParseLogRepository] skip duplicate task: task_id={payload.task_id}"
-            )
             return None
         return log_record
 
@@ -84,9 +82,7 @@ class ParseLogRepository:
 
         参数名沿用历史命名，对应 ``document_parse_file.id``。
         """
-        stmt = select(DocumentParseTask).where(
-            DocumentParseTask.id == document_parse_task_id
-        )
+        stmt = select(DocumentParseTask).where(DocumentParseTask.id == document_parse_task_id)
         if for_share:
             # Retry validation and supersede CAS run in one transaction.  A
             # shared row lock lets parallel readers proceed but blocks Java
@@ -111,9 +107,7 @@ class ParseLogRepository:
         # markdown 产物坐标统一经 payload 解析：md/markdown 透传取上传位置（source_*），
         # 其余格式取 cleaning 写出的 md_*。让 parsed_* 始终指向 markdown 真实所在位置，
         # 后续重试从 CHUNKING 恢复时即按此坐标读回，不会误用历史 md_bucket 字段。
-        log_record.parsed_filename = self._build_parsed_filename(
-            payload.source_filename
-        )
+        log_record.parsed_filename = self._build_parsed_filename(payload.source_filename)
         log_record.parsed_bucket_name = payload.markdown_bucket
         log_record.parsed_object_key = payload.markdown_object_key
         log_record.parsed_file_url = self._build_internal_file_url(
@@ -122,9 +116,7 @@ class ParseLogRepository:
         )
         log_record.parsed_at = finished_at
         log_record.parse_finished_at = finished_at
-        log_record.parse_duration_ms = duration_ms(
-            log_record.parse_started_at, finished_at
-        )
+        log_record.parse_duration_ms = duration_ms(log_record.parse_started_at, finished_at)
         await db.commit()
 
     async def mark_parse_finished(
@@ -136,15 +128,22 @@ class ParseLogRepository:
         try:
             finished_at = now()
             log_record.parse_finished_at = finished_at
-            log_record.parse_duration_ms = duration_ms(
-                log_record.parse_started_at, finished_at
-            )
+            log_record.parse_duration_ms = duration_ms(log_record.parse_started_at, finished_at)
             await db.commit()
         except Exception as db_exc:
             await db.rollback()
-            logger.error(
-                f"[ParseLogRepository] failed to write parse finish snapshot: "
-                f"task_id={log_record.task_id}, error={db_exc}"
+            logger.bind(
+                event="parse_log_snapshot_write_failed",
+                outcome="failed",
+                task_id=log_record.task_id,
+                error_type=type(db_exc).__name__,
+                error_message=truncate_log_value(db_exc),
+                stack_trace=safe_exception_stack(db_exc),
+            ).error(
+                "[ParseTask] parse_finish_snapshot_failed task_id={} error_type={} error={}",
+                log_record.task_id,
+                type(db_exc).__name__,
+                truncate_log_value(db_exc),
             )
 
     async def create_for_retry(
@@ -176,9 +175,7 @@ class ParseLogRepository:
             trigger_mode=payload.trigger_mode,
             retry_of_task_id=retry_of_task_id,
             parsed_filename=(
-                self._build_parsed_filename(payload.source_filename)
-                if parsed_object_key
-                else None
+                self._build_parsed_filename(payload.source_filename) if parsed_object_key else None
             ),
             parsed_bucket_name=parsed_bucket,
             parsed_object_key=parsed_object_key,

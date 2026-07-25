@@ -65,6 +65,16 @@ class DocumentDeleteMessage(AbstractMessage):
     def get_payload(self) -> DocumentDeletePayload:
         return self._payload
 
+    def get_log_fields(self) -> dict[str, object]:
+        """返回删除通知的业务定位字段。"""
+        return {
+            "message_id": self._payload.message_id,
+            "delete_type": self._payload.delete_type,
+            "dataset_id": self._payload.dataset_id,
+            "user_id": self._payload.user_id,
+            "original_file_id": self._payload.original_file_id,
+        }
+
     @classmethod
     def build(
         cls,
@@ -97,9 +107,13 @@ class DocumentDeleteMessage(AbstractMessage):
         try:
             return DocumentDeletePayload(**payload_data)
         except Exception as exc:
+            if hasattr(exc, "errors"):
+                details = exc.errors(include_url=False, include_input=False)
+            else:
+                details = [{"type": type(exc).__name__}]
             raise MQSerializationError(
-                f"DocumentDeletePayload 字段校验失败: {exc}，原始消息前200字符: {raw[:200]}"
-            ) from exc
+                f"DocumentDeletePayload 字段校验失败: {details}"
+            ) from None
 
     class MQReceiver(Protocol):
         async def on_document_delete(self, payload: "DocumentDeletePayload") -> None: ...

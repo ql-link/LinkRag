@@ -3,7 +3,7 @@
 把 ``tests/acceptance/features/dense_vector_recall.feature`` 中的中文 Gherkin 句子
 绑定到对真实 ``VectorStorageFacade.search_dense_chunks`` / ``DenseRetriever`` /
 ``ChunkEmbeddingPipeline.aembed_query`` 的行为断言。所有外部依赖
-（system embedding HTTP / Qdrant client）都用桩件隔离，单测不接真模型 / 真服务。
+（Dataset 精确 embedding provider / Qdrant client）都用桩件隔离，单测不接真模型 / 真服务。
 
 state 通过 ``dense_recall_state`` fixture 跨 step 共享。所有 step 函数都走
 star-import 注册到 ``tests/acceptance/test_dense_vector_recall.py``。
@@ -95,7 +95,6 @@ def dense_recall_state(monkeypatch) -> _DenseRecallState:
     state = _DenseRecallState()
     monkeypatch.setattr(settings, "DENSE_RETRIEVAL_TOP_K", 10)
     monkeypatch.setattr(settings, "DENSE_RETRIEVAL_SCORE_THRESHOLD", 0.0)
-    monkeypatch.setattr(settings, "SYSTEM_LLM_MODEL_EMBEDDING", "text-embedding-v4")
     state.embedder_calls = []
     state.facade_call_kwargs_list = []
 
@@ -197,9 +196,8 @@ def dense_recall_state(monkeypatch) -> _DenseRecallState:
 # ---------------------------------------------------------------------------
 
 
-@given(parsers.parse('配置 SYSTEM_LLM_MODEL_EMBEDDING="{model}"'))
-def _given_embedding_model(dense_recall_state: _DenseRecallState, monkeypatch, model: str):
-    monkeypatch.setattr(settings, "SYSTEM_LLM_MODEL_EMBEDDING", model)
+@given(parsers.parse('Dataset 精确 EMBEDDING config_id 对应模型="{model}"'))
+def _given_embedding_model(dense_recall_state: _DenseRecallState, model: str):
     dense_recall_state.embedding_model = model
     dense_recall_state.embedding_pipeline.embedding_model = model
 
@@ -226,7 +224,7 @@ def _given_recall_result_limit(monkeypatch, value: int):
     monkeypatch.setattr(settings, "RECALL_RESULT_LIMIT", value)
 
 
-@given("写入链路使用 unnamed dense vector 写入 chunk 的 dense embedding")
+@given("写入链路使用配置的 named dense vector 写入 chunk embedding")
 def _given_write_unnamed_dense():
     # 写入侧 ensure_collection 用 vectors_config=VectorParams(...) 不带 named；
     # 召回侧 _search_chunks 调用 query_points(using=None) 与之对齐——本断言由
@@ -234,7 +232,7 @@ def _given_write_unnamed_dense():
     return None
 
 
-@given("system embedding HTTP 客户端可用")
+@given("Dataset 精确 embedding provider 可用")
 def _given_embedder_available():
     return None
 
@@ -310,7 +308,7 @@ def _given_collection_missing(dense_recall_state: _DenseRecallState, uid: int):
     dense_recall_state.qdrant_store._search_chunks = AsyncMock(side_effect=_empty)
 
 
-@given("system embedding HTTP 客户端对任意输入抛 httpx.HTTPStatusError")
+@given("Dataset 精确 embedding provider 对任意输入抛 httpx.HTTPStatusError")
 def _given_embedder_raises_http(dense_recall_state: _DenseRecallState):
     fake_response = MagicMock()
     fake_response.status_code = 503
@@ -673,7 +671,7 @@ def _when_aembed_query_direct(dense_recall_state: _DenseRecallState, query: str)
     pipeline = ChunkEmbeddingPipeline(
         chunking_engine=MagicMock(),
         embedder=dense_recall_state.embedding_pipeline.embedder,
-        embedding_model=settings.SYSTEM_LLM_MODEL_EMBEDDING,
+        embedding_model=dense_recall_state.embedding_model,
     )
 
     async def _run():
@@ -693,7 +691,7 @@ def _when_aembed_query_blank(dense_recall_state: _DenseRecallState, token: str):
     pipeline = ChunkEmbeddingPipeline(
         chunking_engine=MagicMock(),
         embedder=dense_recall_state.embedding_pipeline.embedder,
-        embedding_model=settings.SYSTEM_LLM_MODEL_EMBEDDING,
+        embedding_model=dense_recall_state.embedding_model,
     )
 
     async def _run():
@@ -937,9 +935,9 @@ def _then_spec_no_vector_name(dense_recall_state: _DenseRecallState):
     assert "vector_name" not in DenseQueryVectorSpec.__dataclass_fields__
 
 
-@then("返回 VectorSearchResult.vector_name 为 None")
-def _then_result_vector_name_none(dense_recall_state: _DenseRecallState):
-    assert dense_recall_state.result.vector_name is None
+@then("返回 VectorSearchResult.vector_name 等于配置的 dense vector name")
+def _then_result_vector_name(dense_recall_state: _DenseRecallState):
+    assert dense_recall_state.result.vector_name == settings.DENSE_VECTOR_QDRANT_VECTOR_NAME
 
 
 @then("aembed_query 与 aembed_chunks 共用同一个 embedder 实例")
@@ -956,7 +954,7 @@ def _then_shared_embedder(dense_recall_state: _DenseRecallState):
 def _then_shared_embedding_model(dense_recall_state: _DenseRecallState):
     # 同对象同字段，物理一致
     pipe = dense_recall_state.embedding_pipeline
-    assert pipe.embedding_model == settings.SYSTEM_LLM_MODEL_EMBEDDING
+    assert pipe.embedding_model == dense_recall_state.embedding_model
 
 
 @then(parsers.parse("返回 VectorSearchResult.top_k 等于 {n:d}"))
@@ -1140,9 +1138,9 @@ def _then_embedder_texts(dense_recall_state: _DenseRecallState, text: str):
     assert dense_recall_state.embedder_calls[-1]["texts"] == [text]
 
 
-@then("embedder.embed 入参 model 等于 settings.SYSTEM_LLM_MODEL_EMBEDDING")
+@then("embedder.embed 入参 model 等于 Dataset 精确 EMBEDDING 模型")
 def _then_embedder_model(dense_recall_state: _DenseRecallState):
-    assert dense_recall_state.embedder_calls[-1]["model"] == settings.SYSTEM_LLM_MODEL_EMBEDDING
+    assert dense_recall_state.embedder_calls[-1]["model"] == dense_recall_state.embedding_model
 
 
 @then("aembed_query 不写入 embedding_cache")

@@ -1,11 +1,12 @@
-"""召回后重排核心：回填正文 → 解析用户 RERANK 模型 → 调用 rerank → 映射输出 / 降级。
+"""召回后重排核心：回填正文 → 消费 Dataset RERANK 快照 → 调用 rerank → 映射输出 / 降级。
 
 职责边界（brief：本期独立交付、不接入召回/生成链路）：
 - 上游产出融合候选、下游消费重排结果，均不在本模块——它是一个可独立调用、独立测试的单元。
 - 不碰向量化、不碰 LLM 文本生成、不触 ``RecallPipeline`` 纯召回边界。
 
 失败语义：
-- **未配置用户 RERANK 模型 → 降级**：不读取 LinkRag 系统默认 RERANK，不调用模型，返回当前融合顺序。
+- **Dataset 未开启 rerank → 降级**：不调用模型，返回当前融合顺序。
+- **已开启但精确 RERANK 快照缺失 → 显式失败**：不自行查找其它配置。
 - **调用失败 / 返回不可用 → 降级**：返回当前融合顺序候选并标记 ``rerank_applied=False``。
 
 依赖通过构造注入（``content_fetcher`` / ``model_resolver``），便于单测以替身替换 DB 与 LLM。
@@ -20,17 +21,14 @@ from typing import Awaitable, Callable
 from loguru import logger
 
 from src.config import settings
-from src.core.llm.exceptions import UserModelConfigMissingError
-from src.core.llm.user_model_resolver import ResolvedModel, aresolve_user_model
 from src.core.pipeline.chunk_content import fetch_chunk_contents
 from src.core.pipeline.recall.models import RecallHit
 from src.core.pipeline.rerank.models import RerankedHit, RerankRequest, RerankResponse
 from src.services.usage_reporter import report_usage_nowait
+from src.observability.logging import safe_exception_stack, truncate_log_value
 
 # 注入点签名：正文回填 (chunk_ids, user_id) -> {chunk_id: 正文}
 ContentFetcher = Callable[[list[str], int], Awaitable[dict[str, str]]]
-# 注入点签名：按 (user_id, capability) 解析用户模型
-ModelResolver = Callable[..., Awaitable[ResolvedModel]]
 
 
 def reranked_from_recall(
@@ -72,22 +70,20 @@ def degrade_to_rrf_order(content_present_hits: list[RecallHit], top_n: int) -> l
 
 
 class PostRecallReranker:
-    """承接融合后候选，回表取正文并调用用户 RERANK 模型重排。"""
+    """承接融合后候选，回表取正文并调用 Dataset RERANK 快照重排。"""
 
     def __init__(
         self,
         *,
         content_fetcher: ContentFetcher = fetch_chunk_contents,
-        model_resolver: ModelResolver = aresolve_user_model,
     ) -> None:
         self._fetch = content_fetcher
-        self._resolve = model_resolver
 
     async def rerank(self, request: RerankRequest) -> RerankResponse:
         """对融合后候选执行重排，返回重排后候选列表。
 
         步骤：空候选 → 回填正文 → 缺正文过滤（只记日志）→ 全空短路 →
-        解析用户 RERANK 模型（缺失则降级）→ 调用 rerank（降级点）→ index 映射 → 截断 top_n。
+        按 Dataset 取精确 RERANK 快照 → 调用 rerank（降级点）→ index 映射 → 截断 top_n。
         """
         start = time.perf_counter()
         # 入参校验：top_n 要么不传（取配置默认），要么为正整数。
@@ -124,26 +120,44 @@ class PostRecallReranker:
         if not scored_hits:
             return _resp([], False)
 
-        # RAG rerank 只使用用户自己的默认 RERANK。用户未配置时不读取 LinkRag 系统默认
-        # rerank，直接降级为当前融合顺序。
-        try:
-            resolved = await self._resolve(
-                user_id=request.user_id,
-                capability="RERANK",
-                allow_linkrag_default=False,
-                allow_system_fallback=False,
-            )
-        except UserModelConfigMissingError as exc:
-            logger.info(
-                "[rerank] user rerank config missing, degrade to fusion order user_id={}: {}",
-                request.user_id,
-                exc,
-            )
-            return _resp(self._degrade(scored_hits, top_n), False)
+        contexts = request.dataset_contexts or {}
+        # 保留融合列表的 slot：每个 Dataset 只在自己的 slot 内换序，
+        # 不比较不同 reranker 的原始分数尺度。
+        grouped: dict[int, list[RecallHit]] = {}
+        for hit in scored_hits:
+            grouped.setdefault(hit.dataset_id, []).append(hit)
 
-        # 按当前融合顺序构造 rerank documents；top_n 传 None 取回全部打分项，
-        # 由本模块自行映射、排序、编号、截断，保证 rerank_rank 连续可控。
-        documents = [contents[h.chunk_id] for h in scored_hits]
+        ranked_by_dataset: dict[int, list[RerankedHit]] = {}
+        applied = False
+        for dataset_id, group in grouped.items():
+            context = contexts.get(dataset_id)
+            if context is None:
+                raise ValueError(f"Dataset {dataset_id} execution context is required")
+            if not context.config.recall.enable_rerank:
+                ranked_by_dataset[dataset_id] = self._degrade(group, len(group))
+                continue
+            if context.rerank is None:
+                raise ValueError(f"Dataset {dataset_id} rerank binding is required")
+            ranked, group_applied = await self._rerank_group(
+                request=request,
+                hits=group,
+                contents=contents,
+                resolved=context.rerank,
+            )
+            ranked_by_dataset[dataset_id] = ranked
+            applied = applied or group_applied
+
+        offsets = {dataset_id: 0 for dataset_id in ranked_by_dataset}
+        slot_filled: list[RerankedHit] = []
+        for hit in scored_hits:
+            group = ranked_by_dataset[hit.dataset_id]
+            offset = offsets[hit.dataset_id]
+            slot_filled.append(group[offset])
+            offsets[hit.dataset_id] = offset + 1
+        return _resp(slot_filled[:top_n], applied)
+
+    async def _rerank_group(self, *, request, hits, contents, resolved):
+        documents = [contents[h.chunk_id] for h in hits]
         try:
             result = await resolved.provider.rerank(
                 query=request.query,
@@ -153,39 +167,35 @@ class PostRecallReranker:
             )
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 - 调用失败统一降级为当前融合顺序
-            logger.warning(
-                "[rerank] model call failed, degrade to fusion order user_id={}: {}",
-                request.user_id,
-                exc,
-            )
-            return _resp(self._degrade(scored_hits, top_n), False)
+        except Exception as exc:
+            logger.bind(
+                event="rerank_model_failed",
+                outcome="degraded",
+                user_id=request.user_id,
+                dataset_id=hits[0].dataset_id,
+                config_id=resolved.config_id,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).warning("[rerank] model call failed; keeping dataset fusion slots")
+            return self._degrade(hits, len(hits)), False
 
-        # 用量上报（旁路、非阻塞）：rerank token 由模型返回，向量类 completion 恒 0；
-        # 调度后台 task 发送，不阻塞召回返回。
-        _usage = getattr(result, "usage", None)
+        usage = getattr(result, "usage", None)
         report_usage_nowait(
             user_id=request.user_id,
-            provider_type=getattr(resolved, "provider_type", "") or "",
-            model_name=resolved.model_name or "",
+            provider_type=resolved.provider_type,
+            model_name=resolved.model_name,
             stage="recall",
             operation="rerank",
-            prompt_tokens=int(getattr(_usage, "prompt_tokens", 0) or 0),
+            prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
             completion_tokens=0,
-            total_tokens=int(getattr(_usage, "total_tokens", 0) or 0),
-            config_id=getattr(resolved, "config_id", None),
+            total_tokens=int(getattr(usage, "total_tokens", 0) or 0),
+            config_id=int(resolved.config_id),
         )
-
-        ranked = self._map_results(scored_hits, result)
+        ranked = self._map_results(hits, result)
         if ranked is None:
-            # 返回不完整（无任一合法 index）→ 降级。
-            logger.warning(
-                "[rerank] unusable rerank indices, degrade to fusion order user_id={}",
-                request.user_id,
-            )
-            return _resp(self._degrade(scored_hits, top_n), False)
-
-        return _resp(ranked[:top_n], True)
+            return self._degrade(hits, len(hits)), False
+        return ranked, True
 
     def _map_results(self, scored_hits: list[RecallHit], result) -> list[RerankedHit] | None:
         """把 rerank 返回的 (index, score) 映射回候选，健壮处理越界/重复/缺失。

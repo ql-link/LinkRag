@@ -34,6 +34,7 @@ from .heading_hierarchy import (
     LLMHeadingPlanGenerator,
     NoopHeadingPlanGenerator,
     apply_heading_plan,
+    build_heading_plan_generator,
     parse_heading_plan_response,
     validate_heading_plan,
 )
@@ -44,13 +45,10 @@ from .orchestrator import MarkdownEnhancementOrchestrator
 from .parser import MarkdownParser
 from .provider_clients import (
     EnhancementModelMissingError,
-    LLMConfigMissingError,
     ProviderTableClient,
     ProviderVisionClient,
     abuild_table_client,
     abuild_vision_client,
-    build_default_table_client,
-    build_default_vision_client,
 )
 from .scanner import MarkdownScanner
 
@@ -68,12 +66,9 @@ __all__ = [
     "TableDescriber",
     "ProviderTableClient",
     "ProviderVisionClient",
-    "LLMConfigMissingError",
     "EnhancementModelMissingError",
     "abuild_table_client",
     "abuild_vision_client",
-    "build_default_table_client",
-    "build_default_vision_client",
     "MarkdownEnhancementOrchestrator",
     "GateDecision",
     "HeadingGateReason",
@@ -88,6 +83,7 @@ __all__ = [
     "LLMHeadingPlanGenerator",
     "NoopHeadingPlanGenerator",
     "apply_heading_plan",
+    "build_heading_plan_generator",
     "parse_heading_plan_response",
     "validate_heading_plan",
 ]

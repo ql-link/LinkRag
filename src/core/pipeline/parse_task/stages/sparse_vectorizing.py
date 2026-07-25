@@ -44,12 +44,14 @@ class SparseVectorizingStage(Stage):
         from src.core.storage.vector.sparse_indexing import SparseIndexingError
 
         try:
-            await self._services.run_sparse_vectorizing(ctx.payload, ctx.db)
+            await self._services.run_sparse_vectorizing(
+                ctx.payload, ctx.db, ctx.execution_context
+            )
         except SparseIndexingError as exc:
-            return StageOutcome.failure(exc.reason, error=RuntimeError(exc.reason))
+            return StageOutcome.failure(exc.reason, error=exc)
         except Exception as exc:
             reason = build_failure_reason(ParseFailureCode.SPARSE_VECTORIZING_FAILED, str(exc))
-            return StageOutcome.failure(reason, error=RuntimeError(reason))
+            return StageOutcome.failure(reason, error=exc)
         return StageOutcome.success()
 
     async def mark_success(self, ctx: StageContext, outcome: StageOutcome, *, started_at) -> None:

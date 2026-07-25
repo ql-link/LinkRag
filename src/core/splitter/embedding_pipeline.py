@@ -10,6 +10,11 @@ from typing import TYPE_CHECKING, Any, MutableMapping
 import httpx
 
 from src.core.markdown_parser import ParseResult
+from src.observability.logging import (
+    safe_exception_stack,
+    sanitize_url_for_log,
+    truncate_log_value,
+)
 from src.utils.logger import logger
 
 from .models import EmbeddedChunk, EmbeddingPipelineStats
@@ -161,15 +166,26 @@ class ChunkEmbeddingPipeline:
                     body = exc.response.text
                 except Exception:
                     body = "<unable to read response body>"
-                logger.error(
+                logger.bind(
+                    event="embedding_api_failed",
+                    outcome="failed",
+                    status_code=exc.response.status_code,
+                    endpoint=sanitize_url_for_log(exc.request.url),
+                    batch_index=start // self.batch_size,
+                    batch_size=len(batch),
+                    model=self.embedding_model or "",
+                    response_body=truncate_log_value(body),
+                    error_type=type(exc).__name__,
+                    error_message=truncate_log_value(exc),
+                    stack_trace=safe_exception_stack(exc),
+                ).error(
                     "[ChunkEmbeddingPipeline] Embedding API request failed: "
-                    "status={} url={} batch_index={} batch_size={} model={} body={}",
+                    "status={} endpoint={} batch_index={} batch_size={} model={}",
                     exc.response.status_code,
-                    str(exc.request.url),
-                    start,
+                    sanitize_url_for_log(exc.request.url),
+                    start // self.batch_size,
                     len(batch),
                     self.embedding_model,
-                    body,
                 )
                 raise
             resolved_model = getattr(response, "model", resolved_model)

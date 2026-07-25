@@ -44,14 +44,14 @@ async def test_turn_id_present_parses_ok():
     assert body.turn_id == "t-abc"
 
 
-async def test_config_source_system_parses_and_normalizes():
-    # 前端选择系统预设模型时传 SYSTEM；后端规范化后交给 runtime 精确查 llm_system_preset。
+async def test_legacy_config_source_is_rejected():
+    # SYSTEM / USER 共用全局 config_id，不再接受 source 分表路由。
     req = _req_with_body(
         b'{"query":"q","config_id":10,"config_source":"system","conversation_id":2,"turn_id":"t-system"}'
     )
-    body = await rag._parse_and_validate_body(req)
-    assert body.config_id == 10
-    assert body.config_source == "SYSTEM"
+    with pytest.raises(RecallApiError) as exc_info:
+        await rag._parse_and_validate_body(req)
+    assert exc_info.value.status_code == 422
 
 
 # ---- 生产者 / 消费者解耦 ----
@@ -92,7 +92,7 @@ async def test_producer_enqueues_events_and_releases_slot(monkeypatch):
     channel = rag._StreamChannel()
 
     await rag._run_chat_turn_producer(
-        channel, None, None, SimpleNamespace(), "rid", 42, 7, "USER", 100, "t-1", False, 4000, 8
+        channel, None, None, SimpleNamespace(), "rid", 42, 7, 100, "t-1", False, 4000, 8
     )
 
     queued = await _drain_queue(channel)
@@ -111,7 +111,7 @@ async def test_producer_continues_and_releases_when_consumer_gone(monkeypatch):
     channel.consumer_gone.set()  # 模拟客户端已断连
 
     await rag._run_chat_turn_producer(
-        channel, None, None, SimpleNamespace(), "rid", 42, 7, "USER", 100, "t-2", False, 4000, 8
+        channel, None, None, SimpleNamespace(), "rid", 42, 7, 100, "t-2", False, 4000, 8
     )
 
     # 消费者已走：事件未入队，仅留哨兵；名额仍在任务结束时释放。
@@ -131,7 +131,7 @@ async def test_producer_releases_slot_even_when_stream_crashes(monkeypatch):
     channel = rag._StreamChannel()
 
     await rag._run_chat_turn_producer(
-        channel, None, None, SimpleNamespace(), "rid", 7, 1, "USER", 1, "t-3", False, 4000, 8
+        channel, None, None, SimpleNamespace(), "rid", 7, 1, 1, "t-3", False, 4000, 8
     )
     assert released == [7]
     assert channel.queue.get_nowait().startswith("event: stream_started")

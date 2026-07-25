@@ -13,10 +13,16 @@ from __future__ import annotations
 
 from loguru import logger
 
-from src.core.dataset_config import DatasetConfigService
 from src.core.splitter.factory import DenseEmbeddingConfigMissingError
+from src.observability.logging import safe_exception_stack, truncate_log_value
 
-from .._utils import coerce_optional_int, duration_ms, now
+from .._utils import (
+    coerce_optional_int,
+    compact_log_value,
+    duration_ms,
+    now,
+    task_log_context,
+)
 from ..error_codes import ParseFailureCode, build_failure_reason
 from ..post_process.constants import POST_PROCESS_STAGE_CHUNKING
 from .base import Stage
@@ -74,11 +80,6 @@ class ChunkingStage(Stage):
             # 分片；否则才是真状态不一致（无产物也无 markdown），落 chunking_failed。
             markdown = await self._load_retry_markdown(ctx)
             if markdown is None:
-                logger.warning(
-                    "[ChunkingStage] retry aborted due to unexpected state: task_id={} reason={}",
-                    ctx.payload.task_id,
-                    _CHUNKING_NOT_SUCCESS_IN_RETRY,
-                )
                 return StageOutcome.failure(
                     _CHUNKING_NOT_SUCCESS_IN_RETRY,
                     error=RuntimeError(_CHUNKING_NOT_SUCCESS_IN_RETRY),
@@ -102,6 +103,7 @@ class ChunkingStage(Stage):
                 ctx.payload,
                 ctx.db,
                 chunking_config,
+                ctx.execution_context,
             )
         except DenseEmbeddingConfigMissingError as exc:
             return StageOutcome.failure(
@@ -123,8 +125,9 @@ class ChunkingStage(Stage):
         dataset_id = coerce_optional_int(payload.dataset_id)
         if user_id is None or dataset_id is None:
             return None
-        bundle = await DatasetConfigService().get_config(user_id, dataset_id, ctx.db)
-        return bundle.chunking
+        if ctx.execution_context is None:
+            return None
+        return ctx.execution_context.config.chunking
 
     async def _load_retry_markdown(self, ctx: StageContext) -> str | None:
         """重试从 CHUNKING 恢复时读回旧 markdown；坐标缺失或读取失败返回 None。
@@ -142,10 +145,21 @@ class ChunkingStage(Stage):
         try:
             return await self._services.load_markdown(ctx.payload)
         except Exception as exc:
-            logger.warning(
-                "[ChunkingStage] retry markdown reload failed: task_id={} error={}",
-                ctx.payload.task_id,
-                exc,
+            logger.bind(
+                event="retry_markdown_reload_failed",
+                outcome="failed",
+                task_id=ctx.payload.task_id,
+                original_file_id=ctx.payload.original_file_id,
+                user_id=ctx.payload.user_id,
+                dataset_id=ctx.payload.dataset_id,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).warning(
+                "[ParseTask] retry_markdown_reload_failed {} error_type={} error={}",
+                task_log_context(ctx.payload),
+                type(exc).__name__,
+                compact_log_value(exc),
             )
             return None
 

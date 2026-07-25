@@ -15,8 +15,12 @@ MARKDOWN_HEADING_LLM_MAX_OUTPUT_TOKEN_MAX = 65536
 PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
 
 
-def _settings_env_file() -> str:
-    return os.getenv("TOLINK_ENV_FILE") or os.path.join(PROJECT_ROOT, ".env")
+def _settings_env_files() -> tuple[str, ...]:
+    base_env_file = os.getenv("TOLINK_ENV_FILE") or os.path.join(PROJECT_ROOT, ".env")
+    local_env_file = f"{base_env_file}.local"
+    if os.path.isfile(local_env_file):
+        return base_env_file, local_env_file
+    return (base_env_file,)
 
 
 class Settings(BaseSettings):
@@ -187,23 +191,27 @@ class Settings(BaseSettings):
     RERANK_DEFAULT_TOP_N: int = 8
 
     # ==========================================
-    # 系统级兜底 LLM 配置 (Platform Default Fallback LLMs)
+    # 精确 LLM runtime cache
     # ==========================================
-    SYSTEM_LLM_PROVIDER: str = "qwen"
-    SYSTEM_LLM_API_KEY: Optional[str] = None
-    SYSTEM_LLM_API_BASE: Optional[str] = None
+    LLM_RUNTIME_CACHE_ENABLED: bool = False
+    LLM_RUNTIME_CACHE_SCHEMA_VERSION: int = 1
+    LLM_RUNTIME_CACHE_TTL_SECONDS: int = 86400
+    LLM_RUNTIME_NEGATIVE_TTL_SECONDS: int = 60
+    LLM_RUNTIME_LOAD_LOCK_TTL_MS: int = 5000
+    LLM_RUNTIME_LOAD_WAIT_MS: int = 50
+    LLM_RUNTIME_FENCE_TTL_SECONDS: int = 2592000
 
-    SYSTEM_LLM_MODEL_CHAT: str = "qwen3.5-flash"
-    SYSTEM_LLM_MODEL_EMBEDDING: str = "text-embedding-v4"
-    # RERANK 不走系统兜底：必须由用户在 RERANK 能力配置里显式指定 provider + rerank 模型
-    # （如硅基流动 BAAI/bge-reranker-v2-m3）。置空后 get_system_fallback_config_by_capability("RERANK")
-    # 返回 None，召回链路 allow_system_fallback=False 时即抛 UserModelConfigMissingError（必配不兜底）。
-    SYSTEM_LLM_MODEL_RERANK: Optional[str] = None
-    SYSTEM_LLM_MODEL_VISION: Optional[str] = None
-    MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT: bool = True
-    MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT: bool = True
-    MARKDOWN_PARSER_TABLE_MODEL: Optional[str] = None
-    MARKDOWN_PARSER_VISION_MODEL: Optional[str] = None
+    # Java/Python 共享的 dataset_parse_config 原始快照缓存。只有 Java CDC
+    # BusinessCacheHealthIndicator READY 后才允许在部署配置中开启。
+    DATASET_PARSE_CONFIG_CACHE_ENABLED: bool = False
+    DATASET_PARSE_CONFIG_CACHE_TTL_SECONDS: int = 604800
+    DATASET_PARSE_CONFIG_NEGATIVE_TTL_SECONDS: int = 60
+    DATASET_PARSE_CONFIG_LOAD_LOCK_TTL_MS: int = 5000
+    DATASET_PARSE_CONFIG_LOAD_WAIT_MS: int = 50
+    DATASET_PARSE_CONFIG_FENCE_TTL_SECONDS: int = 2592000
+
+    MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT: bool = False
+    MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT: bool = False
     MARKDOWN_PARSER_LLM_TIMEOUT_MS: int = 60000
     MARKDOWN_PARSER_VISION_CONCURRENCY: int = 24
     MARKDOWN_PARSER_ENABLE_HEADING_HIERARCHY: bool = False
@@ -641,6 +649,11 @@ class Settings(BaseSettings):
     MINIO_PRIVATE_BUCKET: str = "tolink-rag-docs"
     MINIO_PUBLIC_BUCKET: str = "tolink-public"
     MINIO_USE_SSL: bool = False
+    # Java 规范化 Markdown 中的 ``tolink-raw://`` 图片按批读取。单图上限必须不高于
+    # Java 上传侧限制，避免两个服务对同一资源包作出不同判断。
+    RAW_MARKDOWN_IMAGE_MAX_BYTES: int = 20 * 1024 * 1024
+    RAW_MARKDOWN_IMAGE_BATCH_SIZE: int = 4
+    RAW_MARKDOWN_IMAGE_DOWNLOAD_CONCURRENCY: int = 4
     # Optional external/public HTTP(S) endpoint used only when generating object URLs
     # for cloud parsers and browser-facing resources. S3 SDK traffic still uses
     # MINIO_ENDPOINT.
@@ -655,6 +668,23 @@ class Settings(BaseSettings):
     MINERU_API_KEY: Optional[str] = None  # MinerU 云服务专属 Token
     MINERU_TIMEOUT: int = 300  # MinerU API 请求超时（秒）
     MINERU_MODEL_VERSION: str = "vlm"  # pipeline / vlm / MinerU-HTML
+
+    @field_validator("RAW_MARKDOWN_IMAGE_MAX_BYTES")
+    @classmethod
+    def validate_raw_markdown_image_max_bytes(cls, value: int) -> int:
+        if value <= 0:
+            raise ValueError("RAW_MARKDOWN_IMAGE_MAX_BYTES must be > 0")
+        return value
+
+    @field_validator(
+        "RAW_MARKDOWN_IMAGE_BATCH_SIZE",
+        "RAW_MARKDOWN_IMAGE_DOWNLOAD_CONCURRENCY",
+    )
+    @classmethod
+    def validate_raw_markdown_image_batch_limits(cls, value: int) -> int:
+        if value < 1 or value > 20:
+            raise ValueError("RAW markdown image batch/concurrency values must be in [1, 20]")
+        return value
 
     # ==========================================
     # MQ 消息中台配置 (Message Queue)
@@ -707,7 +737,7 @@ class Settings(BaseSettings):
         raise ValueError(v)
 
     model_config = SettingsConfigDict(
-        env_file=_settings_env_file(),
+        env_file=_settings_env_files(),
         env_file_encoding="utf-8",
         extra="ignore",
     )

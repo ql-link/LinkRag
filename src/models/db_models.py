@@ -55,14 +55,11 @@ class SystemProviderDB(Base):
     )
 
     # 关系
-    user_configs: Mapped[List["UserLLMConfigDB"]] = relationship(
-        "UserLLMConfigDB", back_populates="provider"
+    model_configs: Mapped[List["LLMModelConfigDB"]] = relationship(
+        "LLMModelConfigDB", back_populates="provider"
     )
     provider_models: Mapped[List["ProviderModelDB"]] = relationship(
         "ProviderModelDB", back_populates="provider"
-    )
-    system_presets: Mapped[List["SystemPresetDB"]] = relationship(
-        "SystemPresetDB", back_populates="provider"
     )
 
 
@@ -106,105 +103,81 @@ class ProviderModelDB(Base):
     )
 
 
-class SystemPresetDB(Base):
-    """系统预设模板
+class LLMModelConfigDB(Base):
+    """统一可执行 LLM 配置快照。
 
-    表：llm_system_preset
+    ``scope`` 仅表达授权边界，不再参与分表路由。SYSTEM 行的
+    ``owner_user_id`` 固定为 0，从而让 MySQL 唯一约束对平台配置同样有效。
     """
 
-    __tablename__ = "llm_system_preset"
+    __tablename__ = "llm_model_config"
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    provider_id: Mapped[int] = mapped_column(
-        BigInteger, ForeignKey("llm_system_provider.id"), nullable=False
-    )
-    model_name: Mapped[str] = mapped_column(String(128), nullable=False)
-    display_name: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
-    capability: Mapped[str] = mapped_column(String(32), nullable=False)
-    # 厂商类型（与用户配置对齐，镜像免 join）
-    provider_type: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
-    # 调用协议（创建预设时复制自模型能力层）
-    protocol: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
-    # 调用入口完整端点 URL（复制自模型能力层）
-    api_base_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
-    api_key: Mapped[str] = mapped_column(String(512), nullable=False)
-    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
-    updated_at: Mapped[datetime] = mapped_column(
-        DateTime, default=func.now(), onupdate=func.now(), nullable=False
-    )
-
-    provider: Mapped["SystemProviderDB"] = relationship(
-        "SystemProviderDB", back_populates="system_presets"
-    )
-
-    __table_args__ = (
-        UniqueConstraint(
-            "provider_id",
-            "model_name",
-            "capability",
-            name="uk_preset_provider_model_cap",
-        ),
-        Index(
-            "idx_preset_provider_cap_default",
-            "provider_type",
-            "capability",
-            "is_active",
-            "is_default",
-        ),
-    )
-
-
-class UserLLMConfigDB(Base):
-    """用户级 LLM 配置
-
-    表：llm_user_config
-
-    本表仅保存用户自己的配置。历史系统预设镜像行通过 is_system_preset 保留兼容，
-    Python 读取用户默认配置时排除该类历史行。
-    """
-
-    __tablename__ = "llm_user_config"
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
+    scope: Mapped[str] = mapped_column(String(16), nullable=False)
+    owner_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     provider_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("llm_system_provider.id"), nullable=False
     )
     provider_type: Mapped[str] = mapped_column(String(32), nullable=False)
-    api_key: Mapped[str] = mapped_column(String(512), nullable=False)
-    # 实际生效地址：复制自模型能力层事实（不 fallback 厂商默认）
-    api_base_url: Mapped[Optional[str]] = mapped_column(String(512), nullable=True)
-    # 调用协议快照：复制自模型能力层，下游按 protocol+capability 选 adapter
-    protocol: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     model_name: Mapped[str] = mapped_column(String(128), nullable=False)
-    capability: Mapped[str] = mapped_column(String(32), default="CHAT", nullable=False)
+    display_name: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    capability: Mapped[str] = mapped_column(String(32), nullable=False)
+    protocol: Mapped[str] = mapped_column(String(32), nullable=False)
+    api_base_url: Mapped[str] = mapped_column(String(512), nullable=False)
+    api_key: Mapped[str] = mapped_column(String(512), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    is_default: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    is_system_preset: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    snapshot_version: Mapped[int] = mapped_column(BigInteger, default=1, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=func.now(), onupdate=func.now(), nullable=False
     )
 
-    # 关系
     provider: Mapped["SystemProviderDB"] = relationship(
-        "SystemProviderDB", back_populates="user_configs"
+        "SystemProviderDB", back_populates="model_configs"
     )
-    usage_logs: Mapped[List["UsageLogDB"]] = relationship("UsageLogDB", back_populates="config")
 
     __table_args__ = (
         UniqueConstraint(
-            "user_id",
+            "scope",
+            "owner_user_id",
             "provider_id",
             "model_name",
             "capability",
-            "is_system_preset",
-            name="uk_user_provider_model_capability",
+            name="uk_llm_model_config_owner_model",
         ),
-        Index("idx_user_active_default", "user_id", "is_active", "is_default"),
-        Index("idx_user_provider_cap", "user_id", "provider_type", "capability"),
+        Index(
+            "idx_llm_model_config_owner_capability",
+            "scope",
+            "owner_user_id",
+            "capability",
+            "is_active",
+        ),
+    )
+
+
+class LLMCapabilityDefaultDB(Base):
+    """能力默认关系，仅保存“未显式指定时选谁”的指针。"""
+
+    __tablename__ = "llm_capability_default"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    scope: Mapped[str] = mapped_column(String(16), nullable=False)
+    owner_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    capability: Mapped[str] = mapped_column(String(32), nullable=False)
+    config_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=func.now(), onupdate=func.now(), nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "scope",
+            "owner_user_id",
+            "capability",
+            name="uk_llm_capability_default_owner_cap",
+        ),
+        Index("idx_llm_capability_default_config", "config_id"),
     )
 
 
@@ -218,11 +191,8 @@ class UsageLogDB(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False, index=True)
-    # config_id 放开为可空：对话 / 解析写入侧走用户配置（有 config_id），但召回 query 编码
-    # 等走系统配置的调用没有 per-user 配置行，全链路用量上报时该列可能缺省。
-    config_id: Mapped[Optional[int]] = mapped_column(
-        BigInteger, ForeignKey("llm_user_config.id"), nullable=True
-    )
+    # 历史行保留可空；新版 UsageReport 必须携带全局 config_id。
+    config_id: Mapped[Optional[int]] = mapped_column(BigInteger, nullable=True)
     provider_type: Mapped[str] = mapped_column(String(32), nullable=False)
     model_name: Mapped[str] = mapped_column(String(128), nullable=False)
     prompt_tokens: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
@@ -238,11 +208,6 @@ class UsageLogDB(Base):
     stage: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     operation: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), nullable=False)
-
-    # 关系
-    config: Mapped[Optional["UserLLMConfigDB"]] = relationship(
-        "UserLLMConfigDB", back_populates="usage_logs"
-    )
 
     __table_args__ = (
         Index("idx_user_date", "user_id", "created_at"),
