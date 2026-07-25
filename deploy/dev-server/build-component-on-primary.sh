@@ -3,8 +3,8 @@ set -euo pipefail
 
 component=${1:-}
 build_number=${2:-}
-test_root=${TEST_ROOT:-/opt/tolink/test}
-jenkins_root="$test_root/jenkins"
+dev_root=${DEV_ROOT:-/opt/tolink/dev}
+jenkins_root="$dev_root/jenkins"
 workspace_root="$jenkins_root/workspaces"
 lock_file="$jenkins_root/build.lock"
 
@@ -49,7 +49,7 @@ source_dir="$workspace_root/$workspace_name"
 next_dir="$workspace_root/.${workspace_name}.next"
 archive=$(mktemp "$jenkins_root/${workspace_name}.XXXXXX.tgz")
 trap 'rm -f "$archive"; rm -rf "$next_dir"' EXIT
-source_ref_file="$test_root/source-refs/$component"
+source_ref_file="$dev_root/source-refs/$component"
 source_ref=dev
 if [[ -f "$source_ref_file" ]]; then
   source_ref=$(tr -d '[:space:]' <"$source_ref_file")
@@ -84,7 +84,7 @@ rm -f "$archive"
 rm -rf "$source_dir"
 mv "$next_dir" "$source_dir"
 
-image_tag="test-dev-b${build_number}"
+image_tag="dev-b${build_number}"
 echo "[$component] build $image_name:$image_tag on Primary"
 case "$component" in
   rag)
@@ -96,7 +96,7 @@ case "$component" in
     # Docker build; BuildKit keeps the downloaded .m2 cache between attempts.
     for attempt in 1 2 3; do
       if DOCKER_BUILDKIT=1 docker build \
-        -f "$test_root/Dockerfile.service" \
+        -f "$dev_root/Dockerfile.service" \
         -t "$image_name:$image_tag" "$source_dir"; then
         break
       fi
@@ -140,7 +140,7 @@ esac
 update_tag() {
   local key=$1
   local value=$2
-  local env_file="$test_root/.env.test"
+  local env_file="$dev_root/.env.dev"
   if grep -q "^${key}=" "$env_file"; then
     sed -i "s/^${key}=.*/${key}=${value}/" "$env_file"
   else
@@ -149,40 +149,36 @@ update_tag() {
 }
 
 if [[ "$component" == rag ]]; then
-  config_source="$source_dir/deploy/test-server"
+  config_source="$source_dir/deploy/dev-server"
   for name in docker-compose.yml Dockerfile.service loki-config.yml promtail-config.yml nginx.conf \
-    rag.env.test app.env.test configure-test-env.sh build-component-on-primary.sh \
-    generate-test-llm-migration-inputs.py; do
-    install -m 600 "$config_source/$name" "$test_root/$name"
+    configure-dev-env.sh build-component-on-primary.sh \
+    generate-dev-llm-migration-inputs.py; do
+    install -m 600 "$config_source/$name" "$dev_root/$name"
   done
-  chmod 700 "$test_root/configure-test-env.sh" "$test_root/build-component-on-primary.sh"
-  install -d -m 700 "$test_root/config/rag"
-  install -m 0644 "$source_dir/.env.development" "$test_root/config/rag/.env.development"
-  "$test_root/configure-test-env.sh"
+  chmod 700 "$dev_root/configure-dev-env.sh" "$dev_root/build-component-on-primary.sh"
+  install -d -m 700 "$dev_root/config/rag"
+  install -m 0644 "$source_dir/.env.development" "$dev_root/config/rag/.env.development"
+  "$dev_root/configure-dev-env.sh"
 elif [[ "$component" == service ]]; then
-  # The current Service dev branch uses packaged application.yml plus
-  # environment variables. Remove the legacy copied profile file because it
-  # contains production-oriented endpoints and would break test isolation.
-  rm -f "$test_root/toLink-Service/config/application-test.yml"
-  install -d -m 700 "$test_root/config/service"
+  install -d -m 700 "$dev_root/config/service"
   if [[ -f "$source_dir/link-api/src/main/resources/application-dev.yml" ]]; then
     install -m 0644 "$source_dir/link-api/src/main/resources/application-dev.yml" \
-      "$test_root/config/service/application-dev.yml"
+      "$dev_root/config/service/application-dev.yml"
   fi
-  "$test_root/configure-test-env.sh"
+  "$dev_root/configure-dev-env.sh"
 fi
 
 update_tag "$tag_key" "$image_tag"
 
-cd "$test_root"
+cd "$dev_root"
 case "$component" in
   rag)
-    required_dev_config=${RAG_DEV_ENV_FILE:-$test_root/config/rag/.env.development}
-    required_secret_config=${RAG_DEV_SECRET_ENV_FILE:-$test_root/config/rag/.env.development.local}
+    required_dev_config=${RAG_DEV_ENV_FILE:-$dev_root/config/rag/.env.development}
+    required_secret_config=${RAG_DEV_SECRET_ENV_FILE:-$dev_root/config/rag/.env.development.local}
     ;;
   service)
-    required_dev_config=${SERVICE_DEV_CONFIG_FILE:-$test_root/config/service/application-dev.yml}
-    required_secret_config=${SERVICE_DEV_SECRET_CONFIG_FILE:-$test_root/config/service/application-dev-local.yml}
+    required_dev_config=${SERVICE_DEV_CONFIG_FILE:-$dev_root/config/service/application-dev.yml}
+    required_secret_config=${SERVICE_DEV_SECRET_CONFIG_FILE:-$dev_root/config/service/application-dev-local.yml}
     ;;
   *)
     required_dev_config=
@@ -199,34 +195,34 @@ if [[ -n "$required_secret_config" && ! -f "$required_secret_config" ]]; then
 fi
 
 if [[ "$component" == rag ]]; then
-  llm_migration_dir="$test_root/secrets/llm-migration"
+  llm_migration_dir="$dev_root/secrets/llm-migration"
   install -d -m 700 "$llm_migration_dir"
   echo "[rag] prepare Alembic seed with development config: $required_dev_config + $required_secret_config"
   docker run --rm \
-    --env-file "$test_root/config/rag/.env.development" \
-    --env-file "$test_root/config/rag/.env.development.local" \
+    --env-file "$dev_root/config/rag/.env.development" \
+    --env-file "$dev_root/config/rag/.env.development.local" \
     -e PYTHONPATH=/app \
-    -v "$test_root/generate-test-llm-migration-inputs.py:/run/generate-test-llm-migration-inputs.py:ro" \
+    -v "$dev_root/generate-dev-llm-migration-inputs.py:/run/generate-dev-llm-migration-inputs.py:ro" \
     -v "$llm_migration_dir:/run/llm-migration" \
     "$image_name:$image_tag" \
-    python /run/generate-test-llm-migration-inputs.py /run/llm-migration
+    python /run/generate-dev-llm-migration-inputs.py /run/llm-migration
   docker run --rm \
-    --network tolink-test-net \
-    --env-file "$test_root/config/rag/.env.development" \
-    --env-file "$test_root/config/rag/.env.development.local" \
+    --network tolink-dev-net \
+    --env-file "$dev_root/config/rag/.env.development" \
+    --env-file "$dev_root/config/rag/.env.development.local" \
     -e PYTHONPATH=/app \
     -v "$llm_migration_dir:/run/llm-migration" \
-    -v "$test_root/toLink-Rag/logs:/app/logs" \
+    -v "$dev_root/toLink-Rag/logs:/app/logs" \
     "$image_name:$image_tag" \
     python scripts/release/run_alembic.py \
       --expected-app-env development \
       --expected-host 100.86.10.52 \
       --expected-port 13306 \
-      --expected-database tolink_rag_test \
+      --expected-database tolink_rag_dev \
       --seed-ciphertext-file /run/llm-migration/ciphertexts.json
 fi
 
-docker compose --env-file .env.test --profile apps up -d "$compose_service"
+docker compose --env-file .env.dev --profile apps up -d "$compose_service"
 
 case "$component" in
   rag)
@@ -250,8 +246,8 @@ for _ in $(seq 1 60); do
   sleep 5
 done
 
-container_name="tolink-test-$component"
-[[ "$component" == service ]] && container_name=tolink-test-service
+container_name="tolink-dev-$component"
+[[ "$component" == service ]] && container_name=tolink-dev-service
 if ! docker inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null | grep -qx true; then
   docker logs --tail 150 "$container_name" || true
   exit 1

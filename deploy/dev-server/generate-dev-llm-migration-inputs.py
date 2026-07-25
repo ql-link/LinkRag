@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate test-only inputs required by the irreversible LLM config migration."""
+"""Generate dev-only inputs required by the irreversible LLM config migration."""
 
 from __future__ import annotations
 
@@ -22,14 +22,14 @@ CAPABILITIES = (
 
 def main() -> int:
     if len(sys.argv) != 2:
-        raise SystemExit("usage: generate-test-llm-migration-inputs.py OUTPUT_DIR")
+        raise SystemExit("usage: generate-dev-llm-migration-inputs.py OUTPUT_DIR")
     if not os.environ.get("API_KEY_ENCRYPTION_SECRET"):
         raise RuntimeError("API_KEY_ENCRYPTION_SECRET is required")
 
     output_dir = Path(sys.argv[1])
     output_dir.mkdir(parents=True, exist_ok=True)
     ciphertexts = {
-        capability: encrypt_api_key(f"test-only-{capability.lower()}")
+        capability: encrypt_api_key(f"dev-only-{capability.lower()}")
         for capability in CAPABILITIES
     }
     path = output_dir / "ciphertexts.json"

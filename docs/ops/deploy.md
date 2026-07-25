@@ -31,7 +31,7 @@
 | `deploy/host-server/docker-compose.yml` | 主机服务器中间件栈的 deploy 目录版本 |
 | `deploy/cloud-server/docker-compose.yml` | 云服务器应用栈：Java、Python RAG、Web、Promtail |
 | `deploy/docker-compose.yml` | 保留的 Python RAG 单服务部署入口 |
-| `deploy/test-server/docker-compose.yml` | Primary 测试栈：隔离的 MySQL、Redis、Kafka、Qdrant、Manticore、Loki，以及 dev 应用 |
+| `deploy/dev-server/docker-compose.yml` | Primary 开发栈：隔离的 MySQL、Redis、Kafka、Qdrant、Manticore、Loki，以及 dev 应用 |
 
 Promtail 必须部署在产生日志文件的云服务器上；Loki 部署在主机服务器中间件栈中。
 
@@ -47,7 +47,7 @@ Compose 按基础文件、密钥文件的顺序加载，后者覆盖前者中的
 迁移容器固定加载 `.env.production` + `.env.production.local`；迁移失败会立即终止本次部署，
 不会把新镜像切换为运行实例。迁移过程具有幂等性，数据库已经在 `head` 时不会重复执行 DDL。
 执行前还会校验目标必须是 `production / tolink-mysql:3306 / tolink_rag_db`，避免密钥文件或
-`DATABASE_URL` 覆盖错误导致生产任务串到测试库。
+`DATABASE_URL` 覆盖错误导致生产任务串到开发库。
 
 云服务器首次部署只需创建一次密钥文件并限制权限：
 
@@ -61,48 +61,48 @@ Java 的 `application-prod.yml` 随镜像发布，并通过 `spring.config.impor
 `application-prod-local.yml`；Cloud Compose 只读挂载该密钥文件，不再用服务器目录覆盖镜像中的
 基础配置。
 
-## Primary 测试环境
+## Primary 开发环境
 
-测试环境通过 `deploy/test-server/docker-compose.yml` 部署，所有容器、网络、端口和数据卷均使用
-`tolink-test-*` 命名，不修改生产栈。测试 MySQL、Redis、Kafka、Qdrant、Manticore 和 Loki 独立运行；
-MinIO 仍复用主机实例，但必须使用独立测试账号和 `tolink-test-*` bucket。
-测试账号的策略只允许访问 `tolink-test-raw`、`tolink-test-docs` 和 `tolink-test-public`。
+开发环境通过 `deploy/dev-server/docker-compose.yml` 部署，所有容器、网络、端口和数据卷均使用
+`tolink-dev-*` 命名，不修改生产栈。开发 MySQL、Redis、Kafka、Qdrant、Manticore 和 Loki 独立运行；
+MinIO 仍复用主机实例，但必须使用独立开发账号和 `tolink-dev-*` bucket。
+开发账号的策略只允许访问 `tolink-dev-raw`、`tolink-dev-docs` 和 `tolink-dev-public`。
 
-测试端口只绑定 Tailscale 地址 `100.86.10.52`，不得通过 FRP 或公网安全组暴露。首次部署时从
-`.env.test.example` 生成服务器本地 `.env.test`，随机密钥不得提交到 Git：
+开发端口只绑定 Tailscale 地址 `100.86.10.52`，不得通过 FRP 或公网安全组暴露。首次部署时从
+`.env.dev.example` 生成服务器本地 `.env.dev`，随机密钥不得提交到 Git：
 
 ```bash
-cd /opt/tolink/test
-docker compose --env-file .env.test up -d mysql redis kafka qdrant manticore loki
-docker compose --env-file .env.test --profile apps up -d
+cd /opt/tolink/dev
+docker compose --env-file .env.dev up -d mysql redis kafka qdrant manticore loki
+docker compose --env-file .env.dev --profile apps up -d
 ```
 
 开发服务使用各项目既有的开发 profile：Python 设置 `APP_ENV=development`，并从
-`/opt/tolink/test/config/rag/.env.development` 加载可提交的基础配置，再由权限为 `600` 的
+`/opt/tolink/dev/config/rag/.env.development` 加载可提交的基础配置，再由权限为 `600` 的
 `.env.development.local` 注入账号、密码、JWT 与 API Key。Java 设置
-`SPRING_PROFILES_ACTIVE=dev`，挂载 `/opt/tolink/test/config/service/`，其中
+`SPRING_PROFILES_ACTIVE=dev`，挂载 `/opt/tolink/dev/config/service/`，其中
 `application-dev.yml` 是可提交基础配置，`application-dev-local.yml` 只保存敏感字段并由前者导入。
 Compose 和构建迁移任务都按“基础配置 → 本机密钥覆盖”的顺序加载，两个 `.local` 文件不得进入
-Git 或 Docker 镜像。测试环境的基础配置固定指向 `tolink-test-*` 隔离资源，避免误连生产环境。
+Git 或 Docker 镜像。开发环境的基础配置固定指向 `tolink-dev-*` 隔离资源，避免误连生产环境。
 
-当前业务 topic 和 consumer group 由代码常量固定，因此测试环境使用独立 Kafka broker，不能只依赖
-topic 前缀与生产共用 broker。测试 Loki 独立保存日志并保留 7 天。
+当前业务 topic 和 consumer group 由代码常量固定，因此开发环境使用独立 Kafka broker，不能只依赖
+topic 前缀与生产共用 broker。开发 Loki 独立保存日志并保留 7 天。
 
 Cloud Jenkins 使用三个独立 dev 作业：`linkrag-rag-dev`、`linkrag-service-dev`、
 `linkrag-web-dev`。Jenkins 只负责调度和保留日志，三个作业均通过 Tailscale SSH 在 Primary
-拉取对应仓库的 `dev` 分支、构建镜像并部署，镜像使用 `test-dev-b<build>` 标签；现有 `master`
-生产作业保持不变。Primary 通过构建锁避免三个测试作业同时占用 Docker 构建资源。
+拉取对应仓库的 `dev` 分支、构建镜像并部署，镜像使用 `dev-b<build>` 标签；现有 `master`
+生产作业保持不变。Primary 通过构建锁避免三个开发作业同时占用 Docker 构建资源。
 其中 `linkrag-rag-dev` 在启动新 RAG 容器前自动执行 Alembic，固定加载
 `.env.development` + `.env.development.local`，并输出最终 revision；迁移失败时不会部署新镜像。
-执行前会校验目标必须是 `development / 100.86.10.52:13306 / tolink_rag_test`，不满足时直接阻断。
-0036 升级时优先复用库内已有的六类系统密文；只有全新测试库或能力不完整时，才使用部署任务
-自动生成的 test-only 密文，避免日常 dev 发布覆盖已有可用 Key。
-Java 测试镜像使用 `deploy/test-server/Dockerfile.service` 构建；Maven 下载设置请求超时，Docker
+执行前会校验目标必须是 `development / 100.86.10.52:13306 / tolink_rag_dev`，不满足时直接阻断。
+0036 升级时优先复用库内已有的六类系统密文；只有全新开发库或能力不完整时，才使用部署任务
+自动生成的 dev-only 密文，避免日常 dev 发布覆盖已有可用 Key。
+Java 开发镜像使用 `deploy/dev-server/Dockerfile.service` 构建；Maven 下载设置请求超时，Docker
 构建失败时最多自动重试三次，并复用 BuildKit 的 `.m2` 缓存，避免单条公网连接长期挂起。
-Web 构建把 npm 缓存持久化到 `/opt/tolink/test/jenkins/npm-cache`，`npm ci` 设置超时并最多重试三次；
+Web 构建把 npm 缓存持久化到 `/opt/tolink/dev/jenkins/npm-cache`，`npm ci` 设置超时并最多重试三次；
 安装失败会立即终止，不再继续执行 typecheck、测试和打包。
 公网源码下载不稳定时，可将完整 tar 包预置到
-`/opt/tolink/test/jenkins/incoming/<workspace>-dev.tgz`；下一次对应构建会校验并消费该文件，随后仍在
+`/opt/tolink/dev/jenkins/incoming/<workspace>-dev.tgz`；下一次对应构建会校验并消费该文件，随后仍在
 Primary 完成镜像构建。
 
 ## 启动顺序
