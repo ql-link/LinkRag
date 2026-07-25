@@ -61,11 +61,16 @@ Java 的 `application-prod.yml` 随镜像发布，并通过 `spring.config.impor
 `application-prod-local.yml`；Cloud Compose 只读挂载该密钥文件，不再用服务器目录覆盖镜像中的
 基础配置。
 
+生产 RAG/Java 继续通过 Primary 的 Tailscale 地址访问 Qdrant 与 Kafka。Primary 上对应容器统一使用
+`tolink-prod-qdrant`、`tolink-prod-zookeeper`、`tolink-prod-kafka`、`tolink-prod-kafka-ui` 命名，
+保留原有 `6333/6334`、`2181`、`9092/39092`、`9081` 端口和数据卷。
+
 ## Primary 开发环境
 
 开发环境通过 `deploy/dev-server/docker-compose.yml` 部署，所有容器、网络、端口和数据卷均使用
-`tolink-dev-*` 命名，不修改生产栈。开发 MySQL、Redis、Kafka、Qdrant、Manticore 和 Loki 独立运行；
-MinIO 仍复用主机实例，但必须使用独立开发账号和 `tolink-dev-*` bucket。
+`tolink-dev-*` 命名，不修改生产栈。开发 MySQL、Redis、Kafka、Qdrant、ZooKeeper、Kafka UI、
+Manticore 和 Loki 独立运行；Primary 上的开发 MinIO 使用 `tolink-dev-minio` 名称，并加入
+`tolink-dev-net`，同时使用独立开发账号和 `tolink-dev-*` bucket。
 开发账号的策略只允许访问 `tolink-dev-raw`、`tolink-dev-docs` 和 `tolink-dev-public`。
 
 开发端口只绑定 Tailscale 地址 `100.86.10.52`，不得通过 FRP 或公网安全组暴露。首次部署时从
@@ -73,7 +78,7 @@ MinIO 仍复用主机实例，但必须使用独立开发账号和 `tolink-dev-*
 
 ```bash
 cd /opt/tolink/dev
-docker compose --env-file .env.dev up -d mysql redis kafka qdrant manticore loki
+docker compose --env-file .env.dev up -d mysql redis zookeeper kafka kafka-ui qdrant manticore loki
 docker compose --env-file .env.dev --profile apps up -d
 ```
 
@@ -84,6 +89,8 @@ docker compose --env-file .env.dev --profile apps up -d
 `application-dev.yml` 是可提交基础配置，`application-dev-local.yml` 只保存敏感字段并由前者导入。
 Compose 和构建迁移任务都按“基础配置 → 本机密钥覆盖”的顺序加载，两个 `.local` 文件不得进入
 Git 或 Docker 镜像。开发环境的基础配置固定指向 `tolink-dev-*` 隔离资源，避免误连生产环境。
+部署时 Compose 会把 RAG/Java 的非密钥连接地址覆盖为开发网络内的容器 DNS；本地 IDE 仍可使用
+`.env.development` / `application-dev.yml` 中的 Tailscale 地址与开发端口。
 
 当前业务 topic 和 consumer group 由代码常量固定，因此开发环境使用独立 Kafka broker，不能只依赖
 topic 前缀与生产共用 broker。开发 Loki 独立保存日志并保留 7 天。
