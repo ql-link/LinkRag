@@ -201,6 +201,7 @@ fi
 if [[ "$component" == rag ]]; then
   llm_migration_dir="$test_root/secrets/llm-migration"
   install -d -m 700 "$llm_migration_dir"
+  echo "[rag] prepare Alembic seed with development config: $required_dev_config + $required_secret_config"
   docker run --rm \
     --env-file "$test_root/config/rag/.env.development" \
     --env-file "$test_root/config/rag/.env.development.local" \
@@ -214,11 +215,15 @@ if [[ "$component" == rag ]]; then
     --env-file "$test_root/config/rag/.env.development" \
     --env-file "$test_root/config/rag/.env.development.local" \
     -e PYTHONPATH=/app \
-    -e TOLINK_LLM_SEED_CIPHERTEXT_FILE=/run/llm-migration/ciphertexts.json \
     -v "$llm_migration_dir:/run/llm-migration" \
     -v "$test_root/toLink-Rag/logs:/app/logs" \
     "$image_name:$image_tag" \
-    python -m alembic upgrade head
+    python scripts/release/run_alembic.py \
+      --expected-app-env development \
+      --expected-host 100.86.10.52 \
+      --expected-port 13306 \
+      --expected-database tolink_rag_test \
+      --seed-ciphertext-file /run/llm-migration/ciphertexts.json
 fi
 
 docker compose --env-file .env.test --profile apps up -d "$compose_service"

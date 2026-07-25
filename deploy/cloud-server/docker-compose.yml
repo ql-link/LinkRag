@@ -1,6 +1,7 @@
 # 云服务器应用栈。
 # 包含 Java 管理端、Python RAG 服务、前端，以及跟随应用部署的 Promtail。
-# MySQL / Redis / MinIO / Qdrant / Kafka / Loki 等共享中间件由主机服务器提供。
+# MySQL / Redis / MinIO / Manticore / Loki 已部署在云服务器的 tolink-app-net 内网；
+# Qdrant / Kafka 仍由主机服务器提供。
 #
 # 用法示例：
 #   cd deploy/cloud-server
@@ -17,7 +18,7 @@ services:
       - TZ=Asia/Shanghai
       - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:-prod}
       - RECALL_SESSION_STREAM_BASE_URL=${RECALL_SESSION_STREAM_BASE_URL:-http://117.72.214.40:8000}
-      - OBSERVABILITY_LOKI_BASE_URL=${OBSERVABILITY_LOKI_BASE_URL:-http://${HOST_VPN_IP:-100.86.10.52}:3100}
+      - OBSERVABILITY_LOKI_BASE_URL=${OBSERVABILITY_LOKI_BASE_URL:-http://tolink-loki:3100}
     volumes:
       # application-prod.yml 已打入镜像；这里只挂载服务器长期保存的密钥覆盖文件。
       - ${SERVICE_SECRET_CONFIG_FILE:-/opt/tolink/toLink-Service/config/application-prod-local.yml}:/app/config/${SERVICE_SECRET_CONFIG_NAME:-application-prod-local.yml}:ro
@@ -71,7 +72,7 @@ services:
       - -config.file=/etc/promtail/promtail-remote-config.yml
       - -config.expand-env=true
     environment:
-      LOKI_PUSH_URL: ${LOKI_PUSH_URL:-http://${HOST_VPN_IP:-100.86.10.52}:3100/loki/api/v1/push}
+      LOKI_PUSH_URL: ${LOKI_PUSH_URL:-http://tolink-loki:3100/loki/api/v1/push}
     volumes:
       - ../observability/promtail-remote-config.yml:/etc/promtail/promtail-remote-config.yml:ro
       - ${SERVICE_LOG_PATH:-/opt/tolink/toLink-Service/logs}:/var/log/tolink-service:ro

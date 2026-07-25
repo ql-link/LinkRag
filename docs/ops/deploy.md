@@ -42,6 +42,13 @@ Promtail 必须部署在产生日志文件的云服务器上；Loki 部署在主
 Jenkins 每次部署会自动更新基础配置和 `deploy/docker-compose.yml`，但不会覆盖密钥文件；
 Compose 按基础文件、密钥文件的顺序加载，后者覆盖前者中的空值。
 
+生产 `master` 作业构建新镜像后、启动新容器前，会先用该镜像执行一次
+`python -m alembic upgrade head`，并通过 `python -m alembic current` 输出最终 revision。
+迁移容器固定加载 `.env.production` + `.env.production.local`；迁移失败会立即终止本次部署，
+不会把新镜像切换为运行实例。迁移过程具有幂等性，数据库已经在 `head` 时不会重复执行 DDL。
+执行前还会校验目标必须是 `production / tolink-mysql:3306 / tolink_rag_db`，避免密钥文件或
+`DATABASE_URL` 覆盖错误导致生产任务串到测试库。
+
 云服务器首次部署只需创建一次密钥文件并限制权限：
 
 ```bash
@@ -85,6 +92,11 @@ Cloud Jenkins 使用三个独立 dev 作业：`linkrag-rag-dev`、`linkrag-servi
 `linkrag-web-dev`。Jenkins 只负责调度和保留日志，三个作业均通过 Tailscale SSH 在 Primary
 拉取对应仓库的 `dev` 分支、构建镜像并部署，镜像使用 `test-dev-b<build>` 标签；现有 `master`
 生产作业保持不变。Primary 通过构建锁避免三个测试作业同时占用 Docker 构建资源。
+其中 `linkrag-rag-dev` 在启动新 RAG 容器前自动执行 Alembic，固定加载
+`.env.development` + `.env.development.local`，并输出最终 revision；迁移失败时不会部署新镜像。
+执行前会校验目标必须是 `development / 100.86.10.52:13306 / tolink_rag_test`，不满足时直接阻断。
+0036 升级时优先复用库内已有的六类系统密文；只有全新测试库或能力不完整时，才使用部署任务
+自动生成的 test-only 密文，避免日常 dev 发布覆盖已有可用 Key。
 Java 测试镜像使用 `deploy/test-server/Dockerfile.service` 构建；Maven 下载设置请求超时，Docker
 构建失败时最多自动重试三次，并复用 BuildKit 的 `.m2` 缓存，避免单条公网连接长期挂起。
 Web 构建把 npm 缓存持久化到 `/opt/tolink/test/jenkins/npm-cache`，`npm ci` 设置超时并最多重试三次；

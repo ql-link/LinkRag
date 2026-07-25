@@ -47,7 +47,7 @@ pipeline {
             }
         }
 
-        stage('Deploy') {
+        stage('Migrate Database') {
             steps {
                 sh '''
                     test -f .env.production || { echo "Missing tracked RAG base config: .env.production"; exit 13; }
@@ -65,6 +65,28 @@ pipeline {
                         exit 15
                     }
 
+                    cd "$DEPLOY_DIR"
+                    export TAG RAG_ENV_FILE RAG_SECRET_ENV_FILE
+                    docker network inspect tolink-app-net >/dev/null
+                    echo "Running Alembic with production config: $RAG_ENV_FILE + $RAG_SECRET_ENV_FILE"
+                    docker run --rm \
+                        --network tolink-app-net \
+                        --env-file "$RAG_ENV_FILE" \
+                        --env-file "$RAG_SECRET_ENV_FILE" \
+                        -e PYTHONPATH=/app \
+                        "$IMAGE:$TAG" \
+                        python scripts/release/run_alembic.py \
+                            --expected-app-env production \
+                            --expected-host tolink-mysql \
+                            --expected-port 3306 \
+                            --expected-database tolink_rag_db
+                '''
+            }
+        }
+
+        stage('Deploy') {
+            steps {
+                sh '''
                     cd "$DEPLOY_DIR"
                     export TAG RAG_ENV_FILE RAG_SECRET_ENV_FILE
                     docker compose -f deploy/docker-compose.yml up -d
