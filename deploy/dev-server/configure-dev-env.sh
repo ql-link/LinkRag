@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-test_root=${1:-/opt/tolink/test}
-middleware_env="$test_root/.env.test"
-secrets_dir="$test_root/secrets"
+dev_root=${1:-/opt/tolink/dev}
+middleware_env="$dev_root/.env.dev"
+secrets_dir="$dev_root/secrets"
 rag_secrets="$secrets_dir/rag.env"
 app_secrets="$secrets_dir/app.env"
-rag_config_dir="$test_root/config/rag"
-service_config_dir="$test_root/config/service"
+rag_config_dir="$dev_root/config/rag"
+service_config_dir="$dev_root/config/service"
 rag_local_config="$rag_config_dir/.env.development.local"
 service_local_config="$service_config_dir/application-dev-local.yml"
-legacy_rag_env="$test_root/toLink-Rag/.env.test"
+legacy_rag_env="$dev_root/toLink-Rag/.env.dev"
 
 if [[ ! -f "$middleware_env" ]]; then
   echo "missing required file: $middleware_env" >&2
@@ -59,14 +59,14 @@ umask 077
 
 rag_tmp=$(mktemp "$secrets_dir/rag.env.XXXXXX")
 {
-  printf 'DB_PASSWORD=%s\n' "$TEST_MYSQL_PASSWORD"
-  printf 'DATABASE_URL=mysql+pymysql://%s:%s@tolink-test-mysql:3306/%s\n' "$TEST_MYSQL_USER" "$TEST_MYSQL_PASSWORD" "$TEST_MYSQL_DATABASE"
-  printf 'ALEMBIC_DATABASE_URL=mysql+pymysql://%s:%s@tolink-test-mysql:3306/%s\n' "$TEST_MYSQL_USER" "$TEST_MYSQL_PASSWORD" "$TEST_MYSQL_DATABASE"
-  printf 'REDIS_PASSWORD=%s\n' "$TEST_REDIS_PASSWORD"
-  printf 'REDIS_URL=redis://:%s@tolink-test-redis:6379/0\n' "$TEST_REDIS_PASSWORD"
-  printf 'QDRANT_API_KEY=%s\n' "$TEST_QDRANT_API_KEY"
-  printf 'MINIO_SECRET_KEY=%s\n' "$TEST_MINIO_SECRET_KEY"
-  printf 'KAFKA_SASL_PASSWORD=%s\n' "$TEST_KAFKA_PASSWORD"
+  printf 'DB_PASSWORD=%s\n' "$DEV_MYSQL_PASSWORD"
+  printf 'DATABASE_URL=mysql+pymysql://%s:%s@tolink-dev-mysql:3306/%s\n' "$DEV_MYSQL_USER" "$DEV_MYSQL_PASSWORD" "$DEV_MYSQL_DATABASE"
+  printf 'ALEMBIC_DATABASE_URL=mysql+pymysql://%s:%s@tolink-dev-mysql:3306/%s\n' "$DEV_MYSQL_USER" "$DEV_MYSQL_PASSWORD" "$DEV_MYSQL_DATABASE"
+  printf 'REDIS_PASSWORD=%s\n' "$DEV_REDIS_PASSWORD"
+  printf 'REDIS_URL=redis://:%s@tolink-dev-redis:6379/0\n' "$DEV_REDIS_PASSWORD"
+  printf 'QDRANT_API_KEY=%s\n' "$DEV_QDRANT_API_KEY"
+  printf 'MINIO_SECRET_KEY=%s\n' "$DEV_MINIO_SECRET_KEY"
+  printf 'KAFKA_SASL_PASSWORD=%s\n' "$DEV_KAFKA_PASSWORD"
   printf 'API_KEY_ENCRYPTION_SECRET=%s\n' "$api_key_secret"
   printf 'RECALL_SESSION_JWT_SECRET=%s\n' "$recall_session_secret"
   [[ -z "$system_llm_api_key" ]] || printf 'SYSTEM_LLM_API_KEY=%s\n' "$system_llm_api_key"
@@ -76,19 +76,19 @@ mv "$rag_tmp" "$rag_secrets"
 
 rag_local_tmp=$(mktemp "$rag_config_dir/.env.development.local.XXXXXX")
 {
-  printf 'DB_USER=%s\n' "$TEST_MYSQL_USER"
-  printf 'KAFKA_SASL_USERNAME=%s\n' "$TEST_KAFKA_USER"
-  printf 'MINIO_ACCESS_KEY=%s\n' "$TEST_MINIO_ACCESS_KEY"
+  printf 'DB_USER=%s\n' "$DEV_MYSQL_USER"
+  printf 'KAFKA_SASL_USERNAME=%s\n' "$DEV_KAFKA_USER"
+  printf 'MINIO_ACCESS_KEY=%s\n' "$DEV_MINIO_ACCESS_KEY"
   cat "$rag_secrets"
 } >"$rag_local_tmp"
 mv "$rag_local_tmp" "$rag_local_config"
 
 app_tmp=$(mktemp "$secrets_dir/app.env.XXXXXX")
 {
-  printf 'SPRING_DATASOURCE_PASSWORD=%s\n' "$TEST_MYSQL_PASSWORD"
-  printf 'SPRING_REDIS_PASSWORD=%s\n' "$TEST_REDIS_PASSWORD"
-  printf 'SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG=org.apache.kafka.common.security.plain.PlainLoginModule required username="%s" password="%s";\n' "$TEST_KAFKA_USER" "$TEST_KAFKA_PASSWORD"
-  printf 'TOLINK_OSS_MINIO_SECRET_KEY=%s\n' "$TEST_MINIO_SECRET_KEY"
+  printf 'SPRING_DATASOURCE_PASSWORD=%s\n' "$DEV_MYSQL_PASSWORD"
+  printf 'SPRING_REDIS_PASSWORD=%s\n' "$DEV_REDIS_PASSWORD"
+  printf 'SPRING_KAFKA_PROPERTIES_SASL_JAAS_CONFIG=org.apache.kafka.common.security.plain.PlainLoginModule required username="%s" password="%s";\n' "$DEV_KAFKA_USER" "$DEV_KAFKA_PASSWORD"
+  printf 'TOLINK_OSS_MINIO_SECRET_KEY=%s\n' "$DEV_MINIO_SECRET_KEY"
   printf 'RECALL_INTERNAL_JWT_SECRET=%s\n' "$recall_internal_secret"
   printf 'TOLINK_RECALL_SESSION_JWT_SECRET=%s\n' "$recall_session_secret"
   printf 'TOLINK_LLM_API_KEY_SECRET=%s\n' "$api_key_secret"
@@ -106,13 +106,13 @@ def quoted(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 values = {
-    "db_user": os.environ["TEST_MYSQL_USER"],
-    "db_password": os.environ["TEST_MYSQL_PASSWORD"],
-    "redis_password": os.environ["TEST_REDIS_PASSWORD"],
-    "kafka_user": os.environ["TEST_KAFKA_USER"],
-    "kafka_password": os.environ["TEST_KAFKA_PASSWORD"],
-    "minio_user": os.environ["TEST_MINIO_ACCESS_KEY"],
-    "minio_password": os.environ["TEST_MINIO_SECRET_KEY"],
+    "db_user": os.environ["DEV_MYSQL_USER"],
+    "db_password": os.environ["DEV_MYSQL_PASSWORD"],
+    "redis_password": os.environ["DEV_REDIS_PASSWORD"],
+    "kafka_user": os.environ["DEV_KAFKA_USER"],
+    "kafka_password": os.environ["DEV_KAFKA_PASSWORD"],
+    "minio_user": os.environ["DEV_MINIO_ACCESS_KEY"],
+    "minio_password": os.environ["DEV_MINIO_SECRET_KEY"],
     "recall_secret": os.environ["RECALL_SESSION_SECRET"],
     "llm_secret": os.environ["API_KEY_SECRET"],
 }
@@ -145,4 +145,4 @@ Path(sys.argv[1]).write_text(content, encoding="utf-8")
 PY
 
 chmod 600 "$rag_secrets" "$app_secrets" "$rag_local_config" "$service_local_config" "$middleware_env"
-echo "test secret layers configured"
+echo "dev secret layers configured"
