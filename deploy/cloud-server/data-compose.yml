@@ -1,0 +1,125 @@
+# Cloud 生产数据栈：仅通过外部应用网络提供 MySQL / Redis / MinIO / Manticore / Loki，
+# 不暴露宿主机端口。
+#
+# 启动：
+#   docker compose \
+#     --env-file /opt/tolink/toLink-Rag/.env.production \
+#     --env-file /opt/tolink/toLink-Rag/.env.production.local \
+#     -f data-compose.yml up -d
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: tolink-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${DB_PASSWORD:?required}
+      MYSQL_DATABASE: ${DB_NAME:-tolink_rag_db}
+    command:
+      - mysqld
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - prod_mysql_data:/var/lib/mysql
+    networks: [tolink-app-net]
+    healthcheck:
+      test: ["CMD-SHELL", "MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysqladmin ping -h 127.0.0.1 -uroot --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+    mem_limit: 1g
+    cpus: 1.5
+
+  redis:
+    image: redis:7.2-alpine
+    container_name: tolink-redis
+    restart: unless-stopped
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?required}
+    command: ["sh", "-c", "exec redis-server --requirepass \"$$REDIS_PASSWORD\" --appendonly yes"]
+    volumes:
+      - prod_redis_data:/data
+    networks: [tolink-app-net]
+    healthcheck:
+      test: ["CMD-SHELL", "REDISCLI_AUTH=$$REDIS_PASSWORD redis-cli ping | grep -q PONG"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    mem_limit: 512m
+    cpus: 0.5
+
+  minio:
+    image: minio/minio:RELEASE.2025-04-22T22-12-26Z
+    container_name: tolink-minio
+    restart: unless-stopped
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?required}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?required}
+    command: ["server", "/data", "--console-address", ":9001"]
+    volumes:
+      - prod_minio_data:/data
+    networks: [tolink-app-net]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    mem_limit: 768m
+    cpus: 1.5
+
+  manticore:
+    image: manticoresearch/manticore:27.1.5
+    container_name: tolink-manticore
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - prod_manticore_data:/var/lib/manticore
+    networks: [tolink-app-net]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9308/ >/dev/null || exit 1"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    mem_limit: 768m
+    cpus: 1
+
+  loki:
+    image: grafana/loki:2.9.8
+    container_name: tolink-loki
+    restart: unless-stopped
+    command: -config.file=/etc/loki/loki-config.yml
+    volumes:
+      - ./loki-config.yml:/etc/loki/loki-config.yml:ro
+      - prod_loki_data:/loki
+    networks: [tolink-app-net]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3100/ready | grep -q ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    mem_limit: 256m
+    cpus: 0.75
+
+networks:
+  tolink-app-net:
+    external: true
+
+volumes:
+  prod_mysql_data:
+    name: tolink_prod_mysql_data
+  prod_redis_data:
+    name: tolink_prod_redis_data
+  prod_minio_data:
+    name: tolink_prod_minio_data
+  prod_manticore_data:
+    name: tolink_prod_manticore_data
+  prod_loki_data:
+    name: tolink_prod_loki_data
