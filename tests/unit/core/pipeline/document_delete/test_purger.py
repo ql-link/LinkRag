@@ -68,6 +68,15 @@ class _FakeParseRepo:
         return {}
 
 
+class _FakeWikiRepo:
+    def __init__(self, log):
+        self._log = log
+
+    async def delete_by_doc_id(self, db, doc_id):
+        self._log.append(f"db.delete_wiki:{doc_id}")
+        return 0
+
+
 class _FakeQdrant:
     def __init__(self, log):
         self._log = log
@@ -129,6 +138,7 @@ def _make_purger(monkeypatch, *, routing=None, oss_keys=None, dataset_pages=None
         storage=storage,
         page_size=10,
         mutation_guard=NoopIndexMutationGuard(),
+        wiki_repository=_FakeWikiRepo(log),
     )
     return purger, log, qdrant, es, storage
 
@@ -239,9 +249,10 @@ class TestPurgeFile:
         first_db_delete = min(
             i
             for i, e in enumerate(log)
-            if e.startswith(("db.delete_chunks", "db.delete_parse_rows"))
+            if e.startswith(("db.delete_wiki", "db.delete_chunks", "db.delete_parse_rows"))
         )
         assert last_external < first_db_delete
+        assert log.index("db.delete_wiki:7") < log.index("db.delete_chunks:7")
         assert "db.commit" in log
 
     async def test_empty_products_is_noop(self, monkeypatch):
@@ -258,6 +269,7 @@ class TestPurgeFile:
         # ES 按 filter 删（无匹配返 0），仍会调用一次——幂等
         assert es.calls == [(1, 2, 99)]
         assert "db.delete_chunks:99" in log
+        assert "db.delete_wiki:99" in log
         assert "db.delete_parse_rows:99" in log
 
 

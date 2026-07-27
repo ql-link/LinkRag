@@ -7,10 +7,11 @@ from typing import Any
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.config import settings
+from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
 from src.core.storage.chunks import ChunkRepository
 from src.core.storage.qdrant import BucketRouter, QdrantIndexStore
 from src.core.storage.qdrant.constants import DEFAULT_BUCKET_COUNT, DEFAULT_COLLECTION_PREFIX
-from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
+from src.core.storage.wiki_tree.repository import WikiTreeRepository
 from src.database import get_async_session_factory
 
 from .compensation_pipeline import VectorStorageCompensationPipeline
@@ -42,6 +43,7 @@ def create_vector_storage_facade(
     repository: ChunkRepository | None = None,
     qdrant_store: QdrantIndexStore | None = None,
     qdrant_client: Any | None = None,
+    wiki_repository: WikiTreeRepository | None = None,
 ) -> VectorStorageFacade:
     """
     使用项目默认配置装配向量存储统一入口。
@@ -85,6 +87,7 @@ def create_vector_storage_facade(
         qdrant_store=resolved_qdrant_store,
         embedding_pipeline=embedding_pipeline,
         sparse_vector_service=sparse_vector_service,
+        wiki_repository=wiki_repository,
     )
     compensation_service = VectorStorageCompensationPipeline(
         session_factory=resolved_session_factory,
@@ -112,6 +115,7 @@ def compose_vector_storage_facade(
     repository: ChunkRepository | None = None,
     qdrant_store: QdrantIndexStore | None = None,
     qdrant_client: Any | None = None,
+    wiki_repository: WikiTreeRepository | None = None,
 ) -> VectorStorageFacade:
     """一站式装配：运行时模型必须由 Dataset context 显式提供。
 
@@ -127,4 +131,5 @@ def compose_vector_storage_facade(
         repository=repository,
         qdrant_store=qdrant_store,
         qdrant_client=qdrant_client,
+        wiki_repository=wiki_repository,
     )

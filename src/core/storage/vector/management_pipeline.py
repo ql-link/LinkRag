@@ -35,10 +35,12 @@ from src.core.storage.qdrant.point_factory import (
     indexed_point_from_record,
     sparse_indexed_point_from_record,
 )
+from src.core.storage.wiki_tree.repository import WikiTreeRepository
 from src.models.chunk_record import ChunkRecordDB
 from src.utils.logger import logger
 
 from ._transaction import TransactionalPipelineMixin
+from .exceptions import ChunkStructuralUpdateNotAllowedError
 from .models import ChunkDeleteRequest, ChunkMutationResult, ChunkUpdateRequest
 
 
@@ -61,6 +63,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
         qdrant_store: QdrantIndexStore,
         embedding_pipeline: ChunkEmbeddingPipeline,
         sparse_vector_service: SparseVectorService | None = None,
+        wiki_repository: WikiTreeRepository | None = None,
     ) -> None:
         """
             初始化 chunk 管理服务，并注入数据库、向量索引与 embedding 依赖。
@@ -79,6 +82,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
         self.qdrant_store = qdrant_store
         self.embedding_pipeline = embedding_pipeline
         self.sparse_vector_service = sparse_vector_service
+        self.wiki_repository = wiki_repository or WikiTreeRepository()
 
     async def update_chunk(self, request: ChunkUpdateRequest) -> ChunkMutationResult:
         """
@@ -97,6 +101,18 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
                 affected_chunks=0,
                 skipped_chunk_ids=[request.chunk_id],
             )
+
+        structural_changes = {
+            field_name
+            for field_name, requested_value, current_value in (
+                ("start_line", request.start_line, getattr(record, "start_line", None)),
+                ("end_line", request.end_line, getattr(record, "end_line", None)),
+                ("chunk_index", request.chunk_index, getattr(record, "chunk_index", None)),
+            )
+            if requested_value is not None and requested_value != current_value
+        }
+        if structural_changes:
+            raise ChunkStructuralUpdateNotAllowedError(structural_changes)
 
         content_hash = self._content_hash(request.content)
         chunk_type = request.chunk_type or record.chunk_type
@@ -495,13 +511,24 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
         Returns:
             int: 实际切换为 `REMOVED` 的记录数。
         """
-        return await self._run_in_transaction_with_result(
-            lambda session: self.repository.mark_removed(
+
+        targets = tuple(dict.fromkeys(chunk_ids))
+
+        async def mark_and_delete_refs(session: AsyncSession) -> int:
+            """在同一事务中完成 REMOVED CAS 与全部 Wiki 引用清理。"""
+
+            affected = await self.repository.mark_removed(
                 session,
-                chunk_ids,
+                targets,
                 expected_lifecycle_status=CHUNK_LIFECYCLE_ACTIVE,
             )
-        )
+            if affected != len(targets):
+                raise RuntimeError("chunk removal CAS mismatch; Wiki references were not changed")
+            if affected:
+                await self.wiki_repository.delete_refs_by_chunk_ids(session, targets)
+            return affected
+
+        return await self._run_in_transaction_with_result(mark_and_delete_refs)
 
     async def _delete_qdrant_point_if_record_is_delete_state(
         self,

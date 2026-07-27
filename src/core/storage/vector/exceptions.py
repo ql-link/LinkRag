@@ -25,6 +25,19 @@ class VectorStorageConfigurationError(VectorStorageError):
     """
 
 
+class ChunkStructuralUpdateNotAllowedError(VectorStorageError):
+    """单 Chunk 更新试图修改会影响 Wiki 归属的结构坐标。"""
+
+    def __init__(self, fields: set[str]) -> None:
+        """记录被拒绝的结构字段，并提示调用方改走整文档重新解析。"""
+
+        self.fields = frozenset(fields)
+        super().__init__(
+            "single-chunk structural update is not allowed; reparse the whole document: "
+            + ", ".join(sorted(fields))
+        )
+
+
 # ============================================================================
 # 召回侧公共异常族（本次新增）
 #
