@@ -4,20 +4,18 @@
 - target_metadata 合并了项目中所有 SQLAlchemy Base 的 MetaData，以便 autogenerate
   能 diff 出全部表/列变更。
 """
+
 from __future__ import annotations
-
-from logging.config import fileConfig
-
-from alembic import context
-from sqlalchemy import engine_from_config, pool
 
 # --- 项目导入 ----------------------------------------------------------------
 # 模型导入仅 autogenerate 时必需（用于 diff metadata vs DB）。
 # `alembic upgrade head` 只需要 versions/*.py 即可工作，不依赖模型，
 # 因此采用 best-effort 导入：缺依赖也允许 upgrade 运行（CI 不必装重依赖）。
 import os
+from logging.config import fileConfig
 
-from sqlalchemy import MetaData
+from alembic import context
+from sqlalchemy import MetaData, engine_from_config, pool
 
 # Alembic Config 对象
 config = context.config
@@ -28,6 +26,7 @@ runtime_url = os.environ.get("ALEMBIC_DATABASE_URL")
 if not runtime_url:
     try:
         from src.config import settings  # 可能因缺依赖而失败，仅 autogen 必需
+
         runtime_url = settings.DATABASE_URL
     except Exception:  # noqa: BLE001
         runtime_url = None
@@ -37,14 +36,15 @@ if runtime_url:
 
 combined_metadata = MetaData()
 try:
-    from src.models import db_models  # noqa: F401
     from src.models import chunk_record  # noqa: F401
-    from src.models import parse_task  # noqa: F401
     from src.models import dataset_parse_config  # noqa: F401
+    from src.models import db_models  # noqa: F401
+    from src.models import parse_task  # noqa: F401
+    from src.models import wiki_tree  # noqa: F401
     from src.models import workflow  # noqa: F401
+    from src.models.dataset_parse_config import Base as DatasetParseConfigBase
     from src.models.db_models import Base as CoreBase
     from src.models.parse_task import Base as ParseTaskBase
-    from src.models.dataset_parse_config import Base as DatasetParseConfigBase
 
     for base in (CoreBase, ParseTaskBase, DatasetParseConfigBase):
         for table in base.metadata.tables.values():
