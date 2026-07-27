@@ -53,7 +53,7 @@ services:
     cpus: 0.5
 
   kafka:
-    image: bitnami/kafka:3.7
+    image: soldevelo/kafka:3.7
     container_name: tolink-dev-kafka
     restart: unless-stopped
     environment:
