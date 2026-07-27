@@ -27,6 +27,7 @@ from src.core.wiki.models import (
     WikiChunkRecord,
     WikiChunkRefRecord,
     WikiDocumentTreeRows,
+    WikiHeadingDraft,
     WikiHeadingPathItem,
     WikiHeadingPreview,
     WikiHeadingRecord,
@@ -180,20 +181,13 @@ class WikiTreeRepository:
                 ),
             )
         )
-        # 显式 lower + utf8mb4_unicode_ci 让 SQL 与 heading_key 的大小写不敏感
-        # 语义保持一致；prefix 还必须转义通配符，确保只开放字面前缀匹配。
-        lowered = normalized_title.casefold()
+        # title 继承表级 utf8mb4_unicode_ci，直接比较即可保持英文大小写不敏感，
+        # 同时让联合索引继续使用 title 键；prefix 仍转义通配符，只开放字面前缀。
         if mode == "exact":
-            statement = statement.where(
-                func.lower(node.title).collate("utf8mb4_unicode_ci") == lowered
-            )
+            statement = statement.where(node.title == normalized_title)
         else:
-            escaped = lowered.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-            statement = statement.where(
-                func.lower(node.title)
-                .collate("utf8mb4_unicode_ci")
-                .like(f"{escaped}%", escape="\\")
-            )
+            escaped = normalized_title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            statement = statement.where(node.title.like(f"{escaped}%", escape="\\"))
         # 使用 (dataset_id, doc_id, node.id) keyset，避免 offset 在跨库结果页上
         # 因并发插入产生大范围漂移，也让游标只保存下一未消费位置。
         if after is not None:
@@ -385,45 +379,66 @@ class WikiTreeRepository:
         if not headings:
             return {}
         heading_ids = tuple(item.id for item in headings)
+        ref = self.model_cls
         parent = aliased(self.model_cls)
+        # 子查询在 MySQL 内按标题完成总数与稳定排名，外层只保留 rank=1；因此高扇出
+        # 标题不会把全部引用行传给 Python，同时首条预览与完整计数来自同一快照。
+        ranked = (
+            select(
+                ref.parent_id.label("heading_id"),
+                ref.id.label("ref_id"),
+                ref.sort_order.label("sort_order"),
+                ref.chunk_id.label("chunk_id"),
+                func.count().over(partition_by=ref.parent_id).label("direct_chunk_count"),
+                func.row_number()
+                .over(partition_by=ref.parent_id, order_by=(ref.sort_order, ref.id))
+                .label("position_rank"),
+            )
+            .join(ChunkRecordDB, ChunkRecordDB.chunk_id == ref.chunk_id)
+            .join(
+                parent,
+                and_(
+                    parent.id == ref.parent_id,
+                    parent.doc_id == ref.doc_id,
+                    parent.node_type == WIKI_NODE_HEADING,
+                ),
+            )
+            .where(
+                ref.node_type == WIKI_NODE_CHUNK_REF,
+                ref.parent_id.in_(heading_ids),
+                ChunkRecordDB.user_id == scope.user_id,
+                ChunkRecordDB.set_id.in_(scope.dataset_ids),
+                ChunkRecordDB.lifecycle_status == CHUNK_LIFECYCLE_ACTIVE,
+                ChunkRecordDB.doc_id == ref.doc_id,
+            )
+            .subquery("ranked_heading_previews")
+        )
         rows = (
             await session.execute(
                 select(
-                    self.model_cls.parent_id,
-                    self.model_cls.id,
-                    self.model_cls.sort_order,
-                    self.model_cls.chunk_id,
+                    ranked.c.heading_id,
+                    ranked.c.ref_id,
+                    ranked.c.sort_order,
+                    ranked.c.chunk_id,
+                    ranked.c.direct_chunk_count,
                 )
-                .join(ChunkRecordDB, ChunkRecordDB.chunk_id == self.model_cls.chunk_id)
-                .join(
-                    parent,
-                    and_(
-                        parent.id == self.model_cls.parent_id,
-                        parent.doc_id == self.model_cls.doc_id,
-                        parent.node_type == WIKI_NODE_HEADING,
-                    ),
-                )
-                .where(
-                    self.model_cls.node_type == WIKI_NODE_CHUNK_REF,
-                    self.model_cls.parent_id.in_(heading_ids),
-                    ChunkRecordDB.user_id == scope.user_id,
-                    ChunkRecordDB.set_id.in_(scope.dataset_ids),
-                    ChunkRecordDB.lifecycle_status == CHUNK_LIFECYCLE_ACTIVE,
-                    ChunkRecordDB.doc_id == self.model_cls.doc_id,
-                )
-                .order_by(self.model_cls.parent_id, self.model_cls.sort_order, self.model_cls.id)
+                .where(ranked.c.position_rank == 1)
+                .order_by(ranked.c.heading_id)
             )
         ).all()
-        grouped: dict[int, list[tuple[int, int, str]]] = defaultdict(list)
-        for parent_id, ref_id, sort_order, chunk_id in rows:
-            grouped[int(parent_id)].append((int(ref_id), int(sort_order), str(chunk_id)))
+        by_heading = {
+            int(heading_id): (int(ref_id), int(sort_order), str(chunk_id), int(count))
+            for heading_id, ref_id, sort_order, chunk_id, count in rows
+        }
         return {
             heading.id: WikiHeadingPreview(
                 heading_id=heading.id,
-                direct_chunk_count=len(grouped.get(heading.id, ())),
-                chunk_id=grouped[heading.id][0][2] if grouped.get(heading.id) else None,
-                first_ref_sort_order=grouped[heading.id][0][1] if grouped.get(heading.id) else None,
-                first_ref_id=grouped[heading.id][0][0] if grouped.get(heading.id) else None,
+                direct_chunk_count=by_heading[heading.id][3] if heading.id in by_heading else 0,
+                chunk_id=by_heading[heading.id][2] if heading.id in by_heading else None,
+                first_ref_sort_order=(
+                    by_heading[heading.id][1] if heading.id in by_heading else None
+                ),
+                first_ref_id=by_heading[heading.id][0] if heading.id in by_heading else None,
             )
             for heading in headings
         }
@@ -460,6 +475,7 @@ class WikiTreeRepository:
                 ChunkRecordDB.user_id == scope.user_id,
                 ChunkRecordDB.set_id == heading.dataset_id,
                 ChunkRecordDB.doc_id == doc_id,
+                ChunkRecordDB.lifecycle_status == CHUNK_LIFECYCLE_ACTIVE,
             )
         )
         if after is not None:
@@ -539,44 +555,77 @@ class WikiTreeRepository:
         chunk_ids: Sequence[str],
         *,
         scope: EffectiveWikiScope,
+        max_positions: int | None = None,
     ) -> tuple[WikiChunkLocationRecord, ...]:
-        """返回每个请求 Chunk 的全部直接父标题 ID。
+        """返回每个请求 Chunk 的直接父标题 ID 及未截断位置总数。
 
         必须先确认所有 Chunk 均可见；随后用 ``(chunk_id, doc_id)`` 查询引用并要求
-        父 HEADING 同文档，使跨文档脏引用无法泄漏其他文档标题。
+        父 HEADING 同文档，使跨文档脏引用无法泄漏其他文档标题。搜索和标题展开
+        传入上限时只把稳定排序的前 N 个标题 ID 送入父链水合；批量定位不传上限，
+        因而仍返回全部位置。
         """
 
+        if max_positions is not None and max_positions <= 0:
+            raise ValueError("max_positions must be positive")
         chunks = await self.load_chunks(session, chunk_ids, scope=scope)
         if len(chunks) != len(tuple(dict.fromkeys(chunk_ids))):
             raise RecallApiError(403, CODE_SCOPE_FORBIDDEN, "one or more chunks are not authorized")
         ref = self.model_cls
         parent = aliased(self.model_cls)
-        rows = (
-            await session.execute(
-                select(ref.chunk_id, ref.parent_id)
-                .join(
-                    parent,
-                    and_(
-                        parent.id == ref.parent_id,
-                        parent.doc_id == ref.doc_id,
-                        parent.node_type == WIKI_NODE_HEADING,
-                    ),
+        # 先在数据库按 Chunk 分区计数和排名，再由外层应用可选上限；搜索/展开只会
+        # 水合前 N 个父标题，完整定位不加外层 rank 条件，仍得到全部直接位置。
+        ranked = (
+            select(
+                ref.chunk_id.label("chunk_id"),
+                ref.doc_id.label("doc_id"),
+                ref.parent_id.label("parent_id"),
+                func.count().over(partition_by=(ref.chunk_id, ref.doc_id)).label("position_count"),
+                func.row_number()
+                .over(
+                    partition_by=(ref.chunk_id, ref.doc_id),
+                    order_by=(ref.sort_order, ref.id),
                 )
-                .where(
-                    ref.node_type == WIKI_NODE_CHUNK_REF,
-                    tuple_(ref.chunk_id, ref.doc_id).in_(
-                        tuple((item.chunk_id, item.doc_id) for item in chunks)
-                    ),
-                )
-                .order_by(ref.doc_id, ref.sort_order, ref.id)
+                .label("position_rank"),
             )
+            .join(
+                parent,
+                and_(
+                    parent.id == ref.parent_id,
+                    parent.doc_id == ref.doc_id,
+                    parent.node_type == WIKI_NODE_HEADING,
+                ),
+            )
+            .where(
+                ref.node_type == WIKI_NODE_CHUNK_REF,
+                tuple_(ref.chunk_id, ref.doc_id).in_(
+                    tuple((item.chunk_id, item.doc_id) for item in chunks)
+                ),
+            )
+            .subquery("ranked_chunk_locations")
+        )
+        statement = select(
+            ranked.c.chunk_id,
+            ranked.c.parent_id,
+            ranked.c.position_count,
+            ranked.c.position_rank,
+        )
+        if max_positions is not None:
+            statement = statement.where(ranked.c.position_rank <= max_positions)
+        rows = (
+            await session.execute(statement.order_by(ranked.c.chunk_id, ranked.c.position_rank))
         ).all()
         headings: dict[str, list[int]] = defaultdict(list)
-        for chunk_id, parent_id in rows:
+        position_counts: dict[str, int] = {}
+        for chunk_id, parent_id, position_count, _position_rank in rows:
+            position_counts[str(chunk_id)] = int(position_count)
             if parent_id is not None:
                 headings[str(chunk_id)].append(int(parent_id))
         return tuple(
-            WikiChunkLocationRecord(chunk, tuple(dict.fromkeys(headings[chunk.chunk_id])))
+            WikiChunkLocationRecord(
+                chunk,
+                tuple(dict.fromkeys(headings[chunk.chunk_id])),
+                position_counts.get(chunk.chunk_id, 0),
+            )
             for chunk in chunks
         )
 
@@ -770,35 +819,54 @@ class WikiTreeRepository:
         能在同一事务中共同成功或共同回滚。
         """
 
+        drafts_by_key: dict[str, WikiHeadingDraft] = {}
+        headings_by_level: dict[int, list[WikiHeadingDraft]] = defaultdict(list)
+        for heading in tree_draft.headings:
+            if heading.heading_key in drafts_by_key:
+                raise ValueError(f"duplicate heading_key in tree draft: {heading.heading_key}")
+            if not 1 <= heading.heading_level <= 6:
+                raise ValueError(f"invalid heading level: {heading.heading_level}")
+            drafts_by_key[heading.heading_key] = heading
+            headings_by_level[heading.heading_level].append(heading)
+        for heading in tree_draft.headings:
+            if heading.parent_heading_key is None:
+                continue
+            parent = drafts_by_key.get(heading.parent_heading_key)
+            if parent is None or parent.heading_level >= heading.heading_level:
+                raise ValueError(
+                    "tree draft has an invalid parent: "
+                    f"{heading.parent_heading_key} -> {heading.heading_key}"
+                )
+
         deleted_count = await self.delete_by_doc_id(session, doc_id)
         heading_ids: dict[str, int] = {}
 
-        for heading in tree_draft.headings:
-            if heading.heading_key in heading_ids:
-                raise ValueError(f"duplicate heading_key in tree draft: {heading.heading_key}")
-            if heading.parent_heading_key is not None:
-                parent_id = heading_ids.get(heading.parent_heading_key)
-                if parent_id is None:
-                    raise ValueError(
-                        "tree draft is not topologically ordered: "
-                        f"missing parent {heading.parent_heading_key}"
+        # 每个非空标题层级只 flush 一次：父层主键先落定，随后整层子标题批量引用，
+        # 将写入往返限制在 H1～H6 六轮内，而不是随标题总数线性增长。
+        for heading_level in sorted(headings_by_level):
+            records: list[WikiTreeNodeDB] = []
+            for heading in headings_by_level[heading_level]:
+                parent_id = (
+                    heading_ids[heading.parent_heading_key]
+                    if heading.parent_heading_key is not None
+                    else None
+                )
+                records.append(
+                    self.model_cls(
+                        heading_key=heading.heading_key,
+                        doc_id=doc_id,
+                        parent_id=parent_id,
+                        node_type=WIKI_NODE_HEADING,
+                        title=heading.title,
+                        heading_level=heading.heading_level,
+                        chunk_id=None,
+                        sort_order=heading.sort_order,
                     )
-            else:
-                parent_id = None
-
-            record = self.model_cls(
-                heading_key=heading.heading_key,
-                doc_id=doc_id,
-                parent_id=parent_id,
-                node_type=WIKI_NODE_HEADING,
-                title=heading.title,
-                heading_level=heading.heading_level,
-                chunk_id=None,
-                sort_order=heading.sort_order,
-            )
-            session.add(record)
+                )
+            session.add_all(records)
             await session.flush()
-            heading_ids[heading.heading_key] = record.id
+            for heading, record in zip(headings_by_level[heading_level], records):
+                heading_ids[heading.heading_key] = record.id
 
         ref_records: list[WikiTreeNodeDB] = []
         for chunk_ref in tree_draft.chunk_refs:

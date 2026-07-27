@@ -475,7 +475,12 @@ class WikiRuntime:
                     dict.fromkeys([*preview_ids, *(hit.chunk_id for hit in bm25_hits)])
                 )
                 locations = (
-                    await self._repository.load_chunk_locations(db, chunk_ids, scope=scope)
+                    await self._repository.load_chunk_locations(
+                        db,
+                        chunk_ids,
+                        scope=scope,
+                        max_positions=MAX_SEARCH_POSITIONS_PER_CHUNK,
+                    )
                     if chunk_ids
                     else ()
                 )
@@ -533,9 +538,7 @@ class WikiRuntime:
             }
             for hit in bm25_hits
         )
-        chunks = self._serialize_locations(
-            locations, location_paths=location_paths, truncate_positions=True
-        )
+        chunks = self._serialize_locations(locations, location_paths=location_paths)
         payload: dict[str, Any] = {
             "results": results,
             "chunks": chunks,
@@ -582,7 +585,10 @@ class WikiRuntime:
                 )
                 locations = (
                     await self._repository.load_chunk_locations(
-                        db, [item.chunk_id for item in refs], scope=scope
+                        db,
+                        [item.chunk_id for item in refs],
+                        scope=scope,
+                        max_positions=MAX_SEARCH_POSITIONS_PER_CHUNK,
                     )
                     if refs
                     else ()
@@ -605,9 +611,7 @@ class WikiRuntime:
         payload: dict[str, Any] = {
             "doc_id": doc_id,
             "heading_key": heading_key,
-            "chunks": self._serialize_locations(
-                locations, location_paths=paths, truncate_positions=True
-            ),
+            "chunks": self._serialize_locations(locations, location_paths=paths),
             "page_size": self._page_size,
             "direct_chunks_has_more": has_more,
         }
@@ -701,9 +705,7 @@ class WikiRuntime:
             "original_filename": tree.original_filename,
             "headings": [build_heading(item) for item in children.get(None, ())],
             "root_chunk_ids": list(tree.root_chunk_ids),
-            "chunks": self._serialize_locations(
-                locations, location_paths=paths, truncate_positions=False
-            ),
+            "chunks": self._serialize_locations(locations, location_paths=paths),
         }
 
     async def _resolve_scope(
@@ -810,21 +812,15 @@ class WikiRuntime:
         locations: Sequence[WikiChunkLocationRecord],
         *,
         location_paths: Mapping[int, Sequence[object]],
-        truncate_positions: bool,
     ) -> list[dict[str, Any]]:
-        """序列化 Chunk 真值及标题位置，并按调用场景限制位置数量。"""
+        """序列化仓储已按场景加载的 Chunk 真值、标题位置及完整计数。"""
 
         serialized: list[dict[str, Any]] = []
         for location in locations:
-            all_positions = [
+            positions = [
                 {"path": [self._path_item(item) for item in location_paths.get(heading_id, ())]}
                 for heading_id in location.heading_ids
             ]
-            positions = (
-                all_positions[:MAX_SEARCH_POSITIONS_PER_CHUNK]
-                if truncate_positions
-                else all_positions
-            )
             chunk = location.chunk
             serialized.append(
                 {
@@ -836,8 +832,8 @@ class WikiRuntime:
                     "start_line": chunk.start_line,
                     "end_line": chunk.end_line,
                     "positions": positions,
-                    "position_count": len(all_positions),
-                    "positions_truncated": len(positions) < len(all_positions),
+                    "position_count": location.position_count,
+                    "positions_truncated": len(positions) < location.position_count,
                 }
             )
         return serialized

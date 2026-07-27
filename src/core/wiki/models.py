@@ -115,10 +115,11 @@ class WikiChunkRecord:
 
 @dataclass(frozen=True, slots=True)
 class WikiChunkLocationRecord:
-    """一个可见 Chunk 及其全部直接父标题 ID。"""
+    """一个可见 Chunk、已加载的直接父标题 ID 及其未截断总数。"""
 
     chunk: WikiChunkRecord
     heading_ids: tuple[int, ...]
+    position_count: int
 
 
 @dataclass(frozen=True, slots=True)

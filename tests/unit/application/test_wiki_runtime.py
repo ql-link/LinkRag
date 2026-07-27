@@ -12,6 +12,10 @@ from src.application.wiki_runtime import WikiRuntime
 from src.core.pipeline.recall.models import RetrieverHit
 from src.core.wiki.models import (
     EffectiveWikiScope,
+    WikiChunkLocationRecord,
+    WikiChunkRecord,
+    WikiChunkRefRecord,
+    WikiHeadingPathItem,
     WikiHeadingPreview,
     WikiHeadingRecord,
 )
@@ -34,6 +38,16 @@ def _heading(node_id: int = 1) -> WikiHeadingRecord:
         title="Guide",
         heading_level=1,
         sort_order=0,
+    )
+
+
+def _location(*, loaded_positions: int, position_count: int) -> WikiChunkLocationRecord:
+    """构造仓储已经完成位置窗口限制后的 Chunk 记录。"""
+
+    return WikiChunkLocationRecord(
+        chunk=WikiChunkRecord("C1", 100, 10, "content", "paragraph", 1, 2),
+        heading_ids=tuple(range(1, loaded_positions + 1)),
+        position_count=position_count,
     )
 
 
@@ -220,3 +234,68 @@ async def test_hydration_revalidates_current_success_and_drops_stale_heading(mon
     assert payload["chunks"] == []
     repository.revalidate_visible_headings.assert_awaited_once()
     bm25.recall_by_dataset.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("position_count", "positions_truncated"),
+    [(10, False), (11, True), (5000, True)],
+)
+async def test_search_limits_position_hydration_in_repository_and_keeps_total_count(
+    monkeypatch, position_count, positions_truncated
+):
+    runtime, repository, _bm25 = _runtime(monkeypatch)
+    repository.find_heading_page.return_value = ((_heading(),), False)
+    repository.load_heading_previews.return_value = {1: WikiHeadingPreview(1, 1, "C1", 0, 101)}
+    repository.load_heading_previews.side_effect = None
+    repository.load_chunk_locations.return_value = (
+        _location(loaded_positions=min(position_count, 10), position_count=position_count),
+    )
+    loaded_positions = min(position_count, 10)
+    repository.load_headings_by_ids.return_value = tuple(
+        _heading(index) for index in range(1, loaded_positions + 1)
+    )
+    repository.load_heading_paths.return_value = {
+        index: (WikiHeadingPathItem(f"{index:064x}", f"H{index}", 1),)
+        for index in range(1, loaded_positions + 1)
+    }
+
+    payload = await runtime.search(
+        _ctx(), query="Guide", dataset_ids=None, doc_ids=None, cursor=None
+    )
+
+    repository.load_chunk_locations.assert_awaited_once()
+    assert repository.load_chunk_locations.await_args.kwargs["max_positions"] == 10
+    assert repository.load_headings_by_ids.await_args.args[1] == list(
+        range(1, loaded_positions + 1)
+    )
+    assert len(payload["chunks"][0]["positions"]) == loaded_positions
+    assert payload["chunks"][0]["position_count"] == position_count
+    assert payload["chunks"][0]["positions_truncated"] is positions_truncated
+
+
+@pytest.mark.asyncio
+async def test_heading_expansion_limits_positions_but_chunk_location_keeps_full_set(monkeypatch):
+    runtime, repository, _bm25 = _runtime(monkeypatch)
+    repository.load_heading_chunk_page.return_value = ((WikiChunkRefRecord(101, 0, "C1"),), False)
+    repository.load_chunk_locations.return_value = (
+        _location(loaded_positions=10, position_count=25),
+    )
+    repository.load_headings_by_ids.return_value = tuple(_heading(index) for index in range(1, 11))
+
+    expanded = await runtime.expand_heading_chunks(
+        _ctx(), doc_id=100, heading_key="a" * 64, cursor=None
+    )
+
+    assert repository.load_chunk_locations.await_args.kwargs["max_positions"] == 10
+    assert len(expanded["chunks"][0]["positions"]) == 10
+    repository.load_chunk_locations.reset_mock()
+    repository.load_chunk_locations.return_value = (
+        _location(loaded_positions=25, position_count=25),
+    )
+    repository.load_headings_by_ids.return_value = tuple(_heading(index) for index in range(1, 26))
+
+    located = await runtime.locate_chunks(_ctx(), chunk_ids=["C1"], dataset_ids=None)
+
+    assert "max_positions" not in repository.load_chunk_locations.await_args.kwargs
+    assert len(located["locations"][0]["positions"]) == 25

@@ -1,8 +1,4 @@
-"""wiki 的 pytest-bdd step 实现。
-
-由 promote_acceptance.py 生成的空骨架——在此补 @given/@when/@then,直到
-``python scripts/acceptance/check_acceptance_steps.py`` 报 0 undefined step。
-"""
+"""Wiki 冻结验收场景的 pytest-bdd 步骤与可复现测试夹具。"""
 
 from __future__ import annotations
 
@@ -32,6 +28,7 @@ from src.config import settings
 from src.core.markdown_parser import ElementType, MarkdownElement, ParseResult
 from src.core.pipeline.document_delete.purger import DocumentDeletePurger
 from src.core.pipeline.parse_task.stages.services import StageServices
+from src.core.pipeline.recall.document_readiness import MySqlDocumentReadinessGate
 from src.core.pipeline.recall.models import RetrieverHit
 from src.core.splitter.models import Chunk
 from src.core.storage.bm25_models import Bm25ChunkHit
@@ -230,6 +227,77 @@ def _build_tree(
     )
 
 
+def _install_heading_key(tree) -> str:
+    """从真实建树结果中取得规范标题为 install 的稳定业务键。"""
+
+    return next(item.heading_key for item in tree.headings if item.title.casefold() == "install")
+
+
+def _nonstructural_identity_keys(change: str) -> tuple[str, str]:
+    """针对每种非结构变化分别重建树，返回变化前后的 Install 标题键。"""
+
+    base_elements = [
+        _heading(1, 1, "Guide"),
+        _heading(2, 2, "Intro"),
+        _body(3),
+        _heading(4, 2, "Install"),
+        _body(5),
+    ]
+    before = _build_tree(base_elements, [("C1", 5, 5, "paragraph")])
+    if change == "正文增删导致行号变化":
+        after = _build_tree(
+            [
+                _heading(10, 1, "Guide"),
+                _heading(20, 2, "Intro"),
+                _body(30),
+                _heading(40, 2, "Install"),
+                _body(50),
+            ],
+            [("C2", 50, 50, "paragraph")],
+        )
+    elif change == "Chunk 重新分块":
+        after = _build_tree(
+            base_elements,
+            [("C2", 5, 5, "paragraph"), ("C3", 5, 5, "derived")],
+        )
+    elif change == "chunk_id 重新分配":
+        after = _build_tree(base_elements, [("NEW-C1", 5, 5, "paragraph")])
+    elif change == "标题仅改变英文大小写":
+        after = _build_tree(
+            [
+                _heading(1, 1, "GUIDE"),
+                _heading(2, 2, "Intro"),
+                _body(3),
+                _heading(4, 2, "INSTALL"),
+                _body(5),
+            ],
+            [("C2", 5, 5, "paragraph")],
+        )
+    elif change == "同一父标题下普通兄弟重排":
+        after = _build_tree(
+            [
+                _heading(1, 1, "Guide"),
+                _heading(2, 2, "Install"),
+                _body(3),
+                _heading(4, 2, "Intro"),
+                _body(5),
+            ],
+            [("C2", 3, 3, "paragraph")],
+        )
+    elif change == "标题删除后以相同结构重新出现":
+        deleted = _build_tree(
+            [_heading(1, 1, "Guide"), _heading(2, 2, "Intro"), _body(3)],
+            [("C2", 3, 3, "paragraph")],
+        )
+        assert all(item.title.casefold() != "install" for item in deleted.headings)
+        after = _build_tree(base_elements, [("C3", 5, 5, "paragraph")])
+    elif change == "内容完全相同的重复解析":
+        after = _build_tree(base_elements, [("C1", 5, 5, "paragraph")])
+    else:
+        raise AssertionError(f"unknown nonstructural identity change: {change}")
+    return _install_heading_key(before), _install_heading_key(after)
+
+
 def _parameter(state: WikiAcceptanceState, name: str, expected: object) -> None:
     if name in state.parameters:
         assert state.parameters[name] == str(expected)
@@ -266,6 +334,7 @@ def _acceptance_location(chunk_id: str, *, heading_ids: tuple[int, ...] = ()):
             end_line=1,
         ),
         heading_ids=heading_ids,
+        position_count=len(heading_ids),
     )
 
 
@@ -602,19 +671,8 @@ def _assert_scenario_contract(node_name: str, state: WikiAcceptanceState, monkey
             db.rollback.assert_awaited_once()
         return
     if scenario == "非结构性变化不改变_heading_key":
-        assert state.parameters["change"] in {
-            "正文增删导致行号变化",
-            "Chunk 重新分块",
-            "chunk_id 重新分配",
-            "标题仅改变英文大小写",
-            "同一父标题下普通兄弟重排",
-            "标题删除后以相同结构重新出现",
-            "内容完全相同的重复解析",
-        }
-        identity = ((1, "指南".casefold()), (2, "安装".casefold()))
-        assert HeadingIdentity.make_key(
-            doc_id=10001, identity_path=identity, occurrence=0
-        ) == HeadingIdentity.make_key(doc_id=10001, identity_path=identity, occurrence=0)
+        before_key, after_key = _nonstructural_identity_keys(state.parameters["change"])
+        assert after_key == before_key
         return
     if scenario == "标题身份变化时生成新的_heading_key":
         change = state.parameters["change"]
@@ -1218,18 +1276,35 @@ def _assert_scenario_contract(node_name: str, state: WikiAcceptanceState, monkey
             bm25.recall_by_dataset.assert_not_awaited()
         return
     if scenario == "不可见候选在返回前被_fail_closed":
-        assert state.parameters["condition"] in {
-            "归属其他用户",
-            "不在请求的数据集范围内",
-            "不在请求的文档范围内",
-            "最新解析流水线不是 SUCCESS",
-            "Chunk 生命周期不是 ACTIVE",
-        }
+        condition = state.parameters["condition"]
         runtime, repository, bm25, readiness = _acceptance_runtime(monkeypatch)
-        hit = RetrieverHit("C1", 10001, 10, 1.0, "bm25")
+        del readiness
+        hit_doc_id = 20001 if condition == "不在请求的文档范围内" else 10001
+        hit_dataset_id = 20 if condition == "不在请求的数据集范围内" else 10
+        hit = RetrieverHit("C1", hit_doc_id, hit_dataset_id, 1.0, "bm25")
+        if condition == "不在请求的文档范围内":
+            repository.resolve_scope.return_value = EffectiveWikiScope(
+                123, (10,), (10001,), {10: (10001,)}
+            )
+        readiness_rows = {
+            "归属其他用户": [],
+            "不在请求的数据集范围内": [("C1", 10001, 20, "ACTIVE", "SUCCESS")],
+            "不在请求的文档范围内": [("C1", 20001, 10, "ACTIVE", "SUCCESS")],
+            "最新解析流水线不是 SUCCESS": [("C1", 10001, 10, "ACTIVE", "FAILED")],
+            "Chunk 生命周期不是 ACTIVE": [("C1", 10001, 10, "REMOVED", "SUCCESS")],
+        }[condition]
+        readiness_db = AsyncMock()
+        readiness_db.execute.return_value = SimpleNamespace(all=lambda: readiness_rows)
+
+        @asynccontextmanager
+        async def readiness_db_context():
+            yield readiness_db
+
+        runtime._readiness = MySqlDocumentReadinessGate(
+            session_context_factory=readiness_db_context
+        )
         repository.find_heading_page.side_effect = [((), False), ((), False)]
         bm25.recall_by_dataset.return_value = {10: [hit]}
-        readiness.filter_visible_hits.side_effect = lambda _hits, **_kw: []
         forbidden = RecallApiError(403, "RECALL_SCOPE_FORBIDDEN", "not visible")
         repository.load_chunk_locations.side_effect = forbidden
         repository.load_document_tree.side_effect = forbidden
@@ -1256,6 +1331,7 @@ def _assert_scenario_contract(node_name: str, state: WikiAcceptanceState, monkey
         payload, errors = asyncio.run(exercise_fail_closed_reads())
         assert payload["results"] == [] and payload["chunks"] == []
         assert errors == [403, 403]
+        readiness_db.execute.assert_awaited_once()
         return
     if scenario == "chunk_定位返回全部直接标题位置并支持批量读取":
         runtime, repository, _bm25, _readiness = _acceptance_runtime(monkeypatch)

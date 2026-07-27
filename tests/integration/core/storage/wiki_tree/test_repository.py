@@ -242,6 +242,8 @@ async def test_real_mysql_exact_prefix_preview_location_tree_and_readiness(migra
             assert foreign_heading not in locations_after_foreign_ref[0].heading_ids
             tree = await repository.load_document_tree(session, doc_id=10001, scope=scope)
             assert [item.title for item in tree.headings] == ["Guide", "Install", "Guide%Literal"]
+            headings_by_title = {item.title: item for item in tree.headings}
+            assert headings_by_title["Install"].parent_id == headings_by_title["Guide"].id
             assert tree.root_chunk_ids == ("C4",)
 
             await session.execute(
@@ -282,6 +284,157 @@ async def test_real_mysql_exact_prefix_preview_location_tree_and_readiness(migra
                     requested_dataset_ids=(20,),
                     requested_doc_ids=None,
                 )
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_real_mysql_title_index_and_bounded_window_queries(migrated_database):
+    """用生产方言验证标题索引、预览窗口和位置窗口的真实执行结果。"""
+
+    async_url = make_url(migrated_database).set(drivername="mysql+aiomysql")
+    engine = create_async_engine(async_url)
+    repository = WikiTreeRepository()
+    try:
+        async with AsyncSession(engine) as session:
+            await _seed_truth(session)
+            await repository.replace_document_tree(session, 10001, _tree())
+            # 构造 5000 条高扇出直属引用，验证预览 SQL 只回传首条并保留完整计数。
+            extra_chunks = [
+                {
+                    "chunk_id": f"C{index}",
+                    "content": f"content-{index}",
+                    "hash": f"hash-{index}",
+                    "line": index,
+                    "idx": index - 1,
+                }
+                for index in range(5, 5005)
+            ]
+            await session.execute(
+                text(
+                    "INSERT INTO kb_document_chunk "
+                    "(chunk_id,doc_id,set_id,user_id,bucket_id,content,content_hash,chunk_type,"
+                    "start_line,end_line,chunk_index,dense_vector_status,sparse_vector_status,"
+                    "es_status,lifecycle_status) VALUES "
+                    "(:chunk_id,10001,10,123,0,:content,:hash,'paragraph',:line,:line,:idx,"
+                    "'SUCCESS','SUCCESS','SUCCESS','ACTIVE')"
+                ),
+                extra_chunks,
+            )
+            heading_a = int(
+                await session.scalar(
+                    text("SELECT id FROM wiki_tree_node WHERE heading_key=:key"),
+                    {"key": "a" * 64},
+                )
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO wiki_tree_node "
+                    "(doc_id,parent_id,node_type,chunk_id,sort_order) VALUES "
+                    "(10001,:parent_id,'CHUNK_REF',:chunk_id,:sort_order)"
+                ),
+                [
+                    {"parent_id": heading_a, "chunk_id": f"C{index}", "sort_order": index - 3}
+                    for index in range(5, 5005)
+                ],
+            )
+            # 同一 Chunk 挂到 26 个标题下，覆盖搜索窗口与完整定位的差异。
+            await session.execute(
+                text(
+                    "INSERT INTO wiki_tree_node "
+                    "(heading_key,doc_id,parent_id,node_type,title,heading_level,sort_order) VALUES "
+                    "(:heading_key,10001,NULL,'HEADING',:title,1,:sort_order)"
+                ),
+                [
+                    {
+                        "heading_key": f"{1000 + index:064x}",
+                        "title": f"Position {index}",
+                        "sort_order": 1000 + index,
+                    }
+                    for index in range(25)
+                ]
+                + [
+                    {
+                        "heading_key": f"{10000 + index:064x}",
+                        "title": "IndexTarget" if index == 0 else f"Noise {index}",
+                        "sort_order": 2000 + index,
+                    }
+                    for index in range(2000)
+                ],
+            )
+            position_heading_ids = tuple(
+                int(row[0])
+                for row in await session.execute(
+                    text("SELECT id FROM wiki_tree_node WHERE title LIKE 'Position %' ORDER BY id")
+                )
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO wiki_tree_node "
+                    "(doc_id,parent_id,node_type,chunk_id,sort_order) VALUES "
+                    "(10001,:parent_id,'CHUNK_REF','C3',0)"
+                ),
+                [{"parent_id": heading_id} for heading_id in position_heading_ids],
+            )
+            await session.commit()
+
+        async with AsyncSession(engine) as session:
+            scope = EffectiveWikiScope(123, (10,), None, {})
+            exact, _ = await repository.find_heading_page(
+                session,
+                mode="exact",
+                normalized_title="guide",
+                scope=scope,
+                after=None,
+                limit=15,
+            )
+            previews = await repository.load_heading_previews(session, exact, scope=scope)
+            assert previews[exact[0].id].direct_chunk_count == 5002
+            assert previews[exact[0].id].chunk_id == "C1"
+
+            limited = await repository.load_chunk_locations(
+                session, ("C3",), scope=scope, max_positions=10
+            )
+            complete = await repository.load_chunk_locations(session, ("C3",), scope=scope)
+            assert len(limited[0].heading_ids) == 10
+            assert limited[0].position_count == 26
+            assert len(complete[0].heading_ids) == complete[0].position_count == 26
+
+            # 真实 EXPLAIN 的 key_len 必须覆盖 title，而不只是索引首列 node_type。
+            await session.execute(text("ANALYZE TABLE wiki_tree_node"))
+            explain = (
+                (
+                    await session.execute(
+                        text(
+                            "EXPLAIN SELECT id,doc_id FROM wiki_tree_node "
+                            "WHERE node_type='HEADING' AND title='IndexTarget' "
+                            "ORDER BY doc_id,id LIMIT 16"
+                        )
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            assert explain["key"] == "idx_wiki_type_title_doc"
+            assert int(explain["key_len"]) > 2000
+
+            # REMOVED 过滤必须发生在 LIMIT 之前，确保下一条 ACTIVE 引用补足页面。
+            await session.execute(
+                text(
+                    "UPDATE kb_document_chunk SET lifecycle_status='REMOVED' " "WHERE chunk_id='C1'"
+                )
+            )
+            await session.commit()
+            refs, has_more = await repository.load_heading_chunk_page(
+                session,
+                doc_id=10001,
+                heading_key="a" * 64,
+                scope=scope,
+                after=None,
+                limit=1,
+            )
+            assert [item.chunk_id for item in refs] == ["C2"]
+            assert has_more is True
     finally:
         await engine.dispose()
 
