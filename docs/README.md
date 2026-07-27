@@ -21,7 +21,7 @@
 | [http_contracts.md](api/http_contracts.md) | REST API 接口契约 |
 | [mq_contracts.md](api/mq_contracts.md) | MQ 消息载荷与对接说明 |
 | [error_codes.md](api/error_codes.md) | 业务错误码 |
-| [schemas/mysql.md](api/schemas/mysql.md) | MySQL 表结构（共 20 张表） |
+| [schemas/mysql.md](api/schemas/mysql.md) | MySQL 表结构（共 22 张表） |
 | [schemas/qdrant.md](api/schemas/qdrant.md) | Qdrant collection 与 payload |
 
 ### [internals/](internals/) — 内部实现
@@ -35,6 +35,7 @@
 | [recall_pipeline.md](internals/recall_pipeline.md) | 召回 Pipeline 架构 |
 | [recall_generation.md](internals/recall_generation.md) | 召回后 RAG 答案生成（正文回填/上下文拼装/流式生成） |
 | [recall_http_api.md](internals/recall_http_api.md) | 召回 HTTP 入口与会话/鉴权 |
+| [wiki_heading_tree.md](internals/wiki_heading_tree.md) | Wiki 标题树构建、搜索、权限、游标与生命周期 |
 | [file_parser.md](internals/file_parser.md) | 文件解析器（含回退链） |
 | [markdown_parser.md](internals/markdown_parser.md) | Markdown 解析与 LLM 增强 |
 | [chunking.md](internals/chunking.md) | 分块策略与流水线 |
