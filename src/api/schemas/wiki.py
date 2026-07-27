@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Annotated, Literal
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
@@ -102,14 +104,30 @@ class WikiHeadingSummary(_StrictModel):
     next_direct_chunk_cursor: str | None = None
 
 
-class WikiSearchResult(_StrictModel):
-    """标题或正文 Chunk 两种搜索结果的联合载体。"""
+class WikiHeadingSearchResult(_StrictModel):
+    """标题命中结果，只允许精确标题或标题前缀来源。"""
 
-    result_type: str
-    source: str
-    heading: WikiHeadingSummary | None = None
-    chunk_id: str | None = None
-    bm25_score: float | None = None
+    result_type: Literal["HEADING"]
+    source: Literal["exact_title", "title_prefix"]
+    heading: WikiHeadingSummary
+    chunk_id: None
+    bm25_score: None
+
+
+class WikiChunkSearchResult(_StrictModel):
+    """正文命中结果，只允许 BM25 来源及其对应字段组合。"""
+
+    result_type: Literal["CHUNK"]
+    source: Literal["bm25"]
+    heading: None
+    chunk_id: str
+    bm25_score: float
+
+
+WikiSearchResult = Annotated[
+    WikiHeadingSearchResult | WikiChunkSearchResult,
+    Field(discriminator="result_type"),
+]
 
 
 class WikiChunk(_StrictModel):

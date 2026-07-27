@@ -5,9 +5,11 @@ from unittest.mock import ANY, AsyncMock
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
+from pydantic import TypeAdapter, ValidationError
 
 from src.api.recall_session_auth import SessionAuthContext, verify_session_token
 from src.api.routes import wiki
+from src.api.schemas.wiki import WikiSearchResult
 from src.application.recall_errors import RecallApiError
 from src.application.wiki_runtime import get_wiki_runtime
 
@@ -39,6 +41,21 @@ def _empty_search_payload() -> dict:
         "failed_sources": [],
         "page_size": 15,
         "has_more": False,
+    }
+
+
+def _heading_summary() -> dict:
+    """返回严格搜索联合类型复用的最小标题摘要。"""
+
+    return {
+        "heading_key": "a" * 64,
+        "doc_id": 3,
+        "dataset_id": 10,
+        "title": "Guide",
+        "heading_level": 1,
+        "path": [],
+        "direct_chunk_count": 0,
+        "direct_chunks_has_more": False,
     }
 
 
@@ -155,6 +172,70 @@ async def test_search_keeps_union_null_fields_but_omits_absent_cursors():
     assert payload["results"][1]["heading"] is None
     assert "direct_chunk_preview_id" not in payload["results"][0]["heading"]
     assert "next_cursor" not in payload
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {
+            "result_type": "INVALID",
+            "source": "anything",
+            "heading": None,
+            "chunk_id": None,
+            "bm25_score": None,
+        },
+        {
+            "result_type": "HEADING",
+            "source": "bm25",
+            "heading": _heading_summary(),
+            "chunk_id": None,
+            "bm25_score": None,
+        },
+        {
+            "result_type": "HEADING",
+            "source": "exact_title",
+            "heading": _heading_summary(),
+            "chunk_id": "C1",
+            "bm25_score": None,
+        },
+        {
+            "result_type": "CHUNK",
+            "source": "title_prefix",
+            "heading": None,
+            "chunk_id": "C1",
+            "bm25_score": 1.0,
+        },
+        {
+            "result_type": "CHUNK",
+            "source": "bm25",
+            "heading": _heading_summary(),
+            "chunk_id": "C1",
+            "bm25_score": 1.0,
+        },
+        {
+            "result_type": "CHUNK",
+            "source": "bm25",
+            "heading": None,
+            "chunk_id": None,
+            "bm25_score": 1.0,
+        },
+    ],
+)
+def test_search_result_discriminated_union_rejects_invalid_field_combinations(payload):
+    with pytest.raises(ValidationError):
+        TypeAdapter(WikiSearchResult).validate_python(payload)
+
+
+def test_openapi_exposes_search_result_discriminator_and_two_branches():
+    schemas = _app(AsyncMock()).openapi()["components"]["schemas"]
+    result_items = schemas["WikiSearchResponse"]["properties"]["results"]["items"]
+
+    assert result_items["discriminator"]["propertyName"] == "result_type"
+    assert set(result_items["discriminator"]["mapping"]) == {"HEADING", "CHUNK"}
+    assert {item["$ref"].rsplit("/", 1)[-1] for item in result_items["oneOf"]} == {
+        "WikiHeadingSearchResult",
+        "WikiChunkSearchResult",
+    }
 
 
 @pytest.mark.asyncio
