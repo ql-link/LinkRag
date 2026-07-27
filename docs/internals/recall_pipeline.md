@@ -302,6 +302,12 @@ dataset_parse_config.recall_config 或系统 Settings
 
 `DENSE_RETRIEVAL_TOP_K` / `SPARSE_RETRIEVAL_TOP_K` 只作为 `VectorStorageFacade.search_dense_chunks()` / `search_sparse_chunks()` 直调时的兜底默认。完整 RAG pipeline 会显式传入三路 top_k，因此不会读取这两个 facade 默认作为召回深度。最终顺序固定为 `fuse → readiness gate → top_k`，不能提前截断。
 
+### 11.1 Wiki 的分知识库 BM25 读取
+
+`Bm25Retriever.recall_by_dataset()` 是 Wiki 专用的分组读取入口，不把 Wiki 注册成 RecallPipeline 的第四路，也不改变既有 `recall()` 结果。它对 query 只分词一次，按 `dataset_id` 排序去重后以最多 8 个并发 work item 调用当前 BM25 后端；每库独立按 `(-score, doc_id, chunk_id)` 稳定排序、按 `chunk_id` 去重并截取 `WIKI_BM25_TOP_K_PER_DATASET`。
+
+超时、连接中断和明确的 502/503/504 最多重试一次，退避时释放并发槽；参数、认证、权限、配置和协议错误不重试。任一 work item 最终失败即让整条 BM25 来源失败，交由 Wiki 的系统级 strict/lenient 规则处理，不能静默遗漏故障知识库。详情见 [wiki_heading_tree.md](wiki_heading_tree.md)。
+
 ---
 
 ## 12. 召回后重排模块（独立下游，LINK-130）

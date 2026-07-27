@@ -118,6 +118,10 @@ class Settings(BaseSettings):
     RECALL_DENSE_TOP_K: int = 100
     RECALL_SPARSE_TOP_K: int = 50
     RECALL_BM25_TOP_K: int = 100
+    # Wiki 标题搜索由服务端固定分页；客户端不能覆盖。
+    WIKI_SEARCH_PAGE_SIZE: int = 15
+    # Wiki mixed 分支为每个有效数据集独立读取的 BM25 候选深度。
+    WIKI_BM25_TOP_K_PER_DATASET: int = 50
     # 启用的召回路（逗号分隔）。dense/sparse query 编码按数据集绑定模型配置解析，
     # 与 bm25 并行后做融合；如需暂时回退，运维侧 set RECALL_ENABLED_SOURCES=bm25,sparse 重启。
     RECALL_ENABLED_SOURCES: str = "bm25,sparse,dense"
@@ -144,6 +148,15 @@ class Settings(BaseSettings):
     def validate_recall_rrf_k(cls, v: int) -> int:
         if v <= 0:
             raise ValueError("RECALL_RRF_K must be a positive int")
+        return v
+
+    @field_validator("WIKI_SEARCH_PAGE_SIZE", "WIKI_BM25_TOP_K_PER_DATASET")
+    @classmethod
+    def validate_wiki_positive_int(cls, v: int) -> int:
+        """确保 Wiki 固定页大小和每库候选深度均为正整数。"""
+
+        if v <= 0:
+            raise ValueError("Wiki search limits must be positive integers")
         return v
 
     @field_validator(
