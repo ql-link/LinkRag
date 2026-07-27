@@ -7,7 +7,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy import and_, delete, func, or_, select, tuple_
+from sqlalchemy import and_, delete, func, insert, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import aliased
 
@@ -812,11 +812,11 @@ class WikiTreeRepository:
         doc_id: int,
         tree_draft: WikiTreeDraft,
     ) -> WikiTreeWriteResult:
-        """替换一篇文档的整棵树，并 flush 取得父标题物理 ID。
+        """在调用方事务内批量替换一篇文档的整棵树。
 
-        ``tree_draft.headings`` 必须已经按拓扑排序。本方法只执行 SQL 和 flush，
-        不主动 commit/rollback；事务由调用方统一控制，确保 Chunk 真值与 Wiki 树
-        能在同一事务中共同成功或共同回滚。
+        标题输入可以不是拓扑顺序；本方法会按层级分组，但父标题必须存在且层级
+        更低。方法只执行 SQL，不主动 commit/rollback，确保 Chunk 真值与 Wiki 树
+        由调用方在同一事务中共同提交或共同回滚。
         """
 
         drafts_by_key: dict[str, WikiHeadingDraft] = {}
@@ -837,69 +837,86 @@ class WikiTreeRepository:
                     "tree draft has an invalid parent: "
                     f"{heading.parent_heading_key} -> {heading.heading_key}"
                 )
+        for chunk_ref in tree_draft.chunk_refs:
+            if (
+                chunk_ref.parent_heading_key is not None
+                and chunk_ref.parent_heading_key not in drafts_by_key
+            ):
+                raise ValueError(
+                    "chunk reference points to unknown heading: " f"{chunk_ref.parent_heading_key}"
+                )
 
         deleted_count = await self.delete_by_doc_id(session, doc_id)
         heading_ids: dict[str, int] = {}
 
-        # 每个非空标题层级只 flush 一次：父层主键先落定，随后整层子标题批量引用，
-        # 将写入往返限制在 H1～H6 六轮内，而不是随标题总数线性增长。
+        # ORM add_all 会为自增主键逐对象发送 INSERT。这里每层显式生成一条多值
+        # INSERT，再批量反查 heading_key 对应的物理 ID，使真实数据库往返只随
+        # H1～H6 非空层级增长，而不随标题节点数量增长。
         for heading_level in sorted(headings_by_level):
-            records: list[WikiTreeNodeDB] = []
-            for heading in headings_by_level[heading_level]:
+            level_headings = headings_by_level[heading_level]
+            heading_values: list[dict[str, object]] = []
+            for heading in level_headings:
                 parent_id = (
                     heading_ids[heading.parent_heading_key]
                     if heading.parent_heading_key is not None
                     else None
                 )
-                records.append(
-                    self.model_cls(
-                        heading_key=heading.heading_key,
-                        doc_id=doc_id,
-                        parent_id=parent_id,
-                        node_type=WIKI_NODE_HEADING,
-                        title=heading.title,
-                        heading_level=heading.heading_level,
-                        chunk_id=None,
-                        sort_order=heading.sort_order,
-                    )
+                heading_values.append(
+                    {
+                        "heading_key": heading.heading_key,
+                        "doc_id": doc_id,
+                        "parent_id": parent_id,
+                        "node_type": WIKI_NODE_HEADING,
+                        "title": heading.title,
+                        "heading_level": heading.heading_level,
+                        "chunk_id": None,
+                        "sort_order": heading.sort_order,
+                    }
                 )
-            session.add_all(records)
-            await session.flush()
-            for heading, record in zip(headings_by_level[heading_level], records):
-                heading_ids[heading.heading_key] = record.id
+            await session.execute(insert(self.model_cls).values(heading_values))
 
-        ref_records: list[WikiTreeNodeDB] = []
-        for chunk_ref in tree_draft.chunk_refs:
-            if chunk_ref.parent_heading_key is not None:
-                parent_id = heading_ids.get(chunk_ref.parent_heading_key)
-                if parent_id is None:
-                    raise ValueError(
-                        "chunk reference points to unknown heading: "
-                        f"{chunk_ref.parent_heading_key}"
-                    )
-            else:
-                parent_id = None
-            ref_records.append(
-                self.model_cls(
-                    heading_key=None,
-                    doc_id=doc_id,
-                    parent_id=parent_id,
-                    node_type=WIKI_NODE_CHUNK_REF,
-                    title=None,
-                    heading_level=None,
-                    chunk_id=chunk_ref.chunk_id,
-                    sort_order=chunk_ref.sort_order,
+            level_keys = tuple(heading.heading_key for heading in level_headings)
+            id_rows = await session.execute(
+                select(self.model_cls.heading_key, self.model_cls.id).where(
+                    self.model_cls.doc_id == doc_id,
+                    self.model_cls.heading_key.in_(level_keys),
                 )
             )
+            resolved_ids = {str(row[0]): int(row[1]) for row in id_rows.all()}
+            missing_keys = set(level_keys) - resolved_ids.keys()
+            if missing_keys:
+                raise RuntimeError(
+                    "failed to resolve inserted wiki heading ids: " f"{sorted(missing_keys)}"
+                )
+            heading_ids.update(resolved_ids)
 
-        if ref_records:
-            session.add_all(ref_records)
-            await session.flush()
+        ref_values: list[dict[str, object]] = []
+        for chunk_ref in tree_draft.chunk_refs:
+            parent_id = (
+                heading_ids[chunk_ref.parent_heading_key]
+                if chunk_ref.parent_heading_key is not None
+                else None
+            )
+            ref_values.append(
+                {
+                    "heading_key": None,
+                    "doc_id": doc_id,
+                    "parent_id": parent_id,
+                    "node_type": WIKI_NODE_CHUNK_REF,
+                    "title": None,
+                    "heading_level": None,
+                    "chunk_id": chunk_ref.chunk_id,
+                    "sort_order": chunk_ref.sort_order,
+                }
+            )
+
+        if ref_values:
+            await session.execute(insert(self.model_cls).values(ref_values))
 
         return WikiTreeWriteResult(
             deleted_count=deleted_count,
             heading_count=len(tree_draft.headings),
-            chunk_ref_count=len(ref_records),
+            chunk_ref_count=len(ref_values),
         )
 
     async def delete_by_doc_id(self, session: AsyncSession, doc_id: int) -> int:

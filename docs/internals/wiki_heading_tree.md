@@ -20,7 +20,7 @@ Wiki 标题树是内部 RAG 导航能力：每篇文档从解析期的同一份 
 - Chunk 只挂到其覆盖正文元素对应标题路径的末端标题；跨越多个路径时，每个末端标题各有一个引用。overlap 文本和 heading trail 不作为全局标题匹配依据。
 - `heading_key` 是 64 位 SHA-256：输入包含版本域、`doc_id`、大小写折叠后的完整 `(level,title)` 路径及同路径同名出现次序。正文行号、分块或 chunk_id 变化不改 key；标题、级别、祖先、出现次序或 doc_id 变化会改 key。
 - `ChunkingEngine.process_with_parse_result()` 在保持旧 `process()` 返回兼容的同时暴露实际消费的 ParseResult。首次、重试或成功文档的再次完整解析都执行 Chunk + Wiki 全量事务替换；构建发生在首次 DB mutation 前。
-- 标题持久化先校验完整草稿，再按 H1～H6 非空层级批量加入 session，每层只 `flush` 一次以取得父层物理 ID；Chunk 引用另批量写入一次。标题数量增加不会把 `flush` 往返放大为逐节点调用。
+- 标题持久化先校验完整草稿，再按 H1～H6 非空层级执行 Core multi-values INSERT，并按本层 `heading_key` 一次批量查询物理 ID；Chunk 引用另用一条 multi-values INSERT 写入。真实数据库 INSERT 次数只随非空标题层级增长，不随标题或引用节点数量增长。
 
 ## 3. 检索与分页
 

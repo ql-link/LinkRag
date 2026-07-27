@@ -128,27 +128,15 @@ async def test_chunk_locations_apply_position_limit_before_parent_path_hydration
 
 
 @pytest.mark.asyncio
-async def test_tree_replacement_flushes_once_per_heading_level_and_once_for_refs(monkeypatch):
+async def test_tree_replacement_uses_one_multi_value_insert_per_level_and_for_refs(monkeypatch):
     repository = WikiTreeRepository()
     monkeypatch.setattr(repository, "delete_by_doc_id", AsyncMock(return_value=3))
     session = MagicMock()
-    session.flush = AsyncMock()
-    next_id = 10000
-    batches: list[list[object]] = []
-
-    def add_all(records):
-        nonlocal next_id
-        batch = list(records)
-        batches.append(batch)
-        for record in batch:
-            if record.id is None:
-                next_id += 1
-                record.id = next_id
-
-    session.add_all.side_effect = add_all
     headings: list[WikiHeadingDraft] = []
     previous = {"a": None, "b": None}
+    ids_by_level: list[list[tuple[str, int]]] = []
     for level in range(1, 7):
+        level_ids: list[tuple[str, int]] = []
         for branch in ("a", "b"):
             key = f"{level * 2 + (branch == 'b'):064x}"
             headings.append(
@@ -160,17 +148,30 @@ async def test_tree_replacement_flushes_once_per_heading_level_and_once_for_refs
                     sort_order=0 if branch == "a" else 1,
                 )
             )
+            level_ids.append((key, 10000 + level * 2 + (branch == "b")))
             previous[branch] = key
+        ids_by_level.append(level_ids)
     tree = WikiTreeDraft(
         headings=tuple(reversed(headings)),
         chunk_refs=(WikiChunkRefDraft("C1", previous["a"], 0),),
     )
+    execute_results: list[object] = []
+    for level_ids in ids_by_level:
+        execute_results.extend((MagicMock(), _Rows(level_ids)))
+    execute_results.append(MagicMock())
+    session.execute = AsyncMock(side_effect=execute_results)
 
     result = await repository.replace_document_tree(session, 10001, tree)
 
     assert result.deleted_count == 3
     assert result.heading_count == 12
-    assert session.flush.await_count == 7
-    assert [len(batch) for batch in batches] == [2, 2, 2, 2, 2, 2, 1]
-    deepest_a = next(record for record in batches[-2] if record.title == "A6")
-    assert batches[-1][0].parent_id == deepest_a.id
+    statements = [call.args[0] for call in session.execute.await_args_list]
+    insert_statements = [statement for statement in statements if statement.is_insert]
+    assert len(insert_statements) == 7
+    assert all("), (" in _compiled_sql(statement) for statement in insert_statements[:-1])
+    assert "parent_id" in _compiled_sql(insert_statements[-1])
+    assert str(ids_by_level[-1][0][1]) in _compiled_sql(insert_statements[-1])
+    session.add_all.assert_not_called()
+    session.flush.assert_not_called()
+    session.commit.assert_not_called()
+    session.rollback.assert_not_called()

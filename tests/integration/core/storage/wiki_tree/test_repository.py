@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import event, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
@@ -104,6 +104,50 @@ def _tree() -> WikiTreeDraft:
             WikiChunkRefDraft("C4", None, 0),
         ),
     )
+
+
+@pytest.mark.asyncio
+async def test_real_mysql_tree_write_uses_bounded_multi_value_inserts(migrated_database):
+    """按实际 cursor 执行次数验证同层标题和引用不会退化为逐节点写入。"""
+
+    async_url = make_url(migrated_database).set(drivername="mysql+aiomysql")
+    engine = create_async_engine(async_url)
+    insert_executions: list[bool] = []
+
+    def capture_wiki_insert(_conn, _cursor, statement, _parameters, _context, executemany):
+        normalized = " ".join(statement.lower().split())
+        if normalized.startswith("insert into wiki_tree_node"):
+            insert_executions.append(bool(executemany))
+
+    event.listen(engine.sync_engine, "before_cursor_execute", capture_wiki_insert)
+    headings = tuple(
+        WikiHeadingDraft(f"{index + 1:064x}", f"Heading {index}", 1, None, index)
+        for index in range(100)
+    )
+    chunk_refs = tuple(
+        WikiChunkRefDraft(f"C{index}", heading.heading_key, 0)
+        for index, heading in enumerate(headings)
+    )
+    try:
+        async with AsyncSession(engine) as session:
+            result = await WikiTreeRepository().replace_document_tree(
+                session,
+                10001,
+                WikiTreeDraft(headings=headings, chunk_refs=chunk_refs),
+            )
+            heading_count = await session.scalar(
+                text("SELECT COUNT(*) FROM wiki_tree_node WHERE node_type='HEADING'")
+            )
+            ref_count = await session.scalar(
+                text("SELECT COUNT(*) FROM wiki_tree_node WHERE node_type='CHUNK_REF'")
+            )
+            await session.rollback()
+
+        assert result.heading_count == result.chunk_ref_count == 100
+        assert heading_count == ref_count == 100
+        assert insert_executions == [False, False]
+    finally:
+        await engine.dispose()
 
 
 class _FailOnceWikiRepository(WikiTreeRepository):
