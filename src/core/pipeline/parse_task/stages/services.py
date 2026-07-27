@@ -47,7 +47,7 @@ from src.core.splitter.factory import (
     build_chunk_embedding_pipeline,
     build_embedding_client,
 )
-from src.core.splitter.models import Chunk
+from src.core.splitter.models import Chunk, ChunkingResult
 from src.core.storage.bm25_backend import build_indexing_pipeline
 from src.core.storage.bm25_models import Bm25IndexingResult
 from src.core.storage.chunks.constants import (
@@ -66,6 +66,8 @@ from src.core.storage.qdrant.constants import DEFAULT_BUCKET_COUNT, DEFAULT_COLL
 from src.core.storage.vector import compose_vector_storage_facade
 from src.core.storage.vector.draft_factory import ChunkDraftFactory
 from src.core.storage.vector.models import ChunkIndexingResult
+from src.core.storage.wiki_tree import WikiTreeRepository
+from src.core.wiki import HeadingTreeBuilder
 from src.models.chunk_record import ChunkRecordDB
 from src.observability.logging import safe_exception_stack, truncate_log_value
 from src.services.storage.base import BaseObjectStorage
@@ -110,6 +112,8 @@ class StageServices:
         sparse_indexing_pipeline: Any | None = None,
         mutation_guard: MutationGuardProtocol | None = None,
         raw_asset_loader: Any | None = None,
+        wiki_tree_builder: HeadingTreeBuilder | None = None,
+        wiki_tree_repository: WikiTreeRepository | None = None,
     ) -> None:
         self._storage = storage
         self.source_io = source_io
@@ -120,6 +124,8 @@ class StageServices:
         self._chunk_draft_factory = chunk_draft_factory
         self._sparse_indexing_pipeline = sparse_indexing_pipeline
         self._raw_asset_loader = raw_asset_loader
+        self._wiki_tree_builder = wiki_tree_builder or HeadingTreeBuilder()
+        self._wiki_tree_repository = wiki_tree_repository or WikiTreeRepository()
         # StageServices is also instantiated directly by focused unit tests.  Keep
         # that boundary lightweight, while production ParseTaskPipeline injects
         # the shared MySQL-backed guard explicitly.
@@ -327,15 +333,20 @@ class StageServices:
                 raise RuntimeError("chunking semantic stage requires dataset execution context")
             embedder = build_embedding_client(execution_context.dense_embedding)
 
-        chunks = await asyncio.to_thread(
-            self._chunk_markdown,
+        chunking_result = await asyncio.to_thread(
+            self._chunk_markdown_with_parse_result,
             markdown,
             payload.md_object_key,
             parse_result,
             chunking_config,
             embedder,
         )
-        await self._persist_chunk_facts(chunks, payload, db)
+        await self._persist_chunk_facts(
+            chunking_result.chunks,
+            chunking_result.parse_result,
+            payload,
+            db,
+        )
 
         # commit 后立即反查 ORM 行作为返回值（与 retry 路径形态一致）。
         return await self._reload_chunks_from_db(payload, db)
@@ -375,6 +386,7 @@ class StageServices:
     async def _persist_chunk_facts(
         self,
         chunks: list[Chunk],
+        parse_result: ParseResult,
         payload: ParseTaskPayload,
         db: AsyncSession,
     ) -> None:
@@ -388,12 +400,20 @@ class StageServices:
             doc_id=doc_id,
             chunks=chunks,
         )
+        # 首次删除/写入前先完成整棵树构建与校验，避免结构输入异常时改动
+        # Chunk 和 Wiki 任一 SQL 真值集合。
+        tree_draft = self._wiki_tree_builder.build(
+            doc_id=doc_id,
+            parse_result=parse_result,
+            chunks=chunks,
+            chunk_drafts=drafts,
+        )
         try:
-            if payload.is_retry:
-                # 重试重建 chunk truth set：先清本文档残留再全量写入，使「清旧+写新」同事务原子化，
-                # 避免旧 chunking 半成品或上一轮残片与本轮派生的同名 chunk_id 撞唯一键。
-                await self._chunk_repository.delete_by_doc_id(db, doc_id)
+            # 每次真实执行 chunking 都全量替换真值集合，不能依赖调用方是否标记 retry，
+            # 否则首次解析重入也可能把旧 Chunk 与本轮 Wiki 引用混在一起。
+            await self._chunk_repository.delete_by_doc_id(db, doc_id)
             await self._chunk_repository.bulk_insert_pending(db, drafts)
+            await self._wiki_tree_repository.replace_document_tree(db, doc_id, tree_draft)
             await db.commit()
         except Exception:
             await db.rollback()
@@ -407,11 +427,31 @@ class StageServices:
         chunking_config: "ChunkingConfig | None" = None,
         embedder: Any | None = None,
     ) -> list[Chunk]:
+        """兼容旧调用方，只返回最终 Chunk 列表。"""
+
+        return StageServices._chunk_markdown_with_parse_result(
+            markdown,
+            source_file,
+            parse_result,
+            chunking_config,
+            embedder,
+        ).chunks
+
+    @staticmethod
+    def _chunk_markdown_with_parse_result(
+        markdown: str,
+        source_file: str | None,
+        parse_result: ParseResult | None = None,
+        chunking_config: "ChunkingConfig | None" = None,
+        embedder: Any | None = None,
+    ) -> ChunkingResult:
+        """同时返回本轮实际消费的 ParseResult 与最终 Chunk。"""
+
         processor = create_chunking_engine(config=chunking_config, embedder=embedder)
         if parse_result is None:
-            return processor.process(markdown, source_file=source_file)
+            return processor.process_with_parse_result(markdown, source_file=source_file)
         parse_result_for_chunking = replace(parse_result, source_file=source_file)
-        return processor.process_parse_result(parse_result_for_chunking)
+        return processor.process_with_parse_result(parse_result_for_chunking)
 
     async def load_all_chunks_from_db(
         self,
@@ -1047,9 +1087,7 @@ class StageServices:
         if self._vector_storage is not None:
             return self._vector_storage
         return compose_vector_storage_facade(
-            embedding_pipeline=build_chunk_embedding_pipeline(
-                execution_context.dense_embedding
-            )
+            embedding_pipeline=build_chunk_embedding_pipeline(execution_context.dense_embedding)
         )
 
     def _get_es_indexing_pipeline(self):
@@ -1135,9 +1173,7 @@ def _upload_base64_images_sync(
                 error_type=type(exc).__name__,
                 error_message=truncate_log_value(exc),
                 stack_trace=safe_exception_stack(exc),
-            ).warning(
-                "[upload_md_images] 图片上传失败，保留原始 base64: mime={}", mime
-            )
+            ).warning("[upload_md_images] 图片上传失败，保留原始 base64: mime={}", mime)
             return match.group(0)
 
     result = _BASE64_IMG_RE.sub(_replace, markdown)

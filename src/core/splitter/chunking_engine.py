@@ -5,7 +5,7 @@ from typing import Any
 
 from src.core.markdown_parser import MarkdownParser, ParseResult
 
-from .models import Chunk
+from .models import Chunk, ChunkingResult
 
 
 class ChunkingEngine:
@@ -80,8 +80,34 @@ class ChunkingEngine:
         Returns:
             list[Chunk]: 最终分片结果列表。
         """
-        parse_result = self._parser.parse(text, source_file=source_file)
-        return self._chunker.chunk_from_parse_result(parse_result, **kwargs)
+        return self.process_with_parse_result(
+            text,
+            source_file=source_file,
+            **kwargs,
+        ).chunks
+
+    def process_with_parse_result(
+        self,
+        source: str | ParseResult,
+        source_file: str | None = None,
+        **kwargs,
+    ) -> ChunkingResult:
+        """返回实际消费的 ParseResult 及其产出的最终 Chunk。
+
+        现有 ``process`` 与 ``process_parse_result`` 继续保持返回列表的公共契约，
+        并委托给本结构化兼容入口，供 Wiki 构建复用同一份解析位置数据。
+        """
+
+        if isinstance(source, ParseResult):
+            parse_result = source
+            if source_file is not None and parse_result.source_file != source_file:
+                from dataclasses import replace
+
+                parse_result = replace(parse_result, source_file=source_file)
+        else:
+            parse_result = self._parser.parse(source, source_file=source_file)
+        chunks = self._chunker.chunk_from_parse_result(parse_result, **kwargs)
+        return ChunkingResult(parse_result=parse_result, chunks=chunks)
 
     async def aprocess(
         self,
@@ -121,7 +147,7 @@ class ChunkingEngine:
             list[Chunk]: 最终分片结果列表。
         """
         parse_result = self._parser.parse_file(filepath, encoding=encoding)
-        return self._chunker.chunk_from_parse_result(parse_result, **kwargs)
+        return self.process_with_parse_result(parse_result, **kwargs).chunks
 
     def process_parse_result(
         self,
@@ -138,7 +164,7 @@ class ChunkingEngine:
         Returns:
             list[Chunk]: 最终分片结果列表。
         """
-        return self._chunker.chunk_from_parse_result(parse_result, **kwargs)
+        return self.process_with_parse_result(parse_result, **kwargs).chunks
 
     async def aprocess_file(
         self,

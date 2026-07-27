@@ -21,9 +21,9 @@ from .constants import (
     ES_STATUS_PENDING,
     ES_STATUS_SUCCESS,
     SPARSE_VECTOR_STATUS_FAILED,
+    SPARSE_VECTOR_STATUS_INDEXED,
     SPARSE_VECTOR_STATUS_INDEXING,
     SPARSE_VECTOR_STATUS_PENDING,
-    SPARSE_VECTOR_STATUS_INDEXED,
 )
 from .models import FactChunkDraft
 
@@ -42,16 +42,14 @@ class ChunkRepository:
     ) -> int:
         """硬删除指定文档的全部 chunk 真值行（不区分 lifecycle）。
 
-        服务于「重试从 CHUNKING 恢复」的 chunk truth set 重建：旧 chunking 失败后
-        DB 中可能残留半成品（或上一轮 REMOVED 残片），而 ``chunk_id`` 为全局唯一键
-        且由内容派生，重新分片会复用同一批 chunk_id。若不先清残留，``bulk_insert_pending``
-        会撞唯一键。本方法在重新分片落库前清场，保证 truth set 由本轮全量重建。
+        服务于每次实际执行完整 chunking 时的 truth set 重建：旧 chunking 失败后
+        DB 中可能残留半成品（或上一轮 REMOVED 残片）。``ChunkDraftFactory`` 每轮以
+        ``uuid4()`` 分配真实 ``chunk_id``；Wiki 引用必须绑定本轮 ID，不能从正文推算。
+        本方法在重新分片落库前清场，保证 truth set 由本轮全量重建。
 
         调用方应在同一事务内紧接 ``bulk_insert_pending`` + ``commit``，使「清旧+写新」原子化。
         """
-        result = await db.execute(
-            delete(self.model_cls).where(self.model_cls.doc_id == doc_id)
-        )
+        result = await db.execute(delete(self.model_cls).where(self.model_cls.doc_id == doc_id))
         return int(result.rowcount or 0)
 
     async def list_routing_by_doc_id(

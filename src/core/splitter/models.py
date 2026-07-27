@@ -1,8 +1,11 @@
 # -*- coding: utf-8 -*-
-"""Data models used by the splitter and embedding pipeline."""
+"""Splitter 与 embedding pipeline 共用的数据模型。"""
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from src.core.markdown_parser import ParseResult
 
 
 @dataclass
@@ -96,6 +99,14 @@ class Chunk:
         preview = self.content[:60] + "..." if len(self.content) > 60 else self.content
         preview = preview.replace("\n", "\\n")
         return f"Chunk(L{self.start_line}-{self.end_line}, {self.char_count}ch, {preview!r})"
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkingResult:
+    """把实际消费的结构化解析结果与其产出的 Chunk 成对返回。"""
+
+    parse_result: "ParseResult"
+    chunks: list[Chunk]
 
 
 @dataclass
