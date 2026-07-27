@@ -199,6 +199,26 @@ async def test_search_keeps_union_null_fields_but_omits_absent_cursors():
             "bm25_score": None,
         },
         {
+            "result_type": "HEADING",
+            "source": "exact_title",
+            "heading": _heading_summary(),
+            "chunk_id": None,
+            "bm25_score": 1.0,
+        },
+        {
+            "result_type": "HEADING",
+            "source": "exact_title",
+            "chunk_id": None,
+            "bm25_score": None,
+        },
+        {
+            "result_type": "HEADING",
+            "source": "exact_title",
+            "heading": None,
+            "chunk_id": None,
+            "bm25_score": None,
+        },
+        {
             "result_type": "CHUNK",
             "source": "title_prefix",
             "heading": None,
@@ -219,6 +239,25 @@ async def test_search_keeps_union_null_fields_but_omits_absent_cursors():
             "chunk_id": None,
             "bm25_score": 1.0,
         },
+        {
+            "result_type": "CHUNK",
+            "source": "bm25",
+            "heading": None,
+            "bm25_score": 1.0,
+        },
+        {
+            "result_type": "CHUNK",
+            "source": "bm25",
+            "heading": None,
+            "chunk_id": "C1",
+        },
+        {
+            "result_type": "CHUNK",
+            "source": "bm25",
+            "heading": None,
+            "chunk_id": "C1",
+            "bm25_score": None,
+        },
     ],
 )
 def test_search_result_discriminated_union_rejects_invalid_field_combinations(payload):
@@ -236,6 +275,42 @@ def test_openapi_exposes_search_result_discriminator_and_two_branches():
         "WikiHeadingSearchResult",
         "WikiChunkSearchResult",
     }
+    required_fields = {"result_type", "source", "heading", "chunk_id", "bm25_score"}
+    assert set(schemas["WikiHeadingSearchResult"]["required"]) == required_fields
+    assert set(schemas["WikiChunkSearchResult"]["required"]) == required_fields
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "invalid_result",
+    [
+        {
+            "result_type": "HEADING",
+            "source": "exact_title",
+            "chunk_id": None,
+            "bm25_score": None,
+        },
+        {
+            "result_type": "CHUNK",
+            "source": "bm25",
+            "heading": None,
+            "chunk_id": "C1",
+        },
+    ],
+)
+async def test_search_route_rejects_invalid_runtime_result(invalid_result):
+    """HTTP 路由必须以响应 Schema 拒绝 Runtime 返回的缺字段结果。"""
+
+    runtime = AsyncMock()
+    runtime.search.return_value = {
+        **_empty_search_payload(),
+        "results": [invalid_result],
+    }
+    transport = ASGITransport(app=_app(runtime))
+
+    with pytest.raises(ValidationError):
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            await client.post("/api/v1/wiki/search", json={"query": "Guide"})
 
 
 @pytest.mark.asyncio
