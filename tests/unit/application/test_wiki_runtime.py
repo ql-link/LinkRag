@@ -156,6 +156,7 @@ async def test_empty_heading_chunk_cursor_is_rejected_before_queries(monkeypatch
         )
 
     assert exc_info.value.status_code == 422
+    assert exc_info.value.code == "RECALL_INVALID_REQUEST"
     repository.load_heading_chunk_page.assert_not_awaited()
 
 
@@ -439,6 +440,73 @@ async def test_exact_heading_recomputes_current_preview_summary(monkeypatch):
     assert "next_direct_chunk_cursor" in summary
     assert [chunk["chunk_id"] for chunk in payload["chunks"]] == ["C2"]
     bm25.recall_by_dataset.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_heading_cursor_from_cross_dataset_search_expands_in_document_scope(monkeypatch):
+    runtime, repository, _bm25 = _runtime(monkeypatch)
+    search_scope = EffectiveWikiScope(7, (10, 20), None, {})
+    document_scope = EffectiveWikiScope(7, (10,), (100,), {10: (100,)})
+    repository.resolve_scope.side_effect = [search_scope, document_scope]
+    repository.find_heading_page.return_value = ((_heading(1),), False)
+    repository.load_heading_previews.side_effect = None
+    repository.load_heading_previews.return_value = {1: WikiHeadingPreview(1, 2, "C1", 0, 201)}
+    repository.load_heading_chunk_page.return_value = (
+        (WikiChunkRefRecord(202, 1, "C2"),),
+        False,
+    )
+    ctx = SessionAuthContext(user_id=7, dataset_ids=[10, 20], request_id="req")
+
+    search = await runtime.search(
+        ctx,
+        query="Guide",
+        dataset_ids=[10, 20],
+        doc_ids=None,
+        cursor=None,
+    )
+    direct_cursor = search["results"][0]["heading"]["next_direct_chunk_cursor"]
+    expanded = await runtime.expand_heading_chunks(
+        ctx,
+        doc_id=100,
+        heading_key=f"{1:064x}",
+        cursor=direct_cursor,
+    )
+
+    assert [chunk["chunk_id"] for chunk in expanded["chunks"]] == ["C2"]
+    assert repository.load_heading_chunk_page.await_args.kwargs["after"] == (0, 201)
+
+
+@pytest.mark.asyncio
+async def test_heading_cursor_rejects_changed_document_dataset(monkeypatch):
+    runtime, repository, _bm25 = _runtime(monkeypatch)
+    search_scope = EffectiveWikiScope(7, (10, 20), None, {})
+    moved_document_scope = EffectiveWikiScope(7, (20,), (100,), {20: (100,)})
+    repository.resolve_scope.side_effect = [search_scope, moved_document_scope]
+    repository.find_heading_page.return_value = ((_heading(1),), False)
+    repository.load_heading_previews.side_effect = None
+    repository.load_heading_previews.return_value = {1: WikiHeadingPreview(1, 2, "C1", 0, 201)}
+    ctx = SessionAuthContext(user_id=7, dataset_ids=[10, 20], request_id="req")
+
+    search = await runtime.search(
+        ctx,
+        query="Guide",
+        dataset_ids=[10, 20],
+        doc_ids=None,
+        cursor=None,
+    )
+    direct_cursor = search["results"][0]["heading"]["next_direct_chunk_cursor"]
+
+    with pytest.raises(RecallApiError) as exc_info:
+        await runtime.expand_heading_chunks(
+            ctx,
+            doc_id=100,
+            heading_key=f"{1:064x}",
+            cursor=direct_cursor,
+        )
+
+    assert exc_info.value.status_code == 422
+    assert exc_info.value.code == "RECALL_INVALID_REQUEST"
+    repository.load_heading_chunk_page.assert_not_awaited()
 
 
 @pytest.mark.asyncio

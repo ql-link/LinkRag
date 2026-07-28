@@ -671,7 +671,12 @@ class WikiRuntime:
         results: list[dict[str, Any]] = []
         for heading in headings:
             preview = previews[heading.id]
-            heading_binding = self._heading_binding(scope, heading.doc_id, heading.heading_key)
+            heading_binding = self._heading_binding(
+                user_id=scope.user_id,
+                dataset_id=heading.dataset_id,
+                doc_id=heading.doc_id,
+                heading_key=heading.heading_key,
+            )
             direct_cursor = None
             if preview.direct_chunk_count > 1:
                 direct_cursor = self._cursor.encode(
@@ -735,7 +740,17 @@ class WikiRuntime:
         """分页展开一个授权标题的直属 Chunk，不读取子标题正文。"""
 
         scope = await self._resolve_scope(ctx, dataset_ids=None, doc_ids=(doc_id,))
-        binding = self._heading_binding(scope, doc_id, heading_key)
+        # doc_id 已由 _resolve_scope 重新完成所有权、claims 与当前数据集归属校验；
+        # 单文档范围按仓储契约只会收敛到一个数据集。这里使用该规范资源身份验签，
+        # 不能沿用来源搜索的多数据集集合，否则展开接口无法重建同一指纹。
+        if len(scope.dataset_ids) != 1:
+            raise RecallApiError(500, CODE_INTERNAL_ERROR, "invalid Wiki document scope")
+        binding = self._heading_binding(
+            user_id=scope.user_id,
+            dataset_id=scope.dataset_ids[0],
+            doc_id=doc_id,
+            heading_key=heading_key,
+        )
         after: tuple[int, int] | None = None
         if cursor is not None:
             try:
@@ -977,19 +992,26 @@ class WikiRuntime:
 
     @staticmethod
     def _heading_binding(
-        scope: EffectiveWikiScope,
+        *,
+        user_id: int,
+        dataset_id: int,
         doc_id: int,
         heading_key: str,
     ) -> dict[str, object]:
-        """生成绑定用户、文档、标题和授权范围的展开游标指纹。"""
+        """生成绑定标题规范资源身份的展开游标指纹。
+
+        展开端点只接收文档和标题标识，无法也不应重建来源搜索的完整数据集集合。
+        因此指纹固定绑定标题当前所属数据集，而权限仍在每次展开前重新解析；这样
+        跨数据集搜索签发的游标可正常使用，文档改归属后旧游标仍会安全失效。
+        """
 
         return {
-            "user_id": scope.user_id,
+            "user_id": user_id,
             "doc_id": doc_id,
             "heading_key": heading_key,
             "scope": make_scope_fingerprint(
-                user_id=scope.user_id,
-                dataset_ids=scope.dataset_ids,
+                user_id=user_id,
+                dataset_ids=(dataset_id,),
                 doc_ids=(doc_id,),
             ),
         }

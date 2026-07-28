@@ -1154,7 +1154,17 @@ def _assert_scenario_contract(node_name: str, state: WikiAcceptanceState, monkey
         bm25.recall_by_dataset.assert_not_awaited()
         return
     if scenario == "标题搜索只预览首个直属_chunk_并独立加载当前标题的其余直属_chunk":
-        runtime, repository, _bm25, _readiness = _acceptance_runtime(monkeypatch)
+        runtime, repository, _bm25, _readiness = _acceptance_runtime(
+            monkeypatch, dataset_ids=(10, 20)
+        )
+        # 搜索覆盖两个知识库，而标题展开会按 doc_id 重新收敛到所属知识库 10；
+        # 两次展开分别重算同一文档范围，锁定跨库搜索游标的真实调用链。
+        document_scope = EffectiveWikiScope(123, (10,), (10001,), {10: (10001,)})
+        repository.resolve_scope.side_effect = [
+            EffectiveWikiScope(123, (10, 20), None, {}),
+            document_scope,
+            document_scope,
+        ]
         heading = _acceptance_heading(1, title="H1")
         repository.find_heading_page.return_value = ((heading,), False)
         repository.load_heading_previews.side_effect = lambda _db, items, **_kw: {

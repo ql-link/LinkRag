@@ -407,7 +407,7 @@ RAG SSE 成功终态同构。三路执行期 top_k / 分数阈值 / 融合策略
 
 ### GET /api/v1/wiki/documents/{doc_id}/headings/{heading_key}/chunks
 
-`heading_key` 是 64 位小写十六进制。查询参数 `cursor` 可选：不传时从首个直属 Chunk 开始；提交搜索结果的 `next_direct_chunk_cursor` 时从预览后的第二个开始。响应字段为 `doc_id`、`heading_key`、去重后的完整 `chunks`、`page_size`、`direct_chunks_has_more` 及可选 `next_direct_chunk_cursor`。只读取当前标题的直属 CHUNK_REF，不进入子标题或其他搜索结果。服务端固定前瞻最多 `2 * page_size` 个直属引用；最终水合时刚失效的内部 Chunk 被跳过并由后项补位，仍不足时返回 200 短页，标题本身失效或越权仍整体 403。每个返回 Chunk 的 `positions` 最多内嵌前 10 个稳定标题位置，并以 `position_count/positions_truncated` 表示完整数量和是否截断；需要全部位置时调用 Chunk 定位端点。
+`heading_key` 是 64 位小写十六进制。查询参数 `cursor` 可选：不传时从首个直属 Chunk 开始；提交搜索结果的 `next_direct_chunk_cursor` 时从预览后的第二个开始。展开游标绑定用户、标题当前所属数据集、`doc_id`、`heading_key` 和 `heading_chunks` 分支，不绑定来源搜索可能覆盖的多数据集集合；接口会先按 `doc_id` 重新授权和解析当前数据集归属，再执行验签，因此跨数据集搜索签发的游标可以展开所属文档。对于仍可授权解析但资源身份不符的文档、数据集或标题，旧游标返回 422；越权资源仍在验签前返回 403。响应字段为 `doc_id`、`heading_key`、去重后的完整 `chunks`、`page_size`、`direct_chunks_has_more` 及可选 `next_direct_chunk_cursor`。只读取当前标题的直属 CHUNK_REF，不进入子标题或其他搜索结果。服务端固定前瞻最多 `2 * page_size` 个直属引用；最终水合时刚失效的内部 Chunk 被跳过并由后项补位，仍不足时返回 200 短页，标题本身失效或越权仍整体 403。每个返回 Chunk 的 `positions` 最多内嵌前 10 个稳定标题位置，并以 `position_count/positions_truncated` 表示完整数量和是否截断；需要全部位置时调用 Chunk 定位端点。
 
 ### POST /api/v1/wiki/chunk-locations
 
