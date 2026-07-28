@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+from src.application import recall_pipeline_provider as provider
 from src.application.recall_pipeline_provider import build_recall_request_from_config
 from src.core.dataset_config import RecallConfig
 
@@ -20,8 +21,6 @@ def test_build_recall_request_maps_fusion_limit_and_route_top_k():
         dense_top_k=99,
         dense_score_threshold=0.7,
         recall_enabled_sources=["bm25", "dense"],
-        recall_fusion_strategy="weighted_score",
-        rrf_k=10,
         fusion_bm25_weight=0.1,
         fusion_sparse_weight=0.2,
         fusion_dense_weight=0.7,
@@ -49,8 +48,29 @@ def test_build_recall_request_maps_fusion_limit_and_route_top_k():
     assert request.dense_score_threshold_override == 0.7
     assert request.enabled_sources == ["bm25", "dense"]
     assert request.strict_override is True
-    assert request.fusion_strategy_override == "weighted_score"
-    assert request.rrf_k_override == 10
     assert request.fusion_bm25_weight_override == 0.1
     assert request.fusion_sparse_weight_override == 0.2
     assert request.fusion_dense_weight_override == 0.7
+
+
+def test_ltr_rollout_forces_frozen_system_fusion_weights(monkeypatch):
+    monkeypatch.setattr(provider.settings, "RECALL_LTR_MODE", "shadow")
+    monkeypatch.setattr(provider.settings, "RECALL_FUSION_BM25_WEIGHT", 0.15)
+    monkeypatch.setattr(provider.settings, "RECALL_FUSION_SPARSE_WEIGHT", 0.15)
+    monkeypatch.setattr(provider.settings, "RECALL_FUSION_DENSE_WEIGHT", 0.70)
+    recall_cfg = RecallConfig(
+        fusion_bm25_weight=0.2,
+        fusion_sparse_weight=0.3,
+        fusion_dense_weight=0.5,
+    )
+
+    request = build_recall_request_from_config(
+        query="合同付款",
+        user_id=7,
+        dataset_ids=[10],
+        recall_cfg=recall_cfg,
+    )
+
+    assert request.fusion_bm25_weight_override == 0.15
+    assert request.fusion_sparse_weight_override == 0.15
+    assert request.fusion_dense_weight_override == 0.70

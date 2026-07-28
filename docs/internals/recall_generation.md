@@ -11,6 +11,7 @@
 | 文件 | 职责 |
 | --- | --- |
 | [`src/application/recall_stream_runtime.py`](../../src/application/recall_stream_runtime.py) | SSE 流式执行 runtime：模型前置校验、召回执行、生成编排、事件序列化与异常→终态事件映射 |
+| [`src/core/pipeline/ltr/`](../../src/core/pipeline/ltr/) | 本地 `candidate_difference_v3` 特征构造、模型包校验、LambdaMART 推理及 weighted-score 降级 |
 | [`src/core/pipeline/recall/generation.py`](../../src/core/pipeline/recall/generation.py) | `fetch_chunk_contents`（按 chunk_id 回填正文）、`assemble_context`（按 token 预算拼装上下文） |
 | [`src/core/pipeline/rerank/reranker.py`](../../src/core/pipeline/rerank/reranker.py) | `PostRecallReranker`：对融合候选回表取正文、调用用户 RERANK 模型精排；不可用即降级为当前融合顺序 |
 | [`src/core/prompts/rag_generation.py`](../../src/core/prompts/rag_generation.py) | `RAG_GENERATION_SYSTEM_PROMPT` + `build_rag_user_prompt`（编号片段注入模板） |
@@ -32,11 +33,17 @@
 2. 召回执行（带超时，计时起点 recall_started）
    asyncio.wait_for(pipeline.execute(recall_req), RECALL_STREAM_TIMEOUT_MS/1000)
 
-3. 正文回填（一次性，rerank 与生成共用）
-   fetch_chunk_contents(融合候选.chunk_id, user_id)        # 仅 ACTIVE、非空正文
-   └─ 同一份 contents 注入 rerank、并直接喂给生成阶段，避免对同批 chunk 重复查库
+3. 正文回填（一次性，排序与生成共用）
+   fetch_chunk_contents(候选.chunk_id, user_id)            # 仅 ACTIVE、非空正文
+   └─ off/未抽样只读公开融合窗口；LTR active/baseline 或 Shadow 抽样读取完整门禁候选池
 
-4. rerank 精排（_rerank_hits，best-effort）
+4. 发布模式分流
+   off      → 继续执行旧 rerank
+   shadow   → 旧 rerank 返回线上结果；LTR 非阻塞旁路，只记 Top10 差异、模式和延迟
+   active   → 本地 LambdaMART 直接产出最终候选，不调用远程 rerank
+   baseline → frozen weighted score 产出最终候选，不调用远程 rerank（主动回滚）
+
+   旧 rerank 路径（_rerank_hits，best-effort）
    剩余预算 = RECALL_STREAM_TIMEOUT_MS/1000 - (now - recall_started)  # 与召回共享同一窗
    reranker.rerank(RerankRequest(query, user_id, hits=融合候选, contents=已回填正文))
    ├─ 生效   → 最终候选 = rerank 顺序（≤ RERANK_DEFAULT_TOP_N），rerank_applied=True
@@ -44,7 +51,7 @@
       （未配 RERANK 模型 / 调用失败 / 返回不可用 / rerank 超时 / 预算耗尽，皆不让整条流失败；
        未预期异常则上抛 → 顶层 INTERNAL_ERROR，不静默降级）
 
-5. 生成（_generate_answer，输入为 rerank 后的最终候选 + 已回填正文）
+5. 生成（_generate_answer，输入为当前发布模式的最终候选 + 已回填正文）
    ├─ 候选为空 → recall_done（不生成）
    ├─ assemble_context(hits, contents, 预算)              # 按 rerank 后顺序、token 预算
    │    └─ 拼装后 blocks 为空（全部缺正文）→ recall_done（不生成）
@@ -57,6 +64,9 @@
 
 - **模型校验在召回之前**：CHAT 模型不可用就别浪费召回算力；且 `allow_system_fallback=False`——直连场景必须用发起用户自己选定的模型，不静默回落系统模型。
 - **正文只回填一次**：在 rerank 之前批量回填，注入 reranker 并复用到生成阶段，避免对同批 chunk 两趟查库。
+- **LTR 使用完整候选池**：`RecallResponse.candidate_hits` / `route_hits` 是仅供进程内下游排序使用的门禁后候选，不进入对外序列化；避免公开 `top_k` 在模型前提前丢候选。
+- **Shadow 不改变返回值**：按 `request_id` 稳定抽样，模型任务不阻塞旧 rerank 与生成；日志只记录候选数、模型版本、模式、耗时、Top10 是否变化及 overlap，不记录 query 或正文。
+- **active 不调用远程 rerank**：模型包启动校验、推理超时、预算超限或运行错误都回退 frozen weighted score；`baseline` 是无需替换制品的一键主动回滚模式。
 - **rerank 与召回共享同一条流超时**：只把剩余预算交给 rerank，整条流的端到端时间仍受单个 `RECALL_STREAM_TIMEOUT_MS` 约束，不会两段各占满一窗。
 - **rerank 是 best-effort 增强**：返回的是 rerank 精排后的最终候选；rerank 已知不可用情形（未配 RERANK 模型的硬失败、调用失败/返回不可用的软降级、超时、预算耗尽）都经 `degrade_to_fusion_order` 降级为当前融合顺序候选（口径与 reranker 软降级一致：只保留有正文候选、再截断 top_n）并置 `rerank_applied=False`，**绝不**因 rerank 不可用而让整条流失败。未预期异常不被吞成降级，照常上抛由顶层收敛为 `INTERNAL_ERROR`（带堆栈）。上下文拼装与终态 `hits` 均以最终候选为准。
 - **0 命中 / 全部缺正文 → `recall_done` 而非 error**：这是正常业务终态（没召回到东西不是错误），客户端据此走"无答案"分支。
@@ -106,6 +116,9 @@
 | --- | --- |
 | `RECALL_STREAM_TIMEOUT_MS` | 召回执行超时（毫秒）；超时发 `RECALL_TIMEOUT` |
 | `RECALL_GENERATION_CONTEXT_TOKEN_BUDGET` | 上下文拼装的 token 预算上限 |
+| `RECALL_LTR_MODE` | `off` / `shadow` / `active` / `baseline` 发布与回滚状态 |
+| `RECALL_LTR_MODEL_DIR` | 版本化 LambdaMART 模型包路径 |
+| `RECALL_LTR_SHADOW_SAMPLE_RATE` | 按 request_id 稳定抽样的 Shadow 比例 |
 
 详见 [ops/configure.md](../ops/configure.md)。
 
@@ -113,7 +126,7 @@
 
 ## 6. 协作关系
 
-- **上游**：[recall_pipeline.md](recall_pipeline.md) 产出不含正文的融合候选；本阶段消费 `RecallResponse.hits`。
+- **上游**：[recall_pipeline.md](recall_pipeline.md) 产出不含正文的融合候选；旧链路消费 `hits`，LTR 消费不对外序列化的 `candidate_hits` / `route_hits`。
 - **正文来源**：[chunk_fact_storage.md](chunk_fact_storage.md) —— `fetch_chunk_contents` 按 ACTIVE 回读正文。
 - **模型一致性**：dense / sparse 召回 query 编码按数据集绑定的 `dense_embedding_config_id` / `sparse_embedding_config_id` 解析（读写同源），生成则用用户选定的 CHAT 模型；二者都不回落系统模型。
 

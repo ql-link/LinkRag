@@ -292,16 +292,17 @@ MySQL 是业务真值。正常写入与写入失败后的同步清理对同一 `
 | `RECALL_STREAM_TIMEOUT_MS` | `60000` | 召回 + rerank 阶段最大执行时间（毫秒）；超时 RAG 流以 SSE `error` RECALL_TIMEOUT 终止，纯召回 JSON 返回 `504` RECALL_TIMEOUT。**不含 LLM 生成阶段**（见 `RECALL_GENERATION_TIMEOUT_MS`） |
 | `RECALL_GENERATION_TIMEOUT_MS` | `300000` | LLM 生成阶段最大执行时间（毫秒），与召回超时解耦。RAG 生成跑在独立后台任务、断连不取消，需独立超时防孤儿任务无限烧 token；超时落 `FAILED` + `GENERATION_TIMEOUT`（保留半截答案）。取值远大于召回超时以容纳长回答 |
 | `RECALL_STRICT_DEFAULT` | `false` | pipeline 严格模式默认；false=宽松，允许单路失败降级 |
-| `RECALL_RESULT_LIMIT` | `64` | RRF 融合后的候选池窗口，作为下游 rerank 输入池；不再作为各路执行期 `top_k` |
+| `RECALL_RESULT_LIMIT` | `64` | 对外融合窗口与旧 rerank 输入池；LTR 使用门禁后的完整内部候选池，不受该截断影响 |
 | `RECALL_DENSE_TOP_K` | `100` | RAG pipeline dense 路执行期召回深度；数据集级 `recall_config.dense_top_k` 未配置时使用 |
 | `RECALL_SPARSE_TOP_K` | `50` | RAG pipeline sparse 路执行期召回深度；数据集级 `recall_config.sparse_top_k` 未配置时使用 |
 | `RECALL_BM25_TOP_K` | `100` | RAG pipeline bm25 路执行期召回深度；数据集级 `recall_config.bm25_top_k` 未配置时使用 |
 | `RECALL_ENABLED_SOURCES` | `bm25,sparse,dense` | 启用的召回路（逗号分隔）。本期默认开启三路；运维侧可显式 set `bm25,sparse` 暂时回退到 dev 旧行为；未登记的 source 出现在配置中装配期 `ValueError` |
-| `RECALL_FUSION_STRATEGY` | `rrf` | 召回融合策略，可选 `rrf` / `weighted_score`。默认保持 RRF；`weighted_score` 仅在 BM25/sparse/dense 召回后、rerank 前生效 |
-| `RECALL_RRF_K` | `60` | RRF rank constant，计算 `1 / (rrf_k + rank)` 时使用；仅 `RECALL_FUSION_STRATEGY=rrf` 生效，数据集级 `recall_config.rrf_k` 可覆盖 |
-| `RECALL_FUSION_BM25_WEIGHT` | `0.2` | `weighted_score` 下 BM25 路权重；允许为 0，active source 权重和为 0 时本次融合失败 |
-| `RECALL_FUSION_SPARSE_WEIGHT` | `0.3` | `weighted_score` 下 sparse 路权重；允许为 0，active source 权重和为 0 时本次融合失败 |
-| `RECALL_FUSION_DENSE_WEIGHT` | `0.5` | `weighted_score` 下 dense 路权重；允许为 0，active source 权重和为 0 时本次融合失败 |
+| `RECALL_LTR_MODE` | `off` | `off` 保持旧 rerank；`shadow` 旁路比较但不改结果；`active` 本地 LambdaMART 主排并跳过 rerank；`baseline` 主动回滚到 weighted score 并跳过 rerank |
+| `RECALL_LTR_MODEL_DIR` | `models/ltr/candidate-difference-v3-20260728-final33` | 版本化生产模型包；首次加载校验 LightGBM 版本、模型/文件 SHA-256、特征签名、Alias=false 和 3 个测试向量 |
+| `RECALL_LTR_SHADOW_SAMPLE_RATE` | `0.1` | Shadow 稳定抽样比例 `[0,1]`，按 `request_id` 哈希；仅 `shadow` 模式生效 |
+| `RECALL_FUSION_BM25_WEIGHT` | `0.2` | 固定 weighted score 的 BM25 路权重；允许为 0，active source 权重和为 0 时本次融合失败 |
+| `RECALL_FUSION_SPARSE_WEIGHT` | `0.3` | 固定 weighted score 的 sparse 路权重；允许为 0，active source 权重和为 0 时本次融合失败 |
+| `RECALL_FUSION_DENSE_WEIGHT` | `0.5` | 固定 weighted score 的 dense 路权重；允许为 0，active source 权重和为 0 时本次融合失败 |
 | `SPARSE_RETRIEVAL_TOP_K` | `10` | sparse 召回 facade 直调时调用方未传 `top_k` 的兜底值；完整 RAG pipeline 不读取它作为 sparse 深召回默认 |
 | `SPARSE_RETRIEVAL_SCORE_THRESHOLD` | `0.0` | sparse 召回默认 score 阈值（0.0 = 不过滤；详见 [vectorization.md §9.4](../internals/vectorization.md)） |
 | `DENSE_RETRIEVAL_TOP_K` | `10` | dense 召回 facade 直调时调用方未传 `top_k` 的兜底值；完整 RAG pipeline 不读取它作为 dense 深召回默认 |
@@ -309,11 +310,20 @@ MySQL 是业务真值。正常写入与写入失败后的同步清理对同一 `
 | `RECALL_GENERATION_CONTEXT_TOKEN_BUDGET` | `4000` | 召回后 LLM 生成拼装上下文的 token 预算上限；命中片段按融合分数从高到低纳入，累计超预算即截断尾部低分片段（仅 RAG 问答流的生成阶段生效） |
 | `RERANK_DEFAULT_TOP_N` | `8` | 召回后重排模块（LINK-130）输出候选条数兜底默认值；调用方未显式传 `top_n` 时生效。参考 RAGFlow rerank `top_n`（默认 6，本项目放宽到 8） |
 
+LambdaMART 发布顺序固定为 `shadow → active`。Shadow 至少观察 `recall_ltr_shadow_completed` 的
+`top10_changed` / `top10_overlap`、`rank_mode`、`duration_ms` 和失败事件；确认业务反馈后才切
+`active`。`fallback_*` 比例或 p95 超过 250ms 时，把 `RECALL_LTR_MODE` 改为 `baseline` 并重启，
+即可在不加载模型、不调用远程 rerank 的情况下回滚到 frozen weighted score。模型包离线验收中
+真实搜索 MRR 曾下降 0.70pp，因此不得跳过 Shadow 直接全量启用。
+
+当 `RECALL_LTR_MODE` 为 `shadow` / `active` / `baseline` 时，运行时会强制使用系统级
+三路系统权重，避免旧 Dataset 快照中的历史权重破坏模型口径；`off` 模式仍尊重 Dataset 级三路权重。
+
 默认值来源说明：
 
 - `RECALL_RESULT_LIMIT=64`：参考 [RAGFlow `rag/nlp/search.py::_rerank_window`](https://github.com/infiniflow/ragflow/blob/main/rag/nlp/search.py) 将 rerank 候选池控制在约 64 的 provider-friendly 窗口；该值是 source-backed baseline，不是本项目评测结论。
 - `RECALL_DENSE_TOP_K=100`：参考 [Sentence Transformers retrieve-and-rerank](https://www.sbert.net/examples/sentence_transformer/applications/retrieve_rerank/README.html) / [Cross-Encoder 文档](https://www.sbert.net/examples/cross_encoder/applications/README.html)，先用 Bi-Encoder 取 top-100，再交 Cross-Encoder 重排。
-- `RECALL_SPARSE_TOP_K=50`：参考 RRF 检索常见的每路 50 候选窗口，以及 [Azure AI Search semantic ranker](https://learn.microsoft.com/en-us/azure/search/semantic-search-overview) 对 top 50 的重排窗口。
+- `RECALL_SPARSE_TOP_K=50`：参考 [Azure AI Search semantic ranker](https://learn.microsoft.com/en-us/azure/search/semantic-search-overview) 对 top 50 的重排窗口。
 - `RECALL_BM25_TOP_K=100`：参考 [BEIR BM25 + Cross-Encoder reranking 示例](https://github.com/beir-cellar/beir/blob/main/examples/retrieval/evaluation/reranking/evaluate_bm25_ce_reranking.py) 对 BM25 top-100 做 rerank。
 
 配置边界：`RECALL_*_TOP_K` 只驱动完整 RAG pipeline 的三路召回深度；`DENSE_RETRIEVAL_TOP_K` / `SPARSE_RETRIEVAL_TOP_K` 只在直接调用 `VectorStorageFacade.search_*_chunks()` 且调用方未传 `top_k` 时兜底。

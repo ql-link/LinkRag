@@ -1,0 +1,213 @@
+{
+  "vectors": [
+    {
+      "id": "contract-1",
+      "input": {
+        "query": "订单ABC-2025为什么不能退款",
+        "routes": {
+          "dense": [
+            {
+              "chunk_id": "contract-a",
+              "doc_id": 1,
+              "dataset_id": 999999,
+              "score": 0.91
+            },
+            {
+              "chunk_id": "contract-b",
+              "doc_id": 2,
+              "dataset_id": 999999,
+              "score": 0.72
+            }
+          ],
+          "sparse": [
+            {
+              "chunk_id": "contract-b",
+              "doc_id": 2,
+              "dataset_id": 999999,
+              "score": 8.5
+            },
+            {
+              "chunk_id": "contract-a",
+              "doc_id": 1,
+              "dataset_id": 999999,
+              "score": 2.1
+            }
+          ],
+          "bm25": [
+            {
+              "chunk_id": "contract-b",
+              "doc_id": 2,
+              "dataset_id": 999999,
+              "score": 12.0
+            },
+            {
+              "chunk_id": "contract-c",
+              "doc_id": 3,
+              "dataset_id": 999999,
+              "score": 4.0
+            }
+          ]
+        },
+        "candidate_contents": {
+          "contract-a": "订单ABC-2024支持退款，具体以旧版规则为准。",
+          "contract-b": "订单ABC-2025不能退款，v2.1规则明确禁止退款。",
+          "contract-c": "其他订单可在七日内申请售后。"
+        }
+      },
+      "expected": {
+        "candidate_chunk_ids": [
+          "contract-a",
+          "contract-b",
+          "contract-c"
+        ],
+        "feature_matrix_sha256": "68f291748b2b29c155d9ab786f42ba9ebc6f54e4188eaa24df580a8feb6081bf",
+        "ltr_ranked_chunk_ids": [
+          "contract-a",
+          "contract-b",
+          "contract-c"
+        ],
+        "weighted_score_ranked_chunk_ids": [
+          "contract-a",
+          "contract-b",
+          "contract-c"
+        ]
+      }
+    },
+    {
+      "id": "contract-2",
+      "input": {
+        "query": "年假规则",
+        "routes": {
+          "dense": [
+            {
+              "chunk_id": "contract-d",
+              "doc_id": 4,
+              "dataset_id": 999999,
+              "score": 0.82
+            },
+            {
+              "chunk_id": "contract-e",
+              "doc_id": 5,
+              "dataset_id": 999999,
+              "score": 0.8
+            }
+          ],
+          "sparse": [
+            {
+              "chunk_id": "contract-e",
+              "doc_id": 5,
+              "dataset_id": 999999,
+              "score": 6.0
+            }
+          ],
+          "bm25": [
+            {
+              "chunk_id": "contract-e",
+              "doc_id": 5,
+              "dataset_id": 999999,
+              "score": 9.0
+            },
+            {
+              "chunk_id": "contract-d",
+              "doc_id": 4,
+              "dataset_id": 999999,
+              "score": 8.7
+            }
+          ]
+        },
+        "candidate_contents": {
+          "contract-d": "年假申请流程与审批人说明。",
+          "contract-e": "员工年假天数、结转期限及适用规则。"
+        }
+      },
+      "expected": {
+        "candidate_chunk_ids": [
+          "contract-d",
+          "contract-e"
+        ],
+        "feature_matrix_sha256": "9898f0eaadb7455278f8a800f25a202c8198280776b168e557dc2b626ede4440",
+        "ltr_ranked_chunk_ids": [
+          "contract-d",
+          "contract-e"
+        ],
+        "weighted_score_ranked_chunk_ids": [
+          "contract-d",
+          "contract-e"
+        ]
+      }
+    },
+    {
+      "id": "contract-3",
+      "input": {
+        "query": "2026年3月后同时满足企业版和已认证条件的额度",
+        "routes": {
+          "dense": [
+            {
+              "chunk_id": "contract-f",
+              "doc_id": 6,
+              "dataset_id": 999999,
+              "score": 0.88
+            },
+            {
+              "chunk_id": "contract-g",
+              "doc_id": 6,
+              "dataset_id": 999999,
+              "score": 0.84
+            }
+          ],
+          "sparse": [
+            {
+              "chunk_id": "contract-g",
+              "doc_id": 6,
+              "dataset_id": 999999,
+              "score": 7.2
+            },
+            {
+              "chunk_id": "contract-h",
+              "doc_id": 7,
+              "dataset_id": 999999,
+              "score": 5.4
+            }
+          ],
+          "bm25": [
+            {
+              "chunk_id": "contract-g",
+              "doc_id": 6,
+              "dataset_id": 999999,
+              "score": 11.0
+            },
+            {
+              "chunk_id": "contract-h",
+              "doc_id": 7,
+              "dataset_id": 999999,
+              "score": 8.0
+            }
+          ]
+        },
+        "candidate_contents": {
+          "contract-f": "企业版默认额度为1000，认证状态不影响。",
+          "contract-g": "2026年3月后，企业版且已认证账户额度调整为3000。",
+          "contract-h": "个人版已认证账户额度为500。"
+        }
+      },
+      "expected": {
+        "candidate_chunk_ids": [
+          "contract-f",
+          "contract-g",
+          "contract-h"
+        ],
+        "feature_matrix_sha256": "0bd43f093dc36bfb3ccb35b7c49795018152ef7c6236e961764a107624f347ad",
+        "ltr_ranked_chunk_ids": [
+          "contract-g",
+          "contract-f",
+          "contract-h"
+        ],
+        "weighted_score_ranked_chunk_ids": [
+          "contract-f",
+          "contract-g",
+          "contract-h"
+        ]
+      }
+    }
+  ]
+}

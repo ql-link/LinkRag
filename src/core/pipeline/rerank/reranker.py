@@ -64,11 +64,6 @@ def degrade_to_fusion_order(content_present_hits: list[RecallHit], top_n: int) -
     return [reranked_from_recall(h) for h in content_present_hits[:top_n]]
 
 
-def degrade_to_rrf_order(content_present_hits: list[RecallHit], top_n: int) -> list[RerankedHit]:
-    """兼容旧导出名；实际语义是按输入的当前融合顺序降级。"""
-    return degrade_to_fusion_order(content_present_hits, top_n)
-
-
 class PostRecallReranker:
     """承接融合后候选，回表取正文并调用 Dataset RERANK 快照重排。"""
 

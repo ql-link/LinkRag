@@ -1,4 +1,4 @@
-"""weighted_score 融合策略单测。"""
+"""固定 weighted score 融合单测。"""
 
 from __future__ import annotations
 
@@ -33,7 +33,6 @@ def _config(
     dense: float = 0.5,
 ) -> RecallPipelineConfig:
     return RecallPipelineConfig(
-        fusion_strategy="weighted_score",
         fusion_bm25_weight=bm25,
         fusion_sparse_weight=sparse,
         fusion_dense_weight=dense,
@@ -63,30 +62,6 @@ async def test_weighted_score_three_sources_with_default_weights():
     assert by_id["cB"].fused_score == pytest.approx(0.3)
     assert by_id["cC"].fused_score == pytest.approx(0.5)
     assert [h.chunk_id for h in response.hits] == ["cC", "cB", "cA"]
-
-
-@pytest.mark.asyncio
-async def test_weighted_score_ignores_rrf_k():
-    bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("cA", SOURCE_BM25, 100.0)])
-    dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("cB", SOURCE_DENSE, 0.9)])
-    pipeline = make_recall_pipeline(
-        [bm25, dense],
-        RecallPipelineConfig(
-            fusion_strategy="weighted_score",
-            rrf_k=10,
-            fusion_bm25_weight=0.2,
-            fusion_sparse_weight=0.3,
-            fusion_dense_weight=0.5,
-        ),
-    )
-
-    response = await pipeline.execute(
-        RecallRequest(user_id=1, query="q", dataset_ids=[10], rrf_k_override=120)
-    )
-
-    by_id = {h.chunk_id: h for h in response.hits}
-    assert by_id["cA"].fused_score == pytest.approx(0.2 / 0.7)
-    assert by_id["cB"].fused_score == pytest.approx(0.5 / 0.7)
 
 
 @pytest.mark.asyncio
@@ -261,17 +236,16 @@ async def test_weighted_score_truncates_after_fusion():
 
 
 @pytest.mark.asyncio
-async def test_request_override_selects_weighted_score_over_config_default():
+async def test_request_override_updates_fixed_weighted_score_weights():
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("cA", SOURCE_BM25, 10.0)])
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("cB", SOURCE_DENSE, 0.9)])
-    pipeline = make_recall_pipeline([bm25, dense], RecallPipelineConfig(fusion_strategy="rrf"))
+    pipeline = make_recall_pipeline([bm25, dense])
 
     response = await pipeline.execute(
         RecallRequest(
             user_id=1,
             query="q",
             dataset_ids=[10],
-            fusion_strategy_override="weighted_score",
             fusion_bm25_weight_override=0.2,
             fusion_sparse_weight_override=0.3,
             fusion_dense_weight_override=0.5,
