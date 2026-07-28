@@ -403,7 +403,7 @@ RAG SSE 成功终态同构。三路执行期 top_k / 分数阈值 / 融合策略
 }
 ```
 
-`results` 是以 `result_type` 为判别字段的严格联合类型，也是分页与顺序的权威数组：`HEADING` 只允许 `source=exact_title|title_prefix`、非空 `heading` 及空 `chunk_id/bm25_score`；`CHUNK` 只允许 `source=bm25`、空 `heading` 及非空 `chunk_id/bm25_score`。其他来源或交叉字段组合不属于响应契约，并会被服务端 Schema 拒绝。HEADING 以物理节点唯一，CHUNK 以 `chunk_id` 唯一。`chunks` 是按 `chunk_id` 去重的正文展开区。每个标题最多预览一个直属 Chunk；每个搜索 Chunk 最多内嵌前 10 个稳定标题位置。exact 结果的全部续页不调用 prefix/BM25；mixed 默认目标配额 5/10，任一路不足由另一条补位。`has_more=false` 时省略 `next_cursor`。
+`results` 是以 `result_type` 为判别字段的严格联合类型，也是分页与顺序的权威数组：`HEADING` 只允许 `source=exact_title|title_prefix`、非空 `heading` 及空 `chunk_id/bm25_score`；`CHUNK` 只允许 `source=bm25`、空 `heading` 及非空 `chunk_id/bm25_score`。其他来源或交叉字段组合不属于响应契约，并会被服务端 Schema 拒绝。HEADING 以物理节点唯一，CHUNK 以 `chunk_id` 唯一。`chunks` 是按 `chunk_id` 去重的正文展开区。每个标题最多预览一个直属 Chunk；若 BM25 候选同时是本次查询任意匹配标题的首个可见直属 Chunk，则在分页前固定归标题预览所有并从 BM25 流移除，后项按原顺序补位，保证数据不变时跨页不重复。每个搜索 Chunk 最多内嵌前 10 个稳定标题位置。exact 结果的全部续页不调用 prefix/BM25；mixed 默认目标配额 5/10，任一路不足由另一条补位。`has_more=false` 时省略 `next_cursor`。
 
 ### GET /api/v1/wiki/documents/{doc_id}/headings/{heading_key}/chunks
 

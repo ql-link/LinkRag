@@ -30,6 +30,8 @@ mixed 页默认 15 条：标题目标 `ceil(15/3)=5`，BM25 目标 10，任一�
 
 游标是 URL-safe base64 的 `payload.signature`，签名密钥从 `RECALL_SESSION_JWT_SECRET` 通过 `wiki-search-cursor:v1` 域隔离派生。游标绑定版本、10 分钟有效期、分支、用户、规范 query、有效 scope 指纹和下一 keyset/轮询位置；任一不符返回 422。它不保存服务端状态或快照：数据不变时无重复遗漏，翻页期间数据改变时允许少量重复或遗漏，客户端按 `heading_key`/`chunk_id` 累计去重或从第一页重启。
 
+mixed 分支在分页前为正文建立确定性归属：若可见 BM25 候选同时是本次规范 query 与有效 scope 下任意匹配标题的首个可见直属 Chunk，该 Chunk 固定由标题预览返回，并从所有 BM25 分页中移除，后续候选按原跨库轮询顺序补位。归属查询从已经有界的 BM25 candidate IDs 出发，并用 `NOT EXISTS` 确认同一标题下没有排序更早的可见直属引用；这样既不会把第二条引用误判为预览，也无需对全部匹配标题引用做无界排名或把历史 Chunk ID 写入游标，数据不变时后页标题预览不会重复前页 BM25 结果。
+
 每个标题搜索结果只预览首个可见直属 Chunk，直属总数大于 1 时签发独立 `heading_chunks` 游标，从第二条引用开始每页最多 15 条。该游标不读取子标题，也不推进顶层搜索游标。
 
 标题精确/前缀 SQL 直接比较 `title`，大小写不敏感语义由表级 `utf8mb4_unicode_ci` 提供，禁止对索引列包装 `LOWER()`，使 `(node_type,title,doc_id,id)` 联合索引可同时使用标题键。直属预览在 MySQL 子查询中按标题执行 `COUNT() OVER` 与 `ROW_NUMBER() OVER`，外层只读取排名第一的引用；即使标题挂载大量 Chunk，Python 也只接收每标题一行和完整总数。

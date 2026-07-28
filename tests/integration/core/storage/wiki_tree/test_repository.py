@@ -239,6 +239,22 @@ async def test_real_mysql_exact_prefix_preview_location_tree_and_readiness(migra
             previews = await repository.load_heading_previews(session, exact, scope=scope)
             assert previews[exact[0].id].direct_chunk_count == 2
             assert previews[exact[0].id].chunk_id == "C1"
+            matching_preview_ids = await repository.find_matching_preview_chunk_ids(
+                session,
+                normalized_title="Gui",
+                candidate_chunk_ids=("C1", "C2", "C3"),
+                scope=scope,
+            )
+            assert matching_preview_ids == frozenset({"C1"})
+            assert (
+                await repository.find_matching_preview_chunk_ids(
+                    session,
+                    normalized_title="Gui",
+                    candidate_chunk_ids=("C2",),
+                    scope=scope,
+                )
+                == frozenset()
+            )
             refs, has_more = await repository.load_heading_chunk_page(
                 session,
                 doc_id=10001,

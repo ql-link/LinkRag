@@ -309,12 +309,50 @@ class WikiRuntime:
                 for dataset, hits in bm25_by_dataset.items()
             }
 
+        # 无状态游标只保存两路下一消费位置，不能携带不断增长的历史 Chunk 集。
+        # 因此在分页前一次性确定全搜索链正文归属：匹配标题的首个预览固定优先于
+        # BM25，后页标题预览就不会先在前页作为正文出现；过滤后仍由轮询后项补位。
+        preview_owned_bm25_ids: frozenset[str] = frozenset()
+        if SOURCE_PREFIX not in failures and SOURCE_BM25 not in failures:
+            candidate_chunk_ids = tuple(
+                dict.fromkeys(
+                    hit.chunk_id
+                    for dataset_id in sorted(bm25_by_dataset)
+                    for hit in bm25_by_dataset[dataset_id]
+                )
+            )
+            if candidate_chunk_ids:
+                try:
+                    async with get_db_context() as db:
+                        preview_owned_bm25_ids = (
+                            await self._repository.find_matching_preview_chunk_ids(
+                                db,
+                                normalized_title=normalized_query,
+                                candidate_chunk_ids=candidate_chunk_ids,
+                                scope=scope,
+                            )
+                        )
+                except Exception as exc:
+                    raise RecallApiError(
+                        500,
+                        CODE_INTERNAL_ERROR,
+                        "Wiki preview ownership read failed",
+                    ) from exc
+                if preview_owned_bm25_ids:
+                    bm25_by_dataset = {
+                        dataset_id: [
+                            hit for hit in hits if hit.chunk_id not in preview_owned_bm25_ids
+                        ]
+                        for dataset_id, hits in bm25_by_dataset.items()
+                    }
+
         logger.bind(
             event="wiki_search_candidates_collected",
             branch=BRANCH_MIXED,
             exact_candidate_count=0,
             prefix_candidate_count=len(prefix_items),
             bm25_candidate_count=sum(len(hits) for hits in bm25_by_dataset.values()),
+            preview_owned_bm25_count=len(preview_owned_bm25_ids),
             failed_sources=failures,
         ).info("Wiki search candidates collected")
 

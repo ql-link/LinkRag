@@ -357,6 +357,7 @@ def _acceptance_runtime(
     repository.load_heading_previews.side_effect = lambda _db, headings, **_kw: {
         item.id: WikiHeadingPreview(item.id, 0, None, None, None) for item in headings
     }
+    repository.find_matching_preview_chunk_ids.return_value = frozenset()
     repository.load_chunk_locations.return_value = ()
     repository.load_headings_by_ids.return_value = ()
     bm25 = AsyncMock()
@@ -962,6 +963,63 @@ def _assert_scenario_contract(node_name: str, state: WikiAcceptanceState, monkey
         assert [item["result_type"] for item in payload["results"]] == ["HEADING", "CHUNK"]
         assert payload["results"][1]["chunk_id"] == "C2"
         assert [chunk["chunk_id"] for chunk in payload["chunks"]].count("C1") == 1
+        return
+    if scenario == "匹配标题的首个预览在整个搜索链固定优先于_bm25":
+        runtime, repository, bm25, readiness = _acceptance_runtime(monkeypatch)
+        first_prefix_window = tuple(_acceptance_heading(index) for index in range(1, 16))
+        second_prefix_window = tuple(_acceptance_heading(index) for index in range(6, 16))
+        repository.find_heading_page.side_effect = [
+            ((), False),
+            (first_prefix_window, False),
+            (second_prefix_window, False),
+        ]
+        repository.find_matching_preview_chunk_ids.return_value = frozenset({"C6"})
+        repository.load_heading_previews.side_effect = lambda _db, headings, **_kw: {
+            item.id: (
+                WikiHeadingPreview(item.id, 1, "C6", 0, 600)
+                if item.id == 6
+                else WikiHeadingPreview(item.id, 0, None, None, None)
+            )
+            for item in headings
+        }
+        hits = [
+            RetrieverHit(chunk_id, 10001, 10, float(30 - rank), "bm25")
+            for rank, chunk_id in enumerate(["C6", *(f"C{i}" for i in range(7, 27))])
+        ]
+        bm25.recall_by_dataset.return_value = {10: hits}
+        readiness.filter_visible_hits.return_value = hits
+
+        async def load_two_pages():
+            first = await runtime.search(
+                _acceptance_context(),
+                query="gui",
+                dataset_ids=None,
+                doc_ids=None,
+                cursor=None,
+            )
+            second = await runtime.search(
+                _acceptance_context(),
+                query="gui",
+                dataset_ids=None,
+                doc_ids=None,
+                cursor=first["next_cursor"],
+            )
+            return first, second
+
+        first, second = asyncio.run(load_two_pages())
+        first_bm25 = [
+            item["chunk_id"] for item in first["results"] if item["result_type"] == "CHUNK"
+        ]
+        second_preview_ids = [
+            item["heading"].get("direct_chunk_preview_id")
+            for item in second["results"]
+            if item["result_type"] == "HEADING"
+        ]
+        assert "C6" not in first_bm25
+        assert first_bm25[0] == "C7"
+        assert len(first_bm25) == 10
+        assert "C6" in second_preview_ids
+        assert repository.find_matching_preview_chunk_ids.await_count == 2
         return
     if scenario == "标题前缀与_bm25_按每页三分之一和三分之二分配并互补空位":
         prefix_count = int(state.parameters["prefix_available"])

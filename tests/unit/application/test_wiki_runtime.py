@@ -63,6 +63,7 @@ def _runtime(monkeypatch, *, strict: bool = False):
     repository.load_heading_previews.side_effect = lambda _db, headings, **_kw: {
         heading.id: WikiHeadingPreview(heading.id, 0, None, None, None) for heading in headings
     }
+    repository.find_matching_preview_chunk_ids.return_value = frozenset()
     repository.load_chunk_locations.return_value = ()
     repository.load_headings_by_ids.return_value = ()
     bm25 = AsyncMock()
@@ -187,6 +188,22 @@ async def test_readiness_sql_failure_is_internal_even_in_lenient_mode(monkeypatc
 
 
 @pytest.mark.asyncio
+async def test_preview_ownership_sql_failure_is_internal_even_in_lenient_mode(monkeypatch):
+    runtime, repository, bm25 = _runtime(monkeypatch, strict=False)
+    repository.find_heading_page.side_effect = [((), False), ((_heading(1),), False)]
+    hit = RetrieverHit("c1", 100, 10, 1.0, "bm25")
+    bm25.recall_by_dataset.return_value = {10: [hit]}
+    runtime._readiness.filter_visible_hits.return_value = [hit]
+    repository.find_matching_preview_chunk_ids.side_effect = RuntimeError("mysql down")
+
+    with pytest.raises(RecallApiError) as exc_info:
+        await runtime.search(_ctx(), query="gui", dataset_ids=None, doc_ids=None, cursor=None)
+
+    assert exc_info.value.code == "RECALL_INTERNAL_ERROR"
+    repository.load_heading_previews.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_scope_sql_failure_is_mapped_to_internal_error(monkeypatch):
     runtime, repository, _bm25 = _runtime(monkeypatch)
     repository.resolve_scope.side_effect = RuntimeError("mysql down")
@@ -217,6 +234,56 @@ async def test_mixed_preview_suppresses_duplicate_bm25_and_backfills(monkeypatch
     ]
     assert chunk_result_ids == [f"c{i}" for i in range(2, 16)]
     assert len(payload["results"]) == 15
+
+
+@pytest.mark.asyncio
+async def test_mixed_search_reserves_future_heading_preview_before_bm25_pagination(monkeypatch):
+    """后页标题的固定预览不得先在前页作为 BM25 正文出现。"""
+
+    runtime, repository, bm25 = _runtime(monkeypatch)
+    first_prefix_window = tuple(_heading(index) for index in range(1, 16))
+    second_prefix_window = tuple(_heading(index) for index in range(6, 16))
+    repository.find_heading_page.side_effect = [
+        ((), False),
+        (first_prefix_window, False),
+        (second_prefix_window, False),
+    ]
+    repository.find_matching_preview_chunk_ids.return_value = frozenset({"C6"})
+    repository.load_heading_previews.side_effect = lambda _db, headings, **_kw: {
+        item.id: (
+            WikiHeadingPreview(item.id, 1, "C6", 0, 600)
+            if item.id == 6
+            else WikiHeadingPreview(item.id, 0, None, None, None)
+        )
+        for item in headings
+    }
+    hits = [
+        RetrieverHit(chunk_id, 100, 10, float(30 - rank), "bm25")
+        for rank, chunk_id in enumerate(["C6", *(f"C{i}" for i in range(7, 27))])
+    ]
+    bm25.recall_by_dataset.return_value = {10: hits}
+    runtime._readiness.filter_visible_hits.return_value = hits
+
+    first = await runtime.search(_ctx(), query="gui", dataset_ids=None, doc_ids=None, cursor=None)
+    second = await runtime.search(
+        _ctx(),
+        query="gui",
+        dataset_ids=None,
+        doc_ids=None,
+        cursor=first["next_cursor"],
+    )
+
+    first_bm25 = [item["chunk_id"] for item in first["results"] if item["result_type"] == "CHUNK"]
+    second_preview_ids = [
+        item["heading"].get("direct_chunk_preview_id")
+        for item in second["results"]
+        if item["result_type"] == "HEADING"
+    ]
+    assert "C6" not in first_bm25
+    assert first_bm25[0] == "C7"
+    assert len(first_bm25) == 10
+    assert "C6" in second_preview_ids
+    assert repository.find_matching_preview_chunk_ids.await_count == 2
 
 
 @pytest.mark.asyncio

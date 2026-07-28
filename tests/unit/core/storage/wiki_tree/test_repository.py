@@ -95,6 +95,27 @@ async def test_heading_preview_counts_all_refs_but_transfers_only_first_row():
 
 
 @pytest.mark.asyncio
+async def test_matching_preview_ownership_checks_earlier_visible_refs_from_bounded_candidates():
+    repository = WikiTreeRepository()
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=_Rows([("C6",)]))
+
+    owned = await repository.find_matching_preview_chunk_ids(
+        session,
+        normalized_title="Gui",
+        candidate_chunk_ids=("C6", "C7"),
+        scope=_scope(),
+    )
+
+    sql = _compiled_sql(session.execute.await_args.args[0])
+    assert "not (exists" in sql
+    assert "earlier_preview_ref.sort_order < preview_owner_ref.sort_order" in sql
+    assert "preview_owner_heading.title like 'gui%%'" in sql
+    assert "preview_owner_ref.chunk_id in ('c6', 'c7')" in sql
+    assert owned == frozenset({"C6"})
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("position_count", [10, 11, 5000])
 async def test_chunk_locations_apply_position_limit_before_parent_path_hydration(
     monkeypatch, position_count

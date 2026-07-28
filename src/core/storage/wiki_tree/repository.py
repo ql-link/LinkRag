@@ -18,6 +18,7 @@ from src.core.storage.document_visibility import (
     current_successful_document_conditions,
     dataset_table,
     document_original_file_table,
+    visible_chunk_conditions,
 )
 from src.core.wiki.models import (
     WIKI_NODE_CHUNK_REF,
@@ -442,6 +443,105 @@ class WikiTreeRepository:
             )
             for heading in headings
         }
+
+    async def find_matching_preview_chunk_ids(
+        self,
+        session: AsyncSession,
+        *,
+        normalized_title: str,
+        candidate_chunk_ids: Sequence[str],
+        scope: EffectiveWikiScope,
+    ) -> frozenset[str]:
+        """找出属于任意匹配标题首个可见直属预览的 BM25 候选。
+
+        该查询为整个无状态搜索链建立稳定正文归属：只要候选 Chunk 是当前
+        query/scope 下某个前缀标题的首个预览，就固定由标题结果返回，不能先在
+        前页作为 BM25 正文出现。查询从有界 candidate ID 出发，再用 NOT EXISTS
+        确认同一标题下不存在排序更早的可见引用；不能先过滤同标题其他引用后再
+        排名，否则第二条引用会被错误提升为首条预览。
+        """
+
+        ordered_ids = tuple(dict.fromkeys(candidate_chunk_ids))
+        if not ordered_ids or not scope.dataset_ids:
+            return frozenset()
+
+        heading = aliased(self.model_cls, name="preview_owner_heading")
+        ref = aliased(self.model_cls, name="preview_owner_ref")
+        earlier_ref = aliased(self.model_cls, name="earlier_preview_ref")
+        earlier_chunk = aliased(ChunkRecordDB, name="earlier_preview_chunk")
+        escaped = normalized_title.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        earlier_visible_ref_exists = (
+            select(1)
+            .select_from(earlier_ref)
+            .join(
+                earlier_chunk,
+                and_(
+                    earlier_chunk.chunk_id == earlier_ref.chunk_id,
+                    earlier_chunk.doc_id == earlier_ref.doc_id,
+                ),
+            )
+            .where(
+                earlier_ref.node_type == WIKI_NODE_CHUNK_REF,
+                earlier_ref.doc_id == ref.doc_id,
+                earlier_ref.parent_id == ref.parent_id,
+                earlier_chunk.user_id == scope.user_id,
+                earlier_chunk.set_id == DocumentParseTask.dataset_id,
+                earlier_chunk.doc_id == DocumentParseTask.document_original_file_id,
+                earlier_chunk.lifecycle_status == CHUNK_LIFECYCLE_ACTIVE,
+                or_(
+                    earlier_ref.sort_order < ref.sort_order,
+                    and_(
+                        earlier_ref.sort_order == ref.sort_order,
+                        earlier_ref.id < ref.id,
+                    ),
+                ),
+            )
+            .exists()
+        )
+        statement = (
+            select(ref.chunk_id)
+            .select_from(ref)
+            .join(
+                heading,
+                and_(
+                    heading.id == ref.parent_id,
+                    heading.doc_id == ref.doc_id,
+                    heading.node_type == WIKI_NODE_HEADING,
+                ),
+            )
+            .join(
+                ChunkRecordDB,
+                and_(
+                    ChunkRecordDB.chunk_id == ref.chunk_id,
+                    ChunkRecordDB.doc_id == ref.doc_id,
+                ),
+            )
+            .join(
+                DocumentParseTask,
+                DocumentParseTask.document_original_file_id == heading.doc_id,
+            )
+            .join(DocumentParsePipeline, current_document_join_condition())
+            .join(dataset_table, dataset_table.c.id == DocumentParseTask.dataset_id)
+            .join(
+                document_original_file_table,
+                document_original_file_table.c.id == DocumentParseTask.document_original_file_id,
+            )
+            .where(
+                ref.node_type == WIKI_NODE_CHUNK_REF,
+                ref.chunk_id.in_(ordered_ids),
+                heading.title.like(f"{escaped}%", escape="\\"),
+                *current_successful_document_conditions(
+                    user_id=scope.user_id,
+                    dataset_ids=scope.dataset_ids,
+                    doc_ids=scope.doc_ids,
+                ),
+                *visible_chunk_conditions(user_id=scope.user_id),
+                ~earlier_visible_ref_exists,
+            )
+            .distinct()
+        )
+        rows = (await session.execute(statement)).all()
+        return frozenset(str(row[0]) for row in rows)
 
     async def load_heading_chunk_page(
         self,
