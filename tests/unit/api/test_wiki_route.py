@@ -81,6 +81,28 @@ async def test_search_rejects_invalid_json_and_unknown_fields_before_runtime():
 
 
 @pytest.mark.asyncio
+async def test_chunk_locations_preserves_manual_request_error_contract():
+    """补充 OpenAPI 描述不能绕过既有的统一请求错误映射。"""
+
+    runtime = AsyncMock()
+    transport = ASGITransport(app=_app(runtime))
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        invalid = await client.post(
+            "/api/v1/wiki/chunk-locations",
+            content=b"{",
+            headers={"content-type": "application/json"},
+        )
+        unknown = await client.post(
+            "/api/v1/wiki/chunk-locations",
+            json={"chunk_ids": ["C1"], "unknown": True},
+        )
+
+    assert invalid.status_code == unknown.status_code == 422
+    assert invalid.json()["code"] == unknown.json()["code"] == "RECALL_INVALID_REQUEST"
+    runtime.locate_chunks.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_search_rejects_boolean_ids_before_runtime():
     runtime = AsyncMock()
     transport = ASGITransport(app=_app(runtime))
@@ -278,6 +300,31 @@ def test_openapi_exposes_search_result_discriminator_and_two_branches():
     required_fields = {"result_type", "source", "heading", "chunk_id", "bm25_score"}
     assert set(schemas["WikiHeadingSearchResult"]["required"]) == required_fields
     assert set(schemas["WikiChunkSearchResult"]["required"]) == required_fields
+
+
+def test_openapi_exposes_required_request_bodies_for_manual_parsers():
+    """手工解析请求体时也必须把既有 Pydantic 契约暴露给 OpenAPI。"""
+
+    paths = _app(AsyncMock()).openapi()["paths"]
+    cases = {
+        "/api/v1/wiki/search": (
+            {"query", "dataset_ids", "doc_ids", "cursor"},
+            {"query"},
+        ),
+        "/api/v1/wiki/chunk-locations": (
+            {"chunk_ids", "dataset_ids"},
+            {"chunk_ids"},
+        ),
+    }
+
+    for path, (properties, required) in cases.items():
+        request_body = paths[path]["post"]["requestBody"]
+        schema = request_body["content"]["application/json"]["schema"]
+
+        assert request_body["required"] is True
+        assert set(schema["properties"]) == properties
+        assert set(schema["required"]) == required
+        assert schema["additionalProperties"] is False
 
 
 @pytest.mark.asyncio

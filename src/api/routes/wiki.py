@@ -27,6 +27,21 @@ SchemaT = TypeVar("SchemaT", bound=BaseModel)
 _HEADING_KEY_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
+def _openapi_request_body(schema: type[BaseModel]) -> dict[str, object]:
+    """为保留手工错误映射的 POST 路由补充既有请求 Schema。"""
+
+    return {
+        "requestBody": {
+            "required": True,
+            "content": {
+                "application/json": {
+                    "schema": schema.model_json_schema(),
+                }
+            },
+        }
+    }
+
+
 async def _parse_body(request: Request, schema: type[SchemaT]) -> SchemaT:
     """解析并按严格 Pydantic Schema 校验请求体，统一映射为 422。"""
 
@@ -86,7 +101,11 @@ def _omit_optional_none(value: object) -> None:
             _omit_optional_none(nested)
 
 
-@router.post("/search", response_model=WikiSearchResponse)
+@router.post(
+    "/search",
+    response_model=WikiSearchResponse,
+    openapi_extra=_openapi_request_body(WikiSearchRequest),
+)
 async def search_wiki(
     request: Request,
     ctx: SessionAuthContext = Depends(verify_session_token),
@@ -134,6 +153,7 @@ async def expand_heading_chunks(
 @router.post(
     "/chunk-locations",
     response_model=WikiChunkLocationsResponse,
+    openapi_extra=_openapi_request_body(WikiChunkLocationsRequest),
 )
 async def locate_chunks(
     request: Request,

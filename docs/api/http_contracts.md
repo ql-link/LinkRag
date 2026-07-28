@@ -363,7 +363,7 @@ RAG SSE 成功终态同构。三路执行期 top_k / 分数阈值 / 融合策略
 
 ## 7. Wiki API（对外）
 
-四个端点均使用 `/api/v1/wiki` 前缀和 `Authorization: Bearer <session-token>`，鉴权 claims 与 §6 相同。成功响应为 JSON，并回显/生成 `X-Request-Id`；两个 POST 请求体中的未知字段一律 422，ID 必须为正整数。身份只取 token claims。
+四个端点均使用 `/api/v1/wiki` 前缀和 `Authorization: Bearer <session-token>`，鉴权 claims 与 §6 相同。成功响应为 JSON，并回显/生成 `X-Request-Id`；两个 POST 请求体中的未知字段一律 422，ID 必须为正整数。身份只取 token claims。两个 POST 的运行时 OpenAPI `requestBody` 直接由对应 Pydantic 请求模型生成并标记为必填，与本节字段契约保持同源。
 
 | Method | Path | 用途 |
 | --- | --- | --- |
