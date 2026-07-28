@@ -593,6 +593,69 @@ class WikiTreeRepository:
             len(rows) > limit,
         )
 
+    async def find_visible_chunk_ids(
+        self,
+        session: AsyncSession,
+        chunk_ids: Sequence[str],
+        *,
+        scope: EffectiveWikiScope,
+    ) -> frozenset[str]:
+        """返回有界候选 ID 与当前 Chunk 真值的可见交集。
+
+        持久不一致必须由 Chunk/索引存储生命周期修复；本查询只处理检索后端
+        产生候选到 Wiki 最终分页之间不可避免的跨存储读取竞态。调用方只能传入
+        已有界的候选集合，且 SQL/连接异常必须继续上抛，不能被解释为“候选失效”。
+
+        Args:
+            session: 调用方管理事务边界的异步数据库会话。
+            chunk_ids: 已按召回深度限制的候选 Chunk ID，重复项按首次出现去重。
+            scope: 已完成用户、知识库和文档授权解析的 Wiki 范围。
+
+        Returns:
+            同时满足当前文档 SUCCESS、Chunk ACTIVE 与授权范围的 ID 集合。
+
+        Raises:
+            SQLAlchemyError: SQL 执行或连接失败时原样上抛，由 Runtime 映射为 500。
+        """
+
+        ordered = tuple(dict.fromkeys(chunk_ids))
+        if not ordered:
+            return frozenset()
+
+        # 这里只选择 ID 而不提前加载正文或标题位置：最终门禁必须先于配额和分页，
+        # 同时避免为每知识库最多 50 个候选放大正文传输与父链水合。
+        rows = (
+            await session.execute(
+                select(ChunkRecordDB.chunk_id)
+                .select_from(ChunkRecordDB)
+                .join(
+                    DocumentParseTask,
+                    and_(
+                        DocumentParseTask.document_original_file_id == ChunkRecordDB.doc_id,
+                        DocumentParseTask.dataset_id == ChunkRecordDB.set_id,
+                        DocumentParseTask.user_id == ChunkRecordDB.user_id,
+                    ),
+                )
+                .join(DocumentParsePipeline, current_document_join_condition())
+                .join(dataset_table, dataset_table.c.id == DocumentParseTask.dataset_id)
+                .join(
+                    document_original_file_table,
+                    document_original_file_table.c.id
+                    == DocumentParseTask.document_original_file_id,
+                )
+                .where(
+                    ChunkRecordDB.chunk_id.in_(ordered),
+                    ChunkRecordDB.lifecycle_status == CHUNK_LIFECYCLE_ACTIVE,
+                    *current_successful_document_conditions(
+                        user_id=scope.user_id,
+                        dataset_ids=scope.dataset_ids,
+                        doc_ids=scope.doc_ids,
+                    ),
+                )
+            )
+        ).all()
+        return frozenset(str(row[0]) for row in rows)
+
     async def load_chunks(
         self,
         session: AsyncSession,
@@ -657,19 +720,71 @@ class WikiTreeRepository:
         scope: EffectiveWikiScope,
         max_positions: int | None = None,
     ) -> tuple[WikiChunkLocationRecord, ...]:
-        """返回每个请求 Chunk 的直接父标题 ID 及未截断位置总数。
+        """严格返回显式请求的全部 Chunk；任一不可见即整体 403。
 
-        必须先确认所有 Chunk 均可见；随后用 ``(chunk_id, doc_id)`` 查询引用并要求
-        父 HEADING 同文档，使跨文档脏引用无法泄漏其他文档标题。搜索和标题展开
-        传入上限时只把稳定排序的前 N 个标题 ID 送入父链水合；批量定位不传上限，
-        因而仍返回全部位置。
+        该入口服务 `/chunk-locations` 等客户端主动提交 ID 的用例，必须保持
+        全有或全无的防探测契约。服务端自己产生的搜索/展开候选不得调用本方法，
+        应使用 :meth:`load_visible_chunk_locations` 处理正常读取竞态。
+
+        Args:
+            session: 调用方管理事务边界的异步数据库会话。
+            chunk_ids: 客户端显式请求定位的 Chunk ID。
+            scope: 已完成授权解析的 Wiki 范围。
+            max_positions: 每个 Chunk 最多水合的位置数；为空时返回全部位置。
+
+        Returns:
+            与去重后输入 ID 一一对应且保持输入顺序的位置记录。
+
+        Raises:
+            RecallApiError: 任一 ID 缺失、越权、未就绪或非 ACTIVE 时返回 403。
+        """
+
+        ordered = tuple(dict.fromkeys(chunk_ids))
+        locations = await self.load_visible_chunk_locations(
+            session,
+            ordered,
+            scope=scope,
+            max_positions=max_positions,
+        )
+        if len(locations) != len(ordered):
+            raise RecallApiError(403, CODE_SCOPE_FORBIDDEN, "one or more chunks are not authorized")
+        return locations
+
+    async def load_visible_chunk_locations(
+        self,
+        session: AsyncSession,
+        chunk_ids: Sequence[str],
+        *,
+        scope: EffectiveWikiScope,
+        max_positions: int | None = None,
+    ) -> tuple[WikiChunkLocationRecord, ...]:
+        """宽松返回服务端内部候选的当前可见子集及标题位置。
+
+        “宽松”只表示 SQL 成功后允许少量候选因并发重解析/删除而缺失；它不是
+        存储一致性修复，也绝不能捕获 SQL、连接或解码异常。随后仍用
+        ``(chunk_id, doc_id)`` 查询引用并要求父 HEADING 同文档，使跨文档脏引用
+        无法泄漏其他文档标题。搜索和标题展开传入上限时只水合稳定排序的前 N 个
+        标题 ID。
+
+        Args:
+            session: 调用方管理事务边界的异步数据库会话。
+            chunk_ids: 搜索或标题展开已经有界的内部候选 ID。
+            scope: 已完成授权解析的 Wiki 范围。
+            max_positions: 每个 Chunk 最多水合的位置数；为空时返回全部位置。
+
+        Returns:
+            当前仍可见的候选位置，按输入 ID 首次出现顺序排列。
+
+        Raises:
+            ValueError: `max_positions` 不是正整数时抛出。
+            SQLAlchemyError: SQL 执行、连接或行解码失败时原样上抛。
         """
 
         if max_positions is not None and max_positions <= 0:
             raise ValueError("max_positions must be positive")
         chunks = await self.load_chunks(session, chunk_ids, scope=scope)
-        if len(chunks) != len(tuple(dict.fromkeys(chunk_ids))):
-            raise RecallApiError(403, CODE_SCOPE_FORBIDDEN, "one or more chunks are not authorized")
+        if not chunks:
+            return ()
         ref = self.model_cls
         parent = aliased(self.model_cls)
         # 先在数据库按 Chunk 分区计数和排名，再由外层应用可选上限；搜索/展开只会

@@ -309,6 +309,51 @@ class WikiRuntime:
                 for dataset, hits in bm25_by_dataset.items()
             }
 
+        # Chunk 真值、Wiki 引用和外部索引的持久不一致必须由存储生命周期修复。
+        # 这里不是容忍脏数据，而是专门处理 BM25 产生候选后、Wiki 分页前发生重解析
+        # 或删除的跨存储读取竞态。候选已受“每库 top-k”约束，因此一次批量求当前
+        # 真值交集即可让失效项在配额前退出、后项自然补位，不能扩大查询或猜测新 ID。
+        stale_candidate_count = 0
+        bounded_candidate_chunk_ids = tuple(
+            dict.fromkeys(
+                hit.chunk_id
+                for dataset_id in sorted(bm25_by_dataset)
+                for hit in bm25_by_dataset[dataset_id]
+            )
+        )
+        if bounded_candidate_chunk_ids:
+            try:
+                async with get_db_context() as db:
+                    final_visible_ids = await self._repository.find_visible_chunk_ids(
+                        db,
+                        bounded_candidate_chunk_ids,
+                        scope=scope,
+                    )
+            except Exception as exc:
+                # 只有 SQL 成功但 ID 缺失才属于正常竞态；基础设施失败必须保留 500
+                # 证据，不能被宽松候选语义伪装成空搜索结果。
+                logger.bind(
+                    event="wiki_search_final_visibility_failed",
+                    bounded_candidate_count=len(bounded_candidate_chunk_ids),
+                ).exception("Wiki final visibility SQL failed")
+                raise RecallApiError(
+                    500,
+                    CODE_INTERNAL_ERROR,
+                    "Wiki final visibility check failed",
+                ) from exc
+            stale_candidate_count = len(bounded_candidate_chunk_ids) - len(final_visible_ids)
+            bm25_by_dataset = {
+                dataset_id: [hit for hit in hits if hit.chunk_id in final_visible_ids]
+                for dataset_id, hits in bm25_by_dataset.items()
+            }
+            if stale_candidate_count:
+                logger.bind(
+                    event="wiki_search_stale_candidates_dropped",
+                    phase="pre_pagination",
+                    stale_candidate_count=stale_candidate_count,
+                    bounded_candidate_count=len(bounded_candidate_chunk_ids),
+                ).info("Wiki search dropped candidates invalidated before pagination")
+
         # 无状态游标只保存两路下一消费位置，不能携带不断增长的历史 Chunk 集。
         # 因此在分页前一次性确定全搜索链正文归属：匹配标题的首个预览固定优先于
         # BM25，后页标题预览就不会先在前页作为正文出现；过滤后仍由轮询后项补位。
@@ -353,6 +398,7 @@ class WikiRuntime:
             prefix_candidate_count=len(prefix_items),
             bm25_candidate_count=sum(len(hits) for hits in bm25_by_dataset.values()),
             preview_owned_bm25_count=len(preview_owned_bm25_ids),
+            stale_candidate_count=stale_candidate_count,
             failed_sources=failures,
         ).info("Wiki search candidates collected")
 
@@ -497,6 +543,11 @@ class WikiRuntime:
         current SUCCESS 与 ACTIVE 门禁，不能直接信任前一阶段的候选快照。
         """
 
+        requested_bm25_count = len(bm25_hits)
+        recomputed_preview_count = 0
+        dropped_preview_count = 0
+        late_stale_count = 0
+        late_preview_owned_bm25_count = 0
         try:
             async with get_db_context() as db:
                 headings = await self._repository.revalidate_visible_headings(
@@ -513,7 +564,7 @@ class WikiRuntime:
                     dict.fromkeys([*preview_ids, *(hit.chunk_id for hit in bm25_hits)])
                 )
                 locations = (
-                    await self._repository.load_chunk_locations(
+                    await self._repository.load_visible_chunk_locations(
                         db,
                         chunk_ids,
                         scope=scope,
@@ -522,6 +573,69 @@ class WikiRuntime:
                     if chunk_ids
                     else ()
                 )
+                visible_chunk_ids = {location.chunk.chunk_id for location in locations}
+                stale_preview_heading_ids = tuple(
+                    item.id
+                    for item in headings
+                    if previews[item.id].chunk_id is not None
+                    and previews[item.id].chunk_id not in visible_chunk_ids
+                )
+                if stale_preview_heading_ids:
+                    # 预览查询与正文水合之间仍可能发生极窄竞态。只允许一次有界重算：
+                    # 重新取得当前首条/总数/游标位置，并仅水合新出现的预览 ID；若
+                    # 第二次仍变化则降级为无预览标题，绝不留下 results/chunks 悬空引用。
+                    recomputed_preview_count = len(stale_preview_heading_ids)
+                    previews = await self._repository.load_heading_previews(
+                        db, headings, scope=scope
+                    )
+                    replacement_preview_ids = tuple(
+                        dict.fromkeys(
+                            preview.chunk_id
+                            for preview in previews.values()
+                            if preview.chunk_id is not None
+                            and preview.chunk_id not in visible_chunk_ids
+                        )
+                    )
+                    if replacement_preview_ids:
+                        replacement_locations = await self._repository.load_visible_chunk_locations(
+                            db,
+                            replacement_preview_ids,
+                            scope=scope,
+                            max_positions=MAX_SEARCH_POSITIONS_PER_CHUNK,
+                        )
+                        locations = (*locations, *replacement_locations)
+                        visible_chunk_ids.update(
+                            location.chunk.chunk_id for location in replacement_locations
+                        )
+                    reconciled_previews: dict[int, WikiHeadingPreview] = {}
+                    for item in headings:
+                        preview = previews[item.id]
+                        if (
+                            preview.chunk_id is not None
+                            and preview.chunk_id not in visible_chunk_ids
+                        ):
+                            dropped_preview_count += 1
+                            preview = WikiHeadingPreview(item.id, 0, None, None, None)
+                        reconciled_previews[item.id] = preview
+                    previews = reconciled_previews
+                # 最终位置水合仍采用宽松内部入口，以覆盖交集检查后的极窄竞态窗口。
+                # 这里只删除原候选，绝不映射到内容相似的新 Chunk；因此 results 与
+                # chunks 始终自洽，极端并发下允许短页但不会返回悬空 chunk_id。
+                bm25_hits = tuple(hit for hit in bm25_hits if hit.chunk_id in visible_chunk_ids)
+                late_stale_count = requested_bm25_count - len(bm25_hits)
+                final_preview_chunk_ids = {
+                    preview.chunk_id
+                    for preview in previews.values()
+                    if preview.chunk_id is not None
+                }
+                if final_preview_chunk_ids:
+                    # 预览重算可能把正文所有权从 C1 移到已入选的 BM25 C2；最终摘要
+                    # 仍以标题预览优先，故再次去重并允许短页，不能扩大候选查询。
+                    visible_bm25_count = len(bm25_hits)
+                    bm25_hits = tuple(
+                        hit for hit in bm25_hits if hit.chunk_id not in final_preview_chunk_ids
+                    )
+                    late_preview_owned_bm25_count = visible_bm25_count - len(bm25_hits)
                 all_heading_ids = [
                     heading_id for location in locations for heading_id in location.heading_ids
                 ]
@@ -530,7 +644,29 @@ class WikiRuntime:
         except RecallApiError:
             raise
         except Exception as exc:
+            logger.bind(event="wiki_search_hydration_failed").exception(
+                "Wiki final hydration SQL failed"
+            )
             raise RecallApiError(500, CODE_INTERNAL_ERROR, "Wiki hydration failed") from exc
+
+        if recomputed_preview_count:
+            logger.bind(
+                event="wiki_search_stale_previews_recomputed",
+                recomputed_preview_count=recomputed_preview_count,
+                dropped_preview_count=dropped_preview_count,
+            ).info("Wiki search recomputed previews invalidated during final hydration")
+        if late_stale_count:
+            logger.bind(
+                event="wiki_search_stale_candidates_dropped",
+                phase="final_hydration",
+                stale_candidate_count=late_stale_count,
+                bounded_candidate_count=requested_bm25_count,
+            ).info("Wiki search dropped candidates invalidated during final hydration")
+        if late_preview_owned_bm25_count:
+            logger.bind(
+                event="wiki_search_final_preview_owned_bm25_dropped",
+                preview_owned_bm25_count=late_preview_owned_bm25_count,
+            ).info("Wiki search removed BM25 chunks owned by recomputed final previews")
 
         results: list[dict[str, Any]] = []
         for heading in headings:
@@ -613,16 +749,19 @@ class WikiRuntime:
                 raise RecallApiError(422, CODE_INVALID_REQUEST, "invalid Wiki cursor") from exc
         try:
             async with get_db_context() as db:
-                refs, has_more = await self._repository.load_heading_chunk_page(
+                # 前瞻固定两页候选，让最终水合刚失效的内部引用由后项补位；扫描仍受
+                # 2 * page_size 硬上限约束。持久失效引用应由存储生命周期清理，Wiki
+                # 这里只处理读取竞态，SQL/连接异常仍由外层映射为 500。
+                refs, source_has_more = await self._repository.load_heading_chunk_page(
                     db,
                     doc_id=doc_id,
                     heading_key=heading_key,
                     scope=scope,
                     after=after,
-                    limit=self._page_size,
+                    limit=self._page_size * 2,
                 )
-                locations = (
-                    await self._repository.load_chunk_locations(
+                visible_locations = (
+                    await self._repository.load_visible_chunk_locations(
                         db,
                         [item.chunk_id for item in refs],
                         scope=scope,
@@ -631,16 +770,36 @@ class WikiRuntime:
                     if refs
                     else ()
                 )
+                locations = visible_locations[: self._page_size]
                 heading_ids = [item for loc in locations for item in loc.heading_ids]
                 headings = await self._repository.load_headings_by_ids(db, heading_ids)
                 paths = await self._repository.load_heading_paths(db, headings)
         except RecallApiError:
             raise
         except Exception as exc:
+            logger.bind(
+                event="wiki_heading_hydration_failed",
+                doc_id=doc_id,
+            ).exception("Wiki heading expansion SQL failed")
             raise RecallApiError(500, CODE_INTERNAL_ERROR, "Wiki heading read failed") from exc
+        stale_ref_count = len({item.chunk_id for item in refs}) - len(visible_locations)
+        if stale_ref_count:
+            logger.bind(
+                event="wiki_heading_stale_refs_dropped",
+                doc_id=doc_id,
+                stale_ref_count=stale_ref_count,
+                bounded_candidate_count=len(refs),
+            ).info("Wiki heading expansion dropped invalidated internal candidates")
+        has_more = source_has_more or len(visible_locations) > self._page_size
         next_direct_cursor = None
-        if has_more and refs:
-            last = refs[-1]
+        if refs and has_more:
+            # 有已水合但本页未返回的可见项时停在最后一个返回项；若本轮全部失效，
+            # 则推进到最后扫描项，避免下一页重复消费同一批失效引用。
+            if len(visible_locations) > self._page_size:
+                last_chunk_id = locations[-1].chunk.chunk_id
+                last = next(item for item in refs if item.chunk_id == last_chunk_id)
+            else:
+                last = refs[-1]
             next_direct_cursor = self._cursor.encode(
                 branch=BRANCH_HEADING_CHUNKS,
                 binding=binding,
