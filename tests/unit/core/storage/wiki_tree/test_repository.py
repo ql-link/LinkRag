@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from sqlalchemy.dialects import mysql
 
+from src.application.recall_errors import RecallApiError
 from src.core.storage.wiki_tree.repository import WikiTreeRepository
 from src.core.wiki.models import (
     EffectiveWikiScope,
@@ -116,6 +117,50 @@ async def test_matching_preview_ownership_checks_earlier_visible_refs_from_bound
 
 
 @pytest.mark.asyncio
+async def test_visible_chunk_ids_intersect_only_the_bounded_candidate_set():
+    repository = WikiTreeRepository()
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=_Rows([("C2",), ("C3",)]))
+
+    visible = await repository.find_visible_chunk_ids(
+        session,
+        ("C1", "C2", "C3"),
+        scope=_scope(),
+    )
+
+    sql = _compiled_sql(session.execute.await_args.args[0])
+    assert "kb_document_chunk.chunk_id in ('c1', 'c2', 'c3')" in sql
+    assert "kb_document_chunk.lifecycle_status = 'active'" in sql
+    assert visible == frozenset({"C2", "C3"})
+
+
+@pytest.mark.asyncio
+async def test_visible_locations_return_subset_but_strict_locations_reject_missing_ids(
+    monkeypatch,
+):
+    repository = WikiTreeRepository()
+    visible_chunk = WikiChunkRecord("C1", 10001, 10, "content", "paragraph", 1, 2)
+    monkeypatch.setattr(repository, "load_chunks", AsyncMock(return_value=(visible_chunk,)))
+    session = MagicMock()
+    session.execute = AsyncMock(return_value=_Rows([]))
+
+    visible = await repository.load_visible_chunk_locations(
+        session,
+        ("C1", "C2"),
+        scope=_scope(),
+    )
+
+    assert [item.chunk.chunk_id for item in visible] == ["C1"]
+    with pytest.raises(RecallApiError) as exc_info:
+        await repository.load_chunk_locations(
+            session,
+            ("C1", "C2"),
+            scope=_scope(),
+        )
+    assert exc_info.value.status_code == 403
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("position_count", [10, 11, 5000])
 async def test_chunk_locations_apply_position_limit_before_parent_path_hydration(
     monkeypatch, position_count
@@ -133,7 +178,7 @@ async def test_chunk_locations_apply_position_limit_before_parent_path_hydration
         )
     )
 
-    locations = await repository.load_chunk_locations(
+    locations = await repository.load_visible_chunk_locations(
         session,
         ("C1",),
         scope=_scope(),

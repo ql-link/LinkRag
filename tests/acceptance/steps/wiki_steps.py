@@ -358,6 +358,12 @@ def _acceptance_runtime(
         item.id: WikiHeadingPreview(item.id, 0, None, None, None) for item in headings
     }
     repository.find_matching_preview_chunk_ids.return_value = frozenset()
+    repository.find_visible_chunk_ids.side_effect = lambda _db, chunk_ids, **_kw: frozenset(
+        chunk_ids
+    )
+    repository.load_visible_chunk_locations.side_effect = lambda _db, chunk_ids, **_kw: tuple(
+        _acceptance_location(chunk_id) for chunk_id in chunk_ids
+    )
     repository.load_chunk_locations.return_value = ()
     repository.load_headings_by_ids.return_value = ()
     bm25 = AsyncMock()
@@ -1390,6 +1396,195 @@ def _assert_scenario_contract(node_name: str, state: WikiAcceptanceState, monkey
         assert payload["results"] == [] and payload["chunks"] == []
         assert errors == [403, 403]
         readiness_db.execute.assert_awaited_once()
+        return
+    if scenario == "搜索最终水合丢弃少量失效候选并从有界池补位":
+        runtime, repository, bm25, readiness = _acceptance_runtime(monkeypatch, page_size=5)
+        repository.find_heading_page.side_effect = [((), False), ((), False)]
+        hits = [
+            RetrieverHit(f"C{index}", 10001, 10, float(10 - index), "bm25") for index in range(1, 8)
+        ]
+        bm25.recall_by_dataset.return_value = {10: hits}
+        readiness.filter_visible_hits.return_value = hits
+        repository.find_visible_chunk_ids.side_effect = None
+        repository.find_visible_chunk_ids.return_value = frozenset({"C3", "C4", "C5", "C6", "C7"})
+
+        payload = asyncio.run(
+            runtime.search(
+                _acceptance_context(), query="gui", dataset_ids=None, doc_ids=None, cursor=None
+            )
+        )
+
+        assert [item["chunk_id"] for item in payload["results"]] == [
+            "C3",
+            "C4",
+            "C5",
+            "C6",
+            "C7",
+        ]
+        assert [chunk["chunk_id"] for chunk in payload["chunks"]] == [
+            "C3",
+            "C4",
+            "C5",
+            "C6",
+            "C7",
+        ]
+        assert repository.find_visible_chunk_ids.await_args.args[1] == tuple(
+            f"C{index}" for index in range(1, 8)
+        )
+        return
+    if scenario == "搜索有界候选全部失效时返回_200_空页":
+        runtime, repository, bm25, readiness = _acceptance_runtime(monkeypatch)
+        repository.find_heading_page.side_effect = [((), False), ((), False)]
+        hits = [RetrieverHit("C1", 10001, 10, 1.0, "bm25")]
+        bm25.recall_by_dataset.return_value = {10: hits}
+        readiness.filter_visible_hits.return_value = hits
+        repository.find_visible_chunk_ids.side_effect = None
+        repository.find_visible_chunk_ids.return_value = frozenset()
+
+        payload = asyncio.run(
+            runtime.search(
+                _acceptance_context(), query="gui", dataset_ids=None, doc_ids=None, cursor=None
+            )
+        )
+
+        assert payload["results"] == []
+        assert payload["chunks"] == []
+        assert payload["has_more"] is False
+        return
+    if scenario == "标题原预览失效时按当前可见引用重算摘要":
+        runtime, repository, bm25, _readiness = _acceptance_runtime(monkeypatch)
+        heading = _acceptance_heading(1, title="H1")
+        repository.find_heading_page.return_value = ((heading,), False)
+        repository.load_heading_previews.side_effect = None
+        repository.load_heading_previews.return_value = {1: WikiHeadingPreview(1, 2, "C2", 1, 202)}
+        repository.load_visible_chunk_locations.side_effect = None
+        repository.load_visible_chunk_locations.return_value = (
+            _acceptance_location("C2", heading_ids=(1,)),
+        )
+
+        payload = asyncio.run(
+            runtime.search(
+                _acceptance_context(), query="H1", dataset_ids=None, doc_ids=None, cursor=None
+            )
+        )
+
+        summary = payload["results"][0]["heading"]
+        assert summary["direct_chunk_preview_id"] == "C2"
+        assert summary["direct_chunk_count"] == 2
+        assert summary["direct_chunks_has_more"] is True
+        assert "next_direct_chunk_cursor" in summary
+        assert [chunk["chunk_id"] for chunk in payload["chunks"]] == ["C2"]
+        bm25.recall_by_dataset.assert_not_awaited()
+        return
+    if scenario == "显式_chunk_定位包含失效_id_时整体拒绝":
+        runtime, repository, _bm25, _readiness = _acceptance_runtime(monkeypatch)
+        repository.load_chunk_locations.side_effect = RecallApiError(
+            403,
+            "RECALL_SCOPE_FORBIDDEN",
+            "one or more chunks are not authorized",
+        )
+
+        with pytest.raises(RecallApiError) as exc_info:
+            asyncio.run(
+                runtime.locate_chunks(
+                    _acceptance_context(), chunk_ids=["C1", "C2"], dataset_ids=None
+                )
+            )
+
+        assert exc_info.value.status_code == 403
+        repository.load_visible_chunk_locations.assert_not_awaited()
+        return
+    if scenario == "标题展开跳过失效直属_chunk_并从后项补位":
+        runtime, repository, _bm25, _readiness = _acceptance_runtime(monkeypatch, page_size=2)
+        refs = tuple(WikiChunkRefRecord(index, index - 1, f"C{index}") for index in range(1, 4))
+        repository.load_heading_chunk_page.return_value = (refs, False)
+        repository.load_visible_chunk_locations.side_effect = None
+        repository.load_visible_chunk_locations.return_value = (
+            _acceptance_location("C2"),
+            _acceptance_location("C3"),
+        )
+
+        page = asyncio.run(
+            runtime.expand_heading_chunks(
+                _acceptance_context(), doc_id=10001, heading_key="a" * 64, cursor=None
+            )
+        )
+        assert [chunk["chunk_id"] for chunk in page["chunks"]] == ["C2", "C3"]
+        assert repository.load_heading_chunk_page.await_args.kwargs["limit"] == 4
+
+        repository.load_heading_chunk_page.side_effect = RecallApiError(
+            403, "RECALL_SCOPE_FORBIDDEN", "heading is not authorized"
+        )
+        with pytest.raises(RecallApiError) as exc_info:
+            asyncio.run(
+                runtime.expand_heading_chunks(
+                    _acceptance_context(), doc_id=10001, heading_key="b" * 64, cursor=None
+                )
+            )
+        assert exc_info.value.status_code == 403
+        return
+    if scenario == "宽松候选水合的数据库异常仍然失败":
+        runtime, repository, bm25, readiness = _acceptance_runtime(monkeypatch)
+        repository.find_heading_page.side_effect = [((), False), ((), False)]
+        hit = RetrieverHit("C1", 10001, 10, 1.0, "bm25")
+        bm25.recall_by_dataset.return_value = {10: [hit]}
+        readiness.filter_visible_hits.return_value = [hit]
+        repository.find_visible_chunk_ids.side_effect = RuntimeError("mysql down")
+
+        with pytest.raises(RecallApiError) as exc_info:
+            asyncio.run(
+                runtime.search(
+                    _acceptance_context(),
+                    query="gui",
+                    dataset_ids=None,
+                    doc_ids=None,
+                    cursor=None,
+                )
+            )
+
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.code == "RECALL_INTERNAL_ERROR"
+        return
+    if scenario == "旧_chunk_失效后不猜测映射到相似的新_chunk":
+        runtime, repository, bm25, readiness = _acceptance_runtime(monkeypatch)
+        repository.find_heading_page.side_effect = [((), False), ((), False)]
+        hit = RetrieverHit("C1", 10001, 10, 1.0, "bm25")
+        bm25.recall_by_dataset.return_value = {10: [hit]}
+        readiness.filter_visible_hits.return_value = [hit]
+        repository.find_visible_chunk_ids.side_effect = None
+        repository.find_visible_chunk_ids.return_value = frozenset({"C2"})
+
+        payload = asyncio.run(
+            runtime.search(
+                _acceptance_context(), query="gui", dataset_ids=None, doc_ids=None, cursor=None
+            )
+        )
+
+        assert payload["results"] == []
+        assert payload["chunks"] == []
+        return
+    if scenario == "连续失效候选只在固定有界窗口内扫描":
+        runtime, repository, bm25, readiness = _acceptance_runtime(monkeypatch, page_size=3)
+        repository.find_heading_page.side_effect = [((), False), ((), False)]
+        hits = [
+            RetrieverHit(f"C{index}", 10001, 10, float(6 - index), "bm25") for index in range(1, 6)
+        ]
+        bm25.recall_by_dataset.return_value = {10: hits}
+        readiness.filter_visible_hits.return_value = hits
+        repository.find_visible_chunk_ids.side_effect = None
+        repository.find_visible_chunk_ids.return_value = frozenset({"C5"})
+
+        payload = asyncio.run(
+            runtime.search(
+                _acceptance_context(), query="gui", dataset_ids=None, doc_ids=None, cursor=None
+            )
+        )
+
+        assert [item["chunk_id"] for item in payload["results"]] == ["C5"]
+        assert payload["has_more"] is False
+        assert repository.find_visible_chunk_ids.await_args.args[1] == tuple(
+            f"C{index}" for index in range(1, 6)
+        )
         return
     if scenario == "chunk_定位返回全部直接标题位置并支持批量读取":
         runtime, repository, _bm25, _readiness = _acceptance_runtime(monkeypatch)

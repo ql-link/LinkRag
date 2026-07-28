@@ -268,6 +268,24 @@ async def test_real_mysql_exact_prefix_preview_location_tree_and_readiness(migra
             locations = await repository.load_chunk_locations(session, ["C1", "C4"], scope=scope)
             assert len(locations[0].heading_ids) == 2
             assert locations[1].heading_ids == ()
+            assert await repository.find_visible_chunk_ids(
+                session,
+                ("C1", "STALE"),
+                scope=scope,
+            ) == frozenset({"C1"})
+            visible_subset = await repository.load_visible_chunk_locations(
+                session,
+                ("C1", "STALE"),
+                scope=scope,
+            )
+            assert [item.chunk.chunk_id for item in visible_subset] == ["C1"]
+            with pytest.raises(RecallApiError) as stale_location_error:
+                await repository.load_chunk_locations(
+                    session,
+                    ("C1", "STALE"),
+                    scope=scope,
+                )
+            assert stale_location_error.value.status_code == 403
 
             foreign_heading_result = await session.execute(
                 text(
