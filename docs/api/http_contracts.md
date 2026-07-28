@@ -403,15 +403,15 @@ RAG SSE 成功终态同构。三路执行期 top_k / 分数阈值 / 融合策略
 }
 ```
 
-`results` 是以 `result_type` 为判别字段的严格联合类型，也是分页与顺序的权威数组：`HEADING` 只允许 `source=exact_title|title_prefix`、非空 `heading` 及空 `chunk_id/bm25_score`；`CHUNK` 只允许 `source=bm25`、空 `heading` 及非空 `chunk_id/bm25_score`。其他来源或交叉字段组合不属于响应契约，并会被服务端 Schema 拒绝。HEADING 以物理节点唯一，CHUNK 以 `chunk_id` 唯一。`chunks` 是按 `chunk_id` 去重的正文展开区。每个标题最多预览一个直属 Chunk；若 BM25 候选同时是本次查询任意匹配标题的首个可见直属 Chunk，则在分页前固定归标题预览所有并从 BM25 流移除，后项按原顺序补位，保证数据不变时跨页不重复。每个搜索 Chunk 最多内嵌前 10 个稳定标题位置。exact 结果的全部续页不调用 prefix/BM25；mixed 默认目标配额 5/10，任一路不足由另一条补位。`has_more=false` 时省略 `next_cursor`。
+`results` 是以 `result_type` 为判别字段的严格联合类型，也是分页与顺序的权威数组：`HEADING` 只允许 `source=exact_title|title_prefix`、非空 `heading` 及空 `chunk_id/bm25_score`；`CHUNK` 只允许 `source=bm25`、空 `heading` 及非空 `chunk_id/bm25_score`。其他来源或交叉字段组合不属于响应契约，并会被服务端 Schema 拒绝。HEADING 以物理节点唯一，CHUNK 以 `chunk_id` 唯一。`chunks` 是按 `chunk_id` 去重的正文展开区。每个标题最多预览一个直属 Chunk；若 BM25 候选同时是本次查询任意匹配标题的首个可见直属 Chunk，则在分页前固定归标题预览所有并从 BM25 流移除，后项按原顺序补位，保证数据不变时跨页不重复。BM25 候选还会在配额和分页前批量校验当前 MySQL 真值：候选产生后因并发重解析或删除而失效的 ID 被丢弃并由有界池后项按原顺序补位，池耗尽时返回 HTTP 200 短页或空页，不返回 403/409/500；真正的 SQL 或连接失败仍返回 500。响应中的每个结果 Chunk/标题预览都必然存在于同一响应的 `chunks`。每个搜索 Chunk 最多内嵌前 10 个稳定标题位置。exact 结果的全部续页不调用 prefix/BM25；mixed 默认目标配额 5/10，任一路不足由另一条补位。`has_more=false` 时省略 `next_cursor`。
 
 ### GET /api/v1/wiki/documents/{doc_id}/headings/{heading_key}/chunks
 
-`heading_key` 是 64 位小写十六进制。查询参数 `cursor` 可选：不传时从首个直属 Chunk 开始；提交搜索结果的 `next_direct_chunk_cursor` 时从预览后的第二个开始。响应字段为 `doc_id`、`heading_key`、去重后的完整 `chunks`、`page_size`、`direct_chunks_has_more` 及可选 `next_direct_chunk_cursor`。只读取当前标题的直属 CHUNK_REF，不进入子标题或其他搜索结果。每个返回 Chunk 的 `positions` 最多内嵌前 10 个稳定标题位置，并以 `position_count/positions_truncated` 表示完整数量和是否截断；需要全部位置时调用 Chunk 定位端点。
+`heading_key` 是 64 位小写十六进制。查询参数 `cursor` 可选：不传时从首个直属 Chunk 开始；提交搜索结果的 `next_direct_chunk_cursor` 时从预览后的第二个开始。响应字段为 `doc_id`、`heading_key`、去重后的完整 `chunks`、`page_size`、`direct_chunks_has_more` 及可选 `next_direct_chunk_cursor`。只读取当前标题的直属 CHUNK_REF，不进入子标题或其他搜索结果。服务端固定前瞻最多 `2 * page_size` 个直属引用；最终水合时刚失效的内部 Chunk 被跳过并由后项补位，仍不足时返回 200 短页，标题本身失效或越权仍整体 403。每个返回 Chunk 的 `positions` 最多内嵌前 10 个稳定标题位置，并以 `position_count/positions_truncated` 表示完整数量和是否截断；需要全部位置时调用 Chunk 定位端点。
 
 ### POST /api/v1/wiki/chunk-locations
 
-请求 `{"chunk_ids":["C1","C2"],"dataset_ids":[10,20]}`。`chunk_ids` 为 1～100 个，去重后保持首次出现顺序；`dataset_ids` 可省略。响应 `locations[]` 逐项包含 `chunk_id`、`doc_id`、`dataset_id`、`positions[]`，每个 position 含从文档根标题到直接标题的完整 `path`。本端点不截断位置；任一 Chunk 缺失、越权、非 ACTIVE 或文档未就绪时整体 403。
+请求 `{"chunk_ids":["C1","C2"],"dataset_ids":[10,20]}`。`chunk_ids` 为 1～100 个，去重后保持首次出现顺序；`dataset_ids` 可省略。响应 `locations[]` 逐项包含 `chunk_id`、`doc_id`、`dataset_id`、`positions[]`，每个 position 含从文档根标题到直接标题的完整 `path`。本端点不截断位置；它与服务端内部候选水合不同，保持严格全有或全无语义，任一 Chunk 缺失、越权、非 ACTIVE 或文档未就绪时整体 403，且不返回其他有效 ID 的部分位置。
 
 ### GET /api/v1/wiki/documents/{doc_id}/tree
 
