@@ -22,6 +22,8 @@ from src.core.mq.messages.parse_task import ParseTaskPayload
 from src.core.pipeline.parse_task.source import ParseSourceIO
 from src.core.pipeline.parse_task.stages.services import StageServices
 from src.core.storage.chunks.repository import ChunkRepository
+from src.core.storage.wiki_tree import WikiTreeRepository
+from src.core.wiki import HeadingTreeBuilder
 from src.core.workflow import (
     InMemoryWorkflowStore,
     RunRecord,
@@ -61,6 +63,8 @@ class ParseWorkflowRunner:
         preprocessor: Any | None = None,
         chunk_draft_factory: Any | None = None,
         sparse_indexing_pipeline: Any | None = None,
+        wiki_tree_builder: HeadingTreeBuilder | None = None,
+        wiki_tree_repository: WikiTreeRepository | None = None,
     ) -> None:
         self._storage = storage or StorageFactory.get_storage()
         self._session_factory = session_factory or get_async_session_factory()
@@ -79,6 +83,8 @@ class ParseWorkflowRunner:
             preprocessor=preprocessor,
             chunk_draft_factory=chunk_draft_factory,
             sparse_indexing_pipeline=sparse_indexing_pipeline,
+            wiki_tree_builder=wiki_tree_builder,
+            wiki_tree_repository=wiki_tree_repository,
         )
 
     @property

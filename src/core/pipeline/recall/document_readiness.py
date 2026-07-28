@@ -5,14 +5,18 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractAsyncContextManager
-from typing import TypeAlias
+from typing import Protocol, TypeAlias, TypeVar
 
 from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.pipeline.parse_task.post_process.constants import PIPELINE_STATUS_SUCCESS
-from src.core.pipeline.recall.models import RecallHit
 from src.core.storage.chunks.constants import CHUNK_LIFECYCLE_ACTIVE
+from src.core.storage.document_visibility import (
+    current_document_join_condition,
+    dataset_table,
+    document_original_file_table,
+)
 from src.database import get_db_context
 from src.models.chunk_record import ChunkRecordDB
 from src.models.parse_task import DocumentParsePipeline, DocumentParseTask
@@ -23,6 +27,31 @@ DEFAULT_READINESS_BATCH_SIZE = 500
 
 SessionContext: TypeAlias = AbstractAsyncContextManager[AsyncSession]
 SessionContextFactory: TypeAlias = Callable[[], SessionContext]
+
+
+class RoutedHit(Protocol):
+    """可由 MySQL 就绪门禁校验的最小召回候选协议。"""
+
+    @property
+    def chunk_id(self) -> str:
+        """返回 Chunk 业务 ID。"""
+
+        ...
+
+    @property
+    def doc_id(self) -> int:
+        """返回候选声明的原文档 ID。"""
+
+        ...
+
+    @property
+    def dataset_id(self) -> int:
+        """返回候选声明的数据集 ID。"""
+
+        ...
+
+
+RoutedHitT = TypeVar("RoutedHitT", bound=RoutedHit)
 
 
 class MySqlDocumentReadinessGate:
@@ -46,10 +75,10 @@ class MySqlDocumentReadinessGate:
 
     async def filter_visible_hits(
         self,
-        hits: Sequence[RecallHit],
+        hits: Sequence[RoutedHitT],
         *,
         user_id: int,
-    ) -> list[RecallHit]:
+    ) -> list[RoutedHitT]:
         """返回 MySQL 已确认可见的候选，并保持融合顺序和对象引用。
 
         可见条件同时包含：chunk 属于请求用户且仍为 ACTIVE；chunk 的文档、数据集
@@ -106,7 +135,7 @@ class MySqlDocumentReadinessGate:
             )
             raise
 
-        visible: list[RecallHit] = []
+        visible: list[RoutedHitT] = []
         filtered_by_routing_or_missing = 0
         filtered_by_lifecycle = 0
         filtered_by_pipeline = 0
@@ -116,8 +145,8 @@ class MySqlDocumentReadinessGate:
                 filtered_by_routing_or_missing += 1
                 continue
             lifecycle_status, pipeline_status = readiness
-            # Assign one primary reason per hit so the breakdown adds up to the
-            # total filtered count.  The precedence is part of the log contract.
+            # 每个候选只归入一个首要过滤原因，确保分类计数之和等于总过滤数；
+            # 此优先级已进入日志契约，不能随意调整。
             if lifecycle_status != CHUNK_LIFECYCLE_ACTIVE:
                 filtered_by_lifecycle += 1
             elif pipeline_status != PIPELINE_STATUS_SUCCESS:
@@ -144,6 +173,8 @@ class MySqlDocumentReadinessGate:
 
     @staticmethod
     def _build_query(chunk_ids: Sequence[str], *, user_id: int):
+        """构建同时校验 Chunk 路由、数据集所有权和当前 pipeline 的批量 SQL。"""
+
         return (
             select(
                 ChunkRecordDB.chunk_id,
@@ -162,19 +193,26 @@ class MySqlDocumentReadinessGate:
             )
             .outerjoin(
                 DocumentParsePipeline,
-                and_(
-                    DocumentParsePipeline.task_id == DocumentParseTask.latest_parse_task_id,
-                    DocumentParsePipeline.document_parse_file_id == DocumentParseTask.id,
-                    DocumentParsePipeline.document_original_file_id
-                    == DocumentParseTask.document_original_file_id,
-                ),
+                current_document_join_condition(),
+            )
+            .join(dataset_table, dataset_table.c.id == DocumentParseTask.dataset_id)
+            .join(
+                document_original_file_table,
+                document_original_file_table.c.id == DocumentParseTask.document_original_file_id,
             )
             .where(
                 ChunkRecordDB.chunk_id.in_(chunk_ids),
                 ChunkRecordDB.user_id == user_id,
+                dataset_table.c.user_id == user_id,
+                dataset_table.c.status.collate("utf8mb4_unicode_ci") == "ACTIVE",
+                dataset_table.c.is_deleted.is_(False),
+                document_original_file_table.c.user_id == user_id,
+                document_original_file_table.c.is_deleted.is_(False),
             )
         )
 
     def _iter_batches(self, values: Sequence[str]) -> Iterator[Sequence[str]]:
+        """按配置批大小切分 Chunk ID，避免生成无界 IN 条件。"""
+
         for offset in range(0, len(values), self._batch_size):
             yield values[offset : offset + self._batch_size]

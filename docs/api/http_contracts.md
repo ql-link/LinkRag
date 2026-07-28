@@ -4,7 +4,7 @@
 
 ## 1. 通用约定
 
-- API 前缀按模块划分：`/api/v1/parser`、`/api/v1/mq`、`/api/v1/llm`、`/api/v1/internal/llm`、`/api/v1/rag`、`/api/v1/recall`。
+- API 前缀按模块划分：`/api/v1/parser`、`/api/v1/mq`、`/api/v1/llm`、`/api/v1/internal/llm`、`/api/v1/rag`、`/api/v1/recall`、`/api/v1/wiki`。
 - 所有 HTTP 请求可带 `X-Trace-Id` 请求头；未携带时 Python 端生成 UUID。响应会回显本次请求使用的 `X-Trace-Id`，日志上下文同步写入该值。
 - 普通 JSON 响应通常使用 `{code, message, data}` 或模块自定义响应模型。
 - 解析和 MQ 路由异常通常返回 HTTP `500`，`detail` 为异常文本。
@@ -360,3 +360,61 @@ RAG SSE 成功终态同构。三路执行期 top_k / 分数阈值 / 融合策略
 执行期错误走 **HTTP 状态码**（区别于 SSE error 帧）：无默认 EMBEDDING 配置 `422`、全路失败 `500`、
 召回超时 `504`、未预期异常 `500`，错误体为 `{code, message, data}`，`message` 不含内部堆栈。错误码见
 [error_codes.md §5](error_codes.md#5-recall-错误码对外-rag-流--纯召回-json)。
+
+## 7. Wiki API（对外）
+
+四个端点均使用 `/api/v1/wiki` 前缀和 `Authorization: Bearer <session-token>`，鉴权 claims 与 §6 相同。成功响应为 JSON，并回显/生成 `X-Request-Id`；两个 POST 请求体中的未知字段一律 422，ID 必须为正整数。身份只取 token claims。两个 POST 的运行时 OpenAPI `requestBody` 直接由对应 Pydantic 请求模型生成并标记为必填，与本节字段契约保持同源。
+
+| Method | Path | 用途 |
+| --- | --- | --- |
+| `POST` | `/api/v1/wiki/search` | exact 标题或 prefix + BM25 混合搜索 |
+| `GET` | `/api/v1/wiki/documents/{doc_id}/headings/{heading_key}/chunks` | 分页展开一个标题的直属 Chunk |
+| `POST` | `/api/v1/wiki/chunk-locations` | 批量定位 Chunk 的全部直接标题路径 |
+| `GET` | `/api/v1/wiki/documents/{doc_id}/tree` | 读取授权且就绪文档的完整标题树 |
+
+### POST /api/v1/wiki/search
+
+请求：
+
+```json
+{"query":"快速 开始","dataset_ids":[10,20],"doc_ids":[10001],"cursor":"optional"}
+```
+
+`query` 必填；`dataset_ids`、`doc_ids`、`cursor` 可省略。ID 数组去重后排序。客户端不能提交 `page_size`、`top_k`、`strict` 或 sources。续页必须重复同一 query 和范围；无状态 HMAC 游标绑定用户、规范 query、有效 scope 和 exact/mixed 分支，10 分钟过期。
+
+成功体：
+
+```json
+{
+  "results":[
+    {"result_type":"HEADING","source":"title_prefix","heading":{
+      "heading_key":"<64-hex>","doc_id":10001,"dataset_id":10,"title":"快速开始",
+      "heading_level":2,"path":[{"heading_key":"<64-hex>","title":"指南","heading_level":1}],
+      "direct_chunk_count":2,"direct_chunk_preview_id":"C1","direct_chunks_has_more":true,
+      "next_direct_chunk_cursor":"<signed>"
+    },"chunk_id":null,"bm25_score":null},
+    {"result_type":"CHUNK","source":"bm25","heading":null,"chunk_id":"C2","bm25_score":8.31}
+  ],
+  "chunks":[{"chunk_id":"C1","doc_id":10001,"dataset_id":10,"content":"完整 Chunk 正文",
+    "chunk_type":"paragraph","start_line":10,"end_line":20,
+    "positions":[{"path":[{"heading_key":"<64-hex>","title":"快速开始","heading_level":2}]}],
+    "position_count":1,"positions_truncated":false}],
+  "failed_sources":[],"page_size":15,"has_more":true,"next_cursor":"<signed>"
+}
+```
+
+`results` 是以 `result_type` 为判别字段的严格联合类型，也是分页与顺序的权威数组：`HEADING` 只允许 `source=exact_title|title_prefix`、非空 `heading` 及空 `chunk_id/bm25_score`；`CHUNK` 只允许 `source=bm25`、空 `heading` 及非空 `chunk_id/bm25_score`。其他来源或交叉字段组合不属于响应契约，并会被服务端 Schema 拒绝。HEADING 以物理节点唯一，CHUNK 以 `chunk_id` 唯一。`chunks` 是按 `chunk_id` 去重的正文展开区。每个标题最多预览一个直属 Chunk；若 BM25 候选同时是本次查询任意匹配标题的首个可见直属 Chunk，则在分页前固定归标题预览所有并从 BM25 流移除，后项按原顺序补位，保证数据不变时跨页不重复。BM25 候选还会在配额和分页前批量校验当前 MySQL 真值：候选产生后因并发重解析或删除而失效的 ID 被丢弃并由有界池后项按原顺序补位，池耗尽时返回 HTTP 200 短页或空页，不返回 403/409/500；真正的 SQL 或连接失败仍返回 500。响应中的每个结果 Chunk/标题预览都必然存在于同一响应的 `chunks`。每个搜索 Chunk 最多内嵌前 10 个稳定标题位置。exact 结果的全部续页不调用 prefix/BM25；mixed 默认目标配额 5/10，任一路不足由另一条补位。`has_more=false` 时省略 `next_cursor`。
+
+### GET /api/v1/wiki/documents/{doc_id}/headings/{heading_key}/chunks
+
+`heading_key` 是 64 位小写十六进制。查询参数 `cursor` 可选：不传时从首个直属 Chunk 开始；提交搜索结果的 `next_direct_chunk_cursor` 时从预览后的第二个开始。展开游标绑定用户、标题当前所属数据集、`doc_id`、`heading_key` 和 `heading_chunks` 分支，不绑定来源搜索可能覆盖的多数据集集合；接口会先按 `doc_id` 重新授权和解析当前数据集归属，再执行验签，因此跨数据集搜索签发的游标可以展开所属文档。对于仍可授权解析但资源身份不符的文档、数据集或标题，旧游标返回 422；越权资源仍在验签前返回 403。响应字段为 `doc_id`、`heading_key`、去重后的完整 `chunks`、`page_size`、`direct_chunks_has_more` 及可选 `next_direct_chunk_cursor`。只读取当前标题的直属 CHUNK_REF，不进入子标题或其他搜索结果。服务端固定前瞻最多 `2 * page_size` 个直属引用；最终水合时刚失效的内部 Chunk 被跳过并由后项补位，仍不足时返回 200 短页，标题本身失效或越权仍整体 403。每个返回 Chunk 的 `positions` 最多内嵌前 10 个稳定标题位置，并以 `position_count/positions_truncated` 表示完整数量和是否截断；需要全部位置时调用 Chunk 定位端点。
+
+### POST /api/v1/wiki/chunk-locations
+
+请求 `{"chunk_ids":["C1","C2"],"dataset_ids":[10,20]}`。`chunk_ids` 为 1～100 个，去重后保持首次出现顺序；`dataset_ids` 可省略。响应 `locations[]` 逐项包含 `chunk_id`、`doc_id`、`dataset_id`、`positions[]`，每个 position 含从文档根标题到直接标题的完整 `path`。本端点不截断位置；它与服务端内部候选水合不同，保持严格全有或全无语义，任一 Chunk 缺失、越权、非 ACTIVE 或文档未就绪时整体 403，且不返回其他有效 ID 的部分位置。
+
+### GET /api/v1/wiki/documents/{doc_id}/tree
+
+响应包含 `doc_id`、`dataset_id`、`original_filename`、递归 `headings`、`root_chunk_ids` 与去重后的完整 `chunks`。每个 heading 含 `heading_key/title/heading_level/direct_chunk_ids/children`；同父 HEADING 与直属 CHUNK_REF 分别按各自 `sort_order` 排序，不声明两类节点间的混合顺序。文档越权或当前 pipeline 非 SUCCESS 时返回 403。
+
+Wiki 错误码见 [error_codes.md §5.1](error_codes.md#51-wiki-端点错误映射)，实现与最终一致性游标语义见 [wiki_heading_tree.md](../internals/wiki_heading_tree.md)。

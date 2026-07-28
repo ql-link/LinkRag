@@ -21,7 +21,7 @@ from .factory import (
     create_chunking_engine,
 )
 from .input_adapter import InputAdapter
-from .models import Chunk, EmbeddedChunk, EmbeddingPipelineStats
+from .models import Chunk, ChunkingResult, EmbeddedChunk, EmbeddingPipelineStats
 from .overlap import ChunkOverlapConfig, ChunkOverlapper
 from .pipeline_chunker import SplitterOutputValidationError, StructuredSemanticChunker
 from .stage_contracts import StageOneAlgorithm, StageTwoAlgorithm
@@ -42,6 +42,7 @@ from .validators import CoarseChunkSetValidator, FinalChunkSetValidator
 
 __all__ = [
     "Chunk",
+    "ChunkingResult",
     "EmbeddedChunk",
     "EmbeddingPipelineStats",
     "CandidateBoundaryChunker",

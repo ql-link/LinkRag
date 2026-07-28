@@ -11,7 +11,7 @@ ORM 或 `scripts/db/init.sql` 与 migration 不一致时，以 migration 为准�
 
 ## 表清单
 
-按业务域共 21 张表：
+按业务域共 22 张表：
 
 | 业务域 | 表 | 主键 ID 起始 |
 | --- | --- | --- |
@@ -21,7 +21,7 @@ ORM 或 `scripts/db/init.sql` 与 migration 不一致时，以 migration 为准�
 | [文档解析](#4-文档解析) | `document_original_file`, `document_parse_file`, `document_parsed_log`, `document_parse_pipeline` | 10000 |
 | [博客](#5-博客) | `blog_post`, `blog_asset` | 10000 |
 | [用户反馈](#6-用户反馈) | `user_feedback` | 10000 |
-| [知识索引](#7-知识索引) | `kb_document_chunk` | 10000 |
+| [知识索引](#7-知识索引) | `kb_document_chunk`, `wiki_tree_node` | 10000 |
 | [Workflow 运行记录](#8-workflow-运行记录) | `workflow_run`, `workflow_node_run` | 10000 |
 
 所有表统一：`InnoDB` / `utf8mb4_unicode_ci`，主键自增从 `10000` 起。
@@ -588,6 +588,40 @@ ORM：[`ChunkRecordDB`](../../../src/models/chunk_record.py)
 - `idx_doc_es_status(doc_id, es_status)`
 - `idx_doc_lifecycle_status(doc_id, lifecycle_status)`
 - `idx_lifecycle_update_time(lifecycle_status, update_time)`
+
+### `wiki_tree_node` — Wiki 标题与 Chunk 引用混合节点表
+
+每篇文档的一棵可重建标题树。`HEADING` 保存标题结构，`CHUNK_REF` 只引用
+`kb_document_chunk.chunk_id`；正文、用户、知识库和 Chunk 类型不在本表复制。
+
+ORM：[`WikiTreeNodeDB`](../../../src/models/wiki_tree.py)
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | BIGINT UNSIGNED PK | 节点物理主键；全量重建后可变化 |
+| `heading_key` | VARCHAR(64) UNIQUE NULL | `HEADING` 的条件稳定业务键；`CHUNK_REF` 为 NULL |
+| `doc_id` | BIGINT UNSIGNED | 原始文档 ID，对应 `document_original_file.id` |
+| `parent_id` | BIGINT UNSIGNED NULL | 直接父 `HEADING.id`；NULL 表示文档虚拟根 |
+| `node_type` | VARCHAR(16) | `HEADING`=标题节点；`CHUNK_REF`=Chunk 引用节点 |
+| `title` | VARCHAR(512) NULL | 规范空白后保留展示大小写的标题；仅 `HEADING` 使用 |
+| `heading_level` | TINYINT UNSIGNED NULL | 标题级别 1～6；仅 `HEADING` 使用 |
+| `chunk_id` | VARCHAR(128) NULL | 指向 `kb_document_chunk.chunk_id`；仅 `CHUNK_REF` 使用 |
+| `sort_order` | INT UNSIGNED | 同父节点、同节点类型内从 0 开始的顺序 |
+| `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
+
+索引：
+- `uk_wiki_heading_key(heading_key)`
+- `idx_wiki_doc_parent_type_order(doc_id, parent_id, node_type, sort_order)`
+- `idx_wiki_type_title_doc(node_type, title, doc_id, id)`
+- `idx_wiki_chunk_doc_parent(chunk_id, doc_id, parent_id)`
+
+约束说明：
+
+- `HEADING` 必须有 `heading_key`、`title`、`heading_level`，且 `chunk_id` 为空；
+  `CHUNK_REF` 必须有 `chunk_id`，且标题字段为空。组合约束由领域构建器和仓储校验。
+- 不设置物理外键；父节点同文档、引用目标和生命周期一致性由同事务写入、读取门禁与集成测试保证。
+- nullable unique 允许多条 `CHUNK_REF` 使用 `heading_key=NULL`；根级重复引用由构建器去重。
+- migration 只创建空表，不从存量 Chunk 反推标题树。主键从 `10000` 起。
 
 ## 8. Workflow 运行记录
 

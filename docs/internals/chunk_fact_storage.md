@@ -55,6 +55,10 @@ src/core/storage/chunks/
 | `mark_sparse_indexing` / `mark_sparse_indexed` / `mark_sparse_failed` | sparse 状态翻转 | CAS 同下；只 SET sparse 维度 |
 | `mark_es_success` / `mark_es_failed` / `mark_es_retrying` | BM25 chunk 状态翻转 | 使用 ES/BM25 专属 CAS，并恒带 `_active_predicate` |
 | `mark_document_es_failed` / `mark_document_es_success` | 文档级 BM25 清理/重建后统一更新整篇 ACTIVE chunk | 按 `doc_id + user_id + set_id` 限定范围 |
+
+Wiki 标题树只保存 `chunk_id` 引用。管理端删除 Chunk 时，`lifecycle_status: ACTIVE → REMOVED` 与删除该 Chunk 的全部 `wiki_tree_node.CHUNK_REF` 必须在同一 MySQL 事务中完成；批量 CAS 只要不是全量命中就整体回滚，不能删除仍为 ACTIVE 的 Chunk 引用。即使清理重试窗口内存在悬挂引用，所有 Wiki 读取仍以 ACTIVE Chunk 为最终门禁。
+
+单 Chunk 正文更新继续复用既有 `chunk_id` 和 Wiki 引用；请求若实际改变 `start_line`、`end_line` 或 `chunk_index`，会在 content hash、MySQL 更新、embedding 及外部索引 mutation 前抛出 `ChunkStructuralUpdateNotAllowedError`，并提示通过整文档重新解析原子替换 Chunk 与标题树。字段省略或携带相同值不视为结构变化。
 | `mark_removed(chunk_ids)` | 软删除：`lifecycle ACTIVE→REMOVED` | 触发「鬼影 hit」窗口（见 §5） |
 | `update_chunk_for_reindex` / `update_chunk_metadata` | 改写正文/元数据并重置索引状态 | 限 `dense_vector_status ∈ (SUCCESS, FAILED)` 且 `ACTIVE` |
 

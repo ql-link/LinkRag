@@ -296,6 +296,8 @@ MySQL 是业务真值。正常写入与写入失败后的同步清理对同一 `
 | `RECALL_DENSE_TOP_K` | `100` | RAG pipeline dense 路执行期召回深度；数据集级 `recall_config.dense_top_k` 未配置时使用 |
 | `RECALL_SPARSE_TOP_K` | `50` | RAG pipeline sparse 路执行期召回深度；数据集级 `recall_config.sparse_top_k` 未配置时使用 |
 | `RECALL_BM25_TOP_K` | `100` | RAG pipeline bm25 路执行期召回深度；数据集级 `recall_config.bm25_top_k` 未配置时使用 |
+| `WIKI_SEARCH_PAGE_SIZE` | `15` | Wiki 顶层搜索与单标题直属 Chunk 展开的服务端固定页大小；必须为正整数，客户端不能覆盖 |
+| `WIKI_BM25_TOP_K_PER_DATASET` | `50` | Wiki mixed 分支对每个有效知识库独立读取的 BM25 候选上限；必须为正整数，不读取知识库个性 `bm25_top_k` |
 | `RECALL_ENABLED_SOURCES` | `bm25,sparse,dense` | 启用的召回路（逗号分隔）。本期默认开启三路；运维侧可显式 set `bm25,sparse` 暂时回退到 dev 旧行为；未登记的 source 出现在配置中装配期 `ValueError` |
 | `RECALL_LTR_MODE` | `off` | `off` 保持旧 rerank；`shadow` 旁路比较但不改结果；`active` 本地 LambdaMART 主排并跳过 rerank；`baseline` 主动回滚到 weighted score 并跳过 rerank |
 | `RECALL_LTR_MODEL_DIR` | `models/ltr/candidate-difference-v3-20260728-final33` | 版本化生产模型包；首次加载校验 LightGBM 版本、模型/文件 SHA-256、特征签名、Alias=false 和 3 个测试向量 |
@@ -327,6 +329,7 @@ LambdaMART 发布顺序固定为 `shadow → active`。Shadow 至少观察 `reca
 - `RECALL_BM25_TOP_K=100`：参考 [BEIR BM25 + Cross-Encoder reranking 示例](https://github.com/beir-cellar/beir/blob/main/examples/retrieval/evaluation/reranking/evaluate_bm25_ce_reranking.py) 对 BM25 top-100 做 rerank。
 
 配置边界：`RECALL_*_TOP_K` 只驱动完整 RAG pipeline 的三路召回深度；`DENSE_RETRIEVAL_TOP_K` / `SPARSE_RETRIEVAL_TOP_K` 只在直接调用 `VectorStorageFacade.search_*_chunks()` 且调用方未传 `top_k` 时兜底。
+Wiki 标题搜索只复用 `RECALL_STRICT_DEFAULT` 与 `RECALL_STREAM_TIMEOUT_MS`；分页游标固定 10 分钟有效，单 Chunk 搜索位置固定最多 10 条，两者均为模块内部常量，不增加环境变量。Wiki 不使用 Redis。
 
 ### 对外会话鉴权配置（RAG 流 / 纯召回 JSON）
 

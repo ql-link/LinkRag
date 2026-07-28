@@ -32,7 +32,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from src.api.routes import internal, llm, mq, parse, rag, recall
+from src.api.routes import internal, llm, mq, parse, rag, recall, wiki
 from src.application.recall_errors import RecallApiError
 from src.cache.redis_client import redis_client
 from src.config import settings
@@ -163,6 +163,7 @@ app.include_router(parse.router)  # 挂载文档解析路由
 app.include_router(mq.router)  # 挂载 MQ 消息中台路由
 app.include_router(rag.router)  # 挂载对外 RAG 问答流 SSE 路由（LINK-131）
 app.include_router(recall.router)  # 挂载对外纯召回 JSON 路由（LINK-131）
+app.include_router(wiki.router)  # 挂载 Wiki 标题树对外读取路由
 
 
 @app.exception_handler(RecallApiError)

@@ -460,6 +460,7 @@ Markdown 正文或模型请求/响应正文。
 - `pipeline_status=SUCCESS` 终态写库必须晚于 Markdown、分片、dense 向量化、预分词、ES 入库和 sparse 向量化全部完成。
 - 新增阶段时应同步更新 `document_parse_pipeline` 表结构、`docs/api/schemas/mysql.md` 和 `docs/api/error_codes.md`。
 - 重投场景必须保持幂等，不应重复解析同一 `task_id`。
+- 每次真实执行 CHUNKING 都从同一 Markdown 获得 `ParseResult + Chunks`，先在内存构建完整 Wiki 标题树，再在一个 MySQL 事务内执行“删除旧 Chunk → 写入新 Chunk → 替换 `wiki_tree_node` → commit”。该规则不依赖 `is_retry`；任一构建、flush 或 commit 失败时 Chunk 与 Wiki 一起回滚。最新 pipeline 到达 `SUCCESS` 前，用户态 Wiki 查询按就绪门禁隐藏该文档。
 
 ## 9. 测试建议
 

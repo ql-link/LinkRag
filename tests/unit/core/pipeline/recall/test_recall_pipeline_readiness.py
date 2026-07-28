@@ -267,7 +267,8 @@ def test_mysql_gate_query_returns_current_pipeline_and_lifecycle_classifiers():
         )
     )
 
-    assert "document_parse_pipeline.task_id = document_parse_file.latest_parse_task_id" in sql
+    assert "document_parse_pipeline.task_id COLLATE utf8mb4_unicode_ci" in sql
+    assert "document_parse_file.latest_parse_task_id COLLATE utf8mb4_unicode_ci" in sql
     assert "kb_document_chunk.lifecycle_status" in sql
     assert "document_parse_pipeline.pipeline_status" in sql
     assert "LEFT OUTER JOIN document_parse_file" in sql

@@ -100,6 +100,7 @@ CODE: 中文业务原因；底层详情
 | --- | --- |
 | `VectorStorageError` | 向量存储基础异常 |
 | `VectorStorageConfigurationError` | 向量存储配置错误 |
+| `ChunkStructuralUpdateNotAllowedError` | 单 Chunk 更新实际改变 `start_line`、`end_line` 或 `chunk_index`；请求在任何 MySQL/embedding/Qdrant/稀疏/BM25 mutation 前被拒绝，结构变化必须走整文档重新解析 |
 | `QdrantVectorStorageError` | Qdrant 索引存储基础异常 |
 | `QdrantVectorStorageConfigurationError` | Qdrant 依赖或配置错误 |
 | `QdrantStoreError` | Qdrant collection 或 point 操作失败 |
@@ -159,6 +160,22 @@ CODE: 中文业务原因；底层详情
 例外：dense / sparse 召回 query 编码按数据集绑定的 `dense_embedding_config_id` /
 `sparse_embedding_config_id` 解析（与写入侧同源）。绑定缺失或配置无效属**必备前置缺失**，
 走硬失败而非宽松降级——即便其余路可用也不返回部分结果，避免读写向量空间不一致的误召回。
+
+### 5.1 Wiki 端点错误映射
+
+四个 `/api/v1/wiki/**` 端点复用相同 session token 与 `{code,message,data}` 错误体：
+
+| 场景 | HTTP | code |
+| --- | --- | --- |
+| token 缺失、无效或过期 | `401` | `RECALL_SESSION_UNAUTHORIZED` |
+| dataset/doc/chunk/heading 越权，或资源非当前就绪/ACTIVE 版本 | `403` | `RECALL_SCOPE_FORBIDDEN` |
+| query 空白 | `400` | `RECALL_INVALID_REQUEST` |
+| JSON/字段/path 非法，游标格式、签名、10 分钟有效期、分支或指纹不符 | `422` | `RECALL_INVALID_REQUEST` |
+| exact SQL 失败；mixed 两路失败；strict 模式任一路失败 | `500` | `RECALL_ALL_SOURCES_FAILED` |
+| scope、路径、正文回填等真值 SQL 失败 | `500` | `RECALL_INTERNAL_ERROR` |
+| Wiki 搜索超过 `RECALL_STREAM_TIMEOUT_MS` | `504` | `RECALL_TIMEOUT` |
+
+宽松模式下 mixed 单路失败仍返回 `200`，成功体的 `failed_sources` 标记 `title_prefix` 或 `bm25`。所有越权与不可见资源均 fail closed，不用“未找到”列表暴露存在性。
 
 ## 6. Chunk Status Values
 
