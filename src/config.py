@@ -7,6 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SUPPORTED_CHUNKING_STAGE_TWO_ALGORITHMS = frozenset({"noop", "semantic_depth_window"})
 SUPPORTED_RECALL_FUSION_STRATEGIES = frozenset({"rrf", "weighted_score"})
+SUPPORTED_RECALL_LTR_MODES = frozenset({"off", "shadow", "active", "baseline"})
 SUPPORTED_BM25_BACKENDS = frozenset({"qdrant", "manticore"})
 MARKDOWN_HEADING_LLM_CONTEXT_TOKEN_MIN = 2048
 MARKDOWN_HEADING_LLM_CONTEXT_TOKEN_MAX = 262144
@@ -130,6 +131,14 @@ class Settings(BaseSettings):
     RECALL_FUSION_SPARSE_WEIGHT: float = 0.3
     RECALL_FUSION_DENSE_WEIGHT: float = 0.5
 
+    # 本地 LambdaMART 排序发布模式：off=保持旧 rerank；shadow=旁路对比但不改结果；
+    # active=LambdaMART 主排并在异常时回退 weighted score；baseline=主动回滚到 weighted score。
+    RECALL_LTR_MODE: str = "off"
+    RECALL_LTR_MODEL_DIR: str = os.path.join(
+        PROJECT_ROOT, "models/ltr/candidate-difference-v3-20260728-final33"
+    )
+    RECALL_LTR_SHADOW_SAMPLE_RATE: float = 0.1
+
     @field_validator("RECALL_FUSION_STRATEGY")
     @classmethod
     def validate_recall_fusion_strategy(cls, v: str) -> str:
@@ -155,6 +164,22 @@ class Settings(BaseSettings):
     def validate_recall_fusion_weight(cls, v: float) -> float:
         if not math.isfinite(v) or v < 0:
             raise ValueError("recall fusion weights must be finite floats >= 0")
+        return v
+
+    @field_validator("RECALL_LTR_MODE")
+    @classmethod
+    def validate_recall_ltr_mode(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if normalized not in SUPPORTED_RECALL_LTR_MODES:
+            supported = ", ".join(sorted(SUPPORTED_RECALL_LTR_MODES))
+            raise ValueError(f"RECALL_LTR_MODE must be one of: {supported}")
+        return normalized
+
+    @field_validator("RECALL_LTR_SHADOW_SAMPLE_RATE")
+    @classmethod
+    def validate_recall_ltr_shadow_sample_rate(cls, v: float) -> float:
+        if not math.isfinite(v) or not 0.0 <= v <= 1.0:
+            raise ValueError("RECALL_LTR_SHADOW_SAMPLE_RATE must be in [0, 1]")
         return v
 
     # ==========================================

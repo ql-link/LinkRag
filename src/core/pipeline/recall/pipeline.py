@@ -13,7 +13,6 @@ import asyncio
 import time
 
 from loguru import logger
-from src.observability.logging import safe_exception_stack, truncate_log_value
 
 from src.core.pipeline.recall.exceptions import (
     RecallError,
@@ -38,6 +37,7 @@ from src.core.pipeline.recall.protocols import (
     DocumentReadinessGate,
     Retriever,
 )
+from src.observability.logging import safe_exception_stack, truncate_log_value
 
 
 class RecallPipeline:
@@ -123,12 +123,17 @@ class RecallPipeline:
         )
         # 文档门禁必须在最终 top_k 之前执行，否则隐藏候选会占用窗口，
         # 导致后方的可见文档无法补位。门禁必须保持融合顺序。
-        fused_hits = await self._readiness_gate.filter_visible_hits(
+        candidate_hits = await self._readiness_gate.filter_visible_hits(
             fused_hits,
             user_id=request.user_id,
         )
+        visible_chunk_ids = {hit.chunk_id for hit in candidate_hits}
+        visible_route_hits = {
+            source: [hit for hit in hits if hit.chunk_id in visible_chunk_ids]
+            for source, hits in success_hits.items()
+        }
         # 融合候选池窗口：门禁过滤后再按 request.top_k 截断，作为下游 rerank 输入池。
-        fused_hits = fused_hits[: request.top_k]
+        fused_hits = candidate_hits[: request.top_k]
         elapsed_ms = int((time.monotonic() - started_at) * 1000)
 
         # 结果日志：耗时、融合命中数、各路命中分布、失败路（已有数据，原先只进响应不落日志）。
@@ -147,6 +152,8 @@ class RecallPipeline:
             failed_sources=failed_sources,
             elapsed_ms=elapsed_ms,
             sources=effective_sources,
+            candidate_hits=candidate_hits,
+            route_hits=visible_route_hits,
         )
 
     def _effective_fusion_config(self, request: RecallRequest) -> tuple[str, dict[str, float], int]:
@@ -379,6 +386,8 @@ class RecallPipeline:
         failed_sources: list[str],
         elapsed_ms: int,
         sources: list[str],
+        candidate_hits,
+        route_hits: dict[str, list[RetrieverHit]],
     ) -> RecallResponse:
         """组装响应：per_source_counts 基于本次生效的 source 集；空列表 / 失败路都计 0。"""
         per_source_counts = {source: len(success_hits.get(source, [])) for source in sources}
@@ -404,6 +413,8 @@ class RecallPipeline:
             failed_sources=failed_sources,
             elapsed_ms=elapsed_ms,
             recall_diagnostics=recall_diagnostics,
+            candidate_hits=candidate_hits,
+            route_hits=route_hits,
         )
 
 

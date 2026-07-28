@@ -53,6 +53,24 @@ def test_recall_fusion_rejects_unknown_strategy():
         Settings(_env_file=None, RECALL_FUSION_STRATEGY="unknown")
 
 
+def test_recall_ltr_mode_and_shadow_rate_are_validated():
+    settings = Settings(
+        _env_file=None,
+        RECALL_LTR_MODE=" Shadow ",
+        RECALL_LTR_SHADOW_SAMPLE_RATE=0.25,
+    )
+
+    assert settings.RECALL_LTR_MODE == "shadow"
+    assert settings.RECALL_LTR_SHADOW_SAMPLE_RATE == 0.25
+
+
+def test_recall_ltr_rejects_invalid_rollout_config():
+    with pytest.raises(ValueError, match="RECALL_LTR_MODE"):
+        Settings(_env_file=None, RECALL_LTR_MODE="canary")
+    with pytest.raises(ValueError, match="RECALL_LTR_SHADOW_SAMPLE_RATE"):
+        Settings(_env_file=None, RECALL_LTR_SHADOW_SAMPLE_RATE=1.1)
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [

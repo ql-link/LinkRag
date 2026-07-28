@@ -9,7 +9,7 @@
 """
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 FUSION_STRATEGY_RRF = "rrf"
 FUSION_STRATEGY_WEIGHTED_SCORE = "weighted_score"
@@ -229,6 +229,10 @@ class RecallResponse:
     failed_sources: list[str]
     elapsed_ms: int
     recall_diagnostics: RecallDiagnostics | None = None
+    # 内部下游排序候选：门禁过滤后的完整融合池及对应分路原始命中。
+    # 对外 JSON/SSE 序列化器不暴露这两个字段；未提供时保持旧调用方兼容。
+    candidate_hits: list[RecallHit] = field(default_factory=list)
+    route_hits: dict[str, list[RetrieverHit]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

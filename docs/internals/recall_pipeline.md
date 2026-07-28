@@ -62,7 +62,8 @@ RecallRequest(query, user_id, dataset_ids, doc_ids, top_k, bm25_top_k, sparse_to
        -> check failures by strict / loose policy
        -> fuse successful hits with configured strategy
        -> filter visible hits by MySQL document readiness（保持融合顺序）
-       -> truncate visible hits to top_k（融合候选池 / rerank 输入窗口）
+       -> 保留进程内完整 candidate_hits / route_hits（供 LTR）
+       -> truncate visible hits to top_k（对外融合窗口 / 旧 rerank 输入窗口）
        -> build RecallResponse
 ```
 
@@ -152,7 +153,7 @@ class Retriever(Protocol):
 | `RecallResponse` | 出参 | 回显 query、融合候选、各路命中数、失败路、整体耗时 |
 | `RecallPipelineConfig` | 装配配置 | `parallel`、`strict`、`rrf_k`、`fusion_strategy`、三路 `fusion_*_weight` |
 
-召回阶段不返回 chunk 正文字段。正文获取属于 reranker 或上下文拼装阶段，避免召回层把存储读取、权限补偿和内容裁剪混在一起。
+`RecallResponse.candidate_hits` / `route_hits` 保存门禁后的完整融合池和分路原始命中，只供同进程 LTR 使用，序列化器不对外输出。召回阶段仍不返回 chunk 正文字段；正文获取属于下游排序或上下文拼装阶段，避免召回层把存储读取、权限补偿和内容裁剪混在一起。
 
 ---
 
@@ -278,7 +279,7 @@ RecallPipelineConfig(
 - 单路查询、预处理、过滤和打分逻辑放在各自 Retriever 内。
 - 文档业务可见性只由必传的 `DocumentReadinessGate` 判定；不得在单路 Retriever、JSON/SSE 出口或正文回填处各自复制一套 current-task 规则。
 - Pipeline 只消费 `RetrieverHit`，只输出 `RecallHit`，不携带 chunk 正文。
-- 不在召回层接入 rerank score；rerank 永远消费融合后的 `RecallHit`。
+- 不在召回层接入模型分数；旧 rerank 与本地 LTR 都在下游消费门禁后的候选。
 
 ## 11. top_k 配置边界（LINK-136）
 
