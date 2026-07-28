@@ -13,7 +13,6 @@ from src.core.pipeline.rerank.models import (
 from src.core.pipeline.rerank.reranker import (
     PostRecallReranker,
     degrade_to_fusion_order,
-    degrade_to_rrf_order,
     reranked_from_recall,
 )
 
@@ -23,6 +22,5 @@ __all__ = [
     "RerankResponse",
     "RerankedHit",
     "degrade_to_fusion_order",
-    "degrade_to_rrf_order",
     "reranked_from_recall",
 ]

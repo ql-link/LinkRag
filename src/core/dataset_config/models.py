@@ -16,7 +16,6 @@ import math
 
 from pydantic import BaseModel, field_validator, model_validator
 
-SUPPORTED_RECALL_FUSION_STRATEGIES = frozenset({"rrf", "weighted_score"})
 SUPPORTED_STAGE_TWO_ALGORITHMS = frozenset({"noop", "semantic_depth_window"})
 
 
@@ -173,16 +172,14 @@ class PDFConfig(BaseModel):
 
 
 class RecallConfig(BaseModel):
-    """召回检索配置（15 项），消费点见 ``routes/rag.py`` / ``routes/recall.py`` 与各 retriever。
+    """召回检索配置（14 项），消费点见 ``routes/rag.py`` / ``routes/recall.py`` 与各 retriever。
 
     其中多项为 pipeline / rerank 级旋钮：
 
     - ``recall_enabled_sources``：启用哪几条召回路并参与融合（``bm25`` / ``sparse`` / ``dense``）。
       **只能在系统已装配的召回路（``RECALL_ENABLED_SOURCES``）子集内收窄**：列出的路里凡未被
       系统装配的会被忽略；若交集为空则回退到系统全部已装配路（见 ``RecallPipeline`` 执行期处理）。
-    - ``recall_fusion_strategy``：候选融合策略，默认 ``rrf``，可选 ``weighted_score``。
-    - ``rrf_k``：RRF rank constant，仅 ``recall_fusion_strategy=rrf`` 时使用。
-    - ``fusion_*_weight``：``weighted_score`` 三路权重，单项允许为 0；active source 权重和为 0
+    - ``fusion_*_weight``：固定 weighted score 融合的三路权重，单项允许为 0；active source 权重和为 0
       在运行期拒绝。
     - ``rerank_top_n``：重排后返回候选条数上限（透传给 ``RerankRequest.top_n``）。
     - ``recall_strict``：召回容错模式（透传给 ``RecallRequest.strict_override``）。``True`` 时任一路
@@ -197,8 +194,6 @@ class RecallConfig(BaseModel):
     dense_top_k: int = 100
     dense_score_threshold: float = 0.0
     recall_enabled_sources: list[str] = ["bm25", "sparse", "dense"]
-    recall_fusion_strategy: str = "rrf"
-    rrf_k: int = 60
     fusion_bm25_weight: float = 0.2
     fusion_sparse_weight: float = 0.3
     fusion_dense_weight: float = 0.5
@@ -211,7 +206,6 @@ class RecallConfig(BaseModel):
         "bm25_top_k",
         "sparse_top_k",
         "dense_top_k",
-        "rrf_k",
         "rerank_top_n",
     )
     @classmethod
@@ -226,15 +220,6 @@ class RecallConfig(BaseModel):
         # 去空白 / 去空项；允许空列表（执行期回退系统全部已装配路），但不允许出现空白源名。
         cleaned = [s.strip() for s in v if s and s.strip()]
         return cleaned
-
-    @field_validator("recall_fusion_strategy")
-    @classmethod
-    def _validate_recall_fusion_strategy(cls, v: str) -> str:
-        normalized = v.strip().lower()
-        if normalized not in SUPPORTED_RECALL_FUSION_STRATEGIES:
-            supported = ", ".join(sorted(SUPPORTED_RECALL_FUSION_STRATEGIES))
-            raise ValueError(f"recall_fusion_strategy must be one of: {supported}")
-        return normalized
 
     @field_validator("fusion_bm25_weight", "fusion_sparse_weight", "fusion_dense_weight")
     @classmethod
@@ -258,8 +243,6 @@ class RecallConfig(BaseModel):
             recall_enabled_sources=[
                 src.strip() for src in (s.RECALL_ENABLED_SOURCES or "").split(",") if src.strip()
             ],
-            recall_fusion_strategy=s.RECALL_FUSION_STRATEGY,
-            rrf_k=s.RECALL_RRF_K,
             fusion_bm25_weight=s.RECALL_FUSION_BM25_WEIGHT,
             fusion_sparse_weight=s.RECALL_FUSION_SPARSE_WEIGHT,
             fusion_dense_weight=s.RECALL_FUSION_DENSE_WEIGHT,

@@ -22,7 +22,6 @@ class _Bm25RecallBackend(Protocol):
     async def recall_topk_chunks(self, request: Bm25RecallRequest) -> list[Bm25ChunkHit]: ...
 
 
-_DATASET_RRF_K = 60
 BM25_READ_MAX_ATTEMPTS = 2
 BM25_READ_RETRY_BASE_SECONDS = 0.1
 BM25_READ_MAX_CONCURRENCY = 8
@@ -227,15 +226,16 @@ class Bm25Retriever:
         ranked: list[tuple[float, int, int, RetrieverHit]] = []
         for dataset_id in dataset_order:
             hits = sorted(by_dataset.get(dataset_id, []), key=lambda hit: hit.score, reverse=True)
+            hit_count = len(hits)
             for rank, hit in enumerate(hits, start=1):
-                rrf_score = 1.0 / (_DATASET_RRF_K + rank)
+                normalized_rank_score = (hit_count - rank + 1) / hit_count
                 normalized = RetrieverHit(
                     chunk_id=hit.chunk_id,
                     doc_id=hit.doc_id,
                     dataset_id=hit.dataset_id,
-                    score=rrf_score,
+                    score=normalized_rank_score,
                     source=hit.source,
                 )
-                ranked.append((rrf_score, dataset_pos[dataset_id], rank, normalized))
+                ranked.append((normalized_rank_score, dataset_pos[dataset_id], rank, normalized))
         ranked.sort(key=lambda item: (-item[0], item[1], item[2]))
         return [item[3] for item in ranked[:top_k]]

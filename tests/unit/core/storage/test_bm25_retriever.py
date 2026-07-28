@@ -105,7 +105,7 @@ async def test_top_k_truncates_merged_result():
 
 
 @pytest.mark.asyncio
-async def test_dataset_scoped_backend_uses_rank_fusion():
+async def test_dataset_scoped_backend_uses_normalized_rank_scores():
     backend = _FakeBackend(
         {
             10: [
@@ -124,6 +124,7 @@ async def test_dataset_scoped_backend_uses_rank_fusion():
     )
     assert [hit.chunk_id for hit in hits] == ["a1", "b1", "a2", "b2"]
     assert hits[0].score == hits[1].score > hits[2].score == hits[3].score
+    assert [hit.score for hit in hits] == [1.0, 1.0, 0.5, 0.5]
 
 
 @pytest.mark.asyncio

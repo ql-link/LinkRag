@@ -1,0 +1,7 @@
+{
+  "version": "short_query_fallback_v1",
+  "max_query_chars": 15,
+  "confidence_threshold": 0.1,
+  "confidence_feature": "ltr_top12_margin",
+  "fallback": "hybrid"
+}

@@ -8,14 +8,13 @@ from dataclasses import dataclass, field
 from types import SimpleNamespace
 
 import pytest
-from pydantic import ValidationError
 from pytest_bdd import given, parsers, then, when
 
 from src.api.routes import rag, recall
 from src.application import recall_pipeline_provider
 from src.application.recall_errors import RecallApiError
 from src.application.recall_stream_runtime import _rerank_hits
-from src.config import Settings, settings
+from src.config import settings
 from src.core.dataset_config.models import RecallConfig
 from src.core.llm.exceptions import LLMConfigNotFoundError
 from src.core.pipeline.recall import (
@@ -96,7 +95,6 @@ class _CapturingReranker:
 
 @dataclass
 class _State:
-    strategy: str | None = None
     weights: dict[str, float] = field(default_factory=lambda: dict(_DEFAULT_WEIGHTS))
     enabled_sources: list[str] | None = None
     top_k: int = 20
@@ -105,8 +103,6 @@ class _State:
     )
     response: RecallResponse | None = None
     error: BaseException | None = None
-    parsed_error: BaseException | None = None
-    parsed_error_text: str = ""
     pipeline_config: RecallPipelineConfig | None = None
     captured_request: RecallRequest | None = None
     http_errors: list[RecallApiError] = field(default_factory=list)
@@ -158,9 +154,6 @@ def _run_pipeline(state: _State, *, request_override: bool = False) -> None:
         "fusion_sparse_weight": state.weights[SOURCE_SPARSE],
         "fusion_dense_weight": state.weights[SOURCE_DENSE],
     }
-    if state.strategy is not None:
-        config_kwargs["fusion_strategy"] = state.strategy
-
     pipeline = RecallPipeline(
         list(state.retrievers.values()),
         RecallPipelineConfig(**config_kwargs),
@@ -173,10 +166,9 @@ def _run_pipeline(state: _State, *, request_override: bool = False) -> None:
         "top_k": state.top_k,
         "enabled_sources": state.enabled_sources,
     }
-    if request_override and state.strategy is not None:
+    if request_override:
         request_kwargs.update(
             {
-                "fusion_strategy_override": state.strategy,
                 "fusion_bm25_weight_override": state.weights[SOURCE_BM25],
                 "fusion_sparse_weight_override": state.weights[SOURCE_SPARSE],
                 "fusion_dense_weight_override": state.weights[SOURCE_DENSE],
@@ -207,11 +199,6 @@ def _given_supported_sources(weighted_fusion_state: _State) -> None:
     assert set(weighted_fusion_state.retrievers) == set(_SOURCES)
 
 
-@given('系统默认 RECALL_FUSION_STRATEGY 为 "rrf"')
-def _given_default_strategy() -> None:
-    assert settings.RECALL_FUSION_STRATEGY == "rrf"
-
-
 @given(parsers.parse("系统默认 RECALL_FUSION_BM25_WEIGHT 为 {value:f}"))
 def _given_default_bm25_weight(value: float) -> None:
     assert settings.RECALL_FUSION_BM25_WEIGHT == pytest.approx(value)
@@ -236,11 +223,6 @@ def _given_hit_shape() -> None:
 # ---------------------------------------------------------------------------
 # Pipeline 配置
 # ---------------------------------------------------------------------------
-
-
-@given(parsers.parse('fusion_strategy 配置为 "{strategy}"'))
-def _given_strategy(weighted_fusion_state: _State, strategy: str) -> None:
-    weighted_fusion_state.strategy = strategy
 
 
 @given(parsers.parse("fusion 权重配置为 bm25={bm25:f} sparse={sparse:f} dense={dense:f}"))
@@ -301,11 +283,6 @@ def _given_top_k(weighted_fusion_state: _State, value: int) -> None:
     weighted_fusion_state.top_k = value
 
 
-@when("执行 RecallPipeline 且未设置 fusion_strategy 覆盖")
-def _when_execute_without_override(weighted_fusion_state: _State) -> None:
-    _run_pipeline(weighted_fusion_state, request_override=False)
-
-
 @when("执行 RecallPipeline")
 def _when_execute_pipeline(weighted_fusion_state: _State) -> None:
     _run_pipeline(weighted_fusion_state, request_override=False)
@@ -349,12 +326,6 @@ def _then_hit_raw_score(
 @then(parsers.parse('返回 hit "{chunk_id}" 不含 normalized_scores 字段'))
 def _then_no_normalized_scores(weighted_fusion_state: _State, chunk_id: str) -> None:
     assert not hasattr(_hit_by_id(weighted_fusion_state, chunk_id), "normalized_scores")
-
-
-@then("返回 hits 按 RRF 分数排序而不是按 dense 权重排序")
-def _then_rrf_order_not_dense_weight(weighted_fusion_state: _State) -> None:
-    assert weighted_fusion_state.response is not None
-    assert [hit.chunk_id for hit in weighted_fusion_state.response.hits] == ["c1", "c2"]
 
 
 @then(parsers.parse('hits 顺序为 "{order}"'))
@@ -407,12 +378,6 @@ def _then_no_corrected_hit(weighted_fusion_state: _State) -> None:
     assert weighted_fusion_state.response is None
 
 
-@then("不静默回退到 RRF")
-def _then_no_rrf_fallback(weighted_fusion_state: _State) -> None:
-    assert weighted_fusion_state.error is not None
-    assert weighted_fusion_state.response is None
-
-
 @then("融合计算未因极端 BM25 分数溢出")
 def _then_no_overflow(weighted_fusion_state: _State) -> None:
     assert weighted_fusion_state.error is None
@@ -449,42 +414,6 @@ def _then_equal_fused_scores(weighted_fusion_state: _State, left: str, right: st
 # ---------------------------------------------------------------------------
 
 
-@given(parsers.parse('配置项 "{field}" 的值为 "{value}"'))
-def _given_invalid_config_value(weighted_fusion_state: _State, field: str, value: str) -> None:
-    weighted_fusion_state.config_field = field
-    weighted_fusion_state.config_value = value
-
-
-@when("加载 Settings 或 dataset recall_config")
-def _when_load_config(weighted_fusion_state: _State) -> None:
-    field = weighted_fusion_state.config_field
-    value = weighted_fusion_state.config_value
-    try:
-        Settings(**{field: value})
-        weighted_fusion_state.parsed_error = None
-        weighted_fusion_state.parsed_error_text = ""
-    except (ValidationError, ValueError) as exc:
-        weighted_fusion_state.parsed_error = exc
-        weighted_fusion_state.parsed_error_text = str(exc)
-
-
-@then("配置解析失败")
-def _then_config_parse_failed(weighted_fusion_state: _State) -> None:
-    assert weighted_fusion_state.parsed_error is not None
-
-
-@then(parsers.parse('错误信息包含 "{field}"'))
-def _then_error_contains(weighted_fusion_state: _State, field: str) -> None:
-    assert field in weighted_fusion_state.parsed_error_text
-
-
-@given(parsers.parse('Settings 中 RECALL_FUSION_STRATEGY="{strategy}"'))
-@given(parsers.parse('Settings 默认 RECALL_FUSION_STRATEGY="{strategy}"'))
-def _given_settings_strategy(monkeypatch, strategy: str) -> None:
-    monkeypatch.setattr(settings, "RECALL_FUSION_STRATEGY", strategy)
-    monkeypatch.setattr(recall_pipeline_provider.settings, "RECALL_FUSION_STRATEGY", strategy)
-
-
 @given(parsers.parse("Settings 中 RECALL_FUSION_BM25_WEIGHT={value:f}"))
 def _given_settings_bm25(monkeypatch, value: float) -> None:
     monkeypatch.setattr(settings, "RECALL_FUSION_BM25_WEIGHT", value)
@@ -513,12 +442,6 @@ def _when_build_pipeline(weighted_fusion_state: _State, monkeypatch) -> None:
     )
     pipeline = recall_pipeline_provider._build_pipeline()
     weighted_fusion_state.pipeline_config = pipeline._config
-
-
-@then(parsers.parse('RecallPipelineConfig.fusion_strategy 等于 "{strategy}"'))
-def _then_pipeline_strategy(weighted_fusion_state: _State, strategy: str) -> None:
-    assert weighted_fusion_state.pipeline_config is not None
-    assert weighted_fusion_state.pipeline_config.fusion_strategy == strategy
 
 
 @then(parsers.parse("RecallPipelineConfig.fusion_bm25_weight 等于 {value:f}"))
