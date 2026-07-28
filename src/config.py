@@ -6,7 +6,6 @@ from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SUPPORTED_CHUNKING_STAGE_TWO_ALGORITHMS = frozenset({"noop", "semantic_depth_window"})
-SUPPORTED_RECALL_FUSION_STRATEGIES = frozenset({"rrf", "weighted_score"})
 SUPPORTED_RECALL_LTR_MODES = frozenset({"off", "shadow", "active", "baseline"})
 SUPPORTED_BM25_BACKENDS = frozenset({"qdrant", "manticore"})
 MARKDOWN_HEADING_LLM_CONTEXT_TOKEN_MIN = 2048
@@ -122,11 +121,7 @@ class Settings(BaseSettings):
     # 启用的召回路（逗号分隔）。dense/sparse query 编码按数据集绑定模型配置解析，
     # 与 bm25 并行后做融合；如需暂时回退，运维侧 set RECALL_ENABLED_SOURCES=bm25,sparse 重启。
     RECALL_ENABLED_SOURCES: str = "bm25,sparse,dense"
-    # 召回融合策略：默认 RRF，weighted_score 作为可选策略在三路召回后、rerank 前生效。
-    RECALL_FUSION_STRATEGY: str = "rrf"
-    # RRF rank constant，影响排名贡献衰减；仅 RECALL_FUSION_STRATEGY=rrf 时使用。
-    RECALL_RRF_K: int = 60
-    # weighted_score 三路权重。单项允许为 0；active source 权重和为 0 在运行期拒绝。
+    # 三路固定使用 weighted_score 融合。单项允许为 0；active source 权重和为 0 在运行期拒绝。
     RECALL_FUSION_BM25_WEIGHT: float = 0.2
     RECALL_FUSION_SPARSE_WEIGHT: float = 0.3
     RECALL_FUSION_DENSE_WEIGHT: float = 0.5
@@ -138,22 +133,6 @@ class Settings(BaseSettings):
         PROJECT_ROOT, "models/ltr/candidate-difference-v3-20260728-final33"
     )
     RECALL_LTR_SHADOW_SAMPLE_RATE: float = 0.1
-
-    @field_validator("RECALL_FUSION_STRATEGY")
-    @classmethod
-    def validate_recall_fusion_strategy(cls, v: str) -> str:
-        normalized = v.strip().lower()
-        if normalized not in SUPPORTED_RECALL_FUSION_STRATEGIES:
-            supported = ", ".join(sorted(SUPPORTED_RECALL_FUSION_STRATEGIES))
-            raise ValueError(f"RECALL_FUSION_STRATEGY must be one of: {supported}")
-        return normalized
-
-    @field_validator("RECALL_RRF_K")
-    @classmethod
-    def validate_recall_rrf_k(cls, v: int) -> int:
-        if v <= 0:
-            raise ValueError("RECALL_RRF_K must be a positive int")
-        return v
 
     @field_validator(
         "RECALL_FUSION_BM25_WEIGHT",

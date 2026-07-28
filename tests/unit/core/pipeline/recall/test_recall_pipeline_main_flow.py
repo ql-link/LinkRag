@@ -125,13 +125,8 @@ async def test_serial_fixed_order():
 
 
 @pytest.mark.asyncio
-async def test_rrf_sum_across_sources():
-    """同一 chunk 在多路命中时融合得分等于各路 1/(k+rank) 之和。
-
-    cA 在 dense rank=1、sparse rank=1：贡献 1/61 + 1/61 = 2/61。
-    cB 仅在 dense rank=2：1/62。
-    cC 仅在 sparse rank=2：1/62。
-    """
+async def test_weighted_score_sum_across_sources():
+    """同一 chunk 在多路命中时累加各路归一化加权贡献。"""
     dense = FakeRetriever(
         source=SOURCE_DENSE,
         hits=[
@@ -152,8 +147,8 @@ async def test_rrf_sum_across_sources():
     response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
     by_id = {h.chunk_id: h for h in response.hits}
 
-    assert by_id["cA"].fused_score == pytest.approx(2 / 61)
-    assert by_id["cB"].fused_score == pytest.approx(1 / 62)
-    assert by_id["cC"].fused_score == pytest.approx(1 / 62)
+    assert by_id["cA"].fused_score == pytest.approx(1.0)
+    assert by_id["cB"].fused_score == pytest.approx(0.0)
+    assert by_id["cC"].fused_score == pytest.approx(0.0)
     # cA 排在最前
     assert response.hits[0].chunk_id == "cA"

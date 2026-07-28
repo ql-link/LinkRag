@@ -11,23 +11,10 @@
 import math
 from dataclasses import dataclass, field
 
-FUSION_STRATEGY_RRF = "rrf"
-FUSION_STRATEGY_WEIGHTED_SCORE = "weighted_score"
-SUPPORTED_FUSION_STRATEGIES = frozenset({FUSION_STRATEGY_RRF, FUSION_STRATEGY_WEIGHTED_SCORE})
 SOURCE_MODE_HYBRID = "hybrid"
 SOURCE_MODE_BM25_ONLY = "bm25_only"
 SOURCE_MODE_MISSING_SPARSE = "missing_sparse"
 SOURCE_MODE_MISSING_DENSE = "missing_dense"
-
-
-def normalize_fusion_strategy(value: str, *, field_name: str = "fusion_strategy") -> str:
-    if not isinstance(value, str):
-        raise ValueError(f"{field_name} must be a string")
-    normalized = value.strip().lower()
-    if normalized not in SUPPORTED_FUSION_STRATEGIES:
-        supported = ", ".join(sorted(SUPPORTED_FUSION_STRATEGIES))
-        raise ValueError(f"{field_name} must be one of: {supported}")
-    return normalized
 
 
 def validate_fusion_weight(value: float, *, field_name: str) -> float:
@@ -37,16 +24,6 @@ def validate_fusion_weight(value: float, *, field_name: str) -> float:
         raise ValueError(f"{field_name} must be a finite float >= 0") from exc
     if not math.isfinite(normalized) or normalized < 0:
         raise ValueError(f"{field_name} must be a finite float >= 0")
-    return normalized
-
-
-def validate_rrf_k(value: int, *, field_name: str = "rrf_k") -> int:
-    try:
-        normalized = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(f"{field_name} must be a positive int") from exc
-    if normalized <= 0:
-        raise ValueError(f"{field_name} must be a positive int")
     return normalized
 
 
@@ -180,13 +157,8 @@ class RecallRequest:
             来自数据集级 ``recall_config.recall_enabled_sources``。
         strict_override: 可选容错模式覆盖；``None`` 时沿用 pipeline 装配期 ``RecallPipelineConfig.strict``。
             来自数据集级 ``recall_config.recall_strict``。
-        fusion_strategy_override: 可选融合策略覆盖；``None`` 时沿用 pipeline 装配期
-            ``RecallPipelineConfig.fusion_strategy``。来自数据集级
-            ``recall_config.recall_fusion_strategy``，不来自 HTTP 请求体。
         fusion_*_weight_override: 可选三路融合权重覆盖；``None`` 时沿用 pipeline 装配期默认值。
-            仅 ``weighted_score`` 使用，来自数据集级 ``recall_config``。
-        rrf_k_override: 可选 RRF rank constant 覆盖；``None`` 时沿用 pipeline 装配期默认值。
-            仅 ``rrf`` 使用，来自数据集级 ``recall_config.rrf_k``。
+            来自数据集级 ``recall_config``。
     """
 
     query: str
@@ -201,11 +173,9 @@ class RecallRequest:
     dense_score_threshold_override: float | None = None
     enabled_sources: list[str] | None = None
     strict_override: bool | None = None
-    fusion_strategy_override: str | None = None
     fusion_bm25_weight_override: float | None = None
     fusion_sparse_weight_override: float | None = None
     fusion_dense_weight_override: float | None = None
-    rrf_k_override: int | None = None
     dataset_contexts: dict[int, object] | None = None
 
 
@@ -242,26 +212,16 @@ class RecallPipelineConfig:
     Attributes:
         parallel: 是否并行触发各路；默认 True；False 时按 retrievers 构造顺序串行。
         strict: 严格容错；True 时任一路异常立即抛 ``RecallError``。
-        rrf_k: RRF 平滑常数；业界默认 60。
-        fusion_strategy: 融合策略；默认 ``rrf``。
-        fusion_*_weight: ``weighted_score`` 三路权重；单项允许为 0。
+        fusion_*_weight: 固定 weighted score 融合的三路权重；单项允许为 0。
     """
 
     parallel: bool = True
     strict: bool = False
-    rrf_k: int = 60
-    fusion_strategy: str = FUSION_STRATEGY_RRF
     fusion_bm25_weight: float = 0.2
     fusion_sparse_weight: float = 0.3
     fusion_dense_weight: float = 0.5
 
     def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "fusion_strategy",
-            normalize_fusion_strategy(self.fusion_strategy),
-        )
-        object.__setattr__(self, "rrf_k", validate_rrf_k(self.rrf_k))
         for field_name in (
             "fusion_bm25_weight",
             "fusion_sparse_weight",

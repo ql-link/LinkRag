@@ -14,25 +14,12 @@ def test_should_enable_sparse_vector_by_default():
     assert settings.SPARSE_VECTOR_ENABLED is True
 
 
-def test_recall_fusion_defaults_and_strategy_normalization():
-    settings = Settings(_env_file=None, RECALL_FUSION_STRATEGY=" Weighted_Score ")
+def test_recall_fusion_defaults():
+    settings = Settings(_env_file=None)
 
-    assert settings.RECALL_FUSION_STRATEGY == "weighted_score"
-    assert settings.RECALL_RRF_K == 60
     assert settings.RECALL_FUSION_BM25_WEIGHT == 0.2
     assert settings.RECALL_FUSION_SPARSE_WEIGHT == 0.3
     assert settings.RECALL_FUSION_DENSE_WEIGHT == 0.5
-
-
-def test_recall_rrf_k_accepts_positive_int():
-    settings = Settings(_env_file=None, RECALL_RRF_K=10)
-
-    assert settings.RECALL_RRF_K == 10
-
-
-def test_recall_rrf_k_rejects_non_positive_int():
-    with pytest.raises(ValueError, match="RECALL_RRF_K"):
-        Settings(_env_file=None, RECALL_RRF_K=0)
 
 
 def test_recall_fusion_weights_allow_zero():
@@ -46,11 +33,6 @@ def test_recall_fusion_weights_allow_zero():
     assert settings.RECALL_FUSION_BM25_WEIGHT == 0.0
     assert settings.RECALL_FUSION_SPARSE_WEIGHT == 0.0
     assert settings.RECALL_FUSION_DENSE_WEIGHT == 1.0
-
-
-def test_recall_fusion_rejects_unknown_strategy():
-    with pytest.raises(ValueError, match="RECALL_FUSION_STRATEGY"):
-        Settings(_env_file=None, RECALL_FUSION_STRATEGY="unknown")
 
 
 def test_recall_ltr_mode_and_shadow_rate_are_validated():

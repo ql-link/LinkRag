@@ -20,7 +20,6 @@ from src.core.pipeline.recall import (
     Retriever,
     RetrieverHit,
     fuse_hits,
-    fuse_with_rrf,
     fuse_with_weighted_score,
 )
 
@@ -41,6 +40,5 @@ __all__ = [
     "SOURCE_DENSE",
     "SOURCE_SPARSE",
     "fuse_hits",
-    "fuse_with_rrf",
     "fuse_with_weighted_score",
 ]

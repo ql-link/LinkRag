@@ -128,12 +128,13 @@ async def test_enabled_sources_uses_route_top_k_only_for_active_sources():
 
 
 @pytest.mark.asyncio
-async def test_unknown_source_uses_fusion_limit_as_fallback_top_k():
-    """新增未知召回路没有专属 top_k 字段时，回退使用融合候选池窗口。"""
+async def test_unknown_source_is_rejected_by_fixed_weighted_fusion():
+    """固定 weighted score 仅接受已定义权重的三条召回路。"""
     graph = FakeRetriever(source="graph", hits=[_hit("g1", "graph")])
     pipeline = make_recall_pipeline([graph])
 
-    await pipeline.execute(RecallRequest(user_id=7, query="q", dataset_ids=[10], top_k=64))
+    with pytest.raises(Exception, match="weighted_score only supports"):
+        await pipeline.execute(RecallRequest(user_id=7, query="q", dataset_ids=[10], top_k=64))
 
     assert graph.top_ks == [64]
 
@@ -194,12 +195,8 @@ async def test_all_empty_returns_empty():
 
 
 @pytest.mark.asyncio
-async def test_trust_declared_order():
-    """pipeline 信任各路返回的排序，不会重新排序。
-
-    故意造一个"声明降序但 score 是 0.3 < 0.9"的反直觉例子：pipeline 按下标
-    取 rank，不按 score 重排——cA 仍 rank=1、cB 仍 rank=2。
-    """
+async def test_weighted_fusion_uses_scores_not_declared_order():
+    """weighted score 使用原始分归一化，结果不依赖输入列表的声明顺序。"""
     dense = FakeRetriever(
         source=SOURCE_DENSE,
         hits=[
@@ -213,40 +210,22 @@ async def test_trust_declared_order():
 
     response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
     by_id = {h.chunk_id: h for h in response.hits}
-    assert by_id["cA"].fused_score == pytest.approx(1 / 61)
-    assert by_id["cB"].fused_score == pytest.approx(1 / 62)
-    # cA 仍应排在 cB 前
-    assert response.hits[0].chunk_id == "cA"
+    assert by_id["cA"].fused_score == pytest.approx(0.0)
+    assert by_id["cB"].fused_score == pytest.approx(1.0)
+    assert response.hits[0].chunk_id == "cB"
 
 
 @pytest.mark.asyncio
-async def test_four_retrievers():
-    """pipeline 不限制召回路数，装四路也能正常工作。"""
+async def test_fourth_unweighted_retriever_is_rejected():
+    """新增召回路必须先定义 weighted score 权重，不能静默参与融合。"""
     dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("c1", SOURCE_DENSE)])
     sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[_hit("c2", SOURCE_SPARSE)])
     bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("c3", SOURCE_BM25)])
     graph = FakeRetriever(source="graph", hits=[_hit("c4", "graph")])
     pipeline = make_recall_pipeline([dense, sparse, bm25, graph])
 
-    response = await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
-
-    for r in (dense, sparse, bm25, graph):
-        assert len(r.calls) == 1
-    assert {h.chunk_id for h in response.hits} == {"c1", "c2", "c3", "c4"}
-    assert set(response.per_source_counts.keys()) == {
-        SOURCE_DENSE,
-        SOURCE_SPARSE,
-        SOURCE_BM25,
-        "graph",
-    }
-    # 每条 hit 的 scores 也含全部 4 个键
-    for hit in response.hits:
-        assert set(hit.scores.keys()) == {
-            SOURCE_DENSE,
-            SOURCE_SPARSE,
-            SOURCE_BM25,
-            "graph",
-        }
+    with pytest.raises(Exception, match="weighted_score only supports"):
+        await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
 
 
 @pytest.mark.asyncio

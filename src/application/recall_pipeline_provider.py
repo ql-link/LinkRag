@@ -91,8 +91,6 @@ def _build_pipeline() -> RecallPipeline:
         retrievers,
         RecallPipelineConfig(
             strict=settings.RECALL_STRICT_DEFAULT,
-            rrf_k=settings.RECALL_RRF_K,
-            fusion_strategy=settings.RECALL_FUSION_STRATEGY,
             fusion_bm25_weight=settings.RECALL_FUSION_BM25_WEIGHT,
             fusion_sparse_weight=settings.RECALL_FUSION_SPARSE_WEIGHT,
             fusion_dense_weight=settings.RECALL_FUSION_DENSE_WEIGHT,
@@ -140,7 +138,7 @@ def build_recall_request_from_config(
 
     RAG 流与纯召回 JSON 共用此映射，避免新增召回配置字段时两个入口失同步。
     ``top_k`` 在 ``RecallRequest`` 中表示融合候选池窗口；三路执行期召回深度由
-    ``bm25_top_k`` / ``sparse_top_k`` / ``dense_top_k`` 分别控制。融合策略、``rrf_k`` 与权重
+    ``bm25_top_k`` / ``sparse_top_k`` / ``dense_top_k`` 分别控制。固定 weighted score 权重
     同样在这里统一映射，避免 RAG 流与纯召回 JSON 入口失同步。
     """
     ltr_rollout = settings.RECALL_LTR_MODE in {"shadow", "active", "baseline"}
@@ -157,10 +155,6 @@ def build_recall_request_from_config(
         dense_score_threshold_override=recall_cfg.dense_score_threshold,
         enabled_sources=recall_cfg.recall_enabled_sources,
         strict_override=recall_cfg.recall_strict,
-        fusion_strategy_override=(
-            "weighted_score" if ltr_rollout else recall_cfg.recall_fusion_strategy
-        ),
-        rrf_k_override=recall_cfg.rrf_k,
         dataset_contexts=dataset_contexts or {},
         fusion_bm25_weight_override=(
             settings.RECALL_FUSION_BM25_WEIGHT if ltr_rollout else recall_cfg.fusion_bm25_weight

@@ -83,7 +83,7 @@ Feature: 对外 RAG 问答流 SSE
 
   # ==== 召回执行语义（补回 #165 随 recall_http_api.feature 删除的断言）====
 
-  Scenario: 多路命中经 RRF 融合后由 rerank 精排并以最小候选形状输出
+  Scenario: 多路命中经 weighted score 融合后由 rerank 精排并以最小候选形状输出
     Given session token claims sub=123 dataset_ids=[1] scope=recall:stream 未过期
     And config_id 指向的 CHAT 模型对用户 123 可用
     And bm25 与 sparse 两路均返回命中
