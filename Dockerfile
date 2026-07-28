@@ -27,7 +27,7 @@ RUN sed -i 's|http://deb.debian.org|https://mirrors.aliyun.com|g; s|https://deb.
 # 这样日常改业务代码不会让 pip 那层失效、不再重装依赖。
 COPY pyproject.toml README.md ./
 RUN mkdir -p src && touch src/__init__.py
-RUN --mount=type=cache,target=/root/.cache/pip \
+RUN --mount=type=cache,id=tolink-rag-pip,target=/root/.cache/pip,sharing=locked \
     pip install --upgrade pip -i https://mirrors.aliyun.com/pypi/simple && \
     pip install '.[all]' -i https://mirrors.aliyun.com/pypi/simple --timeout 120
 
