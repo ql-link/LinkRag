@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 from src.api.routes import rag, recall
+from src.application import recall_pipeline_provider as provider
 from src.application.recall_errors import RecallApiError
 
 
@@ -69,6 +70,7 @@ async def test_recall_json_body_rejects_fusion_fields(field: str):
 
 
 async def test_recall_json_maps_dataset_fusion_config_to_internal_request(monkeypatch):
+    monkeypatch.setattr(provider.settings, "RECALL_LTR_MODE", "off")
     captured = {}
 
     dataset_contexts = {7: object()}

@@ -11,7 +11,8 @@ from src.application.recall_pipeline_provider import build_recall_request_from_c
 from src.core.dataset_config import RecallConfig
 
 
-def test_build_recall_request_maps_fusion_limit_and_route_top_k():
+def test_build_recall_request_maps_fusion_limit_and_route_top_k(monkeypatch):
+    monkeypatch.setattr(provider.settings, "RECALL_LTR_MODE", "off")
     recall_cfg = RecallConfig(
         recall_result_limit=64,
         recall_context_token_budget=4000,
