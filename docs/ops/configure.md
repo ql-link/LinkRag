@@ -299,7 +299,7 @@ MySQL 是业务真值。正常写入与写入失败后的同步清理对同一 `
 | `WIKI_SEARCH_PAGE_SIZE` | `15` | Wiki 顶层搜索与单标题直属 Chunk 展开的服务端固定页大小；必须为正整数，客户端不能覆盖 |
 | `WIKI_BM25_TOP_K_PER_DATASET` | `50` | Wiki mixed 分支对每个有效知识库独立读取的 BM25 候选上限；必须为正整数，不读取知识库个性 `bm25_top_k` |
 | `RECALL_ENABLED_SOURCES` | `bm25,sparse,dense` | 启用的召回路（逗号分隔）。本期默认开启三路；运维侧可显式 set `bm25,sparse` 暂时回退到 dev 旧行为；未登记的 source 出现在配置中装配期 `ValueError` |
-| `RECALL_LTR_MODE` | `off` | `off` 保持旧 rerank；`shadow` 旁路比较但不改结果；`active` 本地 LambdaMART 主排并跳过 rerank；`baseline` 主动回滚到 weighted score 并跳过 rerank |
+| `RECALL_LTR_MODE` | `active` | 默认由本地 LambdaMART 主排并跳过远程 rerank；`off` 保持旧 rerank；`shadow` 旁路比较但不改结果；`baseline` 主动回滚到 weighted score 并跳过 rerank |
 | `RECALL_LTR_MODEL_DIR` | `models/ltr/candidate-difference-v3-20260728-final33` | 版本化生产模型包；首次加载校验 LightGBM 版本、模型/文件 SHA-256、特征签名、Alias=false 和 3 个测试向量 |
 | `RECALL_LTR_SHADOW_SAMPLE_RATE` | `0.1` | Shadow 稳定抽样比例 `[0,1]`，按 `request_id` 哈希；仅 `shadow` 模式生效 |
 | `RECALL_FUSION_BM25_WEIGHT` | `0.2` | 固定 weighted score 的 BM25 路权重；允许为 0，active source 权重和为 0 时本次融合失败 |
@@ -312,11 +312,11 @@ MySQL 是业务真值。正常写入与写入失败后的同步清理对同一 `
 | `RECALL_GENERATION_CONTEXT_TOKEN_BUDGET` | `4000` | 召回后 LLM 生成拼装上下文的 token 预算上限；命中片段按融合分数从高到低纳入，累计超预算即截断尾部低分片段（仅 RAG 问答流的生成阶段生效） |
 | `RERANK_DEFAULT_TOP_N` | `8` | 召回后重排模块（LINK-130）输出候选条数兜底默认值；调用方未显式传 `top_n` 时生效。参考 RAGFlow rerank `top_n`（默认 6，本项目放宽到 8） |
 
-LambdaMART 发布顺序固定为 `shadow → active`。Shadow 至少观察 `recall_ltr_shadow_completed` 的
-`top10_changed` / `top10_overlap`、`rank_mode`、`duration_ms` 和失败事件；确认业务反馈后才切
-`active`。`fallback_*` 比例或 p95 超过 250ms 时，把 `RECALL_LTR_MODE` 改为 `baseline` 并重启，
-即可在不加载模型、不调用远程 rerank 的情况下回滚到 frozen weighted score。模型包离线验收中
-真实搜索 MRR 曾下降 0.70pp，因此不得跳过 Shadow 直接全量启用。
+LambdaMART 当前默认以 `active` 运行。新模型版本发布时仍按 `shadow → active` 验证：Shadow 至少
+观察 `recall_ltr_shadow_completed` 的 `top10_changed` / `top10_overlap`、`rank_mode`、
+`duration_ms` 和失败事件，确认业务反馈后再切换该新版本。`fallback_*` 比例或 p95 超过 250ms 时，
+把 `RECALL_LTR_MODE` 改为 `baseline` 并重启，即可在不加载模型、不调用远程 rerank 的情况下回滚到
+frozen weighted score。当前模型包已完成离线契约验证；后续新模型不得跳过 Shadow 验证。
 
 当 `RECALL_LTR_MODE` 为 `shadow` / `active` / `baseline` 时，运行时会强制使用系统级
 三路系统权重，避免旧 Dataset 快照中的历史权重破坏模型口径；`off` 模式仍尊重 Dataset 级三路权重。

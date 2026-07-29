@@ -35,6 +35,10 @@ RUN --mount=type=cache,id=tolink-rag-pip,target=/root/.cache/pip,sharing=locked 
 # 这层变动不影响上面的依赖层缓存。运行时 uvicorn 从 /app/src 直接加载。
 COPY . .
 
+# LambdaMART 默认启用：构建期即校验模型文件、特征契约、LightGBM 版本与固定测试向量。
+# 任一不匹配都阻断镜像产出，避免分支构建成功但运行期静默降级。
+RUN python -c "from src.application.ltr_provider import get_ltr_ranker; assert get_ltr_ranker() is not None"
+
 # NLTK 数据：构建时下载到镜像内固定目录，固化进镜像层。
 # 运行时由 src.bootstrap.nltk_data 读取 NLTK_DATA 优先命中，避免依赖用户家目录或运行时联网下载。
 ENV NLTK_DATA=/app/nltk_data

@@ -132,7 +132,7 @@ class Settings(BaseSettings):
 
     # 本地 LambdaMART 排序发布模式：off=保持旧 rerank；shadow=旁路对比但不改结果；
     # active=LambdaMART 主排并在异常时回退 weighted score；baseline=主动回滚到 weighted score。
-    RECALL_LTR_MODE: str = "off"
+    RECALL_LTR_MODE: str = "active"
     RECALL_LTR_MODEL_DIR: str = os.path.join(
         PROJECT_ROOT, "models/ltr/candidate-difference-v3-20260728-final33"
     )

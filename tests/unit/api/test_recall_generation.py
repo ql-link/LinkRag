@@ -30,13 +30,15 @@ from src.core.pipeline.rerank import RerankedHit, RerankResponse
 @pytest.fixture(autouse=True)
 def _stub_chat_turn_mq(monkeypatch):
     """隔离对话轮次落库通知：生成终态会发 ChatTurnMessage，这里用无操作 MQ 替身，
-    避免单测触达真实 MQ（chat-message-persistence）。"""
+    避免单测触达真实 MQ（chat-message-persistence）。旧 rerank 用例显式固定在 off 模式，
+    LTR 模式用例再按各自目标覆盖。"""
 
     class _NoopMQ:
         async def send(self, msg):
             return None
 
     monkeypatch.setattr(rt, "MQService", _NoopMQ)
+    monkeypatch.setattr(settings, "RECALL_LTR_MODE", "off")
 
 
 class _FakePipeline:

@@ -46,6 +46,10 @@ def test_recall_ltr_mode_and_shadow_rate_are_validated():
     assert settings.RECALL_LTR_SHADOW_SAMPLE_RATE == 0.25
 
 
+def test_recall_ltr_is_active_by_default():
+    assert Settings.model_fields["RECALL_LTR_MODE"].default == "active"
+
+
 def test_recall_ltr_rejects_invalid_rollout_config():
     with pytest.raises(ValueError, match="RECALL_LTR_MODE"):
         Settings(_env_file=None, RECALL_LTR_MODE="canary")
