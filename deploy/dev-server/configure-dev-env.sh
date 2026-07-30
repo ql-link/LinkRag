@@ -48,8 +48,6 @@ api_key_secret=$(existing_or_random_hex "$rag_secrets" API_KEY_ENCRYPTION_SECRET
 recall_session_secret=$(existing_or_random_hex "$rag_secrets" RECALL_SESSION_JWT_SECRET "$legacy_rag_env")
 recall_internal_secret=$(existing_or_random_hex "$app_secrets" RECALL_INTERNAL_JWT_SECRET)
 
-system_llm_api_key=$(read_env_value "$rag_secrets" SYSTEM_LLM_API_KEY)
-[[ -n "$system_llm_api_key" ]] || system_llm_api_key=$(read_env_value "$legacy_rag_env" SYSTEM_LLM_API_KEY)
 mineru_api_key=$(read_env_value "$rag_secrets" MINERU_API_KEY)
 [[ -n "$mineru_api_key" ]] || mineru_api_key=$(read_env_value "$legacy_rag_env" MINERU_API_KEY)
 
@@ -69,7 +67,6 @@ rag_tmp=$(mktemp "$secrets_dir/rag.env.XXXXXX")
   printf 'KAFKA_SASL_PASSWORD=%s\n' "$DEV_KAFKA_PASSWORD"
   printf 'API_KEY_ENCRYPTION_SECRET=%s\n' "$api_key_secret"
   printf 'RECALL_SESSION_JWT_SECRET=%s\n' "$recall_session_secret"
-  [[ -z "$system_llm_api_key" ]] || printf 'SYSTEM_LLM_API_KEY=%s\n' "$system_llm_api_key"
   [[ -z "$mineru_api_key" ]] || printf 'MINERU_API_KEY=%s\n' "$mineru_api_key"
 } >"$rag_tmp"
 mv "$rag_tmp" "$rag_secrets"

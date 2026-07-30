@@ -9,7 +9,7 @@ Qdrant 向量库的 collection 命名、分桶规则、point 结构与 payload �
 - Point 构造：[src/core/storage/qdrant/point_factory.py](../../../src/core/storage/qdrant/point_factory.py)
 - BM25 独立存储：[src/core/storage/qdrant_bm25/store.py](../../../src/core/storage/qdrant_bm25/store.py)
 
-启用条件：`VECTOR_STORE_TYPE=qdrant`。
+当前向量存储固定使用 Qdrant。
 
 ## Collection 命名与分桶
 
@@ -37,9 +37,9 @@ Collection 名称示例：`kb_bucket_0`, `kb_bucket_1`, ..., `kb_bucket_127`。
 | --- | --- |
 | `CHUNK_INDEX_BUCKET_COUNT` | 覆盖 bucket 总数 |
 | `CHUNK_INDEX_COLLECTION_PREFIX` | 覆盖 collection 前缀 |
-| `QDRANT_COLLECTION_NAME` | 全局兜底 collection 名（非分桶场景） |
 | `QDRANT_HOST` / `QDRANT_PORT` / `QDRANT_GRPC_PORT` | 连接信息 |
 | `QDRANT_API_KEY` | 鉴权 token |
+| `QDRANT_HTTPS` | 是否使用 HTTPS；与 API key 独立配置 |
 | `QDRANT_TIMEOUT_SECONDS` | 操作超时，默认 20 秒 |
 
 ### 分桶的设计目的

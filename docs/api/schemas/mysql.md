@@ -518,7 +518,7 @@ ORM：[`BlogAssetDB`](../../../src/models/db_models.py)
 - `uk_blog_asset_object_key(object_key)`
 - `idx_blog_asset_post_type(post_id, asset_type, is_deleted, created_at)`
 
-说明：博客 HTTP 工作流由 Java 侧负责；Python 侧迁移链负责创建共享库表。博客资源与反馈附件统一存入公开桶 `MINIO_PUBLIC_BUCKET`（默认 `tolink-public`，需由部署环境配置公开读策略）；原博客专用桶 `tolink-blog` 已并入该公开桶。
+说明：博客 HTTP 工作流由 Java 侧负责；Python 侧迁移链负责创建共享库表。博客资源与反馈附件的公开桶及匿名读策略由 Java 服务配置，RAG 服务不读取该配置。
 
 ---
 
