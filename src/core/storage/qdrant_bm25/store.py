@@ -64,6 +64,7 @@ class QdrantBm25Store:
         host: str | None = None,
         port: int | None = None,
         api_key: str | None = None,
+        https: bool | None = None,
         timeout: int | None = None,
         collection_name: str | None = None,
         vector_name: str | None = None,
@@ -76,8 +77,11 @@ class QdrantBm25Store:
         resolved_api_key = (
             api_key if api_key is not None else getattr(settings, "QDRANT_API_KEY", None)
         )
-        # 空串归一为 None：见 QdrantIndexStore 同款说明（非 None api_key 会强制 https）。
+        # 空串归一为 None，协议独立配置；API key 只负责鉴权，不代表服务启用 TLS。
         self.api_key = resolved_api_key or None
+        self.https = (
+            https if https is not None else getattr(settings, "QDRANT_HTTPS", False)
+        )
         self.timeout = timeout or getattr(settings, "QDRANT_TIMEOUT_SECONDS", 30)
         self.collection_name = collection_name or settings.QDRANT_BM25_COLLECTION
         self.vector_name = vector_name or settings.QDRANT_BM25_VECTOR_NAME
@@ -372,6 +376,7 @@ class QdrantBm25Store:
             host=self.host,
             port=self.port,
             api_key=self.api_key,
+            https=self.https,
             timeout=self.timeout,
             prefer_grpc=self.prefer_grpc,
         )

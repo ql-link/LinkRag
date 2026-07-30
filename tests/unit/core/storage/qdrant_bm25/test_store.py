@@ -18,6 +18,11 @@ class _FakeClient:
         self.payload_index_calls.append(kwargs)
 
 
+class _CapturingClient:
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+
+
 async def test_ensure_collection_passes_empty_dense_vectors_config_for_sparse_only() -> None:
     fake = _FakeClient()
     store = QdrantBm25Store(client=fake)
@@ -28,3 +33,13 @@ async def test_ensure_collection_passes_empty_dense_vectors_config_for_sparse_on
     create_kwargs = fake.create_calls[0]
     assert create_kwargs["vectors_config"] == {}
     assert "bm25_text" in create_kwargs["sparse_vectors_config"]
+
+
+async def test_client_passes_explicit_http_with_api_key(monkeypatch) -> None:
+    store = QdrantBm25Store(api_key="secret", https=False)
+    monkeypatch.setattr(store, "_client_class", lambda: _CapturingClient)
+
+    client = await store._get_client()
+
+    assert client.kwargs["api_key"] == "secret"
+    assert client.kwargs["https"] is False
