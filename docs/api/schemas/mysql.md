@@ -24,7 +24,9 @@ ORM 或 `scripts/db/init.sql` 与 migration 不一致时，以 migration 为准�
 | [知识索引](#7-知识索引) | `kb_document_chunk`, `wiki_tree_node` | 10000 |
 | [Workflow 运行记录](#8-workflow-运行记录) | `workflow_run`, `workflow_node_run` | 10000 |
 
-所有表统一：`InnoDB` / `utf8mb4_unicode_ci`，主键自增从 `10000` 起。
+所有表统一：`InnoDB` / `utf8mb4` / `utf8mb4_unicode_ci`，主键自增从 `10000` 起。
+数据库默认值与存量基础表由 migration `0038` 统一；迁移只转换排序规则不一致的表，
+避免 `task_id` 等跨表文本比较触发 MySQL 1267 collation 冲突。
 
 ---
 

@@ -8,7 +8,8 @@
 --   - ORM 模型与本文件都是逻辑/测试镜像，不能反向替代 migration；
 --   - 修改字段或种子数据必须先新增 migration，再同步 ORM 与本文件。
 -- 同步时机：每条会改动表结构的 migration 落库时一并更新本文件。
--- 末次同步：migration 0037_20260727_add_wiki_tree_node
+-- 末次同步：migration 0038_20260730_unify_mysql_collation
+-- 0038 统一数据库及全部基础表为 utf8mb4 / utf8mb4_unicode_ci。
 -- 0036 存量升级自动复用旧系统预设密文；本快照仅表达升级后的最终结构与种子目录。
 -- 备注：0032_20260702_provider_icon_fields 兼容历史 dev 库中 provider icon 误用 0031 revision 的状态；
 --      本快照只表达叠加全部 migration 后的最终结构。
@@ -36,7 +37,7 @@ CREATE TABLE IF NOT EXISTS sys_user (
     UNIQUE KEY uk_username (username),
     UNIQUE KEY uk_email (email),
     INDEX idx_sys_user_created_at (created_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '系统用户表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '系统用户表';
 
 -- 1.1 用户成功登录事件表
 CREATE TABLE IF NOT EXISTS user_login_event (
@@ -63,7 +64,7 @@ CREATE TABLE IF NOT EXISTS llm_system_provider (
     updated_at      DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
 
     UNIQUE KEY uk_provider_type (provider_type)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT 'LLM 系统级厂商配置表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT 'LLM 系统级厂商配置表';
 
 -- 2.1 厂商模型能力目录表
 CREATE TABLE IF NOT EXISTS llm_provider_model (
@@ -80,7 +81,7 @@ CREATE TABLE IF NOT EXISTS llm_provider_model (
 
     UNIQUE KEY uk_provider_model_cap (provider_id, model_name, capability),
     INDEX idx_provider_cap (provider_id, capability)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '厂商模型能力目录表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '厂商模型能力目录表';
 
 -- 2.2 统一可执行 LLM 配置表
 CREATE TABLE IF NOT EXISTS llm_model_config (
@@ -132,7 +133,7 @@ CREATE TABLE IF NOT EXISTS dataset (
 
     UNIQUE KEY uk_dataset_user_name_seq (user_id, name, deleted_seq),
     INDEX idx_dataset_user_updated (user_id, updated_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '数据集表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '数据集表';
 
 -- 5. 对话表
 CREATE TABLE IF NOT EXISTS chat_conversation (
@@ -148,7 +149,7 @@ CREATE TABLE IF NOT EXISTS chat_conversation (
 
     INDEX idx_chat_conversation_user_pinned_updated (user_id, is_pinned, updated_at),
     INDEX idx_chat_conversation_dataset_updated (dataset_id, updated_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '对话表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '对话表';
 
 -- 6. 对话消息表（一行一轮：query + answer 同行；migration 0021 收缩、0023 加韧性字段）
 CREATE TABLE IF NOT EXISTS chat_message (
@@ -168,7 +169,7 @@ CREATE TABLE IF NOT EXISTS chat_message (
 
     INDEX idx_conversation_created (conversation_id, created_at),
     UNIQUE KEY uk_chat_message_turn_id (turn_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '对话消息表（一行一轮）';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '对话消息表（一行一轮）';
 
 -- 7. LLM 调用用量日志表
 CREATE TABLE IF NOT EXISTS llm_usage_log (
@@ -190,7 +191,7 @@ CREATE TABLE IF NOT EXISTS llm_usage_log (
     INDEX idx_user_date (user_id, created_at),
     INDEX idx_config_date (config_id, created_at),
     INDEX idx_user_stage_date (user_id, stage, created_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT 'LLM 调用用量日志表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT 'LLM 调用用量日志表';
 
 -- 8. 原始文档上传表
 CREATE TABLE IF NOT EXISTS document_original_file (
@@ -216,7 +217,7 @@ CREATE TABLE IF NOT EXISTS document_original_file (
     INDEX idx_document_original_dataset_created (dataset_id, created_at),
     INDEX idx_document_original_user_created (user_id, created_at),
     INDEX idx_document_original_upload_status (upload_status, updated_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '知识库原始文档上传记录表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '知识库原始文档上传记录表';
 
 -- 9. 文件解析表
 CREATE TABLE IF NOT EXISTS document_parse_file (
@@ -233,7 +234,7 @@ CREATE TABLE IF NOT EXISTS document_parse_file (
     UNIQUE KEY uk_parse_task_original_file (document_original_file_id),
     INDEX idx_parse_task_dataset_user (dataset_id, user_id, updated_at),
     INDEX idx_parse_task_latest_task (latest_parse_task_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '文件解析表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '文件解析表';
 
 -- 10. 文件解析产物快照表
 -- 经 migration 0007 把 task_status / failure_reason 下沉到 document_parse_pipeline
@@ -260,7 +261,7 @@ CREATE TABLE IF NOT EXISTS document_parsed_log (
     INDEX idx_parsed_log_original_file (document_original_file_id, updated_at),
     INDEX idx_parsed_log_parse_file (document_parse_file_id, updated_at),
     INDEX idx_parsed_log_retry_of (retry_of_task_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '文件解析产物快照表';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '文件解析产物快照表';
 
 -- 11. 文件解析流程状态表
 -- 经 migration 0002/0003 新增 pretokenize_status / pretokenize_duration_ms；
