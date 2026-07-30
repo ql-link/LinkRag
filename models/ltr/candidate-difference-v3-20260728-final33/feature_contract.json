@@ -1,0 +1,73 @@
+{
+  "feature_version": "candidate_difference_v3",
+  "feature_signature": "52a69c3b8ae5e6a5988f62e0a87a775137a4f16ea769bc66829ec664b8782d7b",
+  "feature_names": [
+    "dense_score",
+    "sparse_log_score",
+    "bm25_log_score",
+    "dense_norm",
+    "sparse_norm",
+    "bm25_norm",
+    "dense_rr",
+    "sparse_rr",
+    "bm25_rr",
+    "dense_missing",
+    "sparse_missing",
+    "bm25_missing",
+    "route_count",
+    "all_routes",
+    "dense_sparse_overlap",
+    "dense_bm25_overlap",
+    "sparse_bm25_overlap",
+    "dense_sparse_rr_gap",
+    "dense_bm25_rr_gap",
+    "sparse_bm25_rr_gap",
+    "dense_top12_margin",
+    "sparse_top12_margin",
+    "bm25_top12_margin",
+    "baseline_score",
+    "baseline_rr",
+    "query_length",
+    "query_has_digit",
+    "identifier_exact_coverage",
+    "number_exact_coverage",
+    "negation_overlap_coverage",
+    "negation_mismatch",
+    "query_bigram_coverage",
+    "query_trigram_coverage",
+    "condition_coverage",
+    "distinctive_query_bigram_coverage",
+    "same_doc_candidate_count",
+    "same_doc_max_bigram_similarity",
+    "content_length_log"
+  ],
+  "required_request_fields": {
+    "query": "string",
+    "routes": {
+      "dense": "ordered list[chunk_id,doc_id,dataset_id,score]",
+      "sparse": "ordered list[chunk_id,doc_id,dataset_id,score]",
+      "bm25": "ordered list[chunk_id,doc_id,dataset_id,score]"
+    },
+    "candidate_contents": "map[chunk_id,string]"
+  },
+  "forbidden_request_fields": [
+    "sample_id",
+    "scenario",
+    "expected_chunk_ids",
+    "qrels"
+  ],
+  "fallback": {
+    "type": "weighted-score-baseline",
+    "weights": {
+      "dense": 0.7,
+      "sparse": 0.15,
+      "bm25": 0.15
+    },
+    "thresholds": {
+      "dense": 0.3,
+      "sparse": 0.2,
+      "bm25": 0.0
+    }
+  },
+  "alias_enabled": false
+}

@@ -82,7 +82,7 @@ when_to_use: 当用户明确要求"生成技术方案 / 生成技术实现文档
 - 涉及文件 / 对象存储、object key → 读 `docs/internals/object_storage.md`
 - 涉及异步消息 / topic / consumer → 读 `docs/internals/mq.md`、`docs/api/mq_contracts.md`
 - 涉及向量检索 → 读 `docs/api/schemas/qdrant.md`、`docs/internals/vectorization.md`
-- 涉及 ES / BM25 检索 → 读 `docs/api/schemas/elasticsearch.md`
+- 涉及 ES / BM25 检索 → 读 `docs/internals/vectorization.md`
 - 涉及解析流水线 → 读 `docs/internals/parse_task_pipeline.md`
 - 本项目当前不使用 Redis 公共组件；如确需引入缓存，先在 brief / TD 中说明并补对应文档
 

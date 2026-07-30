@@ -1,6 +1,6 @@
 # 召回 HTTP API（对外 RAG 流 / 纯召回 JSON）
 
-本文描述 Python 侧对外召回的两个端点运行时：暴露面、会话鉴权、请求装配与降级语义。
+本文描述 Python 侧对外召回与 Wiki 导航端点的运行时：暴露面、会话鉴权、请求装配与降级语义。
 LINK-131 拆分语义——`POST /api/v1/rag/stream` 承接「召回 + LLM 流式生成」的完整 RAG 问答（SSE），
 `POST /api/v1/recall` 是纯召回 JSON（一次性返回 hits、不生成、不限流、预留实现）。
 对外契约见 [docs/api/http_contracts.md §6](../api/http_contracts.md#6-rag--recall-api对外)；
@@ -11,7 +11,7 @@ LINK-131 拆分语义——`POST /api/v1/rag/stream` 承接「召回 + LLM 流�
 > 历史背景：早期 `POST /api/v1/recall/stream` 以 `recall` 之名承载完整 RAG 问答，LINK-131 拆分后
 > 删除、不留兼容。更早还存在一条 Java Recall Gateway → Python **内部端点**
 > `/api/v1/internal/recall/stream` 的网关链路（纯召回、无生成），已随前端直连方案废弃并清理
-> （LINK-122）。Python 侧现只保留下述两个对外端点。
+> （LINK-122）。Python 侧当前保留 RAG、纯召回及四个 Wiki 导航端点。
 
 ## 1. 边界：身份与授权归属
 
@@ -24,7 +24,7 @@ Python **不接受前端 Sa-Token，也不信任请求体里自报的 `user_id`*
 
 ## 2. 暴露面
 
-两个对外端点共用会话鉴权与 scope 校验（§3、§4），差异在执行与返回载体：
+这些对外端点共用会话鉴权与 scope 校验（§3、§4），差异在执行与返回载体：
 
 - **RAG 问答流**：`POST /api/v1/rag/stream`（[src/api/routes/rag.py](../../src/api/routes/rag.py)），
   返回 `text/event-stream`。召回融合后做 rerank 精排（不可用即降级当前融合顺序），再基于最终片段调用用户
@@ -35,6 +35,7 @@ Python **不接受前端 Sa-Token，也不信任请求体里自报的 `user_id`*
   返回 `application/json`，一次性 `{hits, failed_sources}`（**融合候选，不经 rerank**，hits 不含 rerank
   字段）。**不调 CHAT 模型、不回填正文、不建 SSE、不限流**。请求体仅 `query` + 可选 `dataset_ids`，出现 `config_id` → 422。
   执行期错误走 HTTP 状态码（见错误码）。当前为接口预留实现。
+- **Wiki 导航 JSON**：`POST /api/v1/wiki/search`、`GET /api/v1/wiki/documents/{doc_id}/headings/{heading_key}/chunks`、`POST /api/v1/wiki/chunk-locations`、`GET /api/v1/wiki/documents/{doc_id}/tree`（[src/api/routes/wiki.py](../../src/api/routes/wiki.py)）。四者复用同一 session token，但不使用 Redis 并发计数；SQL 会再次核验用户、ACTIVE 数据集、可选文档范围、当前成功解析任务与 ACTIVE Chunk。完整字段和错误语义见 [HTTP 契约 Wiki 章节](../api/http_contracts.md#7-wiki-api对外)。
 
 ## 3. 会话鉴权（HS256 JWT）
 
@@ -72,6 +73,8 @@ JWT 推荐 claims：
 
 下传 pipeline 的 `user_id` 始终取 claims `sub`，不信任 body 自报值（body 不含 `user_id`）。
 
+Wiki 还支持可选 `doc_ids`：只传文档时，服务端从已完整校验的文档归属派生有效数据集；同时传 `dataset_ids` 与 `doc_ids` 时，每篇文档必须落在显式数据集子集内。任一请求 ID 未被完整解析均在标题 SQL/BM25 前返回 `403 RECALL_SCOPE_FORBIDDEN`。
+
 ## 5. 请求装配与执行
 
 两端点握手前都做：JWT 校验 → JSON 解析 + Pydantic 校验（`extra=forbid`）→ `query` 空白 → 400 →
@@ -82,7 +85,7 @@ scope 校验。RAG 流额外要求 `config_id`（缺失 → 422）并在建流�
 `RecallRequest`：`query` ← body；`user_id` ← claims `sub`；`dataset_ids` ← scope 解析结果；
 `doc_ids` = None；`top_k` ← `recall_result_limit`（融合候选池 / rerank 输入窗口）；
 `bm25_top_k` / `sparse_top_k` / `dense_top_k` ← 对应 per-route 配置；
-`fusion_strategy_override`、`rrf_k_override` 与三路 `fusion_*_weight_override` ← 对应融合配置。上述策略字段均由服务端配置决定，
+三路 `fusion_*_weight_override` ← 对应融合配置。权重字段均由服务端配置决定，
 不接受请求覆盖。
 
 ### 5.1 RAG 流（建流在前）
@@ -142,7 +145,7 @@ CORS 复用全局 `CORSMiddleware`；对外环境必须把 `CORS_ORIGINS` 由 `*
 - `sparse` → `SparseRetriever(compose_vector_storage_facade(), score_threshold=...)`；
 - `dense` → `DenseRetriever(compose_vector_storage_facade(), score_threshold=...)`；
 - 配置中出现未登记 source → 装配期 `ValueError`，不静默跳过。
-- `RECALL_FUSION_STRATEGY`、`RECALL_RRF_K` 与三路 `RECALL_FUSION_*_WEIGHT` 注入 `RecallPipelineConfig`，作为无数据集覆盖时的融合默认值。
+- 三路 `RECALL_FUSION_*_WEIGHT` 注入 `RecallPipelineConfig`，作为无数据集覆盖时的融合默认值。
 
 sparse / dense 底座的编码模型不在装配期加载，而是在执行期按每个 dataset 的
 `dataset_parse_config.sparse_embedding_config_id` / `dense_embedding_config_id` 精确解析。

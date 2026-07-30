@@ -8,7 +8,7 @@
 --   - ORM 模型与本文件都是逻辑/测试镜像，不能反向替代 migration；
 --   - 修改字段或种子数据必须先新增 migration，再同步 ORM 与本文件。
 -- 同步时机：每条会改动表结构的 migration 落库时一并更新本文件。
--- 末次同步：migration 0036_20260717_unify_llm_model_config
+-- 末次同步：migration 0037_20260727_add_wiki_tree_node
 -- 0036 存量升级自动复用旧系统预设密文；本快照仅表达升级后的最终结构与种子目录。
 -- 备注：0032_20260702_provider_icon_fields 兼容历史 dev 库中 provider icon 误用 0031 revision 的状态；
 --      本快照只表达叠加全部 migration 后的最终结构。
@@ -404,6 +404,27 @@ CREATE TABLE IF NOT EXISTS kb_document_chunk (
     KEY idx_doc_lifecycle_status (doc_id, lifecycle_status),
     KEY idx_lifecycle_update_time (lifecycle_status, update_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '文档Chunk真值记录表';
+
+-- 16. Wiki 标题与 Chunk 引用混合节点表（migration 0037 引入）
+-- 标题结构可由 ParseResult + Chunk 重建；正文仍只保存在 kb_document_chunk。
+CREATE TABLE IF NOT EXISTS wiki_tree_node (
+    id                  BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT 'Wiki 节点物理主键',
+    heading_key         VARCHAR(64) DEFAULT NULL COMMENT 'HEADING 条件稳定业务键；CHUNK_REF 为 NULL',
+    doc_id              BIGINT UNSIGNED NOT NULL COMMENT '所属原文档 ID',
+    parent_id           BIGINT UNSIGNED DEFAULT NULL COMMENT '直接父 HEADING 物理主键；NULL 为文档虚拟根',
+    node_type           VARCHAR(16) NOT NULL COMMENT '节点类型：HEADING=标题节点，CHUNK_REF=Chunk 引用节点',
+    title               VARCHAR(512) DEFAULT NULL COMMENT '规范空白后保留展示大小写的标题',
+    heading_level       TINYINT UNSIGNED DEFAULT NULL COMMENT 'HEADING 级别 1-6',
+    chunk_id            VARCHAR(128) DEFAULT NULL COMMENT 'CHUNK_REF 指向 kb_document_chunk.chunk_id',
+    sort_order          INT UNSIGNED NOT NULL COMMENT '同父、同类型内顺序，从 0 开始',
+    created_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at          DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+
+    UNIQUE KEY uk_wiki_heading_key (heading_key),
+    KEY idx_wiki_doc_parent_type_order (doc_id, parent_id, node_type, sort_order),
+    KEY idx_wiki_type_title_doc (node_type, title, doc_id, id),
+    KEY idx_wiki_chunk_doc_parent (chunk_id, doc_id, parent_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT 'Wiki 标题与 Chunk 引用混合节点表';
 
 -- 17. 数据集级解析/检索参数配置表（migration 0017 引入，LINK-148）
 -- 四个 JSON 列承载分块 / Markdown 增强 / PDF / 召回四类配置；行数据增删改由 Java 侧负责，

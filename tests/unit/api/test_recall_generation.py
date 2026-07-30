@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 
@@ -16,20 +17,28 @@ from src.application import recall_stream_runtime as rt
 from src.config import settings
 from src.core.llm.exceptions import LLMConfigNotFoundError
 from src.core.llm.response import StreamChunk
-from src.core.pipeline.recall import RecallDiagnostics, RecallHit, RecallRequest, RecallResponse
+from src.core.pipeline.recall import (
+    RecallDiagnostics,
+    RecallHit,
+    RecallRequest,
+    RecallResponse,
+    RetrieverHit,
+)
 from src.core.pipeline.rerank import RerankedHit, RerankResponse
 
 
 @pytest.fixture(autouse=True)
 def _stub_chat_turn_mq(monkeypatch):
     """隔离对话轮次落库通知：生成终态会发 ChatTurnMessage，这里用无操作 MQ 替身，
-    避免单测触达真实 MQ（chat-message-persistence）。"""
+    避免单测触达真实 MQ（chat-message-persistence）。旧 rerank 用例显式固定在 off 模式，
+    LTR 模式用例再按各自目标覆盖。"""
 
     class _NoopMQ:
         async def send(self, msg):
             return None
 
     monkeypatch.setattr(rt, "MQService", _NoopMQ)
+    monkeypatch.setattr(settings, "RECALL_LTR_MODE", "off")
 
 
 class _FakePipeline:
@@ -133,6 +142,25 @@ def _response(hits, diagnostics=None):
     )
 
 
+def _ltr_response(hits):
+    routes = {"dense": [], "sparse": [], "bm25": []}
+    for hit in hits:
+        for source, score in hit.scores.items():
+            if score is not None:
+                routes[source].append(
+                    RetrieverHit(hit.chunk_id, hit.doc_id, hit.dataset_id, score, source)
+                )
+    return RecallResponse(
+        query="q",
+        hits=hits,
+        per_source_counts={source: len(values) for source, values in routes.items()},
+        failed_sources=[],
+        elapsed_ms=1,
+        candidate_hits=hits,
+        route_hits=routes,
+    )
+
+
 def _dataset_context(*, enable_rerank: bool = True):
     """构造仅包含 runtime 本测试所需字段的数据集执行快照。"""
     return SimpleNamespace(
@@ -215,6 +243,70 @@ async def test_happy_streams_answer_delta_then_done(stub_generation):
     assert len(done["hits"]) == 2
     # 终态 hits 回填 chunk 正文（供前端展示召回片段），与回填映射一致。
     assert all(h["content"] == f"正文-{h['chunk_id']}" for h in done["hits"])
+
+
+@pytest.mark.asyncio
+async def test_baseline_mode_skips_remote_reranker(monkeypatch, stub_generation):
+    monkeypatch.setattr(settings, "RECALL_LTR_MODE", "baseline")
+    reranker = _FakeReranker(exc=AssertionError("must not be called"))
+    events = await _collect(
+        rt.recall_event_stream(
+            _FakePipeline(_ltr_response(_weighted_hits())),
+            _req(),
+            "rid-baseline",
+            config_id=77,
+            conversation_id=1,
+            turn_id="t-baseline",
+            reranker=reranker,
+            token_budget=4000,
+            rerank_top_n=8,
+        )
+    )
+
+    assert reranker.last_request is None
+    done = events[-1][1]
+    assert [hit["chunk_id"] for hit in done["hits"]] == ["cDense", "cBm25", "cSparse"]
+    assert done["rerank_applied"] is False
+
+
+@pytest.mark.asyncio
+async def test_shadow_mode_keeps_serving_rerank_order(monkeypatch, stub_generation):
+    monkeypatch.setattr(settings, "RECALL_LTR_MODE", "shadow")
+    monkeypatch.setattr(settings, "RECALL_LTR_SHADOW_SAMPLE_RATE", 1.0)
+
+    class _ShadowRanker:
+        async def rank(self, **kwargs):
+            return SimpleNamespace(
+                ranked_chunk_ids=["cBm25", "cSparse", "cDense"],
+                mode="ltr",
+                model_version="test-v3",
+                elapsed_ms=1.0,
+                reason=None,
+            )
+
+    monkeypatch.setattr(rt, "get_ltr_ranker", lambda: _ShadowRanker())
+    reranker = _FakeReranker(applied=True)
+    events = await _collect(
+        rt.recall_event_stream(
+            _FakePipeline(_ltr_response(_weighted_hits())),
+            _req(),
+            "rid-shadow",
+            config_id=77,
+            conversation_id=1,
+            turn_id="t-shadow",
+            reranker=reranker,
+            token_budget=4000,
+            rerank_top_n=8,
+        )
+    )
+    await asyncio.sleep(0)
+
+    assert reranker.last_request is not None
+    assert [hit["chunk_id"] for hit in events[-1][1]["hits"]] == [
+        "cDense",
+        "cSparse",
+        "cBm25",
+    ]
 
 
 @pytest.mark.asyncio
@@ -427,7 +519,10 @@ async def test_content_fetched_once_and_injected_into_reranker(monkeypatch):
 
     async def _resolve(*a, **k):
         return SimpleNamespace(
-            provider=_FakeProvider(), model_name="m", provider_type="openai", config_id=k["config_id"]
+            provider=_FakeProvider(),
+            model_name="m",
+            provider_type="openai",
+            config_id=k["config_id"],
         )
 
     monkeypatch.setattr(rt, "aresolve_model", _resolve)
@@ -459,7 +554,10 @@ async def test_reranker_receives_expanded_rrf_candidate_pool(monkeypatch):
 
     async def _resolve(*a, **k):
         return SimpleNamespace(
-            provider=_FakeProvider(), model_name="m", provider_type="openai", config_id=k["config_id"]
+            provider=_FakeProvider(),
+            model_name="m",
+            provider_type="openai",
+            config_id=k["config_id"],
         )
 
     async def _contents(chunk_ids, user_id):
@@ -499,7 +597,10 @@ async def test_hard_fail_degrade_drops_no_content_hits(monkeypatch):
 
     async def _resolve(*a, **k):
         return SimpleNamespace(
-            provider=_FakeProvider(), model_name="m", provider_type="openai", config_id=k["config_id"]
+            provider=_FakeProvider(),
+            model_name="m",
+            provider_type="openai",
+            config_id=k["config_id"],
         )
 
     # c0 有正文、c1 无正文、c2 有正文。

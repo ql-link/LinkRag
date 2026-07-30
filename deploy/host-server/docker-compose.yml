@@ -47,7 +47,7 @@ services:
 
   minio:
     image: minio/minio:RELEASE.2025-04-22T22-12-26Z
-    container_name: tolink-minio
+    container_name: tolink-dev-minio
     restart: always
     ports:
       - "9000:9000"
@@ -60,6 +60,7 @@ services:
       - minio_data:/data
     networks:
       - tolink-net
+      - tolink-dev-net
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 30s
@@ -67,8 +68,8 @@ services:
       retries: 3
 
   qdrant:
-    image: qdrant/qdrant:latest
-    container_name: tolink-qdrant
+    image: qdrant/qdrant:v1.17.1
+    container_name: tolink-prod-qdrant
     restart: always
     ports:
       - "6333:6333"
@@ -105,7 +106,7 @@ services:
 
   zookeeper:
     image: bitnami/zookeeper:3.9
-    container_name: tolink-zookeeper
+    container_name: tolink-prod-zookeeper
     restart: always
     ports:
       - "2181:2181"
@@ -123,7 +124,7 @@ services:
 
   kafka:
     image: bitnami/kafka:3.7
-    container_name: tolink-kafka
+    container_name: tolink-prod-kafka
     restart: always
     ports:
       - "9092:9092"
@@ -131,11 +132,11 @@ services:
     environment:
       - KAFKA_ENABLE_KRAFT=no
       - KAFKA_CFG_BROKER_ID=1
-      - KAFKA_CFG_ZOOKEEPER_CONNECT=tolink-zookeeper:2181
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=tolink-prod-zookeeper:2181
       - KAFKA_CFG_LISTENERS=INTERNAL://:29092,EXTERNAL://:9092,PUBLIC://:39092
       - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=INTERNAL:SASL_PLAINTEXT,EXTERNAL:SASL_PLAINTEXT,PUBLIC:SASL_PLAINTEXT
       - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=INTERNAL
-      - KAFKA_CFG_ADVERTISED_LISTENERS=INTERNAL://tolink-kafka:29092,EXTERNAL://${HOST_VPN_IP:-100.86.10.52}:9092,PUBLIC://${HOST_PUBLIC_KAFKA_ADDR:-103.205.254.30:39092}
+      - KAFKA_CFG_ADVERTISED_LISTENERS=INTERNAL://tolink-prod-kafka:29092,EXTERNAL://${HOST_VPN_IP:-100.86.10.52}:9092,PUBLIC://${HOST_PUBLIC_KAFKA_ADDR:-103.205.254.30:39092}
       - ALLOW_PLAINTEXT_LISTENER=yes
       - KAFKA_CFG_SASL_ENABLED_MECHANISMS=PLAIN
       - KAFKA_CFG_SASL_MECHANISM_INTER_BROKER_PROTOCOL=PLAIN
@@ -162,13 +163,13 @@ services:
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
-    container_name: tolink-kafka-ui
+    container_name: tolink-prod-kafka-ui
     restart: always
     ports:
       - "9081:8080"
     environment:
-      - KAFKA_CLUSTERS_0_NAME=tolink-cluster
-      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=tolink-kafka:29092
+      - KAFKA_CLUSTERS_0_NAME=tolink-prod-cluster
+      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=tolink-prod-kafka:29092
       - KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL=SASL_PLAINTEXT
       - KAFKA_CLUSTERS_0_PROPERTIES_SASL_MECHANISM=PLAIN
       - KAFKA_CLUSTERS_0_PROPERTIES_SASL_JAAS_CONFIG=org.apache.kafka.common.security.plain.PlainLoginModule required username="root" password="ql354210";
@@ -195,6 +196,9 @@ services:
 networks:
   tolink-net:
     driver: bridge
+  tolink-dev-net:
+    external: true
+    name: tolink-dev-net
 
 volumes:
   mysql_data:

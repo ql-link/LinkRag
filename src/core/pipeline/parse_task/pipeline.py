@@ -26,6 +26,8 @@ from src.core.pipeline.parse_task.post_process.repository import ParsePipelineRe
 from src.core.storage.chunks.repository import ChunkRepository
 from src.core.storage.index_mutation_guard import MutationGuardProtocol, get_index_mutation_guard
 from src.core.storage.vector.draft_factory import ChunkDraftFactory
+from src.core.storage.wiki_tree import WikiTreeRepository
+from src.core.wiki import HeadingTreeBuilder
 from src.core.workflow import RunStatus
 from src.database import get_async_session_factory
 from src.models.parse_task import DocumentParsedLog
@@ -89,6 +91,8 @@ class ParseTaskPipeline:
         chunk_draft_factory: ChunkDraftFactory | None = None,
         sparse_indexing_pipeline: Any | None = None,
         mutation_guard: MutationGuardProtocol | None = None,
+        wiki_tree_builder: HeadingTreeBuilder | None = None,
+        wiki_tree_repository: WikiTreeRepository | None = None,
     ) -> None:
         """初始化解析流水线依赖。
 
@@ -118,6 +122,8 @@ class ParseTaskPipeline:
             chunk_draft_factory=chunk_draft_factory,
             sparse_indexing_pipeline=sparse_indexing_pipeline,
             mutation_guard=mutation_guard or get_index_mutation_guard(),
+            wiki_tree_builder=wiki_tree_builder,
+            wiki_tree_repository=wiki_tree_repository,
         )
 
     def _build_stage_pipeline(self):
@@ -436,9 +442,11 @@ class ParseTaskPipeline:
         code = (
             ParseFailureCode.DATASET_MODEL_BINDING_REQUIRED
             if isinstance(exc, DatasetModelBindingRequiredError)
-            else ParseFailureCode.LLM_CONFIG_MISSING
-            if isinstance(exc, LLMConfigResolutionError)
-            else ParseFailureCode.INTERNAL_UNKNOWN_ERROR
+            else (
+                ParseFailureCode.LLM_CONFIG_MISSING
+                if isinstance(exc, LLMConfigResolutionError)
+                else ParseFailureCode.INTERNAL_UNKNOWN_ERROR
+            )
         )
         failure_reason = build_failure_reason(code, str(exc))
         await self._log_repository.mark_parse_finished(log_record, db)
@@ -584,8 +592,7 @@ class ParseTaskPipeline:
                 error_message=truncate_log_value(exc),
                 stack_trace=safe_exception_stack(exc),
             ).error(
-                "[ParseTask] retry_validation_failure_persist_failed {} "
-                "error_type={} error={}",
+                "[ParseTask] retry_validation_failure_persist_failed {} " "error_type={} error={}",
                 task_log_context(payload),
                 type(exc).__name__,
                 compact_log_value(exc),

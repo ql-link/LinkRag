@@ -735,7 +735,7 @@ class ManticoreBm25Store:
 
         try:
             await asyncio.wait_for(cur.execute(sql, params), timeout=self.timeout)
-        except TimeoutError as exc:
+        except asyncio.TimeoutError as exc:
             # 取消发生时 MySQL wire 响应可能仍在途中，该连接不应回池复用。
             conn.close()
             raise ManticoreStoreError(f"Manticore SQL timed out after {self.timeout}s") from exc

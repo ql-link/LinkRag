@@ -11,7 +11,7 @@ ORM 或 `scripts/db/init.sql` 与 migration 不一致时，以 migration 为准�
 
 ## 表清单
 
-按业务域共 21 张表：
+按业务域共 22 张表：
 
 | 业务域 | 表 | 主键 ID 起始 |
 | --- | --- | --- |
@@ -21,7 +21,7 @@ ORM 或 `scripts/db/init.sql` 与 migration 不一致时，以 migration 为准�
 | [文档解析](#4-文档解析) | `document_original_file`, `document_parse_file`, `document_parsed_log`, `document_parse_pipeline` | 10000 |
 | [博客](#5-博客) | `blog_post`, `blog_asset` | 10000 |
 | [用户反馈](#6-用户反馈) | `user_feedback` | 10000 |
-| [知识索引](#7-知识索引) | `kb_document_chunk` | 10000 |
+| [知识索引](#7-知识索引) | `kb_document_chunk`, `wiki_tree_node` | 10000 |
 | [Workflow 运行记录](#8-workflow-运行记录) | `workflow_run`, `workflow_node_run` | 10000 |
 
 所有表统一：`InnoDB` / `utf8mb4_unicode_ci`，主键自增从 `10000` 起。
@@ -262,7 +262,7 @@ ORM：[`UsageLogDB`](../../../src/models/db_models.py)
 | `chunking_config` | JSON | 分块配置（3 项：heading_break_level / min_candidate_chunk_tokens / overlap_tokens；旧 percentile 语义切片参数已随 splitter 重写移除） |
 | `enhancement_config` | JSON | Markdown 增强开关；开启的表格/标题和图片分别要求下方 CHAT / VISION 绑定 |
 | `pdf_config` | JSON | PDF 解析配置（1 项：pdf_parser_backend，null 表示用系统默认） |
-| `recall_config` | JSON | 召回检索配置（15 项：recall_result_limit / recall_context_token_budget / bm25_top_k / sparse_top_k / sparse_score_threshold / dense_top_k / dense_score_threshold / recall_enabled_sources / recall_fusion_strategy / rrf_k / fusion_bm25_weight / fusion_sparse_weight / fusion_dense_weight / rerank_top_n / recall_strict；数据库列 COMMENT 由 Alembic 迁移同步维护）。其中 recall_result_limit 为融合后候选池窗口；bm25_top_k / sparse_top_k / dense_top_k 分别控制三路执行期召回深度；recall_enabled_sources 为启用的召回路数组（bm25/sparse/dense，**仅能在系统已装配的召回路集合内收窄**，列出的未装配路被忽略、交集为空时回退全部已装配路）；recall_fusion_strategy 可选 rrf / weighted_score；rrf_k 仅用于 rrf，计算 `1 / (rrf_k + rank)`；三路 fusion 权重仅用于 weighted_score 且允许单项为 0；rerank_top_n 为重排返回条数上限；recall_strict 为召回容错模式（true=任一路失败即整体失败，false=允许单路失败降级） |
+| `recall_config` | JSON | 召回检索配置（14 项：recall_result_limit / recall_context_token_budget / bm25_top_k / sparse_top_k / sparse_score_threshold / dense_top_k / dense_score_threshold / recall_enabled_sources / fusion_bm25_weight / fusion_sparse_weight / fusion_dense_weight / rerank_top_n / enable_rerank / recall_strict；数据库列 COMMENT 由 Alembic 迁移同步维护）。其中 recall_result_limit 为融合后候选池窗口；bm25_top_k / sparse_top_k / dense_top_k 分别控制三路执行期召回深度；recall_enabled_sources 为启用的召回路数组（bm25/sparse/dense，**仅能在系统已装配的召回路集合内收窄**，列出的未装配路被忽略、交集为空时回退全部已装配路）；三路 fusion 权重用于固定 weighted score 融合且允许单项为 0；rerank_top_n 为重排返回条数上限；enable_rerank 控制旧远程重排是否启用；recall_strict 为召回容错模式（true=任一路失败即整体失败，false=允许单路失败降级） |
 | `sparse_embedding_config_id` | BIGINT UNSIGNED NULL | 精确绑定 `llm_model_config.id`，能力必须为 `SPARSE_EMBEDDING` |
 | `dense_embedding_config_id` | BIGINT UNSIGNED NULL | 精确绑定 `llm_model_config.id`，能力必须为 `EMBEDDING` |
 | `enhancement_chat_config_id` | BIGINT UNSIGNED NULL | 表格/标题增强 `CHAT` 绑定；只在对应增强开启时必需 |
@@ -588,6 +588,40 @@ ORM：[`ChunkRecordDB`](../../../src/models/chunk_record.py)
 - `idx_doc_es_status(doc_id, es_status)`
 - `idx_doc_lifecycle_status(doc_id, lifecycle_status)`
 - `idx_lifecycle_update_time(lifecycle_status, update_time)`
+
+### `wiki_tree_node` — Wiki 标题与 Chunk 引用混合节点表
+
+每篇文档的一棵可重建标题树。`HEADING` 保存标题结构，`CHUNK_REF` 只引用
+`kb_document_chunk.chunk_id`；正文、用户、知识库和 Chunk 类型不在本表复制。
+
+ORM：[`WikiTreeNodeDB`](../../../src/models/wiki_tree.py)
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | BIGINT UNSIGNED PK | 节点物理主键；全量重建后可变化 |
+| `heading_key` | VARCHAR(64) UNIQUE NULL | `HEADING` 的条件稳定业务键；`CHUNK_REF` 为 NULL |
+| `doc_id` | BIGINT UNSIGNED | 原始文档 ID，对应 `document_original_file.id` |
+| `parent_id` | BIGINT UNSIGNED NULL | 直接父 `HEADING.id`；NULL 表示文档虚拟根 |
+| `node_type` | VARCHAR(16) | `HEADING`=标题节点；`CHUNK_REF`=Chunk 引用节点 |
+| `title` | VARCHAR(512) NULL | 规范空白后保留展示大小写的标题；仅 `HEADING` 使用 |
+| `heading_level` | TINYINT UNSIGNED NULL | 标题级别 1～6；仅 `HEADING` 使用 |
+| `chunk_id` | VARCHAR(128) NULL | 指向 `kb_document_chunk.chunk_id`；仅 `CHUNK_REF` 使用 |
+| `sort_order` | INT UNSIGNED | 同父节点、同节点类型内从 0 开始的顺序 |
+| `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
+
+索引：
+- `uk_wiki_heading_key(heading_key)`
+- `idx_wiki_doc_parent_type_order(doc_id, parent_id, node_type, sort_order)`
+- `idx_wiki_type_title_doc(node_type, title, doc_id, id)`
+- `idx_wiki_chunk_doc_parent(chunk_id, doc_id, parent_id)`
+
+约束说明：
+
+- `HEADING` 必须有 `heading_key`、`title`、`heading_level`，且 `chunk_id` 为空；
+  `CHUNK_REF` 必须有 `chunk_id`，且标题字段为空。组合约束由领域构建器和仓储校验。
+- 不设置物理外键；父节点同文档、引用目标和生命周期一致性由同事务写入、读取门禁与集成测试保证。
+- nullable unique 允许多条 `CHUNK_REF` 使用 `heading_key=NULL`；根级重复引用由构建器去重。
+- migration 只创建空表，不从存量 Chunk 反推标题树。主键从 `10000` 起。
 
 ## 8. Workflow 运行记录
 

@@ -25,10 +25,10 @@ from src.core.mq.messages.document_delete import (
 from src.core.pipeline.document_delete.repository import ParseDeleteRepository
 from src.core.storage.bm25_backend import build_indexing_pipeline
 from src.core.storage.chunks.repository import ChunkRepository
-from src.core.storage.index_mutation_guard import get_index_mutation_guard
-from src.core.storage.index_mutation_guard import MutationGuardProtocol
+from src.core.storage.index_mutation_guard import MutationGuardProtocol, get_index_mutation_guard
 from src.core.storage.index_mutation_models import IndexBranch
 from src.core.storage.qdrant.qdrant_store import QdrantIndexStore
+from src.core.storage.wiki_tree.repository import WikiTreeRepository
 from src.database import get_db_context
 from src.services.storage.base import BaseObjectStorage
 from src.services.storage.factory import StorageFactory
@@ -56,6 +56,7 @@ class DocumentDeletePurger:
         storage: BaseObjectStorage | None = None,
         page_size: int | None = None,
         mutation_guard: MutationGuardProtocol | None = None,
+        wiki_repository: WikiTreeRepository | None = None,
     ) -> None:
         self._chunk_repo = chunk_repository or ChunkRepository()
         self._parse_repo = parse_repository or ParseDeleteRepository()
@@ -64,6 +65,7 @@ class DocumentDeletePurger:
         self._storage = storage or StorageFactory.get_storage()
         self._page_size = page_size or settings.DOCUMENT_DELETE_PAGE_SIZE
         self._mutation_guard = mutation_guard or get_index_mutation_guard()
+        self._wiki_repo = wiki_repository or WikiTreeRepository()
 
     async def purge(self, payload: DocumentDeletePayload) -> None:
         """删除入口：按范围分流。失败向上抛，由消费者归类为暂时性失败重试。"""
@@ -153,8 +155,10 @@ class DocumentDeletePurger:
             # 存储 SDK 为同步实现，放线程池避免阻塞事件循环
             await asyncio.to_thread(self._storage.remove_prefix, bucket, prefix)
 
-        # STEP 5 最后删 DB 行（单事务）：chunk 真值 + 解析三表，外部产物确认清掉后才销账
+        # STEP 5 最后在同一事务删除 Wiki 结构、Chunk 真值和解析三表；
+        # 只有外部索引与对象存储确认清理完成后才执行最终数据库销账。
         async with get_db_context() as db:
+            await self._wiki_repo.delete_by_doc_id(db, doc_id)
             await self._chunk_repo.delete_by_doc_id(db, doc_id)
             await self._parse_repo.delete_parse_rows_by_doc_id(db, doc_id)
             await db.commit()
