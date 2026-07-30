@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
 
 from src.application import recall_stream_runtime as rt
+from src.application.ltr_shadow_executor import LtrShadowExecutor
 from src.config import settings
 from src.core.llm.exceptions import LLMConfigNotFoundError
 from src.core.llm.response import StreamChunk
@@ -232,7 +234,7 @@ async def test_happy_streams_answer_delta_then_done(stub_generation):
             turn_id="t-gen",
             reranker=_FakeReranker(),
             token_budget=4000,
-            rerank_top_n=8,
+            rerank_top_n=settings.RERANK_DEFAULT_TOP_N,
         )
     )
     names = [e for e, _ in events]
@@ -284,7 +286,7 @@ async def test_shadow_mode_keeps_serving_rerank_order(monkeypatch, stub_generati
                 reason=None,
             )
 
-    monkeypatch.setattr(rt, "get_ltr_ranker", lambda: _ShadowRanker())
+    monkeypatch.setattr(rt, "get_initialized_ltr_ranker", lambda: _ShadowRanker())
     reranker = _FakeReranker(applied=True)
     events = await _collect(
         rt.recall_event_stream(
@@ -307,6 +309,310 @@ async def test_shadow_mode_keeps_serving_rerank_order(monkeypatch, stub_generati
         "cSparse",
         "cBm25",
     ]
+
+
+@pytest.mark.asyncio
+async def test_shadow_full_candidate_content_fetch_does_not_block_serving(
+    monkeypatch, stub_generation
+):
+    monkeypatch.setattr(settings, "RECALL_LTR_MODE", "shadow")
+    monkeypatch.setattr(settings, "RECALL_LTR_SHADOW_SAMPLE_RATE", 1.0)
+    release_shadow_fetch = asyncio.Event()
+    shadow_fetch_started = asyncio.Event()
+    calls: list[list[str]] = []
+
+    async def _contents(chunk_ids, user_id):
+        calls.append(list(chunk_ids))
+        if len(chunk_ids) > 1:
+            shadow_fetch_started.set()
+            await release_shadow_fetch.wait()
+        return {cid: f"正文-{cid}" for cid in chunk_ids}
+
+    class _ShadowRanker:
+        async def rank(self, **kwargs):
+            return SimpleNamespace(
+                ranked_chunk_ids=["cBm25", "cSparse", "cDense"],
+                mode="ltr",
+                model_version="test-v3",
+                elapsed_ms=1.0,
+                reason=None,
+            )
+
+    hits = _weighted_hits()
+    response = _ltr_response(hits)
+    response.hits = hits[:1]
+    monkeypatch.setattr(rt, "fetch_chunk_contents", _contents)
+    monkeypatch.setattr(rt, "get_initialized_ltr_ranker", lambda: _ShadowRanker())
+    shadow_executor = LtrShadowExecutor(
+        max_concurrency=1,
+        max_pending=1,
+        timeout_ms=1000,
+        shutdown_timeout_ms=100,
+    )
+    monkeypatch.setattr(rt, "get_ltr_shadow_executor", lambda: shadow_executor)
+    shadow_request = replace(
+        _req(),
+        candidate_contract_version="blind_v5_candidate_routing_v1",
+        required_sources=["bm25", "sparse", "dense"],
+    )
+
+    events = await asyncio.wait_for(
+        _collect(
+            rt.recall_event_stream(
+                _FakePipeline(response),
+                _req(),
+                "rid-shadow-nonblocking",
+                config_id=77,
+                conversation_id=1,
+                turn_id="t-shadow-nonblocking",
+                reranker=_FakeReranker(applied=True),
+                token_budget=4000,
+                rerank_top_n=10,
+                shadow_recall_req=shadow_request,
+            )
+        ),
+        timeout=0.5,
+    )
+
+    assert events[-1][0] == "answer_done"
+    assert [hit["chunk_id"] for hit in events[-1][1]["hits"]] == ["cDense"]
+    assert ["cDense"] in calls
+    await asyncio.wait_for(shadow_fetch_started.wait(), timeout=0.5)
+    assert any(set(call) == {"cDense", "cSparse", "cBm25"} for call in calls)
+
+    release_shadow_fetch.set()
+    await shadow_executor.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_stream_total_timeout_covers_body_fetch(monkeypatch, stub_generation):
+    monkeypatch.setattr(settings, "RECALL_STREAM_TIMEOUT_MS", 30)
+    body_fetch_cancelled = asyncio.Event()
+
+    async def _hanging_contents(*args, **kwargs):
+        try:
+            await asyncio.Event().wait()
+        finally:
+            body_fetch_cancelled.set()
+
+    monkeypatch.setattr(rt, "fetch_chunk_contents", _hanging_contents)
+    events = await asyncio.wait_for(
+        _collect(
+            rt.recall_event_stream(
+                _FakePipeline(_response(_hits("c1"))),
+                _req(),
+                "rid-body-timeout",
+                config_id=77,
+                conversation_id=1,
+                turn_id="t-body-timeout",
+                reranker=_FakeReranker(),
+                token_budget=4000,
+                rerank_top_n=10,
+            )
+        ),
+        timeout=0.2,
+    )
+
+    assert events[-1][0] == "error"
+    assert events[-1][1]["code"] == "RECALL_TIMEOUT"
+    assert body_fetch_cancelled.is_set()
+
+
+@pytest.mark.asyncio
+async def test_off_remote_rerank_timeout_falls_back_within_budget():
+    """TIM-005: legacy rerank timeout keeps the current fusion order."""
+
+    class _HangingReranker:
+        async def rerank(self, request):
+            await asyncio.Event().wait()
+
+    fusion_hits = _hits("c1", "c2")
+    contents = {"c1": "body-1", "c2": "body-2"}
+    started = asyncio.get_running_loop().time()
+
+    ranked, applied = await rt._rerank_hits(
+        _HangingReranker(),
+        _req(),
+        fusion_hits,
+        contents,
+        0.02,
+        "rid-rerank-timeout",
+        10,
+    )
+
+    elapsed = asyncio.get_running_loop().time() - started
+    assert applied is False
+    assert [hit.chunk_id for hit in ranked] == ["c1", "c2"]
+    assert elapsed < 0.2
+
+
+@pytest.mark.asyncio
+async def test_active_exposes_ltr_ranking_diagnostics(monkeypatch, stub_generation):
+    monkeypatch.setattr(settings, "RECALL_LTR_MODE", "active")
+
+    class _ActiveRanker:
+        async def rank(self, **kwargs):
+            return SimpleNamespace(
+                ranked_chunk_ids=["cBm25", "cDense", "cSparse"],
+                mode="ltr",
+                model_version="test-v3",
+                elapsed_ms=2.5,
+                reason=None,
+            )
+
+    monkeypatch.setattr(rt, "get_initialized_ltr_ranker", lambda: _ActiveRanker())
+    active_request = replace(
+        _req(),
+        candidate_contract_version="blind_v5_candidate_routing_v1",
+        required_sources=["bm25", "sparse", "dense"],
+    )
+    events = await _collect(
+        rt.recall_event_stream(
+            _FakePipeline(_ltr_response(_weighted_hits())),
+            active_request,
+            "rid-active",
+            config_id=77,
+            conversation_id=1,
+            turn_id="t-active",
+            reranker=_FakeReranker(exc=AssertionError("must not be called")),
+            token_budget=4000,
+            rerank_top_n=10,
+        )
+    )
+
+    done = events[-1][1]
+    assert [hit["chunk_id"] for hit in done["hits"]] == ["cBm25", "cDense", "cSparse"]
+    assert done["ranking_diagnostics"] == {
+        "strategy": "lambdamart",
+        "mode": "ltr",
+        "model_version": "test-v3",
+        "candidate_contract_version": "blind_v5_candidate_routing_v1",
+        "candidate_contract_status": "complete",
+        "required_sources": ["bm25", "sparse", "dense"],
+        "actual_sources": ["dense", "sparse", "bm25"],
+        "duration_ms": 2.5,
+        "reason": None,
+    }
+    assert "candidate_hits" not in done
+    assert "route_hits" not in done
+    assert "shadow_hits" not in done
+
+
+@pytest.mark.asyncio
+async def test_active_model_unavailable_uses_weighted_baseline_without_remote_rerank(
+    monkeypatch, stub_generation
+):
+    """MOD-006 / API-005: startup degradation is explicit and safely serialized."""
+
+    monkeypatch.setattr(settings, "RECALL_LTR_MODE", "active")
+    monkeypatch.setattr(rt, "get_initialized_ltr_ranker", lambda: None)
+    reranker = _FakeReranker(exc=AssertionError("active fallback must not call remote rerank"))
+    active_request = replace(
+        _req(),
+        candidate_contract_version="blind_v5_candidate_routing_v1",
+        required_sources=["bm25", "sparse", "dense"],
+    )
+
+    events = await _collect(
+        rt.recall_event_stream(
+            _FakePipeline(_ltr_response(_weighted_hits())),
+            active_request,
+            "rid-active-no-model",
+            config_id=77,
+            conversation_id=1,
+            turn_id="t-active-no-model",
+            reranker=reranker,
+            token_budget=4000,
+            rerank_top_n=10,
+        )
+    )
+
+    done = events[-1][1]
+    assert reranker.last_request is None
+    assert done["ranking_diagnostics"]["mode"] == "fallback_weighted_score"
+    assert done["ranking_diagnostics"]["reason"] == "model_unavailable"
+    assert "traceback" not in json.dumps(done).lower()
+
+
+@pytest.mark.asyncio
+async def test_shadow_sample_zero_does_not_submit_background_work(monkeypatch, stub_generation):
+    """SHD-004 / MOD-003: zero sampling has no hidden content read or task creation."""
+
+    monkeypatch.setattr(settings, "RECALL_LTR_MODE", "shadow")
+    monkeypatch.setattr(settings, "RECALL_LTR_SHADOW_SAMPLE_RATE", 0.0)
+
+    class _UnexpectedExecutor:
+        def submit(self, *args, **kwargs):
+            raise AssertionError("sample-rate zero must not submit shadow work")
+
+    monkeypatch.setattr(rt, "get_ltr_shadow_executor", lambda: _UnexpectedExecutor())
+    shadow_request = replace(
+        _req(),
+        candidate_contract_version="blind_v5_candidate_routing_v1",
+        required_sources=["bm25", "sparse", "dense"],
+    )
+    pipeline = _FakePipeline(_ltr_response(_weighted_hits()))
+
+    events = await _collect(
+        rt.recall_event_stream(
+            pipeline,
+            _req(),
+            "rid-shadow-zero",
+            config_id=77,
+            conversation_id=1,
+            turn_id="t-shadow-zero",
+            reranker=_FakeReranker(applied=True),
+            token_budget=4000,
+            rerank_top_n=8,
+            shadow_recall_req=shadow_request,
+        )
+    )
+
+    assert events[-1][0] == "answer_done"
+    assert len(pipeline.calls) == 1
+
+
+def test_shadow_sampling_is_deterministic_and_close_to_configured_rate(monkeypatch):
+    """SHD-005 / SHD-006: fixed keys are stable and sampling has no process RNG drift."""
+
+    monkeypatch.setattr(settings, "RECALL_LTR_SHADOW_SAMPLE_RATE", 0.25)
+    first = [rt._sample_ltr_shadow(f"request-{index}") for index in range(10_000)]
+    second = [rt._sample_ltr_shadow(f"request-{index}") for index in range(10_000)]
+
+    assert first == second
+    observed = sum(first) / len(first)
+    assert 0.24 <= observed <= 0.26
+
+
+@pytest.mark.asyncio
+async def test_ltr_diagnostics_never_include_ranker_exception_text():
+    """API-005 / SHD-015: user text in an exception cannot enter public diagnostics."""
+
+    class _UnsafeRanker:
+        async def rank(self, **kwargs):
+            raise RuntimeError("SECRET_QUERY_AND_DOCUMENT_BODY")
+
+    hits = _weighted_hits()
+    contents = {hit.chunk_id: f"正文-{hit.chunk_id}" for hit in hits}
+    routes = _ltr_response(hits).route_hits
+
+    _ranked, diagnostics = await rt._ltr_or_baseline_hits(
+        ranker=_UnsafeRanker(),
+        query="SECRET_QUERY_AND_DOCUMENT_BODY",
+        routes=routes,
+        contents=contents,
+        candidate_hits=hits,
+        top_n=10,
+        request_id="safe-diagnostics",
+        force_baseline=False,
+        candidate_contract_version="blind_v5_candidate_routing_v1",
+        required_sources=["bm25", "sparse", "dense"],
+    )
+
+    encoded = json.dumps(diagnostics, ensure_ascii=False)
+    assert diagnostics["mode"] == "fallback_fusion_order"
+    assert diagnostics["reason"] == "RuntimeError"
+    assert "SECRET_QUERY_AND_DOCUMENT_BODY" not in encoded
 
 
 @pytest.mark.asyncio
@@ -471,7 +777,7 @@ async def test_rerank_hard_fail_falls_back_to_fusion_order_truncated(stub_genera
             turn_id="t-gen",
             reranker=reranker,
             token_budget=4000,
-            rerank_top_n=8,
+            rerank_top_n=settings.RERANK_DEFAULT_TOP_N,
         )
     )
     names = [e for e, _ in events]
@@ -548,8 +854,8 @@ async def test_content_fetched_once_and_injected_into_reranker(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_reranker_receives_expanded_rrf_candidate_pool(monkeypatch):
-    """LINK-136：融合候选池放大后，reranker 输入不应被旧 20 条窗口截断。"""
+async def test_reranker_receives_expanded_weighted_candidate_pool(monkeypatch):
+    """融合候选池放大后，旧 reranker 输入不应被公开窗口提前截断。"""
     candidate_ids = [f"c{i}" for i in range(64)]
 
     async def _resolve(*a, **k):

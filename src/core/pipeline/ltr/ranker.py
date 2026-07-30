@@ -8,10 +8,16 @@ import json
 import math
 import time
 from collections import Counter, deque
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from src.config import settings
+from src.core.pipeline.ltr.candidate_routing import (
+    serving_contract_payload,
+    serving_contract_signature,
+)
 from src.core.pipeline.ltr.features import (
     FEATURE_NAMES,
     FEATURE_VERSION,
@@ -64,9 +70,18 @@ class LambdaMartRanker:
     def __init__(self, model_dir: str | Path) -> None:
         self.model_dir = Path(model_dir)
         self.manifest = _load_manifest(self.model_dir)
+        self.serving_contract = _load_serving_contract(self.model_dir, self.manifest)
         self.short_fallback = _load_short_fallback(self.model_dir, self.manifest)
         self.model = _load_booster(self.model_dir, self.manifest)
         self.monitor = RankerMonitor()
+        self._inference_max_concurrency = settings.RECALL_LTR_INFERENCE_MAX_CONCURRENCY
+        self._inference_slots = asyncio.Semaphore(self._inference_max_concurrency)
+        self._inference_executor = ThreadPoolExecutor(
+            max_workers=self._inference_max_concurrency,
+            thread_name_prefix="ltr-inference",
+        )
+        self._inference_running = 0
+        self._closed = False
         _validate_bundle(self.model_dir, self.manifest, self.model)
 
     async def rank(
@@ -79,14 +94,35 @@ class LambdaMartRanker:
         started = time.perf_counter()
         fallback = weighted_baseline_order(routes)
         try:
+            timeout_seconds = self.timeout_ms / 1000
+            await asyncio.wait_for(self._inference_slots.acquire(), timeout=timeout_seconds)
+            slot_acquired_at = time.perf_counter()
+            remaining = timeout_seconds - (slot_acquired_at - started)
+            if remaining <= 0:
+                self._inference_slots.release()
+                raise asyncio.TimeoutError
+            if self._closed:
+                self._inference_slots.release()
+                raise RuntimeError("LambdaMART inference executor is closed")
+            loop = asyncio.get_running_loop()
+            self._inference_running += 1
+            prediction = loop.run_in_executor(
+                self._inference_executor,
+                self._predict,
+                query,
+                routes,
+                candidate_contents,
+            )
+
+            def _release_slot(_future) -> None:
+                self._inference_running -= 1
+                self._inference_slots.release()
+
+            # 只有底层线程真正结束才释放容量；协程超时不能导致后续任务继续无界入队。
+            prediction.add_done_callback(_release_slot)
             chunk_ids, ranked, fallback, confidence = await asyncio.wait_for(
-                asyncio.to_thread(
-                    self._predict,
-                    query,
-                    routes,
-                    candidate_contents,
-                ),
-                timeout=self.timeout_ms / 1000,
+                asyncio.shield(prediction),
+                timeout=remaining,
             )
             if not chunk_ids:
                 return LtrRankResult([], "fallback_empty", self.model_version, 0.0)
@@ -118,6 +154,21 @@ class LambdaMartRanker:
                 elapsed_ms,
                 reason=type(exc).__name__,
             )
+
+    def runtime_snapshot(self) -> dict[str, Any]:
+        snapshot = self.monitor.snapshot()
+        snapshot.update(
+            {
+                "inference_running": self._inference_running,
+                "inference_capacity": self._inference_max_concurrency,
+                "inference_available": self._inference_slots._value,
+            }
+        )
+        return snapshot
+
+    def close(self) -> None:
+        self._closed = True
+        self._inference_executor.shutdown(wait=False, cancel_futures=True)
 
     def _predict(
         self,
@@ -187,6 +238,19 @@ def _load_short_fallback(model_dir: Path, manifest: dict[str, Any]) -> dict[str,
         raise ValueError("short fallback version mismatch")
     if payload.get("fallback") != "hybrid":
         raise ValueError("unsupported short-query fallback")
+    return payload
+
+
+def _load_serving_contract(model_dir: Path, manifest: dict[str, Any]) -> dict[str, Any]:
+    """校验模型与 Blind v5 候选生成口径绑定，拒绝静默 train-serving drift。"""
+    payload = json.loads((model_dir / "serving_contract.json").read_text(encoding="utf-8"))
+    if payload.get("model_version") != manifest.get("model_version"):
+        raise ValueError("LambdaMART serving contract model version mismatch")
+    if payload.get("feature_signature") != manifest.get("feature_signature"):
+        raise ValueError("LambdaMART serving contract feature signature mismatch")
+    if payload.get("candidate_contract") != serving_contract_payload():
+        raise ValueError("LambdaMART candidate serving contract mismatch")
+    payload["candidate_contract_signature"] = serving_contract_signature()
     return payload
 
 

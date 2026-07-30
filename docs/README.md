@@ -34,6 +34,8 @@
 | [workflow_engine.md](internals/workflow_engine.md) | 轻量流程编排引擎 |
 | [recall_pipeline.md](internals/recall_pipeline.md) | 召回 Pipeline 架构 |
 | [recall_generation.md](internals/recall_generation.md) | 召回后 RAG 答案生成（正文回填/上下文拼装/流式生成） |
+| [ltr_quality_alignment.md](internals/ltr_quality_alignment.md) | LambdaMART 质检对齐、兼容保留项与上线边界 |
+| [ltr_quality_test_plan.md](internals/ltr_quality_test_plan.md) | LambdaMART 质检成果生产化完整测试方案、场景矩阵与发布门禁 |
 | [recall_http_api.md](internals/recall_http_api.md) | 召回 HTTP 入口与会话/鉴权 |
 | [wiki_heading_tree.md](internals/wiki_heading_tree.md) | Wiki 标题树构建、搜索、权限、游标与生命周期 |
 | [file_parser.md](internals/file_parser.md) | 文件解析器（含回退链） |

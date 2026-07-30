@@ -32,7 +32,7 @@ from src.core.pipeline.recall import (
 from src.core.pipeline.rerank import RerankedHit, RerankResponse
 
 _SOURCES = [SOURCE_BM25, SOURCE_SPARSE, SOURCE_DENSE]
-_DEFAULT_WEIGHTS = {SOURCE_BM25: 0.2, SOURCE_SPARSE: 0.3, SOURCE_DENSE: 0.5}
+_DEFAULT_WEIGHTS = {SOURCE_BM25: 0.15, SOURCE_SPARSE: 0.15, SOURCE_DENSE: 0.70}
 
 
 @dataclass
@@ -350,9 +350,9 @@ def _then_active_sources(weighted_fusion_state: _State, sources: str) -> None:
 def _then_no_per_chunk_redistribution(weighted_fusion_state: _State) -> None:
     assert weighted_fusion_state.response is not None
     assert {hit.chunk_id: hit.fused_score for hit in weighted_fusion_state.response.hits} == {
-        "cA": pytest.approx(0.2),
-        "cB": pytest.approx(0.3),
-        "cC": pytest.approx(0.5),
+        "cA": pytest.approx(0.15),
+        "cB": pytest.approx(0.15),
+        "cC": pytest.approx(0.70),
     }
 
 
@@ -470,7 +470,7 @@ def _given_dataset_recall_config(weighted_fusion_state: _State, datatable) -> No
     weighted_fusion_state.dataset_recall_config = RecallConfig(**data)
 
 
-@when("RAG 流或纯召回 JSON 入口解析该数据集配置")
+@when("纯召回 JSON 入口解析该数据集配置")
 def _when_route_maps_dataset_config(weighted_fusion_state: _State, monkeypatch) -> None:
     dataset_contexts = {10: SimpleNamespace()}
 
@@ -624,9 +624,7 @@ def _when_rag_enters_rerank(weighted_fusion_state: _State) -> None:
                 dataset_ids=[10],
                 dataset_contexts={
                     10: SimpleNamespace(
-                        config=SimpleNamespace(
-                            recall=SimpleNamespace(enable_rerank=True)
-                        ),
+                        config=SimpleNamespace(recall=SimpleNamespace(enable_rerank=True)),
                         rerank=SimpleNamespace(config_id=780),
                     )
                 },

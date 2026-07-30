@@ -1,0 +1,18 @@
+{
+  "model_version": "candidate-difference-v3-20260728-final33",
+  "feature_signature": "52a69c3b8ae5e6a5988f62e0a87a775137a4f16ea769bc66829ec664b8782d7b",
+  "candidate_contract": {
+    "version": "blind_v5_candidate_routing_v1",
+    "sources": ["bm25", "sparse", "dense"],
+    "score_thresholds": {"dense": 0.0, "sparse": 0.0, "bm25": 0.0},
+    "fusion_weights": {"dense": 0.7, "sparse": 0.15, "bm25": 0.15},
+    "routing_profiles": {
+      "short_keyword": {"dense": 300, "sparse": 100, "bm25": 225},
+      "exact_identifier": {"dense": 150, "sparse": 50, "bm25": 100},
+      "number_time": {"dense": 275, "sparse": 50, "bm25": 200},
+      "long_multi": {"dense": 125, "sparse": 50, "bm25": 75},
+      "natural_default": {"dense": 150, "sparse": 50, "bm25": 225}
+    },
+    "output_top_n": 10
+  }
+}

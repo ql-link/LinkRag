@@ -234,21 +234,25 @@ session token 由 Java 签发、Python 用**独立专用密钥**验签；claims�
 > 生成跑在**独立后台任务**（断连不取消）：任务起点发一条 `tolink.rag.chat_turn`（`status=GENERATING`），终态再发 `COMPLETED`/`FAILED`，同 `turn_id`，供 Java upsert 落库对话内容（空召回也发 `COMPLETED` 占位）。客户端断连只停 SSE 转发、生成续跑到落库；本轮 generate 的 token 用量另走 `tolink.rag.usage_report`（LINK-191）。契约见 [mq_contracts.md §对话轮次上报](mq_contracts.md#对话轮次上报pythonjava)。
 
 **身份只取 token claims**——body 不含 `user_id`，前端自报一律不信任。融合候选池窗口 / 三路执行期 top_k / 召回分数阈值 /
-召回路 / 固定融合权重 / 容错模式 / rerank 条数均由服务端**按数据集配置**控制（`dataset_parse_config.recall_config`：
+召回路 / 固定融合权重 / 容错模式 / rerank 条数均由服务端配置控制。`off` 与纯召回 JSON 按数据集配置（`dataset_parse_config.recall_config`：
 `recall_result_limit` / `bm25_top_k` / `sparse_top_k` / `dense_top_k` / `sparse_score_threshold` / `dense_score_threshold` / `recall_enabled_sources` /
 `fusion_bm25_weight` / `fusion_sparse_weight` / `fusion_dense_weight` /
 `recall_strict` / `rerank_top_n`；多数据集混合取首个 dataset，无数据集配置回退
 `RECALL_RESULT_LIMIT` / `RECALL_BM25_TOP_K` / `RECALL_SPARSE_TOP_K` / `RECALL_DENSE_TOP_K` /
 `SPARSE_RETRIEVAL_SCORE_THRESHOLD` / `DENSE_RETRIEVAL_SCORE_THRESHOLD` / `RECALL_ENABLED_SOURCES` /
 `RECALL_FUSION_*_WEIGHT` /
-`RECALL_STRICT_DEFAULT` / `RERANK_DEFAULT_TOP_N` 等系统默认）；均不接受
-请求覆盖。其中 `recall_enabled_sources` **只能在系统已装配的召回路集合内收窄**（不能启用系统未
+`RECALL_STRICT_DEFAULT` / `RERANK_DEFAULT_TOP_N` 等系统默认）；RAG 主链在 `active` /
+`baseline` 下固定使用模型的 Blind v5 候选契约：`bm25,sparse,dense`、零阈值、
+`0.15/0.15/0.70` 权重、Query 分型 TopK 和最终 Top10。`shadow` 主链与 `off` 一致，后台另起
+冻结候选请求。以上参数均不接受
+请求覆盖。其中 `off`/纯召回配置的 `recall_enabled_sources` **只能在系统已装配的召回路集合内收窄**（不能启用系统未
 装配的路）。模型按 `(user_id, capability, config_id)` 精确解析，SYSTEM / USER 配置使用同一 ID 空间。
 
 并发：按 `user_id` 限并发流数（`RECALL_SESSION_MAX_CONCURRENT`），超限返回 `429`。
 
-**召回即包含 rerank 精排 + LLM 答案生成**：召回前置先校验模型，召回融合命中后做
-**rerank 精排**，再回填片段正文、按 token 预算（数据集 `recall_config.recall_context_token_budget`，
+**召回即包含排序 + LLM 答案生成**：召回前置先校验模型；`active` 默认使用本地 LambdaMART，
+失败回退 frozen weighted score 且不调用远程 rerank；`off` 保留旧 rerank，`shadow` 旁路比较但不改结果。
+排序后回填片段正文、按 token 预算（数据集 `recall_config.recall_context_token_budget`，
 无数据集配置回退 `RECALL_GENERATION_CONTEXT_TOKEN_BUDGET`）拼装上下文，用所选模型
 流式生成答案。SSE 事件：
 
@@ -260,13 +264,13 @@ event: answer_delta
 data: {"text": "<增量 token>"}
 
 event: answer_done
-data: {"answer": "<完整答案>", "hits": [...], "rerank_applied": true, "failed_sources": [], "recall_diagnostics": {...}}
+data: {"answer": "<完整答案>", "hits": [...], "rerank_applied": false, "ranking_diagnostics": {"strategy":"lambdamart","mode":"ltr","model_version":"candidate-difference-v3-20260728-final33","candidate_contract_version":"blind_v5_candidate_routing_v1","candidate_contract_status":"complete","required_sources":["bm25","sparse","dense"],"actual_sources":["bm25","sparse","dense"],"duration_ms":12.3,"reason":null}, "failed_sources": [], "recall_diagnostics": {...}}
 ```
 
 - `stream_started`：建流后的**首个事件**，在模型校验、召回、rerank 与生成之前发出；前端收到后将
   `conversation_id` 对应的会话标记为“回复中”，`request_id` 用于链路关联；
 - `answer_delta`：流式增量 token，可 0 到多帧；
-- `answer_done`：生成结束终态，`hits` 为 **rerank 精排后**的最终候选（含正文 `content`），发送后关闭流；
+- `answer_done`：生成结束终态，`hits` 为当前发布模式排序后的最终候选（含正文 `content`），发送后关闭流；
 - **空命中 / 全部片段缺正文**：不生成，发 `recall_done`（`hits` 可空，同带 `rerank_applied`；全部缺正文时各 hit `content` 为空串）；
 - **生成阶段失败**：整请求失败，发 `error` `RECALL_GENERATION_FAILED`，不返回部分召回片段。
 
@@ -292,16 +296,23 @@ data: {"title": "<会话标题>"}
  "content": "<chunk 正文，供前端展示召回片段>"}
 ```
 
-- `rerank_applied`（顶层 bool）：rerank 是否实际生效。**未配置 RERANK 模型 / 调用失败 / 返回不可用
+- `rerank_applied`（顶层 bool）：仅表示旧远程 rerank 是否实际生效。`active` / `baseline` 下固定为
+  `false`，不能据此判断 LambdaMART 是否生效，应读取 `ranking_diagnostics`。`off` / Shadow 线上旧链路中，**未配置 RERANK 模型 / 调用失败 / 返回不可用
   一律降级**为当前融合顺序候选（best-effort：rag/stream 不因 rerank 不可用而整条失败），此时该字段为
   `false`，每个 hit 的 `rerank_score` / `rerank_rank` 为 `null`；
 - rerank **生效**时（`rerank_applied=true`）：`hits` 按 `rerank_rank` 升序（即 rerank 相关性降序），
   长度 ≤ `rerank_top_n`（数据集 `recall_config.rerank_top_n`，无数据集配置回退 `RERANK_DEFAULT_TOP_N`）；
   个别未被模型打分的候选 `rerank_score` / `rerank_rank` 可为 `null`，排在已打分候选之后；
-- rerank **降级**时（`rerank_applied=false`）：`hits` 为当前融合顺序（按 `fused_score` 降序），
+- 旧 rerank **降级**时（`rerank_applied=false`）：`hits` 为当前融合顺序（按 `fused_score` 降序），
   截断到 `rerank_top_n`；
-- `fused_score` / `scores` 为当前融合策略解释信息，原样保留；`scores` 键集合等于本次生效的召回路
-  （即数据集 `recall_enabled_sources` 在已装配路集合内收窄后的结果）。
+- `ranking_diagnostics`（可选顶层对象）：active/baseline 的实际排序诊断。包含
+  `candidate_contract_version`、`candidate_contract_status`、`required_sources` 与
+  `actual_sources`，可与 `/health.ltr` 和模型 serving contract 交叉核验。`strategy` 为
+  `lambdamart` 或 `weighted_score`，`mode` 表达正常 LTR、短 Query 低置信度 Hybrid、超时/异常/延迟预算
+  降级或主动 baseline，另含 `model_version`、`duration_ms` 与可选 `reason`。这是新增兼容字段，客户端应忽略未知字段；
+- active/baseline 的 `hits` 最多 10 条，与 Blind v5 的 Hit@10/MRR@10 验收口径一致；shadow 仍使用 Dataset TopN；
+- `fused_score` / `scores` 为当前融合策略解释信息，原样保留；`scores` 键集合等于本次生效的召回路。
+  active/baseline RAG 主链固定三路；`off`/shadow/纯召回则是数据集 `recall_enabled_sources` 在已装配路集合内收窄后的结果。
 - `content` 为该 chunk 的正文（与生成阶段上下文同源、一次性回填，无需另起反查）；某候选正文缺失
   时为空串。仅 rag/stream 终态 `hits` 含此字段，纯召回 JSON 端点（下文 `/api/v1/recall`）不含。
 
