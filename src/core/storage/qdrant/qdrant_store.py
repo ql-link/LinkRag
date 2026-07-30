@@ -63,6 +63,7 @@ class QdrantIndexStore:
         host: str | None = None,
         port: int | None = None,
         api_key: str | None = None,
+        https: bool | None = None,
         timeout: int | None = None,
         prefer_grpc: bool = False,
     ) -> None:
@@ -79,9 +80,11 @@ class QdrantIndexStore:
         resolved_api_key = (
             api_key if api_key is not None else getattr(settings, "QDRANT_API_KEY", None)
         )
-        # 空串归一为 None：qdrant-client 见到非 None 的 api_key（含 ""）会强制 https，
-        # 对明文 HTTP 部署触发 [SSL: WRONG_VERSION_NUMBER]。.env 里 QDRANT_API_KEY= 即空串。
+        # 空串归一为 None，协议则必须显式传给 SDK：API key 只负责鉴权，不代表服务启用 TLS。
         self.api_key = resolved_api_key or None
+        self.https = (
+            https if https is not None else getattr(settings, "QDRANT_HTTPS", False)
+        )
         self.timeout = timeout or getattr(
             settings,
             "QDRANT_TIMEOUT_SECONDS",
@@ -733,6 +736,7 @@ class QdrantIndexStore:
             host=self.host,
             port=self.port,
             api_key=self.api_key,
+            https=self.https,
             timeout=self.timeout,
             prefer_grpc=self.prefer_grpc,
         )

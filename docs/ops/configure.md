@@ -41,7 +41,7 @@
 | `MINIO_*`（若 `STORAGE_TYPE=minio`） | 对象存储凭据 |
 | `MINIO_RAW_BUCKET`（若 `STORAGE_TYPE=minio`） | 原文件桶：用户上传的源文件，由 Java 写入，Python 只读；默认 `tolink-rag-raw`，需在 MinIO 控制台预建 |
 | `MINIO_PUBLIC_BUCKET`（若 `STORAGE_TYPE=minio`） | 公开桶：博客与反馈附件等不敏感资源，默认 `tolink-public`，需配置匿名读 |
-| `QDRANT_HOST` / `QDRANT_PORT` | 向量存储 |
+| `QDRANT_HOST` / `QDRANT_PORT` / `QDRANT_HTTPS` | 向量存储地址与协议；`QDRANT_HTTPS` 默认 `false`，需与服务端是否启用 TLS 一致，配置 API key 不代表自动启用 HTTPS |
 
 ## 关键开关
 
