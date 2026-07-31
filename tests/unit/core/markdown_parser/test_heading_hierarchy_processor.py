@@ -244,6 +244,36 @@ async def test_invalid_plan_raises_when_gate_matches():
 
 
 @pytest.mark.asyncio
+async def test_non_candidate_in_multi_plan_fails_before_apply_and_reparse(monkeypatch):
+    import src.core.markdown_parser.heading_hierarchy as hierarchy
+
+    markdown = "段落第一行\n段落第二行"
+    generator = _FakeGenerator(
+        HeadingPlan(
+            (
+                HeadingInsertion(line=0, level=1, text="合法标题"),
+                HeadingInsertion(line=1, level=2, text="非法拆分"),
+            )
+        )
+    )
+    parser = MagicMock(wraps=MarkdownParser())
+    apply_plan = MagicMock(side_effect=AssertionError("must not apply an invalid plan"))
+    monkeypatch.setattr(hierarchy, "apply_heading_plan", apply_plan)
+    processor = HeadingHierarchyProcessor(
+        parser=parser,
+        config=_config(),
+        tokenizer=_TokenCounter(512),
+        generator=generator,
+    )
+
+    with pytest.raises(HeadingPlanValidationError, match="parser-confirmed candidate"):
+        await processor.aprocess(markdown, source_file="x.md")
+
+    apply_plan.assert_not_called()
+    assert parser.parse.call_count == 1
+
+
+@pytest.mark.asyncio
 async def test_gate_miss_does_not_build_default_chat_generator(monkeypatch):
     import src.core.markdown_parser.heading_hierarchy as hierarchy
 
@@ -348,7 +378,7 @@ async def test_llm_heading_generator_parses_json_plan():
     provider = SimpleNamespace()
     provider.generate = AsyncMock(
         return_value=SimpleNamespace(
-            content='```json\n{"insertions":[{"line":1,"level":2,"text":"背景"}]}\n```',
+            content='```json\n{"insertions":[{"line":2,"level":2,"text":"背景"}]}\n```',
             model="qwen-max",
             usage=SimpleNamespace(prompt_tokens=0, completion_tokens=0, total_tokens=0),
         )
@@ -360,7 +390,7 @@ async def test_llm_heading_generator_parses_json_plan():
         generator=generator,
     )
 
-    result = await processor.aprocess("第一段\n第二段", source_file="x.md")
+    result = await processor.aprocess("第一段\n\n第二段", source_file="x.md")
 
     assert result.applied is True
     assert "## 背景" in result.markdown

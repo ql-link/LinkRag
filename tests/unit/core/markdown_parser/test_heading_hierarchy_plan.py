@@ -33,8 +33,8 @@ class _TokenCounter:
 
 
 def test_valid_plan_is_accepted():
-    markdown = "第一行\n第二行\n"
-    plan = HeadingPlan((HeadingInsertion(line=1, level=2, text="核心流程"),))
+    markdown = "第一段\n\n第二段"
+    plan = HeadingPlan((HeadingInsertion(line=2, level=2, text="核心流程"),))
 
     validate_heading_plan(plan, markdown, _parse(markdown))
 
@@ -42,7 +42,7 @@ def test_valid_plan_is_accepted():
 @pytest.mark.parametrize("level", [0, 6, -1])
 def test_invalid_heading_levels_are_rejected(level: int):
     markdown = "第一行\n第二行"
-    plan = HeadingPlan((HeadingInsertion(line=1, level=level, text="标题"),))
+    plan = HeadingPlan((HeadingInsertion(line=0, level=level, text="标题"),))
 
     with pytest.raises(HeadingPlanValidationError):
         validate_heading_plan(plan, markdown, _parse(markdown))
@@ -51,7 +51,7 @@ def test_invalid_heading_levels_are_rejected(level: int):
 @pytest.mark.parametrize("text", ["## 被模型带入的标题", "第一行\n第二行", "", "```python"])
 def test_invalid_heading_text_is_rejected(text: str):
     markdown = "第一行\n第二行"
-    plan = HeadingPlan((HeadingInsertion(line=1, level=2, text=text),))
+    plan = HeadingPlan((HeadingInsertion(line=0, level=2, text=text),))
 
     with pytest.raises(HeadingPlanValidationError):
         validate_heading_plan(plan, markdown, _parse(markdown))
@@ -85,6 +85,33 @@ def test_insertion_at_protected_block_boundary_is_allowed(markdown, boundary_aft
         (
             HeadingInsertion(line=0, level=2, text="保护块"),
             HeadingInsertion(line=boundary_after_block, level=2, text="正文"),
+        )
+    )
+
+    validate_heading_plan(plan, markdown, _parse(markdown))
+
+
+@pytest.mark.parametrize(
+    "markdown,internal_line",
+    [
+        ("段落第一行\n段落第二行", 1),
+        ("- 列表第一项\n  continuation", 1),
+        ("> 引用第一行\n> 引用第二行", 1),
+    ],
+)
+def test_insertion_inside_complete_parser_block_is_rejected(markdown, internal_line):
+    plan = HeadingPlan((HeadingInsertion(line=internal_line, level=2, text="非法拆分"),))
+
+    with pytest.raises(HeadingPlanValidationError, match="parser-confirmed candidate"):
+        validate_heading_plan(plan, markdown, _parse(markdown))
+
+
+def test_element_starts_and_document_end_are_allowed():
+    markdown = "正文段落\n\n" "- 列表第一项\n" "  continuation\n\n" "> 引用第一行\n" "> 引用第二行"
+    plan = HeadingPlan(
+        tuple(
+            HeadingInsertion(line=line, level=2, text=f"标题 {line}")
+            for line in (0, 2, 5, len(markdown.split("\n")))
         )
     )
 

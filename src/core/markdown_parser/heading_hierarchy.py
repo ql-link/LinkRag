@@ -574,7 +574,12 @@ class HeadingHierarchyProcessor:
                 applied=False,
             )
 
-        validate_heading_plan(plan, markdown, parse_result)
+        validate_heading_plan(
+            plan,
+            markdown,
+            parse_result,
+            candidate_insert_positions=decision.candidate_insert_positions,
+        )
         updated_markdown = apply_heading_plan(markdown, plan)
         updated_parse_result = self.parser.parse(updated_markdown, source_file=source_file)
         _validate_front_matter_writeback_invariant(parse_result, updated_parse_result)
@@ -729,11 +734,24 @@ def validate_heading_plan(
     plan: HeadingPlan,
     markdown: str,
     parse_result: ParseResult,
+    *,
+    candidate_insert_positions: tuple[CandidateInsertionPosition, ...] | None = None,
 ) -> None:
-    """Validate that a plan can be safely applied without changing source text."""
+    """Validate a plan against structural rules and parser-confirmed candidates.
+
+    Processor callers pass the gate snapshot so generation and validation share the
+    same allowlist. Direct callers remain supported by rebuilding it from the same
+    Markdown and ParseResult.
+    """
     lines = markdown.split("\n")
     protected_ranges = _protected_ranges(parse_result)
     front_matter_prefix = _front_matter_prefix_range(parse_result)
+    candidates = (
+        candidate_insert_positions
+        if candidate_insert_positions is not None
+        else build_candidate_insert_positions(markdown, parse_result)
+    )
+    allowed_insertion_lines = frozenset(position.line for position in candidates)
 
     for insertion in plan.insertions:
         if insertion.line < 0 or insertion.line > len(lines):
@@ -760,6 +778,12 @@ def validate_heading_plan(
         if _is_inside_protected(insertion.line, protected_ranges):
             raise HeadingPlanValidationError(
                 f"heading insertion line is inside a protected block: {insertion.line}"
+            )
+        # Keep the specific structural checks above for stable diagnostics; this
+        # allowlist is the final defense for every parser-confirmed block type.
+        if insertion.line not in allowed_insertion_lines:
+            raise HeadingPlanValidationError(
+                "heading insertion line is not a parser-confirmed candidate: " f"{insertion.line}"
             )
 
 
