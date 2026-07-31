@@ -1,6 +1,8 @@
 import json
 from hashlib import sha256
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from src.core.markdown_parser import (
     ElementType,
@@ -9,6 +11,10 @@ from src.core.markdown_parser import (
     TableClient,
     TableDescriber,
     VisionClient,
+)
+from src.core.markdown_parser.heading_hierarchy import (
+    HeadingHierarchyConfig,
+    aprocess_existing_markdown_heading_hierarchy,
 )
 from src.core.markdown_parser.models import (
     INLINE_IMAGE_DESCRIPTION_PREFIX,
@@ -405,6 +411,55 @@ Next branch body.
         "Leaf B",
     ]
     assert "标题路径：Root / Parent / Group / Branch / Leaf B" in table_derived_chunk.content
+
+
+async def test_generated_native_markdown_heading_reaches_splitter_heading_trail(monkeypatch):
+    monkeypatch.setattr(
+        HeadingHierarchyConfig,
+        "from_settings",
+        classmethod(
+            lambda cls: HeadingHierarchyConfig(
+                enabled=True,
+                no_heading_min_tokens=1,
+            )
+        ),
+    )
+    provider = SimpleNamespace(
+        generate=AsyncMock(
+            return_value=SimpleNamespace(
+                content='{"insertions":[{"line":0,"level":1,"text":"自动文档标题"}]}',
+                model="qwen-max",
+                usage=None,
+            )
+        )
+    )
+    resolved = SimpleNamespace(
+        provider=provider,
+        model_name="qwen-max",
+        provider_type="qwen",
+        config_id=99,
+    )
+
+    heading_result = await aprocess_existing_markdown_heading_hierarchy(
+        " ".join(f"正文段落{index}" for index in range(140)),
+        enhancement_config=SimpleNamespace(enable_heading_hierarchy=True),
+        source_file="native.md",
+        user_id=7,
+        resolved_model=resolved,
+    )
+    chunks = await _structured_chunker(
+        min_candidate_chunk_tokens=128,
+        overlap_tokens=0,
+    ).achunk(heading_result.parse_result.elements)
+
+    assert heading_result.applied is True
+    assert heading_result.markdown.startswith("# 自动文档标题\n")
+    provider.generate.assert_awaited_once()
+    mixed_chunks = [
+        chunk for chunk in chunks if chunk.metadata.get("chunk_role") != "derived_element"
+    ]
+    assert mixed_chunks
+    assert all(chunk.metadata["heading_trail"] == ["自动文档标题"] for chunk in mixed_chunks)
 
 
 def _write_visualization(parse_result, embedded_chunks, vision_client, table_client, embedder):
