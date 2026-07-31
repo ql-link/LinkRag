@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 """HeadingHierarchyProcessor integration-level unit tests."""
 
+from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.core.markdown_parser import MarkdownParser
 from src.core.markdown_parser.heading_hierarchy import (
     HeadingHierarchyConfig,
     HeadingHierarchyProcessor,
@@ -15,7 +17,7 @@ from src.core.markdown_parser.heading_hierarchy import (
     HeadingPlanValidationError,
     LLMHeadingPlanGenerator,
 )
-from src.core.markdown_parser.models import ElementType
+from src.core.markdown_parser.models import ElementType, ParseResult
 
 
 class _TokenCounter:
@@ -43,6 +45,19 @@ class _FakeGenerator:
         if self.exc is not None:
             raise self.exc
         return self.plan
+
+
+class _SequencedParser:
+    """Return controlled parse results for the original and reparsed Markdown."""
+
+    def __init__(self, *results: ParseResult) -> None:
+        self.results = results
+        self.calls = 0
+
+    def parse(self, text: str, source_file: str | None = None) -> ParseResult:
+        result = self.results[self.calls]
+        self.calls += 1
+        return result
 
 
 def _config(enabled: bool = True) -> HeadingHierarchyConfig:
@@ -91,6 +106,110 @@ async def test_successful_insertion_updates_markdown_and_parse_result_together()
     assert first.metadata["heading_level"] == 1
     assert first.metadata["heading_text"] == "文档概览"
     assert generator.calls
+
+
+@pytest.mark.parametrize(
+    "markdown",
+    [
+        pytest.param("---\ntitle: Demo\n---\n正文", id="yaml-body-no-blank"),
+        pytest.param("---\ntitle: Demo\n---\n\n正文", id="yaml-body-with-blank"),
+        pytest.param("---\ntitle: Demo\n---", id="yaml-front-matter-only"),
+        pytest.param('+++\ntitle = "Demo"\n+++\n正文', id="toml-body-no-blank"),
+        pytest.param('+++\ntitle = "Demo"\n+++\n\n正文', id="toml-body-with-blank"),
+        pytest.param('+++\ntitle = "Demo"\n+++', id="toml-front-matter-only"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_front_matter_is_preserved_after_safe_heading_writeback(markdown):
+    original = MarkdownParser().parse(markdown, source_file="x.md")
+    original_front_matter = original.elements[0]
+    generator = _FakeGenerator(HeadingPlan((HeadingInsertion(line=3, level=1, text="自动标题"),)))
+    processor = HeadingHierarchyProcessor(
+        config=_config(),
+        tokenizer=_TokenCounter(512),
+        generator=generator,
+    )
+
+    result = await processor.aprocess(markdown, source_file="x.md")
+
+    updated_front_matter = result.parse_result.elements[0]
+    assert result.applied is True
+    assert result.markdown.splitlines()[3] == "# 自动标题"
+    assert updated_front_matter.type is ElementType.FRONT_MATTER
+    assert updated_front_matter.start_line == 0
+    assert updated_front_matter.content == original_front_matter.content
+    assert updated_front_matter.end_line == original_front_matter.end_line
+
+
+@pytest.mark.asyncio
+async def test_front_matter_plan_with_any_line_zero_insertion_is_rejected_as_a_whole():
+    markdown = "---\ntitle: Demo\n---\n正文"
+    generator = _FakeGenerator(
+        HeadingPlan(
+            (
+                HeadingInsertion(line=3, level=1, text="安全标题"),
+                HeadingInsertion(line=0, level=2, text="非法标题"),
+            )
+        )
+    )
+    processor = HeadingHierarchyProcessor(
+        config=_config(),
+        tokenizer=_TokenCounter(512),
+        generator=generator,
+    )
+
+    with pytest.raises(HeadingPlanValidationError, match="front matter prefix"):
+        await processor.aprocess(markdown, source_file="x.md")
+
+    assert len(generator.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "mutation,error_match",
+    [
+        ("type", "first parser-confirmed element"),
+        ("start", "first parser-confirmed element"),
+        ("content", "content changed"),
+        ("end", "end line changed"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_post_reparse_front_matter_invariant_rejects_structural_drift(
+    mutation,
+    error_match,
+):
+    markdown = "---\ntitle: Demo\n---\n正文"
+    original = MarkdownParser().parse(markdown, source_file="x.md")
+    original_front_matter = original.elements[0]
+    if mutation == "type":
+        changed_front_matter = replace(original_front_matter, type=ElementType.PARAGRAPH)
+    elif mutation == "start":
+        changed_front_matter = replace(original_front_matter, start_line=1)
+    elif mutation == "content":
+        changed_front_matter = replace(original_front_matter, content="---\ntitle: Changed\n---")
+    else:
+        changed_front_matter = replace(
+            original_front_matter,
+            end_line=original_front_matter.end_line + 1,
+        )
+    reparsed = replace(
+        original,
+        elements=[changed_front_matter, *original.elements[1:]],
+    )
+    parser = _SequencedParser(original, reparsed)
+    processor = HeadingHierarchyProcessor(
+        parser=parser,
+        config=_config(),
+        tokenizer=_TokenCounter(512),
+        generator=_FakeGenerator(
+            HeadingPlan((HeadingInsertion(line=3, level=1, text="自动标题"),))
+        ),
+    )
+
+    with pytest.raises(HeadingPlanValidationError, match=error_match):
+        await processor.aprocess(markdown, source_file="x.md")
+
+    assert parser.calls == 2
 
 
 @pytest.mark.asyncio

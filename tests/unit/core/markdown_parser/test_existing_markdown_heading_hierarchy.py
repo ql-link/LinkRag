@@ -6,9 +6,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.core.markdown_parser import MarkdownParser
 from src.core.markdown_parser.heading_hierarchy import (
     HeadingGateReason,
     HeadingHierarchyConfig,
+    HeadingPlanValidationError,
     aprocess_existing_markdown_heading_hierarchy,
     build_heading_hierarchy_config,
     build_heading_hierarchy_metadata,
@@ -144,31 +146,83 @@ async def test_gate_hit_uses_resolved_model_once(monkeypatch):
     ],
 )
 @pytest.mark.asyncio
-async def test_front_matter_uses_pending_322_guard_without_provider(monkeypatch, markdown):
-    import src.core.markdown_parser.heading_hierarchy as hierarchy
-
+async def test_front_matter_uses_shared_processor_and_preserves_structure(monkeypatch, markdown):
     _patch_settings_config(monkeypatch)
-    build_generator = MagicMock(side_effect=AssertionError("must not build generator"))
-    monkeypatch.setattr(hierarchy, "build_heading_plan_generator", build_generator)
+    original_front_matter = MarkdownParser().parse(markdown).elements[0]
+    provider = SimpleNamespace(
+        generate=AsyncMock(
+            return_value=SimpleNamespace(
+                content='{"insertions":[{"line":3,"level":1,"text":"自动标题"}]}',
+                model="qwen-max",
+                usage=None,
+            )
+        )
+    )
+    resolved = SimpleNamespace(
+        provider=provider,
+        model_name="qwen-max",
+        provider_type="qwen",
+        config_id=99,
+    )
 
     result = await aprocess_existing_markdown_heading_hierarchy(
         markdown,
         enhancement_config=SimpleNamespace(enable_heading_hierarchy=True),
         source_file="native.md",
         user_id=7,
-        resolved_model=SimpleNamespace(),
+        resolved_model=resolved,
     )
 
-    assert result.markdown == markdown
-    assert result.parse_result.elements[0].type is ElementType.FRONT_MATTER
-    assert result.parse_result.elements[0].start_line == 0
-    assert result.applied is False
-    assert result.insertion_count == 0
-    assert result.decision.reason is HeadingGateReason.FRONT_MATTER_PENDING_322
+    updated_front_matter = result.parse_result.elements[0]
+    assert result.markdown.splitlines()[3] == "# 自动标题"
+    assert updated_front_matter.type is ElementType.FRONT_MATTER
+    assert updated_front_matter.start_line == 0
+    assert updated_front_matter.content == original_front_matter.content
+    assert updated_front_matter.end_line == original_front_matter.end_line
+    assert result.applied is True
+    assert result.insertion_count == 1
     assert build_heading_hierarchy_metadata(result) == {
         "heading_hierarchy_enabled": True,
-        "heading_hierarchy_applied": False,
-        "heading_hierarchy_reason": "front_matter_pending_322",
-        "heading_hierarchy_insertions": 0,
+        "heading_hierarchy_applied": True,
+        "heading_hierarchy_reason": "no_headings",
+        "heading_hierarchy_insertions": 1,
     }
-    build_generator.assert_not_called()
+    provider.generate.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "markdown",
+    [
+        "---\ntitle: Demo\n---\n正文",
+        '+++\ntitle = "Demo"\n+++\n正文',
+    ],
+)
+@pytest.mark.asyncio
+async def test_front_matter_rejects_provider_plan_at_line_zero(monkeypatch, markdown):
+    _patch_settings_config(monkeypatch)
+    provider = SimpleNamespace(
+        generate=AsyncMock(
+            return_value=SimpleNamespace(
+                content='{"insertions":[{"line":0,"level":1,"text":"非法标题"}]}',
+                model="qwen-max",
+                usage=None,
+            )
+        )
+    )
+    resolved = SimpleNamespace(
+        provider=provider,
+        model_name="qwen-max",
+        provider_type="qwen",
+        config_id=99,
+    )
+
+    with pytest.raises(HeadingPlanValidationError, match="front matter prefix"):
+        await aprocess_existing_markdown_heading_hierarchy(
+            markdown,
+            enhancement_config=SimpleNamespace(enable_heading_hierarchy=True),
+            source_file="native.md",
+            user_id=7,
+            resolved_model=resolved,
+        )
+
+    provider.generate.assert_awaited_once()

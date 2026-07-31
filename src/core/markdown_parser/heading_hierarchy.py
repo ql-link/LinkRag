@@ -74,7 +74,6 @@ class HeadingGateReason(str, Enum):
     PLAN_EMPTY = "plan_empty"
     PLAN_INVALID = "plan_invalid"
     GENERATOR_FAILED = "generator_failed"
-    FRONT_MATTER_PENDING_322 = "front_matter_pending_322"
 
 
 @dataclass(frozen=True)
@@ -572,6 +571,7 @@ class HeadingHierarchyProcessor:
         validate_heading_plan(plan, markdown, parse_result)
         updated_markdown = apply_heading_plan(markdown, plan)
         updated_parse_result = self.parser.parse(updated_markdown, source_file=source_file)
+        _validate_front_matter_writeback_invariant(parse_result, updated_parse_result)
 
         return HeadingHierarchyResult(
             markdown=updated_markdown,
@@ -616,35 +616,6 @@ async def aprocess_existing_markdown_heading_hierarchy(
     """Apply the shared title processor to Markdown produced outside a source parser."""
     config = build_heading_hierarchy_config(enhancement_config)
     processor = HeadingHierarchyProcessor(config=config)
-    if not config.enabled:
-        return await processor.aprocess(
-            markdown,
-            source_file=source_file,
-            user_id=user_id,
-            resolved_model=resolved_model,
-        )
-
-    parse_result = processor.parser.parse(markdown, source_file=source_file)
-    if _starts_with_front_matter(parse_result):
-        # Transitional guard for #320 while #322 remains open. The generic heading
-        # candidate/validator currently allows line 0, which can move YAML/TOML
-        # front matter away from the document prefix. Native Markdown therefore
-        # skips title generation as a whole until #322 fixes that shared invariant.
-        # This is intentionally not the #322 fix: candidate and validator behavior
-        # remains unchanged for every existing HeadingHierarchyProcessor caller.
-        decision = replace(
-            processor.gate.evaluate(markdown, parse_result),
-            should_generate=False,
-            reason=HeadingGateReason.FRONT_MATTER_PENDING_322,
-        )
-        return HeadingHierarchyResult(
-            markdown=markdown,
-            parse_result=parse_result,
-            decision=decision,
-            applied=False,
-            insertion_count=0,
-        )
-
     return await processor.aprocess(
         markdown,
         source_file=source_file,
@@ -653,12 +624,19 @@ async def aprocess_existing_markdown_heading_hierarchy(
     )
 
 
-def _starts_with_front_matter(parse_result: ParseResult) -> bool:
-    return bool(
-        parse_result.elements
-        and parse_result.elements[0].type is ElementType.FRONT_MATTER
-        and parse_result.elements[0].start_line == 0
-    )
+def _leading_front_matter(parse_result: ParseResult) -> MarkdownElement | None:
+    """Return parser-confirmed front matter only when it is the document prefix.
+
+    The Markdown parser is the single authority for YAML/TOML recognition. Heading
+    handling deliberately reuses its structural result instead of duplicating fence
+    or metadata-shape rules here.
+    """
+    if not parse_result.elements:
+        return None
+    first = parse_result.elements[0]
+    if first.type is not ElementType.FRONT_MATTER or first.start_line != 0:
+        return None
+    return first
 
 
 def build_heading_plan_generator(
@@ -813,10 +791,36 @@ def _protected_ranges(parse_result: ParseResult) -> tuple[tuple[int, int], ...]:
 
 def _front_matter_prefix_range(parse_result: ParseResult) -> tuple[int, int] | None:
     """Return the closed line range of parser-confirmed leading front matter."""
-    if not _starts_with_front_matter(parse_result):
+    front_matter = _leading_front_matter(parse_result)
+    if front_matter is None:
         return None
-    front_matter = parse_result.elements[0]
     return front_matter.start_line, front_matter.end_line
+
+
+def _validate_front_matter_writeback_invariant(
+    original_parse_result: ParseResult,
+    updated_parse_result: ParseResult,
+) -> None:
+    """Defend parser-confirmed front matter after applying and reparsing a plan.
+
+    Candidate filtering and plan validation protect today's writeback path, but a
+    future renderer or parser change could still move, rewrite, or resize the
+    document prefix. Rechecking the reparsed structure prevents such a regression
+    from returning a partially transformed Markdown/ParseResult pair.
+    """
+    original = _leading_front_matter(original_parse_result)
+    if original is None:
+        return
+
+    updated = _leading_front_matter(updated_parse_result)
+    if updated is None:
+        raise HeadingPlanValidationError(
+            "front matter must remain the first parser-confirmed element after writeback"
+        )
+    if updated.content != original.content:
+        raise HeadingPlanValidationError("front matter content changed after writeback")
+    if updated.end_line != original.end_line:
+        raise HeadingPlanValidationError("front matter end line changed after writeback")
 
 
 def _is_inside_front_matter_prefix(
