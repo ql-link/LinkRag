@@ -151,6 +151,8 @@ def test_gate_context_contains_existing_headings_and_candidate_positions():
     [
         ("---\ntitle: Demo\n---\n\n正文", 2),
         ('+++\ntitle = "Demo"\n+++\n正文', 2),
+        ("---\ntitle: Demo\n---\n", 2),
+        ('+++\ntitle = "Demo"\n+++\n', 2),
     ],
 )
 def test_front_matter_candidates_begin_after_closing_fence(markdown, front_matter_end):
@@ -158,6 +160,7 @@ def test_front_matter_candidates_begin_after_closing_fence(markdown, front_matte
 
     candidate_lines = [position.line for position in decision.candidate_insert_positions]
     assert front_matter_end + 1 in candidate_lines
+    assert min(candidate_lines) == front_matter_end + 1
     assert all(line > front_matter_end for line in candidate_lines)
 
 

@@ -114,9 +114,14 @@ async def test_successful_insertion_updates_markdown_and_parse_result_together()
         pytest.param("---\ntitle: Demo\n---\n正文", id="yaml-body-no-blank"),
         pytest.param("---\ntitle: Demo\n---\n\n正文", id="yaml-body-with-blank"),
         pytest.param("---\ntitle: Demo\n---", id="yaml-front-matter-only"),
+        pytest.param("---\ntitle: Demo\n---\n", id="yaml-front-matter-only-trailing-newline"),
         pytest.param('+++\ntitle = "Demo"\n+++\n正文', id="toml-body-no-blank"),
         pytest.param('+++\ntitle = "Demo"\n+++\n\n正文', id="toml-body-with-blank"),
         pytest.param('+++\ntitle = "Demo"\n+++', id="toml-front-matter-only"),
+        pytest.param(
+            '+++\ntitle = "Demo"\n+++\n',
+            id="toml-front-matter-only-trailing-newline",
+        ),
     ],
 )
 @pytest.mark.asyncio
