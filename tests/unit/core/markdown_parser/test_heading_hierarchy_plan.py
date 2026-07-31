@@ -7,6 +7,7 @@ import pytest
 
 from src.core.markdown_parser import MarkdownParser
 from src.core.markdown_parser.heading_hierarchy import (
+    HEADING_PLAN_SYSTEM_PROMPT,
     HeadingHierarchyConfig,
     HeadingHierarchyGate,
     HeadingInsertion,
@@ -261,6 +262,72 @@ def test_build_heading_plan_prompt_uses_compressed_context_when_over_budget():
     assert '"elements"' in prompt
 
 
+def test_system_prompt_owns_stable_protocol_and_user_prompt_only_carries_context():
+    markdown = "正文第一段\n\n正文第二段"
+    parse_result = _parse(markdown)
+    config = HeadingHierarchyConfig(enabled=True, no_heading_min_tokens=1)
+    decision = HeadingHierarchyGate(
+        config=config,
+        tokenizer=_TokenCounter(8),
+    ).evaluate(markdown, parse_result)
+
+    prompt = build_heading_plan_prompt(
+        markdown,
+        parse_result=parse_result,
+        decision=decision,
+        token_budget=128,
+        tokenizer=_TokenCounter(8),
+    )
+    prompt_preamble = prompt[: prompt.index("{")]
+    context = json.loads(prompt[prompt.index("{") :])
+
+    assert "只输出 JSON" in HEADING_PLAN_SYSTEM_PROMPT
+    assert "0-based 行号" in HEADING_PLAN_SYSTEM_PROMPT
+    assert "level 只能是 1 到 5" in HEADING_PLAN_SYSTEM_PROMPT
+    assert "不要修改、删除或重写任何原文" in HEADING_PLAN_SYSTEM_PROMPT
+    assert "candidate_insert_positions" in HEADING_PLAN_SYSTEM_PROMPT
+    assert '返回 {"insertions":[]}' in HEADING_PLAN_SYSTEM_PROMPT
+    assert "front_matter" not in HEADING_PLAN_SYSTEM_PROMPT
+    assert "不能改写原文" not in prompt_preamble
+    assert "只能使用 candidate_insert_positions" not in prompt_preamble
+    assert "constraints" not in context
+    assert "output_schema" not in context
+
+
+def test_full_and_compressed_prompts_expose_the_same_complete_candidate_allowlist():
+    markdown = "\n\n".join(f"段落 {index}" for index in range(260))
+    parse_result = _parse(markdown)
+    config = HeadingHierarchyConfig(enabled=True, no_heading_min_tokens=1)
+    decision = HeadingHierarchyGate(
+        config=config,
+        tokenizer=_TokenCounter(2048),
+    ).evaluate(markdown, parse_result)
+    expected_lines = [position.line for position in decision.candidate_insert_positions]
+
+    full_prompt = build_heading_plan_prompt(
+        markdown,
+        parse_result=parse_result,
+        decision=decision,
+        token_budget=128,
+        tokenizer=_TokenCounter(8),
+    )
+    compressed_prompt = build_heading_plan_prompt(
+        markdown,
+        parse_result=parse_result,
+        decision=decision,
+        token_budget=8,
+        tokenizer=_TokenCounter(2048),
+    )
+    full_context = json.loads(full_prompt[full_prompt.index("{") :])
+    compressed_context = json.loads(compressed_prompt[compressed_prompt.index("{") :])
+
+    assert len(expected_lines) > 240
+    assert full_context["mode"] == "full_markdown"
+    assert compressed_context["mode"] == "compressed_structure"
+    assert full_context["candidate_insert_positions"] == expected_lines
+    assert compressed_context["candidate_insert_positions"] == expected_lines
+
+
 @pytest.mark.parametrize(
     "markdown",
     [
@@ -307,13 +374,10 @@ def test_heading_plan_prompt_exposes_only_post_front_matter_candidates(
         "end_line": 2,
         "first_allowed_insertion_line": 3,
     }
-    assert context["constraints"] == {
-        "candidate_positions_only": True,
-        "front_matter_insertions_after_closing_fence": True,
-    }
+    assert "constraints" not in context
+    assert "output_schema" not in context
     assert all(
-        candidate["line"] > context["front_matter_prefix"]["end_line"]
-        for candidate in context["candidate_insert_positions"]
+        line > context["front_matter_prefix"]["end_line"]
+        for line in context["candidate_insert_positions"]
     )
-    assert "只能使用 candidate_insert_positions" in prompt
-    assert "只能插入 closing fence 之后" in prompt
+    assert "只能插入 closing fence 之后" not in prompt

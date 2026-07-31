@@ -54,11 +54,9 @@ HEADING_PLAN_SYSTEM_PROMPT = """你是面向 RAG 文档解析的 Markdown 标题
 6. 不要修改、删除或重写任何原文，不要调整已有标题。
 7. 信息不足时返回 {"insertions":[]}。
 8. line 只能使用输入中 candidate_insert_positions 列出的位置。
-9. 存在 front_matter_prefix 时，标题只能插入 closing fence 之后，line 必须大于其 end_line。
 """
 HEADING_PLAN_MAX_OUTPUT_TOKENS = 4096
 COMPRESSED_CONTEXT_ELEMENT_LIMIT = 180
-COMPRESSED_CONTEXT_CANDIDATE_LIMIT = 240
 
 
 class HeadingGateReason(str, Enum):
@@ -689,10 +687,7 @@ def build_heading_plan_prompt(
         context["elements"] = _compressed_elements(parse_result)
 
     return (
-        "请根据以下 Markdown 结构上下文生成标题插入计划。\n"
-        "注意：只能建议新增标题，不能改写原文；line 必须引用原始 Markdown "
-        "行号，且只能使用 candidate_insert_positions。如存在 front matter，标题只能"
-        "插入 closing fence 之后。\n\n"
+        "请根据以下当前文档结构上下文生成标题插入计划。\n\n"
         f"{json.dumps(context, ensure_ascii=False, indent=2)}"
     )
 
@@ -895,14 +890,7 @@ def _base_prompt_context(
             {"line": item.line, "level": item.level, "text": item.text}
             for item in decision.existing_headings
         ],
-        "candidate_insert_positions": [
-            {
-                "line": item.line,
-                "element_type": item.element_type,
-                "preview": item.preview,
-            }
-            for item in decision.candidate_insert_positions[:COMPRESSED_CONTEXT_CANDIDATE_LIMIT]
-        ],
+        "candidate_insert_positions": [item.line for item in decision.candidate_insert_positions],
         "protected_ranges": [
             {"start_line": start, "end_line": end} for start, end in _protected_ranges(parse_result)
         ],
@@ -915,13 +903,6 @@ def _base_prompt_context(
             if front_matter_prefix is not None
             else None
         ),
-        "constraints": {
-            "candidate_positions_only": True,
-            "front_matter_insertions_after_closing_fence": front_matter_prefix is not None,
-        },
-        "output_schema": {
-            "insertions": [{"line": "int", "level": "int 1..5", "text": "single-line title"}]
-        },
     }
 
 
