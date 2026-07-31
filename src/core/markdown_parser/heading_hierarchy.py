@@ -53,6 +53,8 @@ HEADING_PLAN_SYSTEM_PROMPT = """你是面向 RAG 文档解析的 Markdown 标题
 5. text 只能是标题文本，不要包含 #、代码围栏或换行。
 6. 不要修改、删除或重写任何原文，不要调整已有标题。
 7. 信息不足时返回 {"insertions":[]}。
+8. line 只能使用输入中 candidate_insert_positions 列出的位置。
+9. 存在 front_matter_prefix 时，标题只能插入 closing fence 之后，line 必须大于其 end_line。
 """
 HEADING_PLAN_MAX_OUTPUT_TOKENS = 4096
 COMPRESSED_CONTEXT_ELEMENT_LIMIT = 180
@@ -464,12 +466,16 @@ class HeadingHierarchyGate:
     ) -> tuple[CandidateInsertionPosition, ...]:
         lines = markdown.split("\n")
         candidates: dict[int, CandidateInsertionPosition] = {
-            0: CandidateInsertionPosition(line=0, element_type=None, preview=""),
             len(lines): CandidateInsertionPosition(line=len(lines), element_type=None, preview=""),
         }
+        front_matter_prefix = _front_matter_prefix_range(parse_result)
+        if front_matter_prefix is None:
+            candidates[0] = CandidateInsertionPosition(line=0, element_type=None, preview="")
         protected = _protected_ranges(parse_result)
         for element in parse_result.elements:
             line = element.start_line
+            if _is_inside_front_matter_prefix(line, front_matter_prefix):
+                continue
             if _is_inside_protected(line, protected):
                 continue
             candidates.setdefault(
@@ -478,6 +484,16 @@ class HeadingHierarchyGate:
                     line=line,
                     element_type=element.type.value,
                     preview=_preview(element.content),
+                ),
+            )
+        if front_matter_prefix is not None:
+            first_safe_line = front_matter_prefix[1] + 1
+            candidates.setdefault(
+                first_safe_line,
+                CandidateInsertionPosition(
+                    line=first_safe_line,
+                    element_type=None,
+                    preview="",
                 ),
             )
         return tuple(candidates[line] for line in sorted(candidates))
@@ -685,7 +701,9 @@ def build_heading_plan_prompt(
 
     return (
         "请根据以下 Markdown 结构上下文生成标题插入计划。\n"
-        "注意：只能建议新增标题，不能改写原文；line 必须引用原始 Markdown 行号。\n\n"
+        "注意：只能建议新增标题，不能改写原文；line 必须引用原始 Markdown "
+        "行号，且只能使用 candidate_insert_positions。如存在 front matter，标题只能"
+        "插入 closing fence 之后。\n\n"
         f"{json.dumps(context, ensure_ascii=False, indent=2)}"
     )
 
@@ -731,6 +749,7 @@ def validate_heading_plan(
     """Validate that a plan can be safely applied without changing source text."""
     lines = markdown.split("\n")
     protected_ranges = _protected_ranges(parse_result)
+    front_matter_prefix = _front_matter_prefix_range(parse_result)
 
     for insertion in plan.insertions:
         if insertion.line < 0 or insertion.line > len(lines):
@@ -749,6 +768,10 @@ def validate_heading_plan(
         if text.startswith("#") or text.startswith("```"):
             raise HeadingPlanValidationError(
                 "heading text must not include markdown heading/code markers"
+            )
+        if _is_inside_front_matter_prefix(insertion.line, front_matter_prefix):
+            raise HeadingPlanValidationError(
+                f"heading insertion line is inside the front matter prefix: {insertion.line}"
             )
         if _is_inside_protected(insertion.line, protected_ranges):
             raise HeadingPlanValidationError(
@@ -788,6 +811,25 @@ def _protected_ranges(parse_result: ParseResult) -> tuple[tuple[int, int], ...]:
     )
 
 
+def _front_matter_prefix_range(parse_result: ParseResult) -> tuple[int, int] | None:
+    """Return the closed line range of parser-confirmed leading front matter."""
+    if not _starts_with_front_matter(parse_result):
+        return None
+    front_matter = parse_result.elements[0]
+    return front_matter.start_line, front_matter.end_line
+
+
+def _is_inside_front_matter_prefix(
+    line: int,
+    front_matter_prefix: tuple[int, int] | None,
+) -> bool:
+    """Return whether an insertion falls in the front matter closed prefix range."""
+    if front_matter_prefix is None:
+        return False
+    start, end = front_matter_prefix
+    return start <= line <= end
+
+
 def _is_inside_protected(line: int, ranges: tuple[tuple[int, int], ...]) -> bool:
     return any(start < line <= end for start, end in ranges)
 
@@ -804,6 +846,7 @@ def _base_prompt_context(
     parse_result: ParseResult,
     decision: GateDecision,
 ) -> dict[str, Any]:
+    front_matter_prefix = _front_matter_prefix_range(parse_result)
     return {
         "line_count": len(markdown.split("\n")),
         "gate_reason": decision.reason.value,
@@ -829,6 +872,19 @@ def _base_prompt_context(
         "protected_ranges": [
             {"start_line": start, "end_line": end} for start, end in _protected_ranges(parse_result)
         ],
+        "front_matter_prefix": (
+            {
+                "start_line": front_matter_prefix[0],
+                "end_line": front_matter_prefix[1],
+                "first_allowed_insertion_line": front_matter_prefix[1] + 1,
+            }
+            if front_matter_prefix is not None
+            else None
+        ),
+        "constraints": {
+            "candidate_positions_only": True,
+            "front_matter_insertions_after_closing_fence": front_matter_prefix is not None,
+        },
         "output_schema": {
             "insertions": [{"line": "int", "level": "int 1..5", "text": "single-line title"}]
         },

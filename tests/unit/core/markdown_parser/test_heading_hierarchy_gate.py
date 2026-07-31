@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """Heading hierarchy gate unit tests."""
 
+import pytest
+
 from src.core.markdown_parser import MarkdownParser
 from src.core.markdown_parser.heading_hierarchy import (
     HeadingGateReason,
@@ -142,3 +144,45 @@ def test_gate_context_contains_existing_headings_and_candidate_positions():
     assert [heading.text for heading in decision.existing_headings] == ["A", "B"]
     assert any(pos.line == 0 for pos in decision.candidate_insert_positions)
     assert any(pos.line == len(markdown.split("\n")) for pos in decision.candidate_insert_positions)
+
+
+@pytest.mark.parametrize(
+    "markdown,front_matter_end",
+    [
+        ("---\ntitle: Demo\n---\n\n正文", 2),
+        ('+++\ntitle = "Demo"\n+++\n正文', 2),
+    ],
+)
+def test_front_matter_candidates_begin_after_closing_fence(markdown, front_matter_end):
+    decision = _decision(markdown, tokens=512, config=_enabled_config())
+
+    candidate_lines = [position.line for position in decision.candidate_insert_positions]
+    assert front_matter_end + 1 in candidate_lines
+    assert all(line > front_matter_end for line in candidate_lines)
+
+
+@pytest.mark.parametrize(
+    "markdown",
+    [
+        "---\n未闭合的元数据\n正文",
+        "---\n这只是普通文本\n---\n正文",
+    ],
+)
+def test_unrecognized_front_matter_does_not_reserve_document_prefix(markdown):
+    decision = _decision(markdown, tokens=512, config=_enabled_config())
+
+    assert any(position.line == 0 for position in decision.candidate_insert_positions)
+
+
+@pytest.mark.parametrize(
+    "markdown,protected_start",
+    [
+        ("正文\n\n```python\nprint(1)\n```\n尾段", 2),
+        ("正文\n\n| A | B |\n| - | - |\n| 1 | 2 |\n尾段", 2),
+        ("正文\n\n$$\na=b\n$$\n尾段", 2),
+    ],
+)
+def test_regular_protected_block_start_remains_a_candidate(markdown, protected_start):
+    decision = _decision(markdown, tokens=512, config=_enabled_config())
+
+    assert any(position.line == protected_start for position in decision.candidate_insert_positions)
