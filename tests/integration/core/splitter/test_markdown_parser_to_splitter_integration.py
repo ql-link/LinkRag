@@ -4,6 +4,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import pytest
+
 from src.core.markdown_parser import (
     ElementType,
     ImageDescriber,
@@ -460,6 +462,86 @@ async def test_generated_native_markdown_heading_reaches_splitter_heading_trail(
     ]
     assert mixed_chunks
     assert all(chunk.metadata["heading_trail"] == ["自动文档标题"] for chunk in mixed_chunks)
+
+
+@pytest.mark.parametrize(
+    "front_matter",
+    [
+        pytest.param("---\ntitle: Demo\n---", id="yaml"),
+        pytest.param('+++\ntitle = "Demo"\n+++', id="toml"),
+    ],
+)
+async def test_generated_heading_preserves_front_matter_through_splitter(
+    monkeypatch,
+    front_matter,
+):
+    monkeypatch.setattr(
+        HeadingHierarchyConfig,
+        "from_settings",
+        classmethod(
+            lambda cls: HeadingHierarchyConfig(
+                enabled=True,
+                no_heading_min_tokens=1,
+            )
+        ),
+    )
+    markdown = f"{front_matter}\n" + " ".join(f"正文段落{index}" for index in range(140))
+    original_parse_result = MarkdownParser().parse(markdown, source_file="native.md")
+    original_front_matter = original_parse_result.elements[0]
+    safe_line = original_front_matter.end_line + 1
+    provider = SimpleNamespace(
+        generate=AsyncMock(
+            return_value=SimpleNamespace(
+                content=json.dumps(
+                    {"insertions": [{"line": safe_line, "level": 1, "text": "自动文档标题"}]},
+                    ensure_ascii=False,
+                ),
+                model="qwen-max",
+                usage=None,
+            )
+        )
+    )
+    resolved = SimpleNamespace(
+        provider=provider,
+        model_name="qwen-max",
+        provider_type="qwen",
+        config_id=99,
+    )
+
+    heading_result = await aprocess_existing_markdown_heading_hierarchy(
+        markdown,
+        enhancement_config=SimpleNamespace(enable_heading_hierarchy=True),
+        source_file="native.md",
+        user_id=7,
+        resolved_model=resolved,
+    )
+    chunks = await _structured_chunker(
+        min_candidate_chunk_tokens=128,
+        overlap_tokens=8,
+    ).achunk(heading_result.parse_result.elements)
+
+    provider.generate.assert_awaited_once()
+    assert heading_result.applied is True
+    preserved_front_matter = heading_result.parse_result.elements[0]
+    assert preserved_front_matter.type is ElementType.FRONT_MATTER
+    assert preserved_front_matter.content == original_front_matter.content == front_matter
+    assert preserved_front_matter.start_line == original_front_matter.start_line == 0
+    assert preserved_front_matter.end_line == original_front_matter.end_line
+
+    front_matter_chunk = chunks[0]
+    assert front_matter_chunk.content == front_matter
+    assert front_matter_chunk.start_line == 0
+    assert front_matter_chunk.end_line == original_front_matter.end_line
+    assert front_matter_chunk.metadata["element_types"] == ["front_matter"]
+    assert front_matter_chunk.metadata["chunk_role"] == "front_matter"
+    assert front_matter_chunk.metadata["protected_element_types"] == ["front_matter"]
+    assert "context_overlap_mode" not in front_matter_chunk.metadata
+
+    body_chunks = [chunk for chunk in chunks if chunk.metadata.get("chunk_role") == "mixed"]
+    assert body_chunks
+    assert all("自动文档标题" in chunk.metadata["heading_trail"] for chunk in body_chunks)
+    assert all("context_overlap_mode" not in chunk.metadata for chunk in chunks)
+    assert all(front_matter not in chunk.content for chunk in body_chunks)
 
 
 def _write_visualization(parse_result, embedded_chunks, vision_client, table_client, embedder):
