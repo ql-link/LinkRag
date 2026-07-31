@@ -44,6 +44,7 @@ ParseResult
 | `ParseResult` | `models.py` | 结构化解析结果，包含 `elements/tables/images/source_file`；`to_markdown()` 把描述字段重新编码为标记（与解码对称） |
 | `MarkdownEnhancementOrchestrator` | `orchestrator.py` | 按配置触发表格和图片增强 |
 | `HeadingHierarchyProcessor` | `heading_hierarchy.py` | 可选标题层级后处理：门禁命中后应用标题插入计划，并返回同构更新后的 Markdown + `ParseResult` |
+| `aprocess_existing_markdown_heading_hierarchy` | `heading_hierarchy.py` | 已有 Markdown 的标题处理适配器：复用同一处理器，并统一构造运行配置与四项标题 metadata |
 | `TableDescriber` | `llm_integration.py` | 把表格总结**编码**为标记 `[表格总结: …]` 写入对应元素 content |
 | `ImageDescriber` | `llm_integration.py` | 把图片视觉描述**编码**为标记 `[视觉描述\|src=<url>: …]` 写入 content |
 | `ProviderTableClient` / `ProviderVisionClient` | `provider_clients.py` | 调用系统 LLM Provider 完成增强 |
@@ -129,6 +130,8 @@ Java 规范化 Markdown 的 RAW 图片由 parse-task 层先完成对象存储范
 - 已有多级 heading，但 `total_tokens / heading_count` 达到 `MARKDOWN_PARSER_HEADING_SPARSE_TOKENS_PER_HEADING`（默认 `1536`，下限 `1024`）。
 
 标题写回只支持插入新 heading，等级限制为 `#` 到 `#####`。插入计划的 `line` 始终是原始 Markdown 行号，写回时先按原始行号分组，再一次性重建 Markdown，避免前序插入导致后续行号漂移。写回后必须重新走 `MarkdownParser.parse()`，因此对外最终 Markdown 与 `ParseResult` 来自同一份处理后的文本；splitter 不需要感知标题来源，仍按 `heading_level` / `heading_text` / `heading_trail` 消费。标题生成是显式开启能力：开启后如果门禁命中但用户默认与 LinkRag 系统默认预设均无 `CHAT` 配置、LLM 调用失败、响应无法解析或计划校验失败，解析任务失败，不静默降级。
+
+已有 Markdown 通过 `aprocess_existing_markdown_heading_hierarchy()` 进入同一处理器。适配器以 Settings 中的阈值为基础，只用数据集 `enhancement_config` 覆盖开关，并统一返回 `heading_hierarchy_enabled/applied/reason/insertions` 四项 metadata。#322 完成通用候选位置与校验器修复前，若 parser 已把首元素识别为第 0 行开始的 YAML/TOML `front_matter`，该适配器会以 `front_matter_pending_322` 原因保守跳过整次标题生成：不构建 generator、不调用 provider，原文和同源 `ParseResult` 保持不变。这只是原生 Markdown 接入的过渡保护，不改变通用 candidate/validator 语义，也不替代 #322。
 
 标题生成器的单次输入受 `MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET` 控制（默认 `65536`，允许范围 `2048` - `262144`）：预算内优先发送带原始行号的全文 Markdown；超预算时构造压缩结构摘要，保留门禁原因、标题指标、已有标题树、候选插入位置、protected block 边界和元素 preview，再要求 LLM 输出标题插入计划。输出插入计划的上限由 `MARKDOWN_PARSER_HEADING_LLM_MAX_OUTPUT_TOKENS` 控制（默认 `4096`，允许范围 `512` - `65536`）。默认值按系统默认 `qwen3.5-flash` 的百万级上下文能力放宽，但仍保留应用侧上限，避免标题后处理在长文上无限扩大成本和延迟。
 

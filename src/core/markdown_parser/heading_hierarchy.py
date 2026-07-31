@@ -5,14 +5,17 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from src.core.llm.tokenizer import Tokenizer
 
 from .models import ElementType, MarkdownElement, ParseResult
 from .parser import MarkdownParser
+
+if TYPE_CHECKING:
+    from src.core.dataset_config import EnhancementConfig
 
 MAX_HEADING_LEVEL = 5
 PROTECTED_ELEMENT_TYPES = {
@@ -69,6 +72,7 @@ class HeadingGateReason(str, Enum):
     PLAN_EMPTY = "plan_empty"
     PLAN_INVALID = "plan_invalid"
     GENERATOR_FAILED = "generator_failed"
+    FRONT_MATTER_PENDING_322 = "front_matter_pending_322"
 
 
 @dataclass(frozen=True)
@@ -560,6 +564,85 @@ class HeadingHierarchyProcessor:
             applied=True,
             insertion_count=len(plan.insertions),
         )
+
+
+def build_heading_hierarchy_config(
+    enhancement_config: "EnhancementConfig | None",
+) -> HeadingHierarchyConfig:
+    """Build title-processing config for an already available Markdown document."""
+    base = HeadingHierarchyConfig.from_settings()
+    if enhancement_config is None:
+        return base
+    return replace(
+        base,
+        enabled=bool(enhancement_config.enable_heading_hierarchy),
+    )
+
+
+def build_heading_hierarchy_metadata(result: HeadingHierarchyResult) -> dict[str, Any]:
+    """Return the stable parse-task metadata fields for a title-processing result."""
+    return {
+        "heading_hierarchy_enabled": result.decision.reason is not HeadingGateReason.DISABLED,
+        "heading_hierarchy_applied": result.applied,
+        "heading_hierarchy_reason": result.decision.reason.value,
+        "heading_hierarchy_insertions": result.insertion_count,
+    }
+
+
+async def aprocess_existing_markdown_heading_hierarchy(
+    markdown: str,
+    *,
+    enhancement_config: "EnhancementConfig | None",
+    source_file: str | None = None,
+    user_id: int | None = None,
+    resolved_model=None,
+) -> HeadingHierarchyResult:
+    """Apply the shared title processor to Markdown produced outside a source parser."""
+    config = build_heading_hierarchy_config(enhancement_config)
+    processor = HeadingHierarchyProcessor(config=config)
+    if not config.enabled:
+        return await processor.aprocess(
+            markdown,
+            source_file=source_file,
+            user_id=user_id,
+            resolved_model=resolved_model,
+        )
+
+    parse_result = processor.parser.parse(markdown, source_file=source_file)
+    if _starts_with_front_matter(parse_result):
+        # Transitional guard for #320 while #322 remains open. The generic heading
+        # candidate/validator currently allows line 0, which can move YAML/TOML
+        # front matter away from the document prefix. Native Markdown therefore
+        # skips title generation as a whole until #322 fixes that shared invariant.
+        # This is intentionally not the #322 fix: candidate and validator behavior
+        # remains unchanged for every existing HeadingHierarchyProcessor caller.
+        decision = replace(
+            processor.gate.evaluate(markdown, parse_result),
+            should_generate=False,
+            reason=HeadingGateReason.FRONT_MATTER_PENDING_322,
+        )
+        return HeadingHierarchyResult(
+            markdown=markdown,
+            parse_result=parse_result,
+            decision=decision,
+            applied=False,
+            insertion_count=0,
+        )
+
+    return await processor.aprocess(
+        markdown,
+        source_file=source_file,
+        user_id=user_id,
+        resolved_model=resolved_model,
+    )
+
+
+def _starts_with_front_matter(parse_result: ParseResult) -> bool:
+    return bool(
+        parse_result.elements
+        and parse_result.elements[0].type is ElementType.FRONT_MATTER
+        and parse_result.elements[0].start_line == 0
+    )
 
 
 def build_heading_plan_generator(
