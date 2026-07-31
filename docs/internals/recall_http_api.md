@@ -27,9 +27,10 @@ Python **不接受前端 Sa-Token，也不信任请求体里自报的 `user_id`*
 这些对外端点共用会话鉴权与 scope 校验（§3、§4），差异在执行与返回载体：
 
 - **RAG 问答流**：`POST /api/v1/rag/stream`（[src/api/routes/rag.py](../../src/api/routes/rag.py)），
-  返回 `text/event-stream`。召回融合后做 rerank 精排（不可用即降级当前融合顺序），再基于最终片段调用用户
-  CHAT 模型流式生成答案：逐 token `answer_delta`、结束 `answer_done`（附 rerank 后片段元信息与
-  `rerank_applied`）；0 命中 / 全部片段缺正文 → `recall_done`（不生成）；失败 → SSE `error` 帧。请求体需
+  返回 `text/event-stream`。LTR active 默认以本地 LambdaMART 产出 Top10，异常回退 frozen weighted
+  score 且不调用远程 rerank；`off` 保留旧 rerank，`shadow` 只做非阻塞旁路比较。随后基于最终片段调用用户
+  CHAT 模型流式生成答案：逐 token `answer_delta`、结束 `answer_done`（附候选元信息、
+  `rerank_applied` 和可选 `ranking_diagnostics`）；0 命中 / 全部片段缺正文 → `recall_done`（不生成）；失败 → SSE `error` 帧。请求体需
   `config_id`（CHAT 模型）。按 `user_id` 并发限流。
 - **纯召回 JSON**：`POST /api/v1/recall`（[src/api/routes/recall.py](../../src/api/routes/recall.py)），
   返回 `application/json`，一次性 `{hits, failed_sources}`（**融合候选，不经 rerank**，hits 不含 rerank
@@ -86,20 +87,22 @@ scope 校验。RAG 流额外要求 `config_id`（缺失 → 422）并在建流�
 `doc_ids` = None；`top_k` ← `recall_result_limit`（融合候选池 / rerank 输入窗口）；
 `bm25_top_k` / `sparse_top_k` / `dense_top_k` ← 对应 per-route 配置；
 三路 `fusion_*_weight_override` ← 对应融合配置。权重字段均由服务端配置决定，
-不接受请求覆盖。
+不接受请求覆盖。RAG 流在 `shadow` / `active` / `baseline` 下会进一步应用模型的 Blind v5
+候选契约：三路来源、零阈值、`0.15/0.15/0.70` 权重、Query 分型 TopK 和最终 Top10；
+`off` 与纯召回 JSON 仍使用数据集/系统配置。
 
 ### 5.1 RAG 流（建流在前）
 
 建立 SSE 流，执行复用 [src/application/recall_stream_runtime.py](../../src/application/recall_stream_runtime.py)
 的 `recall_event_stream`（`config_id` 来自 body）：先按 `(user_id, CHAT, config_id)` 前置校验
 用户模型——不可用即 `error RECALL_MODEL_CONFIG_MISSING`、**不进入召回**；通过后在流内
-`asyncio.wait_for(pipeline.execute(req), RECALL_STREAM_TIMEOUT_MS)`，对融合候选做 rerank 精排
-（`_rerank_hits`：不可用一律降级当前融合顺序、截断数据集级 `rerank_top_n`，无数据集配置时回退
-`RERANK_DEFAULT_TOP_N`），再按 token 预算拼装上下文
+`asyncio.wait_for(pipeline.execute(req), RECALL_STREAM_TIMEOUT_MS)`，再按发布模式执行本地 LTR、
+frozen weighted score 或旧 rerank。LTR 输出固定 Top10；旧 rerank 不可用时降级当前融合顺序，
+截断数据集级 `rerank_top_n`（无数据集配置时回退 `RERANK_DEFAULT_TOP_N`）。随后按 token 预算拼装上下文
 流式生成：
 
 - 建流后首先发 `stream_started`（`conversation_id` + `request_id`），供前端跨会话维护“回复中”状态；
-- 命中 → 流式 `answer_delta` + 终态 `answer_done`（`hits` 为 rerank 后最终候选、不含正文，附顶层 `rerank_applied`；`failed_sources` 表达异常失败路；可带 `recall_diagnostics` 表达来源结构）。
+- 命中 → 流式 `answer_delta` + 终态 `answer_done`（`hits` 为最终排序候选并含正文，附顶层 `rerank_applied`；active/baseline 可带 `ranking_diagnostics`；`failed_sources` 表达异常失败路；可带 `recall_diagnostics` 表达来源结构）。
 - 0 命中 / 全部片段缺正文 → `recall_done`（不生成；可带 `recall_diagnostics`）。
 - 用户无默认 EMBEDDING 配置 → `error RECALL_EMBEDDING_CONFIG_MISSING`（硬失败，不降级）。
 - 全路失败 `RecallError` → `error RECALL_ALL_SOURCES_FAILED`；超时 → `error RECALL_TIMEOUT`。

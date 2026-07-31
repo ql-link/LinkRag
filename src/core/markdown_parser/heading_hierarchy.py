@@ -5,14 +5,17 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from src.core.llm.tokenizer import Tokenizer
 
 from .models import ElementType, MarkdownElement, ParseResult
 from .parser import MarkdownParser
+
+if TYPE_CHECKING:
+    from src.core.dataset_config import EnhancementConfig
 
 MAX_HEADING_LEVEL = 5
 PROTECTED_ELEMENT_TYPES = {
@@ -50,10 +53,10 @@ HEADING_PLAN_SYSTEM_PROMPT = """你是面向 RAG 文档解析的 Markdown 标题
 5. text 只能是标题文本，不要包含 #、代码围栏或换行。
 6. 不要修改、删除或重写任何原文，不要调整已有标题。
 7. 信息不足时返回 {"insertions":[]}。
+8. line 只能使用输入中 candidate_insert_positions 列出的位置。
 """
 HEADING_PLAN_MAX_OUTPUT_TOKENS = 4096
 COMPRESSED_CONTEXT_ELEMENT_LIMIT = 180
-COMPRESSED_CONTEXT_CANDIDATE_LIMIT = 240
 
 
 class HeadingGateReason(str, Enum):
@@ -268,6 +271,51 @@ class _TokenCounter(Protocol):
     def count_tokens(self, text: str) -> int: ...
 
 
+def build_candidate_insert_positions(
+    markdown: str,
+    parse_result: ParseResult,
+) -> tuple[CandidateInsertionPosition, ...]:
+    """Build insertion candidates from parser-confirmed original line boundaries.
+
+    Parser elements are the structural authority: their start lines, document
+    boundaries, and the first line after leading front matter are candidates.
+    Front matter and other protected ranges keep their existing special handling.
+    """
+    lines = markdown.split("\n")
+    candidates: dict[int, CandidateInsertionPosition] = {
+        len(lines): CandidateInsertionPosition(line=len(lines), element_type=None, preview=""),
+    }
+    front_matter_prefix = _front_matter_prefix_range(parse_result)
+    if front_matter_prefix is None:
+        candidates[0] = CandidateInsertionPosition(line=0, element_type=None, preview="")
+    protected = _protected_ranges(parse_result)
+    for element in parse_result.elements:
+        line = element.start_line
+        if _is_inside_front_matter_prefix(line, front_matter_prefix):
+            continue
+        if _is_inside_protected(line, protected):
+            continue
+        candidates.setdefault(
+            line,
+            CandidateInsertionPosition(
+                line=line,
+                element_type=element.type.value,
+                preview=_preview(element.content),
+            ),
+        )
+    if front_matter_prefix is not None:
+        first_safe_line = front_matter_prefix[1] + 1
+        candidates.setdefault(
+            first_safe_line,
+            CandidateInsertionPosition(
+                line=first_safe_line,
+                element_type=None,
+                preview="",
+            ),
+        )
+    return tuple(candidates[line] for line in sorted(candidates))
+
+
 class HeadingHierarchyGate:
     """Deterministic gate deciding whether heading generation should run."""
 
@@ -283,7 +331,7 @@ class HeadingHierarchyGate:
     def evaluate(self, markdown: str, parse_result: ParseResult) -> GateDecision:
         metrics = self._build_metrics(markdown, parse_result)
         existing_headings = self._existing_headings(parse_result)
-        candidate_positions = self._candidate_insert_positions(markdown, parse_result)
+        candidate_positions = build_candidate_insert_positions(markdown, parse_result)
 
         if not self.config.enabled:
             return self._decision(
@@ -453,31 +501,6 @@ class HeadingHierarchyGate:
             )
         )
 
-    @staticmethod
-    def _candidate_insert_positions(
-        markdown: str,
-        parse_result: ParseResult,
-    ) -> tuple[CandidateInsertionPosition, ...]:
-        lines = markdown.split("\n")
-        candidates: dict[int, CandidateInsertionPosition] = {
-            0: CandidateInsertionPosition(line=0, element_type=None, preview=""),
-            len(lines): CandidateInsertionPosition(line=len(lines), element_type=None, preview=""),
-        }
-        protected = _protected_ranges(parse_result)
-        for element in parse_result.elements:
-            line = element.start_line
-            if _is_inside_protected(line, protected):
-                continue
-            candidates.setdefault(
-                line,
-                CandidateInsertionPosition(
-                    line=line,
-                    element_type=element.type.value,
-                    preview=_preview(element.content),
-                ),
-            )
-        return tuple(candidates[line] for line in sorted(candidates))
-
 
 class HeadingHierarchyProcessor:
     """Coordinates parse -> gate -> plan generation -> validate/apply -> parse."""
@@ -549,9 +572,15 @@ class HeadingHierarchyProcessor:
                 applied=False,
             )
 
-        validate_heading_plan(plan, markdown, parse_result)
+        validate_heading_plan(
+            plan,
+            markdown,
+            parse_result,
+            candidate_insert_positions=decision.candidate_insert_positions,
+        )
         updated_markdown = apply_heading_plan(markdown, plan)
         updated_parse_result = self.parser.parse(updated_markdown, source_file=source_file)
+        _validate_front_matter_writeback_invariant(parse_result, updated_parse_result)
 
         return HeadingHierarchyResult(
             markdown=updated_markdown,
@@ -560,6 +589,63 @@ class HeadingHierarchyProcessor:
             applied=True,
             insertion_count=len(plan.insertions),
         )
+
+
+def build_heading_hierarchy_config(
+    enhancement_config: "EnhancementConfig | None",
+) -> HeadingHierarchyConfig:
+    """Build title-processing config for an already available Markdown document."""
+    base = HeadingHierarchyConfig.from_settings()
+    if enhancement_config is None:
+        return base
+    return replace(
+        base,
+        enabled=bool(enhancement_config.enable_heading_hierarchy),
+    )
+
+
+def build_heading_hierarchy_metadata(result: HeadingHierarchyResult) -> dict[str, Any]:
+    """Return the stable parse-task metadata fields for a title-processing result."""
+    return {
+        "heading_hierarchy_enabled": result.decision.reason is not HeadingGateReason.DISABLED,
+        "heading_hierarchy_applied": result.applied,
+        "heading_hierarchy_reason": result.decision.reason.value,
+        "heading_hierarchy_insertions": result.insertion_count,
+    }
+
+
+async def aprocess_existing_markdown_heading_hierarchy(
+    markdown: str,
+    *,
+    enhancement_config: "EnhancementConfig | None",
+    source_file: str | None = None,
+    user_id: int | None = None,
+    resolved_model=None,
+) -> HeadingHierarchyResult:
+    """Apply the shared title processor to Markdown produced outside a source parser."""
+    config = build_heading_hierarchy_config(enhancement_config)
+    processor = HeadingHierarchyProcessor(config=config)
+    return await processor.aprocess(
+        markdown,
+        source_file=source_file,
+        user_id=user_id,
+        resolved_model=resolved_model,
+    )
+
+
+def _leading_front_matter(parse_result: ParseResult) -> MarkdownElement | None:
+    """Return parser-confirmed front matter only when it is the document prefix.
+
+    The Markdown parser is the single authority for YAML/TOML recognition. Heading
+    handling deliberately reuses its structural result instead of duplicating fence
+    or metadata-shape rules here.
+    """
+    if not parse_result.elements:
+        return None
+    first = parse_result.elements[0]
+    if first.type is not ElementType.FRONT_MATTER or first.start_line != 0:
+        return None
+    return first
 
 
 def build_heading_plan_generator(
@@ -601,8 +687,7 @@ def build_heading_plan_prompt(
         context["elements"] = _compressed_elements(parse_result)
 
     return (
-        "请根据以下 Markdown 结构上下文生成标题插入计划。\n"
-        "注意：只能建议新增标题，不能改写原文；line 必须引用原始 Markdown 行号。\n\n"
+        "请根据以下当前文档结构上下文生成标题插入计划。\n\n"
         f"{json.dumps(context, ensure_ascii=False, indent=2)}"
     )
 
@@ -644,10 +729,24 @@ def validate_heading_plan(
     plan: HeadingPlan,
     markdown: str,
     parse_result: ParseResult,
+    *,
+    candidate_insert_positions: tuple[CandidateInsertionPosition, ...] | None = None,
 ) -> None:
-    """Validate that a plan can be safely applied without changing source text."""
+    """Validate a plan against structural rules and parser-confirmed candidates.
+
+    Processor callers pass the gate snapshot so generation and validation share the
+    same allowlist. Direct callers remain supported by rebuilding it from the same
+    Markdown and ParseResult.
+    """
     lines = markdown.split("\n")
     protected_ranges = _protected_ranges(parse_result)
+    front_matter_prefix = _front_matter_prefix_range(parse_result)
+    candidates = (
+        candidate_insert_positions
+        if candidate_insert_positions is not None
+        else build_candidate_insert_positions(markdown, parse_result)
+    )
+    allowed_insertion_lines = frozenset(position.line for position in candidates)
 
     for insertion in plan.insertions:
         if insertion.line < 0 or insertion.line > len(lines):
@@ -667,9 +766,19 @@ def validate_heading_plan(
             raise HeadingPlanValidationError(
                 "heading text must not include markdown heading/code markers"
             )
+        if _is_inside_front_matter_prefix(insertion.line, front_matter_prefix):
+            raise HeadingPlanValidationError(
+                f"heading insertion line is inside the front matter prefix: {insertion.line}"
+            )
         if _is_inside_protected(insertion.line, protected_ranges):
             raise HeadingPlanValidationError(
                 f"heading insertion line is inside a protected block: {insertion.line}"
+            )
+        # Keep the specific structural checks above for stable diagnostics; this
+        # allowlist is the final defense for every parser-confirmed block type.
+        if insertion.line not in allowed_insertion_lines:
+            raise HeadingPlanValidationError(
+                "heading insertion line is not a parser-confirmed candidate: " f"{insertion.line}"
             )
 
 
@@ -705,6 +814,51 @@ def _protected_ranges(parse_result: ParseResult) -> tuple[tuple[int, int], ...]:
     )
 
 
+def _front_matter_prefix_range(parse_result: ParseResult) -> tuple[int, int] | None:
+    """Return the closed line range of parser-confirmed leading front matter."""
+    front_matter = _leading_front_matter(parse_result)
+    if front_matter is None:
+        return None
+    return front_matter.start_line, front_matter.end_line
+
+
+def _validate_front_matter_writeback_invariant(
+    original_parse_result: ParseResult,
+    updated_parse_result: ParseResult,
+) -> None:
+    """Defend parser-confirmed front matter after applying and reparsing a plan.
+
+    Candidate filtering and plan validation protect today's writeback path, but a
+    future renderer or parser change could still move, rewrite, or resize the
+    document prefix. Rechecking the reparsed structure prevents such a regression
+    from returning a partially transformed Markdown/ParseResult pair.
+    """
+    original = _leading_front_matter(original_parse_result)
+    if original is None:
+        return
+
+    updated = _leading_front_matter(updated_parse_result)
+    if updated is None:
+        raise HeadingPlanValidationError(
+            "front matter must remain the first parser-confirmed element after writeback"
+        )
+    if updated.content != original.content:
+        raise HeadingPlanValidationError("front matter content changed after writeback")
+    if updated.end_line != original.end_line:
+        raise HeadingPlanValidationError("front matter end line changed after writeback")
+
+
+def _is_inside_front_matter_prefix(
+    line: int,
+    front_matter_prefix: tuple[int, int] | None,
+) -> bool:
+    """Return whether an insertion falls in the front matter closed prefix range."""
+    if front_matter_prefix is None:
+        return False
+    start, end = front_matter_prefix
+    return start <= line <= end
+
+
 def _is_inside_protected(line: int, ranges: tuple[tuple[int, int], ...]) -> bool:
     return any(start < line <= end for start, end in ranges)
 
@@ -721,6 +875,7 @@ def _base_prompt_context(
     parse_result: ParseResult,
     decision: GateDecision,
 ) -> dict[str, Any]:
+    front_matter_prefix = _front_matter_prefix_range(parse_result)
     return {
         "line_count": len(markdown.split("\n")),
         "gate_reason": decision.reason.value,
@@ -735,20 +890,19 @@ def _base_prompt_context(
             {"line": item.line, "level": item.level, "text": item.text}
             for item in decision.existing_headings
         ],
-        "candidate_insert_positions": [
-            {
-                "line": item.line,
-                "element_type": item.element_type,
-                "preview": item.preview,
-            }
-            for item in decision.candidate_insert_positions[:COMPRESSED_CONTEXT_CANDIDATE_LIMIT]
-        ],
+        "candidate_insert_positions": [item.line for item in decision.candidate_insert_positions],
         "protected_ranges": [
             {"start_line": start, "end_line": end} for start, end in _protected_ranges(parse_result)
         ],
-        "output_schema": {
-            "insertions": [{"line": "int", "level": "int 1..5", "text": "single-line title"}]
-        },
+        "front_matter_prefix": (
+            {
+                "start_line": front_matter_prefix[0],
+                "end_line": front_matter_prefix[1],
+                "first_allowed_insertion_line": front_matter_prefix[1] + 1,
+            }
+            if front_matter_prefix is not None
+            else None
+        ),
     }
 
 

@@ -126,9 +126,9 @@ class Settings(BaseSettings):
     # 与 bm25 并行后做融合；如需暂时回退，运维侧 set RECALL_ENABLED_SOURCES=bm25,sparse 重启。
     RECALL_ENABLED_SOURCES: str = "bm25,sparse,dense"
     # 三路固定使用 weighted_score 融合。单项允许为 0；active source 权重和为 0 在运行期拒绝。
-    RECALL_FUSION_BM25_WEIGHT: float = 0.2
-    RECALL_FUSION_SPARSE_WEIGHT: float = 0.3
-    RECALL_FUSION_DENSE_WEIGHT: float = 0.5
+    RECALL_FUSION_BM25_WEIGHT: float = 0.15
+    RECALL_FUSION_SPARSE_WEIGHT: float = 0.15
+    RECALL_FUSION_DENSE_WEIGHT: float = 0.70
 
     # 本地 LambdaMART 排序发布模式：off=保持旧 rerank；shadow=旁路对比但不改结果；
     # active=LambdaMART 主排并在异常时回退 weighted score；baseline=主动回滚到 weighted score。
@@ -137,6 +137,11 @@ class Settings(BaseSettings):
         PROJECT_ROOT, "models/ltr/candidate-difference-v3-20260728-final33"
     )
     RECALL_LTR_SHADOW_SAMPLE_RATE: float = 0.1
+    RECALL_LTR_SHADOW_MAX_CONCURRENCY: int = 4
+    RECALL_LTR_SHADOW_MAX_PENDING: int = 16
+    RECALL_LTR_SHADOW_TIMEOUT_MS: int = 5000
+    RECALL_LTR_SHADOW_SHUTDOWN_TIMEOUT_MS: int = 3000
+    RECALL_LTR_INFERENCE_MAX_CONCURRENCY: int = 4
 
     @field_validator("WIKI_SEARCH_PAGE_SIZE", "WIKI_BM25_TOP_K_PER_DATASET")
     @classmethod
@@ -174,6 +179,25 @@ class Settings(BaseSettings):
             raise ValueError("RECALL_LTR_SHADOW_SAMPLE_RATE must be in [0, 1]")
         return v
 
+    @field_validator(
+        "RECALL_LTR_SHADOW_MAX_CONCURRENCY",
+        "RECALL_LTR_SHADOW_TIMEOUT_MS",
+        "RECALL_LTR_SHADOW_SHUTDOWN_TIMEOUT_MS",
+        "RECALL_LTR_INFERENCE_MAX_CONCURRENCY",
+    )
+    @classmethod
+    def validate_recall_ltr_positive_limits(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("LTR concurrency and timeout limits must be positive")
+        return v
+
+    @field_validator("RECALL_LTR_SHADOW_MAX_PENDING")
+    @classmethod
+    def validate_recall_ltr_pending_limit(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("RECALL_LTR_SHADOW_MAX_PENDING must be >= 0")
+        return v
+
     # ==========================================
     # 对外会话鉴权配置 (RAG 流 / 纯召回 JSON / LINK-40, LINK-131)
     # ==========================================
@@ -204,8 +228,8 @@ class Settings(BaseSettings):
     # 召回后重排 (Post-Recall Rerank / LINK-130)
     # ==========================================
     # 重排模块输出的候选条数兜底默认值。调用方未显式传 top_n 时生效；
-    # 调用方传入则以传入为准。值参考业界 rerank top_n（RAGFlow 默认 6，本项目放宽到 8）。
-    RERANK_DEFAULT_TOP_N: int = 8
+    # 调用方传入则以传入为准；默认 Top10 与 Blind v5 评测口径一致。
+    RERANK_DEFAULT_TOP_N: int = 10
 
     # ==========================================
     # 精确 LLM runtime cache
@@ -389,13 +413,28 @@ class Settings(BaseSettings):
     # ==========================================
     # 向量数据库配置 (Vector Store)
     # ==========================================
+    # readiness 仍以该开关判断是否探测当前唯一支持的 Qdrant 后端。
+    VECTOR_STORE_TYPE: str = "qdrant"
+
     # Qdrant
+    # 显式协议是权威配置；非空 API key 不能再隐式把明文部署切成 HTTPS。
+    QDRANT_URL: Optional[str] = None
     QDRANT_HOST: str = "43.138.176.52"
     QDRANT_PORT: int = 6333
     QDRANT_GRPC_PORT: int = 6334
     QDRANT_API_KEY: Optional[str] = None
     QDRANT_HTTPS: bool = False
     QDRANT_TIMEOUT_SECONDS: int = 20
+
+    @field_validator("QDRANT_URL")
+    @classmethod
+    def validate_qdrant_url(cls, value: Optional[str]) -> Optional[str]:
+        if value is None or not value.strip():
+            return None
+        normalized = value.strip().rstrip("/")
+        if not normalized.startswith(("http://", "https://")):
+            raise ValueError("QDRANT_URL must start with http:// or https://")
+        return normalized
 
     # Chunk indexing / vector storage
     CHUNK_INDEX_BUCKET_COUNT: int = 128

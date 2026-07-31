@@ -11,12 +11,23 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from src.config import settings
-from src.core.storage.chunks import ChunkRepository
-from src.core.storage.qdrant import BucketRouter, QdrantIndexStore
 from src.core.splitter.models import Chunk, EmbeddedChunk
+from src.core.storage.chunks import ChunkRepository
+from src.core.storage.chunks.constants import (
+    CHUNK_LIFECYCLE_ACTIVE,
+    CHUNK_STATUS_PENDING,
+    ES_STATUS_PENDING,
+    SPARSE_VECTOR_STATUS_PENDING,
+)
+from src.core.storage.qdrant import BucketRouter, QdrantIndexStore
 from src.core.storage.vector.draft_factory import ChunkDraftFactory
-from src.core.storage.vector.models import ChunkDeleteRequest, ChunkStorageRequest, ChunkUpdateRequest
+from src.core.storage.vector.exceptions import ChunkStructuralUpdateNotAllowedError
 from src.core.storage.vector.management_pipeline import VectorStorageManagementPipeline
+from src.core.storage.vector.models import (
+    ChunkDeleteRequest,
+    ChunkStorageRequest,
+    ChunkUpdateRequest,
+)
 from src.core.storage.vector.pipeline import VectorStoragePipeline
 from src.models.chunk_record import ChunkRecordDB
 
@@ -40,6 +51,10 @@ def _async_database_url() -> str:
 
 
 class DeterministicEmbeddingPipeline:
+    embedding_model = "real-env-test-embedding"
+    batch_size = 32
+    embedder = None
+
     def __init__(self) -> None:
         self.last_stats = None
 
@@ -52,7 +67,7 @@ class DeterministicEmbeddingPipeline:
                     float(len(chunk.content) + 1),
                     float(len(chunk.content) + 2),
                 ],
-                embedding_model="real-env-test-embedding",
+                embedding_model=self.embedding_model,
             )
             for chunk in chunks
         ]
@@ -122,23 +137,40 @@ async def test_should_store_update_and_delete_chunks_into_real_mysql_and_qdrant_
     )
     collection_name = bucket_router.collection_name(0)
     original_sparse_enabled = settings.SPARSE_VECTOR_ENABLED
+    original_dense_dimension = settings.DENSE_VECTOR_DIMENSION
     settings.SPARSE_VECTOR_ENABLED = False
+    settings.DENSE_VECTOR_DIMENSION = 3
 
     try:
         async with session_factory() as session:
             await session.execute(
                 delete(ChunkRecordDB).where(ChunkRecordDB.chunk_id.in_(chunk_ids))
             )
+            session.add_all(
+                [
+                    ChunkRecordDB(
+                        chunk_id=chunk_id,
+                        doc_id=990003,
+                        set_id=990002,
+                        user_id=990001,
+                        bucket_id=0,
+                        content=chunk.content,
+                        content_hash=f"{index + 1:064x}",
+                        chunk_type="mixed",
+                        chunk_index=index,
+                        dense_vector_status=CHUNK_STATUS_PENDING,
+                        sparse_vector_status=SPARSE_VECTOR_STATUS_PENDING,
+                        es_status=ES_STATUS_PENDING,
+                        lifecycle_status=CHUNK_LIFECYCLE_ACTIVE,
+                    )
+                    for index, (chunk_id, chunk) in enumerate(zip(chunk_ids, chunks))
+                ]
+            )
             await session.commit()
 
-        with pytest.MonkeyPatch.context() as monkeypatch:
-            monkeypatch.setattr(
-                "src.core.storage.vector.draft_factory.uuid4",
-                lambda: chunk_ids.pop(0),
-            )
-            result = await service.store_chunks(
-                ChunkStorageRequest(user_id=990001, set_id=990002, doc_id=990003, chunks=chunks)
-            )
+        result = await service.store_chunks(
+            ChunkStorageRequest(user_id=990001, set_id=990002, doc_id=990003, chunks=chunks)
+        )
 
         stored_chunk_ids = [
             "00000000-0000-4000-8000-000000000101",
@@ -153,12 +185,16 @@ async def test_should_store_update_and_delete_chunks_into_real_mysql_and_qdrant_
 
         async with session_factory() as session:
             records = (
-                await session.execute(
-                    select(ChunkRecordDB)
-                    .where(ChunkRecordDB.chunk_id.in_(stored_chunk_ids))
-                    .order_by(ChunkRecordDB.chunk_id.asc())
+                (
+                    await session.execute(
+                        select(ChunkRecordDB)
+                        .where(ChunkRecordDB.chunk_id.in_(stored_chunk_ids))
+                        .order_by(ChunkRecordDB.chunk_id.asc())
+                    )
                 )
-            ).scalars().all()
+                .scalars()
+                .all()
+            )
 
         assert [record.dense_vector_status for record in records] == ["SUCCESS", "SUCCESS"]
         assert [record.bucket_id for record in records] == [0, 0]
@@ -179,16 +215,23 @@ async def test_should_store_update_and_delete_chunks_into_real_mysql_and_qdrant_
         assert {record.payload["doc_id"] for record in qdrant_records} == {990003}
         assert all(record.vector for record in qdrant_records)
 
-        # Act + Assert: update one chunk and overwrite the existing Qdrant point
+        # Act + Assert: structural fields are immutable for a single-chunk update.
+        with pytest.raises(ChunkStructuralUpdateNotAllowedError):
+            await management_service.update_chunk(
+                ChunkUpdateRequest(
+                    chunk_id=stored_chunk_ids[0],
+                    content="structural update must be rejected",
+                    start_line=11,
+                )
+            )
+
+        # Act + Assert: update mutable content and overwrite the existing Qdrant point.
         updated_content = "real vector storage smoke chunk alpha updated"
         update_result = await management_service.update_chunk(
             ChunkUpdateRequest(
                 chunk_id=stored_chunk_ids[0],
                 content=updated_content,
                 chunk_type="heading",
-                start_line=11,
-                end_line=11,
-                chunk_index=10,
             )
         )
         assert update_result.total_chunks == 1
@@ -205,9 +248,9 @@ async def test_should_store_update_and_delete_chunks_into_real_mysql_and_qdrant_
         assert updated_record.dense_vector_status == "SUCCESS"
         assert updated_record.content == updated_content
         assert updated_record.chunk_type == "heading"
-        assert updated_record.start_line == 11
-        assert updated_record.end_line == 11
-        assert updated_record.chunk_index == 10
+        assert updated_record.start_line is None
+        assert updated_record.end_line is None
+        assert updated_record.chunk_index == 0
 
         updated_points = await client.retrieve(
             collection_name=collection_name,
@@ -216,7 +259,9 @@ async def test_should_store_update_and_delete_chunks_into_real_mysql_and_qdrant_
             with_vectors=True,
         )
         assert len(updated_points) == 1
-        assert updated_points[0].vector == pytest.approx(
+        vectors = updated_points[0].vector
+        assert isinstance(vectors, dict)
+        assert vectors[settings.DENSE_VECTOR_QDRANT_VECTOR_NAME] == pytest.approx(
             _expected_stored_vector(updated_content),
             abs=1e-6,
         )
@@ -266,3 +311,4 @@ async def test_should_store_update_and_delete_chunks_into_real_mysql_and_qdrant_
         with suppress(Exception):
             await engine.dispose()
         settings.SPARSE_VECTOR_ENABLED = original_sparse_enabled
+        settings.DENSE_VECTOR_DIMENSION = original_dense_dimension

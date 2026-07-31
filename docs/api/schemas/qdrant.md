@@ -9,7 +9,7 @@ Qdrant 向量库的 collection 命名、分桶规则、point 结构与 payload �
 - Point 构造：[src/core/storage/qdrant/point_factory.py](../../../src/core/storage/qdrant/point_factory.py)
 - BM25 独立存储：[src/core/storage/qdrant_bm25/store.py](../../../src/core/storage/qdrant_bm25/store.py)
 
-当前向量存储固定使用 Qdrant。
+当前向量存储固定使用 Qdrant，`VECTOR_STORE_TYPE=qdrant` 同时控制 readiness 的 Qdrant 探测。
 
 ## Collection 命名与分桶
 

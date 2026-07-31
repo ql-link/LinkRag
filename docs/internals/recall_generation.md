@@ -33,13 +33,14 @@
 2. 召回执行（带超时，计时起点 recall_started）
    asyncio.wait_for(pipeline.execute(recall_req), RECALL_STREAM_TIMEOUT_MS/1000)
 
-3. 正文回填（一次性，排序与生成共用）
-   fetch_chunk_contents(候选.chunk_id, user_id)            # 仅 ACTIVE、非空正文
-   └─ off/未抽样只读公开融合窗口；LTR active/baseline 或 Shadow 抽样读取完整门禁候选池
+3. 正文回填（排序与生成共用）
+   off/未抽样     → 只读公开融合窗口
+   active/baseline → 主链路读取完整门禁候选池
+   Shadow 抽样    → 主链路只读公开窗口；完整候选读取随 LTR 推理进入后台任务
 
 4. 发布模式分流
    off      → 继续执行旧 rerank
-   shadow   → 旧 rerank 返回线上结果；LTR 非阻塞旁路，只记 Top10 差异、模式和延迟
+   shadow   → 主请求与 off 完全一致；有界后台另起冻结候选召回、正文读取和 LTR，只记差异、模式和延迟
    active   → 本地 LambdaMART 直接产出最终候选，不调用远程 rerank
    baseline → frozen weighted score 产出最终候选，不调用远程 rerank（主动回滚）
 
@@ -57,17 +58,21 @@
    │    └─ 拼装后 blocks 为空（全部缺正文）→ recall_done（不生成）
    └─ provider.stream(user_prompt, system_prompt)
         ├─ 逐 token → answer_delta
-        └─ 结束    → answer_done（answer + hits 元信息 + rerank_applied + failed_sources + recall_diagnostics）
+        └─ 结束    → answer_done（answer + hits 元信息 + rerank_applied + ranking_diagnostics
+                                  + failed_sources + recall_diagnostics）
 ```
 
 关键设计点：
 
 - **模型校验在召回之前**：CHAT 模型不可用就别浪费召回算力；且 `allow_system_fallback=False`——直连场景必须用发起用户自己选定的模型，不静默回落系统模型。
-- **正文只回填一次**：在 rerank 之前批量回填，注入 reranker 并复用到生成阶段，避免对同批 chunk 两趟查库。
+- **正文批量回填并复用**：线上最终候选的正文批量读取一次并复用于排序和生成。Shadow 抽样的完整候选是旁路专用输入，单独在后台批量读取，不进入生成主链路。
 - **LTR 使用完整候选池**：`RecallResponse.candidate_hits` / `route_hits` 是仅供进程内下游排序使用的门禁后候选，不进入对外序列化；避免公开 `top_k` 在模型前提前丢候选。
-- **Shadow 不改变返回值**：按 `request_id` 稳定抽样，模型任务不阻塞旧 rerank 与生成；日志只记录候选数、模型版本、模式、耗时、Top10 是否变化及 overlap，不记录 query 或正文。
+- **候选口径与 Blind v5 绑定**：`active` / `baseline` 主请求固定三路来源、零阈值、`0.15/0.15/0.70` 权重、Query 分型 TopK 和最终 Top10；`shadow` 主请求保持 off/Dataset 配置，只在后台构造独立冻结请求。冻结契约缺路或任一路执行失败时 fail closed。模型加载时验证 `serving_contract.json`，纯召回 JSON 不套用该覆盖。
+- **Shadow 不改变返回值也不阻塞主链路**：按 `request_id` 稳定抽样，独立冻结候选召回、完整正文读取与模型推理都在有界后台执行器中执行；达到并发/等待容量后直接丢弃并计数，任务受总超时和关闭截止时间约束。日志不记录 query 或正文。
 - **active 不调用远程 rerank**：模型包启动校验、推理超时、预算超限或运行错误都回退 frozen weighted score；`baseline` 是无需替换制品的一键主动回滚模式。
-- **rerank 与召回共享同一条流超时**：只把剩余预算交给 rerank，整条流的端到端时间仍受单个 `RECALL_STREAM_TIMEOUT_MS` 约束，不会两段各占满一窗。
+- **请求期不初始化模型**：FastAPI startup 在 worker thread 完成 LightGBM 导入、文件校验、Booster 构造和测试向量；请求只读取预加载结果，失败状态直接走 baseline。
+- **active 排序结果可解释**：终态附加 `ranking_diagnostics`，包含实际策略、模式、模型版本、候选契约版本/状态、要求来源、实际来源、耗时与降级原因；兼容字段 `rerank_applied` 在 active/baseline 下保持 `false`。
+- **召回、正文与排序共享同一条流超时**：pipeline、正文回填、本地排序和旧 rerank 都只取得剩余预算，整条流受单个 `RECALL_STREAM_TIMEOUT_MS` 约束。
 - **rerank 是 best-effort 增强**：返回的是 rerank 精排后的最终候选；rerank 已知不可用情形（未配 RERANK 模型的硬失败、调用失败/返回不可用的软降级、超时、预算耗尽）都经 `degrade_to_fusion_order` 降级为当前融合顺序候选（口径与 reranker 软降级一致：只保留有正文候选、再截断 top_n）并置 `rerank_applied=False`，**绝不**因 rerank 不可用而让整条流失败。未预期异常不被吞成降级，照常上抛由顶层收敛为 `INTERNAL_ERROR`（带堆栈）。上下文拼装与终态 `hits` 均以最终候选为准。
 - **0 命中 / 全部缺正文 → `recall_done` 而非 error**：这是正常业务终态（没召回到东西不是错误），客户端据此走"无答案"分支。
 - **召回诊断只随成功终态透出**：`recall_diagnostics` 来自上游 `RecallResponse`，用于表达完整三路启用时的来源结构（`hybrid` / `bm25_only` / `missing_sparse` / `missing_dense`）。它不改变 rerank、prompt 或生成策略；BM25-only 不是错误。
@@ -119,6 +124,9 @@
 | `RECALL_LTR_MODE` | `off` / `shadow` / `active` / `baseline` 发布与回滚状态 |
 | `RECALL_LTR_MODEL_DIR` | 版本化 LambdaMART 模型包路径 |
 | `RECALL_LTR_SHADOW_SAMPLE_RATE` | 按 request_id 稳定抽样的 Shadow 比例 |
+
+进程内模型状态与 `RankerMonitor` 快照由 `GET /health` 的 `ltr` 字段暴露；详细冻结契约、
+已关闭问题和仍需上线验证项见 [ltr_quality_alignment.md](ltr_quality_alignment.md)。
 
 详见 [ops/configure.md](../ops/configure.md)。
 

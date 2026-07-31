@@ -1,10 +1,13 @@
 # -*- coding: utf-8 -*-
 """Heading hierarchy insertion-plan validation and application tests."""
 
+import json
+
 import pytest
 
 from src.core.markdown_parser import MarkdownParser
 from src.core.markdown_parser.heading_hierarchy import (
+    HEADING_PLAN_SYSTEM_PROMPT,
     HeadingHierarchyConfig,
     HeadingHierarchyGate,
     HeadingInsertion,
@@ -31,8 +34,8 @@ class _TokenCounter:
 
 
 def test_valid_plan_is_accepted():
-    markdown = "第一行\n第二行\n"
-    plan = HeadingPlan((HeadingInsertion(line=1, level=2, text="核心流程"),))
+    markdown = "第一段\n\n第二段"
+    plan = HeadingPlan((HeadingInsertion(line=2, level=2, text="核心流程"),))
 
     validate_heading_plan(plan, markdown, _parse(markdown))
 
@@ -40,7 +43,7 @@ def test_valid_plan_is_accepted():
 @pytest.mark.parametrize("level", [0, 6, -1])
 def test_invalid_heading_levels_are_rejected(level: int):
     markdown = "第一行\n第二行"
-    plan = HeadingPlan((HeadingInsertion(line=1, level=level, text="标题"),))
+    plan = HeadingPlan((HeadingInsertion(line=0, level=level, text="标题"),))
 
     with pytest.raises(HeadingPlanValidationError):
         validate_heading_plan(plan, markdown, _parse(markdown))
@@ -49,7 +52,7 @@ def test_invalid_heading_levels_are_rejected(level: int):
 @pytest.mark.parametrize("text", ["## 被模型带入的标题", "第一行\n第二行", "", "```python"])
 def test_invalid_heading_text_is_rejected(text: str):
     markdown = "第一行\n第二行"
-    plan = HeadingPlan((HeadingInsertion(line=1, level=2, text=text),))
+    plan = HeadingPlan((HeadingInsertion(line=0, level=2, text=text),))
 
     with pytest.raises(HeadingPlanValidationError):
         validate_heading_plan(plan, markdown, _parse(markdown))
@@ -70,14 +73,105 @@ def test_insertion_inside_protected_blocks_is_rejected(markdown: str, line: int)
         validate_heading_plan(plan, markdown, _parse(markdown))
 
 
-def test_insertion_at_protected_block_boundary_is_allowed():
-    markdown = "```python\nprint(1)\n```\n正文"
+@pytest.mark.parametrize(
+    "markdown,boundary_after_block",
+    [
+        ("```python\nprint(1)\n```\n正文", 3),
+        ("| A | B |\n| - | - |\n| 1 | 2 |\n正文", 3),
+        ("$$\na=b\n$$\n正文", 3),
+    ],
+)
+def test_insertion_at_protected_block_boundary_is_allowed(markdown, boundary_after_block):
     plan = HeadingPlan(
         (
-            HeadingInsertion(line=0, level=2, text="代码示例"),
-            HeadingInsertion(line=3, level=2, text="正文"),
+            HeadingInsertion(line=0, level=2, text="保护块"),
+            HeadingInsertion(line=boundary_after_block, level=2, text="正文"),
         )
     )
+
+    validate_heading_plan(plan, markdown, _parse(markdown))
+
+
+@pytest.mark.parametrize(
+    "markdown,internal_line",
+    [
+        ("段落第一行\n段落第二行", 1),
+        ("- 列表第一项\n  continuation", 1),
+        ("> 引用第一行\n> 引用第二行", 1),
+    ],
+)
+def test_insertion_inside_complete_parser_block_is_rejected(markdown, internal_line):
+    plan = HeadingPlan((HeadingInsertion(line=internal_line, level=2, text="非法拆分"),))
+
+    with pytest.raises(HeadingPlanValidationError, match="parser-confirmed candidate"):
+        validate_heading_plan(plan, markdown, _parse(markdown))
+
+
+def test_element_starts_and_document_end_are_allowed():
+    markdown = "正文段落\n\n" "- 列表第一项\n" "  continuation\n\n" "> 引用第一行\n" "> 引用第二行"
+    plan = HeadingPlan(
+        tuple(
+            HeadingInsertion(line=line, level=2, text=f"标题 {line}")
+            for line in (0, 2, 5, len(markdown.split("\n")))
+        )
+    )
+
+    validate_heading_plan(plan, markdown, _parse(markdown))
+
+
+@pytest.mark.parametrize(
+    "markdown,prefix_line",
+    [
+        ("---\ntitle: Demo\n---\n正文", 0),
+        ("---\ntitle: Demo\n---\n正文", 1),
+        ("---\ntitle: Demo\n---\n正文", 2),
+        ('+++\ntitle = "Demo"\n+++\n正文', 0),
+        ('+++\ntitle = "Demo"\n+++\n正文', 1),
+        ('+++\ntitle = "Demo"\n+++\n正文', 2),
+    ],
+)
+def test_insertion_inside_front_matter_closed_prefix_is_rejected(markdown, prefix_line):
+    plan = HeadingPlan((HeadingInsertion(line=prefix_line, level=1, text="自动标题"),))
+
+    with pytest.raises(HeadingPlanValidationError, match="front matter prefix"):
+        validate_heading_plan(plan, markdown, _parse(markdown))
+
+
+@pytest.mark.parametrize(
+    "markdown,safe_line",
+    [
+        ("---\ntitle: Demo\n---\n正文", 3),
+        ('+++\ntitle = "Demo"\n+++\n正文', 3),
+    ],
+)
+def test_insertion_immediately_after_front_matter_is_accepted(markdown, safe_line):
+    plan = HeadingPlan((HeadingInsertion(line=safe_line, level=1, text="自动标题"),))
+
+    validate_heading_plan(plan, markdown, _parse(markdown))
+
+
+def test_multi_insertion_plan_rejects_any_front_matter_prefix_position():
+    markdown = "---\ntitle: Demo\n---\n正文"
+    plan = HeadingPlan(
+        (
+            HeadingInsertion(line=3, level=1, text="安全标题"),
+            HeadingInsertion(line=0, level=2, text="非法标题"),
+        )
+    )
+
+    with pytest.raises(HeadingPlanValidationError, match="front matter prefix"):
+        validate_heading_plan(plan, markdown, _parse(markdown))
+
+
+@pytest.mark.parametrize(
+    "markdown",
+    [
+        "---\n未闭合的元数据\n正文",
+        "---\n这只是普通文本\n---\n正文",
+    ],
+)
+def test_unrecognized_front_matter_keeps_line_zero_valid(markdown):
+    plan = HeadingPlan((HeadingInsertion(line=0, level=1, text="文档标题"),))
 
     validate_heading_plan(plan, markdown, _parse(markdown))
 
@@ -166,3 +260,124 @@ def test_build_heading_plan_prompt_uses_compressed_context_when_over_budget():
     assert '"mode": "compressed_structure"' in prompt
     assert "markdown_with_line_numbers" not in prompt
     assert '"elements"' in prompt
+
+
+def test_system_prompt_owns_stable_protocol_and_user_prompt_only_carries_context():
+    markdown = "正文第一段\n\n正文第二段"
+    parse_result = _parse(markdown)
+    config = HeadingHierarchyConfig(enabled=True, no_heading_min_tokens=1)
+    decision = HeadingHierarchyGate(
+        config=config,
+        tokenizer=_TokenCounter(8),
+    ).evaluate(markdown, parse_result)
+
+    prompt = build_heading_plan_prompt(
+        markdown,
+        parse_result=parse_result,
+        decision=decision,
+        token_budget=128,
+        tokenizer=_TokenCounter(8),
+    )
+    prompt_preamble = prompt[: prompt.index("{")]
+    context = json.loads(prompt[prompt.index("{") :])
+
+    assert "只输出 JSON" in HEADING_PLAN_SYSTEM_PROMPT
+    assert "0-based 行号" in HEADING_PLAN_SYSTEM_PROMPT
+    assert "level 只能是 1 到 5" in HEADING_PLAN_SYSTEM_PROMPT
+    assert "不要修改、删除或重写任何原文" in HEADING_PLAN_SYSTEM_PROMPT
+    assert "candidate_insert_positions" in HEADING_PLAN_SYSTEM_PROMPT
+    assert '返回 {"insertions":[]}' in HEADING_PLAN_SYSTEM_PROMPT
+    assert "front_matter" not in HEADING_PLAN_SYSTEM_PROMPT
+    assert "不能改写原文" not in prompt_preamble
+    assert "只能使用 candidate_insert_positions" not in prompt_preamble
+    assert "constraints" not in context
+    assert "output_schema" not in context
+
+
+def test_full_and_compressed_prompts_expose_the_same_complete_candidate_allowlist():
+    markdown = "\n\n".join(f"段落 {index}" for index in range(260))
+    parse_result = _parse(markdown)
+    config = HeadingHierarchyConfig(enabled=True, no_heading_min_tokens=1)
+    decision = HeadingHierarchyGate(
+        config=config,
+        tokenizer=_TokenCounter(2048),
+    ).evaluate(markdown, parse_result)
+    expected_lines = [position.line for position in decision.candidate_insert_positions]
+
+    full_prompt = build_heading_plan_prompt(
+        markdown,
+        parse_result=parse_result,
+        decision=decision,
+        token_budget=128,
+        tokenizer=_TokenCounter(8),
+    )
+    compressed_prompt = build_heading_plan_prompt(
+        markdown,
+        parse_result=parse_result,
+        decision=decision,
+        token_budget=8,
+        tokenizer=_TokenCounter(2048),
+    )
+    full_context = json.loads(full_prompt[full_prompt.index("{") :])
+    compressed_context = json.loads(compressed_prompt[compressed_prompt.index("{") :])
+
+    assert len(expected_lines) > 240
+    assert full_context["mode"] == "full_markdown"
+    assert compressed_context["mode"] == "compressed_structure"
+    assert full_context["candidate_insert_positions"] == expected_lines
+    assert compressed_context["candidate_insert_positions"] == expected_lines
+
+
+@pytest.mark.parametrize(
+    "markdown",
+    [
+        "---\ntitle: Demo\n---\n\n正文",
+        '+++\ntitle = "Demo"\n+++\n正文',
+    ],
+)
+@pytest.mark.parametrize(
+    "tokens,token_budget,expected_mode",
+    [
+        (8, 128, "full_markdown"),
+        (2048, 8, "compressed_structure"),
+    ],
+)
+def test_heading_plan_prompt_exposes_only_post_front_matter_candidates(
+    markdown,
+    tokens,
+    token_budget,
+    expected_mode,
+):
+    parse_result = _parse(markdown)
+    config = HeadingHierarchyConfig(
+        enabled=True,
+        no_heading_min_tokens=1,
+        llm_context_token_budget=token_budget,
+    )
+    decision = HeadingHierarchyGate(
+        config=config,
+        tokenizer=_TokenCounter(tokens),
+    ).evaluate(markdown, parse_result)
+
+    prompt = build_heading_plan_prompt(
+        markdown,
+        parse_result=parse_result,
+        decision=decision,
+        token_budget=token_budget,
+        tokenizer=_TokenCounter(tokens),
+    )
+    context = json.loads(prompt[prompt.index("{") :])
+
+    assert context["mode"] == expected_mode
+    assert context["front_matter_prefix"] == {
+        "start_line": 0,
+        "end_line": 2,
+        "first_allowed_insertion_line": 3,
+    }
+    assert "constraints" not in context
+    assert "output_schema" not in context
+    assert all(
+        line > context["front_matter_prefix"]["end_line"]
+        for line in context["candidate_insert_positions"]
+    )
+    assert "只能插入 closing fence 之后" not in prompt
