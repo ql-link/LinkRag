@@ -273,6 +273,51 @@ class _TokenCounter(Protocol):
     def count_tokens(self, text: str) -> int: ...
 
 
+def build_candidate_insert_positions(
+    markdown: str,
+    parse_result: ParseResult,
+) -> tuple[CandidateInsertionPosition, ...]:
+    """Build insertion candidates from parser-confirmed original line boundaries.
+
+    Parser elements are the structural authority: their start lines, document
+    boundaries, and the first line after leading front matter are candidates.
+    Front matter and other protected ranges keep their existing special handling.
+    """
+    lines = markdown.split("\n")
+    candidates: dict[int, CandidateInsertionPosition] = {
+        len(lines): CandidateInsertionPosition(line=len(lines), element_type=None, preview=""),
+    }
+    front_matter_prefix = _front_matter_prefix_range(parse_result)
+    if front_matter_prefix is None:
+        candidates[0] = CandidateInsertionPosition(line=0, element_type=None, preview="")
+    protected = _protected_ranges(parse_result)
+    for element in parse_result.elements:
+        line = element.start_line
+        if _is_inside_front_matter_prefix(line, front_matter_prefix):
+            continue
+        if _is_inside_protected(line, protected):
+            continue
+        candidates.setdefault(
+            line,
+            CandidateInsertionPosition(
+                line=line,
+                element_type=element.type.value,
+                preview=_preview(element.content),
+            ),
+        )
+    if front_matter_prefix is not None:
+        first_safe_line = front_matter_prefix[1] + 1
+        candidates.setdefault(
+            first_safe_line,
+            CandidateInsertionPosition(
+                line=first_safe_line,
+                element_type=None,
+                preview="",
+            ),
+        )
+    return tuple(candidates[line] for line in sorted(candidates))
+
+
 class HeadingHierarchyGate:
     """Deterministic gate deciding whether heading generation should run."""
 
@@ -288,7 +333,7 @@ class HeadingHierarchyGate:
     def evaluate(self, markdown: str, parse_result: ParseResult) -> GateDecision:
         metrics = self._build_metrics(markdown, parse_result)
         existing_headings = self._existing_headings(parse_result)
-        candidate_positions = self._candidate_insert_positions(markdown, parse_result)
+        candidate_positions = build_candidate_insert_positions(markdown, parse_result)
 
         if not self.config.enabled:
             return self._decision(
@@ -457,45 +502,6 @@ class HeadingHierarchyGate:
                 _DIGIT_PAREN_RE,
             )
         )
-
-    @staticmethod
-    def _candidate_insert_positions(
-        markdown: str,
-        parse_result: ParseResult,
-    ) -> tuple[CandidateInsertionPosition, ...]:
-        lines = markdown.split("\n")
-        candidates: dict[int, CandidateInsertionPosition] = {
-            len(lines): CandidateInsertionPosition(line=len(lines), element_type=None, preview=""),
-        }
-        front_matter_prefix = _front_matter_prefix_range(parse_result)
-        if front_matter_prefix is None:
-            candidates[0] = CandidateInsertionPosition(line=0, element_type=None, preview="")
-        protected = _protected_ranges(parse_result)
-        for element in parse_result.elements:
-            line = element.start_line
-            if _is_inside_front_matter_prefix(line, front_matter_prefix):
-                continue
-            if _is_inside_protected(line, protected):
-                continue
-            candidates.setdefault(
-                line,
-                CandidateInsertionPosition(
-                    line=line,
-                    element_type=element.type.value,
-                    preview=_preview(element.content),
-                ),
-            )
-        if front_matter_prefix is not None:
-            first_safe_line = front_matter_prefix[1] + 1
-            candidates.setdefault(
-                first_safe_line,
-                CandidateInsertionPosition(
-                    line=first_safe_line,
-                    element_type=None,
-                    preview="",
-                ),
-            )
-        return tuple(candidates[line] for line in sorted(candidates))
 
 
 class HeadingHierarchyProcessor:

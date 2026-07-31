@@ -146,6 +146,40 @@ def test_gate_context_contains_existing_headings_and_candidate_positions():
     assert any(pos.line == len(markdown.split("\n")) for pos in decision.candidate_insert_positions)
 
 
+def test_candidates_follow_complete_parser_element_boundaries():
+    markdown = (
+        "段落第一行\n"
+        "段落第二行\n\n"
+        "- 列表第一项\n"
+        "  continuation\n\n"
+        "> 引用第一行\n"
+        "> 引用第二行\n\n"
+        "结尾段落"
+    )
+
+    decision = _decision(markdown, tokens=512, config=_enabled_config())
+    candidate_lines = {position.line for position in decision.candidate_insert_positions}
+
+    assert {0, 3, 6, 9, len(markdown.split("\n"))} <= candidate_lines
+    assert {1, 4, 7}.isdisjoint(candidate_lines)
+
+
+@pytest.mark.parametrize(
+    "markdown,expected_lines",
+    [
+        ("", {0, 1}),
+        ("正文\n", {0, 2}),
+    ],
+)
+def test_candidates_keep_document_boundaries_for_empty_and_trailing_newline(
+    markdown,
+    expected_lines,
+):
+    decision = _decision(markdown, tokens=512, config=_enabled_config())
+
+    assert {position.line for position in decision.candidate_insert_positions} == expected_lines
+
+
 @pytest.mark.parametrize(
     "markdown,front_matter_end",
     [
