@@ -129,9 +129,11 @@ Java 规范化 Markdown 的 RAW 图片由 parse-task 层先完成对象存储范
 - 全篇只有同级 heading，heading 数达到 `MARKDOWN_PARSER_HEADING_FLAT_MIN_HEADINGS`（默认/下限 `5`），且存在章节编号或常见章节短语等层级线索。
 - 已有多级 heading，但 `total_tokens / heading_count` 达到 `MARKDOWN_PARSER_HEADING_SPARSE_TOKENS_PER_HEADING`（默认 `1536`，下限 `1024`）。
 
-标题写回只支持插入新 heading，等级限制为 `#` 到 `#####`。插入计划的 `line` 始终是原始 Markdown 行号，写回时先按原始行号分组，再一次性重建 Markdown，避免前序插入导致后续行号漂移。写回后必须重新走 `MarkdownParser.parse()`，因此对外最终 Markdown 与 `ParseResult` 来自同一份处理后的文本；splitter 不需要感知标题来源，仍按 `heading_level` / `heading_text` / `heading_trail` 消费。标题生成是显式开启能力：开启后如果门禁命中但用户默认与 LinkRag 系统默认预设均无 `CHAT` 配置、LLM 调用失败、响应无法解析或计划校验失败，解析任务失败，不静默降级。
+标题写回只支持插入新 heading，等级限制为 `#` 到 `#####`。插入计划的 `line` 始终是原始 Markdown 行号，写回时先按原始行号分组，再一次性重建 Markdown，避免前序插入导致后续行号漂移。若 parser 已把首元素识别为从第 0 行开始的 YAML/TOML `front_matter`，候选位置不会暴露 `0..end_line` 闭区间，最早安全位置为 closing fence 后的 `end_line + 1`；计划校验器会独立拒绝该闭区间内的插入。这个前缀约束不改变代码块、表格或公式块的通用 protected 边界语义，它们仍允许在自身 `start_line` 前插入标题。
 
-已有 Markdown 通过 `aprocess_existing_markdown_heading_hierarchy()` 进入同一处理器。适配器以 Settings 中的阈值为基础，只用数据集 `enhancement_config` 覆盖开关，并统一返回 `heading_hierarchy_enabled/applied/reason/insertions` 四项 metadata。#322 完成通用候选位置与校验器修复前，若 parser 已把首元素识别为第 0 行开始的 YAML/TOML `front_matter`，该适配器会以 `front_matter_pending_322` 原因保守跳过整次标题生成：不构建 generator、不调用 provider，原文和同源 `ParseResult` 保持不变。这只是原生 Markdown 接入的过渡保护，不改变通用 candidate/validator 语义，也不替代 #322。
+写回后必须重新走 `MarkdownParser.parse()`，因此对外最终 Markdown 与 `ParseResult` 来自同一份处理后的文本。原文含 `front_matter` 时，重解析结果还必须满足：首元素仍为 `front_matter`、`start_line == 0`、content 与写回前逐字符相同、`end_line` 不变；任一不变量失败都会拒绝整份计划。splitter 不需要感知标题来源，仍按 `heading_level` / `heading_text` / `heading_trail` 消费，并继续把 parser 识别的 `front_matter` 作为独立结构保护块。标题生成是显式开启能力：开启后如果门禁命中但用户默认与 LinkRag 系统默认预设均无 `CHAT` 配置、LLM 调用失败、响应无法解析或计划校验失败，解析任务失败，不静默降级。
+
+已有 Markdown 通过 `aprocess_existing_markdown_heading_hierarchy()` 进入同一处理器。适配器以 Settings 中的阈值为基础，只用数据集 `enhancement_config` 覆盖开关，并统一返回 `heading_hierarchy_enabled/applied/reason/insertions` 四项 metadata。原生 Markdown 与其他解析来源共享上述 `front_matter` 候选、计划校验和写回后结构不变量，不在适配层重复识别 YAML/TOML fence。
 
 标题生成器的单次输入受 `MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET` 控制（默认 `65536`，允许范围 `2048` - `262144`）：预算内优先发送带原始行号的全文 Markdown；超预算时构造压缩结构摘要，保留门禁原因、标题指标、已有标题树、候选插入位置、protected block 边界和元素 preview，再要求 LLM 输出标题插入计划。输出插入计划的上限由 `MARKDOWN_PARSER_HEADING_LLM_MAX_OUTPUT_TOKENS` 控制（默认 `4096`，允许范围 `512` - `65536`）。默认值按系统默认 `qwen3.5-flash` 的百万级上下文能力放宽，但仍保留应用侧上限，避免标题后处理在长文上无限扩大成本和延迟。
 
