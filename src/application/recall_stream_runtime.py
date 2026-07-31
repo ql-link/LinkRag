@@ -21,7 +21,8 @@ from collections.abc import AsyncGenerator
 
 from loguru import logger
 
-from src.application.ltr_provider import get_ltr_ranker
+from src.application.ltr_provider import get_initialized_ltr_ranker
+from src.application.ltr_shadow_executor import get_ltr_shadow_executor
 from src.application.recall_errors import (
     CODE_ALL_SOURCES_FAILED,
     CODE_EMBEDDING_CONFIG_MISSING,
@@ -40,6 +41,7 @@ from src.core.llm.exceptions import LLMConfigResolutionError
 from src.core.llm.response import UsageInfo
 from src.core.llm.user_model_resolver import aresolve_model
 from src.core.mq.messages import ChatTurnMessage
+from src.core.pipeline.ltr import LtrRankResult
 from src.core.pipeline.ltr.features import weighted_baseline_order
 from src.core.pipeline.recall import (
     RecallDiagnostics,
@@ -71,8 +73,6 @@ from src.core.prompts.conversation_title import TITLE_MAX_OUTPUT_TOKENS
 from src.observability.logging import safe_exception_stack, truncate_log_value
 from src.services.mq_service import MQService
 from src.services.usage_reporter import report_usage_nowait
-
-_ltr_shadow_tasks: set[asyncio.Task] = set()
 
 
 def recall_event(name: str, payload: dict) -> str:
@@ -168,6 +168,7 @@ async def recall_event_stream(
     token_budget: int,
     rerank_top_n: int,
     is_first_turn: bool = False,
+    shadow_recall_req: RecallRequest | None = None,
 ) -> AsyncGenerator[str, None]:
     """流内执行召回 + 重排 + 生成，把结果/异常映射为 SSE 终态事件。
 
@@ -194,6 +195,13 @@ async def recall_event_stream(
     """
     timeout_seconds = settings.RECALL_STREAM_TIMEOUT_MS / 1000
     started = time.perf_counter()
+    recall_deadline = time.monotonic() + timeout_seconds
+
+    def _remaining_recall_budget() -> float:
+        remaining = recall_deadline - time.monotonic()
+        if remaining <= 0:
+            raise asyncio.TimeoutError
+        return remaining
 
     def _elapsed_ms() -> int:
         return int((time.perf_counter() - started) * 1000)
@@ -271,53 +279,55 @@ async def recall_event_stream(
 
         # 模型解析成功：首轮起并行标题任务，与下面的召回 + rerank + 流式生成全程重叠。
         if is_first_turn:
+            assert fallback_title is not None
             title_task = asyncio.create_task(
                 _resolve_title(resolved, recall_req.query, fallback_title, request_id)
             )
 
-        recall_started = time.monotonic()
-        response = await asyncio.wait_for(pipeline.execute(recall_req), timeout=timeout_seconds)
+        response = await asyncio.wait_for(
+            pipeline.execute(recall_req), timeout=_remaining_recall_budget()
+        )
 
         ltr_mode = settings.RECALL_LTR_MODE
         shadow_sampled = ltr_mode == "shadow" and _sample_ltr_shadow(request_id)
         ltr_candidate_hits = response.candidate_hits or response.hits
-        content_hits = (
-            ltr_candidate_hits
-            if ltr_mode in {"active", "baseline"} or shadow_sampled
-            else response.hits
-        )
-        # 正文回填一次：旧 rerank、LTR 与生成共用。LTR 生效/抽样时读取完整门禁候选池。
+        content_hits = ltr_candidate_hits if ltr_mode in {"active", "baseline"} else response.hits
+        # 正文回填一次：Active/Baseline 读取完整候选；Off/Shadow 主链只读取 serving 窗口。
         contents = (
-            await fetch_chunk_contents([h.chunk_id for h in content_hits], recall_req.user_id)
+            await asyncio.wait_for(
+                fetch_chunk_contents([h.chunk_id for h in content_hits], recall_req.user_id),
+                timeout=_remaining_recall_budget(),
+            )
             if content_hits
             else {}
         )
 
         routes = _ltr_routes(response.route_hits, ltr_candidate_hits, contents)
-        ranker = get_ltr_ranker() if ltr_mode in {"shadow", "active"} else None
-        shadow_task = None
-        if shadow_sampled and ranker is not None and routes:
-            shadow_task = asyncio.create_task(
-                ranker.rank(query=recall_req.query, routes=routes, candidate_contents=contents)
-            )
+        ranker = get_initialized_ltr_ranker() if ltr_mode == "active" else None
+        ranking_diagnostics = None
 
         if ltr_mode in {"active", "baseline"}:
             # active 由本地 LTR 取代远程 rerank；模型不可用/异常与 baseline 模式均走
             # 同一份 frozen weighted-score 排序，不发起任何 RERANK 模型调用。
-            reranked_hits = await _ltr_or_baseline_hits(
-                ranker=ranker,
-                query=recall_req.query,
-                routes=routes,
-                contents=contents,
-                candidate_hits=ltr_candidate_hits,
-                top_n=rerank_top_n,
-                request_id=request_id,
-                force_baseline=ltr_mode == "baseline",
+            reranked_hits, ranking_diagnostics = await asyncio.wait_for(
+                _ltr_or_baseline_hits(
+                    ranker=ranker,
+                    query=recall_req.query,
+                    routes=routes,
+                    contents=contents,
+                    candidate_hits=ltr_candidate_hits,
+                    top_n=rerank_top_n,
+                    request_id=request_id,
+                    force_baseline=ltr_mode == "baseline",
+                    candidate_contract_version=recall_req.candidate_contract_version,
+                    required_sources=recall_req.required_sources or [],
+                ),
+                timeout=_remaining_recall_budget(),
             )
             rerank_applied = False
         else:
             # off/shadow 阶段保持旧结果，shadow 只记录差异，不增加主链路模型等待。
-            rerank_budget = timeout_seconds - (time.monotonic() - recall_started)
+            rerank_budget = recall_deadline - time.monotonic()
             reranked_hits, rerank_applied = await _rerank_hits(
                 reranker,
                 recall_req,
@@ -327,12 +337,20 @@ async def recall_event_stream(
                 request_id,
                 rerank_top_n,
             )
-        if shadow_task is not None:
-            _observe_ltr_shadow(
-                shadow_task,
-                serving_chunk_ids=[hit.chunk_id for hit in reranked_hits],
+        if shadow_sampled and shadow_recall_req is not None:
+            # Shadow 使用独立冻结候选请求；主请求始终保持 off 语义。提交是非阻塞且有界的，
+            # 饱和时直接丢弃样本，绝不把后台排队时间施加到 serving 主链。
+            get_ltr_shadow_executor().submit(
+                lambda: _run_ltr_shadow(
+                    pipeline=pipeline,
+                    recall_req=shadow_recall_req,
+                ),
                 request_id=request_id,
-                candidate_count=len(ltr_candidate_hits),
+                on_success=lambda result: _log_ltr_shadow_success(
+                    result,
+                    serving_chunk_ids=[hit.chunk_id for hit in reranked_hits],
+                    request_id=request_id,
+                ),
             )
 
         # 空命中 / 上下文拼装 / 流式生成（用 rerank 后的最终候选与已回填正文）。
@@ -341,6 +359,7 @@ async def recall_event_stream(
             resolved,
             reranked_hits,
             rerank_applied,
+            ranking_diagnostics,
             contents,
             response.failed_sources,
             recall_req,
@@ -549,7 +568,9 @@ async def _ltr_or_baseline_hits(
     top_n: int,
     request_id: str,
     force_baseline: bool,
-) -> list[RerankedHit]:
+    candidate_contract_version: str | None = None,
+    required_sources: list[str] | None = None,
+) -> tuple[list[RerankedHit], dict[str, object]]:
     content_hits = {hit.chunk_id: hit for hit in candidate_hits if contents.get(hit.chunk_id)}
     try:
         if not force_baseline and ranker is not None:
@@ -586,57 +607,71 @@ async def _ltr_or_baseline_hits(
         duration_ms=round(elapsed_ms, 3),
         reason=reason,
     ).info("[recall] local ranking completed request_id={}", request_id)
-    return [
+    hits = [
         reranked_from_recall(content_hits[chunk_id])
         for chunk_id in ranked_ids
         if chunk_id in content_hits
     ][:top_n]
+    diagnostics: dict[str, object] = {
+        "strategy": "lambdamart" if mode == "ltr" else "weighted_score",
+        "mode": mode,
+        "model_version": model_version,
+        "candidate_contract_version": candidate_contract_version,
+        "candidate_contract_status": (
+            "complete" if candidate_contract_version is not None else "not_applicable"
+        ),
+        "required_sources": list(required_sources or []),
+        "actual_sources": list(routes),
+        "duration_ms": round(elapsed_ms, 3),
+        "reason": reason,
+    }
+    return hits, diagnostics
 
 
-def _observe_ltr_shadow(
-    rank_task: asyncio.Task,
+def _log_ltr_shadow_success(
+    result: LtrRankResult,
     *,
     serving_chunk_ids: list[str],
     request_id: str,
-    candidate_count: int,
 ) -> None:
-    async def _consume() -> None:
-        try:
-            result = await rank_task
-            comparison_k = min(10, len(result.ranked_chunk_ids), len(serving_chunk_ids))
-            ltr_top = result.ranked_chunk_ids[:comparison_k]
-            serving_top = serving_chunk_ids[:comparison_k]
-            overlap = len(set(ltr_top).intersection(serving_top))
-            logger.bind(
-                event="recall_ltr_shadow_completed",
-                outcome="succeeded",
-                request_id=request_id,
-                model_version=result.model_version,
-                rank_mode=result.mode,
-                candidate_count=candidate_count,
-                serving_count=len(serving_chunk_ids),
-                comparison_top_k=comparison_k,
-                top10_changed=ltr_top != serving_top,
-                top10_overlap=overlap,
-                duration_ms=round(result.elapsed_ms, 3),
-                reason=result.reason,
-            ).info("[recall] LambdaMART shadow completed request_id={}", request_id)
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            logger.bind(
-                event="recall_ltr_shadow_failed",
-                outcome="degraded",
-                request_id=request_id,
-                candidate_count=candidate_count,
-                error_type=type(exc).__name__,
-                error_message=truncate_log_value(exc),
-                stack_trace=safe_exception_stack(exc),
-            ).warning("[recall] LambdaMART shadow failed request_id={}", request_id)
+    comparison_k = min(10, len(result.ranked_chunk_ids), len(serving_chunk_ids))
+    ltr_top = result.ranked_chunk_ids[:comparison_k]
+    serving_top = serving_chunk_ids[:comparison_k]
+    overlap = len(set(ltr_top).intersection(serving_top))
+    logger.bind(
+        event="recall_ltr_shadow_completed",
+        outcome="succeeded",
+        request_id=request_id,
+        model_version=result.model_version,
+        rank_mode=result.mode,
+        candidate_count=len(result.ranked_chunk_ids),
+        serving_count=len(serving_chunk_ids),
+        comparison_top_k=comparison_k,
+        top10_changed=ltr_top != serving_top,
+        top10_overlap=overlap,
+        duration_ms=round(result.elapsed_ms, 3),
+        reason=result.reason,
+    ).info("[recall] LambdaMART shadow completed request_id={}", request_id)
 
-    task = asyncio.create_task(_consume())
-    _ltr_shadow_tasks.add(task)
-    task.add_done_callback(_ltr_shadow_tasks.discard)
+
+async def _run_ltr_shadow(
+    *,
+    pipeline: RecallPipeline,
+    recall_req: RecallRequest,
+) -> LtrRankResult:
+    """独立执行冻结候选召回、正文读取和排序；总超时由有界执行器统一控制。"""
+    ranker = get_initialized_ltr_ranker()
+    if ranker is None:
+        raise RuntimeError("LambdaMART shadow model unavailable")
+    response = await pipeline.execute(recall_req)
+    candidate_hits = response.candidate_hits or response.hits
+    contents = await fetch_chunk_contents(
+        [hit.chunk_id for hit in candidate_hits], recall_req.user_id
+    )
+    routes = _ltr_routes(response.route_hits, candidate_hits, contents)
+    if not routes:
+        raise RuntimeError("LambdaMART shadow has no candidates with content")
+    return await ranker.rank(query=recall_req.query, routes=routes, candidate_contents=contents)
 
 
 async def _rerank_hits(
@@ -722,6 +757,7 @@ async def _generate_answer(
     resolved,
     hits: list[RerankedHit],
     rerank_applied: bool,
+    ranking_diagnostics: dict[str, object] | None,
     contents: dict[str, str],
     failed_sources: list[str],
     recall_req: RecallRequest,
@@ -760,6 +796,8 @@ async def _generate_answer(
     def _with_recall_diagnostics(payload: dict) -> dict:
         if recall_diagnostics is not None:
             payload["recall_diagnostics"] = serialize_recall_diagnostics(recall_diagnostics)
+        if ranking_diagnostics is not None:
+            payload["ranking_diagnostics"] = ranking_diagnostics
         return payload
 
     # 空命中：不生成，但仍落 COMPLETED 占位行（前端按空内容展示占位）。标题必须先于

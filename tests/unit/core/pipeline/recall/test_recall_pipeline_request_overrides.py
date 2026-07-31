@@ -8,21 +8,19 @@
 import pytest
 
 from src.core.pipeline.recall import (
+    SOURCE_BM25,
+    SOURCE_DENSE,
+    SOURCE_SPARSE,
     RecallError,
     RecallPipelineConfig,
     RecallRequest,
     RetrieverHit,
-    SOURCE_BM25,
-    SOURCE_DENSE,
-    SOURCE_SPARSE,
 )
 from tests.unit.core.pipeline.recall.conftest import FakeRetriever, make_recall_pipeline
 
 
 def _hit(chunk_id, source, score=1.0):
-    return RetrieverHit(
-        chunk_id=chunk_id, doc_id=100, dataset_id=10, score=score, source=source
-    )
+    return RetrieverHit(chunk_id=chunk_id, doc_id=100, dataset_id=10, score=score, source=source)
 
 
 def _pipeline_three(strict=False):
@@ -125,3 +123,42 @@ async def test_strict_override_none_uses_assembled_default():
 
     with pytest.raises(RecallError):
         await pipeline.execute(RecallRequest(user_id=1, query="q", dataset_ids=[10]))
+
+
+@pytest.mark.asyncio
+async def test_candidate_contract_fails_when_required_source_not_assembled():
+    dense = FakeRetriever(source=SOURCE_DENSE, hits=[_hit("c1", SOURCE_DENSE)])
+    bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("c2", SOURCE_BM25)])
+    pipeline = make_recall_pipeline([dense, bm25])
+
+    with pytest.raises(RecallError, match="not assembled: sparse"):
+        await pipeline.execute(
+            RecallRequest(
+                user_id=1,
+                query="q",
+                dataset_ids=[10],
+                enabled_sources=[SOURCE_BM25, SOURCE_SPARSE, SOURCE_DENSE],
+                required_sources=[SOURCE_BM25, SOURCE_SPARSE, SOURCE_DENSE],
+                candidate_contract_version="contract-v1",
+            )
+        )
+
+
+@pytest.mark.asyncio
+async def test_candidate_contract_fails_when_required_source_execution_fails():
+    dense = FakeRetriever(source=SOURCE_DENSE, exc=RuntimeError("qdrant unavailable"))
+    sparse = FakeRetriever(source=SOURCE_SPARSE, hits=[_hit("c2", SOURCE_SPARSE)])
+    bm25 = FakeRetriever(source=SOURCE_BM25, hits=[_hit("c3", SOURCE_BM25)])
+    pipeline = make_recall_pipeline([dense, sparse, bm25])
+
+    with pytest.raises(RecallError, match="required retrievers failed: dense"):
+        await pipeline.execute(
+            RecallRequest(
+                user_id=1,
+                query="q",
+                dataset_ids=[10],
+                enabled_sources=[SOURCE_BM25, SOURCE_SPARSE, SOURCE_DENSE],
+                required_sources=[SOURCE_BM25, SOURCE_SPARSE, SOURCE_DENSE],
+                candidate_contract_version="contract-v1",
+            )
+        )

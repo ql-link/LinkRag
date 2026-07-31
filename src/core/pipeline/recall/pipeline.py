@@ -110,6 +110,14 @@ class RecallPipeline:
         success_hits, failed_sources = self._check_failures(
             per_source_results, effective_sources, strict
         )
+        if request.required_sources and failed_sources:
+            required_failed = [
+                source for source in request.required_sources if source in failed_sources
+            ]
+            if required_failed:
+                raise RecallError(
+                    "candidate contract required retrievers failed: " + ",".join(required_failed)
+                )
         fused_hits = fuse_hits(
             per_source_hits=success_hits,
             all_sources=effective_sources,
@@ -132,12 +140,15 @@ class RecallPipeline:
 
         # 结果日志：耗时、融合命中数、各路命中分布、失败路（已有数据，原先只进响应不落日志）。
         logger.info(
-            "[RecallPipeline] done user={} elapsed_ms={} hits={} per_source={} failed={}",
+            "[RecallPipeline] done user={} elapsed_ms={} hits={} per_source={} failed={} "
+            "candidate_contract={} candidate_profile={}",
             request.user_id,
             elapsed_ms,
             len(fused_hits),
             {s: len(success_hits.get(s, [])) for s in effective_sources},
             failed_sources,
+            request.candidate_contract_version,
+            request.candidate_profile,
         )
         return self._build_response(
             query=request.query,
@@ -191,6 +202,12 @@ class RecallPipeline:
         - 交集为空（如数据集只点了系统未装配的路）→ 回退全部已装配路并记 warning，
           避免因一条过时的数据集配置把整次召回打空。
         """
+        if request.required_sources:
+            missing = [source for source in request.required_sources if source not in self._sources]
+            if missing:
+                raise RecallError(
+                    "candidate contract required retrievers are not assembled: " + ",".join(missing)
+                )
         requested = request.enabled_sources
         if not requested:
             return self._sources

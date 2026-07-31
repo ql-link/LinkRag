@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping, Sequence
+from functools import partial
 from typing import TYPE_CHECKING, Any, Literal, TypeVar
 
 from src.config import settings
@@ -62,6 +63,7 @@ class QdrantIndexStore:
         bucket_router: BucketRouter | None = None,
         host: str | None = None,
         port: int | None = None,
+        url: str | None = None,
         api_key: str | None = None,
         https: bool | None = None,
         timeout: int | None = None,
@@ -77,6 +79,14 @@ class QdrantIndexStore:
         )
         self.host = host or settings.QDRANT_HOST
         self.port = port or settings.QDRANT_PORT
+        if url is not None:
+            self.url = url.rstrip("/")
+        elif host is not None or port is not None:
+            self.url = f"http://{self.host}:{self.port}"
+        else:
+            self.url = getattr(settings, "QDRANT_URL", None) or (
+                f"http://{self.host}:{self.port}"
+            )
         resolved_api_key = (
             api_key if api_key is not None else getattr(settings, "QDRANT_API_KEY", None)
         )
@@ -113,9 +123,7 @@ class QdrantIndexStore:
         type_name = type(exc).__name__.lower()
         return "timeout" in type_name or "connecterror" in type_name
 
-    async def _with_write_retry(
-        self, op_name: str, thunk: Callable[[], Awaitable[_T]]
-    ) -> _T:
+    async def _with_write_retry(self, op_name: str, thunk: Callable[[], Awaitable[_T]]) -> _T:
         """对幂等写操作做瞬时故障重试（指数退避）。
 
         ``thunk`` 必须幂等——本类所有写入都用显式 id 的 ``upsert`` / ``update_vectors``，
@@ -199,7 +207,8 @@ class QdrantIndexStore:
                 for field_name in QDRANT_PAYLOAD_INDEX_FIELDS:
                     await self._with_write_retry(
                         "ensure_collection.create_payload_index",
-                        lambda field_name=field_name: client.create_payload_index(
+                        partial(
+                            client.create_payload_index,
                             collection_name=collection_name,
                             field_name=field_name,
                             field_schema=models.PayloadSchemaType.INTEGER,
@@ -256,9 +265,7 @@ class QdrantIndexStore:
                 ),
             )
         except Exception as exc:
-            raise QdrantStoreError(
-                f"Failed to ensure points in {collection_name}: {exc}"
-            ) from exc
+            raise QdrantStoreError(f"Failed to ensure points in {collection_name}: {exc}") from exc
 
     async def upsert_points(self, *, bucket_id: int, points: Sequence[IndexedPoint]) -> None:
         """写入 dense named 向量到各 chunk 的 point（point 不存在则先建空点）。
@@ -592,10 +599,9 @@ class QdrantIndexStore:
             )
         except Exception as exc:
             # 老 collection 尚未配置该 named vector 是合法中间态，等价于全量缺失。
-            if (
-                self._is_named_vector_missing_error(exc)
-                or self._is_collection_or_point_missing_error(exc)
-            ):
+            if self._is_named_vector_missing_error(
+                exc
+            ) or self._is_collection_or_point_missing_error(exc):
                 return presence
             raise QdrantStoreError(
                 f"Failed to inspect named vector {vector_name!r} in {collection_name}: {exc}"
@@ -645,10 +651,9 @@ class QdrantIndexStore:
                 ),
             )
         except Exception as exc:
-            if (
-                self._is_named_vector_missing_error(exc)
-                or self._is_collection_or_point_missing_error(exc)
-            ):
+            if self._is_named_vector_missing_error(
+                exc
+            ) or self._is_collection_or_point_missing_error(exc):
                 return
             raise QdrantStoreError(
                 f"Failed to delete named vector {vector_name!r} from {collection_name}: {exc}"
@@ -733,8 +738,7 @@ class QdrantIndexStore:
 
         client_cls = self._client_class()
         self._client = client_cls(
-            host=self.host,
-            port=self.port,
+            url=self.url,
             api_key=self.api_key,
             https=self.https,
             timeout=self.timeout,

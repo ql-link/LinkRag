@@ -8,13 +8,13 @@ Feature: 固定 weighted score 召回融合
 
   Background:
     Given 服务端支持召回源 "bm25"、"sparse"、"dense"
-    And 系统默认 RECALL_FUSION_BM25_WEIGHT 为 0.2
-    And 系统默认 RECALL_FUSION_SPARSE_WEIGHT 为 0.3
-    And 系统默认 RECALL_FUSION_DENSE_WEIGHT 为 0.5
+    And 系统默认 RECALL_FUSION_BM25_WEIGHT 为 0.15
+    And 系统默认 RECALL_FUSION_SPARSE_WEIGHT 为 0.15
+    And 系统默认 RECALL_FUSION_DENSE_WEIGHT 为 0.70
     And RecallHit 输出字段为 chunk_id、doc_id、dataset_id、fused_score、scores
 
   Scenario: 三路正常命中时按 log1p、min-max 与默认权重融合
-    Given fusion 权重配置为 bm25=0.2 sparse=0.3 dense=0.5
+    Given fusion 权重配置为 bm25=0.15 sparse=0.15 dense=0.70
     And bm25 路按顺序返回:
       | chunk_id | score |
       | cA       | 100.0 |
@@ -28,20 +28,20 @@ Feature: 固定 weighted score 召回融合
       | cC       | 0.9   |
       | cA       | 0.4   |
     When 执行 RecallPipeline
-    Then hit "cA" 的 fused_score 等于 0.2
-    And hit "cB" 的 fused_score 等于 0.3
-    And hit "cC" 的 fused_score 等于 0.5
-    And hits 顺序为 "cC,cB,cA"
+    Then hit "cA" 的 fused_score 等于 0.15
+    And hit "cB" 的 fused_score 等于 0.15
+    And hit "cC" 的 fused_score 等于 0.70
+    And hits 顺序为 "cC,cA,cB"
 
   Scenario: 某一路无命中时仅按 active source 权重归一
-    Given fusion 权重配置为 bm25=0.2 sparse=0.3 dense=0.5
+    Given fusion 权重配置为 bm25=0.15 sparse=0.15 dense=0.70
     And bm25 路按顺序返回 chunk "cA" score 7.0
     And sparse 路返回 0 命中
     And dense 路按顺序返回 chunk "cB" score 0.9
     When 执行 RecallPipeline
     Then active sources 为 "bm25,dense"
-    And hit "cA" 的 fused_score 等于 0.2/0.7
-    And hit "cB" 的 fused_score 等于 0.5/0.7
+    And hit "cA" 的 fused_score 等于 0.15/0.85
+    And hit "cB" 的 fused_score 等于 0.70/0.85
     And hit "cA" 的 scores.sparse 等于 null
 
   Scenario: active source 权重和为 0 时拒绝融合
@@ -52,21 +52,21 @@ Feature: 固定 weighted score 召回融合
     And 不返回使用修正后分数的 hit
 
   Scenario: settings 默认权重映射到 RecallPipelineConfig
-    Given Settings 中 RECALL_FUSION_BM25_WEIGHT=0.2
-    And Settings 中 RECALL_FUSION_SPARSE_WEIGHT=0.3
-    And Settings 中 RECALL_FUSION_DENSE_WEIGHT=0.5
+    Given Settings 中 RECALL_FUSION_BM25_WEIGHT=0.15
+    And Settings 中 RECALL_FUSION_SPARSE_WEIGHT=0.15
+    And Settings 中 RECALL_FUSION_DENSE_WEIGHT=0.70
     When 装配 RecallPipeline 单例
-    Then RecallPipelineConfig.fusion_bm25_weight 等于 0.2
-    And RecallPipelineConfig.fusion_sparse_weight 等于 0.3
-    And RecallPipelineConfig.fusion_dense_weight 等于 0.5
+    Then RecallPipelineConfig.fusion_bm25_weight 等于 0.15
+    And RecallPipelineConfig.fusion_sparse_weight 等于 0.15
+    And RecallPipelineConfig.fusion_dense_weight 等于 0.70
 
-  Scenario: dataset recall_config 只覆盖三路权重
+  Scenario: 纯召回 JSON 保留 dataset recall_config 三路权重
     Given dataset_parse_config.recall_config 包含:
       | key                  | value |
       | fusion_bm25_weight   | 0.1   |
       | fusion_sparse_weight | 0.2   |
       | fusion_dense_weight  | 0.7   |
-    When RAG 流或纯召回 JSON 入口解析该数据集配置
+    When 纯召回 JSON 入口解析该数据集配置
     Then 构造的 RecallRequest.fusion_bm25_weight_override 等于 0.1
     And 构造的 RecallRequest.fusion_sparse_weight_override 等于 0.2
     And 构造的 RecallRequest.fusion_dense_weight_override 等于 0.7

@@ -133,6 +133,7 @@ def _gen(
         resolved,
         hits,
         rerank_applied,
+        None,
         contents,
         [],
         recall_req,
@@ -310,7 +311,9 @@ async def test_non_first_turn_has_no_title():
 async def test_first_turn_success_emits_title_and_persists():
     # 首轮成功：发 conversation_title（LLM 标题），COMPLETED 落库同一标题
     recall_req = _recall_req()
-    resolved = _resolved(_FakeProvider([StreamChunk(delta="RAG 是检索增强生成")], title_text="什么是 RAG"))
+    resolved = _resolved(
+        _FakeProvider([StreamChunk(delta="RAG 是检索增强生成")], title_text="什么是 RAG")
+    )
     title_task, fallback = _first_turn_title_task(resolved, recall_req)
     gen = _gen(
         resolved,

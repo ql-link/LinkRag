@@ -204,11 +204,15 @@ class DoubaoVisionProvider(BaseProvider):
         try:
             response = await client.post(url, json=json, headers=headers)
         except httpx.TimeoutException as exc:
+            if retry_count < self.max_retries:
+                return await self._post(url, json, retry_count + 1)
             raise ProviderConnectionError(
                 message="Ark multimodal embedding request timeout.",
                 provider_type=self.provider_type,
             ) from exc
         except httpx.ConnectError as exc:
+            if retry_count < self.max_retries:
+                return await self._post(url, json, retry_count + 1)
             raise ProviderConnectionError(
                 message="Ark multimodal embedding connection failed.",
                 provider_type=self.provider_type,

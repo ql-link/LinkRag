@@ -49,7 +49,8 @@ async def test_should_upsert_retrieve_and_delete_point_when_real_qdrant_enabled(
         api_key=getattr(settings, "QDRANT_API_KEY", None),
     )
     collection_name = bucket_router.collection_name(0)
-    chunk_id = f"real-qdrant-{uuid4()}"
+    # 产品 chunk_id 由 ChunkRepository 生成 UUID；Qdrant point id 只接受 UUID/整数。
+    chunk_id = str(uuid4())
     point = IndexedPoint(
         chunk_id=chunk_id,
         bucket_id=0,

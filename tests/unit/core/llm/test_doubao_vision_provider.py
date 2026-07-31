@@ -220,6 +220,45 @@ async def test_embed_sparse_retries_then_fails_on_server_error():
     assert len(calls) == 3  # 首次 + 2 次重试
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "network_error",
+    [
+        httpx.ReadTimeout("temporary timeout"),
+        httpx.ConnectError("temporary connection failure"),
+    ],
+)
+async def test_embed_sparse_retries_transient_network_error(network_error):
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise network_error
+        return httpx.Response(200, json=_resp([{"index": 7, "value": 0.5}]))
+
+    result = await _provider(handler, max_retries=1).embed_sparse(["a"])
+
+    assert calls == 2
+    assert result.embeddings[0].indices == [7]
+
+
+@pytest.mark.asyncio
+async def test_embed_sparse_network_error_stops_after_retry_budget():
+    calls = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        raise httpx.ReadTimeout("persistent timeout")
+
+    with pytest.raises(ProviderConnectionError, match="request timeout"):
+        await _provider(handler, max_retries=2).embed_sparse(["a"])
+
+    assert calls == 3
+
+
 # --- 并发：逐条请求用 Semaphore 限并发的 gather 发出（限流生效 + 保序） ---
 
 

@@ -63,6 +63,7 @@ class QdrantBm25Store:
         client: Any | None = None,
         host: str | None = None,
         port: int | None = None,
+        url: str | None = None,
         api_key: str | None = None,
         https: bool | None = None,
         timeout: int | None = None,
@@ -74,6 +75,14 @@ class QdrantBm25Store:
         self._owns_client = client is None
         self.host = host or settings.QDRANT_HOST
         self.port = port or settings.QDRANT_PORT
+        if url is not None:
+            self.url = url.rstrip("/")
+        elif host is not None or port is not None:
+            self.url = f"http://{self.host}:{self.port}"
+        else:
+            self.url = getattr(settings, "QDRANT_URL", None) or (
+                f"http://{self.host}:{self.port}"
+            )
         resolved_api_key = (
             api_key if api_key is not None else getattr(settings, "QDRANT_API_KEY", None)
         )
@@ -101,9 +110,7 @@ class QdrantBm25Store:
                     collection_name=self.collection_name,
                     vectors_config={},
                     sparse_vectors_config={
-                        self.vector_name: models.SparseVectorParams(
-                            modifier=models.Modifier.IDF
-                        )
+                        self.vector_name: models.SparseVectorParams(modifier=models.Modifier.IDF)
                     },
                 )
             if not self._collection_ready:
@@ -200,9 +207,7 @@ class QdrantBm25Store:
                 f"Failed to check BM25 collection existence: {self.collection_name}: {exc}"
             ) from exc
 
-        sparse = models.SparseVector(
-            indices=query_vector.indices, values=query_vector.values
-        )
+        sparse = models.SparseVector(indices=query_vector.indices, values=query_vector.values)
         tenant = self._tenant_filter(models, user_id, dataset_id, doc_id)
         formula = self._build_formula(models, type_mult)
 
@@ -255,9 +260,7 @@ class QdrantBm25Store:
         return hits
 
     # ---------------- 删除（文档级全量重建的删除半步）----------------
-    async def delete_by_document(
-        self, *, user_id: int, dataset_id: int, doc_id: int
-    ) -> int:
+    async def delete_by_document(self, *, user_id: int, dataset_id: int, doc_id: int) -> int:
         """按 user_id+dataset_id+doc_id 三维 filter 删除某文档的全部 chunk。
 
         与 ES delete_by_query 三维条件删除对齐，避免误删其他租户/文档。
@@ -363,9 +366,7 @@ class QdrantBm25Store:
         if len(terms) == 1:  # 没有任何有效乘数 → 退化为纯 BM25
             return None
         type_multiplier = models.SumExpression(sum=terms)
-        return models.FormulaQuery(
-            formula=models.MultExpression(mult=["$score", type_multiplier])
-        )
+        return models.FormulaQuery(formula=models.MultExpression(mult=["$score", type_multiplier]))
 
     # ---------------- 内部：client ----------------
     async def _get_client(self) -> Any:
@@ -373,8 +374,7 @@ class QdrantBm25Store:
             return self._client
         client_cls = self._client_class()
         self._client = client_cls(
-            host=self.host,
-            port=self.port,
+            url=self.url,
             api_key=self.api_key,
             https=self.https,
             timeout=self.timeout,

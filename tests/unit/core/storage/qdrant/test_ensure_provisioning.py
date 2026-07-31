@@ -46,6 +46,34 @@ async def test_client_passes_explicit_http_with_api_key(monkeypatch) -> None:
     assert client.kwargs["https"] is False
 
 
+async def test_nonempty_api_key_keeps_explicit_plain_http_url(monkeypatch):
+    captured = {}
+
+    class _Client:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    store = QdrantIndexStore(url="http://qdrant.internal:6333", api_key="secret")
+    monkeypatch.setattr(store, "_client_class", lambda: _Client)
+
+    await store._get_client()
+
+    assert captured["url"] == "http://qdrant.internal:6333"
+    assert captured["api_key"] == "secret"
+    assert "host" not in captured and "port" not in captured
+
+
+def test_explicit_host_port_override_global_url(monkeypatch):
+    monkeypatch.setattr(
+        "src.core.storage.qdrant.qdrant_store.settings.QDRANT_URL",
+        "https://shared-qdrant:6333",
+    )
+
+    store = QdrantIndexStore(host="127.0.0.1", port=1)
+
+    assert store.url == "http://127.0.0.1:1"
+
+
 async def test_ensure_collection_provisions_named_sparse_vector():
     fake = _FakeClient()
     store = QdrantIndexStore(client=fake)
