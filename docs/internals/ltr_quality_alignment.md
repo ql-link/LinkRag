@@ -38,7 +38,8 @@ Query 分型深度：
 | `natural_default` | 150 | 50 | 225 |
 
 分型规则只依赖 Query 文本，与 Blind v5 使用同一实现口径。该覆盖仅用于
-`RECALL_LTR_MODE=shadow/active/baseline` 的 RAG 问答流；`off` 和纯召回 JSON 仍按数据集配置执行。
+`RECALL_LTR_MODE=active/baseline` 的 RAG 问答主链；`shadow` 主链、`off` 和纯召回 JSON 仍按数据集配置执行，
+其中 Shadow 只在独立后台请求中使用冻结契约做旁路比较。
 
 ## 3. 问题与处理结果
 
