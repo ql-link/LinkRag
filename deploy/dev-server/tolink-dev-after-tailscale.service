@@ -1,6 +1,5 @@
 [Unit]
 Description=Recover the toLink development stack after Tailscale is online
-Documentation=file:/usr/local/sbin/tolink-dev-recover-after-tailscale
 Wants=network-online.target tailscale-online.target
 After=network-online.target tailscale-online.target docker.service
 Requires=docker.service
@@ -9,7 +8,28 @@ ConditionPathExists=/opt/tolink/dev/.env.dev
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/tolink-dev-recover-after-tailscale
+WorkingDirectory=/opt/tolink/dev
+ExecStartPre=/usr/bin/bash -c 'for _ in {1..120}; do /usr/sbin/ip -4 address show dev tailscale0 2>/dev/null | /usr/bin/grep -Fq "inet 100.86.10.52/32" && exit 0; /usr/bin/sleep 1; done; exit 1'
+ExecStartPre=/usr/bin/chmod 0644 /opt/tolink/dev/loki-config.yml /opt/tolink/dev/nginx.conf /opt/tolink/dev/promtail-config.yml
+ExecStartPre=-/usr/bin/chcon -t container_file_t /opt/tolink/dev/loki-config.yml /opt/tolink/dev/nginx.conf /opt/tolink/dev/promtail-config.yml
+ExecStart=/usr/bin/docker compose --env-file /opt/tolink/dev/.env.dev -f /opt/tolink/dev/docker-compose.yml up -d --no-build --force-recreate mysql redis zookeeper qdrant manticore loki
+ExecStart=/usr/bin/bash -c 'for _ in {1..180}; do [[ "$(/usr/bin/docker inspect --format "{{if .State.Health}}{{.State.Health.Status}}{{end}}" tolink-dev-mysql 2>/dev/null)" == healthy ]] && exit 0; /usr/bin/sleep 1; done; exit 1'
+ExecStart=/usr/bin/bash -c 'for _ in {1..180}; do [[ "$(/usr/bin/docker inspect --format "{{if .State.Health}}{{.State.Health.Status}}{{end}}" tolink-dev-redis 2>/dev/null)" == healthy ]] && exit 0; /usr/bin/sleep 1; done; exit 1'
+ExecStart=/usr/bin/bash -c 'for _ in {1..180}; do [[ "$(/usr/bin/docker inspect --format "{{if .State.Health}}{{.State.Health.Status}}{{end}}" tolink-dev-zookeeper 2>/dev/null)" == healthy ]] && exit 0; /usr/bin/sleep 1; done; exit 1'
+ExecStart=/usr/bin/bash -c 'for _ in {1..180}; do [[ "$(/usr/bin/docker inspect --format "{{if .State.Health}}{{.State.Health.Status}}{{end}}" tolink-dev-manticore 2>/dev/null)" == healthy ]] && exit 0; /usr/bin/sleep 1; done; exit 1'
+ExecStart=/usr/bin/bash -c 'for _ in {1..180}; do /usr/bin/curl -fsS --max-time 5 http://100.86.10.52:16333/readyz >/dev/null 2>&1 && exit 0; /usr/bin/sleep 1; done; exit 1'
+ExecStart=/usr/bin/bash -c 'for _ in {1..180}; do /usr/bin/curl -fsS --max-time 5 http://100.86.10.52:13100/ready >/dev/null 2>&1 && exit 0; /usr/bin/sleep 1; done; exit 1'
+ExecStart=/usr/bin/docker compose --env-file /opt/tolink/dev/.env.dev -f /opt/tolink/dev/docker-compose.yml up -d --no-build --no-deps --force-recreate kafka
+ExecStart=/usr/bin/bash -c 'for _ in {1..180}; do [[ "$(/usr/bin/docker inspect --format "{{if .State.Health}}{{.State.Health.Status}}{{end}}" tolink-dev-kafka 2>/dev/null)" == healthy ]] && exit 0; /usr/bin/sleep 1; done; exit 1'
+ExecStart=/usr/bin/docker compose --env-file /opt/tolink/dev/.env.dev -f /opt/tolink/dev/docker-compose.yml up -d --no-build --no-deps --force-recreate kafka-ui
+ExecStart=/usr/bin/bash -c 'for _ in {1..180}; do /usr/bin/curl -fsS --max-time 5 http://100.86.10.52:19081/ >/dev/null 2>&1 && exit 0; /usr/bin/sleep 1; done; exit 1'
+ExecStart=/usr/bin/docker compose --env-file /opt/tolink/dev/.env.dev -f /opt/tolink/dev/docker-compose.yml --profile apps up -d --no-build --no-deps --force-recreate tolink-rag tolink-service
+ExecStart=/usr/bin/bash -c 'for _ in {1..180}; do /usr/bin/curl -fsS --max-time 5 http://100.86.10.52:18000/health >/dev/null 2>&1 && exit 0; /usr/bin/sleep 1; done; exit 1'
+ExecStart=/usr/bin/bash -c 'for _ in {1..180}; do /usr/bin/curl -fsS --max-time 5 http://100.86.10.52:18081/actuator/health >/dev/null 2>&1 && exit 0; /usr/bin/sleep 1; done; exit 1'
+ExecStart=/usr/bin/docker compose --env-file /opt/tolink/dev/.env.dev -f /opt/tolink/dev/docker-compose.yml --profile apps up -d --no-build --no-deps --force-recreate linkrag-web
+ExecStart=/usr/bin/bash -c 'for _ in {1..180}; do /usr/bin/curl -fsS --max-time 5 http://100.86.10.52:18080/ >/dev/null 2>&1 && exit 0; /usr/bin/sleep 1; done; exit 1'
+ExecStart=/usr/bin/docker compose --env-file /opt/tolink/dev/.env.dev -f /opt/tolink/dev/docker-compose.yml --profile apps up -d --no-build --no-deps --force-recreate promtail
+ExecStart=/usr/bin/bash -c 'if ! /usr/bin/docker inspect linkcv-dev >/dev/null 2>&1; then exit 0; fi; /usr/bin/docker restart linkcv-dev >/dev/null; for _ in {1..180}; do [[ "$(/usr/bin/docker inspect --format "{{if .State.Health}}{{.State.Health.Status}}{{end}}" linkcv-dev 2>/dev/null)" == healthy ]] && exit 0; /usr/bin/sleep 1; done; exit 1'
 RemainAfterExit=yes
 TimeoutStartSec=900
 Restart=on-failure
