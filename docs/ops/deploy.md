@@ -20,7 +20,7 @@
 | `kafka-ui` | `provectuslabs/kafka-ui` | 9081 | Kafka 调试 UI | 可选 |
 | `loki` | `grafana/loki:2.9.8` | 3100 | 集中日志存储与查询 | ✅ |
 
-注 1：`STORAGE_TYPE=minio` 使用 MinIO，`STORAGE_TYPE=local` 使用 `LOCAL_DOCS_PATH` 本地目录。
+注 1：当前可用对象存储实现为 `STORAGE_TYPE=minio`；OSS 适配器仍为占位实现。
 注 2：当前生产固定使用 Qdrant，不再部署 Elasticsearch。BM25 通过 Qdrant sparse vector + `Modifier.IDF` 承载。
 
 ## Compose 文件分层

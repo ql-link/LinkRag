@@ -88,8 +88,6 @@ ParseResult
 
 - `MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT`
 - `MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT`
-- `MARKDOWN_PARSER_TABLE_MODEL`
-- `MARKDOWN_PARSER_VISION_MODEL`
 - `MARKDOWN_PARSER_LLM_TIMEOUT_MS`
 - `MARKDOWN_PARSER_VISION_CONCURRENCY`
 - `MARKDOWN_PARSER_ENABLE_HEADING_HIERARCHY`
@@ -99,15 +97,9 @@ ParseResult
 - `MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET`
 - `MARKDOWN_PARSER_HEADING_LLM_MAX_OUTPUT_TOKENS`
 
-表格增强使用文本能力；图片增强使用视觉能力。有 `user_id` 的生产解析路径按“用户 active +
-default → LinkRag active + default 系统预设”解析：表格增强使用 `CHAT`，图片增强使用 `VISION`。
-两层都未命中时抛 `EnhancementModelMissingError`。无 `user_id` 的调试入口使用遗留 env 系统配置：
-
-- `SYSTEM_LLM_PROVIDER`
-- `SYSTEM_LLM_API_KEY`
-- `SYSTEM_LLM_API_BASE`
-- `SYSTEM_LLM_MODEL_CHAT`
-- `SYSTEM_LLM_MODEL_VISION`
+表格增强使用文本能力；图片增强使用视觉能力。解析路径通过数据集配置中的精确
+`enhancement_chat_config_id` / `enhancement_vision_config_id` 解析 `CHAT` / `VISION` 模型；
+未配置或配置不可用时抛 `EnhancementModelMissingError`，不再读取 `SYSTEM_LLM_*` 环境变量。
 
 PDF 解析阶段如果提供了 `image_bytes_by_url`，图片增强会优先使用内存图片 bytes；缺失时才回退读取 Markdown 中的图片 URL 或本地路径。
 
@@ -121,7 +113,7 @@ Java 规范化 Markdown 的 RAW 图片由 parse-task 层先完成对象存储范
 模型标识、图片数量或图片短指纹以及安全调用栈。图片 URL 会移除 query/fragment，
 不会记录签名参数；表格正文、图片 base64、prompt 和模型响应正文均不进入日志。
 
-标题层级后处理是可选增强，默认关闭。配置关闭时行为与普通 `MarkdownParser.parse()` 等价，不执行门禁，也不读取模型配置。配置开启且门禁命中时，标题生成器按“发起用户默认 → LinkRag 系统默认预设”解析 `CHAT` 模型并生成标题插入计划；无 `user_id` 的调试入口使用遗留 env 系统级 `CHAT` 配置。该模块不新增标题专用模型选择参数，也不允许 LLM 返回整篇 Markdown。
+标题层级后处理是可选增强，默认关闭。配置关闭时行为与普通 `MarkdownParser.parse()` 等价，不执行门禁，也不读取模型配置。配置开启且门禁命中时，标题生成器使用数据集精确绑定的 `CHAT` 模型生成标题插入计划；未绑定时不执行增强。该模块不新增标题专用模型选择参数，也不允许 LLM 返回整篇 Markdown。
 
 门禁命中场景：
 

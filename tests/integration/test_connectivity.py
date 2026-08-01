@@ -89,36 +89,6 @@ async def test_kafka():
                 pass
 
 
-# @pytest.mark.skipif(settings.VECTOR_STORE_TYPE != "milvus", reason="当前环境未配置使用 Milvus 作为向量库")
-# def test_milvus():
-#     """测试 Milvus 连通性"""
-#     pymilvus = pytest.importorskip("pymilvus", reason="未安装 pymilvus，跳过 Milvus 测试")
-#
-#     logger.info(f"正在测试 Milvus 连通性: {settings.MILVUS_HOST}:{settings.MILVUS_PORT}")
-#     try:
-#         test_alias = "milvus_test_conn_pytest"
-#
-#         if test_alias in pymilvus.connections.list_connections():
-#             pymilvus.connections.disconnect(test_alias)
-#
-#         pymilvus.connections.connect(
-#             alias=test_alias,
-#             host=settings.MILVUS_HOST,
-#             port=str(settings.MILVUS_PORT),
-#             user=settings.MILVUS_USER,
-#             password=settings.MILVUS_PASSWORD,
-#             timeout=5
-#         )
-#
-#         server_version = pymilvus.utility.get_server_version(using=test_alias)
-#         pymilvus.connections.disconnect(test_alias)
-#
-#         assert server_version, "获取到的 Server Version 为空"
-#         logger.success(f"Milvus 连接成功! Server Version: {server_version}")
-#     except Exception as e:
-#         pytest.fail(f"Milvus 连接失败: {e}")
-
-
 @pytest.mark.skipif(
     settings.VECTOR_STORE_TYPE != "qdrant", reason="当前环境未配置使用 Qdrant 作为向量库"
 )

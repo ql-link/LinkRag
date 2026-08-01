@@ -17,11 +17,11 @@
 | Markdown 增强 | `MARKDOWN_PARSER_*` | 调整解析增强行为时 |
 | 分块策略 | `CHUNKING_*` | 调整分块参数时 |
 | 流程编排 | `WORKFLOW_*` | 使用轻量流程编排引擎时 |
-| 向量存储 | `VECTOR_STORE_TYPE`, `QDRANT_*`, `CHUNK_INDEX_*`, `SPARSE_VECTOR_*` | 始终（当前生产固定使用 Qdrant） |
+| 向量存储 | `VECTOR_STORE_TYPE`, `QDRANT_*`, `CHUNK_INDEX_*`, `SPARSE_VECTOR_*` | 始终（当前固定使用 Qdrant） |
 | 索引写入互斥 | `INDEX_MUTATION_*` | 调整写入失败同步清理的锁等待时 |
-| 对象存储 | `STORAGE_TYPE`, `MINIO_*`, `LOCAL_DOCS_PATH` | 始终 |
+| 对象存储 | `STORAGE_TYPE`, `MINIO_*` | 始终 |
 | 解析临时目录 | `PARSE_TEMP_DIR` | 始终（流式下载落盘目录） |
-| PDF 解析 | `PDF_PARSER_*`, `MINERU_*`, `DOCLING_*` | 处理 PDF 时 |
+| PDF 解析 | `PDF_PARSER_*`, `MINERU_*` | 处理 PDF 时 |
 | MQ | `MQ_VENDOR`, `KAFKA_*`, `RABBITMQ_*`, `*_TOPIC` | 始终 |
 | CORS | `CORS_ORIGINS` | 前端跨域时 |
 
@@ -40,7 +40,6 @@
 | `KAFKA_BOOTSTRAP_SERVERS` 等（若 `MQ_VENDOR=kafka`） | Kafka 接入信息 |
 | `MINIO_*`（若 `STORAGE_TYPE=minio`） | 对象存储凭据 |
 | `MINIO_RAW_BUCKET`（若 `STORAGE_TYPE=minio`） | 原文件桶：用户上传的源文件，由 Java 写入，Python 只读；默认 `tolink-rag-raw`，需在 MinIO 控制台预建 |
-| `MINIO_PUBLIC_BUCKET`（若 `STORAGE_TYPE=minio`） | 公开桶：博客与反馈附件等不敏感资源，默认 `tolink-public`，需配置匿名读 |
 | `QDRANT_URL` / `QDRANT_HOST` / `QDRANT_PORT` / `QDRANT_HTTPS` / `QDRANT_API_KEY` | 向量存储地址、显式协议与认证；优先使用带 scheme 的 `QDRANT_URL`，`QDRANT_HTTPS` 需与服务端 TLS 状态一致，非空 API key 不代表自动启用 HTTPS |
 
 ## 关键开关
@@ -48,11 +47,10 @@
 | 开关 | 默认 | 含义 |
 | --- | --- | --- |
 | `MQ_VENDOR` | `kafka` | 切换 Kafka / RabbitMQ |
-| `VECTOR_STORE_TYPE` | `qdrant` | 当前生产固定使用 Qdrant |
+| `VECTOR_STORE_TYPE` | `qdrant` | 当前唯一支持 Qdrant；readiness 据此决定是否执行 Qdrant 探测 |
 | `SPARSE_VECTOR_ENABLED` | `true` | 是否在向量化阶段同步生成稀疏向量；关闭后保持旧 dense-only 语义 |
-| `STORAGE_TYPE` | `minio` | 切换 MinIO / 本地存储 |
+| `STORAGE_TYPE` | `minio` | 对象存储实现；当前可用实现为 MinIO，OSS 适配器仍为占位 |
 | `MINIO_RAW_BUCKET` | `tolink-rag-raw` | 用户上传原文件桶，由 Java 写入；Python 解析时从此桶下载源文件，不写入。需在 MinIO 控制台预先创建 |
-| `MINIO_PUBLIC_BUCKET` | `tolink-public` | Java 端公开读桶（博客 + 反馈附件）；Python 解析产物（Markdown + 图片）写入 `MINIO_PRIVATE_BUCKET`。原博客专用桶 `tolink-blog` 已并入 |
 | `MINIO_PUBLIC_ENDPOINT` | 空 | 可选公网对象访问入口；为空时复用 `MINIO_ENDPOINT`。用于给 MinerU 等云端解析器生成可访问 URL，SDK 读写仍走 `MINIO_ENDPOINT` |
 | `PARSE_TEMP_DIR` | `/tmp/tolink-rag-parse` | 解析任务源文件临时落盘目录。流式下载在此创建临时文件；解析为 markdown 后立即清理；worker 启动时清空兜底。不预设最小容量，沿用部署机系统盘大小；写满会归类为 `TEMP_DISK_FULL` 错误码。扩消费者时容量需要 ≥ 单文件上限 × 并发数 |
 | `PDF_PARSER_BACKEND` | `mineru` | PDF 解析后端：`auto` / `mineru` / `opendataloader` / `naive` |
@@ -279,8 +277,6 @@ MySQL 是业务真值。正常写入与写入失败后的同步清理对同一 `
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
 | `INDEX_MUTATION_LOCK_TIMEOUT_SECONDS` | `10` | 获取文档分支 advisory lock 的最长等待时间；超时使当前解析失败，不绕过互斥执行 |
-
-`CHUNK_INDEX_INDEXING_STALE_SECONDS` 已废弃，仅为旧兼容入口暂时保留；同步清理不依赖共享 `update_time`。
 
 ## 召回执行配置
 

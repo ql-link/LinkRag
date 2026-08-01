@@ -240,7 +240,6 @@ class Settings(BaseSettings):
     LLM_RUNTIME_NEGATIVE_TTL_SECONDS: int = 60
     LLM_RUNTIME_LOAD_LOCK_TTL_MS: int = 5000
     LLM_RUNTIME_LOAD_WAIT_MS: int = 50
-    LLM_RUNTIME_FENCE_TTL_SECONDS: int = 2592000
 
     # Java/Python 共享的 dataset_parse_config 原始快照缓存。只有 Java CDC
     # BusinessCacheHealthIndicator READY 后才允许在部署配置中开启。
@@ -414,7 +413,7 @@ class Settings(BaseSettings):
     # ==========================================
     # 向量数据库配置 (Vector Store)
     # ==========================================
-    # 当前仅支持 qdrant。
+    # readiness 仍以该开关判断是否探测当前唯一支持的 Qdrant 后端。
     VECTOR_STORE_TYPE: str = "qdrant"
 
     # Qdrant
@@ -423,7 +422,6 @@ class Settings(BaseSettings):
     QDRANT_HOST: str = "43.138.176.52"
     QDRANT_PORT: int = 6333
     QDRANT_GRPC_PORT: int = 6334
-    QDRANT_COLLECTION_NAME: str = "tolink_rag_collection"
     QDRANT_API_KEY: Optional[str] = None
     QDRANT_HTTPS: bool = False
     QDRANT_TIMEOUT_SECONDS: int = 20
@@ -448,10 +446,6 @@ class Settings(BaseSettings):
     DENSE_VECTOR_DIMENSION: int = 1024
     CHUNK_INDEX_RETRY_LIMIT: int = 3
     CHUNK_INDEX_RETRY_INTERVAL_SECONDS: int = 300
-    # Deprecated: automatic orphan cleanup must never infer inactivity from a
-    # shared chunk update timestamp. It remains temporarily for compatibility.
-    CHUNK_INDEX_INDEXING_STALE_SECONDS: int = 900
-
     # 同一文档、同一索引分支的外部写入和失败清理共用 MySQL advisory lock。
     INDEX_MUTATION_LOCK_TIMEOUT_SECONDS: int = 10
 
@@ -697,11 +691,8 @@ class Settings(BaseSettings):
     # MinIO 三桶模型（与 Java 端 LinkRag-Service 对齐）：
     # · 原文件桶（RAW）  = 用户上传的源文件，由 Java 写入，Python 只读；
     # · 私有桶（DOCS）   = Python 解析产物（Markdown + 图片），不对外匿名读；
-    # · 公开桶（PUBLIC） = 博客 + 反馈附件，Java 写入，需匿名读。
-    # 原博客专用桶 tolink-blog 已并入公开桶，MINIO_BLOG_BUCKET 配置项废弃。
     MINIO_RAW_BUCKET: str = "tolink-rag-raw"
     MINIO_PRIVATE_BUCKET: str = "tolink-rag-docs"
-    MINIO_PUBLIC_BUCKET: str = "tolink-public"
     MINIO_USE_SSL: bool = False
     # Java 规范化 Markdown 中的 ``tolink-raw://`` 图片按批读取。单图上限必须不高于
     # Java 上传侧限制，避免两个服务对同一资源包作出不同判断。
@@ -712,7 +703,6 @@ class Settings(BaseSettings):
     # for cloud parsers and browser-facing resources. S3 SDK traffic still uses
     # MINIO_ENDPOINT.
     MINIO_PUBLIC_ENDPOINT: Optional[str] = None
-    LOCAL_DOCS_PATH: str = "./data/documents"
     PDF_PARSER_BACKEND: str = "mineru"  # auto / mineru / opendataloader / naive
     PDF_PARSER_FALLBACKS: str = ""
     PDF_IMAGE_UPLOAD_ASYNC: bool = True  # 是否后台异步上传 PDF 图片资产
