@@ -183,7 +183,7 @@ services:
     ports:
       - "${TAILSCALE_IP:-100.86.10.52}:${DEV_LOKI_PORT:-13100}:3100"
     volumes:
-      - ./loki-config.yml:/etc/loki/loki-config.yml:ro
+      - ./loki-config.yml:/etc/loki/loki-config.yml:ro,Z
       - dev_loki_data:/loki
     networks: [tolink-dev-net]
     mem_limit: 512m
@@ -217,7 +217,7 @@ services:
     ports:
       - "${TAILSCALE_IP:-100.86.10.52}:${DEV_RAG_PORT:-18000}:8000"
     volumes:
-      - ${RAG_LOG_PATH:-/opt/tolink/dev/toLink-Rag/logs}:/app/logs
+      - ${RAG_LOG_PATH:-/opt/tolink/dev/toLink-Rag/logs}:/app/logs:z
     networks: [tolink-dev-net]
     depends_on:
       mysql: {condition: service_healthy}
@@ -249,8 +249,8 @@ services:
     ports:
       - "${TAILSCALE_IP:-100.86.10.52}:${DEV_SERVICE_PORT:-18081}:8080"
     volumes:
-      - ${SERVICE_DEV_CONFIG_DIR:-/opt/tolink/dev/config/service}:/app/config:ro
-      - ${SERVICE_LOG_PATH:-/opt/tolink/dev/toLink-Service/logs}:/app/logs
+      - ${SERVICE_DEV_CONFIG_DIR:-/opt/tolink/dev/config/service}:/app/config:ro,Z
+      - ${SERVICE_LOG_PATH:-/opt/tolink/dev/toLink-Service/logs}:/app/logs:z
     networks: [tolink-dev-net]
     depends_on:
       mysql: {condition: service_healthy}
@@ -272,7 +272,7 @@ services:
     ports:
       - "${TAILSCALE_IP:-100.86.10.52}:${DEV_WEB_PORT:-18080}:80"
     volumes:
-      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro,Z
     networks: [tolink-dev-net]
     depends_on:
       - tolink-service
@@ -291,9 +291,9 @@ services:
     environment:
       LOKI_PUSH_URL: http://tolink-dev-loki:3100/loki/api/v1/push
     volumes:
-      - ./promtail-config.yml:/etc/promtail/promtail-config.yml:ro
-      - ${SERVICE_LOG_PATH:-/opt/tolink/dev/toLink-Service/logs}:/var/log/tolink-service:ro
-      - ${RAG_LOG_PATH:-/opt/tolink/dev/toLink-Rag/logs}:/var/log/tolink-rag:ro
+      - ./promtail-config.yml:/etc/promtail/promtail-config.yml:ro,Z
+      - ${SERVICE_LOG_PATH:-/opt/tolink/dev/toLink-Service/logs}:/var/log/tolink-service:ro,z
+      - ${RAG_LOG_PATH:-/opt/tolink/dev/toLink-Rag/logs}:/var/log/tolink-rag:ro,z
       - dev_promtail_positions:/tmp
     networks: [tolink-dev-net]
     depends_on:

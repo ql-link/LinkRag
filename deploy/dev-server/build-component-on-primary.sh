@@ -150,12 +150,23 @@ update_tag() {
 
 if [[ "$component" == rag ]]; then
   config_source="$source_dir/deploy/dev-server"
-  for name in docker-compose.yml Dockerfile.service loki-config.yml promtail-config.yml nginx.conf \
-    configure-dev-env.sh build-component-on-primary.sh \
+  for name in docker-compose.yml Dockerfile.service \
+    configure-dev-env.sh build-component-on-primary.sh recover-after-tailscale.sh \
     generate-dev-llm-migration-inputs.py; do
     install -m 600 "$config_source/$name" "$dev_root/$name"
   done
-  chmod 700 "$dev_root/configure-dev-env.sh" "$dev_root/build-component-on-primary.sh"
+  for name in loki-config.yml promtail-config.yml nginx.conf tolink-dev-after-tailscale.service; do
+    install -m 0644 "$config_source/$name" "$dev_root/$name"
+  done
+  chmod 700 "$dev_root/configure-dev-env.sh" "$dev_root/build-component-on-primary.sh" \
+    "$dev_root/recover-after-tailscale.sh"
+  install -m 0755 "$dev_root/recover-after-tailscale.sh" \
+    /usr/local/sbin/tolink-dev-recover-after-tailscale
+  install -m 0644 "$dev_root/tolink-dev-after-tailscale.service" \
+    /etc/systemd/system/tolink-dev-after-tailscale.service
+  systemctl daemon-reload
+  systemctl disable --now tolink-dev-linkcv-after-tailscale.service >/dev/null 2>&1 || true
+  systemctl enable tolink-dev-after-tailscale.service
   install -d -m 700 "$dev_root/config/rag"
   install -m 0644 "$source_dir/.env.development" "$dev_root/config/rag/.env.development"
   "$dev_root/configure-dev-env.sh"

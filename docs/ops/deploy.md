@@ -82,6 +82,12 @@ docker compose --env-file .env.dev up -d mysql redis zookeeper kafka kafka-ui qd
 docker compose --env-file .env.dev --profile apps up -d
 ```
 
+Primary 启用 `tolink-dev-after-tailscale.service` 处理主机重启恢复。该单元等待
+`tailscale-online.target` 并确认 `tailscale0` 已获得 `100.86.10.52`，随后保留数据卷、重建所有
+绑定 Tailscale 地址的中间件端口，按健康状态依次恢复 Kafka、RAG、Java、Web、Promtail 和
+共享开发中间件的 LinkCV。恢复失败时每 15 秒重试。开发配置文件使用 SELinux 容器标签挂载，
+避免主机重启或配置替换后 Loki、Nginx、Promtail 无法读取配置。
+
 开发服务使用各项目既有的开发 profile：Python 设置 `APP_ENV=development`，并从
 `/opt/tolink/dev/config/rag/.env.development` 加载可提交的基础配置，再由权限为 `600` 的
 `.env.development.local` 注入账号、密码、JWT 与 API Key。Java 设置

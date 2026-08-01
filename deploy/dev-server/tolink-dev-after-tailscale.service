@@ -1,0 +1,19 @@
+[Unit]
+Description=Recover the toLink development stack after Tailscale is online
+Documentation=file:/usr/local/sbin/tolink-dev-recover-after-tailscale
+Wants=network-online.target tailscale-online.target
+After=network-online.target tailscale-online.target docker.service
+Requires=docker.service
+ConditionPathExists=/opt/tolink/dev/docker-compose.yml
+ConditionPathExists=/opt/tolink/dev/.env.dev
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/tolink-dev-recover-after-tailscale
+RemainAfterExit=yes
+TimeoutStartSec=900
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
