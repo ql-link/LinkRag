@@ -1,5 +1,5 @@
-# Cloud 生产数据栈：仅通过外部应用网络提供 MySQL / Redis / MinIO / Manticore / Loki，
-# 不暴露宿主机端口。
+# Cloud 生产数据栈：仅通过外部应用网络提供 MySQL / Redis / MinIO / Qdrant /
+# Manticore / Loki，不暴露宿主机端口。
 #
 # 启动：
 #   docker compose \
@@ -70,6 +70,23 @@ services:
     mem_limit: 768m
     cpus: 1.5
 
+  qdrant:
+    # 固定已验证版本；生产向量数据使用独立 named volume，不复用 Primary 历史数据。
+    image: qdrant/qdrant:v1.17.1
+    container_name: tolink-qdrant
+    restart: unless-stopped
+    volumes:
+      - prod_qdrant_data:/qdrant/storage
+    networks: [tolink-app-net]
+    healthcheck:
+      test: ["CMD-SHELL", "timeout 3 bash -c '</dev/tcp/127.0.0.1/6333'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    mem_limit: 2g
+    cpus: 2
+
   manticore:
     image: manticoresearch/manticore:27.1.5
     container_name: tolink-manticore
@@ -119,6 +136,8 @@ volumes:
     name: tolink_prod_redis_data
   prod_minio_data:
     name: tolink_prod_minio_data
+  prod_qdrant_data:
+    name: tolink_prod_qdrant_data
   prod_manticore_data:
     name: tolink_prod_manticore_data
   prod_loki_data:
