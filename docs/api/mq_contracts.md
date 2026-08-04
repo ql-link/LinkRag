@@ -25,7 +25,7 @@ Java 管理端                          toLink-Rag (Python)
 
 > **cache_sync 已下线**：用户 LLM 配置和系统厂商每次直接读取共享 MySQL，不再声明或初始化缓存同步 topic，也不再提供 `CacheSyncMessage`。Broker 上的历史 topic 不由应用自动物理删除，可在稳定观察期后由运维单独清理。
 
-收发 topic 名由消息类的 `MQ_NAME` 常量固定（见 [src/core/mq/messages](../../src/core/mq/messages)），不随 `.env` 改变；环境变量 `PARSE_TASK_TOPIC` 仅用于 Kafka topic 的自动创建（`topic_admin`），不影响实际投递/订阅的 topic。业务方按下方固定值对接即可。
+逻辑消息名由消息类的 `MQ_NAME` 常量固定（见 [src/core/mq/messages](../../src/core/mq/messages)），不随 `.env` 改变。Kafka 中映射为 topic，RabbitMQ 中映射为同名 durable Queue；环境变量 `PARSE_TASK_TOPIC` 仅用于 Kafka topic 的自动创建（`topic_admin`），不影响实际投递/订阅。业务方按下方固定值对接即可。
 
 ## 公共消息头
 
@@ -121,7 +121,9 @@ Java 管理端                          toLink-Rag (Python)
 
 ### 路由键
 
-消息以 `file_type` 作为 routing key，便于按文件类型做消费侧分流。
+Kafka 以 `file_type` 作为 partition key。RabbitMQ 使用默认交换器按
+`tolink.rag.parse_task` Queue 名路由，`file_type` 仅保留为 AMQP `message_id`，不会改投到
+`pdf` / `docx` 等不存在的 Queue。
 
 ## 删除通知（Java → Python，LINK-55）
 

@@ -15,9 +15,7 @@
 | `minio` | `minio/minio` | 9000 / 9001 | 原始文档、解析产物的对象存储 | 二选一¹ |
 | `qdrant` | `qdrant/qdrant` | 6333 / 6334 | 稠密 / 稀疏 / BM25 索引存储 | ✅ |
 | `manticore` | `manticoresearch/manticore:27.1.5` | 9306 / 9308 | 可选 BM25 全文索引；迁移期与 Qdrant 双写 | 按需 |
-| `zookeeper` | `bitnami/zookeeper:3.9` | 2181 | Kafka 协调 | 当 MQ 为 Kafka 时必需 |
-| `kafka` | `bitnami/kafka:3.7` | 9092 | 异步消息中台 | 当 `MQ_VENDOR=kafka` 时必需 |
-| `kafka-ui` | `provectuslabs/kafka-ui` | 9081 | Kafka 调试 UI | 可选 |
+| `rabbitmq` | `rabbitmq:4.3.4-management` | 5672 / 15672 | 异步消息中台 | ✅ |
 | `loki` | `grafana/loki:2.9.8` | 3100 | 集中日志存储与查询 | ✅ |
 
 注 1：当前可用对象存储实现为 `STORAGE_TYPE=minio`；OSS 适配器仍为占位实现。
@@ -29,9 +27,9 @@
 | --- | --- |
 | `docker-compose.yml` | 主机服务器中间件栈，作为当前主机部署入口 |
 | `deploy/host-server/docker-compose.yml` | 主机服务器中间件栈的 deploy 目录版本 |
-| `deploy/cloud-server/docker-compose.yml` | 云服务器应用栈：Java、Python RAG、Web、Promtail |
+| `deploy/cloud-server/docker-compose.yml` | 云服务器生产栈：RabbitMQ、Java、Python RAG、Web、Promtail |
 | `deploy/docker-compose.yml` | 保留的 Python RAG 单服务部署入口 |
-| `deploy/dev-server/docker-compose.yml` | Primary 开发栈：隔离的 MySQL、Redis、Kafka、Qdrant、Manticore、Loki，以及 dev 应用 |
+| `deploy/dev-server/docker-compose.yml` | Primary 开发栈：隔离的 MySQL、Redis、RabbitMQ、Qdrant、Manticore、Loki，以及 dev 应用 |
 
 Promtail 必须部署在产生日志文件的云服务器上；Loki 部署在主机服务器中间件栈中。
 
@@ -61,14 +59,15 @@ Java 的 `application-prod.yml` 随镜像发布，并通过 `spring.config.impor
 `application-prod-local.yml`；Cloud Compose 只读挂载该密钥文件，不再用服务器目录覆盖镜像中的
 基础配置。
 
-生产 RAG/Java 继续通过 Primary 的 Tailscale 地址访问 Qdrant 与 Kafka。Primary 上对应容器统一使用
-`tolink-prod-qdrant`、`tolink-prod-zookeeper`、`tolink-prod-kafka`、`tolink-prod-kafka-ui` 命名，
-保留原有 `6333/6334`、`2181`、`9092/39092`、`9081` 端口和数据卷。
+生产 RAG/Java 继续通过 Primary 的 Tailscale 地址访问 Qdrant；RabbitMQ 与生产应用同机部署在
+Cloud 的 `tolink-app-net`，容器名 `tolink-rabbitmq`。管理端口只绑定 Cloud 回环地址，AMQP
+端口不发布到公网。Broker 与应用凭据分别保存在 `/opt/tolink/rabbitmq/broker.env` 和
+`/opt/tolink/rabbitmq/app.env`，权限均为 `600`。
 
 ## Primary 开发环境
 
 开发环境通过 `deploy/dev-server/docker-compose.yml` 部署，所有容器、网络、端口和数据卷均使用
-`tolink-dev-*` 命名，不修改生产栈。开发 MySQL、Redis、Kafka、Qdrant、ZooKeeper、Kafka UI、
+`tolink-dev-*` 命名，不修改生产栈。开发 MySQL、Redis、RabbitMQ、Qdrant、
 Manticore 和 Loki 独立运行；Primary 上的开发 MinIO 使用 `tolink-dev-minio` 名称，并加入
 `tolink-dev-net`，同时使用独立开发账号和 `tolink-dev-*` bucket。
 开发账号的策略只允许访问 `tolink-dev-raw`、`tolink-dev-docs` 和 `tolink-dev-public`。
@@ -78,7 +77,7 @@ Manticore 和 Loki 独立运行；Primary 上的开发 MinIO 使用 `tolink-dev-
 
 ```bash
 cd /opt/tolink/dev
-docker compose --env-file .env.dev up -d mysql redis zookeeper kafka kafka-ui qdrant manticore loki
+docker compose --env-file .env.dev up -d mysql redis rabbitmq qdrant manticore loki
 docker compose --env-file .env.dev --profile apps up -d
 ```
 
@@ -92,8 +91,8 @@ Git 或 Docker 镜像。开发环境的基础配置固定指向 `tolink-dev-*` �
 部署时 Compose 会把 RAG/Java 的非密钥连接地址覆盖为开发网络内的容器 DNS；本地 IDE 仍可使用
 `.env.development` / `application-dev.yml` 中的 Tailscale 地址与开发端口。
 
-当前业务 topic 和 consumer group 由代码常量固定，因此开发环境使用独立 Kafka broker，不能只依赖
-topic 前缀与生产共用 broker。开发 Loki 独立保存日志并保留 7 天。
+当前业务 Queue 名由代码常量固定。开发环境使用独立 vhost `/tolink-dev` 与独立 RabbitMQ 数据卷，
+生产使用 `/tolink-prod`，两套环境不共享 Broker 或凭据。开发 Loki 独立保存日志并保留 7 天。
 
 Cloud Jenkins 使用三个独立 dev 作业：`linkrag-rag-dev`、`linkrag-service-dev`、
 `linkrag-web-dev`。Jenkins 只负责调度和保留日志，三个作业均通过 Tailscale SSH 在 Primary
@@ -120,8 +119,8 @@ Primary 完成镜像构建。
 
 1. Redis（缓存层初始化）
 2. MySQL（连接池建立）
-3. Kafka topic（若 `INIT_KAFKA_TOPICS_ON_STARTUP=true`，应用启动时创建 topic）
-4. Kafka 消费者启动（订阅 `PARSE_TASK_TOPIC`）
+3. RabbitMQ 连接建立，幂等声明 Queue / DLX / DLT
+4. RabbitMQ 消费者启动（订阅 `tolink.rag.parse_task` 与 `tolink.rag.document_delete`）
 
 任何一项未就绪都会导致 `uvicorn` 启动失败。推荐顺序：
 
@@ -129,7 +128,7 @@ Primary 完成镜像构建。
 # 1. 起依赖
 docker compose up -d
 
-# 2. 等核心依赖 healthy（mysql/redis/kafka 有 healthcheck）
+# 2. 等核心依赖 healthy（mysql/redis/rabbitmq 有 healthcheck）
 docker compose ps
 
 # 3. 起应用
@@ -144,15 +143,15 @@ uvicorn src.main:app --host 0.0.0.0 --port 8000
 | 应用就绪 | `curl http://localhost:8000/ready` | Manticore 启用时实际执行 `SELECT 1`，失败返回 503 |
 | Swagger | 访问 `http://localhost:8000/docs` | 看到所有路由 |
 | MySQL | `docker compose exec mysql mysqladmin ping -uroot -p` | `mysqld is alive` |
-| Kafka | `docker compose ps kafka` | `healthy` |
+| RabbitMQ | `docker compose ps rabbitmq` | `healthy` |
 | MinIO | `curl http://localhost:9000/minio/health/live` | 200 |
 | Manticore | `docker compose ps manticore` | `healthy` |
 
 常见失败：
 
-- **应用启动卡在 Kafka**：通常是 `KAFKA_BOOTSTRAP_SERVERS` 配置错或 broker 未起来。本地用 docker-compose 时此地址应为 `127.0.0.1:9092`（容器内部连接用 `tolink-kafka:29092`）。
+- **应用启动卡在 RabbitMQ**：检查 `MQ_VENDOR=rabbitmq`、`RABBITMQ_URL` 的 vhost URL 编码、Java `RABBITMQ_*` 配置和 Broker health；容器内使用 Compose DNS，不走宿主机管理端口。
 - **API 调用 LLM 报解密失败**：`API_KEY_ENCRYPTION_SECRET` 必须与 Java 管理端的加密 Secret 一致，否则 `llm_model_config.api_key` 密文无法解密。
-- **解析任务消费不到**：检查 `INIT_KAFKA_TOPICS_ON_STARTUP` 是否被关闭，且 topic（`tolink.rag.parse_task`）是否已存在。
+- **解析任务消费不到**：运行 `rabbitmqctl list_queues name messages_ready messages_unacknowledged consumers`，确认同名 Queue 已声明且消费者数大于 0。
 
 ## 生产部署注意事项
 
@@ -160,16 +159,16 @@ uvicorn src.main:app --host 0.0.0.0 --port 8000
 
 - 所有密码硬编码为 `ql354210`，生产必须替换。
 - MySQL/Redis/MinIO 用 root/默认账号且无 TLS，生产应改用专用账户与加密连接。
-- Kafka 用 SASL_PLAINTEXT，生产建议 SASL_SSL。
+- RabbitMQ AMQP 端口只在 `tolink-app-net` 暴露；跨主机访问时必须启用 TLS。
 - 数据卷为本地 docker volume，生产应挂载持久化存储或使用托管服务。
 
 生产环境建议：
 
-1. **外部依赖托管化**：MySQL、Kafka、MinIO/S3、Qdrant 使用云厂商托管或独立部署，应用容器只跑 FastAPI 进程。
+1. **外部依赖托管化**：MySQL、RabbitMQ、MinIO/S3、Qdrant 使用云厂商托管或独立部署，应用容器只跑 FastAPI 进程。
 2. **配置外部化**：`.env` 通过 Secret Manager（如 K8s Secret、Vault）注入，不打进镜像。
-3. **多副本与扩缩容**：FastAPI 进程可水平扩展；Kafka 消费者通过 consumer group 自动分配 partition，消费侧扩缩容时关注 `PARSE_TASK_PARTITIONS` 是否足够。
-4. **初始化 topic**：生产环境建议把 `INIT_KAFKA_TOPICS_ON_STARTUP=false`，topic 由部署流程或运维侧显式创建，避免应用启动时副作用。
-5. **Manticore 高可用**：BM25 固定依赖 Manticore；根 Compose 仅为单节点，不具备生产 HA。生产部署前必须另行完成副本/备份、故障恢复演练与容量压测。
+3. **多副本与扩缩容**：FastAPI 进程可水平扩展；RabbitMQ 同一 Queue 的多个消费者采用竞争消费，使用 prefetch 控制单消费者在途任务数。
+4. **拓扑初始化**：Java/Python 使用完全一致的 durable Queue、DLX 和 DLT 参数幂等声明，禁止单独手工创建参数不同的同名 Queue。
+5. **Manticore 高可用**：BM25 固定依赖 Manticore；根 Compose 仅为单节点，不具备生产 HA。生产部署前必须另行完成副本/备份、故障恢复演练与容量压测；迁移步骤见 [Manticore BM25 上线手册](manticore_bm25_migration.md)。
 6. **Qdrant 单 collection 切换**：历史向量无需保留时，先停止写入并删除旧 bucket collections，再部署使用 `CHUNK_INDEX_COLLECTION_NAME` 的应用，由首次 dense/sparse 写入创建统一业务 collection。操作后需验证 Qdrant、Manticore、RAG readiness 和一次真实解析/召回链路。
 
 ## Python 依赖变更

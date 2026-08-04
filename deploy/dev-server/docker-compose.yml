@@ -1,7 +1,7 @@
 # Primary 开发环境：独立业务数据与日志，不修改生产容器、端口和数据卷。
 #
 # 首次启动中间件：
-#   docker compose --env-file .env.dev up -d mysql redis zookeeper kafka kafka-ui qdrant manticore loki
+#   docker compose --env-file .env.dev up -d mysql redis rabbitmq qdrant manticore loki
 # 启动开发应用：
 #   docker compose --env-file .env.dev --profile apps up -d
 
@@ -52,90 +52,27 @@ services:
     mem_limit: 256m
     cpus: 0.5
 
-  zookeeper:
-    image: bitnami/zookeeper:3.9
-    container_name: tolink-dev-zookeeper
+  rabbitmq:
+    image: rabbitmq:4.3.4-management
+    container_name: tolink-dev-rabbitmq
+    hostname: tolink-dev-rabbitmq
     restart: unless-stopped
-    environment:
-      ALLOW_ANONYMOUS_LOGIN: "yes"
+    env_file:
+      - ${DEV_RABBITMQ_BROKER_ENV_FILE:-/opt/tolink/dev/config/rabbitmq/broker.env}
     ports:
-      - "${TAILSCALE_IP:-100.86.10.52}:${DEV_ZOOKEEPER_PORT:-12181}:2181"
+      - "${TAILSCALE_IP:-100.86.10.52}:${DEV_RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
     volumes:
-      - dev_zookeeper_data:/bitnami/zookeeper
+      - dev_rabbitmq_data:/var/lib/rabbitmq
+      - ./rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
     networks: [tolink-dev-net]
     healthcheck:
-      test: ["CMD-SHELL", "/opt/bitnami/zookeeper/bin/zkServer.sh status >/dev/null 2>&1"]
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
       interval: 10s
       timeout: 5s
-      retries: 10
-    mem_limit: 512m
-    cpus: 0.5
-
-  kafka:
-    image: bitnami/kafka:3.7
-    container_name: tolink-dev-kafka
-    restart: unless-stopped
-    environment:
-      KAFKA_ENABLE_KRAFT: "yes"
-      KAFKA_KRAFT_CLUSTER_ID: ${DEV_KAFKA_CLUSTER_ID:?required}
-      KAFKA_CFG_NODE_ID: 1
-      KAFKA_CFG_PROCESS_ROLES: broker,controller
-      KAFKA_CFG_CONTROLLER_QUORUM_VOTERS: 1@tolink-dev-kafka:29093
-      KAFKA_CFG_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_CFG_LISTENERS: INTERNAL://:29092,EXTERNAL://:19092,CONTROLLER://:29093
-      KAFKA_CFG_ADVERTISED_LISTENERS: INTERNAL://tolink-dev-kafka:29092,EXTERNAL://${TAILSCALE_IP:-100.86.10.52}:${DEV_KAFKA_PORT:-19092}
-      KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:SASL_PLAINTEXT,EXTERNAL:SASL_PLAINTEXT,CONTROLLER:PLAINTEXT
-      KAFKA_CFG_INTER_BROKER_LISTENER_NAME: INTERNAL
-      KAFKA_CFG_SASL_ENABLED_MECHANISMS: PLAIN
-      KAFKA_CFG_SASL_MECHANISM_INTER_BROKER_PROTOCOL: PLAIN
-      KAFKA_INTER_BROKER_USER: ${DEV_KAFKA_USER:-tolink_dev}
-      KAFKA_INTER_BROKER_PASSWORD: ${DEV_KAFKA_PASSWORD:?required}
-      KAFKA_CLIENT_USERS: ${DEV_KAFKA_USER:-tolink_dev}
-      KAFKA_CLIENT_PASSWORDS: ${DEV_KAFKA_PASSWORD:?required}
-      KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
-      KAFKA_CFG_NUM_PARTITIONS: ${DEV_KAFKA_PARTITIONS:-1}
-      KAFKA_CFG_DEFAULT_REPLICATION_FACTOR: 1
-      KAFKA_CFG_MIN_INSYNC_REPLICAS: 1
-      KAFKA_HEAP_OPTS: -Xms512m -Xmx1024m
-    ports:
-      - "${TAILSCALE_IP:-100.86.10.52}:${DEV_KAFKA_PORT:-19092}:19092"
-    volumes:
-      - dev_kafka_data:/bitnami/kafka
-    networks: [tolink-dev-net]
-    healthcheck:
-      test:
-        - CMD-SHELL
-        - >-
-          bash -ec 'printf "%s\n" "security.protocol=SASL_PLAINTEXT" "sasl.mechanism=PLAIN" "sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username=\"$$KAFKA_CLIENT_USERS\" password=\"$$KAFKA_CLIENT_PASSWORDS\";" >/tmp/dev-client.properties && /opt/bitnami/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:29092 --command-config /tmp/dev-client.properties >/dev/null 2>&1'
-      interval: 15s
-      timeout: 8s
       retries: 20
-      start_period: 30s
-    mem_limit: 1536m
-    cpus: 1.5
-
-  kafka-ui:
-    image: provectuslabs/kafka-ui:latest
-    container_name: tolink-dev-kafka-ui
-    restart: unless-stopped
-    ports:
-      - "${TAILSCALE_IP:-100.86.10.52}:${DEV_KAFKA_UI_PORT:-19081}:8080"
-    environment:
-      KAFKA_CLUSTERS_0_NAME: tolink-dev-cluster
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: tolink-dev-kafka:29092
-      KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL: SASL_PLAINTEXT
-      KAFKA_CLUSTERS_0_PROPERTIES_SASL_MECHANISM: PLAIN
-      KAFKA_CLUSTERS_0_PROPERTIES_SASL_JAAS_CONFIG: >-
-        org.apache.kafka.common.security.plain.PlainLoginModule required
-        username="${DEV_KAFKA_USER:-tolink_dev}"
-        password="${DEV_KAFKA_PASSWORD:?required}";
-      DYNAMIC_CONFIG_ENABLED: "true"
-    networks: [tolink-dev-net]
-    depends_on:
-      kafka:
-        condition: service_healthy
-    mem_limit: 512m
-    cpus: 0.5
+      start_period: 20s
+    mem_limit: 768m
+    cpus: 1
 
   qdrant:
     image: qdrant/qdrant:v1.17.1
@@ -197,6 +134,7 @@ services:
     env_file:
       - ${RAG_DEV_ENV_FILE:-/opt/tolink/dev/config/rag/.env.development}
       - ${RAG_DEV_SECRET_ENV_FILE:-/opt/tolink/dev/config/rag/.env.development.local}
+      - ${DEV_RABBITMQ_APP_ENV_FILE:-/opt/tolink/dev/config/rabbitmq/app.env}
     environment:
       TZ: Asia/Shanghai
       APP_ENV: development
@@ -211,7 +149,6 @@ services:
       MANTICORE_HOST: tolink-dev-manticore
       MANTICORE_PORT: 9306
       MINIO_ENDPOINT: tolink-dev-minio:9000
-      KAFKA_BOOTSTRAP_SERVERS: tolink-dev-kafka:29092
     extra_hosts:
       - host.docker.internal:host-gateway
     ports:
@@ -222,7 +159,7 @@ services:
     depends_on:
       mysql: {condition: service_healthy}
       redis: {condition: service_healthy}
-      kafka: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
       manticore: {condition: service_healthy}
     mem_limit: 2g
     cpus: 3
@@ -232,6 +169,8 @@ services:
     image: tolink-service:${SERVICE_TAG:-dev-latest}
     container_name: tolink-dev-service
     restart: unless-stopped
+    env_file:
+      - ${DEV_RABBITMQ_APP_ENV_FILE:-/opt/tolink/dev/config/rabbitmq/app.env}
     environment:
       TZ: Asia/Shanghai
       SPRING_PROFILES_ACTIVE: dev
@@ -241,7 +180,6 @@ services:
       REDIS_HOST: tolink-dev-redis
       REDIS_PORT: 6379
       MINIO_ENDPOINT: http://tolink-dev-minio:9000
-      KAFKA_BOOTSTRAP_SERVERS: tolink-dev-kafka:29092
       TOLINK_RECALL_SESSION_STREAM_BASE_URL: http://${TAILSCALE_IP:-100.86.10.52}:${DEV_RAG_PORT:-18000}
       OBSERVABILITY_LOKI_BASE_URL: http://tolink-dev-loki:3100
     extra_hosts:
@@ -255,7 +193,7 @@ services:
     depends_on:
       mysql: {condition: service_healthy}
       redis: {condition: service_healthy}
-      kafka: {condition: service_healthy}
+      rabbitmq: {condition: service_healthy}
       loki: {condition: service_started}
     mem_limit: 1536m
     cpus: 2
@@ -313,10 +251,8 @@ volumes:
     name: tolink_dev_mysql_data
   dev_redis_data:
     name: tolink_dev_redis_data
-  dev_kafka_data:
-    name: tolink_dev_kafka_data
-  dev_zookeeper_data:
-    name: tolink_dev_zookeeper_data
+  dev_rabbitmq_data:
+    name: tolink_dev_rabbitmq_data
   dev_qdrant_data:
     name: tolink_dev_qdrant_data
   dev_manticore_data:

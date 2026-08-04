@@ -104,82 +104,6 @@ services:
       retries: 10
       start_period: 10s
 
-  zookeeper:
-    image: bitnami/zookeeper:3.9
-    container_name: tolink-prod-zookeeper
-    restart: always
-    ports:
-      - "2181:2181"
-    environment:
-      - ALLOW_ANONYMOUS_LOGIN=yes
-    networks:
-      - tolink-net
-    volumes:
-      - zookeeper_data:/bitnami/zookeeper
-    healthcheck:
-      test: ["CMD-SHELL", "/opt/bitnami/zookeeper/bin/zkServer.sh status >/dev/null 2>&1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  kafka:
-    image: bitnami/kafka:3.7
-    container_name: tolink-prod-kafka
-    restart: always
-    ports:
-      - "9092:9092"
-      - "39092:39092"
-    environment:
-      - KAFKA_ENABLE_KRAFT=no
-      - KAFKA_CFG_BROKER_ID=1
-      - KAFKA_CFG_ZOOKEEPER_CONNECT=tolink-prod-zookeeper:2181
-      - KAFKA_CFG_LISTENERS=INTERNAL://:29092,EXTERNAL://:9092,PUBLIC://:39092
-      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=INTERNAL:SASL_PLAINTEXT,EXTERNAL:SASL_PLAINTEXT,PUBLIC:SASL_PLAINTEXT
-      - KAFKA_CFG_INTER_BROKER_LISTENER_NAME=INTERNAL
-      - KAFKA_CFG_ADVERTISED_LISTENERS=INTERNAL://tolink-prod-kafka:29092,EXTERNAL://${HOST_VPN_IP:-100.86.10.52}:9092,PUBLIC://${HOST_PUBLIC_KAFKA_ADDR:-103.205.254.30:39092}
-      - ALLOW_PLAINTEXT_LISTENER=yes
-      - KAFKA_CFG_SASL_ENABLED_MECHANISMS=PLAIN
-      - KAFKA_CFG_SASL_MECHANISM_INTER_BROKER_PROTOCOL=PLAIN
-      - KAFKA_INTER_BROKER_USER=root
-      - KAFKA_INTER_BROKER_PASSWORD=ql354210
-      - KAFKA_CLIENT_USERS=root
-      - KAFKA_CLIENT_PASSWORDS=ql354210
-    networks:
-      - tolink-net
-    volumes:
-      - kafka_data:/bitnami/kafka
-    depends_on:
-      zookeeper:
-        condition: service_healthy
-    healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "bash -ec 'cat >/tmp/kafka_client.properties <<EOF\nsecurity.protocol=SASL_PLAINTEXT\nsasl.mechanism=PLAIN\nsasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username=\"'\"$${KAFKA_CLIENT_USERS}\"'\" password=\"'\"$${KAFKA_CLIENT_PASSWORDS}\"'\";\nEOF\n/opt/bitnami/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:29092 --command-config /tmp/kafka_client.properties >/dev/null 2>&1'",
-        ]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-
-  kafka-ui:
-    image: provectuslabs/kafka-ui:latest
-    container_name: tolink-prod-kafka-ui
-    restart: always
-    ports:
-      - "9081:8080"
-    environment:
-      - KAFKA_CLUSTERS_0_NAME=tolink-prod-cluster
-      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=tolink-prod-kafka:29092
-      - KAFKA_CLUSTERS_0_PROPERTIES_SECURITY_PROTOCOL=SASL_PLAINTEXT
-      - KAFKA_CLUSTERS_0_PROPERTIES_SASL_MECHANISM=PLAIN
-      - KAFKA_CLUSTERS_0_PROPERTIES_SASL_JAAS_CONFIG=org.apache.kafka.common.security.plain.PlainLoginModule required username="root" password="ql354210";
-      - DYNAMIC_CONFIG_ENABLED=true
-    networks:
-      - tolink-net
-    depends_on:
-      kafka:
-        condition: service_healthy
-
   loki:
     image: grafana/loki:2.9.8
     container_name: tolink-loki
@@ -205,6 +129,4 @@ volumes:
   minio_data:
   qdrant_data:
   manticore_data:
-  zookeeper_data:
-  kafka_data:
   loki_data:
