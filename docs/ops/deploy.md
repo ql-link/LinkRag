@@ -13,13 +13,13 @@
 | `mysql` | `mysql:8.0` | 3306 | 用户、LLM 配置、用量记录、Chunk 状态 | ✅ |
 | `redis` | `redis:7.2-alpine` | 6379 | 召回 session 并发槽位等原子协调能力 | ✅ |
 | `minio` | `minio/minio` | 9000 / 9001 | 原始文档、解析产物的对象存储 | 二选一¹ |
-| `qdrant` | `qdrant/qdrant` | 6333 / 6334 | 稠密 / 稀疏 / BM25 索引存储 | ✅ |
-| `manticore` | `manticoresearch/manticore:27.1.5` | 9306 / 9308 | 可选 BM25 全文索引；迁移期与 Qdrant 双写 | 按需 |
+| `qdrant` | `qdrant/qdrant:v1.17.1` | 6333 / 6334 | 稠密 / learned sparse 向量存储 | ✅ |
+| `manticore` | `manticoresearch/manticore:27.1.5` | 9306 / 9308 | BM25 全文索引 | ✅ |
 | `rabbitmq` | `rabbitmq:4.3.4-management` | 5672 / 15672 | 异步消息中台 | ✅ |
 | `loki` | `grafana/loki:2.9.8` | 3100 | 集中日志存储与查询 | ✅ |
 
 注 1：当前可用对象存储实现为 `STORAGE_TYPE=minio`；OSS 适配器仍为占位实现。
-注 2：当前生产固定使用 Qdrant，不再部署 Elasticsearch。BM25 通过 Qdrant sparse vector + `Modifier.IDF` 承载。
+注 2：当前生产固定使用 Qdrant 承载 dense / learned sparse；BM25 由 Manticore 承载。
 
 ## Compose 文件分层
 
@@ -28,6 +28,7 @@
 | `docker-compose.yml` | 主机服务器中间件栈，作为当前主机部署入口 |
 | `deploy/host-server/docker-compose.yml` | 主机服务器中间件栈的 deploy 目录版本 |
 | `deploy/cloud-server/docker-compose.yml` | 云服务器生产栈：RabbitMQ、Java、Python RAG、Web、Promtail |
+| `deploy/cloud-server/data-compose.yml` | 云服务器生产数据栈：MySQL、Redis、MinIO、Qdrant、Manticore、Loki |
 | `deploy/docker-compose.yml` | 保留的 Python RAG 单服务部署入口 |
 | `deploy/dev-server/docker-compose.yml` | Primary 开发栈：隔离的 MySQL、Redis、RabbitMQ、Qdrant、Manticore、Loki，以及 dev 应用 |
 
@@ -59,8 +60,8 @@ Java 的 `application-prod.yml` 随镜像发布，并通过 `spring.config.impor
 `application-prod-local.yml`；Cloud Compose 只读挂载该密钥文件，不再用服务器目录覆盖镜像中的
 基础配置。
 
-生产 RAG/Java 继续通过 Primary 的 Tailscale 地址访问 Qdrant；RabbitMQ 与生产应用同机部署在
-Cloud 的 `tolink-app-net`，容器名 `tolink-rabbitmq`。管理端口只绑定 Cloud 回环地址；AMQP
+生产 RAG 通过 Cloud `tolink-app-net` 内的容器 DNS `tolink-qdrant:6333` 访问独立 Qdrant，
+Qdrant 不映射宿主机端口。RabbitMQ 与生产应用同机部署，容器名 `tolink-rabbitmq`。管理端口只绑定 Cloud 回环地址；AMQP
 端口仅绑定 Cloud 的 Tailscale 地址 `100.77.31.79:5672`，供本地 `prod` profile 调试，不发布到公网。
 Broker 与应用凭据分别保存在 `/opt/tolink/rabbitmq/broker.env` 和
 `/opt/tolink/rabbitmq/app.env`，权限均为 `600`。

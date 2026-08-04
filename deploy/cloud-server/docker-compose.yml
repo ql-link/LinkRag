@@ -1,7 +1,7 @@
 # 云服务器应用栈。
 # 包含 Java 管理端、Python RAG 服务、前端，以及跟随应用部署的 Promtail。
-# MySQL / Redis / MinIO / Manticore / Loki 已部署在云服务器的 tolink-app-net 内网；
-# Qdrant 仍由主机服务器提供；RabbitMQ 与应用同机部署。
+# MySQL / Redis / MinIO / Qdrant / Manticore / Loki 已部署在云服务器的
+# tolink-app-net 内网；RabbitMQ 与应用同机部署。
 #
 # 用法示例：
 #   cd deploy/cloud-server
