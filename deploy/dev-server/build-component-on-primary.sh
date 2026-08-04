@@ -150,11 +150,12 @@ update_tag() {
 
 if [[ "$component" == rag ]]; then
   config_source="$source_dir/deploy/dev-server"
-  for name in docker-compose.yml Dockerfile.service loki-config.yml promtail-config.yml nginx.conf rabbitmq.conf \
+  for name in docker-compose.yml Dockerfile.service loki-config.yml promtail-config.yml nginx.conf \
     configure-dev-env.sh build-component-on-primary.sh \
     generate-dev-llm-migration-inputs.py; do
     install -m 600 "$config_source/$name" "$dev_root/$name"
   done
+  install -m 0644 "$config_source/rabbitmq.conf" "$dev_root/rabbitmq.conf"
   chmod 700 "$dev_root/configure-dev-env.sh" "$dev_root/build-component-on-primary.sh"
   install -d -m 700 "$dev_root/config/rag"
   install -m 0644 "$source_dir/.env.development" "$dev_root/config/rag/.env.development"
