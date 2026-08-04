@@ -194,10 +194,10 @@ class RecallConfig(BaseModel):
     dense_top_k: int = 100
     dense_score_threshold: float = 0.0
     recall_enabled_sources: list[str] = ["bm25", "sparse", "dense"]
-    fusion_bm25_weight: float = 0.2
-    fusion_sparse_weight: float = 0.3
-    fusion_dense_weight: float = 0.5
-    rerank_top_n: int = 8
+    fusion_bm25_weight: float = 0.15
+    fusion_sparse_weight: float = 0.15
+    fusion_dense_weight: float = 0.70
+    rerank_top_n: int = 10
     enable_rerank: bool = False
     recall_strict: bool = False
 

@@ -44,6 +44,7 @@ ParseResult
 | `ParseResult` | `models.py` | 结构化解析结果，包含 `elements/tables/images/source_file`；`to_markdown()` 把描述字段重新编码为标记（与解码对称） |
 | `MarkdownEnhancementOrchestrator` | `orchestrator.py` | 按配置触发表格和图片增强 |
 | `HeadingHierarchyProcessor` | `heading_hierarchy.py` | 可选标题层级后处理：门禁命中后应用标题插入计划，并返回同构更新后的 Markdown + `ParseResult` |
+| `aprocess_existing_markdown_heading_hierarchy` | `heading_hierarchy.py` | 已有 Markdown 的标题处理适配器：复用同一处理器，并统一构造运行配置与四项标题 metadata |
 | `TableDescriber` | `llm_integration.py` | 把表格总结**编码**为标记 `[表格总结: …]` 写入对应元素 content |
 | `ImageDescriber` | `llm_integration.py` | 把图片视觉描述**编码**为标记 `[视觉描述\|src=<url>: …]` 写入 content |
 | `ProviderTableClient` / `ProviderVisionClient` | `provider_clients.py` | 调用系统 LLM Provider 完成增强 |
@@ -87,8 +88,6 @@ ParseResult
 
 - `MARKDOWN_PARSER_ENABLE_TABLE_ENHANCEMENT`
 - `MARKDOWN_PARSER_ENABLE_IMAGE_ENHANCEMENT`
-- `MARKDOWN_PARSER_TABLE_MODEL`
-- `MARKDOWN_PARSER_VISION_MODEL`
 - `MARKDOWN_PARSER_LLM_TIMEOUT_MS`
 - `MARKDOWN_PARSER_VISION_CONCURRENCY`
 - `MARKDOWN_PARSER_ENABLE_HEADING_HIERARCHY`
@@ -98,15 +97,9 @@ ParseResult
 - `MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET`
 - `MARKDOWN_PARSER_HEADING_LLM_MAX_OUTPUT_TOKENS`
 
-表格增强使用文本能力；图片增强使用视觉能力。有 `user_id` 的生产解析路径按“用户 active +
-default → LinkRag active + default 系统预设”解析：表格增强使用 `CHAT`，图片增强使用 `VISION`。
-两层都未命中时抛 `EnhancementModelMissingError`。无 `user_id` 的调试入口使用遗留 env 系统配置：
-
-- `SYSTEM_LLM_PROVIDER`
-- `SYSTEM_LLM_API_KEY`
-- `SYSTEM_LLM_API_BASE`
-- `SYSTEM_LLM_MODEL_CHAT`
-- `SYSTEM_LLM_MODEL_VISION`
+表格增强使用文本能力；图片增强使用视觉能力。解析路径通过数据集配置中的精确
+`enhancement_chat_config_id` / `enhancement_vision_config_id` 解析 `CHAT` / `VISION` 模型；
+未配置或配置不可用时抛 `EnhancementModelMissingError`，不再读取 `SYSTEM_LLM_*` 环境变量。
 
 PDF 解析阶段如果提供了 `image_bytes_by_url`，图片增强会优先使用内存图片 bytes；缺失时才回退读取 Markdown 中的图片 URL 或本地路径。
 
@@ -120,7 +113,7 @@ Java 规范化 Markdown 的 RAW 图片由 parse-task 层先完成对象存储范
 模型标识、图片数量或图片短指纹以及安全调用栈。图片 URL 会移除 query/fragment，
 不会记录签名参数；表格正文、图片 base64、prompt 和模型响应正文均不进入日志。
 
-标题层级后处理是可选增强，默认关闭。配置关闭时行为与普通 `MarkdownParser.parse()` 等价，不执行门禁，也不读取模型配置。配置开启且门禁命中时，标题生成器按“发起用户默认 → LinkRag 系统默认预设”解析 `CHAT` 模型并生成标题插入计划；无 `user_id` 的调试入口使用遗留 env 系统级 `CHAT` 配置。该模块不新增标题专用模型选择参数，也不允许 LLM 返回整篇 Markdown。
+标题层级后处理是可选增强，默认关闭。配置关闭时行为与普通 `MarkdownParser.parse()` 等价，不执行门禁，也不读取模型配置。配置开启且门禁命中时，标题生成器使用数据集精确绑定的 `CHAT` 模型生成标题插入计划；未绑定时不执行增强。该模块不新增标题专用模型选择参数，也不允许 LLM 返回整篇 Markdown。
 
 门禁命中场景：
 
@@ -128,9 +121,13 @@ Java 规范化 Markdown 的 RAW 图片由 parse-task 层先完成对象存储范
 - 全篇只有同级 heading，heading 数达到 `MARKDOWN_PARSER_HEADING_FLAT_MIN_HEADINGS`（默认/下限 `5`），且存在章节编号或常见章节短语等层级线索。
 - 已有多级 heading，但 `total_tokens / heading_count` 达到 `MARKDOWN_PARSER_HEADING_SPARSE_TOKENS_PER_HEADING`（默认 `1536`，下限 `1024`）。
 
-标题写回只支持插入新 heading，等级限制为 `#` 到 `#####`。插入计划的 `line` 始终是原始 Markdown 行号，写回时先按原始行号分组，再一次性重建 Markdown，避免前序插入导致后续行号漂移。写回后必须重新走 `MarkdownParser.parse()`，因此对外最终 Markdown 与 `ParseResult` 来自同一份处理后的文本；splitter 不需要感知标题来源，仍按 `heading_level` / `heading_text` / `heading_trail` 消费。标题生成是显式开启能力：开启后如果门禁命中但用户默认与 LinkRag 系统默认预设均无 `CHAT` 配置、LLM 调用失败、响应无法解析或计划校验失败，解析任务失败，不静默降级。
+标题写回只支持插入新 heading，等级限制为 `#` 到 `#####`。插入计划的 `line` 始终是原始 Markdown 行号，写回时先按原始行号分组，再一次性重建 Markdown，避免前序插入导致后续行号漂移。候选位置以 parser-confirmed `ParseResult` 为唯一结构权威，由文档起点、各元素 `start_line` 和文档末尾组成；它们同时是计划校验器强制执行的代码级 allowlist。因此 paragraph、list、blockquote 等完整块的内部行不能插入标题，代码块、表格和公式块则仍允许在自身 `start_line` 前插入。若 parser 已把首元素识别为从第 0 行开始的 YAML/TOML `front_matter`，候选位置不会暴露 `0..end_line` 闭区间，最早安全位置为 closing fence 后的 `end_line + 1`；计划校验器会继续独立拒绝该闭区间内的插入。
 
-标题生成器的单次输入受 `MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET` 控制（默认 `65536`，允许范围 `2048` - `262144`）：预算内优先发送带原始行号的全文 Markdown；超预算时构造压缩结构摘要，保留门禁原因、标题指标、已有标题树、候选插入位置、protected block 边界和元素 preview，再要求 LLM 输出标题插入计划。输出插入计划的上限由 `MARKDOWN_PARSER_HEADING_LLM_MAX_OUTPUT_TOKENS` 控制（默认 `4096`，允许范围 `512` - `65536`）。默认值按系统默认 `qwen3.5-flash` 的百万级上下文能力放宽，但仍保留应用侧上限，避免标题后处理在长文上无限扩大成本和延迟。
+写回后必须重新走 `MarkdownParser.parse()`，因此对外最终 Markdown 与 `ParseResult` 来自同一份处理后的文本。原文含 `front_matter` 时，重解析结果还必须满足：首元素仍为 `front_matter`、`start_line == 0`、content 与写回前逐字符相同、`end_line` 不变；任一不变量失败都会拒绝整份计划。splitter 不需要感知标题来源，仍按 `heading_level` / `heading_text` / `heading_trail` 消费，并继续把 parser 识别的 `front_matter` 作为独立结构保护块。标题生成是显式开启能力：开启后如果门禁命中但用户默认与 LinkRag 系统默认预设均无 `CHAT` 配置、LLM 调用失败、响应无法解析或计划校验失败，解析任务失败，不静默降级。
+
+已有 Markdown 通过 `aprocess_existing_markdown_heading_hierarchy()` 进入同一处理器。适配器以 Settings 中的阈值为基础，只用数据集 `enhancement_config` 覆盖开关，并统一返回 `heading_hierarchy_enabled/applied/reason/insertions` 四项 metadata。原生 Markdown 与其他解析来源共享上述 `front_matter` 候选、计划校验和写回后结构不变量，不在适配层重复识别 YAML/TOML fence。
+
+标题生成器的单次输入受 `MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET` 控制（默认 `65536`，允许范围 `2048` - `262144`）：预算内优先发送带原始行号的全文 Markdown；超预算时构造压缩结构摘要，保留门禁原因、标题指标、已有标题树、完整候选插入行、protected block 边界和元素 preview，再要求 LLM 输出标题插入计划。全文与压缩模式共用同一 system prompt 和同一完整候选 allowlist；system prompt 只定义稳定 JSON/行坐标/标题字段协议，user prompt 只承载当前文档结构上下文。输出插入计划的上限由 `MARKDOWN_PARSER_HEADING_LLM_MAX_OUTPUT_TOKENS` 控制（默认 `4096`，允许范围 `512` - `65536`）。默认值按系统默认 `qwen3.5-flash` 的百万级上下文能力放宽，但仍保留应用侧上限，避免标题后处理在长文上无限扩大成本和延迟。
 
 ## 5. 使用方式
 

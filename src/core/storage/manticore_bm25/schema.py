@@ -1,7 +1,7 @@
 """Manticore BM25 后端的命名常量与表结构 DDL。
 
 与 ES / Qdrant 两个既有后端的关键差异：BM25 按 ``dataset_id`` 物理建表（一个
-dataset 一张 Manticore RT 表），不走 Qdrant 那套按 user 哈希分桶（``BucketRouter``）
+dataset 一张 Manticore RT 表）
 或 ES 单一全局 index 的模式——IDF 与 avgdl 天然只统计这个 dataset 自己的语料，
 不需要额外的 tenant filter 把统计口径圈起来。
 """

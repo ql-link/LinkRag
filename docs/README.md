@@ -34,6 +34,8 @@
 | [workflow_engine.md](internals/workflow_engine.md) | 轻量流程编排引擎 |
 | [recall_pipeline.md](internals/recall_pipeline.md) | 召回 Pipeline 架构 |
 | [recall_generation.md](internals/recall_generation.md) | 召回后 RAG 答案生成（正文回填/上下文拼装/流式生成） |
+| [ltr_quality_alignment.md](internals/ltr_quality_alignment.md) | LambdaMART 质检对齐、兼容保留项与上线边界 |
+| [ltr_quality_test_plan.md](internals/ltr_quality_test_plan.md) | LambdaMART 质检成果生产化完整测试方案、场景矩阵与发布门禁 |
 | [recall_http_api.md](internals/recall_http_api.md) | 召回 HTTP 入口与会话/鉴权 |
 | [wiki_heading_tree.md](internals/wiki_heading_tree.md) | Wiki 标题树构建、搜索、权限、游标与生命周期 |
 | [file_parser.md](internals/file_parser.md) | 文件解析器（含回退链） |
@@ -42,7 +44,7 @@
 | [vectorization.md](internals/vectorization.md) | 向量化模块（dense） |
 | [sparse_vector.md](internals/sparse_vector.md) | 稀疏向量编码与索引 |
 | [preprocessor.md](internals/preprocessor.md) | BM25 预分词（RAGFlow） |
-| [bm25_eval.md](internals/bm25_eval.md) | BM25 召回评测（Qdrant/Manticore）与工具 |
+| [bm25_eval.md](internals/bm25_eval.md) | Manticore BM25 召回评测口径 |
 | [chunk_fact_storage.md](internals/chunk_fact_storage.md) | Chunk SQL 事实存储（真值源/状态机） |
 | [mq.md](internals/mq.md) | MQ 中间件实现 |
 | [llm.md](internals/llm.md) | LLM 调用模块 |
@@ -56,7 +58,6 @@
 | --- | --- |
 | [deploy.md](ops/deploy.md) | 部署指南 |
 | [configure.md](ops/configure.md) | 配置详解 |
-| [manticore_bm25_migration.md](ops/manticore_bm25_migration.md) | Manticore BM25 双写、回填、影子读、切换与回滚 |
 
 ### [contributing.md](contributing.md) — 贡献者规范
 

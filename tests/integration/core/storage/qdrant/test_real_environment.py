@@ -9,7 +9,6 @@ import pytest
 from src.config import settings
 from src.core.encoding.sparse.models import SparseVector
 from src.core.storage.qdrant import (
-    BucketRouter,
     IndexedPoint,
     QdrantIndexStore,
     SparseIndexedPoint,
@@ -40,27 +39,25 @@ pytestmark = [
 async def test_should_upsert_retrieve_and_delete_point_when_real_qdrant_enabled():
     pytest.importorskip("qdrant_client", reason="qdrant-client is required for real Qdrant test")
 
-    collection_prefix = f"test_qdrant_vector_{uuid4().hex[:12]}"
-    bucket_router = BucketRouter(bucket_count=1, prefix=collection_prefix)
+    collection_name = f"test_qdrant_vector_{uuid4().hex[:12]}"
     store = QdrantIndexStore(
-        bucket_router=bucket_router,
+        collection_name=collection_name,
         host=settings.QDRANT_HOST,
         port=settings.QDRANT_PORT,
         api_key=getattr(settings, "QDRANT_API_KEY", None),
     )
-    collection_name = bucket_router.collection_name(0)
-    chunk_id = f"real-qdrant-{uuid4()}"
+    # 产品 chunk_id 由 ChunkRepository 生成 UUID；Qdrant point id 只接受 UUID/整数。
+    chunk_id = str(uuid4())
     point = IndexedPoint(
         chunk_id=chunk_id,
-        bucket_id=0,
         vector=[0.1, 0.2, 0.3],
         payload={"chunk_id": chunk_id, "user_id": 990001, "set_id": 990002, "doc_id": 990003},
     )
 
     try:
-        await store.ensure_collection(bucket_id=0, vector_size=3)
-        await store.upsert_points(bucket_id=0, points=[point])
-        assert await store.point_exists(bucket_id=0, chunk_id=chunk_id) is True
+        await store.ensure_collection(vector_size=3)
+        await store.upsert_points(points=[point])
+        assert await store.point_exists(chunk_id=chunk_id) is True
 
         client = await store._get_client()
         records = await client.retrieve(
@@ -74,8 +71,8 @@ async def test_should_upsert_retrieve_and_delete_point_when_real_qdrant_enabled(
         assert records[0].payload["doc_id"] == 990003
         assert records[0].vector
 
-        await store.delete_points(bucket_id=0, chunk_ids=[chunk_id])
-        assert await store.point_exists(bucket_id=0, chunk_id=chunk_id) is False
+        await store.delete_points(chunk_ids=[chunk_id])
+        assert await store.point_exists(chunk_id=chunk_id) is False
     finally:
         with suppress(Exception):
             client = await store._get_client()
@@ -91,16 +88,13 @@ async def test_named_vector_cleanup_should_preserve_sibling_payload_and_payload_
 
     pytest.importorskip("qdrant_client", reason="qdrant-client is required for real Qdrant test")
 
-    collection_prefix = f"test_qdrant_reconcile_{uuid4().hex[:12]}"
-    bucket_router = BucketRouter(bucket_count=1, prefix=collection_prefix)
+    collection_name = f"test_qdrant_reconcile_{uuid4().hex[:12]}"
     store = QdrantIndexStore(
-        bucket_router=bucket_router,
+        collection_name=collection_name,
         host=settings.QDRANT_HOST,
         port=settings.QDRANT_PORT,
         api_key=getattr(settings, "QDRANT_API_KEY", None),
     )
-    bucket_id = 0
-    collection_name = bucket_router.collection_name(bucket_id)
     dense_name = str(getattr(settings, "DENSE_VECTOR_QDRANT_VECTOR_NAME", "dense"))
     sparse_name = str(getattr(settings, "SPARSE_VECTOR_QDRANT_VECTOR_NAME", "sparse_text"))
     full_chunk_id = str(uuid4())
@@ -119,72 +113,59 @@ async def test_named_vector_cleanup_should_preserve_sibling_payload_and_payload_
     }
     dense_point = IndexedPoint(
         chunk_id=full_chunk_id,
-        bucket_id=bucket_id,
         vector=[0.1, 0.2, 0.3],
         payload=full_payload,
     )
     # ensure_points 只使用 payload；这里故意提供一个未写任何向量的 point。
     payload_only_point = IndexedPoint(
         chunk_id=payload_only_chunk_id,
-        bucket_id=bucket_id,
         vector=[0.9, 0.8, 0.7],
         payload=payload_only_payload,
     )
     sparse_point = SparseIndexedPoint(
         chunk_id=full_chunk_id,
-        bucket_id=bucket_id,
         vector_name=sparse_name,
         sparse_vector=SparseVector(indices=[1, 7], values=[0.25, 0.75]),
         payload=full_payload,
     )
 
     try:
-        await store.ensure_collection(bucket_id=bucket_id, vector_size=3)
-        await store.ensure_points(
-            bucket_id=bucket_id,
-            points=[dense_point, payload_only_point],
-        )
-        await store.upsert_points(bucket_id=bucket_id, points=[dense_point])
-        await store.upsert_sparse_vectors(bucket_id=bucket_id, points=[sparse_point])
+        await store.ensure_collection(vector_size=3)
+        await store.ensure_points(points=[dense_point, payload_only_point])
+        await store.upsert_points(points=[dense_point])
+        await store.upsert_sparse_vectors(points=[sparse_point])
 
         chunk_ids = [full_chunk_id, payload_only_chunk_id]
         assert await store.get_named_vector_presence(
-            bucket_id=bucket_id,
             chunk_ids=chunk_ids,
             vector_name=dense_name,
         ) == {full_chunk_id: True, payload_only_chunk_id: False}
         assert await store.get_named_vector_presence(
-            bucket_id=bucket_id,
             chunk_ids=chunk_ids,
             vector_name=sparse_name,
         ) == {full_chunk_id: True, payload_only_chunk_id: False}
         assert (
             await store.point_exists(
-                bucket_id=bucket_id,
                 chunk_id=payload_only_chunk_id,
             )
             is True
         )
 
         await store.delete_named_vectors(
-            bucket_id=bucket_id,
             chunk_ids=[full_chunk_id],
             vector_name=dense_name,
         )
 
         assert await store.get_named_vector_presence(
-            bucket_id=bucket_id,
             chunk_ids=[full_chunk_id],
             vector_name=dense_name,
         ) == {full_chunk_id: False}
         assert await store.get_named_vector_presence(
-            bucket_id=bucket_id,
             chunk_ids=[full_chunk_id],
             vector_name=sparse_name,
         ) == {full_chunk_id: True}
         assert (
             await store.point_exists(
-                bucket_id=bucket_id,
                 chunk_id=full_chunk_id,
             )
             is True

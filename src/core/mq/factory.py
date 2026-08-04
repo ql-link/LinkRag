@@ -157,6 +157,7 @@ class MQFactory:
                 "url": config["url"],
                 "exchange_name": config.get("exchange_name", ""),
                 "exchange_type": config.get("exchange_type", "direct"),
+                "dlq_suffix": self.get_retry_policy().dlq_suffix,
             }
         else:
             kwargs = {}

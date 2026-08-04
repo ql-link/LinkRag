@@ -118,6 +118,18 @@ MQ 配置统一来自 `src/config.py::Settings` 和 `.env`：
 - `RABBITMQ_EXCHANGE_TYPE`
 - `RABBITMQ_PREFETCH_COUNT`
 
+当前 Dev/Prod 默认使用 RabbitMQ。每个业务 Queue 都统一声明：
+
+- durable Queue：`<业务名>`
+- durable direct DLX：`<业务名>.DLX`
+- durable DLT Queue：`<业务名>.DLT`
+- 原 Queue 绑定 `x-dead-letter-exchange=<业务名>.DLX` 与
+  `x-dead-letter-routing-key=<业务名>`
+
+普通消息通过 RabbitMQ 默认交换器按 Queue 名路由。Kafka partition key 不参与默认交换器
+路由，Python 发送端仅将其保留为 AMQP `message_id`。发送 Channel 开启 publisher confirms
+与 mandatory return，目标 Queue 不存在时必须显式失败，不能静默丢消息。
+
 Kafka Topic 初始化还会读取：
 
 - `PARSE_TASK_TOPIC`
@@ -139,8 +151,8 @@ Kafka Topic 初始化还会读取：
 - 死信目标命名：`<原 topic / queue> + MQ_DLQ_SUFFIX`（默认 `.DLT`）。
   - Kafka：`topic_admin.build_default_topic_specs()` 为每个业务 topic 同规格创建 `.DLT`，
     启动时随 `ensure_topics()` 幂等装配。
-  - RabbitMQ：`RabbitMQReceiver.start()` 期声明 `<queue>.DLX` 交换器 + 死信队列，
-    原队列声明附 `x-dead-letter-exchange` 参数。
+  - RabbitMQ：Sender/Receiver 使用同一 helper 幂等声明 `<queue>.DLX`、原 Queue 与死信
+    Queue，确保 Java/Python 任一端先启动时声明参数一致。
 - 死信消息头携带 `x-original-topic` / `x-exception-class` / `x-exception-message` /
   `x-retry-count` / `x-original-key` / `x-failed-at`，body 沿用原始字节不重新序列化。
 - Kafka 位点提交按 `{TopicPartition: offset + 1}` 精确提交（不再使用无参 commit，

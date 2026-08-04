@@ -57,7 +57,6 @@ async def test_presence_requires_target_named_vector_not_just_point() -> None:
     store = QdrantIndexStore(client=fake)
 
     result = await store.get_named_vector_presence(
-        bucket_id=0,
         chunk_ids=["payload-only", "hybrid", "sparse-only", "missing-point"],
         vector_name="dense",
     )
@@ -77,13 +76,11 @@ async def test_delete_named_vectors_preserves_point_payload_and_sibling_vector()
     store = QdrantIndexStore(client=fake)
 
     await store.delete_named_vectors(
-        bucket_id=0,
         chunk_ids=["c1"],
         vector_name="dense",
     )
     # 重复清理同一路仍然成功。
     await store.delete_named_vectors(
-        bucket_id=0,
         chunk_ids=["c1", "already-missing-point"],
         vector_name="dense",
     )
@@ -98,12 +95,10 @@ async def test_missing_collection_is_idempotent_for_presence_and_delete() -> Non
     store = QdrantIndexStore(client=fake)
 
     result = await store.get_named_vector_presence(
-        bucket_id=0,
         chunk_ids=["c1"],
         vector_name="dense",
     )
     await store.delete_named_vectors(
-        bucket_id=0,
         chunk_ids=["c1"],
         vector_name="dense",
     )
@@ -131,12 +126,10 @@ async def test_missing_named_vector_schema_is_treated_as_absent_and_delete_succe
     store = QdrantIndexStore(client=_ErrorClient(RuntimeError("Not existing vector name dense")))
 
     assert await store.get_named_vector_presence(
-        bucket_id=0,
         chunk_ids=["c1"],
         vector_name="dense",
     ) == {"c1": False}
     await store.delete_named_vectors(
-        bucket_id=0,
         chunk_ids=["c1"],
         vector_name="dense",
     )
@@ -146,12 +139,10 @@ async def test_collection_removed_after_check_is_idempotent() -> None:
     store = QdrantIndexStore(client=_ErrorClient(RuntimeError("Collection chunks doesn't exist")))
 
     assert await store.get_named_vector_presence(
-        bucket_id=0,
         chunk_ids=["c1"],
         vector_name="dense",
     ) == {"c1": False}
     await store.delete_named_vectors(
-        bucket_id=0,
         chunk_ids=["c1"],
         vector_name="dense",
     )
@@ -162,7 +153,6 @@ async def test_unexpected_presence_error_is_wrapped() -> None:
 
     with pytest.raises(QdrantStoreError, match="Failed to inspect named vector"):
         await store.get_named_vector_presence(
-            bucket_id=0,
             chunk_ids=["c1"],
             vector_name="dense",
         )

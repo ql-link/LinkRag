@@ -65,14 +65,12 @@ class TransactionalPipelineMixin:
         self,
         *,
         chunk_id: str,
-        fallback_bucket_id: int,
     ) -> None:
         """
         回查 MySQL 删除态后，尽力清理可能残留的 Qdrant point。
 
         Args:
             chunk_id: 需要检查并清理的 chunk 标识。
-            fallback_bucket_id: 回查不到记录 bucket 时使用的原 bucket。
 
         Returns:
             None.
@@ -84,21 +82,17 @@ class TransactionalPipelineMixin:
             if record is None or record.lifecycle_status not in CHUNK_LIFECYCLE_INACTIVE_STATUSES:
                 return
 
-            bucket_id = record.bucket_id if record.bucket_id is not None else fallback_bucket_id
             try:
-                await self.qdrant_store.delete_points(bucket_id=bucket_id, chunk_ids=[chunk_id])
+                await self.qdrant_store.delete_points(chunk_ids=[chunk_id])
             except Exception as exc:
                 logger.bind(
                     event="stale_vector_cleanup_failed",
                     outcome="skipped",
                     chunk_id=chunk_id,
-                    bucket_id=bucket_id,
                     error_type=type(exc).__name__,
                     error_message=truncate_log_value(exc),
                     stack_trace=safe_exception_stack(exc),
-                ).warning(
-                    "[TransactionalPipelineMixin] Failed to cleanup stale Qdrant point"
-                )
+                ).warning("[TransactionalPipelineMixin] Failed to cleanup stale Qdrant point")
         except Exception as exc:
             logger.bind(
                 event="stale_vector_cleanup_inspection_failed",
@@ -107,6 +101,4 @@ class TransactionalPipelineMixin:
                 error_type=type(exc).__name__,
                 error_message=truncate_log_value(exc),
                 stack_trace=safe_exception_stack(exc),
-            ).warning(
-                "[TransactionalPipelineMixin] Failed to inspect delete state before cleanup"
-            )
+            ).warning("[TransactionalPipelineMixin] Failed to inspect delete state before cleanup")

@@ -12,9 +12,8 @@ named-dense 解耦后，dense 与 sparse 各自是 Qdrant 命名向量，写在�
     4. 断言 MySQL 两列均 SUCCESS，且同一 Qdrant point 同时带 ``dense`` 与
        ``sparse_text`` 两个命名向量——这正是解耦要守住的共存性。
 
-注：dense embedder 在当前实现按发起用户解析（LINK-91），故 monkeypatch
-``aresolve_user_chunk_embedding_pipeline`` 注入确定性 3 维管线，并把
-``DENSE_VECTOR_DIMENSION`` 临时设为 3 让维度校验通过——避免依赖真实 EMBEDDING 配置。
+注：测试通过构造参数注入确定性 3 维 dense 管线，并把
+``DENSE_VECTOR_DIMENSION`` 临时设为 3 让维度校验通过，避免依赖外部 embedding 服务。
 """
 
 from __future__ import annotations
@@ -40,8 +39,7 @@ from src.core.storage.chunks.constants import (
     SPARSE_VECTOR_STATUS_INDEXED,
     SPARSE_VECTOR_STATUS_PENDING,
 )
-from src.core.storage.qdrant import BucketRouter, QdrantIndexStore
-from src.core.storage.vector import pipeline as pipeline_mod
+from src.core.storage.qdrant import QdrantIndexStore
 from src.core.storage.vector.draft_factory import ChunkDraftFactory
 from src.core.storage.vector.models import ChunkStorageRequest
 from src.core.storage.vector.pipeline import VectorStoragePipeline
@@ -127,9 +125,8 @@ async def test_should_keep_dense_sparse_qdrant_and_mysql_consistent_for_real_chu
     pytest.importorskip("qdrant_client", reason="qdrant-client is required for real Qdrant test")
 
     user_id, set_id, doc_id = 990011, 990012, 990013
-    collection_prefix = f"test_dense_sparse_{uuid4().hex[:12]}"
-    bucket_router = BucketRouter(bucket_count=1, prefix=collection_prefix)
-    qdrant_store = QdrantIndexStore(bucket_router=bucket_router)
+    collection_name = f"test_dense_sparse_{uuid4().hex[:12]}"
+    qdrant_store = QdrantIndexStore(collection_name=collection_name)
     repository = ChunkRepository()
     dense_name = getattr(settings, "DENSE_VECTOR_QDRANT_VECTOR_NAME", "dense")
     sparse_name = getattr(settings, "SPARSE_VECTOR_QDRANT_VECTOR_NAME", "sparse_text")
@@ -146,8 +143,6 @@ async def test_should_keep_dense_sparse_qdrant_and_mysql_consistent_for_real_chu
         autoflush=False,
     )
 
-    bucket_id = bucket_router.route_user(user_id).bucket_id
-    collection_name = bucket_router.collection_name(bucket_id)
     chunk_ids = [
         "00000000-0000-4000-8000-000000000201",
         "00000000-0000-4000-8000-000000000202",
@@ -156,7 +151,7 @@ async def test_should_keep_dense_sparse_qdrant_and_mysql_consistent_for_real_chu
 
     service = VectorStoragePipeline(
         session_factory=session_factory,
-        draft_factory=ChunkDraftFactory(bucket_router=bucket_router),
+        draft_factory=ChunkDraftFactory(),
         repository=repository,
         qdrant_store=qdrant_store,
         embedding_pipeline=DeterministicEmbeddingPipeline(),
@@ -169,11 +164,7 @@ async def test_should_keep_dense_sparse_qdrant_and_mysql_consistent_for_real_chu
         qdrant_store=qdrant_store,
     )
 
-    # dense embedder 按发起用户解析（LINK-91）；测试注入确定性管线并放宽维度校验到 3 维。
-    async def _fake_resolve(_user_id):
-        return DeterministicEmbeddingPipeline()
-
-    monkeypatch.setattr(pipeline_mod, "aresolve_user_chunk_embedding_pipeline", _fake_resolve)
+    # 测试已通过构造参数注入确定性 dense 管线，只需放宽统一维度到 3。
     monkeypatch.setattr(settings, "DENSE_VECTOR_DIMENSION", _DENSE_DIM)
 
     try:
@@ -189,7 +180,6 @@ async def test_should_keep_dense_sparse_qdrant_and_mysql_consistent_for_real_chu
                         doc_id=doc_id,
                         set_id=set_id,
                         user_id=user_id,
-                        bucket_id=bucket_id,
                         content=content,
                         content_hash=f"hash-{cid}",
                         chunk_type="mixed",

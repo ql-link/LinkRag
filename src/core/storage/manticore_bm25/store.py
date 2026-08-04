@@ -1,6 +1,6 @@
 """Manticore BM25 存储：按 dataset_id 物理建表，coarse-only 原生 BM25。
 
-与 Qdrant BM25 后端（``qdrant_bm25/store.py``）的关键差异：
+Manticore BM25 存储约定：
 
 - **不需要客户端补算 TF/长度归一**：coarse 预分词字段由 Manticore 原生
   ``bm25a(k1, b)`` 计分，TF、长度归一、IDF 全部由对应 dataset 表的语料动态统计。

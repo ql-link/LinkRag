@@ -159,6 +159,8 @@ class RecallRequest:
             来自数据集级 ``recall_config.recall_strict``。
         fusion_*_weight_override: 可选三路融合权重覆盖；``None`` 时沿用 pipeline 装配期默认值。
             来自数据集级 ``recall_config``。
+        required_sources: 候选契约要求必须真实装配且成功执行的来源。与普通
+            ``enabled_sources`` 不同，这些来源缺失或执行失败时必须 fail closed。
     """
 
     query: str
@@ -177,6 +179,9 @@ class RecallRequest:
     fusion_sparse_weight_override: float | None = None
     fusion_dense_weight_override: float | None = None
     dataset_contexts: dict[int, object] | None = None
+    candidate_contract_version: str | None = None
+    candidate_profile: str | None = None
+    required_sources: list[str] | None = None
 
 
 @dataclass
@@ -217,9 +222,9 @@ class RecallPipelineConfig:
 
     parallel: bool = True
     strict: bool = False
-    fusion_bm25_weight: float = 0.2
-    fusion_sparse_weight: float = 0.3
-    fusion_dense_weight: float = 0.5
+    fusion_bm25_weight: float = 0.15
+    fusion_sparse_weight: float = 0.15
+    fusion_dense_weight: float = 0.70
 
     def __post_init__(self) -> None:
         for field_name in (

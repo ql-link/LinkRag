@@ -223,7 +223,6 @@ toLink-Rag/                         # 仓库根目录
 │   │       ├── bm25_retriever.py # 召回 Pipeline 适配器
 │   │       ├── manticore_bm25/   # Manticore BM25 写入、召回与表管理
 │   │       ├── qdrant/           # Qdrant 向量索引底座
-│   │       │   ├── bucket_router.py
 │   │       │   ├── constants.py
 │   │       │   ├── exceptions.py
 │   │       │   ├── models.py

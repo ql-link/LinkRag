@@ -24,7 +24,9 @@ ORM 或 `scripts/db/init.sql` 与 migration 不一致时，以 migration 为准�
 | [知识索引](#7-知识索引) | `kb_document_chunk`, `wiki_tree_node` | 10000 |
 | [Workflow 运行记录](#8-workflow-运行记录) | `workflow_run`, `workflow_node_run` | 10000 |
 
-所有表统一：`InnoDB` / `utf8mb4_unicode_ci`，主键自增从 `10000` 起。
+所有表统一：`InnoDB` / `utf8mb4` / `utf8mb4_unicode_ci`，主键自增从 `10000` 起。
+数据库默认值与存量基础表由 migration `0038` 统一；迁移只转换排序规则不一致的表，
+避免 `task_id` 等跨表文本比较触发 MySQL 1267 collation 冲突。
 
 ---
 
@@ -516,7 +518,7 @@ ORM：[`BlogAssetDB`](../../../src/models/db_models.py)
 - `uk_blog_asset_object_key(object_key)`
 - `idx_blog_asset_post_type(post_id, asset_type, is_deleted, created_at)`
 
-说明：博客 HTTP 工作流由 Java 侧负责；Python 侧迁移链负责创建共享库表。博客资源与反馈附件统一存入公开桶 `MINIO_PUBLIC_BUCKET`（默认 `tolink-public`，需由部署环境配置公开读策略）；原博客专用桶 `tolink-blog` 已并入该公开桶。
+说明：博客 HTTP 工作流由 Java 侧负责；Python 侧迁移链负责创建共享库表。博客资源与反馈附件的公开桶及匿名读策略由 Java 服务配置，RAG 服务不读取该配置。
 
 ---
 
@@ -564,7 +566,6 @@ ORM：[`ChunkRecordDB`](../../../src/models/chunk_record.py)
 | `doc_id` | BIGINT UNSIGNED | 文档 ID（对应原始文件） |
 | `set_id` | BIGINT UNSIGNED | 知识集 / 数据集 ID |
 | `user_id` | BIGINT UNSIGNED | 用户 ID |
-| `bucket_id` | INT NULL | 路由后的 Qdrant 物理桶编号（路由前为空） |
 | `content` | TEXT | Splitter 最终产出的可检索 Chunk 原文 |
 | `content_hash` | VARCHAR(64) | 内容 SHA-256 |
 | `chunk_type` | VARCHAR(32) | 当前允许：`paragraph` / `heading` / `list` / `blockquote` / `code_block` / `math_block` / `table` / `image` / `mixed` / `front_matter`；无数据库默认值 |

@@ -14,7 +14,6 @@ from .exceptions import (
     VectorRetrievalBackendError,
     VectorRetrievalConfigurationError,
     VectorRetrievalEncodingError,
-    VectorRetrievalUserConfigMissingError,
 )
 from .management_pipeline import VectorStorageManagementPipeline
 from .models import (
@@ -218,9 +217,7 @@ class VectorStorageFacade:
         """兼容入口：自动核对已禁用，不根据外部状态修改 MySQL。"""
         return await self.compensation_service.mark_failed_if_point_missing(chunk_ids)
 
-    async def reindex_failed_chunks(
-        self, chunk_ids: Sequence[str]
-    ) -> ChunkIndexingResult:
+    async def reindex_failed_chunks(self, chunk_ids: Sequence[str]) -> ChunkIndexingResult:
         """兼容入口：不自动重建，调用方应要求用户重试整篇文档。"""
         return await self.compensation_service.reindex_failed_chunks(chunk_ids)
 
@@ -238,7 +235,7 @@ class VectorStorageFacade:
         """基于 BGE-M3 稀疏向量在用户 / 知识集范围内召回最多 top-k 个 chunk。
 
         本方法是稀疏向量召回的**唯一对外入口**——内部把 query 走与写入链路同一份
-        BGE-M3 服务向量化，再到对应 bucket collection 上做 named sparse vector search
+        BGE-M3 服务向量化，再到统一业务 collection 上做 named sparse vector search
         （vector name 与写入侧共用 ``settings.SPARSE_VECTOR_QDRANT_VECTOR_NAME``，
         默认 ``sparse_text``），命中通过 payload filter 限定到当前 user / set。
 
@@ -293,9 +290,7 @@ class VectorStorageFacade:
         if not isinstance(set_id, int) or isinstance(set_id, bool) or set_id <= 0:
             raise ValueError(f"set_id must be a positive integer, got {set_id!r}")
         effective_top_k = (
-            top_k
-            if top_k is not None
-            else int(getattr(settings, "SPARSE_RETRIEVAL_TOP_K", 10))
+            top_k if top_k is not None else int(getattr(settings, "SPARSE_RETRIEVAL_TOP_K", 10))
         )
         effective_threshold = (
             score_threshold
@@ -307,13 +302,9 @@ class VectorStorageFacade:
             or isinstance(effective_top_k, bool)
             or effective_top_k <= 0
         ):
-            raise ValueError(
-                f"top_k must be a positive integer, got {effective_top_k!r}"
-            )
+            raise ValueError(f"top_k must be a positive integer, got {effective_top_k!r}")
         if effective_threshold < 0:
-            raise ValueError(
-                f"score_threshold must be >= 0, got {effective_threshold!r}"
-            )
+            raise ValueError(f"score_threshold must be >= 0, got {effective_threshold!r}")
 
         # 提前读取 vector_name：空 query / 配置错路径都需要它包装空 result。
         vector_name = self._sparse_vector_name()
@@ -382,10 +373,7 @@ class VectorStorageFacade:
                 "VectorStorageFacade requires qdrant_store to be configured for retrieval."
             )
 
-        # ───────────────────── ⑤ bucket 路由（与写入侧共用 BucketRouter）────────
-        bucket_route = self.qdrant_store.bucket_router.route_user(user_id)
-
-        # ───────────────────── ⑥ 构造 query_vector_spec 与 payload_filter ────────
+        # ───────────────────── ⑤ 构造 query_vector_spec 与 payload_filter ────────
         query_spec = SparseQueryVectorSpec(
             vector_name=vector_name,
             indices=list(sparse_vector.indices),
@@ -400,7 +388,6 @@ class VectorStorageFacade:
         # ───────────────────── ⑦ 调 store 底座（异常翻译）───────────────────────
         try:
             hits = await self.qdrant_store._search_chunks(
-                bucket_id=bucket_route.bucket_id,
                 query_vector_spec=query_spec,
                 payload_filter=payload_filter,
                 limit=effective_top_k,
@@ -436,7 +423,7 @@ class VectorStorageFacade:
 
         本方法是稠密向量召回的**唯一对外入口**——内部把 query 走与写入链路同一份
         ``ChunkEmbeddingPipeline`` 向量化（按 ``dataset_parse_config.dense_embedding_config_id``
-        精确解析），再到对应 bucket collection 上做 dense vector search，
+        精确解析），再到统一业务 collection 上做 dense vector search，
         命中通过 payload filter 限定到当前 user / set。
 
         **完全只读**：不动 MySQL ``dense_vector_status``、不调 Qdrant
@@ -503,9 +490,7 @@ class VectorStorageFacade:
         if not isinstance(set_id, int) or isinstance(set_id, bool) or set_id <= 0:
             raise ValueError(f"set_id must be a positive integer, got {set_id!r}")
         effective_top_k = (
-            top_k
-            if top_k is not None
-            else int(getattr(settings, "DENSE_RETRIEVAL_TOP_K", 10))
+            top_k if top_k is not None else int(getattr(settings, "DENSE_RETRIEVAL_TOP_K", 10))
         )
         effective_threshold = (
             score_threshold
@@ -517,16 +502,13 @@ class VectorStorageFacade:
             or isinstance(effective_top_k, bool)
             or effective_top_k <= 0
         ):
-            raise ValueError(
-                f"top_k must be a positive integer, got {effective_top_k!r}"
-            )
+            raise ValueError(f"top_k must be a positive integer, got {effective_top_k!r}")
         # dense 比 sparse 多一条 cosine 上界校验（§4.4.1 假设的代码层兜底）：
         # cosine 物理范围 [-1, 1]；本项目 score_threshold >= 0（"不过滤" = 0.0）；
         # > 1.0 会让 Qdrant 永远返 0 hits，调用方会误以为"没数据"。
         if effective_threshold < 0 or effective_threshold > 1.0:
             raise ValueError(
-                f"score_threshold must be in [0, 1] (cosine bound), "
-                f"got {effective_threshold!r}"
+                f"score_threshold must be in [0, 1] (cosine bound), " f"got {effective_threshold!r}"
             )
 
         # ───────────────────── ② 空 query 短路（与 sparse 完全相同） ─────────────
@@ -549,8 +531,7 @@ class VectorStorageFacade:
         # 显式写入 / management / 测试路径可注入 embedding_pipeline。
         if resolved_model is None and self._embedding_pipeline is None:
             raise VectorRetrievalConfigurationError(
-                "Dense vector recall is unavailable: "
-                "embedding_pipeline is not configured."
+                "Dense vector recall is unavailable: " "embedding_pipeline is not configured."
             )
         if self.qdrant_store is None:
             raise VectorRetrievalConfigurationError(
@@ -582,9 +563,7 @@ class VectorStorageFacade:
         # ValueError（空 query / 长度不一致）属于 caller 错误，由 ① / ② 段已拦下，
         # 不到这里。
         try:
-            dense_vector, _q_usage = await embedding_pipeline.aembed_query_detailed(
-                query
-            )
+            dense_vector, _q_usage = await embedding_pipeline.aembed_query_detailed(query)
         except Exception as exc:
             # 包含 httpx.HTTPStatusError / httpx.TimeoutException / 其它远程错误。
             # ValueError 经 ① / ② 段后不会到这一步，但理论上仍会被吞——这是预期，
@@ -596,8 +575,7 @@ class VectorStorageFacade:
         if _q_usage is not None:
             report_usage_nowait(
                 user_id=user_id,
-                provider_type=getattr(embedding_pipeline.embedder, "provider_type", "")
-                or "",
+                provider_type=getattr(embedding_pipeline.embedder, "provider_type", "") or "",
                 model_name=embedding_pipeline.embedding_model or "",
                 stage="recall",
                 operation="embed",
@@ -607,10 +585,7 @@ class VectorStorageFacade:
                 config_id=int(embedding_pipeline.embedder.config_id),
             )
 
-        # ───────────────────── ⑤ bucket 路由（与写入侧共用 BucketRouter）────────
-        bucket_route = self.qdrant_store.bucket_router.route_user(user_id)
-
-        # ───────────────────── ⑥ 构造 query_vector_spec 与 payload_filter ────────
+        # ───────────────────── ⑤ 构造 query_vector_spec 与 payload_filter ────────
         # spec 类型与 sparse 不同：dense vector name 由 QdrantIndexStore 统一读取。
         # payload_filter 完全复用 sparse 的 staticmethod（共用 _build_payload_filter）。
         query_spec = DenseQueryVectorSpec(vector=list(dense_vector))
@@ -623,7 +598,6 @@ class VectorStorageFacade:
         # ───────────────────── ⑦ 调 store 底座（异常翻译，与 sparse 完全相同）──
         try:
             hits = await self.qdrant_store._search_chunks(
-                bucket_id=bucket_route.bucket_id,
                 query_vector_spec=query_spec,
                 payload_filter=payload_filter,
                 limit=effective_top_k,
@@ -647,13 +621,9 @@ class VectorStorageFacade:
         )
 
     @staticmethod
-    def _report_sparse_query_usage(
-        *, service: "SparseVectorService", user_id: int
-    ) -> None:
+    def _report_sparse_query_usage(*, service: "SparseVectorService", user_id: int) -> None:
         usage = getattr(service, "last_usage", None)
-        total_tokens = (
-            int(getattr(usage, "total_tokens", 0) or 0) if usage is not None else 0
-        )
+        total_tokens = int(getattr(usage, "total_tokens", 0) or 0) if usage is not None else 0
         if total_tokens <= 0:
             return
         report_usage_nowait(

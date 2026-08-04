@@ -49,12 +49,14 @@ from src.application.recall_pipeline_provider import (
     get_reranker,
 )
 from src.application.recall_stream_runtime import recall_event, recall_event_stream
-from src.core.pipeline.recall import RecallPipeline, RecallRequest
-from src.core.pipeline.rerank import PostRecallReranker
+from src.config import settings
 from src.core.llm.exceptions import (
     DatasetModelBindingRequiredError,
     LLMConfigResolutionError,
 )
+from src.core.pipeline.ltr.candidate_routing import FROZEN_OUTPUT_TOP_N
+from src.core.pipeline.recall import RecallPipeline, RecallRequest
+from src.core.pipeline.rerank import PostRecallReranker
 
 router = APIRouter(prefix="/api/v1/rag", tags=["rag"])
 
@@ -85,6 +87,38 @@ class RagStreamRequest(BaseModel):
     # 仅作生成开关；省不省钱由它决定，正确性由 Java「空/默认才写」兜底。默认 false 兼容老前端。
     is_first_turn: bool = False
     dataset_ids: list[int] | None = None
+
+
+def _build_mode_recall_requests(
+    *,
+    query: str,
+    user_id: int,
+    dataset_ids: list[int],
+    recall_cfg,
+    dataset_contexts,
+) -> tuple[RecallRequest, RecallRequest | None, int]:
+    """按发布模式同时构造 serving 与可选 Shadow 请求，集中锁定零影响语义。"""
+    mode = settings.RECALL_LTR_MODE
+    serving_request = build_recall_request_from_config(
+        query=query,
+        user_id=user_id,
+        dataset_ids=dataset_ids,
+        recall_cfg=recall_cfg,
+        dataset_contexts=dataset_contexts,
+        apply_ltr_serving_contract=mode in {"active", "baseline"},
+    )
+    shadow_request = None
+    if mode == "shadow":
+        shadow_request = build_recall_request_from_config(
+            query=query,
+            user_id=user_id,
+            dataset_ids=dataset_ids,
+            recall_cfg=recall_cfg,
+            dataset_contexts=dataset_contexts,
+            apply_ltr_serving_contract=True,
+        )
+    final_top_n = FROZEN_OUTPUT_TOP_N if mode in {"active", "baseline"} else recall_cfg.rerank_top_n
+    return serving_request, shadow_request, final_top_n
 
 
 async def _parse_and_validate_body(request: Request) -> RagStreamRequest:
@@ -136,6 +170,7 @@ async def _run_chat_turn_producer(
     is_first_turn: bool,
     token_budget: int,
     rerank_top_n: int,
+    shadow_recall_req: RecallRequest | None = None,
 ) -> None:
     """后台生产者任务：跑完整召回+生成+落库，独立于 HTTP 连接生命周期。
 
@@ -162,6 +197,7 @@ async def _run_chat_turn_producer(
             reranker=reranker,
             token_budget=token_budget,
             rerank_top_n=rerank_top_n,
+            shadow_recall_req=shadow_recall_req,
         ):
             # 消费者尚在则入队；已断连则跳过入队，但生成与落库继续跑完。
             if not channel.consumer_gone.is_set():
@@ -209,13 +245,9 @@ async def rag_stream(
     # 数据集级 recall 配置在建流前读出（短 session），把融合候选池 / per-route top_k /
     # 阈值 / 融合策略 / token 预算固化为普通值带进流，避免 SSE 生成器执行期再触 DB。
     try:
-        recall_cfg, dataset_contexts = await aresolve_recall_execution(
-            ctx.user_id, dataset_ids
-        )
+        recall_cfg, dataset_contexts = await aresolve_recall_execution(ctx.user_id, dataset_ids)
     except DatasetModelBindingRequiredError as exc:
-        raise RecallApiError(
-            409, CODE_DATASET_MODEL_BINDING_REQUIRED, str(exc)
-        ) from exc
+        raise RecallApiError(409, CODE_DATASET_MODEL_BINDING_REQUIRED, str(exc)) from exc
     except LLMConfigResolutionError as exc:
         raise RecallApiError(exc.http_status, exc.code, str(exc)) from exc
 
@@ -223,9 +255,9 @@ async def rag_stream(
     if not await acquire_stream_slot(ctx.user_id):
         raise RecallApiError(429, CODE_RATE_LIMITED, "too many concurrent recall streams")
 
-    recall_req = build_recall_request_from_config(
+    recall_req, shadow_recall_req, final_top_n = _build_mode_recall_requests(
         query=body.query,
-        user_id=ctx.user_id,  # 身份以凭证 claims 为准，不信任 body
+        user_id=ctx.user_id,
         dataset_ids=dataset_ids,
         recall_cfg=recall_cfg,
         dataset_contexts=dataset_contexts,
@@ -248,7 +280,8 @@ async def rag_stream(
                 body.turn_id,
                 body.is_first_turn,
                 recall_cfg.recall_context_token_budget,
-                recall_cfg.rerank_top_n,
+                final_top_n,
+                shadow_recall_req,
             )
         )
     except Exception:

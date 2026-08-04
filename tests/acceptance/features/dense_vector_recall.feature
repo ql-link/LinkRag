@@ -22,7 +22,7 @@ Feature: 稠密向量召回入口
   # ==== 主流程 ====
 
   Scenario: 合法 query 命中并返回 top-k hits
-    Given Qdrant 中 user_id=10002 的 bucket collection 存在 5 个 unnamed dense 向量
+    Given Qdrant 业务 collection 中 user_id=10002 存在 5 个 named dense 向量
     When 调用 search_dense_chunks 传入 query "数据治理流程" user_id 10002 set_id 10003
     Then 返回 VectorSearchResult 长度不超过 10
     And hits 中每个 hit 必须含字段 chunk_id, doc_id, set_id, score, vector_kind
@@ -55,13 +55,7 @@ Feature: 稠密向量召回入口
     Then Qdrant 搜索使用 limit 等于 5
     And 返回 VectorSearchResult.top_k 等于 5
 
-  # ==== Bucket 路由与 vector 形态一致性 ====
-
-  Scenario: 召回侧的 bucket 路由与写入侧一致
-    Given 写入链路对 user_id 10002 计算得到 bucket_id 42
-    When 调用 search_dense_chunks 传入 query "任意" user_id 10002 set_id 10003
-    Then Qdrant 搜索使用 bucket_id 等于 42
-    And VectorSearchResult 不含字段 bucket_id
+  # ==== 单 collection 与 vector 形态一致性 ====
 
   Scenario: 查询使用与写入完全相同的 named dense vector 形态
     When 调用 search_dense_chunks 传入 query "任意" user_id 10002 set_id 10003
@@ -170,8 +164,8 @@ Feature: 稠密向量召回入口
 
   # ==== Qdrant 端容错 ====
 
-  Scenario: 目标 bucket collection 不存在时返回空 hits
-    Given Qdrant 中 user_id 10002 路由到的 bucket collection 不存在
+  Scenario: 业务 collection 不存在时返回空 hits
+    Given Qdrant 业务 collection 对 user_id 10002 不存在
     When 调用 search_dense_chunks 传入 query "任意" user_id 10002 set_id 10003
     Then 返回 VectorSearchResult.hits 为空
     And 不抛任何异常

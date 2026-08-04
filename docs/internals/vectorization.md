@@ -32,7 +32,7 @@ src/core/storage/chunks/
 └── repository.py                  # MySQL 真值表仓储
 
 src/core/storage/qdrant/
-├── bucket_router.py               # user_id 分桶和 collection 命名
+├── constants.py                   # 固定业务 collection 默认名
 ├── point_factory.py               # draft/record -> Qdrant point
 ├── qdrant_store.py                # Qdrant 访问层（含召回底座 _search_chunks）
 └── models.py                      # IndexedPoint / SparseIndexedPoint / SparseQueryVectorSpec
@@ -82,10 +82,9 @@ ParseTaskPipeline
 | `VectorStorageManagementPipeline` | `vector_storage/management_pipeline.py` | Chunk 修改、删除 |
 | `VectorStorageCompensationPipeline` | `vector_storage/compensation_pipeline.py` | 旧接口兼容 no-op；不扫描、不回填、不自动重建 |
 | `IndexMutationGuard` | `index_mutation_guard.py` | 串行化同一文档同一索引分支的正常写、失败清理和删除 |
-| `ChunkDraftFactory` | `vector_storage/draft_factory.py` | 生成 chunk_id、content_hash、bucket_id、chunk_type |
+| `ChunkDraftFactory` | `vector_storage/draft_factory.py` | 生成 chunk_id、content_hash、chunk_type |
 | `ChunkRepository` | `chunk_fact_storage/repository.py` | MySQL Chunk 真值表读写和状态机 |
-| `BucketRouter` | `qdrant_vector_storage/bucket_router.py` | 按 `user_id` 路由到 Qdrant collection；写入与召回共用 |
-| `QdrantIndexStore` | `qdrant_vector_storage/qdrant_store.py` | Qdrant collection、point 写入、删除、查询；`_search_chunks` 为向量类型无关召回底座 |
+| `QdrantIndexStore` | `qdrant/qdrant_store.py` | 固定业务 collection 的 point 写入、删除、查询；`_search_chunks` 为向量类型无关召回底座 |
 | `ManticoreBm25IndexingPipeline` | `storage/manticore_bm25/pipeline.py` | 将文件级 Chunk 的 BM25 token 写入 Manticore |
 | `ParsePipelineRepository` | `pipeline/post_process_repository.py` | 维护 `document_parse_pipeline` 文件级阶段状态 |
 
@@ -106,7 +105,7 @@ chunks: Sequence[ChunkRecordDB]   # pipeline 现场过滤：dense_vector_status 
 
 - `content`：dense 和 sparse 的文本输入。
 - `chunk_id`：Qdrant point id，重试时覆盖同一个索引副本。
-- `user_id` / `set_id` / `doc_id` / `bucket_id`：Qdrant payload 与 collection/bucket 路由。
+- `user_id` / `set_id` / `doc_id`：Qdrant payload，查询时用于数据隔离。
 - `chunk_index` / `chunk_type` / `start_line` / `end_line`：还原 splitter 兼容 `Chunk`。
 - `dense_vector_status` / `sparse_vector_status`：现场过滤口径。
 - `lifecycle_status`：`_reload_chunks_from_db` 只反查 `ACTIVE` 行，删除态不进入向量化。
@@ -121,7 +120,6 @@ chunking 阶段复用 `ChunkDraftFactory`，把每个 `Chunk` 转成 `StoredChun
 
 - `chunk_id`：新生成的 UUID。
 - `user_id` / `set_id` / `doc_id`：业务归属。
-- `bucket_id`：由 `BucketRouter.route_user(user_id)` 计算。
 - `content_hash`：基于内容的 SHA-256。
 - `chunk_type`：只从非空 `Chunk.metadata["element_types"]` 推导；单一类型直接使用，多类型为
   `mixed`。允许类型为 `paragraph` / `heading` / `list` / `blockquote` / `code_block` /
@@ -160,7 +158,7 @@ MySQL 是 Chunk 真值源，Qdrant 是向量索引副本。chunk 表中的稠密
 | `chunking_status` | 分片阶段状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
 | `vectorizing_status` | 向量化/Qdrant 阶段状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
 | `pretokenize_status` | BM25 预分词阶段状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
-| `es_indexing_status` | BM25 入库阶段状态：`PENDING/PROCESSING/SUCCESS/FAILED`，后端可为 Qdrant BM25 或 Elasticsearch |
+| `es_indexing_status` | Manticore BM25 入库阶段状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
 | `sparse_vectorizing_status` | 稀疏向量阶段状态：`PENDING/PROCESSING/SUCCESS/FAILED` |
 | `failed_stage` | 失败阶段：`CHUNKING/VECTORIZING/ES_INDEXING` |
 | `recover_from_stage` | 重投或补偿时可恢复的阶段 |
@@ -175,7 +173,6 @@ MySQL 是 Chunk 真值源，Qdrant 是向量索引副本。chunk 表中的稠密
 
 ```python
 chunk_id: str
-bucket_id: int
 vector: list[float]
 payload: {
     "chunk_id": str,
@@ -185,7 +182,7 @@ payload: {
 }
 ```
 
-collection 名称由 `BucketRouter.collection_name(bucket_id)` 生成。
+所有 point 写入 `CHUNK_INDEX_COLLECTION_NAME` 指定的统一业务 collection。
 
 启用稀疏向量时，`SparseIndexedPoint` 使用同一 `chunk_id` 作为 Point ID，并通过 named sparse vector（默认 `sparse_text`）写入稀疏 lexical weights。稀疏向量写入使用局部 vector update，不覆盖 dense vector。
 
@@ -337,7 +334,7 @@ cleanup 成功后，在同一个 MySQL 事务中把对应分支状态收敛为 `
 
 Embedding HTTP 失败日志只保留去除认证信息与 query 的 endpoint、status、model、batch
 序号/大小，以及定长脱敏响应摘要；不记录输入文本。Qdrant 重试、
-Manticore/Qdrant BM25 写入、稀疏状态回写和 mutation lock 异常均记录操作、资源 ID、
+Manticore BM25 写入、稀疏状态回写和 mutation lock 异常均记录操作、资源 ID、
 重试次数与安全调用栈，不直接拼接外部异常原文。
 
 补偿粒度：
@@ -346,11 +343,11 @@ Manticore/Qdrant BM25 写入、稀疏状态回写和 mutation lock 异常均记�
 | --- | --- | --- | --- |
 | dense | chunk | 只删除、重建目标 chunk 的 dense named vector | 与 sparse 共用 point，固定同时取得 `DENSE → SPARSE` |
 | sparse | chunk | 只删除、重建目标 chunk 的 sparse named vector | 与 dense 相同，固定同时取得 `DENSE → SPARSE` |
-| BM25（Qdrant / ES） | document | 按用户、数据集、文档清理整篇，并从 MySQL ACTIVE chunk 全量重建；整篇 `es_status` 一致收敛 | `(doc_id, BM25)` |
+| BM25（Manticore） | document | 按用户、数据集、文档清理整篇，并从 MySQL ACTIVE chunk 全量重建；整篇 `es_status` 一致收敛 | `(doc_id, BM25)` |
 
 MySQL 是唯一权威：外部产物“存在”只用于诊断，不能反向把 MySQL 状态回填为成功。外部存在但 MySQL 未确认时，按 `cleanup → FAILED → rebuild` 收敛；外部已经不存在时，cleanup 视为幂等成功并继续状态机。
 
-job 保存创建时的路由与 `artifact_name` 快照。若 cleanup 时目标 chunk 已 `REMOVED` 或 MySQL source 已硬删除，仍按快照清掉外部孤儿；随后因不存在 ACTIVE 重建来源而直接以 cleanup-only `SUCCEEDED` 收口，不重新制造已删除数据。BM25 的 inspect、文档删除和重建也始终使用 job 保存的 collection / ES index 名，不跟随运行期间的 `BM25_BACKEND` 或索引名配置漂移。
+job 保存创建时的资源标识快照。若 cleanup 时目标 chunk 已 `REMOVED` 或 MySQL source 已硬删除，仍按快照清掉外部孤儿；随后因不存在 ACTIVE 重建来源而直接以 cleanup-only `SUCCEEDED` 收口，不重新制造已删除数据。
 
 防御性发现“MySQL 当前 pipeline 已成功、外部产物缺失”时，从 `REBUILD_PENDING` 开始，并设置 `visibility_hold=1`。worker 只从 MySQL 正文和路由重建；hold 在 `SUCCEEDED` 或 `CANCELLED_SUPERSEDED` 后释放，失败或 `DEAD` 时继续阻断整篇文档召回。召回门禁只匹配 `source_task_id == latest_parse_task_id` 的 hold，旧 task 的遗留 job 不会隐藏新 current task。
 
@@ -413,14 +410,8 @@ chunk_id_to_content = {
 
 常见配置来自 `src/config.py` 和 `.env`：
 
-- `SYSTEM_LLM_PROVIDER`
-- `SYSTEM_LLM_API_KEY`
-- `SYSTEM_LLM_API_BASE`
-- `SYSTEM_LLM_MODEL_EMBEDDING`
 - `CHUNK_INDEX_EMBED_BATCH_SIZE`
-- `CHUNK_INDEX_BUCKET_COUNT`
-- `CHUNK_INDEX_COLLECTION_PREFIX`
-- `CHUNK_INDEX_INDEXING_STALE_SECONDS`（兼容配置；统一补偿不再据此扫描共享 `update_time`）
+- `CHUNK_INDEX_COLLECTION_NAME`
 - `QDRANT_HOST`
 - `QDRANT_PORT`
 - `QDRANT_API_KEY`
@@ -549,7 +540,7 @@ SparseVectorService(encoder)
 - 业务生命周期由 `lifecycle_status` 表达：`ACTIVE -> REMOVED`；产物状态字段只保留 `PENDING/SUCCESS/FAILED`。
 - Qdrant / BM25 写入成功但 MySQL 回写失败时，仍以 SQL 状态为准；统一补偿先精确清理未确认产物，再从 MySQL 重建，禁止仅检查存在性后回填成功。
 - dense 与 sparse 共用 Qdrant point，补偿只能删除目标 named vector；完整 point 删除只用于文档业务删除。
-- BM25 的一致性单位是文档，无论后端是 Qdrant BM25 还是 Elasticsearch，均按整篇清理与全量重建。
+- BM25 的一致性单位是文档，Manticore 按整篇清理与全量重建。
 - 正常写、补偿 cleanup、补偿 rebuild 与文档删除必须共用 MySQL `(doc_id, branch)` advisory lock；dense/sparse repair 因共享 point 固定同时取得 `DENSE → SPARSE`，其他多锁路径也遵守 `DENSE → SPARSE → BM25` 顺序。锁内 current-task 查询使用共享行锁并保留事务到 mutation guard 退出，使 Java 的 `latest_parse_task_id` 切换不能穿过外部 mutation。
 - 自动扫描只消费明确的当前 `FAILED` pipeline，不凭 chunk 共享 `update_time` 推断写入已停止。
 - 文档业务可见性要求当前 pipeline 整体 `SUCCESS` 且无 `visibility_hold`；单个分支重建成功不会提前放行文档，也不会修改失败 pipeline 的整体状态。
@@ -592,7 +583,7 @@ SparseVectorService(encoder)
 - **稀疏召回**（`search_sparse_chunks`）：query 走数据集绑定的 `sparse_embedding_config_id` 编码 → Qdrant **named** sparse vector（默认 `sparse_text`）
 - **稠密召回**（`search_dense_chunks`）：query 走数据集绑定的 `dense_embedding_config_id` 编码 → Qdrant dense vector（cosine 距离）
 
-两路共用 bucket 路由、payload filter 构造、`VectorSearchHit` / `VectorSearchResult` 中性 dataclass、召回侧异常族（`VectorRetrievalError` 系列）。差异仅在 query 向量化路径与 Qdrant `query_points` 调用形态。
+两路共用固定业务 collection、payload filter 构造、`VectorSearchHit` / `VectorSearchResult` 中性 dataclass、召回侧异常族（`VectorRetrievalError` 系列）。差异仅在 query 向量化路径与 Qdrant `query_points` 调用形态。
 
 ```text
 调用方
@@ -606,11 +597,10 @@ SparseVectorService(encoder)
        -> query 向量化
             - sparse: SparseVectorService.vectorize_query(query) → SparseVector(indices, values)
             - dense:  ChunkEmbeddingPipeline.aembed_query(query)  → list[float]
-       -> BucketRouter.route_user(user_id) → bucket_id（两路共用）
        -> 构造 query_vector_spec + payload_filter(must: user_id, set_id, [doc_id MatchAny])
             - sparse: SparseQueryVectorSpec(name, indices, values)
             - dense:  DenseQueryVectorSpec(vector=list[float])  ← vector name 由 QdrantIndexStore 读取 DENSE_VECTOR_QDRANT_VECTOR_NAME
-       -> QdrantIndexStore._search_chunks(bucket_id, spec, filter, limit, score_threshold)
+       -> QdrantIndexStore._search_chunks(spec, filter, limit, score_threshold)
             -> collection_exists? 不存在 → 返空 hits + warn 日志
             -> client.query_points:
                  - sparse: query=SparseVector, using="sparse_text"
@@ -627,7 +617,7 @@ SparseVectorService(encoder)
 
 | 不变量 | 同源处 |
 | --- | --- |
-| bucket 路由 | `BucketRouter.route_user(user_id)`，写入 / sparse 召回 / dense 召回共用同一路由算法（按 user_id CRC32 哈希 → bucket_id → collection 名） |
+| collection | 写入、sparse 召回与 dense 召回统一使用 `settings.CHUNK_INDEX_COLLECTION_NAME` |
 | sparse vector 命名 | `settings.SPARSE_VECTOR_QDRANT_VECTOR_NAME`（默认 `sparse_text`），写入 `upsert_sparse_vectors` 与召回 sparse 分支都从该 setting 读取，不分叉 |
 | dense vector 形态 | named vector，默认名来自 `settings.DENSE_VECTOR_QDRANT_VECTOR_NAME`（默认 `dense`）；写入 `ensure_collection` 用 `vectors_config={dense: VectorParams(size=1024, distance=COSINE)}`，`update_vectors({dense: [...]})` 只写 dense 维度；召回 `query_points(using=dense)` 与之对齐 |
 | 稀疏编码器配置 | 写入与召回都经 `aresolve_dataset_sparse_vector_service(user_id, dataset_id)` 按 `dataset_parse_config.sparse_embedding_config_id` 解析同一份配置，保证两侧落在同一 token 权重空间 |
@@ -641,8 +631,8 @@ SparseVectorService(encoder)
 
 | 场景 | 处理 | 判别 |
 | --- | --- | --- |
-| bucket collection 不存在 | 返空 hits，不抛；warn 日志带 `bucket_id` | 业务等价于"用户/set 没数据"；与写入侧 `delete_points` 把"collection 不存在"当作合法语义一致 |
-| collection 存在但目标 named vector 未配置 | 返空 hits，不抛；warn 日志带 `bucket_id` + `vector_name` | 常见于旧 collection 尚未迁移到 named dense，或 sparse schema 未建成 |
+| 业务 collection 不存在 | 返空 hits，不抛 | 尚未初始化索引或当前环境没有数据 |
+| collection 存在但目标 named vector 未配置 | 返空 hits，不抛；warn 日志带 `vector_name` | collection schema 尚未创建完整 |
 | Qdrant 网络故障 / 超时 / 服务不可用 | 抛 `VectorRetrievalBackendError` | 底层故障，由调用方决定降级或重试 |
 | `SPARSE_VECTOR_ENABLED=False` / dense `embedding_pipeline` 未注入 / 依赖缺失 / Qdrant URL 无效 | 抛 `VectorRetrievalConfigurationError` | 部署侧配置错误，不是常态 |
 | 编码器（稀疏 adapter / 数据集绑定 embedding HTTP）推理失败 | 抛 `VectorRetrievalEncodingError` | 编码失败不是召回的常态 |
@@ -732,7 +722,7 @@ dense 召回正确性建立在「query 与 chunk 走同一份 embedding 接口�
 
 | 升级场景 | Qdrant 行为 | 运维 SOP |
 | --- | --- | --- |
-| 切换到不同维度的 embedding 模型（如 1024 → 1536） | `client.upsert` 维度不匹配硬报错 | 升级前必须重建所有 bucket collection；写入 + 召回同步切换 |
+| 切换到不同维度的 embedding 模型（如 1024 → 1536） | `client.upsert` 维度不匹配硬报错 | 升级前必须重建业务 collection；写入 + 召回同步切换 |
 | 切换到同维度但不同向量空间的模型 | Qdrant 不报错；cosine 分数失真，召回质量静默退化 | **不允许就地切换**；必须重建 collection；staging 环境实测 recall@k 通过后才上生产 |
 | 切换到非对称模型（需 `input_type` 参数区分 query / document） | API 调用通过；语义模式不一致 → recall@k 静默退化（10~30%） | 单独 issue 扩 `IEmbedder` 协议；**当前实现假设对称模型** |
 | 同一模型字符串但服务端权重漂移（厂商静默更新） | 不报错；分数缓慢漂移 | 评测 harness follow-up 监控 score 分布趋势 |

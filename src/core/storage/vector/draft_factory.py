@@ -8,7 +8,6 @@ from uuid import uuid4
 
 from src.core.splitter.models import Chunk
 from src.core.storage.chunks.constants import ALLOWED_CHUNK_TYPES, DISALLOWED_CHUNK_TYPES
-from src.core.storage.qdrant import BucketRouter
 
 from .models import StoredChunkDraft
 
@@ -23,18 +22,6 @@ class ChunkDraftFactory:
     Returns:
         None.
     """
-
-    def __init__(self, bucket_router: BucketRouter) -> None:
-        """
-            初始化 draft 工厂，并注入用于计算分桶结果的路由器。
-
-        Args:
-            bucket_router: 负责计算 `bucket_id` 与 collection 名称的分桶路由器。
-
-        Returns:
-            None.
-        """
-        self.bucket_router = bucket_router
 
     def build_drafts(
         self,
@@ -56,15 +43,12 @@ class ChunkDraftFactory:
         Returns:
             list[StoredChunkDraft]: 可同时驱动 MySQL 与 Qdrant 写入的草稿列表。
         """
-        route = self.bucket_router.route_user(user_id)
-
         return [
             StoredChunkDraft(
                 chunk_id=str(uuid4()),
                 user_id=user_id,
                 set_id=set_id,
                 doc_id=doc_id,
-                bucket_id=route.bucket_id,
                 content=chunk.content,
                 content_hash=self._content_hash(chunk.content),
                 chunk_type=self._resolve_chunk_type(chunk),

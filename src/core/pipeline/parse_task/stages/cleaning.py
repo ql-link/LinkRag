@@ -16,12 +16,16 @@ from loguru import logger
 
 from src.config import settings
 from src.core.markdown_parser import EnhancementModelMissingError
+from src.core.markdown_parser.heading_hierarchy import (
+    aprocess_existing_markdown_heading_hierarchy,
+    build_heading_hierarchy_metadata,
+)
 
 from .. import temp_workspace
 from .._utils import coerce_optional_int, compact_log_value, now, task_log_context
 from ..error_codes import ParseFailureCode, build_failure_reason
-from ..raw_markdown_assets import RawMarkdownAssetLoader
 from ..post_process.constants import POST_PROCESS_STAGE_CLEANING
+from ..raw_markdown_assets import RawMarkdownAssetLoader
 from .base import Stage
 from .context import StageContext, StageOutcome
 
@@ -103,20 +107,34 @@ class CleaningStage(Stage):
                     parse_result["markdown"] = await self._services.upload_md_images(
                         parse_result["markdown"], payload
                     )
-                    # Java v1 资源包的 source_object_key 指向 normalized.md。仅该路径读取
+                    dataset_cfg = await self._load_dataset_config(payload, ctx)
+                    enhancement_config = (
+                        dataset_cfg.enhancement if dataset_cfg is not None else None
+                    )
+                    # Java v1 资源包的 source_object_key 指向 normalized.md。仅该路径消费
                     # 数据集图片增强开关；关闭时不扫描 URI、不下载 RAW、不构建 Vision client。
                     if RawMarkdownAssetLoader.is_v1_source(payload):
-                        dataset_cfg = await self._load_dataset_config(payload, ctx)
-                        enhancement_config = (
-                            dataset_cfg.enhancement if dataset_cfg is not None else None
+                        parse_result["markdown"] = await self._services.enhance_markdown_raw_images(
+                            parse_result["markdown"],
+                            payload,
+                            enhancement_config,
                         )
-                        parse_result["markdown"] = (
-                            await self._services.enhance_markdown_raw_images(
-                                parse_result["markdown"],
-                                payload,
-                                enhancement_config,
-                            )
-                        )
+                    heading_result = await aprocess_existing_markdown_heading_hierarchy(
+                        parse_result["markdown"],
+                        enhancement_config=enhancement_config,
+                        source_file=payload.source_filename or payload.source_object_key,
+                        user_id=coerce_optional_int(payload.user_id),
+                        resolved_model=(
+                            ctx.execution_context.enhancement_chat
+                            if ctx.execution_context is not None
+                            else None
+                        ),
+                    )
+                    parse_result["markdown"] = heading_result.markdown
+                    parse_result["parse_result"] = heading_result.parse_result
+                    parse_result["metadata"].update(
+                        build_heading_hierarchy_metadata(heading_result)
+                    )
                 else:
                     # 读取数据集级配置（PDF 后端 + 增强模型/开关）注入解析。get_config 内部已对
                     # DB 故障降级为默认；JSON 内容非法时 ValidationError 在此向上抛，由下方

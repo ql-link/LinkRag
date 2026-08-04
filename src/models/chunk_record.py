@@ -24,7 +24,6 @@ class ChunkRecordDB(Base):
     doc_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     set_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    bucket_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
     chunk_type: Mapped[str] = mapped_column(String(32), nullable=False)

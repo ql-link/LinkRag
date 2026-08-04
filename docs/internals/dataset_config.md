@@ -70,13 +70,16 @@ JSON 的缺失字段仍取运行期 `Settings` 值。数据集配置行不存在
 | `dense_top_k` | `int` | `100` | > 0 | 稠密向量路执行期召回深度 |
 | `dense_score_threshold` | `float` | `0.0` | ≥ 0 | 稠密路分数过滤阈值，低于此分的候选被丢弃 |
 | `recall_enabled_sources` | `list[str]` | `["bm25","sparse","dense"]` | 系统已装配路的子集 | 本数据集启用的召回路；空列表退回系统全部已装配路 |
-| `fusion_bm25_weight` | `float` | `0.2` | ≥ 0，有限浮点 | 固定 weighted score 融合的 BM25 路权重 |
-| `fusion_sparse_weight` | `float` | `0.3` | ≥ 0，有限浮点 | 固定 weighted score 融合的稀疏路权重 |
-| `fusion_dense_weight` | `float` | `0.5` | ≥ 0，有限浮点 | 固定 weighted score 融合的稠密路权重 |
-| `rerank_top_n` | `int` | `8` | > 0 | 重排后返回的候选条数上限 |
+| `fusion_bm25_weight` | `float` | `0.15` | ≥ 0，有限浮点 | 固定 weighted score 融合的 BM25 路权重 |
+| `fusion_sparse_weight` | `float` | `0.15` | ≥ 0，有限浮点 | 固定 weighted score 融合的稀疏路权重 |
+| `fusion_dense_weight` | `float` | `0.70` | ≥ 0，有限浮点 | 固定 weighted score 融合的稠密路权重 |
+| `rerank_top_n` | `int` | `10` | > 0 | 旧 rerank/off 链路返回的候选条数上限；LTR RAG 流固定 Top10 |
 | `recall_strict` | `bool` | `False` | — | `True` 时任一召回路失败即整体报错；`False` 时允许单路失败降级继续 |
 
 > active source 对应权重之和为 0 时运行期拒绝（无意义的融合）。历史 JSON 中的旧融合策略字段读取时忽略，下一次保存后自然清除。
+
+> `RECALL_LTR_MODE=shadow/active/baseline` 时，只有 RAG 问答流会用模型目录中的 Blind v5
+> serving contract 覆盖上述候选生成字段；纯召回 JSON 和 `off` 模式继续使用本表配置。
 
 ---
 

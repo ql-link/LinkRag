@@ -7,7 +7,6 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 SUPPORTED_CHUNKING_STAGE_TWO_ALGORITHMS = frozenset({"noop", "semantic_depth_window"})
 SUPPORTED_RECALL_LTR_MODES = frozenset({"off", "shadow", "active", "baseline"})
-SUPPORTED_BM25_BACKENDS = frozenset({"qdrant", "manticore"})
 MARKDOWN_HEADING_LLM_CONTEXT_TOKEN_MIN = 2048
 MARKDOWN_HEADING_LLM_CONTEXT_TOKEN_MAX = 262144
 MARKDOWN_HEADING_LLM_MAX_OUTPUT_TOKEN_MIN = 512
@@ -126,9 +125,9 @@ class Settings(BaseSettings):
     # 与 bm25 并行后做融合；如需暂时回退，运维侧 set RECALL_ENABLED_SOURCES=bm25,sparse 重启。
     RECALL_ENABLED_SOURCES: str = "bm25,sparse,dense"
     # 三路固定使用 weighted_score 融合。单项允许为 0；active source 权重和为 0 在运行期拒绝。
-    RECALL_FUSION_BM25_WEIGHT: float = 0.2
-    RECALL_FUSION_SPARSE_WEIGHT: float = 0.3
-    RECALL_FUSION_DENSE_WEIGHT: float = 0.5
+    RECALL_FUSION_BM25_WEIGHT: float = 0.15
+    RECALL_FUSION_SPARSE_WEIGHT: float = 0.15
+    RECALL_FUSION_DENSE_WEIGHT: float = 0.70
 
     # 本地 LambdaMART 排序发布模式：off=保持旧 rerank；shadow=旁路对比但不改结果；
     # active=LambdaMART 主排并在异常时回退 weighted score；baseline=主动回滚到 weighted score。
@@ -137,6 +136,11 @@ class Settings(BaseSettings):
         PROJECT_ROOT, "models/ltr/candidate-difference-v3-20260728-final33"
     )
     RECALL_LTR_SHADOW_SAMPLE_RATE: float = 0.1
+    RECALL_LTR_SHADOW_MAX_CONCURRENCY: int = 4
+    RECALL_LTR_SHADOW_MAX_PENDING: int = 16
+    RECALL_LTR_SHADOW_TIMEOUT_MS: int = 5000
+    RECALL_LTR_SHADOW_SHUTDOWN_TIMEOUT_MS: int = 3000
+    RECALL_LTR_INFERENCE_MAX_CONCURRENCY: int = 4
 
     @field_validator("WIKI_SEARCH_PAGE_SIZE", "WIKI_BM25_TOP_K_PER_DATASET")
     @classmethod
@@ -174,6 +178,25 @@ class Settings(BaseSettings):
             raise ValueError("RECALL_LTR_SHADOW_SAMPLE_RATE must be in [0, 1]")
         return v
 
+    @field_validator(
+        "RECALL_LTR_SHADOW_MAX_CONCURRENCY",
+        "RECALL_LTR_SHADOW_TIMEOUT_MS",
+        "RECALL_LTR_SHADOW_SHUTDOWN_TIMEOUT_MS",
+        "RECALL_LTR_INFERENCE_MAX_CONCURRENCY",
+    )
+    @classmethod
+    def validate_recall_ltr_positive_limits(cls, v: int) -> int:
+        if v <= 0:
+            raise ValueError("LTR concurrency and timeout limits must be positive")
+        return v
+
+    @field_validator("RECALL_LTR_SHADOW_MAX_PENDING")
+    @classmethod
+    def validate_recall_ltr_pending_limit(cls, v: int) -> int:
+        if v < 0:
+            raise ValueError("RECALL_LTR_SHADOW_MAX_PENDING must be >= 0")
+        return v
+
     # ==========================================
     # 对外会话鉴权配置 (RAG 流 / 纯召回 JSON / LINK-40, LINK-131)
     # ==========================================
@@ -204,8 +227,8 @@ class Settings(BaseSettings):
     # 召回后重排 (Post-Recall Rerank / LINK-130)
     # ==========================================
     # 重排模块输出的候选条数兜底默认值。调用方未显式传 top_n 时生效；
-    # 调用方传入则以传入为准。值参考业界 rerank top_n（RAGFlow 默认 6，本项目放宽到 8）。
-    RERANK_DEFAULT_TOP_N: int = 8
+    # 调用方传入则以传入为准；默认 Top10 与 Blind v5 评测口径一致。
+    RERANK_DEFAULT_TOP_N: int = 10
 
     # ==========================================
     # 精确 LLM runtime cache
@@ -216,7 +239,6 @@ class Settings(BaseSettings):
     LLM_RUNTIME_NEGATIVE_TTL_SECONDS: int = 60
     LLM_RUNTIME_LOAD_LOCK_TTL_MS: int = 5000
     LLM_RUNTIME_LOAD_WAIT_MS: int = 50
-    LLM_RUNTIME_FENCE_TTL_SECONDS: int = 2592000
 
     # Java/Python 共享的 dataset_parse_config 原始快照缓存。只有 Java CDC
     # BusinessCacheHealthIndicator READY 后才允许在部署配置中开启。
@@ -390,31 +412,38 @@ class Settings(BaseSettings):
     # ==========================================
     # 向量数据库配置 (Vector Store)
     # ==========================================
-    # 当前仅支持 qdrant。
+    # readiness 仍以该开关判断是否探测当前唯一支持的 Qdrant 后端。
     VECTOR_STORE_TYPE: str = "qdrant"
 
     # Qdrant
+    # 显式协议是权威配置；非空 API key 不能再隐式把明文部署切成 HTTPS。
+    QDRANT_URL: Optional[str] = None
     QDRANT_HOST: str = "43.138.176.52"
     QDRANT_PORT: int = 6333
     QDRANT_GRPC_PORT: int = 6334
-    QDRANT_COLLECTION_NAME: str = "tolink_rag_collection"
     QDRANT_API_KEY: Optional[str] = None
+    QDRANT_HTTPS: bool = False
     QDRANT_TIMEOUT_SECONDS: int = 20
 
+    @field_validator("QDRANT_URL")
+    @classmethod
+    def validate_qdrant_url(cls, value: Optional[str]) -> Optional[str]:
+        if value is None or not value.strip():
+            return None
+        normalized = value.strip().rstrip("/")
+        if not normalized.startswith(("http://", "https://")):
+            raise ValueError("QDRANT_URL must start with http:// or https://")
+        return normalized
+
     # Chunk indexing / vector storage
-    CHUNK_INDEX_BUCKET_COUNT: int = 128
-    CHUNK_INDEX_COLLECTION_PREFIX: str = "kb_bucket"
+    CHUNK_INDEX_COLLECTION_NAME: str = "tolink_rag_chunks"
     CHUNK_INDEX_EMBED_BATCH_SIZE: int = 32
-    # 稠密向量系统统一维度（方案 A：写入按用户解析 embedder，但所有用户共享 per-bucket
-    # collection、维度首次建表即固定）。写入前校验用户 EMBEDDING 模型输出维度必须等于此值，
+    # 稠密向量系统统一维度：写入按用户解析 embedder，但所有用户共享单 collection，
+    # 维度首次建表即固定。写入前校验用户 EMBEDDING 模型输出维度必须等于此值，
     # 不一致则任务失败（EMBEDDING_DIMENSION_UNSUPPORTED），避免写入既有 collection 时维度冲突。
     DENSE_VECTOR_DIMENSION: int = 1024
     CHUNK_INDEX_RETRY_LIMIT: int = 3
     CHUNK_INDEX_RETRY_INTERVAL_SECONDS: int = 300
-    # Deprecated: automatic orphan cleanup must never infer inactivity from a
-    # shared chunk update timestamp. It remains temporarily for compatibility.
-    CHUNK_INDEX_INDEXING_STALE_SECONDS: int = 900
-
     # 同一文档、同一索引分支的外部写入和失败清理共用 MySQL advisory lock。
     INDEX_MUTATION_LOCK_TIMEOUT_SECONDS: int = 10
 
@@ -435,7 +464,7 @@ class Settings(BaseSettings):
     # Qdrant named dense vector 字段名；写入与召回共用。
     # dense 从匿名默认向量改为 named 向量后，point 的创建不再绑定 dense（可先建只含
     # payload 的空点），dense 与 sparse 各自 update_vectors 独立写入、可并行。
-    # 旧 collection（匿名默认向量）需迁移后才能被新代码召回，详见迁移脚本。
+    # 旧 collection 需迁移到统一业务 collection 后才能被新代码召回。
     DENSE_VECTOR_QDRANT_VECTOR_NAME: str = "dense"
     # 全局清洗规则（各 provider 复用，保证召回侧表现一致）。
     SPARSE_VECTOR_TOP_K: int = 256
@@ -461,93 +490,12 @@ class Settings(BaseSettings):
     DENSE_RETRIEVAL_TOP_K: int = 10
     DENSE_RETRIEVAL_SCORE_THRESHOLD: float = 0.0
 
-    # BM25 全文检索后端选择：qdrant / manticore。
-    # manticore 是实验性新后端（coarse-only 原生 BM25，按 dataset 物理建表，见下方配置）。
-    # 开关只影响 BM25 一路，dense / sparse 召回不受影响。
-    # 详见 docs/internals/parse_task_pipeline.md。
-    BM25_BACKEND: str = "qdrant"
-    # 迁移期写后端（逗号分隔）。空值表示只写 BM25_BACKEND；双写示例：qdrant,manticore。
-    # 读后端必须包含在写后端中，保证切换后新写入的数据一定可读。
-    BM25_WRITE_BACKENDS: str = ""
-    # 影子读只记录与主读的 top-k 重合度，不返回影子结果、不增加主链路成功依赖。
-    BM25_SHADOW_BACKEND: Optional[str] = None
-    BM25_SHADOW_SAMPLE_RATE: float = 0.0
-    BM25_SHADOW_TIMEOUT_SECONDS: float = 10.0
-
-    @field_validator("BM25_BACKEND")
-    @classmethod
-    def validate_bm25_backend(cls, value: str) -> str:
-        normalized = value.strip().lower()
-        if normalized not in SUPPORTED_BM25_BACKENDS:
-            supported = ", ".join(sorted(SUPPORTED_BM25_BACKENDS))
-            raise ValueError(f"BM25_BACKEND must be one of: {supported}")
-        return normalized
-
-    @field_validator("BM25_WRITE_BACKENDS")
-    @classmethod
-    def validate_bm25_write_backends(cls, value: str) -> str:
-        backends = list(
-            dict.fromkeys(part.strip().lower() for part in value.split(",") if part.strip())
-        )
-        invalid = [backend for backend in backends if backend not in SUPPORTED_BM25_BACKENDS]
-        if invalid:
-            raise ValueError(f"BM25_WRITE_BACKENDS contains unsupported backends: {invalid}")
-        return ",".join(backends)
-
-    @field_validator("BM25_SHADOW_BACKEND", mode="before")
-    @classmethod
-    def validate_bm25_shadow_backend(cls, value: object) -> str | None:
-        if value is None or not str(value).strip():
-            return None
-        normalized = str(value).strip().lower()
-        if normalized not in SUPPORTED_BM25_BACKENDS:
-            raise ValueError(f"unsupported BM25_SHADOW_BACKEND: {normalized}")
-        return normalized
-
-    @field_validator("BM25_SHADOW_SAMPLE_RATE")
-    @classmethod
-    def validate_bm25_shadow_sample_rate(cls, value: float) -> float:
-        if not math.isfinite(value) or not 0.0 <= value <= 1.0:
-            raise ValueError("BM25_SHADOW_SAMPLE_RATE must be between 0 and 1")
-        return value
-
-    @field_validator("BM25_SHADOW_TIMEOUT_SECONDS")
-    @classmethod
-    def validate_bm25_shadow_timeout(cls, value: float) -> float:
-        if not math.isfinite(value) or value <= 0:
-            raise ValueError("BM25_SHADOW_TIMEOUT_SECONDS must be finite and > 0")
-        return value
-
-    # ---- Qdrant BM25 后端（仅 BM25_BACKEND=qdrant 时生效）----
-    # 以 sparse vector + Modifier.IDF 实现真 BM25（路 A：客户端补算 TF 部分，IDF 服务端补），
-    # 召回用 Formula Query 表达「BM25 主分 × chunk_type 乘数」的乘法类型加权。
-    # BM25 独立 collection（单 collection + payload filter 隔离租户）。
-    QDRANT_BM25_COLLECTION: str = "tolink_rag_bm25"
-    # BM25 专用 named sparse vector 名（带 Modifier.IDF），与 BGE-M3 sparse_text 并存。
-    # 装 coarse + fine 双段 token（各占隔离 hash 维度空间，单向量单次点积即双路 BM25）。
-    QDRANT_BM25_VECTOR_NAME: str = "bm25_text"
-    # Formula 重排前先用 BM25 sparse 召回的候选数（prefetch）。需 > 最终 top_k，
-    # 以便类型乘法能把候选内的 heading/table 抬进最终结果；过大增加重排开销。
-    BM25_PREFETCH_LIMIT: int = 200
-    # BM25 参数（对齐 Lucene 默认）。k1 控词频饱和强度，b 控长度归一强度。
+    # Manticore BM25 参数（对齐 Lucene 默认）。k1 控词频饱和强度，b 控长度归一强度。
     BM25_K1: float = 1.2
     BM25_B: float = 0.75
-    # 长度归一所需的全库平均文档长度。coarse / fine 两段各自归一，故分开配。默认值用真实
-    # Markdown 语料（177 篇文档）走完整生产 chunking pipeline（MarkdownParser +
-    # CandidateBoundaryChunker + 默认 noop stage two）产出 1951 个真实 chunk 校准得出
-    # （mean coarse=180.6 / fine=188.5，实测中文技术文档 fine 仅略大于 coarse，并非数量级
-    # 差异）；仍是单一语料来源、非全量生产数据，规模更大时建议用
-    # scripts/dev/calibrate_bm25_avgdl.py --from-db 重新校准。avgdl 写入时冻结，变更只对
-    # 之后写入的 chunk 生效，存量需重灌才完全对齐——见 docs/internals/parse_task_pipeline.md。
-    BM25_AVGDL: float = 181.0
-    BM25_AVGDL_FINE: float = 188.0
-    # query 侧 coarse 段权重：query 词在
-    # coarse 段 value=该值、fine 段 value=1，点积即 coarse_boost×coarse_BM25 + fine_BM25。
-    BM25_COARSE_BOOST: float = 2.0
-    # 乘法类型权重（Qdrant Formula 用）：命中该 chunk_type 时 BM25 主分 ×倍数。
-    # 建议从温和权重（1.1~1.5）起步，
-    # 再用召回评测扫参；别从 ×3 开始（会变成「类型碾压相关性」）。取值 <1.0 表示降权
-    # （见 store._build_formula：乘数 = 1.0 + Σ(mult−1)·[chunk_type 命中]）。
+    # 类型加权前的 Manticore 候选池大小，必须不小于最终 top_k。
+    BM25_PREFETCH_LIMIT: int = 200
+    # Manticore 候选池类型权重；取值 <1.0 表示降权。
     # heading/list/paragraph/blockquote 在自动链路里几乎不
     # 可达（splitter 正文分片必然收敛成 mixed），不配权重；table/code_block/math_block/image
     # 走 derived_element 稳定单独成块，front_matter 走 isolated source chunk 稳定单独成块，
@@ -562,16 +510,14 @@ class Settings(BaseSettings):
         }
     )
 
-    # ---- Manticore BM25 后端（仅 BM25_BACKEND=manticore 时生效）----
+    # ---- Manticore BM25 后端 ----
     # 用原生 bm25a(k1, b) 对 coarse 预分词字段计分。真实召回评测表明，把 fine 字段混进
     # 同一 BM25F 分数会明显拉低中文召回，因此 v2 只保留 coarse；fine 后续作为独立召回路。
     # 按 dataset 物理建表（一个 dataset 一张表，表名 f"{prefix}_{dataset_id}"），IDF 与
     # avgdl 天然只统计这个 dataset 自己的语料，不需要额外的 tenant filter 或旁路统计基础
-    # 设施；相应地也不复用 Qdrant 那套 BucketRouter（那是按 user 哈希分桶，这里是按
-    # dataset 精确建表，两回事）。avgdl 走 Manticore 动态计算（index_field_lengths，
+    # 设施。avgdl 走 Manticore 动态计算（index_field_lengths，
     # 每张表天然只含一个 dataset 的文档，动态平均值等价于"按 dataset 计算"，不需要
-    # bm25a() 的常量覆盖参数）；k1/b/type_mult 复用上面 BM25_* 通用配置，coarse_boost
-    # 只用于 Qdrant 双段编码，不参与 Manticore v2 coarse-only 计分。
+    # bm25a() 的常量覆盖参数）；k1/b/type_mult 复用上面 BM25_* 通用配置。
     # 中文字符必须显式加进 charset_table，Manticore 默认字符集表不认 CJK，会把中文词
     # 当分隔符丢弃（实测踩过：charset_table 不配置时，中文 chunk 基本等于没索引）。
     MANTICORE_HOST: str = "localhost"
@@ -614,18 +560,6 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_manticore_pool_and_batch(self) -> "Settings":
-        write_backends = (
-            set(self.BM25_WRITE_BACKENDS.split(","))
-            if self.BM25_WRITE_BACKENDS
-            else {self.BM25_BACKEND}
-        )
-        if self.BM25_BACKEND not in write_backends:
-            raise ValueError("BM25_BACKEND must be included in BM25_WRITE_BACKENDS")
-        if self.BM25_SHADOW_BACKEND is not None:
-            if self.BM25_SHADOW_BACKEND == self.BM25_BACKEND:
-                raise ValueError("BM25_SHADOW_BACKEND must differ from BM25_BACKEND")
-            if self.BM25_SHADOW_BACKEND not in write_backends:
-                raise ValueError("BM25_SHADOW_BACKEND must be included in BM25_WRITE_BACKENDS")
         if self.MANTICORE_POOL_MINSIZE < 0:
             raise ValueError("MANTICORE_POOL_MINSIZE must be >= 0")
         if self.MANTICORE_POOL_MAXSIZE <= 0:
@@ -660,11 +594,8 @@ class Settings(BaseSettings):
     # MinIO 三桶模型（与 Java 端 LinkRag-Service 对齐）：
     # · 原文件桶（RAW）  = 用户上传的源文件，由 Java 写入，Python 只读；
     # · 私有桶（DOCS）   = Python 解析产物（Markdown + 图片），不对外匿名读；
-    # · 公开桶（PUBLIC） = 博客 + 反馈附件，Java 写入，需匿名读。
-    # 原博客专用桶 tolink-blog 已并入公开桶，MINIO_BLOG_BUCKET 配置项废弃。
     MINIO_RAW_BUCKET: str = "tolink-rag-raw"
     MINIO_PRIVATE_BUCKET: str = "tolink-rag-docs"
-    MINIO_PUBLIC_BUCKET: str = "tolink-public"
     MINIO_USE_SSL: bool = False
     # Java 规范化 Markdown 中的 ``tolink-raw://`` 图片按批读取。单图上限必须不高于
     # Java 上传侧限制，避免两个服务对同一资源包作出不同判断。
@@ -675,7 +606,6 @@ class Settings(BaseSettings):
     # for cloud parsers and browser-facing resources. S3 SDK traffic still uses
     # MINIO_ENDPOINT.
     MINIO_PUBLIC_ENDPOINT: Optional[str] = None
-    LOCAL_DOCS_PATH: str = "./data/documents"
     PDF_PARSER_BACKEND: str = "mineru"  # auto / mineru / opendataloader / naive
     PDF_PARSER_FALLBACKS: str = ""
     PDF_IMAGE_UPLOAD_ASYNC: bool = True  # 是否后台异步上传 PDF 图片资产
@@ -706,8 +636,8 @@ class Settings(BaseSettings):
     # ==========================================
     # MQ 消息中台配置 (Message Queue)
     # ==========================================
-    # 可选值: kafka / rabbitmq
-    MQ_VENDOR: str = "kafka"
+    # 可选值: rabbitmq / kafka；RabbitMQ 是当前默认，Kafka 仅保留回滚兼容。
+    MQ_VENDOR: str = "rabbitmq"
 
     # --- Kafka 配置 ---
     KAFKA_BOOTSTRAP_SERVERS: str = "localhost:9092"

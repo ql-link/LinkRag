@@ -1,7 +1,7 @@
 """QdrantIndexStore 建表/连接配置回归。
 
 锁定两个曾导致解析链路向量阶段失败的修复：
-  1. 空串 api_key 归一为 None —— 否则 qdrant-client 对明文 HTTP 强制 https。
+  1. 空串 api_key 归一为 None，且协议显式传给 SDK，避免 API key 被误判为 HTTPS。
   2. collection 创建时即带 named sparse vector —— 否则 dense-only collection 无法
      事后追加 sparse 向量，稀疏索引阶段必失败。
 """
@@ -25,17 +25,60 @@ class _FakeClient:
         return None
 
 
+class _CapturingClient:
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+
+
 def test_empty_api_key_is_normalized_to_none():
-    # 空串与 None 都应落到 None：qdrant-client 见到非 None api_key（含 ""）会强制 https。
+    # 空串与 None 都应落到 None，避免把空配置当成有效鉴权信息。
     assert QdrantIndexStore(api_key="").api_key is None
     assert QdrantIndexStore(api_key=None).api_key is None
+
+
+async def test_client_passes_explicit_http_with_api_key(monkeypatch) -> None:
+    store = QdrantIndexStore(api_key="secret", https=False)
+    monkeypatch.setattr(store, "_client_class", lambda: _CapturingClient)
+
+    client = await store._get_client()
+
+    assert client.kwargs["api_key"] == "secret"
+    assert client.kwargs["https"] is False
+
+
+async def test_nonempty_api_key_keeps_explicit_plain_http_url(monkeypatch):
+    captured = {}
+
+    class _Client:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    store = QdrantIndexStore(url="http://qdrant.internal:6333", api_key="secret")
+    monkeypatch.setattr(store, "_client_class", lambda: _Client)
+
+    await store._get_client()
+
+    assert captured["url"] == "http://qdrant.internal:6333"
+    assert captured["api_key"] == "secret"
+    assert "host" not in captured and "port" not in captured
+
+
+def test_explicit_host_port_override_global_url(monkeypatch):
+    monkeypatch.setattr(
+        "src.core.storage.qdrant.qdrant_store.settings.QDRANT_URL",
+        "https://shared-qdrant:6333",
+    )
+
+    store = QdrantIndexStore(host="127.0.0.1", port=1)
+
+    assert store.url == "http://127.0.0.1:1"
 
 
 async def test_ensure_collection_provisions_named_sparse_vector():
     fake = _FakeClient()
     store = QdrantIndexStore(client=fake)
 
-    await store.ensure_collection(bucket_id=0, vector_size=8)
+    await store.ensure_collection(vector_size=8)
 
     assert fake.create_calls, "collection 不存在时应调用 create_collection"
     sparse_cfg = fake.create_calls[0].get("sparse_vectors_config")

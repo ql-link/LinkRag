@@ -33,6 +33,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from src.api.routes import internal, llm, mq, parse, rag, recall, wiki
+from src.application.ltr_provider import (
+    get_ltr_runtime_status,
+    preload_ltr_ranker,
+    shutdown_ltr_ranker,
+)
+from src.application.ltr_shadow_executor import (
+    get_ltr_shadow_executor,
+    initialize_ltr_shadow_executor,
+    shutdown_ltr_shadow_executor,
+)
 from src.application.recall_errors import RecallApiError
 from src.cache.redis_client import redis_client
 from src.config import settings
@@ -56,19 +66,6 @@ from src.core.pipeline.parse_task import temp_workspace
 from src.database import close_database, init_database
 from src.observability.middleware import TraceContextMiddleware
 from src.services.mq_service import MQService
-
-
-def _manticore_enabled() -> bool:
-    write_backends = {
-        backend.strip()
-        for backend in (settings.BM25_WRITE_BACKENDS or settings.BM25_BACKEND).split(",")
-        if backend.strip()
-    }
-    return (
-        settings.BM25_BACKEND == "manticore"
-        or settings.BM25_SHADOW_BACKEND == "manticore"
-        or "manticore" in write_backends
-    )
 
 
 async def _start_mq_consumers() -> None:
@@ -101,6 +98,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """应用生命周期管理
 
     启动时初始化：
+    - LambdaMART 模型或明确 baseline 状态
     - Redis 连接
     - MySQL 连接池
 
@@ -110,6 +108,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     - MySQL 连接池
     """
     # 启动时初始化
+    # LTR 文件读取、LightGBM 导入、Booster 构造与测试向量校验全部在 worker thread
+    # 预加载；失败会固化为本进程 baseline 状态，不把首次初始化成本留给真实请求。
+    await preload_ltr_ranker()
+    initialize_ltr_shadow_executor()
     await redis_client.initialize()
     await init_database()
     # 在拉起消费者之前清空临时落盘目录：兜底回收上次进程异常退出残留的源文件副本，
@@ -126,11 +128,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception:
         pass
     await redis_client.close()
-    if _manticore_enabled():
-        from src.core.storage.manticore_bm25 import close_manticore_bm25_store
+    from src.core.storage.manticore_bm25 import close_manticore_bm25_store
 
-        await close_manticore_bm25_store()
+    await close_manticore_bm25_store()
     await close_database()
+    await shutdown_ltr_shadow_executor()
+    shutdown_ltr_ranker()
     # 等待 enqueue 异步队列里的日志全部落盘，避免退出时丢失尾部日志。
     await logger.complete()
 
@@ -205,38 +208,83 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 @app.get("/health")
 async def health_check():
     """进程存活检查；不访问外部依赖。"""
-    return {"status": "ok", "app": settings.APP_NAME, "services": ["llm", "document_parser"]}
+    ltr_status = get_ltr_runtime_status()
+    ltr_status["shadow"] = get_ltr_shadow_executor().snapshot()
+    return {
+        "status": "ok",
+        "app": settings.APP_NAME,
+        "services": ["llm", "document_parser"],
+        "ltr": ltr_status,
+    }
 
 
 @app.get("/ready")
 async def readiness_check():
-    """流量就绪检查；启用 Manticore 时必须能在截止时间内执行 SQL。"""
+    """流量就绪检查；验证服务请求路径依赖，不与纯进程存活混淆。"""
 
-    if _manticore_enabled():
-        from src.core.storage.manticore_bm25 import get_manticore_bm25_store
+    import asyncio
 
+    from sqlalchemy import text
+
+    from src.database import get_async_engine
+
+    failures: list[str] = []
+
+    try:
+        async with get_async_engine().connect() as connection:
+            await asyncio.wait_for(connection.execute(text("SELECT 1")), timeout=5)
+    except Exception:
+        failures.append("mysql")
+
+    if not await redis_client.ping():
+        failures.append("redis")
+
+    from src.core.storage.manticore_bm25 import get_manticore_bm25_store
+
+    try:
+        await get_manticore_bm25_store().ping()
+    except Exception as exc:
+        logger.bind(
+            event="manticore_readiness_failed",
+            outcome="degraded",
+            error_type=type(exc).__name__,
+            error_message=truncate_log_value(exc),
+            stack_trace=safe_exception_stack(exc),
+        ).warning("Manticore readiness check failed")
+        failures.append("manticore")
+
+    if settings.VECTOR_STORE_TYPE.lower() == "qdrant":
+        from src.core.storage.qdrant import QdrantIndexStore
+
+        qdrant_store = QdrantIndexStore(timeout=5)
         try:
-            await get_manticore_bm25_store().ping()
-        except Exception as exc:
-            logger.bind(
-                event="manticore_readiness_failed",
-                outcome="degraded",
-                error_type=type(exc).__name__,
-                error_message=truncate_log_value(exc),
-                stack_trace=safe_exception_stack(exc),
-            ).warning("Manticore readiness check failed")
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "status": "not_ready",
-                    "app": settings.APP_NAME,
-                    "bm25_backend": "manticore",
-                },
-            )
+            client = await qdrant_store._get_client()
+            await asyncio.wait_for(client.get_collections(), timeout=5)
+        except Exception:
+            failures.append("qdrant")
+        finally:
+            await qdrant_store.close()
+
+    if failures:
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "not_ready",
+                "app": settings.APP_NAME,
+                "failed_dependencies": failures,
+                "bm25_backend": "manticore",
+            },
+        )
+
+    ltr_status = get_ltr_runtime_status()
+    degraded_components = []
+    if settings.RECALL_LTR_MODE == "active" and not ltr_status["loaded"]:
+        degraded_components.append("ltr")
     return {
-        "status": "ready",
+        "status": "degraded" if degraded_components else "ready",
         "app": settings.APP_NAME,
-        "bm25_backend": settings.BM25_BACKEND,
+        "bm25_backend": "manticore",
+        "degraded_components": degraded_components,
     }
 
 

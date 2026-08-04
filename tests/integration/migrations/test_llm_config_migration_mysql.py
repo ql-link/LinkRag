@@ -228,11 +228,11 @@ def _seed_complete_legacy_snapshot(connection, fixed_time: str, ciphertexts: dic
         """,
         """
         INSERT INTO kb_document_chunk
-            (id, chunk_id, doc_id, set_id, user_id, bucket_id, content, content_hash,
+            (id, chunk_id, doc_id, set_id, user_id, content, content_hash,
              chunk_type, start_line, end_line, chunk_index, dense_vector_status,
              dense_vector_model, sparse_vector_status, sparse_vector_model,
              es_status, lifecycle_status, create_time, update_time)
-        VALUES (11005, 'marker-chunk', 11002, 9001, 7001, 3, 'marker-content',
+        VALUES (11005, 'marker-chunk', 11002, 9001, 7001, 'marker-content',
                 REPEAT('a', 64), 'paragraph', 1, 2, 0, 'SUCCESS', 'dense-marker',
                 'SUCCESS', 'sparse-marker', 'SUCCESS', 'ACTIVE', :fixed_time, :fixed_time)
         """,

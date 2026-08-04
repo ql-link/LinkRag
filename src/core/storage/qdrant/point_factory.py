@@ -52,7 +52,6 @@ def indexed_point_from_draft(draft: Any, embedded_chunk: Any) -> IndexedPoint:
 
     return _indexed_point(
         chunk_id=draft.chunk_id,
-        bucket_id=draft.bucket_id,
         user_id=draft.user_id,
         set_id=draft.set_id,
         doc_id=draft.doc_id,
@@ -65,7 +64,6 @@ def indexed_point_from_record(record: Any, embedded_chunk: Any) -> IndexedPoint:
 
     return _indexed_point(
         chunk_id=record.chunk_id,
-        bucket_id=record.bucket_id,
         user_id=record.user_id,
         set_id=record.set_id,
         doc_id=record.doc_id,
@@ -83,7 +81,6 @@ def sparse_indexed_point_from_draft(
 
     return _sparse_indexed_point(
         chunk_id=draft.chunk_id,
-        bucket_id=draft.bucket_id,
         user_id=draft.user_id,
         set_id=draft.set_id,
         doc_id=draft.doc_id,
@@ -102,7 +99,6 @@ def sparse_indexed_point_from_record(
 
     return _sparse_indexed_point(
         chunk_id=record.chunk_id,
-        bucket_id=record.bucket_id,
         user_id=record.user_id,
         set_id=record.set_id,
         doc_id=record.doc_id,
@@ -114,7 +110,6 @@ def sparse_indexed_point_from_record(
 def _indexed_point(
     *,
     chunk_id: str,
-    bucket_id: int,
     user_id: int,
     set_id: int,
     doc_id: int,
@@ -124,7 +119,6 @@ def _indexed_point(
 
     return IndexedPoint(
         chunk_id=chunk_id,
-        bucket_id=bucket_id,
         vector=[float(value) for value in embedding],
         payload=_payload(chunk_id=chunk_id, user_id=user_id, set_id=set_id, doc_id=doc_id),
     )
@@ -133,7 +127,6 @@ def _indexed_point(
 def _sparse_indexed_point(
     *,
     chunk_id: str,
-    bucket_id: int,
     user_id: int,
     set_id: int,
     doc_id: int,
@@ -144,7 +137,6 @@ def _sparse_indexed_point(
 
     return SparseIndexedPoint(
         chunk_id=chunk_id,
-        bucket_id=bucket_id,
         vector_name=vector_name,
         sparse_vector=sparse_vector,
         payload=_payload(chunk_id=chunk_id, user_id=user_id, set_id=set_id, doc_id=doc_id),

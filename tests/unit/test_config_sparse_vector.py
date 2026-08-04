@@ -17,9 +17,9 @@ def test_should_enable_sparse_vector_by_default():
 def test_recall_fusion_defaults():
     settings = Settings(_env_file=None)
 
-    assert settings.RECALL_FUSION_BM25_WEIGHT == 0.2
-    assert settings.RECALL_FUSION_SPARSE_WEIGHT == 0.3
-    assert settings.RECALL_FUSION_DENSE_WEIGHT == 0.5
+    assert settings.RECALL_FUSION_BM25_WEIGHT == 0.15
+    assert settings.RECALL_FUSION_SPARSE_WEIGHT == 0.15
+    assert settings.RECALL_FUSION_DENSE_WEIGHT == 0.70
 
 
 def test_recall_fusion_weights_allow_zero():
@@ -55,6 +55,19 @@ def test_recall_ltr_rejects_invalid_rollout_config():
         Settings(_env_file=None, RECALL_LTR_MODE="canary")
     with pytest.raises(ValueError, match="RECALL_LTR_SHADOW_SAMPLE_RATE"):
         Settings(_env_file=None, RECALL_LTR_SHADOW_SAMPLE_RATE=1.1)
+    with pytest.raises(ValueError, match="LTR concurrency"):
+        Settings(_env_file=None, RECALL_LTR_SHADOW_MAX_CONCURRENCY=0)
+    with pytest.raises(ValueError, match="RECALL_LTR_SHADOW_MAX_PENDING"):
+        Settings(_env_file=None, RECALL_LTR_SHADOW_MAX_PENDING=-1)
+
+
+def test_qdrant_url_requires_explicit_http_scheme():
+    assert (
+        Settings(_env_file=None, QDRANT_URL="http://qdrant:6333/").QDRANT_URL
+        == "http://qdrant:6333"
+    )
+    with pytest.raises(ValueError, match="QDRANT_URL"):
+        Settings(_env_file=None, QDRANT_URL="qdrant:6333")
 
 
 @pytest.mark.parametrize(

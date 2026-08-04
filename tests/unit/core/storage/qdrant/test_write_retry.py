@@ -44,7 +44,6 @@ class _FlakyClient:
 def _point() -> IndexedPoint:
     return IndexedPoint(
         chunk_id="11111111-1111-1111-1111-111111111111",
-        bucket_id=0,
         vector=[],
         payload={"doc_id": 1, "set_id": 1, "user_id": 1},
     )
@@ -54,7 +53,7 @@ async def test_transient_502_is_retried_then_succeeds():
     client = _FlakyClient(fail_times=1, error=RuntimeError("Unexpected Response: 502 Bad Gateway"))
     store = QdrantIndexStore(client=client)
 
-    await store.ensure_points(bucket_id=0, points=[_point()])
+    await store.ensure_points(points=[_point()])
 
     # 第 1 次 502、第 2 次成功 → 共 2 次 upsert 调用。
     assert client.upsert_attempts == 2
@@ -65,20 +64,18 @@ async def test_non_transient_error_is_not_retried():
     store = QdrantIndexStore(client=client)
 
     with pytest.raises(QdrantStoreError):
-        await store.ensure_points(bucket_id=0, points=[_point()])
+        await store.ensure_points(points=[_point()])
 
     # 非瞬时错误立即透传，只调用 1 次，不浪费退避。
     assert client.upsert_attempts == 1
 
 
 async def test_persistent_transient_failure_exhausts_retries():
-    client = _FlakyClient(
-        fail_times=99, error=RuntimeError("503 Service Unavailable")
-    )
+    client = _FlakyClient(fail_times=99, error=RuntimeError("503 Service Unavailable"))
     store = QdrantIndexStore(client=client)
 
     with pytest.raises(QdrantStoreError):
-        await store.ensure_points(bucket_id=0, points=[_point()])
+        await store.ensure_points(points=[_point()])
 
     # 默认 max_attempts=3 → 共尝试 3 次后放弃。
     assert client.upsert_attempts == 3

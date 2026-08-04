@@ -1,7 +1,8 @@
 # 对外 RAG 问答流 SSE acceptance 契约（LINK-131）
 # 由 recall_direct_sse.feature 改名搬迁而来：端点 POST /api/v1/recall/stream → POST /api/v1/rag/stream。
 # 范围：Python 侧对外 RAG 问答流 SSE 端点。承接完整 RAG 行为：会话鉴权 → 召回 → 候选融合 →
-#       rerank 精排（不可用即降级当前融合顺序）→ 正文回填 → 上下文组装 → CHAT 流式生成。
+#       本特性显式固定 off 旧链路：rerank 精排（不可用即降级当前融合顺序）→ 正文回填 →
+#       上下文组装 → CHAT 流式生成。active LambdaMART 契约由 LTR 单元/验收用例独立覆盖。
 # 说明：在原对外直连 SSE 行为基础上，补回 #165 删除 recall_http_api.feature 后悬空的召回执行
 #       语义断言（候选融合、命中字段形状、failed_sources 降级），并覆盖 rerank 精排终态与
 #       Dataset 精确 RERANK config_id 在执行期不可用时的降级契约。
@@ -22,6 +23,7 @@ Feature: 对外 RAG 问答流 SSE
     And session token 短期可复用，有效期内只校验 exp，不做一次性消费
     And 配置 RECALL_RESULT_LIMIT=20
     And 配置 RECALL_ENABLED_SOURCES=bm25,sparse
+    And 配置 RECALL_LTR_MODE=off
     And 配置对外 CORS 允许来源为 ["https://app.tolink.com"]
     And 配置单用户最大并发召回流数 RECALL_SESSION_MAX_CONCURRENT=3
     And Redis 可用用于并发流计数

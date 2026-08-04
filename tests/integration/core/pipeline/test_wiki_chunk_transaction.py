@@ -41,7 +41,6 @@ class _DraftFactory:
                 user_id=user_id,
                 set_id=set_id,
                 doc_id=doc_id,
-                bucket_id=0,
                 content=chunks[0].content,
                 content_hash="new-hash",
                 chunk_type="paragraph",
@@ -133,10 +132,10 @@ async def _seed_old(session: AsyncSession) -> None:
     await session.execute(
         text(
             "INSERT INTO kb_document_chunk "
-            "(chunk_id,doc_id,set_id,user_id,bucket_id,content,content_hash,chunk_type,"
+            "(chunk_id,doc_id,set_id,user_id,content,content_hash,chunk_type,"
             "start_line,end_line,chunk_index,dense_vector_status,sparse_vector_status,"
             "es_status,lifecycle_status) VALUES "
-            "('OLD',10001,10,123,0,'old body','old-hash','paragraph',1,1,0,"
+            "('OLD',10001,10,123,'old body','old-hash','paragraph',1,1,0,"
             "'SUCCESS','SUCCESS','SUCCESS','ACTIVE')"
         )
     )

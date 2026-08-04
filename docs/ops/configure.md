@@ -17,11 +17,11 @@
 | Markdown 增强 | `MARKDOWN_PARSER_*` | 调整解析增强行为时 |
 | 分块策略 | `CHUNKING_*` | 调整分块参数时 |
 | 流程编排 | `WORKFLOW_*` | 使用轻量流程编排引擎时 |
-| 向量存储 | `VECTOR_STORE_TYPE`, `QDRANT_*`, `CHUNK_INDEX_*`, `SPARSE_VECTOR_*` | 始终（当前生产固定使用 Qdrant） |
+| 向量存储 | `VECTOR_STORE_TYPE`, `QDRANT_*`, `CHUNK_INDEX_*`, `SPARSE_VECTOR_*` | 始终（当前固定使用 Qdrant） |
 | 索引写入互斥 | `INDEX_MUTATION_*` | 调整写入失败同步清理的锁等待时 |
-| 对象存储 | `STORAGE_TYPE`, `MINIO_*`, `LOCAL_DOCS_PATH` | 始终 |
+| 对象存储 | `STORAGE_TYPE`, `MINIO_*` | 始终 |
 | 解析临时目录 | `PARSE_TEMP_DIR` | 始终（流式下载落盘目录） |
-| PDF 解析 | `PDF_PARSER_*`, `MINERU_*`, `DOCLING_*` | 处理 PDF 时 |
+| PDF 解析 | `PDF_PARSER_*`, `MINERU_*` | 处理 PDF 时 |
 | MQ | `MQ_VENDOR`, `KAFKA_*`, `RABBITMQ_*`, `*_TOPIC` | 始终 |
 | CORS | `CORS_ORIGINS` | 前端跨域时 |
 
@@ -37,22 +37,20 @@
 | `LLM_RUNTIME_CACHE_ENABLED` / `LLM_RUNTIME_CACHE_TTL_SECONDS` | 全局 `config_id` runtime cache 开关与 TTL |
 | `DATASET_PARSE_CONFIG_CACHE_ENABLED` / `DATASET_PARSE_CONFIG_CACHE_TTL_SECONDS` | `dataset_parse_config` 共享原始快照开关与 TTL；默认关闭，正常值默认 7 天 |
 | `DATASET_PARSE_CONFIG_NEGATIVE_TTL_SECONDS` | 数据集当前没有配置行时的 NOT_FOUND TTL，默认 60 秒 |
-| `KAFKA_BOOTSTRAP_SERVERS` 等（若 `MQ_VENDOR=kafka`） | Kafka 接入信息 |
+| `RABBITMQ_URL`（若 `MQ_VENDOR=rabbitmq`） | RabbitMQ AMQP URL，生产使用独立用户与 vhost |
 | `MINIO_*`（若 `STORAGE_TYPE=minio`） | 对象存储凭据 |
 | `MINIO_RAW_BUCKET`（若 `STORAGE_TYPE=minio`） | 原文件桶：用户上传的源文件，由 Java 写入，Python 只读；默认 `tolink-rag-raw`，需在 MinIO 控制台预建 |
-| `MINIO_PUBLIC_BUCKET`（若 `STORAGE_TYPE=minio`） | 公开桶：博客与反馈附件等不敏感资源，默认 `tolink-public`，需配置匿名读 |
-| `QDRANT_HOST` / `QDRANT_PORT` | 向量存储 |
+| `QDRANT_URL` / `QDRANT_HOST` / `QDRANT_PORT` / `QDRANT_HTTPS` / `QDRANT_API_KEY` | 向量存储地址、显式协议与认证；优先使用带 scheme 的 `QDRANT_URL`，`QDRANT_HTTPS` 需与服务端 TLS 状态一致，非空 API key 不代表自动启用 HTTPS |
 
 ## 关键开关
 
 | 开关 | 默认 | 含义 |
 | --- | --- | --- |
-| `MQ_VENDOR` | `kafka` | 切换 Kafka / RabbitMQ |
-| `VECTOR_STORE_TYPE` | `qdrant` | 当前生产固定使用 Qdrant |
+| `MQ_VENDOR` | `rabbitmq` | 当前默认 RabbitMQ；`kafka` 仅保留回滚兼容 |
+| `VECTOR_STORE_TYPE` | `qdrant` | 当前唯一支持 Qdrant；readiness 据此决定是否执行 Qdrant 探测 |
 | `SPARSE_VECTOR_ENABLED` | `true` | 是否在向量化阶段同步生成稀疏向量；关闭后保持旧 dense-only 语义 |
-| `STORAGE_TYPE` | `minio` | 切换 MinIO / 本地存储 |
+| `STORAGE_TYPE` | `minio` | 对象存储实现；当前可用实现为 MinIO，OSS 适配器仍为占位 |
 | `MINIO_RAW_BUCKET` | `tolink-rag-raw` | 用户上传原文件桶，由 Java 写入；Python 解析时从此桶下载源文件，不写入。需在 MinIO 控制台预先创建 |
-| `MINIO_PUBLIC_BUCKET` | `tolink-public` | Java 端公开读桶（博客 + 反馈附件）；Python 解析产物（Markdown + 图片）写入 `MINIO_PRIVATE_BUCKET`。原博客专用桶 `tolink-blog` 已并入 |
 | `MINIO_PUBLIC_ENDPOINT` | 空 | 可选公网对象访问入口；为空时复用 `MINIO_ENDPOINT`。用于给 MinerU 等云端解析器生成可访问 URL，SDK 读写仍走 `MINIO_ENDPOINT` |
 | `PARSE_TEMP_DIR` | `/tmp/tolink-rag-parse` | 解析任务源文件临时落盘目录。流式下载在此创建临时文件；解析为 markdown 后立即清理；worker 启动时清空兜底。不预设最小容量，沿用部署机系统盘大小；写满会归类为 `TEMP_DISK_FULL` 错误码。扩消费者时容量需要 ≥ 单文件上限 × 并发数 |
 | `PDF_PARSER_BACKEND` | `mineru` | PDF 解析后端：`auto` / `mineru` / `opendataloader` / `naive` |
@@ -78,20 +76,16 @@
 
 > splitter 不再保留 `CHUNKING_ENABLE_ADVANCED_PIPELINE` 布尔开关，也不再回退到旧规则分片器。第二阶段默认使用 `noop`；`noop` 只做结构透传，不保证 final chunk token 数不超过 `CHUNKING_HARD_MAX_TOKENS`。如需启用 TextTiling depth valley 语义细分与 hard max 保障，显式配置 `CHUNKING_STAGE_TWO_ALGORITHM=semantic_depth_window`。
 
-> 注：当前生产不再部署 Elasticsearch；BM25 由 Qdrant sparse vector + `Modifier.IDF` 承载。
-> `BM25_BACKEND=manticore` 是实验性新后端（按 dataset 物理建表，coarse-only 原生 `bm25a`），
-> 需额外部署 Manticore（`docker-compose.yml` 已加 `manticore` 服务，SQL 协议端口
-> `MANTICORE_PORT` 默认 `9306`）。不能直接改此变量切生产流量；必须按
-> [Manticore BM25 上线手册](manticore_bm25_migration.md) 完成双写、回填、对账和影子读。
+> 注：当前生产不再部署 Elasticsearch，Qdrant BM25 也已下线。BM25 固定由 Manticore
+> 按 dataset 物理建表并使用 coarse-only 原生 `bm25a` 承载。`docker-compose.yml`
+> 提供 Manticore 服务，SQL 协议端口 `MANTICORE_PORT` 默认 `9306`。
 
-BM25 迁移相关开关：
+BM25 配置：
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `BM25_BACKEND` | `qdrant` | 主读后端；修改后需重启所有应用/worker |
-| `BM25_WRITE_BACKENDS` | 空 | 空表示只写主读；迁移期设 `qdrant,manticore`，任一后端失败则本次 BM25 写入失败 |
-| `BM25_SHADOW_BACKEND` | 空 | 影子后端，必须不同于主读且包含在写后端中 |
-| `BM25_SHADOW_SAMPLE_RATE` | `0` | 稳定采样比例 `[0,1]`；影子结果只记日志，不影响主读返回 |
+| `BM25_K1` / `BM25_B` | `1.2` / `0.75` | Manticore `bm25a` 参数 |
+| `BM25_TYPE_MULT` | 见环境样例 | chunk 类型乘法重排权重 |
 | `MANTICORE_POOL_MAXSIZE` | `10` | 单进程最大 SQL 连接；服务端连接上限需覆盖副本数乘以该值及迁移任务 |
 | `MANTICORE_MAX_DOCUMENT_BYTES` | `131072` | 单 chunk 的 coarse 预分词 UTF-8 字节上限 |
 | `MANTICORE_SSL_ENABLED` | `false` | 跨主机生产连接应开启并配置 CA；cert/key 成对配置时启用双向 TLS |
@@ -223,11 +217,11 @@ HOST_VPN_IP=<loki-vpn-host> docker compose -f deploy/cloud-server/docker-compose
 | `MQ_RETRY_BACKOFF_SECONDS` | `1.0` | 重试之间固定退避秒数；单条消息最长阻塞 ≈ 此值 × `MQ_MAX_RETRIES` |
 | `MQ_DLQ_SUFFIX` | `.DLT` | 死信目标命名后缀（原 topic / queue + 后缀） |
 
-> 死信兜底恒启用，不提供关闭开关。死信目标在应用启动时由 `ensure_topics()`（Kafka）或 `RabbitMQReceiver.start()`（RabbitMQ）幂等创建。
+> 死信兜底恒启用，不提供关闭开关。RabbitMQ Sender/Receiver 会用完全相同的参数幂等声明 Queue、DLX 与 DLT；Kafka 的 `ensure_topics()` 仅用于回滚兼容模式。
 
-## MQ Topic 命名
+## MQ 逻辑目标命名
 
-应用启动时需要这些 topic 存在或被自动创建（见 [mq_integration.md](../api/mq_contracts.md)）：
+RabbitMQ 使用同名 Queue；Kafka 回滚模式使用同名 topic（见 [mq_contracts.md](../api/mq_contracts.md)）：
 
 | 变量 | 默认值 | 用途 |
 | --- | --- | --- |
@@ -280,8 +274,6 @@ MySQL 是业务真值。正常写入与写入失败后的同步清理对同一 `
 | --- | --- | --- |
 | `INDEX_MUTATION_LOCK_TIMEOUT_SECONDS` | `10` | 获取文档分支 advisory lock 的最长等待时间；超时使当前解析失败，不绕过互斥执行 |
 
-`CHUNK_INDEX_INDEXING_STALE_SECONDS` 已废弃，仅为旧兼容入口暂时保留；同步清理不依赖共享 `update_time`。
-
 ## 召回执行配置
 
 召回融合 pipeline 的通用执行参数（RAG 问答流与纯召回 JSON 两端点共用）。详见
@@ -289,28 +281,33 @@ MySQL 是业务真值。正常写入与写入失败后的同步清理对同一 `
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `RECALL_STREAM_TIMEOUT_MS` | `60000` | 召回 + rerank 阶段最大执行时间（毫秒）；超时 RAG 流以 SSE `error` RECALL_TIMEOUT 终止，纯召回 JSON 返回 `504` RECALL_TIMEOUT。**不含 LLM 生成阶段**（见 `RECALL_GENERATION_TIMEOUT_MS`） |
+| `RECALL_STREAM_TIMEOUT_MS` | `60000` | 召回、正文读取与本地/远程排序共享的总预算（毫秒）；超时 RAG 流以 SSE `error` RECALL_TIMEOUT 终止，纯召回 JSON 返回 `504` RECALL_TIMEOUT。**不含 LLM 生成阶段**（见 `RECALL_GENERATION_TIMEOUT_MS`） |
 | `RECALL_GENERATION_TIMEOUT_MS` | `300000` | LLM 生成阶段最大执行时间（毫秒），与召回超时解耦。RAG 生成跑在独立后台任务、断连不取消，需独立超时防孤儿任务无限烧 token；超时落 `FAILED` + `GENERATION_TIMEOUT`（保留半截答案）。取值远大于召回超时以容纳长回答 |
 | `RECALL_STRICT_DEFAULT` | `false` | pipeline 严格模式默认；false=宽松，允许单路失败降级 |
 | `RECALL_RESULT_LIMIT` | `64` | 对外融合窗口与旧 rerank 输入池；LTR 使用门禁后的完整内部候选池，不受该截断影响 |
-| `RECALL_DENSE_TOP_K` | `100` | RAG pipeline dense 路执行期召回深度；数据集级 `recall_config.dense_top_k` 未配置时使用 |
-| `RECALL_SPARSE_TOP_K` | `50` | RAG pipeline sparse 路执行期召回深度；数据集级 `recall_config.sparse_top_k` 未配置时使用 |
-| `RECALL_BM25_TOP_K` | `100` | RAG pipeline bm25 路执行期召回深度；数据集级 `recall_config.bm25_top_k` 未配置时使用 |
+| `RECALL_DENSE_TOP_K` | `100` | `off` 与纯召回 JSON 的 dense 路系统默认；LTR RAG 流改用 Blind v5 Query 分型深度 |
+| `RECALL_SPARSE_TOP_K` | `50` | `off` 与纯召回 JSON 的 sparse 路系统默认；LTR RAG 流改用 Blind v5 Query 分型深度 |
+| `RECALL_BM25_TOP_K` | `100` | `off` 与纯召回 JSON 的 bm25 路系统默认；LTR RAG 流改用 Blind v5 Query 分型深度 |
 | `WIKI_SEARCH_PAGE_SIZE` | `15` | Wiki 顶层搜索与单标题直属 Chunk 展开的服务端固定页大小；必须为正整数，客户端不能覆盖 |
 | `WIKI_BM25_TOP_K_PER_DATASET` | `50` | Wiki mixed 分支对每个有效知识库独立读取的 BM25 候选上限；必须为正整数，不读取知识库个性 `bm25_top_k` |
 | `RECALL_ENABLED_SOURCES` | `bm25,sparse,dense` | 启用的召回路（逗号分隔）。本期默认开启三路；运维侧可显式 set `bm25,sparse` 暂时回退到 dev 旧行为；未登记的 source 出现在配置中装配期 `ValueError` |
 | `RECALL_LTR_MODE` | `active` | 默认由本地 LambdaMART 主排并跳过远程 rerank；`off` 保持旧 rerank；`shadow` 旁路比较但不改结果；`baseline` 主动回滚到 weighted score 并跳过 rerank |
-| `RECALL_LTR_MODEL_DIR` | `models/ltr/candidate-difference-v3-20260728-final33` | 版本化生产模型包；首次加载校验 LightGBM 版本、模型/文件 SHA-256、特征签名、Alias=false 和 3 个测试向量 |
+| `RECALL_LTR_MODEL_DIR` | `models/ltr/candidate-difference-v3-20260728-final33` | 版本化生产模型包；应用启动时由 worker thread 预加载并校验 LightGBM 版本、模型/文件 SHA-256、特征签名、候选生成契约、Alias=false 和 3 个测试向量 |
 | `RECALL_LTR_SHADOW_SAMPLE_RATE` | `0.1` | Shadow 稳定抽样比例 `[0,1]`，按 `request_id` 哈希；仅 `shadow` 模式生效 |
-| `RECALL_FUSION_BM25_WEIGHT` | `0.2` | 固定 weighted score 的 BM25 路权重；允许为 0，active source 权重和为 0 时本次融合失败 |
-| `RECALL_FUSION_SPARSE_WEIGHT` | `0.3` | 固定 weighted score 的 sparse 路权重；允许为 0，active source 权重和为 0 时本次融合失败 |
-| `RECALL_FUSION_DENSE_WEIGHT` | `0.5` | 固定 weighted score 的 dense 路权重；允许为 0，active source 权重和为 0 时本次融合失败 |
+| `RECALL_LTR_SHADOW_MAX_CONCURRENCY` | `4` | 单进程同时执行的 Shadow 冻结候选召回与排序上限 |
+| `RECALL_LTR_SHADOW_MAX_PENDING` | `16` | 单进程 Shadow 等待容量；并发与等待都满时直接丢弃样本，不等待主链 |
+| `RECALL_LTR_SHADOW_TIMEOUT_MS` | `5000` | Shadow 独立请求的总预算，覆盖候选召回、正文读取和推理 |
+| `RECALL_LTR_SHADOW_SHUTDOWN_TIMEOUT_MS` | `3000` | 服务关闭时等待 Shadow 任务的最长时间，超过后取消 observer |
+| `RECALL_LTR_INFERENCE_MAX_CONCURRENCY` | `4` | LambdaMART 专用 executor 容量；超时线程真正退出前不释放容量，避免默认 executor 无界积压 |
+| `RECALL_FUSION_BM25_WEIGHT` | `0.15` | 固定 weighted score 的 BM25 路权重；允许为 0，active source 权重和为 0 时本次融合失败 |
+| `RECALL_FUSION_SPARSE_WEIGHT` | `0.15` | 固定 weighted score 的 sparse 路权重；允许为 0，active source 权重和为 0 时本次融合失败 |
+| `RECALL_FUSION_DENSE_WEIGHT` | `0.70` | 固定 weighted score 的 dense 路权重；允许为 0，active source 权重和为 0 时本次融合失败 |
 | `SPARSE_RETRIEVAL_TOP_K` | `10` | sparse 召回 facade 直调时调用方未传 `top_k` 的兜底值；完整 RAG pipeline 不读取它作为 sparse 深召回默认 |
 | `SPARSE_RETRIEVAL_SCORE_THRESHOLD` | `0.0` | sparse 召回默认 score 阈值（0.0 = 不过滤；详见 [vectorization.md §9.4](../internals/vectorization.md)） |
 | `DENSE_RETRIEVAL_TOP_K` | `10` | dense 召回 facade 直调时调用方未传 `top_k` 的兜底值；完整 RAG pipeline 不读取它作为 dense 深召回默认 |
 | `DENSE_RETRIEVAL_SCORE_THRESHOLD` | `0.0` | dense 召回默认 score 阈值（cosine 上界 [0, 1]，0.0 = 不过滤；facade 入口校验 `> 1.0` 早死） |
 | `RECALL_GENERATION_CONTEXT_TOKEN_BUDGET` | `4000` | 召回后 LLM 生成拼装上下文的 token 预算上限；命中片段按融合分数从高到低纳入，累计超预算即截断尾部低分片段（仅 RAG 问答流的生成阶段生效） |
-| `RERANK_DEFAULT_TOP_N` | `8` | 召回后重排模块（LINK-130）输出候选条数兜底默认值；调用方未显式传 `top_n` 时生效。参考 RAGFlow rerank `top_n`（默认 6，本项目放宽到 8） |
+| `RERANK_DEFAULT_TOP_N` | `10` | 旧 rerank/off 链路的输出候选条数兜底；LTR RAG 流固定输出 Top10，与 Blind v5 指标口径一致 |
 
 LambdaMART 当前默认以 `active` 运行。新模型版本发布时仍按 `shadow → active` 验证：Shadow 至少
 观察 `recall_ltr_shadow_completed` 的 `top10_changed` / `top10_overlap`、`rank_mode`、
@@ -318,8 +315,28 @@ LambdaMART 当前默认以 `active` 运行。新模型版本发布时仍按 `sha
 把 `RECALL_LTR_MODE` 改为 `baseline` 并重启，即可在不加载模型、不调用远程 rerank 的情况下回滚到
 frozen weighted score。当前模型包已完成离线契约验证；后续新模型不得跳过 Shadow 验证。
 
-当 `RECALL_LTR_MODE` 为 `shadow` / `active` / `baseline` 时，运行时会强制使用系统级
-三路系统权重，避免旧 Dataset 快照中的历史权重破坏模型口径；`off` 模式仍尊重 Dataset 级三路权重。
+当 `RECALL_LTR_MODE` 为 `active` / `baseline` 时，**RAG 问答主链**冻结 Blind v5
+候选契约；`shadow` 主链与 `off` 完全一致，仅在有界后台任务中另起一次冻结候选请求。冻结契约启用
+`bm25,sparse,dense`，阈值全为 `0.0`，权重固定为
+`0.15 / 0.15 / 0.70`，最终 Top10，并按 Query 分型选择三路深度：
+
+| Query 档位 | Dense | Sparse | BM25 |
+| --- | ---: | ---: | ---: |
+| `short_keyword` | 300 | 100 | 225 |
+| `exact_identifier` | 150 | 50 | 100 |
+| `number_time` | 275 | 50 | 200 |
+| `long_multi` | 125 | 50 | 75 |
+| `natural_default` | 150 | 50 | 225 |
+
+该契约写入模型目录的 `serving_contract.json`，加载时与代码内契约逐字段校验。`off` 模式
+仍尊重 Dataset 级配置；`POST /api/v1/recall` 纯召回 JSON 不被全局 LTR 模式改写，始终按
+Dataset/系统配置执行。冻结契约缺少任一路装配或任一路执行失败时 fail closed，不允许把残缺候选
+送入 LTR。Shadow 抽样的独立召回、完整候选正文读取与模型推理均在有界后台任务中完成，不阻塞
+旧线上排序和答案生成。模型文件读取、LightGBM 导入、Booster 构造及测试向量校验在 FastAPI
+startup 阶段通过 worker thread 完成；请求期只读取固化的模型或 baseline 状态。
+`GET /health` 的 `ltr` 字段暴露 `preload_completed`、实际 `serving_strategy`、模型版本、契约版本、加载错误、降级计数和
+p50/p95/p99 推理延迟。服务完成启动后若 active/shadow 出现 `loaded=false`，应结合
+`last_load_error` 按模型预加载失败告警，而不是等待真实请求再次加载。
 
 默认值来源说明：
 
@@ -328,7 +345,7 @@ frozen weighted score。当前模型包已完成离线契约验证；后续新�
 - `RECALL_SPARSE_TOP_K=50`：参考 [Azure AI Search semantic ranker](https://learn.microsoft.com/en-us/azure/search/semantic-search-overview) 对 top 50 的重排窗口。
 - `RECALL_BM25_TOP_K=100`：参考 [BEIR BM25 + Cross-Encoder reranking 示例](https://github.com/beir-cellar/beir/blob/main/examples/retrieval/evaluation/reranking/evaluate_bm25_ce_reranking.py) 对 BM25 top-100 做 rerank。
 
-配置边界：`RECALL_*_TOP_K` 只驱动完整 RAG pipeline 的三路召回深度；`DENSE_RETRIEVAL_TOP_K` / `SPARSE_RETRIEVAL_TOP_K` 只在直接调用 `VectorStorageFacade.search_*_chunks()` 且调用方未传 `top_k` 时兜底。
+配置边界：`RECALL_*_TOP_K` 驱动 `off` RAG 流和纯召回 JSON 的三路召回深度；LTR RAG 流由上述候选契约动态路由。`DENSE_RETRIEVAL_TOP_K` / `SPARSE_RETRIEVAL_TOP_K` 只在直接调用 `VectorStorageFacade.search_*_chunks()` 且调用方未传 `top_k` 时兜底。
 Wiki 标题搜索只复用 `RECALL_STRICT_DEFAULT` 与 `RECALL_STREAM_TIMEOUT_MS`；分页游标固定 10 分钟有效，单 Chunk 搜索位置固定最多 10 条，两者均为模块内部常量，不增加环境变量。Wiki 不使用 Redis。
 
 ### 对外会话鉴权配置（RAG 流 / 纯召回 JSON）

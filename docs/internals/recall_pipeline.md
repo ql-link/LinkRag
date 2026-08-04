@@ -315,7 +315,7 @@ src/core/pipeline/
 - **不触碰召回边界**：`RecallPipeline` 仍只返回融合后的 `RecallResponse`，不查正文、不调 rerank。
 - **输出保留融合解释信息**：`RerankedHit` 在 chunk 元信息上保留 `fused_score` 与各路 `scores`，新增 `rerank_score` / `rerank_rank`。
 - **失败语义**：用户未配置 RERANK 模型 → 硬失败（异常上抛，不降级）；rerank 调用失败 / 返回不可用 → 降级返回当前融合顺序候选并标记 `rerank_applied=False`。
-- **top_n**：调用方传入，缺省取数据集级 `recall_config.rerank_top_n`，无数据集配置时回退 `RERANK_DEFAULT_TOP_N`（默认 8）。
+- **top_n**：调用方传入，缺省取数据集级 `recall_config.rerank_top_n`，无数据集配置时回退 `RERANK_DEFAULT_TOP_N`（默认 10）；LTR RAG 流固定 Top10。
 - **LINK-136 配套**：融合候选池默认放大为 64，并与三路 per-route top_k 解耦，使 rerank 有足够候选可筛。
 - 测试：`tests/unit/core/pipeline/rerank/`，以替身注入正文回填与模型解析，不连真实 DB / LLM。
 

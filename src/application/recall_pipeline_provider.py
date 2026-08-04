@@ -11,6 +11,7 @@ retriever 与 storage facade，单例化主要是为了与 ``recall_pipeline`` �
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import cast
 
 from src.config import settings
 from src.core.dataset_config import (
@@ -18,6 +19,14 @@ from src.core.dataset_config import (
     DatasetExecutionContextLoader,
     DatasetExecutionPurpose,
     RecallConfig,
+)
+from src.core.pipeline.ltr.candidate_routing import (
+    CANDIDATE_CONTRACT_VERSION,
+    FROZEN_FUSION_WEIGHTS,
+    FROZEN_SCORE_THRESHOLDS,
+    FROZEN_SOURCES,
+    classify_candidate_query,
+    depths_for_query,
 )
 from src.core.pipeline.recall import RecallPipeline, RecallPipelineConfig, RecallRequest
 from src.core.pipeline.recall.document_readiness import MySqlDocumentReadinessGate
@@ -37,7 +46,7 @@ from src.core.storage.vector.sparse_retriever import SparseRetriever
 
 
 def _build_bm25_retriever() -> Retriever:
-    # BM25 主读按 BM25_BACKEND 选择；迁移期可由工厂包一层不影响返回值的影子读比较。
+    # BM25 统一由 Manticore 提供。
     return Bm25Retriever(
         backend=build_bm25_recall_backend(),
         tokenizer=RagFlowTokenizer(),
@@ -133,6 +142,7 @@ def build_recall_request_from_config(
     recall_cfg: RecallConfig,
     dataset_contexts: dict[int, DatasetExecutionContext] | None = None,
     doc_ids: list[int] | None = None,
+    apply_ltr_serving_contract: bool = False,
 ) -> RecallRequest:
     """把数据集级召回配置映射为 pipeline 入参。
 
@@ -141,30 +151,41 @@ def build_recall_request_from_config(
     ``bm25_top_k`` / ``sparse_top_k`` / ``dense_top_k`` 分别控制。固定 weighted score 权重
     同样在这里统一映射，避免 RAG 流与纯召回 JSON 入口失同步。
     """
-    ltr_rollout = settings.RECALL_LTR_MODE in {"shadow", "active", "baseline"}
+    # 调用方显式决定当前请求是否使用冻结候选契约。Shadow 主请求必须保持旧链路，
+    # 仅其独立后台请求传 True；不能在这里根据全局 mode 偷换主请求语义。
+    ltr_rollout = apply_ltr_serving_contract
+    routed_depths = depths_for_query(query) if ltr_rollout else None
+    normalized_contexts = cast(dict[int, object], dataset_contexts or {})
     return RecallRequest(
         query=query,
         user_id=user_id,
         dataset_ids=dataset_ids,
         doc_ids=doc_ids,
         top_k=recall_cfg.recall_result_limit,
-        bm25_top_k=recall_cfg.bm25_top_k,
-        sparse_top_k=recall_cfg.sparse_top_k,
-        dense_top_k=recall_cfg.dense_top_k,
-        sparse_score_threshold_override=recall_cfg.sparse_score_threshold,
-        dense_score_threshold_override=recall_cfg.dense_score_threshold,
-        enabled_sources=recall_cfg.recall_enabled_sources,
+        bm25_top_k=routed_depths.bm25 if routed_depths else recall_cfg.bm25_top_k,
+        sparse_top_k=routed_depths.sparse if routed_depths else recall_cfg.sparse_top_k,
+        dense_top_k=routed_depths.dense if routed_depths else recall_cfg.dense_top_k,
+        sparse_score_threshold_override=(
+            FROZEN_SCORE_THRESHOLDS["sparse"] if ltr_rollout else recall_cfg.sparse_score_threshold
+        ),
+        dense_score_threshold_override=(
+            FROZEN_SCORE_THRESHOLDS["dense"] if ltr_rollout else recall_cfg.dense_score_threshold
+        ),
+        enabled_sources=list(FROZEN_SOURCES) if ltr_rollout else recall_cfg.recall_enabled_sources,
         strict_override=recall_cfg.recall_strict,
-        dataset_contexts=dataset_contexts or {},
+        dataset_contexts=normalized_contexts,
         fusion_bm25_weight_override=(
-            settings.RECALL_FUSION_BM25_WEIGHT if ltr_rollout else recall_cfg.fusion_bm25_weight
+            FROZEN_FUSION_WEIGHTS["bm25"] if ltr_rollout else recall_cfg.fusion_bm25_weight
         ),
         fusion_sparse_weight_override=(
-            settings.RECALL_FUSION_SPARSE_WEIGHT if ltr_rollout else recall_cfg.fusion_sparse_weight
+            FROZEN_FUSION_WEIGHTS["sparse"] if ltr_rollout else recall_cfg.fusion_sparse_weight
         ),
         fusion_dense_weight_override=(
-            settings.RECALL_FUSION_DENSE_WEIGHT if ltr_rollout else recall_cfg.fusion_dense_weight
+            FROZEN_FUSION_WEIGHTS["dense"] if ltr_rollout else recall_cfg.fusion_dense_weight
         ),
+        candidate_contract_version=CANDIDATE_CONTRACT_VERSION if ltr_rollout else None,
+        candidate_profile=classify_candidate_query(query) if ltr_rollout else None,
+        required_sources=list(FROZEN_SOURCES) if ltr_rollout else None,
     )
 
 

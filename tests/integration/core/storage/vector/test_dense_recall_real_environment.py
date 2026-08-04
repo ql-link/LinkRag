@@ -43,17 +43,16 @@ from src.core.splitter.models import Chunk, EmbeddedChunk
 from src.core.storage.chunks import ChunkRepository
 from src.core.storage.chunks.constants import (
     CHUNK_LIFECYCLE_ACTIVE,
-    CHUNK_LIFECYCLE_REMOVED,
     CHUNK_STATUS_INDEXED,
 )
-from src.core.storage.qdrant import BucketRouter, QdrantIndexStore
+from src.core.storage.qdrant import QdrantIndexStore
 from src.core.storage.qdrant.point_factory import indexed_point_from_record
 from src.core.storage.vector import (
     VectorRetrievalBackendError,
     VectorStorageFacade,
-    compose_vector_storage_facade,
 )
 from src.core.storage.vector.dense_retriever import DenseRetriever
+from src.database import close_database
 from src.models.chunk_record import ChunkRecordDB
 
 
@@ -94,10 +93,10 @@ pytestmark = [
 
 @pytest.fixture
 def isolation_namespace():
-    """每个测试一份独立 collection_prefix / user_id / set_id / doc_id 命名空间。"""
+    """每个测试一份独立 collection / user_id / set_id / doc_id 命名空间。"""
     nonce = uuid4().hex[:12]
     return {
-        "collection_prefix": f"test_dense_recall_{nonce}",
+        "collection_name": f"test_dense_recall_{nonce}",
         "user_id": int(uuid4().int >> 96) & 0x3FFFFFFF,  # 避开生产 user_id 范围
         "set_id": int(uuid4().int >> 96) & 0x3FFFFFFF,
         "doc_id": int(uuid4().int >> 96) & 0x3FFFFFFF,
@@ -124,11 +123,7 @@ async def session_factory(db_engine):
 @pytest.fixture
 def real_qdrant_store(isolation_namespace):
     pytest.importorskip("qdrant_client", reason="qdrant-client is required for real Qdrant test")
-    bucket_router = BucketRouter(
-        bucket_count=1,
-        prefix=isolation_namespace["collection_prefix"],
-    )
-    store = QdrantIndexStore(bucket_router=bucket_router)
+    store = QdrantIndexStore(collection_name=isolation_namespace["collection_name"])
     yield store
 
 
@@ -148,11 +143,16 @@ def _embedding_config_user_id() -> int:
 
 @pytest.fixture
 async def real_resolved_embedding():
-    return await aresolve_model(
-        user_id=_embedding_config_user_id(),
-        config_id=_embedding_config_id(),
-        capability="EMBEDDING",
-    )
+    try:
+        return await aresolve_model(
+            user_id=_embedding_config_user_id(),
+            config_id=_embedding_config_id(),
+            capability="EMBEDDING",
+        )
+    finally:
+        # pytest-asyncio may create one event loop per test. Do not leave the
+        # module-global application pool bound to the loop used by this fixture.
+        await close_database()
 
 
 @pytest.fixture
@@ -191,7 +191,7 @@ async def test_dense_query_should_hit_real_qdrant_and_return_active_chunks(
     6. 清理：删除 collection + 删除 MySQL 行。
     """
     ns = isolation_namespace
-    chunk_id = f"chunk_{uuid4().hex[:12]}"
+    chunk_id = str(uuid4())
     chunk_text = "测试文档 - 数据治理流程涉及标准、流程与角色分工"
 
     # 写入 MySQL chunk 真值（ACTIVE 状态）
@@ -202,7 +202,6 @@ async def test_dense_query_should_hit_real_qdrant_and_return_active_chunks(
             user_id=ns["user_id"],
             set_id=ns["set_id"],
             doc_id=ns["doc_id"],
-            bucket_id=0,  # bucket_count=1，固定 0
             content=chunk_text,
             chunk_type="mixed",
             chunk_index=0,
@@ -223,15 +222,13 @@ async def test_dense_query_should_hit_real_qdrant_and_return_active_chunks(
         write_dim = len(write_vector)
 
         # 真实 Qdrant：建 collection 并写入 point
-        await real_qdrant_store.ensure_collection(bucket_id=0, vector_size=write_dim)
+        await real_qdrant_store.ensure_collection(vector_size=write_dim)
 
         embedded = EmbeddedChunk(
             chunk=Chunk(
                 content=chunk_text,
-                chunk_type="mixed",
-                start_line=None,
-                end_line=None,
-                chunk_index=0,
+                start_line=1,
+                end_line=1,
             ),
             embedding=write_vector,
             embedding_model=real_embedding_pipeline.embedding_model,
@@ -244,7 +241,7 @@ async def test_dense_query_should_hit_real_qdrant_and_return_active_chunks(
                 )
             ).scalar_one()
         point = indexed_point_from_record(db_record, embedded)
-        await real_qdrant_store.upsert_points(bucket_id=0, points=[point])
+        await real_qdrant_store.upsert_points(points=[point])
 
         # 真实 facade.search_dense_chunks
         facade = VectorStorageFacade(
@@ -281,12 +278,13 @@ async def test_dense_query_should_hit_real_qdrant_and_return_active_chunks(
         # §4.4.3 鬼影 hit 边界验证：MySQL flip → REMOVED 但 Qdrant 还在
         # ===========================================================
         async with session_factory() as session:
-            await repository.soft_delete_by_chunk_ids(
+            affected = await repository.mark_removed(
                 session,
                 [chunk_id],
-                expected_status=CHUNK_LIFECYCLE_ACTIVE,
+                expected_lifecycle_status=CHUNK_LIFECYCLE_ACTIVE,
             )
             await session.commit()
+        assert affected == 1
 
         # 再次召回——Qdrant 仍返回该 point（这就是"鬼影 hit"）
         result_after_delete = await facade.search_dense_chunks(
@@ -315,7 +313,7 @@ async def test_dense_query_should_hit_real_qdrant_and_return_active_chunks(
     finally:
         # 清理：删 Qdrant collection + 删 MySQL 行
         with suppress(Exception):
-            collection_name = real_qdrant_store.bucket_router.collection_name(0)
+            collection_name = real_qdrant_store.collection_name
             client = await real_qdrant_store._get_client()
             await client.delete_collection(collection_name=collection_name)
         with suppress(Exception):
@@ -338,8 +336,8 @@ async def test_dense_recall_should_apply_payload_filter_to_isolate_users(
 
     流程：
     1. 真实 Qdrant 在同一 collection 内写入两个 point：
-       - user_id=A, set_id=X, chunk_id="ca", content="apple"
-       - user_id=B, set_id=Y, chunk_id="cb", content="banana"
+       - user_id=A, set_id=X, chunk_id=UUID-A, content="apple"
+       - user_id=B, set_id=Y, chunk_id=UUID-B, content="banana"
     2. 调 facade.search_dense_chunks(user_id=A, set_id=X, query="apple")。
     3. 仅返回 ca，不返回 cb（payload filter 隔离）。
     """
@@ -351,38 +349,38 @@ async def test_dense_recall_should_apply_payload_filter_to_isolate_users(
     }
     text_a = "apple is a kind of fruit grown on trees"
     text_b = "the financial sector reports quarterly earnings"
+    chunk_id_a = str(uuid4())
+    chunk_id_b = str(uuid4())
 
     try:
         vec_a = await real_embedding_pipeline.aembed_query(text_a)
         vec_b = await real_embedding_pipeline.aembed_query(text_b)
-        await real_qdrant_store.ensure_collection(bucket_id=0, vector_size=len(vec_a))
+        await real_qdrant_store.ensure_collection(vector_size=len(vec_a))
 
         # 写入两个 point；各自 payload 不同
         from src.core.storage.qdrant.models import IndexedPoint
 
         point_a = IndexedPoint(
-            chunk_id="ca",
-            bucket_id=0,
+            chunk_id=chunk_id_a,
             vector=vec_a,
             payload={
-                "chunk_id": "ca",
+                "chunk_id": chunk_id_a,
                 "user_id": ns_a["user_id"],
                 "set_id": ns_a["set_id"],
                 "doc_id": ns_a["doc_id"],
             },
         )
         point_b = IndexedPoint(
-            chunk_id="cb",
-            bucket_id=0,
+            chunk_id=chunk_id_b,
             vector=vec_b,
             payload={
-                "chunk_id": "cb",
+                "chunk_id": chunk_id_b,
                 "user_id": ns_b["user_id"],
                 "set_id": ns_b["set_id"],
                 "doc_id": ns_b["doc_id"],
             },
         )
-        await real_qdrant_store.upsert_points(bucket_id=0, points=[point_a, point_b])
+        await real_qdrant_store.upsert_points(points=[point_a, point_b])
 
         # 调 facade 用 user A 的身份召回
         facade = VectorStorageFacade(
@@ -402,12 +400,12 @@ async def test_dense_recall_should_apply_payload_filter_to_isolate_users(
 
         # payload filter 隔离：只返 user A / set_id X 的 chunk
         hit_ids = {h.chunk_id for h in result.hits}
-        assert "ca" in hit_ids, "user A's chunk should be returned"
-        assert "cb" not in hit_ids, "user B's chunk should be filtered out by payload filter"
+        assert chunk_id_a in hit_ids, "user A's chunk should be returned"
+        assert chunk_id_b not in hit_ids, "user B's chunk should be filtered out by payload filter"
 
     finally:
         with suppress(Exception):
-            collection_name = real_qdrant_store.bucket_router.collection_name(0)
+            collection_name = real_qdrant_store.collection_name
             client = await real_qdrant_store._get_client()
             await client.delete_collection(collection_name=collection_name)
         with suppress(Exception):
@@ -424,9 +422,8 @@ async def test_dense_recall_should_handle_qdrant_unreachable_gracefully(
     底层 ``QdrantStoreError`` 被 facade 翻译为 ``VectorRetrievalBackendError``。
     """
     # 指向一个明确不可达的端口
-    bucket_router = BucketRouter(bucket_count=1, prefix="test_unreachable")
     qdrant_store = QdrantIndexStore(
-        bucket_router=bucket_router,
+        collection_name="test_unreachable",
         host="127.0.0.1",
         port=1,  # 不存在的端口
         timeout=2,
@@ -473,22 +470,22 @@ async def test_dense_retriever_should_integrate_with_real_pipeline_provider(
 
     try:
         vec = await real_embedding_pipeline.aembed_query(text)
-        await real_qdrant_store.ensure_collection(bucket_id=0, vector_size=len(vec))
+        await real_qdrant_store.ensure_collection(vector_size=len(vec))
 
         from src.core.storage.qdrant.models import IndexedPoint
 
+        chunk_id = str(uuid4())
         point = IndexedPoint(
-            chunk_id=f"chunk_{uuid4().hex[:8]}",
-            bucket_id=0,
+            chunk_id=chunk_id,
             vector=vec,
             payload={
-                "chunk_id": "demo",
+                "chunk_id": chunk_id,
                 "user_id": ns["user_id"],
                 "set_id": ns["set_id"],
                 "doc_id": ns["doc_id"],
             },
         )
-        await real_qdrant_store.upsert_points(bucket_id=0, points=[point])
+        await real_qdrant_store.upsert_points(points=[point])
 
         facade = VectorStorageFacade(
             storage_service=None,  # type: ignore[arg-type]
@@ -506,9 +503,7 @@ async def test_dense_retriever_should_integrate_with_real_pipeline_provider(
             user_id=ns["user_id"],
             top_k=10,
             dataset_contexts={
-                ns["set_id"]: SimpleNamespace(
-                    dense_embedding=real_resolved_embedding
-                )
+                ns["set_id"]: SimpleNamespace(dense_embedding=real_resolved_embedding)
             },
         )
 
@@ -519,7 +514,7 @@ async def test_dense_retriever_should_integrate_with_real_pipeline_provider(
 
     finally:
         with suppress(Exception):
-            collection_name = real_qdrant_store.bucket_router.collection_name(0)
+            collection_name = real_qdrant_store.collection_name
             client = await real_qdrant_store._get_client()
             await client.delete_collection(collection_name=collection_name)
         with suppress(Exception):
