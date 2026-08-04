@@ -44,7 +44,7 @@
 | [vectorization.md](internals/vectorization.md) | 向量化模块（dense） |
 | [sparse_vector.md](internals/sparse_vector.md) | 稀疏向量编码与索引 |
 | [preprocessor.md](internals/preprocessor.md) | BM25 预分词（RAGFlow） |
-| [bm25_eval.md](internals/bm25_eval.md) | BM25 召回评测（Qdrant/Manticore）与工具 |
+| [bm25_eval.md](internals/bm25_eval.md) | Manticore BM25 召回评测口径 |
 | [chunk_fact_storage.md](internals/chunk_fact_storage.md) | Chunk SQL 事实存储（真值源/状态机） |
 | [mq.md](internals/mq.md) | MQ 中间件实现 |
 | [llm.md](internals/llm.md) | LLM 调用模块 |
@@ -58,7 +58,6 @@
 | --- | --- |
 | [deploy.md](ops/deploy.md) | 部署指南 |
 | [configure.md](ops/configure.md) | 配置详解 |
-| [manticore_bm25_migration.md](ops/manticore_bm25_migration.md) | Manticore BM25 双写、回填、影子读、切换与回滚 |
 
 ### [contributing.md](contributing.md) — 贡献者规范
 

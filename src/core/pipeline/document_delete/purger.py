@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import asyncio
 import posixpath
-from collections import defaultdict
 
 from src.config import settings
 from src.core.mq.messages.document_delete import (
@@ -131,19 +130,14 @@ class DocumentDeletePurger:
         doc_id: int,
     ) -> None:
         """在三路 mutation lock 均持有时执行实际删除。"""
-        # STEP 1 读路由（只读，不删）：拿到 chunk_id/bucket_id 与 OSS 产物前缀
+        # STEP 1 读账本（只读，不删）：拿到 chunk_id 与 OSS 产物前缀
         async with get_db_context() as db:
-            routing = await self._chunk_repo.list_routing_by_doc_id(db, doc_id, user_id)
+            chunk_ids = await self._chunk_repo.list_chunk_ids_by_doc_id(db, doc_id, user_id)
             parsed_keys = await self._parse_repo.list_parsed_oss_keys_by_doc_id(db, doc_id)
 
-        # STEP 2 删 Qdrant 点：按 bucket_id 分组（一个 user 通常一个 bucket，仍防御性分组）
-        grouped: dict[int, list[str]] = defaultdict(list)
-        for chunk_id, bucket_id in routing:
-            if bucket_id is None:
-                continue
-            grouped[bucket_id].append(chunk_id)
-        for bucket_id, chunk_ids in grouped.items():
-            await self._qdrant_store.delete_points(bucket_id=bucket_id, chunk_ids=chunk_ids)
+        # STEP 2 从固定业务 collection 删除 Qdrant points。
+        if chunk_ids:
+            await self._qdrant_store.delete_points(chunk_ids=chunk_ids)
 
         # STEP 3 删 ES：按 user+dataset+doc 三维 filter（无匹配返 0，幂等）
         await self._es_pipeline.delete_document_index(
@@ -165,7 +159,7 @@ class DocumentDeletePurger:
 
         logger.info(
             f"[DocumentDeletePurger] file 清理完成: doc_id={doc_id}, dataset_id={dataset_id}, "
-            f"user_id={user_id}, qdrant_chunks={sum(len(v) for v in grouped.values())}"
+            f"user_id={user_id}, qdrant_chunks={len(chunk_ids)}"
         )
 
     @staticmethod

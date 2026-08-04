@@ -73,7 +73,7 @@ services:
     networks:
       - tolink-net
 
-  # BM25_BACKEND=manticore 时用（实验性后端，见 src/core/storage/manticore_bm25）。
+  # BM25 固定使用 Manticore（见 src/core/storage/manticore_bm25）。
   # 9306 是 SQL 协议端口（MYSQL wire protocol，代码走这个口）；9308 是 HTTP(S) 端口。
   manticore:
     # 召回基线与集成测试固定在 27.1.5；禁止 latest 静默升级改变 tokenizer/ranker 行为。

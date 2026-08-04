@@ -132,7 +132,6 @@ async def test_should_insert_pending_records_when_bulk_insert_pending_with_draft
             user_id=7,
             set_id=8,
             doc_id=9,
-            bucket_id=11,
             content="alpha",
             content_hash="hash-alpha",
             chunk_type="paragraph",
@@ -315,8 +314,12 @@ async def test_should_claim_failed_for_reindex_and_reset_vector_stage():
 @pytest.mark.asyncio
 async def test_should_return_records_in_input_order_when_get_by_chunk_ids():
     repository = ChunkRepository()
-    first = repository.model_cls(chunk_id="chunk-1", doc_id=1, set_id=1, user_id=1, content="a", content_hash="a")
-    second = repository.model_cls(chunk_id="chunk-2", doc_id=1, set_id=1, user_id=1, content="b", content_hash="b")
+    first = repository.model_cls(
+        chunk_id="chunk-1", doc_id=1, set_id=1, user_id=1, content="a", content_hash="a"
+    )
+    second = repository.model_cls(
+        chunk_id="chunk-2", doc_id=1, set_id=1, user_id=1, content="b", content_hash="b"
+    )
     session = CapturingSession(records=[second, first])
 
     records = await repository.get_by_chunk_ids(session, ["chunk-1", "chunk-2"])
@@ -372,8 +375,12 @@ async def test_should_update_truth_fields_only_when_update_chunk_metadata():
 @pytest.mark.asyncio
 async def test_should_return_records_in_input_order_when_get_updatable_by_chunk_ids():
     repository = ChunkRepository()
-    first = repository.model_cls(chunk_id="chunk-1", doc_id=1, set_id=1, user_id=1, content="a", content_hash="a")
-    second = repository.model_cls(chunk_id="chunk-2", doc_id=1, set_id=1, user_id=1, content="b", content_hash="b")
+    first = repository.model_cls(
+        chunk_id="chunk-1", doc_id=1, set_id=1, user_id=1, content="a", content_hash="a"
+    )
+    second = repository.model_cls(
+        chunk_id="chunk-2", doc_id=1, set_id=1, user_id=1, content="b", content_hash="b"
+    )
     session = CapturingSession(records=[second, first])
 
     records = await repository.get_updatable_by_chunk_ids(session, ["chunk-1", "chunk-2"])
@@ -384,8 +391,12 @@ async def test_should_return_records_in_input_order_when_get_updatable_by_chunk_
 @pytest.mark.asyncio
 async def test_should_return_records_in_input_order_when_get_deletable_by_chunk_ids():
     repository = ChunkRepository()
-    first = repository.model_cls(chunk_id="chunk-1", doc_id=1, set_id=1, user_id=1, content="a", content_hash="a")
-    second = repository.model_cls(chunk_id="chunk-2", doc_id=1, set_id=1, user_id=1, content="b", content_hash="b")
+    first = repository.model_cls(
+        chunk_id="chunk-1", doc_id=1, set_id=1, user_id=1, content="a", content_hash="a"
+    )
+    second = repository.model_cls(
+        chunk_id="chunk-2", doc_id=1, set_id=1, user_id=1, content="b", content_hash="b"
+    )
     session = CapturingSession(records=[second, first])
 
     records = await repository.get_deletable_by_chunk_ids(session, ["chunk-1", "chunk-2"])

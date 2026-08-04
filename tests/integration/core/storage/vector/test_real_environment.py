@@ -19,7 +19,7 @@ from src.core.storage.chunks.constants import (
     ES_STATUS_PENDING,
     SPARSE_VECTOR_STATUS_PENDING,
 )
-from src.core.storage.qdrant import BucketRouter, QdrantIndexStore
+from src.core.storage.qdrant import QdrantIndexStore
 from src.core.storage.vector.draft_factory import ChunkDraftFactory
 from src.core.storage.vector.exceptions import ChunkStructuralUpdateNotAllowedError
 from src.core.storage.vector.management_pipeline import VectorStorageManagementPipeline
@@ -98,9 +98,8 @@ async def test_should_store_update_and_delete_chunks_into_real_mysql_and_qdrant_
     pytest.importorskip("aiomysql", reason="aiomysql is required for real MySQL test")
     pytest.importorskip("qdrant_client", reason="qdrant-client is required for real Qdrant test")
 
-    collection_prefix = f"test_kb_chunk_{uuid4().hex[:12]}"
-    bucket_router = BucketRouter(bucket_count=1, prefix=collection_prefix)
-    qdrant_store = QdrantIndexStore(bucket_router=bucket_router)
+    collection_name = f"test_kb_chunk_{uuid4().hex[:12]}"
+    qdrant_store = QdrantIndexStore(collection_name=collection_name)
     repository = ChunkRepository()
     engine = create_async_engine(
         _async_database_url(),
@@ -124,7 +123,7 @@ async def test_should_store_update_and_delete_chunks_into_real_mysql_and_qdrant_
     ]
     service = VectorStoragePipeline(
         session_factory=session_factory,
-        draft_factory=ChunkDraftFactory(bucket_router=bucket_router),
+        draft_factory=ChunkDraftFactory(),
         repository=repository,
         qdrant_store=qdrant_store,
         embedding_pipeline=DeterministicEmbeddingPipeline(),
@@ -135,7 +134,6 @@ async def test_should_store_update_and_delete_chunks_into_real_mysql_and_qdrant_
         qdrant_store=qdrant_store,
         embedding_pipeline=DeterministicEmbeddingPipeline(),
     )
-    collection_name = bucket_router.collection_name(0)
     original_sparse_enabled = settings.SPARSE_VECTOR_ENABLED
     original_dense_dimension = settings.DENSE_VECTOR_DIMENSION
     settings.SPARSE_VECTOR_ENABLED = False
@@ -153,7 +151,6 @@ async def test_should_store_update_and_delete_chunks_into_real_mysql_and_qdrant_
                         doc_id=990003,
                         set_id=990002,
                         user_id=990001,
-                        bucket_id=0,
                         content=chunk.content,
                         content_hash=f"{index + 1:064x}",
                         chunk_type="mixed",
@@ -197,7 +194,6 @@ async def test_should_store_update_and_delete_chunks_into_real_mysql_and_qdrant_
             )
 
         assert [record.dense_vector_status for record in records] == ["SUCCESS", "SUCCESS"]
-        assert [record.bucket_id for record in records] == [0, 0]
         assert [record.dense_vector_model for record in records] == [
             "real-env-test-embedding",
             "real-env-test-embedding",

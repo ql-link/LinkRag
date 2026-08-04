@@ -9,10 +9,8 @@ from src.config import settings
 from src.observability.logging import safe_exception_stack, truncate_log_value
 from src.utils.logger import logger
 
-from .bucket_router import BucketRouter
 from .constants import (
-    DEFAULT_BUCKET_COUNT,
-    DEFAULT_COLLECTION_PREFIX,
+    DEFAULT_COLLECTION_NAME,
     DEFAULT_QDRANT_TIMEOUT_SECONDS,
     DEFAULT_QDRANT_WRITE_BACKOFF_SECONDS,
     DEFAULT_QDRANT_WRITE_MAX_ATTEMPTS,
@@ -54,13 +52,13 @@ _TRANSIENT_ERROR_MARKERS = (
 
 
 class QdrantIndexStore:
-    """封装 Qdrant bucket collection、dense point 和 sparse vector 的访问。"""
+    """封装统一 Qdrant 业务 collection 的 dense/sparse 向量访问。"""
 
     def __init__(
         self,
         *,
         client: Any | None = None,
-        bucket_router: BucketRouter | None = None,
+        collection_name: str | None = None,
         host: str | None = None,
         port: int | None = None,
         url: str | None = None,
@@ -69,13 +67,12 @@ class QdrantIndexStore:
         timeout: int | None = None,
         prefer_grpc: bool = False,
     ) -> None:
-        """初始化 Qdrant 访问配置；测试可注入 fake client 和 bucket router。"""
+        """初始化 Qdrant 访问配置；测试可注入 fake client 和 collection 名。"""
 
         self._client = client
         self._owns_client = client is None
-        self.bucket_router = bucket_router or BucketRouter(
-            bucket_count=getattr(settings, "CHUNK_INDEX_BUCKET_COUNT", DEFAULT_BUCKET_COUNT),
-            prefix=getattr(settings, "CHUNK_INDEX_COLLECTION_PREFIX", DEFAULT_COLLECTION_PREFIX),
+        self.collection_name = collection_name or getattr(
+            settings, "CHUNK_INDEX_COLLECTION_NAME", DEFAULT_COLLECTION_NAME
         )
         self.host = host or settings.QDRANT_HOST
         self.port = port or settings.QDRANT_PORT
@@ -84,17 +81,13 @@ class QdrantIndexStore:
         elif host is not None or port is not None:
             self.url = f"http://{self.host}:{self.port}"
         else:
-            self.url = getattr(settings, "QDRANT_URL", None) or (
-                f"http://{self.host}:{self.port}"
-            )
+            self.url = getattr(settings, "QDRANT_URL", None) or (f"http://{self.host}:{self.port}")
         resolved_api_key = (
             api_key if api_key is not None else getattr(settings, "QDRANT_API_KEY", None)
         )
         # 空串归一为 None，协议则必须显式传给 SDK：API key 只负责鉴权，不代表服务启用 TLS。
         self.api_key = resolved_api_key or None
-        self.https = (
-            https if https is not None else getattr(settings, "QDRANT_HTTPS", False)
-        )
+        self.https = https if https is not None else getattr(settings, "QDRANT_HTTPS", False)
         self.timeout = timeout or getattr(
             settings,
             "QDRANT_TIMEOUT_SECONDS",
@@ -163,15 +156,15 @@ class QdrantIndexStore:
                 )
                 await asyncio.sleep(delay)
 
-    async def ensure_collection(self, *, bucket_id: int, vector_size: int) -> None:
-        """确保 bucket collection 存在，并创建 dense 向量配置和 payload 索引。"""
+    async def ensure_collection(self, *, vector_size: int) -> None:
+        """确保业务向量 collection 存在，并创建 dense/sparse 配置和 payload 索引。"""
 
         if vector_size <= 0:
             raise ValueError("vector_size must be positive.")
 
         client = await self._get_client()
         models = self._models()
-        collection_name = self.bucket_router.collection_name(bucket_id)
+        collection_name = self.collection_name
 
         try:
             exists = await client.collection_exists(collection_name=collection_name)
@@ -221,9 +214,7 @@ class QdrantIndexStore:
                 f"Failed to ensure Qdrant collection {collection_name}: {exc}"
             ) from exc
 
-    async def ensure_points(
-        self, *, bucket_id: int, points: Sequence[IndexedPoint | SparseIndexedPoint]
-    ) -> None:
+    async def ensure_points(self, *, points: Sequence[IndexedPoint | SparseIndexedPoint]) -> None:
         """确保给定 chunk 的 point 存在（只写 payload，不写任何向量）。
 
         create-if-missing 且幂等：先 retrieve 已存在的 id，只对缺失的 id upsert 一个
@@ -236,7 +227,7 @@ class QdrantIndexStore:
 
         client = await self._get_client()
         models = self._models()
-        collection_name = self.bucket_router.collection_name(bucket_id)
+        collection_name = self.collection_name
 
         ids = [point.chunk_id for point in points]
         try:
@@ -267,7 +258,7 @@ class QdrantIndexStore:
         except Exception as exc:
             raise QdrantStoreError(f"Failed to ensure points in {collection_name}: {exc}") from exc
 
-    async def upsert_points(self, *, bucket_id: int, points: Sequence[IndexedPoint]) -> None:
+    async def upsert_points(self, *, points: Sequence[IndexedPoint]) -> None:
         """写入 dense named 向量到各 chunk 的 point（point 不存在则先建空点）。
 
         dense 为 named 向量，用 ``update_vectors`` 只更新 dense 维度，**不触碰 sparse**。
@@ -278,11 +269,11 @@ class QdrantIndexStore:
         if not points:
             return
 
-        await self.ensure_points(bucket_id=bucket_id, points=points)
+        await self.ensure_points(points=points)
 
         client = await self._get_client()
         models = self._models()
-        collection_name = self.bucket_router.collection_name(bucket_id)
+        collection_name = self.collection_name
         dense_name = self._dense_vector_name
         qdrant_points = [
             models.PointVectors(id=point.chunk_id, vector={dense_name: point.vector})
@@ -303,15 +294,15 @@ class QdrantIndexStore:
                 f"Failed to upsert dense vectors into {collection_name}: {exc}"
             ) from exc
 
-    async def ensure_sparse_vector_schema(self, *, bucket_id: int, vector_name: str) -> None:
-        """确保 bucket collection 中存在指定 named sparse vector 配置。"""
+    async def ensure_sparse_vector_schema(self, *, vector_name: str) -> None:
+        """确保业务向量 collection 中存在指定 named sparse vector 配置。"""
 
         if not vector_name:
             raise ValueError("vector_name must not be empty.")
 
         client = await self._get_client()
         models = self._models()
-        collection_name = self.bucket_router.collection_name(bucket_id)
+        collection_name = self.collection_name
 
         try:
             exists = await self._with_write_retry(
@@ -348,7 +339,6 @@ class QdrantIndexStore:
     async def upsert_sparse_vectors(
         self,
         *,
-        bucket_id: int,
         points: Sequence[SparseIndexedPoint],
     ) -> None:
         """把 sparse named 向量写到各 chunk 的 point（point 不存在则先建空点）。
@@ -360,11 +350,11 @@ class QdrantIndexStore:
         if not points:
             return
 
-        await self.ensure_points(bucket_id=bucket_id, points=points)
+        await self.ensure_points(points=points)
 
         client = await self._get_client()
         models = self._models()
-        collection_name = self.bucket_router.collection_name(bucket_id)
+        collection_name = self.collection_name
         qdrant_points = [
             models.PointVectors(
                 id=point.chunk_id,
@@ -395,7 +385,6 @@ class QdrantIndexStore:
     async def _search_chunks(
         self,
         *,
-        bucket_id: int,
         query_vector_spec: SparseQueryVectorSpec | DenseQueryVectorSpec,
         payload_filter: Any,
         limit: int,
@@ -405,7 +394,7 @@ class QdrantIndexStore:
 
         ``_`` 前缀显式表达"模块内可见、不对业务方暴露"的语义边界。本方法只吞两类
         Qdrant SDK 异常并降级为空结果（业务等价于"没数据"）：
-        - 目标 bucket collection 不存在
+        - 目标业务 collection 不存在
         - 目标 named vector 在 collection 上未配置（常见于旧 collection 尚未迁移到
           named dense，或 sparse schema 未建成）
 
@@ -417,7 +406,6 @@ class QdrantIndexStore:
         不接触 qdrant-client 的 SDK 类型。本方法返回 ``list[VectorSearchHit]``。
 
         Args:
-            bucket_id: 由 ``BucketRouter.route_user(user_id).bucket_id`` 计算得到的 bucket。
             query_vector_spec: 查询向量规格；接受 ``SparseQueryVectorSpec`` /
                 ``DenseQueryVectorSpec``（union dispatch）。
             payload_filter: ``models.Filter`` 实例（由 facade 构造，store 不感知字段语义）。
@@ -440,7 +428,7 @@ class QdrantIndexStore:
 
         client = await self._get_client()
         models = self._models()
-        collection_name = self.bucket_router.collection_name(bucket_id)
+        collection_name = self.collection_name
 
         # 容错点 1：collection 不存在 → 业务等价于"用户/set 没数据"，返空 + warn。
         # 与写入侧 ``delete_points`` 把"collection 不存在"当作合法语义一致。
@@ -453,8 +441,7 @@ class QdrantIndexStore:
         if not collection_present:
             logger.warning(
                 "[QdrantIndexStore._search_chunks] collection not found; returning empty hits: "
-                "bucket_id={} collection={}",
-                bucket_id,
+                "collection={}",
                 collection_name,
             )
             return []
@@ -501,8 +488,7 @@ class QdrantIndexStore:
             if self._is_named_vector_missing_error(exc):
                 logger.warning(
                     "[QdrantIndexStore._search_chunks] named sparse vector not configured; "
-                    "returning empty hits: bucket_id={} collection={} vector_name={}",
-                    bucket_id,
+                    "returning empty hits: collection={} vector_name={}",
                     collection_name,
                     using,
                 )
@@ -566,7 +552,6 @@ class QdrantIndexStore:
     async def get_named_vector_presence(
         self,
         *,
-        bucket_id: int,
         chunk_ids: Sequence[str],
         vector_name: str,
     ) -> dict[str, bool]:
@@ -585,7 +570,7 @@ class QdrantIndexStore:
             raise ValueError("vector_name must not be empty.")
 
         client = await self._get_client()
-        collection_name = self.bucket_router.collection_name(bucket_id)
+        collection_name = self.collection_name
 
         try:
             exists = await client.collection_exists(collection_name=collection_name)
@@ -618,7 +603,6 @@ class QdrantIndexStore:
     async def delete_named_vectors(
         self,
         *,
-        bucket_id: int,
         chunk_ids: Sequence[str],
         vector_name: str,
     ) -> None:
@@ -635,7 +619,7 @@ class QdrantIndexStore:
             raise ValueError("vector_name must not be empty.")
 
         client = await self._get_client()
-        collection_name = self.bucket_router.collection_name(bucket_id)
+        collection_name = self.collection_name
 
         try:
             exists = await client.collection_exists(collection_name=collection_name)
@@ -677,11 +661,11 @@ class QdrantIndexStore:
         )
         return missing_marker and ("collection" in message or "point" in message)
 
-    async def point_exists(self, *, bucket_id: int, chunk_id: str) -> bool:
+    async def point_exists(self, *, chunk_id: str) -> bool:
         """检查指定 chunk_id 对应的 Qdrant point 是否存在。"""
 
         client = await self._get_client()
-        collection_name = self.bucket_router.collection_name(bucket_id)
+        collection_name = self.collection_name
 
         try:
             exists = await client.collection_exists(collection_name=collection_name)
@@ -700,14 +684,14 @@ class QdrantIndexStore:
 
         return bool(records)
 
-    async def delete_points(self, *, bucket_id: int, chunk_ids: Sequence[str]) -> None:
+    async def delete_points(self, *, chunk_ids: Sequence[str]) -> None:
         """删除一批 chunk_id 对应的 Qdrant point。"""
 
         if not chunk_ids:
             return
 
         client = await self._get_client()
-        collection_name = self.bucket_router.collection_name(bucket_id)
+        collection_name = self.collection_name
 
         try:
             exists = await client.collection_exists(collection_name=collection_name)

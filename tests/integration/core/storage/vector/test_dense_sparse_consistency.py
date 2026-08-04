@@ -39,7 +39,7 @@ from src.core.storage.chunks.constants import (
     SPARSE_VECTOR_STATUS_INDEXED,
     SPARSE_VECTOR_STATUS_PENDING,
 )
-from src.core.storage.qdrant import BucketRouter, QdrantIndexStore
+from src.core.storage.qdrant import QdrantIndexStore
 from src.core.storage.vector.draft_factory import ChunkDraftFactory
 from src.core.storage.vector.models import ChunkStorageRequest
 from src.core.storage.vector.pipeline import VectorStoragePipeline
@@ -125,9 +125,8 @@ async def test_should_keep_dense_sparse_qdrant_and_mysql_consistent_for_real_chu
     pytest.importorskip("qdrant_client", reason="qdrant-client is required for real Qdrant test")
 
     user_id, set_id, doc_id = 990011, 990012, 990013
-    collection_prefix = f"test_dense_sparse_{uuid4().hex[:12]}"
-    bucket_router = BucketRouter(bucket_count=1, prefix=collection_prefix)
-    qdrant_store = QdrantIndexStore(bucket_router=bucket_router)
+    collection_name = f"test_dense_sparse_{uuid4().hex[:12]}"
+    qdrant_store = QdrantIndexStore(collection_name=collection_name)
     repository = ChunkRepository()
     dense_name = getattr(settings, "DENSE_VECTOR_QDRANT_VECTOR_NAME", "dense")
     sparse_name = getattr(settings, "SPARSE_VECTOR_QDRANT_VECTOR_NAME", "sparse_text")
@@ -144,8 +143,6 @@ async def test_should_keep_dense_sparse_qdrant_and_mysql_consistent_for_real_chu
         autoflush=False,
     )
 
-    bucket_id = bucket_router.route_user(user_id).bucket_id
-    collection_name = bucket_router.collection_name(bucket_id)
     chunk_ids = [
         "00000000-0000-4000-8000-000000000201",
         "00000000-0000-4000-8000-000000000202",
@@ -154,7 +151,7 @@ async def test_should_keep_dense_sparse_qdrant_and_mysql_consistent_for_real_chu
 
     service = VectorStoragePipeline(
         session_factory=session_factory,
-        draft_factory=ChunkDraftFactory(bucket_router=bucket_router),
+        draft_factory=ChunkDraftFactory(),
         repository=repository,
         qdrant_store=qdrant_store,
         embedding_pipeline=DeterministicEmbeddingPipeline(),
@@ -183,7 +180,6 @@ async def test_should_keep_dense_sparse_qdrant_and_mysql_consistent_for_real_chu
                         doc_id=doc_id,
                         set_id=set_id,
                         user_id=user_id,
-                        bucket_id=bucket_id,
                         content=content,
                         content_hash=f"hash-{cid}",
                         chunk_type="mixed",

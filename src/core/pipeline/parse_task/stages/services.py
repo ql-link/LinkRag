@@ -61,8 +61,6 @@ from src.core.storage.index_mutation_guard import (
     NoopIndexMutationGuard,
 )
 from src.core.storage.index_mutation_models import IndexBranch
-from src.core.storage.qdrant import BucketRouter
-from src.core.storage.qdrant.constants import DEFAULT_BUCKET_COUNT, DEFAULT_COLLECTION_PREFIX
 from src.core.storage.vector import compose_vector_storage_facade
 from src.core.storage.vector.draft_factory import ChunkDraftFactory
 from src.core.storage.vector.models import ChunkIndexingResult
@@ -889,8 +887,7 @@ class StageServices:
 
         dense 阶段已推进 ``dense_vector_status``，这里**重新 load** 一次 chunks 以读到
         刷新后的视图，再**现场过滤** ``dense=SUCCESS AND sparse != SUCCESS`` 后透传给
-        sparse 入口。sparse 模块不再自查 SQL，``bucket_id`` 由 chunks 自带字段决定
-        （不再误传 ``payload.dataset_id``）。
+        sparse 入口。sparse 模块不再自查 SQL，统一写入固定业务 collection。
         """
         from src.core.storage.vector.sparse_indexing import SparseIndexingPipeline
 
@@ -958,41 +955,22 @@ class StageServices:
         """
         from src.core.storage.qdrant.qdrant_store import QdrantIndexStore
 
-        by_bucket: dict[int, list[str]] = {}
-        for chunk in chunks:
-            if chunk.bucket_id is None:
-                logger.error(
-                    "[IndexWriteCleanupAlert] event=missing_bucket task_id={} "
-                    "doc_id={} branch={} chunk_id={}",
-                    task_id,
-                    chunk.doc_id,
-                    branch.value,
-                    chunk.chunk_id,
-                )
-                continue
-            by_bucket.setdefault(int(chunk.bucket_id), []).append(chunk.chunk_id)
-
+        chunk_ids = [chunk.chunk_id for chunk in chunks]
         store = QdrantIndexStore()
-        for bucket_id, chunk_ids in by_bucket.items():
-            try:
-                await store.delete_named_vectors(
-                    bucket_id=bucket_id,
-                    chunk_ids=chunk_ids,
-                    vector_name=vector_name,
-                )
-            except Exception as exc:
-                logger.bind(
-                    error_type=type(exc).__name__,
-                    error_message=truncate_log_value(exc),
-                    stack_trace=safe_exception_stack(exc),
-                ).error(
-                    "[IndexWriteCleanupAlert] event=cleanup_failed task_id={} "
-                    "branch={} bucket_id={} chunk_count={}",
-                    task_id,
-                    branch.value,
-                    bucket_id,
-                    len(chunk_ids),
-                )
+        try:
+            await store.delete_named_vectors(chunk_ids=chunk_ids, vector_name=vector_name)
+        except Exception as exc:
+            logger.bind(
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).error(
+                "[IndexWriteCleanupAlert] event=cleanup_failed task_id={} "
+                "branch={} chunk_count={}",
+                task_id,
+                branch.value,
+                len(chunk_ids),
+            )
 
     # ------------------------------------------------------------------
     # ensure points（dense/sparse 解耦的前置建点）
@@ -1007,7 +985,7 @@ class StageServices:
         """为给定 chunk 在 Qdrant 预建 point（只写 payload，不写向量）。
 
         dense/sparse 解耦后，point 不再由 dense 创建：此步在 dense/sparse 扇出前，
-        按 bucket 建好 collection（维度取系统强制的 ``DENSE_VECTOR_DIMENSION``）与空点，
+        建好固定 collection（维度取系统强制的 ``DENSE_VECTOR_DIMENSION``）与空点，
         之后 dense / sparse 各自 ``update_vectors`` 独立写入、可并行，互不覆盖。
         """
         if not chunks:
@@ -1044,29 +1022,21 @@ class StageServices:
 
         dim = getattr(settings, "DENSE_VECTOR_DIMENSION", 1024)
         store = QdrantIndexStore()
-        by_bucket: dict[int, list[ChunkRecordDB]] = {}
-        for chunk in chunks:
-            if chunk.bucket_id is None:
-                raise ValueError(f"chunk {chunk.chunk_id} missing bucket_id for ensure_points")
-            by_bucket.setdefault(int(chunk.bucket_id), []).append(chunk)
-
-        for bucket_id, records in by_bucket.items():
-            await store.ensure_collection(bucket_id=bucket_id, vector_size=dim)
-            points = [
-                IndexedPoint(
-                    chunk_id=record.chunk_id,
-                    bucket_id=bucket_id,
-                    vector=[],  # ensure_points 只用 chunk_id + payload，忽略 vector
-                    payload={
-                        "chunk_id": record.chunk_id,
-                        "user_id": int(record.user_id),
-                        "set_id": int(record.set_id),
-                        "doc_id": int(record.doc_id),
-                    },
-                )
-                for record in records
-            ]
-            await store.ensure_points(bucket_id=bucket_id, points=points)
+        await store.ensure_collection(vector_size=dim)
+        points = [
+            IndexedPoint(
+                chunk_id=record.chunk_id,
+                vector=[],  # ensure_points 只用 chunk_id + payload，忽略 vector
+                payload={
+                    "chunk_id": record.chunk_id,
+                    "user_id": int(record.user_id),
+                    "set_id": int(record.set_id),
+                    "doc_id": int(record.doc_id),
+                },
+            )
+            for record in chunks
+        ]
+        await store.ensure_points(points=points)
 
     # ------------------------------------------------------------------
     # 懒加载装配
@@ -1074,13 +1044,7 @@ class StageServices:
 
     def _get_chunk_draft_factory(self) -> ChunkDraftFactory:
         if self._chunk_draft_factory is None:
-            bucket_router = BucketRouter(
-                bucket_count=getattr(settings, "CHUNK_INDEX_BUCKET_COUNT", DEFAULT_BUCKET_COUNT),
-                prefix=getattr(
-                    settings, "CHUNK_INDEX_COLLECTION_PREFIX", DEFAULT_COLLECTION_PREFIX
-                ),
-            )
-            self._chunk_draft_factory = ChunkDraftFactory(bucket_router=bucket_router)
+            self._chunk_draft_factory = ChunkDraftFactory()
         return self._chunk_draft_factory
 
     def _get_vector_storage(self, execution_context: "DatasetExecutionContext"):
@@ -1092,7 +1056,7 @@ class StageServices:
 
     def _get_es_indexing_pipeline(self):
         if self._es_indexing_pipeline is None:
-            # BM25 写入按 BM25_WRITE_BACKENDS 装配；迁移期可返回严格双写管线。
+            # BM25 写入统一由 Manticore 管线提供。
             self._es_indexing_pipeline = build_indexing_pipeline(
                 chunk_repository=self._chunk_repository,
             )

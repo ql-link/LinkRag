@@ -76,20 +76,16 @@
 
 > splitter 不再保留 `CHUNKING_ENABLE_ADVANCED_PIPELINE` 布尔开关，也不再回退到旧规则分片器。第二阶段默认使用 `noop`；`noop` 只做结构透传，不保证 final chunk token 数不超过 `CHUNKING_HARD_MAX_TOKENS`。如需启用 TextTiling depth valley 语义细分与 hard max 保障，显式配置 `CHUNKING_STAGE_TWO_ALGORITHM=semantic_depth_window`。
 
-> 注：当前生产不再部署 Elasticsearch；BM25 由 Qdrant sparse vector + `Modifier.IDF` 承载。
-> `BM25_BACKEND=manticore` 是实验性新后端（按 dataset 物理建表，coarse-only 原生 `bm25a`），
-> 需额外部署 Manticore（`docker-compose.yml` 已加 `manticore` 服务，SQL 协议端口
-> `MANTICORE_PORT` 默认 `9306`）。不能直接改此变量切生产流量；必须按
-> [Manticore BM25 上线手册](manticore_bm25_migration.md) 完成双写、回填、对账和影子读。
+> 注：当前生产不再部署 Elasticsearch，Qdrant BM25 也已下线。BM25 固定由 Manticore
+> 按 dataset 物理建表并使用 coarse-only 原生 `bm25a` 承载。`docker-compose.yml`
+> 提供 Manticore 服务，SQL 协议端口 `MANTICORE_PORT` 默认 `9306`。
 
-BM25 迁移相关开关：
+BM25 配置：
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `BM25_BACKEND` | `qdrant` | 主读后端；修改后需重启所有应用/worker |
-| `BM25_WRITE_BACKENDS` | 空 | 空表示只写主读；迁移期设 `qdrant,manticore`，任一后端失败则本次 BM25 写入失败 |
-| `BM25_SHADOW_BACKEND` | 空 | 影子后端，必须不同于主读且包含在写后端中 |
-| `BM25_SHADOW_SAMPLE_RATE` | `0` | 稳定采样比例 `[0,1]`；影子结果只记日志，不影响主读返回 |
+| `BM25_K1` / `BM25_B` | `1.2` / `0.75` | Manticore `bm25a` 参数 |
+| `BM25_TYPE_MULT` | 见环境样例 | chunk 类型乘法重排权重 |
 | `MANTICORE_POOL_MAXSIZE` | `10` | 单进程最大 SQL 连接；服务端连接上限需覆盖副本数乘以该值及迁移任务 |
 | `MANTICORE_MAX_DOCUMENT_BYTES` | `131072` | 单 chunk 的 coarse 预分词 UTF-8 字节上限 |
 | `MANTICORE_SSL_ENABLED` | `false` | 跨主机生产连接应开启并配置 CA；cert/key 成对配置时启用双向 TLS |

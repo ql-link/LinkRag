@@ -381,7 +381,6 @@ CREATE TABLE IF NOT EXISTS kb_document_chunk (
     doc_id                      BIGINT UNSIGNED NOT NULL COMMENT '文档ID',
     set_id                      BIGINT UNSIGNED NOT NULL COMMENT '知识集ID',
     user_id                     BIGINT UNSIGNED NOT NULL COMMENT '用户ID',
-    bucket_id                   INT DEFAULT NULL COMMENT '路由后的Qdrant物理桶编号',
     content                     TEXT NOT NULL COMMENT 'splitter最终产出的可检索Chunk原文',
     content_hash                VARCHAR(64) NOT NULL COMMENT '基于最终Chunk内容计算的SHA-256哈希',
     chunk_type                  VARCHAR(32) NOT NULL COMMENT '分片类型: paragraph/heading/list/blockquote/code_block/math_block/table/image/mixed/front_matter',

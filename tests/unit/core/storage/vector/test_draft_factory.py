@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-from types import SimpleNamespace
-from unittest.mock import MagicMock
-
 import pytest
 
 from src.core.splitter.models import Chunk
@@ -10,9 +7,7 @@ from src.core.storage.vector.draft_factory import ChunkDraftFactory
 
 
 def _factory() -> ChunkDraftFactory:
-    router = MagicMock()
-    router.route_user.return_value = SimpleNamespace(bucket_id=11)
-    return ChunkDraftFactory(bucket_router=router)
+    return ChunkDraftFactory()
 
 
 def _chunk(element_types: list[str] | None, **metadata) -> Chunk:

@@ -9,7 +9,6 @@ from src.core.encoding.sparse.models import SparseVector
 @dataclass(slots=True)
 class IndexedPoint:
     chunk_id: str
-    bucket_id: int
     vector: list[float]
     payload: dict[str, int | str]
 
@@ -17,7 +16,6 @@ class IndexedPoint:
 @dataclass(slots=True)
 class SparseIndexedPoint:
     chunk_id: str
-    bucket_id: int
     vector_name: str
     sparse_vector: SparseVector
     payload: dict[str, int | str]

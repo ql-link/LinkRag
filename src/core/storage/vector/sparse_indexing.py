@@ -12,9 +12,7 @@
   - chunks 中每条的 ``dense_vector_status`` 必须是 ``SUCCESS``——业务硬约束：sparse
     向量追加在 dense point 上，dense 没成功就不能跑 sparse。本模块在入口前置断言
     （fail-fast）兜底；多值 CAS 只能保护 ``sparse_vector_status`` 维度，拦不住这条前置条件。
-  - chunks 自带 ``bucket_id``，本模块从首条取作权威，并 fail-fast 校验同批一致；
-    不再接受外部 ``bucket_id`` 入参（顺手关闭 GitHub issue #95：旧实现误把
-    ``payload.dataset_id`` 当作 bucket_id）。
+  - dense / learned sparse 共用固定业务 collection，租户隔离统一依赖 payload filter。
 - 空集短路：传入 chunks 为空（调用方过滤后无待处理）→ 幂等 no-op SUCCESS。
 """
 
@@ -26,6 +24,10 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import settings
+from src.core.encoding.sparse.exceptions import SparseVectorError
+from src.core.encoding.sparse.factory import build_sparse_vector_service
+from src.core.encoding.sparse.pipeline import SparseVectorService
+from src.core.llm.user_model_resolver import ResolvedModel
 from src.core.storage.chunks import ChunkRepository
 from src.core.storage.chunks.constants import (
     SPARSE_VECTOR_STATUS_FAILED,
@@ -36,11 +38,6 @@ from src.core.storage.qdrant import QdrantIndexStore
 from src.core.storage.qdrant.point_factory import sparse_indexed_point_from_record
 from src.models.chunk_record import ChunkRecordDB
 from src.observability.logging import safe_exception_stack, truncate_log_value
-
-from src.core.encoding.sparse.exceptions import SparseVectorError
-from src.core.encoding.sparse.factory import build_sparse_vector_service
-from src.core.llm.user_model_resolver import ResolvedModel
-from src.core.encoding.sparse.pipeline import SparseVectorService
 from src.services.usage_reporter import report_usage_nowait
 
 
@@ -116,31 +113,12 @@ class SparseIndexingPipeline:
         # 独立建出（或 dense/sparse 任一方按需建），sparse 用 update_vectors 只写自己的
         # named 向量。dense/sparse 的"共存"不再是硬前置，允许 sparse 先于 / 独立于 dense。
 
-        # ③ bucket_id 从 chunks 自带字段取（同文档下由写入路径保证一致），不再外部入参。
-        # 下游 Qdrant 按 bucket_id 路由 collection；不一致属于上游 bug，直接 fail-fast。
-        # ORM 字段名义类型为 int | None，但 chunking 阶段 bulk_insert_pending 要求
-        # bucket_id 必填，运行期不可能为 None；显式断言收紧类型并给出可定位的失败原因。
-        first_bucket_id = records[0].bucket_id
-        if first_bucket_id is None:
-            raise SparseIndexingError(
-                "SPARSE_VECTORIZING_FAILED:missing_bucket_id;" f"chunk_id={records[0].chunk_id}"
-            )
-        bucket_id = int(first_bucket_id)
-        inconsistent = [r for r in records if r.bucket_id is None or int(r.bucket_id) != bucket_id]
-        if inconsistent:
-            sample = inconsistent[0]
-            raise SparseIndexingError(
-                "SPARSE_VECTORIZING_FAILED:bucket_id_mismatch;"
-                f"expected={bucket_id},actual={sample.bucket_id},chunk_id={sample.chunk_id}"
-            )
-
-        # ④ 分批编排：encode → Qdrant upsert → mark INDEXED；任一批失败抛文件级异常。
+        # ③ 分批编排：encode → Qdrant upsert → mark INDEXED；任一批失败抛文件级异常。
         # 稀疏 encoder 背后的 provider 按数据集绑定解析（必配 SPARSE_EMBEDDING、无系统兜底）：
         # 同一文档的 chunks 必定同 user/set，故按首条 user_id + set_id 一次解析、整篇复用，
         # 与 dense 写入侧 per-document 解析同构。vector_name 仍是全局 Qdrant named vector
         # （解析函数取自 settings），保证所有用户写进同一个稀疏向量命名空间。
         user_id = int(records[0].user_id)
-        dataset_id = int(records[0].set_id)
         if self._sparse_vector_service is not None:
             service = self._sparse_vector_service
         elif resolved_model is not None:
@@ -158,7 +136,6 @@ class SparseIndexingPipeline:
             await self._run_batch(
                 db=db,
                 batch=batch,
-                bucket_id=bucket_id,
                 service=service,
                 store=store,
                 model_name=model_name,
@@ -178,7 +155,6 @@ class SparseIndexingPipeline:
         *,
         db: AsyncSession,
         batch: Sequence[ChunkRecordDB],
-        bucket_id: int,
         service: SparseVectorService,
         store: QdrantIndexStore,
         model_name: str,
@@ -222,12 +198,12 @@ class SparseIndexingPipeline:
                 )
 
             # 4.3 写 Qdrant：先 ensure schema，再 upsert sparse vectors。
-            await store.ensure_sparse_vector_schema(bucket_id=bucket_id, vector_name=vector_name)
+            await store.ensure_sparse_vector_schema(vector_name=vector_name)
             points = [
                 sparse_indexed_point_from_record(row, vec, vector_name=vector_name)
                 for row, vec in zip(batch, vectors)
             ]
-            await store.upsert_sparse_vectors(bucket_id=bucket_id, points=points)
+            await store.upsert_sparse_vectors(points=points)
 
             # 4.4 翻 MySQL 状态为 INDEXED，写入 nonzero_count；rowcount 不匹配视为不一致。
             for row, vec in zip(batch, vectors):

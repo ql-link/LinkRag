@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import asyncio
-from collections import defaultdict
 from collections.abc import Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.config import settings
+from src.core.encoding.sparse import SparseChunkVectorizationRequest, SparseVectorService
+from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
+from src.core.splitter.factory import (
+    DenseEmbeddingDimensionError,
+    validate_dense_dimension,
+)
 from src.core.storage.chunks import ChunkRepository
 from src.core.storage.chunks.constants import (
     CHUNK_LIFECYCLE_ACTIVE,
@@ -17,7 +22,6 @@ from src.core.storage.chunks.constants import (
     CHUNK_STATUS_INDEXED,
     CHUNK_STATUS_INDEXING,
     CHUNK_STATUS_PENDING,
-    SPARSE_VECTOR_STATUS_FAILED,
     SPARSE_VECTOR_STATUS_INDEXING,
     SPARSE_VECTOR_STATUS_PENDING,
 )
@@ -26,12 +30,6 @@ from src.core.storage.qdrant.point_factory import (
     chunk_from_record,
     indexed_point_from_record,
     sparse_indexed_point_from_record,
-)
-from src.core.encoding.sparse import SparseChunkVectorizationRequest, SparseVectorService
-from src.core.splitter.embedding_pipeline import ChunkEmbeddingPipeline
-from src.core.splitter.factory import (
-    DenseEmbeddingDimensionError,
-    validate_dense_dimension,
 )
 from src.utils.logger import logger
 
@@ -555,7 +553,6 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
                     chunk_id=chunk_id,
                     content=str(getattr(record, "content")),
                     doc_id=int(getattr(record, "doc_id")),
-                    bucket_id=int(getattr(record, "bucket_id")),
                     user_id=int(getattr(record, "user_id")),
                     set_id=int(getattr(record, "set_id")),
                     task_id=str(getattr(record, "doc_id")),
@@ -577,11 +574,9 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
                 vector_name=self.sparse_vector_service.vector_name,
             )
             await self.qdrant_store.ensure_sparse_vector_schema(
-                bucket_id=sparse_point.bucket_id,
                 vector_name=sparse_point.vector_name,
             )
             await self.qdrant_store.upsert_sparse_vectors(
-                bucket_id=sparse_point.bucket_id,
                 points=[sparse_point],
             )
         except Exception as exc:
@@ -844,7 +839,7 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
 
     async def _ensure_and_upsert(self, points: Sequence[IndexedPoint]) -> None:
         """
-            先按桶分组 point，再逐桶确保 collection 存在并执行 upsert。
+            确保单一业务 collection 存在并执行 upsert。
 
         Args:
             points: 待写入 Qdrant 的标准化 point 序列。
@@ -852,16 +847,10 @@ class VectorStoragePipeline(TransactionalPipelineMixin):
         Returns:
             None.
         """
-        grouped_points: dict[int, list[IndexedPoint]] = defaultdict(list)
-        for point in points:
-            grouped_points[point.bucket_id].append(point)
-
-        for bucket_id, bucket_points in grouped_points.items():
-            await self.qdrant_store.ensure_collection(
-                bucket_id=bucket_id,
-                vector_size=len(bucket_points[0].vector),
-            )
-            await self.qdrant_store.upsert_points(bucket_id=bucket_id, points=bucket_points)
+        if not points:
+            return
+        await self.qdrant_store.ensure_collection(vector_size=len(points[0].vector))
+        await self.qdrant_store.upsert_points(points=points)
 
     def _resolve_embedding_model(
         self,

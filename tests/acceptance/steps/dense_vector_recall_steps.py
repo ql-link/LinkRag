@@ -30,7 +30,6 @@ from pytest_bdd import given, parsers, then, when
 
 from src.config import settings
 from src.core.pipeline.recall.protocols import SOURCE_DENSE
-from src.core.storage.qdrant import BucketRoute
 from src.core.storage.qdrant.exceptions import QdrantStoreError
 from src.core.storage.qdrant.models import DenseQueryVectorSpec
 from src.core.storage.vector import (
@@ -57,7 +56,6 @@ class _DenseRecallState:
     top_k_default: int = 10
     threshold_default: float = 0.0
     embedding_model: str = "text-embedding-v4"
-    bucket_id: int = 42
     inject_pipeline: bool = True
 
     # facade 调用结果
@@ -142,17 +140,10 @@ def dense_recall_state(monkeypatch) -> _DenseRecallState:
 
     # qdrant_store 桩件
     qdrant_store = MagicMock()
-    bucket_router = MagicMock()
-    bucket_router.route_user.return_value = BucketRoute(
-        bucket_id=state.bucket_id,
-        collection_name=f"kb_bucket_{state.bucket_id}",
-    )
-    qdrant_store.bucket_router = bucket_router
 
-    async def _search(*, bucket_id, query_vector_spec, payload_filter, limit, score_threshold):
+    async def _search(*, query_vector_spec, payload_filter, limit, score_threshold):
         state.qdrant_search_call_count += 1
         state.last_search_kwargs = {
-            "bucket_id": bucket_id,
             "query_vector_spec": query_vector_spec,
             "payload_filter": payload_filter,
             "limit": limit,
@@ -242,9 +233,7 @@ def _given_embedder_available():
 # ---------------------------------------------------------------------------
 
 
-@given(
-    parsers.parse("Qdrant 中 user_id={uid:d} 的 bucket collection 存在 {n:d} 个 unnamed dense 向量")
-)
+@given(parsers.parse("Qdrant 业务 collection 中 user_id={uid:d} 存在 {n:d} 个 named dense 向量"))
 def _given_qdrant_has_n_dense_vectors(dense_recall_state: _DenseRecallState, uid: int, n: int):
     dense_recall_state.fake_hits = [
         VectorSearchHit(
@@ -256,15 +245,6 @@ def _given_qdrant_has_n_dense_vectors(dense_recall_state: _DenseRecallState, uid
         )
         for i in range(n)
     ]
-
-
-@given(parsers.parse("写入链路对 user_id {uid:d} 计算得到 bucket_id {bid:d}"))
-def _given_bucket_id(dense_recall_state: _DenseRecallState, uid: int, bid: int):
-    dense_recall_state.bucket_id = bid
-    dense_recall_state.qdrant_store.bucket_router.route_user.return_value = BucketRoute(
-        bucket_id=bid,
-        collection_name=f"kb_bucket_{bid}",
-    )
 
 
 @given(
@@ -298,7 +278,7 @@ def _given_truncated_dense_hits(dense_recall_state: _DenseRecallState, limit: in
     ]
 
 
-@given(parsers.parse("Qdrant 中 user_id {uid:d} 路由到的 bucket collection 不存在"))
+@given(parsers.parse("Qdrant 业务 collection 对 user_id {uid:d} 不存在"))
 def _given_collection_missing(dense_recall_state: _DenseRecallState, uid: int):
     async def _empty(**kwargs):
         dense_recall_state.qdrant_search_call_count += 1
@@ -917,11 +897,6 @@ def _then_search_threshold(dense_recall_state: _DenseRecallState, v: float):
     assert dense_recall_state.last_search_kwargs["score_threshold"] == v
 
 
-@then(parsers.parse("Qdrant 搜索使用 bucket_id 等于 {bid:d}"))
-def _then_search_bucket(dense_recall_state: _DenseRecallState, bid: int):
-    assert dense_recall_state.last_search_kwargs["bucket_id"] == bid
-
-
 @then("Qdrant 搜索的 query_vector_spec 类型为 DenseQueryVectorSpec")
 def _then_spec_type_dense(dense_recall_state: _DenseRecallState):
     spec = dense_recall_state.last_search_kwargs["query_vector_spec"]
@@ -930,7 +905,6 @@ def _then_spec_type_dense(dense_recall_state: _DenseRecallState):
 
 @then("Qdrant 搜索的 query_vector_spec 不带 vector_name")
 def _then_spec_no_vector_name(dense_recall_state: _DenseRecallState):
-    spec = dense_recall_state.last_search_kwargs["query_vector_spec"]
     # DenseQueryVectorSpec 字段不含 vector_name；__dataclass_fields__ 校验
     assert "vector_name" not in DenseQueryVectorSpec.__dataclass_fields__
 
@@ -965,11 +939,6 @@ def _then_result_top_k(dense_recall_state: _DenseRecallState, n: int):
 @then(parsers.parse("返回 VectorSearchResult.score_threshold 等于 {v:f}"))
 def _then_result_threshold(dense_recall_state: _DenseRecallState, v: float):
     assert dense_recall_state.result.score_threshold == v
-
-
-@then("VectorSearchResult 不含字段 bucket_id")
-def _then_result_no_bucket_id():
-    assert "bucket_id" not in VectorSearchResult.__dataclass_fields__
 
 
 def _filter_must_by_key(payload_filter: Any, key: str) -> Any:
@@ -1091,15 +1060,15 @@ def _then_can_import_facade():
 @then("从 vector_storage 包可以导入 VectorSearchHit, VectorSearchResult")
 def _then_can_import_dataclasses():
     from src.core.storage.vector import VectorSearchHit as H  # noqa: F401
-    from src.core.storage.vector import VectorSearchResult as R
+    from src.core.storage.vector import VectorSearchResult as R  # noqa: F401
 
 
 @then("从 vector_storage 包可以导入召回侧异常族")
 def _then_can_import_exceptions():
     from src.core.storage.vector import VectorRetrievalBackendError as B  # noqa: F401
-    from src.core.storage.vector import VectorRetrievalConfigurationError as C
-    from src.core.storage.vector import VectorRetrievalEncodingError as E
-    from src.core.storage.vector import VectorRetrievalError as Base
+    from src.core.storage.vector import VectorRetrievalConfigurationError as C  # noqa: F401
+    from src.core.storage.vector import VectorRetrievalEncodingError as E  # noqa: F401
+    from src.core.storage.vector import VectorRetrievalError as Base  # noqa: F401
 
 
 @then("DenseVectorSearchRequest 不在 vector_storage 包的 __all__ 中")

@@ -1,7 +1,7 @@
 """Manticore BM25 入库管线：与 ``EsIndexingPipeline`` 鸭子兼容的 BM25 写入后端。
 
 对外暴露相同的两个方法签名，使 ``run_es_indexing`` / ``DocumentDeletePurger`` 等
-编排层无需感知后端差异（靠 ``BM25_BACKEND`` 工厂切换）：
+编排层通过统一工厂装配 Manticore：
 
 - ``write_es_index(plan, *, db) -> Bm25IndexingResult``
 - ``delete_document_index(*, user_id, dataset_id, doc_id) -> int``
@@ -18,10 +18,10 @@ from typing import Any
 
 from src.config import settings
 from src.core.preprocessor.models import ChunkWithTokens, FilePostIndexPlan
-from src.core.storage.chunks.repository import ChunkRepository
 from src.core.storage.bm25_models import Bm25IndexingResult
-from src.utils.logger import logger
+from src.core.storage.chunks.repository import ChunkRepository
 from src.observability.logging import safe_exception_stack, truncate_log_value
+from src.utils.logger import logger
 
 from .store import Bm25Point, ManticoreBm25Store, get_manticore_bm25_store
 
