@@ -17,7 +17,7 @@ when_to_use: "当技术设计或代码实现改到 MySQL 表/字段、Qdrant/Ela
 | 契约面 | 代码位置 | 权威文档 |
 | --- | --- | --- |
 | MySQL 表结构 / ORM | `src/models/**.py` | `docs/api/schemas/mysql.md` |
-| Qdrant 向量索引（collection / named vector / payload） | `src/core/qdrant_vector_storage/**` | `docs/api/schemas/qdrant.md` |
+| Qdrant 向量索引（collection / named vector / payload） | `src/core/storage/qdrant/**` | `docs/api/schemas/qdrant.md` |
 | Elasticsearch / BM25 索引 | `src/core/**`（ES/BM25 入库阶段） | `docs/internals/vectorization.md` |
 | MQ topic / 消息结构 | `src/core/mq/messages/**` | `docs/api/mq_contracts.md` + `docs/internals/mq.md` |
 | 对外 HTTP 接口 | `src/api/routes/**` | `docs/api/http_contracts.md` |
