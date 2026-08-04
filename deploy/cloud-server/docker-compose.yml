@@ -1,7 +1,7 @@
 # 云服务器应用栈。
 # 包含 Java 管理端、Python RAG 服务、前端，以及跟随应用部署的 Promtail。
 # MySQL / Redis / MinIO / Manticore / Loki 已部署在云服务器的 tolink-app-net 内网；
-# Qdrant / Kafka 仍由主机服务器提供。
+# Qdrant 仍由主机服务器提供；RabbitMQ 与应用同机部署。
 #
 # 用法示例：
 #   cd deploy/cloud-server
@@ -10,10 +10,36 @@
 #   docker compose up -d
 
 services:
+  rabbitmq:
+    image: rabbitmq:4.3.4-management
+    container_name: tolink-rabbitmq
+    hostname: tolink-rabbitmq
+    restart: always
+    env_file:
+      - ${RABBITMQ_BROKER_ENV_FILE:-/opt/tolink/rabbitmq/broker.env}
+    ports:
+      - "${TAILSCALE_IP:-100.77.31.79}:${RABBITMQ_PORT:-5672}:5672"
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+      - ./rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf:ro
+    networks:
+      - tolink-app-net
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    mem_limit: 768m
+    cpus: 1
+
   tolink-service:
     image: tolink-service:${SERVICE_TAG:-latest}
     container_name: tolink-service
     restart: always
+    env_file:
+      - ${RABBITMQ_APP_ENV_FILE:-/opt/tolink/rabbitmq/app.env}
     environment:
       - TZ=Asia/Shanghai
       - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:-prod}
@@ -27,6 +53,9 @@ services:
       - "${SERVICE_HTTP_PORT:-8080}:8080"
     networks:
       - tolink-app-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
 
   tolink-rag:
     image: tolink-rag:${RAG_TAG:-latest}
@@ -35,6 +64,7 @@ services:
     env_file:
       - ${RAG_ENV_FILE:-/opt/tolink/toLink-Rag/.env.production}
       - ${RAG_SECRET_ENV_FILE:-/opt/tolink/toLink-Rag/.env.production.local}
+      - ${RABBITMQ_APP_ENV_FILE:-/opt/tolink/rabbitmq/app.env}
     environment:
       TZ: Asia/Shanghai
       LOG_SERVICE_NAME: tolink-rag
@@ -44,6 +74,9 @@ services:
       - "${RAG_HTTP_PORT:-8000}:8000"
     networks:
       - tolink-app-net
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
 
   linkrag-web:
     image: linkrag-web:${WEB_TAG:-latest}
@@ -90,3 +123,5 @@ networks:
 
 volumes:
   promtail_positions:
+  rabbitmq_data:
+    name: tolink_rabbitmq_data

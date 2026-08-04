@@ -27,7 +27,7 @@ when_to_use: "当用户要求接入 Kafka/RabbitMQ、发送或订阅消息、新
 - `src/core/mq/factory.py`：注册式单例工厂，根据 `MQ_VENDOR` 选择 Kafka / RabbitMQ 适配器，缓存 Sender/Receiver，并支持测试场景 `reset()`。
 - `src/core/mq/vendors/kafka/kafka_adapter.py`：Kafka 厂商适配器，底层封装 `aiokafka`，保持 Topic、ConsumerGroup、Offset 语义，消费成功后手动提交 offset。
 - `src/core/mq/vendors/kafka/topic_admin.py`：Kafka Topic Admin 实现，供 Kafka Topic 管理流程使用。
-- `src/core/mq/vendors/rabbitmq_adapter.py`：RabbitMQ 厂商适配器，底层封装 `aio-pika`，保持 Exchange、Queue、Binding、RoutingKey、手动 ACK 语义。
+- `src/core/mq/vendors/rabbitmq_adapter.py`：RabbitMQ 厂商适配器，底层封装 `aio-pika`；统一声明 durable Queue + `<queue>.DLX` + `<queue>.DLT`，发送侧启用 publisher confirms/mandatory return，消费侧使用手动 ACK/NACK。默认交换器始终按 Queue 名路由，Kafka key 仅保留为 `message_id`。
 - `src/core/mq/consumers/`：消息消费回调实现；当前文档解析消费者位于 `src/core/mq/consumers/parse_task_consumer.py`，启动入口为 `start_parse_consumer()`。
 - `src/core/mq/topic_admin.py`：应用启动阶段可调用的 Kafka Topic Admin 逻辑，当前由 `src/main.py` 在 `MQ_VENDOR=kafka` 且 `INIT_KAFKA_TOPICS_ON_STARTUP=true` 时调用。
 
@@ -41,6 +41,7 @@ when_to_use: "当用户要求接入 Kafka/RabbitMQ、发送或订阅消息、新
 - `src/main.py` lifespan 中会初始化 Redis、数据库后进入 MQ 初始化逻辑。
 - 当 `settings.MQ_VENDOR.lower() == "kafka"` 且 `settings.INIT_KAFKA_TOPICS_ON_STARTUP` 为 `true` 时，调用 `src/core/mq/topic_admin.py::ensure_topics()`。
 - 当前组合根订阅 `parse_task` 与 `document_delete` 两个消费者，然后统一启动 `MQService` 消费。
+- 当 `MQ_VENDOR=rabbitmq` 时，Sender/Receiver 使用相同 Queue/DLX/DLT 参数幂等声明拓扑；不依赖 `rabbitmq_delayed_message_exchange` 插件。
 
 不要把消息模型拆成 `payload.py` / `message.py` 两个文件，也不要把 HTTP DTO 放进 `src/core/mq/messages/`。
 

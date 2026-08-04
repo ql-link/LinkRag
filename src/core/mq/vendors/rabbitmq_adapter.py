@@ -24,6 +24,42 @@ from src.core.mq.retry import (
 )
 
 
+async def _declare_queue_topology(
+    channel: Any,
+    queue_name: str,
+    *,
+    durable: bool,
+    dlq_suffix: str,
+) -> Any:
+    """幂等声明业务 Queue 及其 DLX/DLT。
+
+    Java/Python 两端必须使用完全相同的 Queue 参数，否则 RabbitMQ 会以
+    ``PRECONDITION_FAILED`` 拒绝重复声明。
+    """
+    import aio_pika
+
+    if queue_name.endswith(dlq_suffix):
+        return await channel.declare_queue(queue_name, durable=durable)
+
+    dlx_name = f"{queue_name}.DLX"
+    dlt_name = f"{queue_name}{dlq_suffix}"
+    dlx = await channel.declare_exchange(
+        dlx_name,
+        type=aio_pika.ExchangeType.DIRECT,
+        durable=durable,
+    )
+    dlt_queue = await channel.declare_queue(dlt_name, durable=durable)
+    await dlt_queue.bind(dlx, routing_key=queue_name)
+    return await channel.declare_queue(
+        queue_name,
+        durable=durable,
+        arguments={
+            "x-dead-letter-exchange": dlx_name,
+            "x-dead-letter-routing-key": queue_name,
+        },
+    )
+
+
 class RabbitMQSender(IMQSender):
     """RabbitMQ 消息生产者
 
@@ -40,6 +76,7 @@ class RabbitMQSender(IMQSender):
         durable: bool = True,
         delivery_mode: int = 2,
         confirm_delivery: bool = True,
+        dlq_suffix: str = ".DLT",
     ):
         """
         Args:
@@ -56,6 +93,7 @@ class RabbitMQSender(IMQSender):
         self._durable = durable
         self._delivery_mode = delivery_mode
         self._confirm_delivery = confirm_delivery
+        self._dlq_suffix = dlq_suffix
 
         self._connection = None
         self._channel = None
@@ -69,10 +107,10 @@ class RabbitMQSender(IMQSender):
             import aio_pika
 
             self._connection = await aio_pika.connect_robust(self._url)
-            self._channel = await self._connection.channel()
-
-            if self._confirm_delivery:
-                await self._channel.set_qos(prefetch_count=1)
+            self._channel = await self._connection.channel(
+                publisher_confirms=self._confirm_delivery,
+                on_return_raises=True,
+            )
 
             # 声明交换器（空名称使用 RabbitMQ 默认交换器，不需要显式声明）
             if self._exchange_name:
@@ -118,7 +156,7 @@ class RabbitMQSender(IMQSender):
         Args:
             topic: Queue 名称（作为 routing_key 使用）
             message: 消息体
-            key: routing_key 覆盖（优先于 topic）
+            key: 业务分区键（写入 AMQP ``message_id``）；默认交换机仍按 topic 路由
             headers: AMQP 消息头
             delay_ms: 延迟毫秒数（需 delayed_message_exchange 插件）
         """
@@ -126,7 +164,9 @@ class RabbitMQSender(IMQSender):
         try:
             import aio_pika
 
-            routing_key = key or topic
+            # 默认交换器只能按 Queue 名路由。Kafka partition key（例如 file_type）
+            # 仅作为 message_id 保留，不能覆盖默认交换器的 routing key。
+            routing_key = key or topic if self._exchange_name else topic
 
             msg_headers = dict(headers) if headers else {}
             if delay_ms is not None and delay_ms > 0:
@@ -137,12 +177,16 @@ class RabbitMQSender(IMQSender):
                 delivery_mode=self._delivery_mode,
                 content_type="application/json",
                 headers=msg_headers if msg_headers else None,
+                message_id=key,
             )
 
-            # 确保队列存在（声明幂等）
+            # Java/Python 统一声明 Queue + DLX + DLT，允许任一发送端先启动。
             if not self._exchange_name:
-                await self._channel.declare_queue(
-                    topic, durable=self._durable
+                await _declare_queue_topology(
+                    self._channel,
+                    topic,
+                    durable=self._durable,
+                    dlq_suffix=self._dlq_suffix,
                 )
 
             await self._exchange.publish(
@@ -279,33 +323,11 @@ class RabbitMQReceiver(IMQReceiver):
 
             for sub in self._subscriptions:
                 queue_name = sub["queue_name"]
-                # 死信装配：DLX exchange + DLT queue + 绑定，全部幂等声明（AMQP
-                # declare 在参数一致时为 no-op，重复启动安全）。
-                dlx_name = f"{queue_name}.DLX"
-                dlt_name = f"{queue_name}{self._retry_policy.dlq_suffix}"
-                dlx = await self._channel.declare_exchange(
-                    dlx_name,
-                    type=aio_pika.ExchangeType.DIRECT,
-                    durable=self._durable,
-                )
-                dlt_queue = await self._channel.declare_queue(
-                    dlt_name,
-                    durable=self._durable,
-                )
-                # routing_key 用原 queue 名，与死信发布时调用 sender.send(topic=dlt_name) 对齐
-                await dlt_queue.bind(dlx, routing_key=queue_name)
-
-                # 原队列声明附加 dead-letter 参数。注意：若环境中已有同名 queue 且
-                # 参数不一致会抛 PRECONDITION_FAILED，需运维一次性删除重建。
-                queue = await self._channel.declare_queue(
+                queue = await _declare_queue_topology(
+                    self._channel,
                     queue_name,
                     durable=self._durable,
-                    auto_delete=self._auto_delete,
-                    exclusive=self._exclusive,
-                    arguments={
-                        "x-dead-letter-exchange": dlx_name,
-                        "x-dead-letter-routing-key": queue_name,
-                    },
+                    dlq_suffix=self._retry_policy.dlq_suffix,
                 )
 
                 # 使用闭包绑定 callback / queue_name

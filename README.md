@@ -13,7 +13,7 @@
 <p align="center">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white">
   <img alt="FastAPI" src="https://img.shields.io/badge/FastAPI-Backend-009688?logo=fastapi&logoColor=white">
-  <img alt="Kafka" src="https://img.shields.io/badge/Kafka-MQ-231F20?logo=apachekafka&logoColor=white">
+  <img alt="RabbitMQ" src="https://img.shields.io/badge/RabbitMQ-MQ-FF6600?logo=rabbitmq&logoColor=white">
   <img alt="Qdrant" src="https://img.shields.io/badge/Qdrant-Dense%20%26%20Sparse-DC244C">
   <img alt="License" src="https://img.shields.io/badge/License-MIT-blue">
 </p>
@@ -122,9 +122,9 @@ LinkRag 由三个仓库协作组成：
 
 | 文件 | 用途 |
 | --- | --- |
-| [docker-compose.yml](./docker-compose.yml) | 主机服务器中间件栈：MySQL、Redis、MinIO、Qdrant、Kafka、Kafka UI、Loki |
+| [docker-compose.yml](./docker-compose.yml) | 主机服务器中间件栈：MySQL、Redis、MinIO、Qdrant、Manticore、Loki；生产 RabbitMQ 位于 Cloud 应用栈 |
 | [deploy/host-server/docker-compose.yml](./deploy/host-server/docker-compose.yml) | 主机服务器中间件栈的 deploy 目录版本 |
-| [deploy/cloud-server/docker-compose.yml](./deploy/cloud-server/docker-compose.yml) | 云服务器应用栈：Java、Python RAG、Web、Promtail |
+| [deploy/cloud-server/docker-compose.yml](./deploy/cloud-server/docker-compose.yml) | 云服务器生产栈：RabbitMQ、Java、Python RAG、Web、Promtail |
 | [deploy/docker-compose.yml](./deploy/docker-compose.yml) | 保留的 Python RAG 单服务部署入口 |
 
 日志拓扑：Loki 部署在主机服务器；Promtail 跟随云服务器应用部署，读取 Java/Python 本机日志并通过 VPN 推送到 Loki。

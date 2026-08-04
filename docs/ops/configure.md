@@ -37,7 +37,7 @@
 | `LLM_RUNTIME_CACHE_ENABLED` / `LLM_RUNTIME_CACHE_TTL_SECONDS` | 全局 `config_id` runtime cache 开关与 TTL |
 | `DATASET_PARSE_CONFIG_CACHE_ENABLED` / `DATASET_PARSE_CONFIG_CACHE_TTL_SECONDS` | `dataset_parse_config` 共享原始快照开关与 TTL；默认关闭，正常值默认 7 天 |
 | `DATASET_PARSE_CONFIG_NEGATIVE_TTL_SECONDS` | 数据集当前没有配置行时的 NOT_FOUND TTL，默认 60 秒 |
-| `KAFKA_BOOTSTRAP_SERVERS` 等（若 `MQ_VENDOR=kafka`） | Kafka 接入信息 |
+| `RABBITMQ_URL`（若 `MQ_VENDOR=rabbitmq`） | RabbitMQ AMQP URL，生产使用独立用户与 vhost |
 | `MINIO_*`（若 `STORAGE_TYPE=minio`） | 对象存储凭据 |
 | `MINIO_RAW_BUCKET`（若 `STORAGE_TYPE=minio`） | 原文件桶：用户上传的源文件，由 Java 写入，Python 只读；默认 `tolink-rag-raw`，需在 MinIO 控制台预建 |
 | `QDRANT_URL` / `QDRANT_HOST` / `QDRANT_PORT` / `QDRANT_HTTPS` / `QDRANT_API_KEY` | 向量存储地址、显式协议与认证；优先使用带 scheme 的 `QDRANT_URL`，`QDRANT_HTTPS` 需与服务端 TLS 状态一致，非空 API key 不代表自动启用 HTTPS |
@@ -46,7 +46,7 @@
 
 | 开关 | 默认 | 含义 |
 | --- | --- | --- |
-| `MQ_VENDOR` | `kafka` | 切换 Kafka / RabbitMQ |
+| `MQ_VENDOR` | `rabbitmq` | 当前默认 RabbitMQ；`kafka` 仅保留回滚兼容 |
 | `VECTOR_STORE_TYPE` | `qdrant` | 当前唯一支持 Qdrant；readiness 据此决定是否执行 Qdrant 探测 |
 | `SPARSE_VECTOR_ENABLED` | `true` | 是否在向量化阶段同步生成稀疏向量；关闭后保持旧 dense-only 语义 |
 | `STORAGE_TYPE` | `minio` | 对象存储实现；当前可用实现为 MinIO，OSS 适配器仍为占位 |
@@ -217,11 +217,11 @@ HOST_VPN_IP=<loki-vpn-host> docker compose -f deploy/cloud-server/docker-compose
 | `MQ_RETRY_BACKOFF_SECONDS` | `1.0` | 重试之间固定退避秒数；单条消息最长阻塞 ≈ 此值 × `MQ_MAX_RETRIES` |
 | `MQ_DLQ_SUFFIX` | `.DLT` | 死信目标命名后缀（原 topic / queue + 后缀） |
 
-> 死信兜底恒启用，不提供关闭开关。死信目标在应用启动时由 `ensure_topics()`（Kafka）或 `RabbitMQReceiver.start()`（RabbitMQ）幂等创建。
+> 死信兜底恒启用，不提供关闭开关。RabbitMQ Sender/Receiver 会用完全相同的参数幂等声明 Queue、DLX 与 DLT；Kafka 的 `ensure_topics()` 仅用于回滚兼容模式。
 
-## MQ Topic 命名
+## MQ 逻辑目标命名
 
-应用启动时需要这些 topic 存在或被自动创建（见 [mq_integration.md](../api/mq_contracts.md)）：
+RabbitMQ 使用同名 Queue；Kafka 回滚模式使用同名 topic（见 [mq_contracts.md](../api/mq_contracts.md)）：
 
 | 变量 | 默认值 | 用途 |
 | --- | --- | --- |

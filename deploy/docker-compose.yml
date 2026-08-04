@@ -1,6 +1,6 @@
 # 部署用 compose：引用本机 docker build 出来的镜像并启动
 # MySQL / Redis / MinIO / Manticore / Loki 位于云服务器的 tolink-app-net；
-# Qdrant / Kafka 仍由主机服务器提供。
+# Qdrant 仍由主机服务器提供；RabbitMQ 位于云服务器 tolink-app-net。
 # 用法：TAG=xxx RAG_ENV_FILE=/opt/tolink/toLink-Rag/.env.production \
 #   RAG_SECRET_ENV_FILE=/opt/tolink/toLink-Rag/.env.production.local \
 #   docker compose -f deploy/docker-compose.yml up -d
@@ -13,6 +13,7 @@ services:
       - ${RAG_ENV_FILE:-../.env.production}
       # 后加载的本机密钥覆盖基础文件中的空值；该文件不进入 Git 或镜像。
       - ${RAG_SECRET_ENV_FILE:-../.env.production.local}
+      - ${RABBITMQ_APP_ENV_FILE:-/opt/tolink/rabbitmq/app.env}
     environment:
       TZ: Asia/Shanghai
     ports:
