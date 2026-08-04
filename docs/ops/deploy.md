@@ -64,6 +64,8 @@ Cloud 的 `tolink-app-net`，容器名 `tolink-rabbitmq`。管理端口只绑定
 端口仅绑定 Cloud 的 Tailscale 地址 `100.77.31.79:5672`，供本地 `prod` profile 调试，不发布到公网。
 Broker 与应用凭据分别保存在 `/opt/tolink/rabbitmq/broker.env` 和
 `/opt/tolink/rabbitmq/app.env`，权限均为 `600`。
+当前环境统一使用 RabbitMQ；Kafka 配置仅保留代码级回滚兼容，部署密钥层不再写入 Kafka
+账号或密码。Python `Settings` 在缺少环境文件时也默认选择 `rabbitmq`。
 
 ## Primary 开发环境
 

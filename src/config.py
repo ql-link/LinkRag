@@ -636,8 +636,8 @@ class Settings(BaseSettings):
     # ==========================================
     # MQ 消息中台配置 (Message Queue)
     # ==========================================
-    # 可选值: kafka / rabbitmq
-    MQ_VENDOR: str = "kafka"
+    # 可选值: rabbitmq / kafka；RabbitMQ 是当前默认，Kafka 仅保留回滚兼容。
+    MQ_VENDOR: str = "rabbitmq"
 
     # --- Kafka 配置 ---
     KAFKA_BOOTSTRAP_SERVERS: str = "localhost:9092"

@@ -1,5 +1,17 @@
 from pathlib import Path
 from src.config import Settings, _settings_env_files
+
+
+def test_default_mq_vendor_is_rabbitmq(tmp_path: Path, monkeypatch) -> None:
+    missing_env = tmp_path / ".env.missing"
+    monkeypatch.setenv("TOLINK_ENV_FILE", str(missing_env))
+    monkeypatch.delenv("MQ_VENDOR", raising=False)
+
+    configured = Settings(_env_file=_settings_env_files())
+
+    assert configured.MQ_VENDOR == "rabbitmq"
+
+
 def test_local_env_file_overrides_shared_env_file(tmp_path: Path, monkeypatch) -> None:
     shared_env = tmp_path / ".env.development"
     local_env = tmp_path / ".env.development.local"
