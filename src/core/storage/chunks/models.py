@@ -21,7 +21,6 @@ class FactChunkDraft:
     user_id: int
     set_id: int
     doc_id: int
-    bucket_id: int
     content: str
     content_hash: str
     chunk_type: str

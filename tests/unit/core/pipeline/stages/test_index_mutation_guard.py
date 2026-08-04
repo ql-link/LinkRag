@@ -13,14 +13,14 @@ from src.core.pipeline.parse_task.pipeline import ParseTaskPipeline
 from src.core.pipeline.parse_task.stages import services as services_module
 from src.core.pipeline.parse_task.stages.services import StageServices
 from src.core.preprocessor.models import ChunkWithTokens, FileIndexMeta, FilePostIndexPlan
+from src.core.storage.bm25_models import Bm25IndexingResult
 from src.core.storage.chunks.constants import (
     CHUNK_STATUS_PENDING,
     SPARSE_VECTOR_STATUS_PENDING,
 )
 from src.core.storage.chunks.repository import ChunkRepository
-from src.core.storage.bm25_models import Bm25IndexingResult
-from src.core.storage.vector.models import ChunkIndexingResult
 from src.core.storage.qdrant import qdrant_store as qdrant_store_module
+from src.core.storage.vector.models import ChunkIndexingResult
 
 
 class _RecordingGuard:
@@ -142,7 +142,6 @@ def _chunk():
         doc_id=9,
         set_id=8,
         user_id=7,
-        bucket_id=11,
         content="text",
         content_hash="hash",
         chunk_index=0,
@@ -251,8 +250,8 @@ async def test_dense_failure_cleans_named_vector_before_releasing_lock(monkeypat
     )
 
     class _QdrantStore:
-        async def delete_named_vectors(self, *, bucket_id, chunk_ids, vector_name):
-            events.append(f"dense.cleanup:{bucket_id}:{vector_name}:{','.join(chunk_ids)}")
+        async def delete_named_vectors(self, *, chunk_ids, vector_name):
+            events.append(f"dense.cleanup:{vector_name}:{','.join(chunk_ids)}")
 
     monkeypatch.setattr(qdrant_store_module, "QdrantIndexStore", _QdrantStore)
 
@@ -263,7 +262,7 @@ async def test_dense_failure_cleans_named_vector_before_releasing_lock(monkeypat
         "lock.enter:DENSE:9",
         "assert:task-1:9",
         "dense.write",
-        "dense.cleanup:11:dense:c1",
+        "dense.cleanup:dense:c1",
         "lock.exit:DENSE:9",
     ]
 
@@ -302,8 +301,8 @@ async def test_sparse_failure_cleans_only_mysql_unconfirmed_vectors_inside_lock(
         return [pending]
 
     class _QdrantStore:
-        async def delete_named_vectors(self, *, bucket_id, chunk_ids, vector_name):
-            events.append(f"sparse.cleanup:{bucket_id}:{vector_name}:{','.join(chunk_ids)}")
+        async def delete_named_vectors(self, *, chunk_ids, vector_name):
+            events.append(f"sparse.cleanup:{vector_name}:{','.join(chunk_ids)}")
 
     monkeypatch.setattr(services, "_reload_chunks_from_db", _reload)
     monkeypatch.setattr(qdrant_store_module, "QdrantIndexStore", _QdrantStore)
@@ -316,7 +315,7 @@ async def test_sparse_failure_cleans_only_mysql_unconfirmed_vectors_inside_lock(
         "assert:task-1:9",
         "sparse.write",
         "mysql.rollback",
-        "sparse.cleanup:11:sparse_text:c1",
+        "sparse.cleanup:sparse_text:c1",
         "lock.exit:SPARSE:9",
     ]
 
@@ -327,10 +326,10 @@ async def test_ensure_points_holds_dense_then_sparse_before_shared_point_write(m
     services = _services(events=events, guard=guard)
 
     class _QdrantStore:
-        async def ensure_collection(self, *, bucket_id, vector_size):
+        async def ensure_collection(self, *, vector_size):
             events.append("points.ensure_collection")
 
-        async def ensure_points(self, *, bucket_id, points):
+        async def ensure_points(self, *, points):
             events.append("points.write")
 
     monkeypatch.setattr(qdrant_store_module, "QdrantIndexStore", _QdrantStore)

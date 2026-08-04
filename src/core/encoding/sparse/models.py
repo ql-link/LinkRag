@@ -38,7 +38,6 @@ class SparseChunkVectorizationRequest:
     chunk_id: str
     content: str
     doc_id: int
-    bucket_id: int
     user_id: int
     set_id: int
     task_id: str = ""

@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from src.core.storage.qdrant import IndexedPoint, SparseIndexedPoint
 from src.core.encoding.sparse import SparseVector
+from src.core.storage.qdrant import IndexedPoint, SparseIndexedPoint
 from src.core.storage.qdrant.point_factory import (
     indexed_point_from_draft,
     indexed_point_from_record,
@@ -14,7 +14,6 @@ from src.core.storage.qdrant.point_factory import (
 def test_should_create_indexed_point_from_draft_when_embedding_provided():
     draft = SimpleNamespace(
         chunk_id="chunk-1",
-        bucket_id=3,
         user_id=7,
         set_id=8,
         doc_id=9,
@@ -25,7 +24,6 @@ def test_should_create_indexed_point_from_draft_when_embedding_provided():
 
     assert isinstance(point, IndexedPoint)
     assert point.chunk_id == "chunk-1"
-    assert point.bucket_id == 3
     assert point.vector == [1.0, 2.0, 3.5]
     assert point.payload == {
         "chunk_id": "chunk-1",
@@ -38,7 +36,6 @@ def test_should_create_indexed_point_from_draft_when_embedding_provided():
 def test_should_create_indexed_point_from_record_when_embedding_provided():
     record = SimpleNamespace(
         chunk_id="chunk-2",
-        bucket_id=4,
         user_id=17,
         set_id=18,
         doc_id=19,
@@ -49,7 +46,6 @@ def test_should_create_indexed_point_from_record_when_embedding_provided():
 
     assert point == IndexedPoint(
         chunk_id="chunk-2",
-        bucket_id=4,
         vector=[0.1, 0.2],
         payload={
             "chunk_id": "chunk-2",
@@ -60,11 +56,9 @@ def test_should_create_indexed_point_from_record_when_embedding_provided():
     )
 
 
-
 def test_should_create_sparse_indexed_point_from_draft_when_sparse_vector_provided():
     draft = SimpleNamespace(
         chunk_id="chunk-1",
-        bucket_id=3,
         user_id=7,
         set_id=8,
         doc_id=9,
@@ -75,7 +69,6 @@ def test_should_create_sparse_indexed_point_from_draft_when_sparse_vector_provid
 
     assert point == SparseIndexedPoint(
         chunk_id="chunk-1",
-        bucket_id=3,
         vector_name="sparse_text",
         sparse_vector=sparse_vector,
         payload={

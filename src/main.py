@@ -68,19 +68,6 @@ from src.observability.middleware import TraceContextMiddleware
 from src.services.mq_service import MQService
 
 
-def _manticore_enabled() -> bool:
-    write_backends = {
-        backend.strip()
-        for backend in (settings.BM25_WRITE_BACKENDS or settings.BM25_BACKEND).split(",")
-        if backend.strip()
-    }
-    return (
-        settings.BM25_BACKEND == "manticore"
-        or settings.BM25_SHADOW_BACKEND == "manticore"
-        or "manticore" in write_backends
-    )
-
-
 async def _start_mq_consumers() -> None:
     """组合根装配：用 MQService 订阅各业务 handler 并启动消费。
 
@@ -141,10 +128,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception:
         pass
     await redis_client.close()
-    if _manticore_enabled():
-        from src.core.storage.manticore_bm25 import close_manticore_bm25_store
+    from src.core.storage.manticore_bm25 import close_manticore_bm25_store
 
-        await close_manticore_bm25_store()
+    await close_manticore_bm25_store()
     await close_database()
     await shutdown_ltr_shadow_executor()
     shutdown_ltr_ranker()
@@ -253,20 +239,19 @@ async def readiness_check():
     if not await redis_client.ping():
         failures.append("redis")
 
-    if _manticore_enabled():
-        from src.core.storage.manticore_bm25 import get_manticore_bm25_store
+    from src.core.storage.manticore_bm25 import get_manticore_bm25_store
 
-        try:
-            await get_manticore_bm25_store().ping()
-        except Exception as exc:
-            logger.bind(
-                event="manticore_readiness_failed",
-                outcome="degraded",
-                error_type=type(exc).__name__,
-                error_message=truncate_log_value(exc),
-                stack_trace=safe_exception_stack(exc),
-            ).warning("Manticore readiness check failed")
-            failures.append("manticore")
+    try:
+        await get_manticore_bm25_store().ping()
+    except Exception as exc:
+        logger.bind(
+            event="manticore_readiness_failed",
+            outcome="degraded",
+            error_type=type(exc).__name__,
+            error_message=truncate_log_value(exc),
+            stack_trace=safe_exception_stack(exc),
+        ).warning("Manticore readiness check failed")
+        failures.append("manticore")
 
     if settings.VECTOR_STORE_TYPE.lower() == "qdrant":
         from src.core.storage.qdrant import QdrantIndexStore
@@ -287,7 +272,7 @@ async def readiness_check():
                 "status": "not_ready",
                 "app": settings.APP_NAME,
                 "failed_dependencies": failures,
-                "bm25_backend": settings.BM25_BACKEND,
+                "bm25_backend": "manticore",
             },
         )
 
@@ -298,7 +283,7 @@ async def readiness_check():
     return {
         "status": "degraded" if degraded_components else "ready",
         "app": settings.APP_NAME,
-        "bm25_backend": settings.BM25_BACKEND,
+        "bm25_backend": "manticore",
         "degraded_components": degraded_components,
     }
 

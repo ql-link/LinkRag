@@ -72,10 +72,10 @@ async def _seed_truth(session: AsyncSession) -> None:
         await session.execute(
             text(
                 "INSERT INTO kb_document_chunk "
-                "(chunk_id,doc_id,set_id,user_id,bucket_id,content,content_hash,chunk_type,"
+                "(chunk_id,doc_id,set_id,user_id,content,content_hash,chunk_type,"
                 "start_line,end_line,chunk_index,dense_vector_status,sparse_vector_status,"
                 "es_status,lifecycle_status) VALUES "
-                "(:chunk_id,10001,10,123,0,:content,:hash,'paragraph',:line,:line,:idx,"
+                "(:chunk_id,10001,10,123,:content,:hash,'paragraph',:line,:line,:idx,"
                 "'SUCCESS','SUCCESS','SUCCESS','ACTIVE')"
             ),
             {
@@ -391,10 +391,10 @@ async def test_real_mysql_title_index_and_bounded_window_queries(migrated_databa
             await session.execute(
                 text(
                     "INSERT INTO kb_document_chunk "
-                    "(chunk_id,doc_id,set_id,user_id,bucket_id,content,content_hash,chunk_type,"
+                    "(chunk_id,doc_id,set_id,user_id,content,content_hash,chunk_type,"
                     "start_line,end_line,chunk_index,dense_vector_status,sparse_vector_status,"
                     "es_status,lifecycle_status) VALUES "
-                    "(:chunk_id,10001,10,123,0,:content,:hash,'paragraph',:line,:line,:idx,"
+                    "(:chunk_id,10001,10,123,:content,:hash,'paragraph',:line,:line,:idx,"
                     "'SUCCESS','SUCCESS','SUCCESS','ACTIVE')"
                 ),
                 extra_chunks,

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import hashlib
-from collections import defaultdict
 from collections.abc import Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -210,20 +209,17 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
                 sparse_service=sparse_service,
             )
             await self.qdrant_store.ensure_collection(
-                bucket_id=record.bucket_id,
                 vector_size=len(point.vector),
             )
-            await self.qdrant_store.upsert_points(bucket_id=record.bucket_id, points=[point])
+            await self.qdrant_store.upsert_points(points=[point])
             if sparse_vector is not None:
                 sparse_point = sparse_indexed_point_from_record(
                     record, sparse_vector, vector_name=sparse_service.vector_name
                 )
                 await self.qdrant_store.ensure_sparse_vector_schema(
-                    bucket_id=record.bucket_id, vector_name=sparse_point.vector_name
+                    vector_name=sparse_point.vector_name
                 )
-                await self.qdrant_store.upsert_sparse_vectors(
-                    bucket_id=record.bucket_id, points=[sparse_point]
-                )
+                await self.qdrant_store.upsert_sparse_vectors(points=[sparse_point])
                 sparse_indexed = await self._mark_sparse_indexed(
                     [record.chunk_id],
                     model_name=sparse_service.model_name,
@@ -238,7 +234,6 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
             if not indexed:
                 await self._delete_qdrant_point_if_record_is_delete_state(
                     chunk_id=record.chunk_id,
-                    fallback_bucket_id=record.bucket_id,
                 )
                 logger.warning(
                     "[VectorStorageManagementPipeline] Skipped stale update completion for chunk "
@@ -308,15 +303,7 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
                     affected_chunks=0,
                     skipped_chunk_ids=chunk_ids,
                 )
-            grouped_chunk_ids: dict[int, list[str]] = defaultdict(list)
-            for chunk_id in active_chunk_ids:
-                grouped_chunk_ids[record_map[chunk_id].bucket_id].append(chunk_id)
-
-            for bucket_id, bucket_chunk_ids in grouped_chunk_ids.items():
-                await self.qdrant_store.delete_points(
-                    bucket_id=bucket_id,
-                    chunk_ids=bucket_chunk_ids,
-                )
+            await self.qdrant_store.delete_points(chunk_ids=active_chunk_ids)
         except Exception as exc:
             error_msg = str(exc)
             logger.exception(
@@ -534,14 +521,12 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
         self,
         *,
         chunk_id: str,
-        fallback_bucket_id: int,
     ) -> None:
         """
             当旧修改流程发现 MySQL 已进入删除态时，反删刚写入的 Qdrant point。
 
         Args:
             chunk_id: 需要清理的 chunk 标识。
-            fallback_bucket_id: 回查失败时可用于定位旧 point 的桶编号。
 
         Returns:
             None.
@@ -553,9 +538,8 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
         if record is None or record.lifecycle_status not in CHUNK_LIFECYCLE_INACTIVE_STATUSES:
             return
 
-        bucket_id = record.bucket_id if record.bucket_id is not None else fallback_bucket_id
         try:
-            await self.qdrant_store.delete_points(bucket_id=bucket_id, chunk_ids=[chunk_id])
+            await self.qdrant_store.delete_points(chunk_ids=[chunk_id])
         except Exception as exc:
             error_msg = str(exc)
             logger.exception(
@@ -688,7 +672,6 @@ class VectorStorageManagementPipeline(TransactionalPipelineMixin):
                     chunk_id=record.chunk_id,
                     content=content,
                     doc_id=record.doc_id,
-                    bucket_id=record.bucket_id,
                     user_id=record.user_id,
                     set_id=record.set_id,
                     task_id=str(record.doc_id),

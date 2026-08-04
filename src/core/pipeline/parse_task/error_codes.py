@@ -31,7 +31,7 @@ class ParseFailureCode(str, Enum):
     # 数据集开启了表格/图片增强，但对应 CHAT/VISION 精确绑定缺失。
     ENHANCEMENT_MODEL_MISSING = "ENHANCEMENT_MODEL_MISSING"
     # 用户 EMBEDDING 模型输出维度与系统统一维度（DENSE_VECTOR_DIMENSION）不一致，
-    # 无法写入按 bucket 共享、维度固定的稠密 collection（方案 A 维度约束）。
+    # 无法写入全局共享、维度固定的稠密 collection。
     EMBEDDING_DIMENSION_UNSUPPORTED = "EMBEDDING_DIMENSION_UNSUPPORTED"
     # 重试前置校验失败前缀；详情形如 "RETRY_VALIDATION_FAILED:<具体校验项>"。
     RETRY_VALIDATION_FAILED = "RETRY_VALIDATION_FAILED"

@@ -16,6 +16,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from src.core.pipeline.parse_task.stages.services import StageServices
 from src.core.storage.chunks.constants import (
     CHUNK_STATUS_FAILED,
     CHUNK_STATUS_INDEXED,
@@ -24,7 +25,6 @@ from src.core.storage.chunks.constants import (
     SPARSE_VECTOR_STATUS_PENDING,
 )
 from src.core.storage.chunks.repository import ChunkRepository
-from src.core.pipeline.parse_task.stages.services import StageServices
 from src.core.storage.vector.models import ChunkIndexingResult
 
 
@@ -34,7 +34,6 @@ def _row(chunk_id, *, dense, sparse=SPARSE_VECTOR_STATUS_PENDING):
         doc_id=9,
         set_id=8,
         user_id=7,
-        bucket_id=11,
         content="x",
         content_hash="h",
         chunk_index=0,

@@ -85,7 +85,7 @@ SparseVectorService(encoder, vector_name=SPARSE_VECTOR_QDRANT_VECTOR_NAME)
 | 模型 | 说明 |
 | --- | --- |
 | `SparseVector` | 写入 Qdrant 的稀疏向量结构：`indices: list[int]` + `values: list[float]`。`__post_init__` 强校验：长度一致、非空、indices 唯一且非负、values 有限 |
-| `SparseChunkVectorizationRequest` | 一个待稀疏向量化的 chunk：`chunk_id` / `content` / `doc_id` / `bucket_id` / `user_id` / `set_id` / `task_id` / `chunk_index` |
+| `SparseChunkVectorizationRequest` | 一个待稀疏向量化的 chunk：`chunk_id` / `content` / `doc_id` / `user_id` / `set_id` / `task_id` / `chunk_index` |
 | `SparseChunkResult` | 单 chunk 处理结果：`indexed` / `nonzero_count` / `error_msg` |
 | `SparseVectorizationResult` | 文档级或批量重试汇总：`total_chunks` / `indexed_chunks` / `failed_chunk_ids`，`is_success` 判断是否全部成功 |
 
@@ -105,7 +105,7 @@ SparseVectorService(encoder, vector_name=SPARSE_VECTOR_QDRANT_VECTOR_NAME)
 
 解析主流水线的最后一段（对应 parse_task 的 `sparse_vectorizing` 阶段）。文件级 all-or-nothing 语义：
 
-- 输入是 pipeline 已过滤的 `chunks` 列表 + `task_id` + `db`。调用方需保证：已剔除 `sparse_vector_status=SUCCESS` 的条目；每条 `dense_vector_status` 必须是 `SUCCESS`（稀疏向量追加在 dense point 上，本模块入口 fail-fast 兜底）；`bucket_id` 从首条取作权威并校验同批一致。
+- 输入是 pipeline 已过滤的 `chunks` 列表 + `task_id` + `db`。调用方需剔除 `sparse_vector_status=SUCCESS` 的条目；稀疏向量写入统一业务 collection，可独立于 dense 写入。
 - 任一 chunk 失败 → 失败 chunk 标 `FAILED`，整体抛 `SparseIndexingError`，由上层转为 `sparse_vectorizing_status=FAILED` + `pipeline_status=FAILED` + 通知 Java。
 - 空集短路：传入 chunks 为空 → 幂等 no-op SUCCESS。
 

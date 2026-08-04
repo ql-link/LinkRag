@@ -6,8 +6,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Literal
 
-from src.core.storage.chunks.constants import CHUNK_STATUS_PENDING
 from src.core.splitter.models import Chunk
+from src.core.storage.chunks.constants import CHUNK_STATUS_PENDING
 
 
 @dataclass(slots=True)
@@ -91,7 +91,7 @@ class ChunkDeleteRequest:
 @dataclass(slots=True)
 class StoredChunkDraft:
     """
-        描述已经补齐业务主键、分桶信息与基础元数据的中间存储草稿对象。
+        描述已经补齐业务主键与基础元数据的中间存储草稿对象。
 
     Args:
         None.
@@ -104,7 +104,6 @@ class StoredChunkDraft:
     user_id: int
     set_id: int
     doc_id: int
-    bucket_id: int
     content: str
     content_hash: str
     chunk_type: str
@@ -232,8 +231,7 @@ class VectorSearchHit:
 class VectorSearchResult:
     """向量召回结果包；hit 列表 + 调用上下文（用于日志 / hybrid 融合）。
 
-    向量类型中性：调用方通过 ``vector_kind`` 字段区分来源。**故意不含 ``bucket_id``**：
-    bucket 路由是内部细节，调用方拿到无用；store 层 warn 日志已经带 ``bucket_id``。
+    向量类型中性：调用方通过 ``vector_kind`` 字段区分来源。
     """
 
     hits: list[VectorSearchHit] = field(default_factory=list)

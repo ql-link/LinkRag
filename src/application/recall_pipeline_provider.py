@@ -46,7 +46,7 @@ from src.core.storage.vector.sparse_retriever import SparseRetriever
 
 
 def _build_bm25_retriever() -> Retriever:
-    # BM25 主读按 BM25_BACKEND 选择；迁移期可由工厂包一层不影响返回值的影子读比较。
+    # BM25 统一由 Manticore 提供。
     return Bm25Retriever(
         backend=build_bm25_recall_backend(),
         tokenizer=RagFlowTokenizer(),

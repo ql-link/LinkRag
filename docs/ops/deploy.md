@@ -169,7 +169,8 @@ uvicorn src.main:app --host 0.0.0.0 --port 8000
 2. **配置外部化**：`.env` 通过 Secret Manager（如 K8s Secret、Vault）注入，不打进镜像。
 3. **多副本与扩缩容**：FastAPI 进程可水平扩展；Kafka 消费者通过 consumer group 自动分配 partition，消费侧扩缩容时关注 `PARSE_TASK_PARTITIONS` 是否足够。
 4. **初始化 topic**：生产环境建议把 `INIT_KAFKA_TOPICS_ON_STARTUP=false`，topic 由部署流程或运维侧显式创建，避免应用启动时副作用。
-5. **Manticore 高可用**：根 Compose 仅为单节点，不具备生产 HA。切主读前必须另行完成副本/备份、故障恢复演练与容量压测；迁移步骤见 [Manticore BM25 上线手册](manticore_bm25_migration.md)。
+5. **Manticore 高可用**：BM25 固定依赖 Manticore；根 Compose 仅为单节点，不具备生产 HA。生产部署前必须另行完成副本/备份、故障恢复演练与容量压测。
+6. **Qdrant 单 collection 切换**：历史向量无需保留时，先停止写入并删除旧 bucket collections，再部署使用 `CHUNK_INDEX_COLLECTION_NAME` 的应用，由首次 dense/sparse 写入创建统一业务 collection。操作后需验证 Qdrant、Manticore、RAG readiness 和一次真实解析/召回链路。
 
 ## Python 依赖变更
 

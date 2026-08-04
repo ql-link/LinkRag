@@ -26,6 +26,7 @@ pytest.importorskip("boto3")
 from sqlalchemy import delete, func, select
 
 from src.bootstrap.nltk_data import configure_nltk_data_path
+from src.config import settings
 from src.core.mq.messages.parse_task import ParseTaskMessage
 from src.core.pipeline.parse_task.workflow_demo import (
     ParseWorkflowRunner,
@@ -33,9 +34,7 @@ from src.core.pipeline.parse_task.workflow_demo import (
     build_parse_task_serial_workflow,
 )
 from src.core.storage.chunks.repository import ChunkRepository
-from src.core.storage.qdrant.bucket_router import BucketRouter
 from src.core.workflow import InMemoryWorkflowStore, NodeStatus, RunStatus
-from src.config import settings
 from src.database import get_async_session_factory
 from src.models.chunk_record import ChunkRecordDB
 from src.models.parse_task import DocumentParseTask
@@ -88,29 +87,21 @@ def _bootstrap_nltk() -> None:
     configure_nltk_data_path()
 
 
-_ISOLATED_QDRANT_PREFIX = "__dagtest"
+_ISOLATED_QDRANT_COLLECTION = "__dagtest_chunks"
 
 
 @pytest.fixture(scope="module", autouse=True)
-def _isolated_qdrant_prefix():
-    """把 Qdrant collection 前缀切到隔离命名空间，避免碰生产 ``kb_bucket_*``。
+def _isolated_qdrant_collection():
+    """把业务 collection 切到隔离命名空间，避免碰真实业务数据。
 
-    named-dense 新写入只兼容新 schema；若直接写现有 ``kb_bucket_*``（匿名默认向量）
-    会 schema 冲突。这里整模块改前缀，所有路由落到 ``__dagtest_<bucket>``（全新 named
-    schema），结束后删除这些测试 collection。完全不触碰存量数据。
+    整个模块使用一个全新 named-vector collection，结束后 best-effort 删除。
     """
-    original = getattr(settings, "CHUNK_INDEX_COLLECTION_PREFIX", None)
-    settings.CHUNK_INDEX_COLLECTION_PREFIX = _ISOLATED_QDRANT_PREFIX
+    original = settings.CHUNK_INDEX_COLLECTION_NAME
+    settings.CHUNK_INDEX_COLLECTION_NAME = _ISOLATED_QDRANT_COLLECTION
     try:
         yield
     finally:
-        if original is None:
-            try:
-                delattr(settings, "CHUNK_INDEX_COLLECTION_PREFIX")
-            except Exception:
-                settings.CHUNK_INDEX_COLLECTION_PREFIX = original
-        else:
-            settings.CHUNK_INDEX_COLLECTION_PREFIX = original
+        settings.CHUNK_INDEX_COLLECTION_NAME = original
         # 删除本次产生的隔离 collection（best-effort）。
         import asyncio
 
@@ -122,7 +113,7 @@ def _isolated_qdrant_prefix():
             client = AsyncQdrantClient(url=url, timeout=30)
             cols = await client.get_collections()
             for c in cols.collections:
-                if c.name.startswith(_ISOLATED_QDRANT_PREFIX):
+                if c.name == _ISOLATED_QDRANT_COLLECTION:
                     try:
                         await client.delete_collection(c.name)
                     except Exception:
@@ -210,9 +201,7 @@ async def parse_case():
         # ---- 清理：chunk 行 / BM25 索引 / DB 任务行 / MinIO 对象 ----
         async with factory() as db:
             await ChunkRepository().delete_by_doc_id(db, doc_id)
-            await db.execute(
-                delete(DocumentParseTask).where(DocumentParseTask.id == parse_task_id)
-            )
+            await db.execute(delete(DocumentParseTask).where(DocumentParseTask.id == parse_task_id))
             await db.commit()
         try:
             from src.core.storage.bm25_backend import build_indexing_pipeline
@@ -236,9 +225,7 @@ async def _count_chunks(doc_id: int) -> int:
     factory = get_async_session_factory()
     async with factory() as db:
         result = await db.execute(
-            select(func.count()).select_from(ChunkRecordDB).where(
-                ChunkRecordDB.doc_id == doc_id
-            )
+            select(func.count()).select_from(ChunkRecordDB).where(ChunkRecordDB.doc_id == doc_id)
         )
         return int(result.scalar_one())
 
@@ -248,47 +235,32 @@ async def _point_vector_names(doc_id: int) -> dict[str, set[str]]:
 
     用于校验 named-dense 解耦的核心不变量：dense 与 sparse 落在**同一个 point** 的两个
     命名向量上（``dense`` / ``sparse_text``），谁先写都不互相覆盖。读 MySQL 取每个
-    chunk 的 bucket_id，按 bucket 路由到隔离 collection，``retrieve`` 出向量字典，
-    其 key 即命名向量名。空 dict / list 形态都归一化处理。
+    chunk_id 后从统一业务 collection ``retrieve`` 出向量字典，其 key 即命名向量名。
+    空 dict / list 形态都归一化处理。
     """
-    from collections import defaultdict
-
     from qdrant_client import AsyncQdrantClient
 
     factory = get_async_session_factory()
     async with factory() as db:
         rows = (
-            await db.execute(
-                select(ChunkRecordDB.chunk_id, ChunkRecordDB.bucket_id).where(
-                    ChunkRecordDB.doc_id == doc_id
-                )
-            )
-        ).all()
-
-    by_bucket: dict[int, list[str]] = defaultdict(list)
-    for chunk_id, bucket_id in rows:
-        assert bucket_id is not None, f"chunk {chunk_id} missing bucket_id"
-        by_bucket[int(bucket_id)].append(chunk_id)
-
-    router = BucketRouter(
-        bucket_count=getattr(settings, "CHUNK_INDEX_BUCKET_COUNT", 128),
-        prefix=settings.CHUNK_INDEX_COLLECTION_PREFIX,
-    )
+            (await db.execute(select(ChunkRecordDB.chunk_id).where(ChunkRecordDB.doc_id == doc_id)))
+            .scalars()
+            .all()
+        )
     host = str(settings.QDRANT_HOST)
     url = host if host.startswith("http") else f"http://{host}:{settings.QDRANT_PORT}"
     client = AsyncQdrantClient(url=url, timeout=60)
     out: dict[str, set[str]] = {}
     try:
-        for bucket_id, ids in by_bucket.items():
-            records = await client.retrieve(
-                collection_name=router.collection_name(bucket_id),
-                ids=ids,
-                with_payload=False,
-                with_vectors=True,
-            )
-            for rec in records:
-                vec = rec.vector or {}
-                out[str(rec.id)] = set(vec.keys()) if isinstance(vec, dict) else {"<unnamed>"}
+        records = await client.retrieve(
+            collection_name=settings.CHUNK_INDEX_COLLECTION_NAME,
+            ids=list(rows),
+            with_payload=False,
+            with_vectors=True,
+        )
+        for rec in records:
+            vec = rec.vector or {}
+            out[str(rec.id)] = set(vec.keys()) if isinstance(vec, dict) else {"<unnamed>"}
     finally:
         await client.close()
     return out
@@ -468,9 +440,7 @@ async def test_retry_after_dense_failure(parse_case, build_definition, max_concu
     ],
     ids=["serial", "parallel"],
 )
-async def test_dense_sparse_coexist_on_same_point(
-    parse_case, build_definition, max_concurrency
-):
+async def test_dense_sparse_coexist_on_same_point(parse_case, build_definition, max_concurrency):
     payload, doc_id = parse_case
     runner = ParseWorkflowRunner(store=InMemoryWorkflowStore())
 

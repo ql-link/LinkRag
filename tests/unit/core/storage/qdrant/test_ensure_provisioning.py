@@ -78,7 +78,7 @@ async def test_ensure_collection_provisions_named_sparse_vector():
     fake = _FakeClient()
     store = QdrantIndexStore(client=fake)
 
-    await store.ensure_collection(bucket_id=0, vector_size=8)
+    await store.ensure_collection(vector_size=8)
 
     assert fake.create_calls, "collection 不存在时应调用 create_collection"
     sparse_cfg = fake.create_calls[0].get("sparse_vectors_config")

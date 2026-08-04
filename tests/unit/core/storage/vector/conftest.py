@@ -5,12 +5,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from src.config import settings
+from src.core.splitter.models import Chunk, EmbeddedChunk
 from src.core.storage.chunks.constants import (
     CHUNK_LIFECYCLE_ACTIVE,
     CHUNK_LIFECYCLE_REMOVED,
     CHUNK_STATUS_PENDING,
 )
-from src.core.splitter.models import Chunk, EmbeddedChunk
 from src.core.storage.vector.models import StoredChunkDraft
 from src.models.chunk_record import ChunkRecordDB
 
@@ -86,7 +86,6 @@ def sample_drafts() -> list[StoredChunkDraft]:
             user_id=7,
             set_id=8,
             doc_id=9,
-            bucket_id=11,
             content="alpha",
             content_hash="hash-alpha",
             chunk_type="paragraph",
@@ -100,7 +99,6 @@ def sample_drafts() -> list[StoredChunkDraft]:
             user_id=7,
             set_id=8,
             doc_id=9,
-            bucket_id=11,
             content="beta",
             content_hash="hash-beta",
             chunk_type="paragraph",
@@ -127,7 +125,6 @@ def failed_chunk_record() -> ChunkRecordDB:
         doc_id=100,
         set_id=200,
         user_id=300,
-        bucket_id=4,
         content="rebuild me",
         content_hash="hash-failed",
         chunk_type="paragraph",
@@ -147,7 +144,6 @@ def indexing_chunk_record() -> ChunkRecordDB:
         doc_id=101,
         set_id=201,
         user_id=301,
-        bucket_id=5,
         content="still indexing",
         content_hash="hash-indexing",
         chunk_type="paragraph",
@@ -167,7 +163,6 @@ def removed_chunk_record() -> ChunkRecordDB:
         doc_id=103,
         set_id=203,
         user_id=303,
-        bucket_id=7,
         content="removed",
         content_hash="hash-removed",
         chunk_type="paragraph",
@@ -178,11 +173,6 @@ def removed_chunk_record() -> ChunkRecordDB:
         lifecycle_status=CHUNK_LIFECYCLE_REMOVED,
         dense_vector_model="persisted-model",
     )
-
-
-@pytest.fixture
-def mock_bucket_router() -> MagicMock:
-    return MagicMock()
 
 
 @pytest.fixture

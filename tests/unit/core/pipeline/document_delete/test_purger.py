@@ -43,7 +43,7 @@ class _FakeChunkRepo:
         self._log = log
         self._routing = routing
 
-    async def list_routing_by_doc_id(self, db, doc_id, user_id):
+    async def list_chunk_ids_by_doc_id(self, db, doc_id, user_id):
         return list(self._routing.get(doc_id, []))
 
     async def delete_by_doc_id(self, db, doc_id):
@@ -82,9 +82,9 @@ class _FakeQdrant:
         self._log = log
         self.calls = []
 
-    async def delete_points(self, *, bucket_id, chunk_ids):
-        self._log.append(f"qdrant.delete:{bucket_id}:{sorted(chunk_ids)}")
-        self.calls.append((bucket_id, sorted(chunk_ids)))
+    async def delete_points(self, *, chunk_ids):
+        self._log.append(f"qdrant.delete:{sorted(chunk_ids)}")
+        self.calls.append(sorted(chunk_ids))
 
 
 class _FakeEs:
@@ -227,7 +227,7 @@ class TestPurgeFile:
     async def test_external_stores_deleted_before_db_rows(self, monkeypatch):
         purger, log, qdrant, es, storage = _make_purger(
             monkeypatch,
-            routing={7: [("c1", 3), ("c2", 3)]},
+            routing={7: ["c1", "c2"]},
             oss_keys={7: [("priv", "parsed/u/d/2026/06/20/task7/f.md")]},
         )
         payload = DocumentDeleteMessage.build(
@@ -237,7 +237,7 @@ class TestPurgeFile:
         await purger.purge(payload)
 
         # 外部三类删除都发生
-        assert qdrant.calls == [(3, ["c1", "c2"])]
+        assert qdrant.calls == [["c1", "c2"]]
         assert es.calls == [(1, 2, 7)]
         assert storage.removed == [("priv", "parsed/u/d/2026/06/20/task7/")]
         # 铁律：外部存储删除全部早于任意 DB 行删除

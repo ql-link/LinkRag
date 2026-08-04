@@ -29,7 +29,7 @@ src/core/storage/chunks/
 | --- | --- | --- |
 | `dense_vector_status` | `PENDING` / `SUCCESS` / `FAILED` | Qdrant 稠密向量索引 |
 | `sparse_vector_status` | `PENDING` / `SUCCESS` / `FAILED` | 稀疏向量索引 |
-| `es_status` | `PENDING` / `SUCCESS` / `FAILED` | BM25 入库（字段名保留历史 `es`，实际后端可为 Qdrant BM25 或 Elasticsearch） |
+| `es_status` | `PENDING` / `SUCCESS` / `FAILED` | Manticore BM25 入库（字段名保留历史 `es`） |
 | `lifecycle_status` | `ACTIVE` / `REMOVED` | 软删除生命周期 |
 
 > **常量命名陷阱**（见 [constants.py](../../src/core/storage/chunks/constants.py)）：代码里 `CHUNK_STATUS_INDEXING` 与 `CHUNK_STATUS_PENDING` 是**同一个 DB 值 `"PENDING"`**，`CHUNK_STATUS_INDEXED` / `SUCCESS` 同为 `"SUCCESS"`。即落库只有 `PENDING` / `SUCCESS` / `FAILED` 三态，"INDEXING" 只是语义别名、不是独立第四态。读写时不要把 `INDEXING` 当成区别于 `PENDING` 的状态。

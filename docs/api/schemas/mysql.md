@@ -566,7 +566,6 @@ ORM：[`ChunkRecordDB`](../../../src/models/chunk_record.py)
 | `doc_id` | BIGINT UNSIGNED | 文档 ID（对应原始文件） |
 | `set_id` | BIGINT UNSIGNED | 知识集 / 数据集 ID |
 | `user_id` | BIGINT UNSIGNED | 用户 ID |
-| `bucket_id` | INT NULL | 路由后的 Qdrant 物理桶编号（路由前为空） |
 | `content` | TEXT | Splitter 最终产出的可检索 Chunk 原文 |
 | `content_hash` | VARCHAR(64) | 内容 SHA-256 |
 | `chunk_type` | VARCHAR(32) | 当前允许：`paragraph` / `heading` / `list` / `blockquote` / `code_block` / `math_block` / `table` / `image` / `mixed` / `front_matter`；无数据库默认值 |

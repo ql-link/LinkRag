@@ -22,13 +22,12 @@ import pytest
 from pytest_bdd import given, parsers, then, when
 
 from src.config import settings
-from src.core.storage.qdrant import BucketRoute
-from src.core.storage.qdrant.exceptions import QdrantStoreError
 from src.core.encoding.sparse import (
     SparseVector,
     SparseVectorEncodingError,
     SparseVectorService,
 )
+from src.core.storage.qdrant.exceptions import QdrantStoreError
 from src.core.storage.vector import (
     VectorRetrievalBackendError,
     VectorRetrievalConfigurationError,
@@ -38,7 +37,6 @@ from src.core.storage.vector import (
     VectorSearchResult,
     VectorStorageFacade,
 )
-
 
 # ---------------------------------------------------------------------------
 # 共享 state + 桩件
@@ -54,7 +52,6 @@ class _RecallState:
     top_k_default: int = 10
     threshold_default: float = 0.0
     sparse_vector_name: str = "sparse_text"
-    bucket_id: int = 42
 
     # 调用结果
     result: VectorSearchResult | None = None
@@ -93,16 +90,10 @@ def recall_state(monkeypatch) -> _RecallState:
     sparse_service.vectorize_query = AsyncMock(side_effect=_vectorize_query)
 
     qdrant_store = MagicMock()
-    bucket_router = MagicMock()
-    bucket_router.route_user.return_value = BucketRoute(
-        bucket_id=state.bucket_id, collection_name=f"kb_bucket_{state.bucket_id}",
-    )
-    qdrant_store.bucket_router = bucket_router
 
-    async def _search(*, bucket_id, query_vector_spec, payload_filter, limit, score_threshold):
+    async def _search(*, query_vector_spec, payload_filter, limit, score_threshold):
         state.qdrant_search_call_count += 1
         state.last_search_kwargs = {
-            "bucket_id": bucket_id,
             "query_vector_spec": query_vector_spec,
             "payload_filter": payload_filter,
             "limit": limit,
@@ -111,9 +102,15 @@ def recall_state(monkeypatch) -> _RecallState:
         return list(state.fake_hits)
 
     qdrant_store._search_chunks = AsyncMock(side_effect=_search)
-    qdrant_store.upsert_points = AsyncMock(side_effect=AssertionError("upsert_points must not be called"))
-    qdrant_store.update_vectors = AsyncMock(side_effect=AssertionError("update_vectors must not be called"))
-    qdrant_store.delete_points = AsyncMock(side_effect=AssertionError("delete_points must not be called"))
+    qdrant_store.upsert_points = AsyncMock(
+        side_effect=AssertionError("upsert_points must not be called")
+    )
+    qdrant_store.update_vectors = AsyncMock(
+        side_effect=AssertionError("update_vectors must not be called")
+    )
+    qdrant_store.delete_points = AsyncMock(
+        side_effect=AssertionError("delete_points must not be called")
+    )
     qdrant_store.close = AsyncMock()
 
     state.fake_hits = [
@@ -181,28 +178,25 @@ def _given_encoder_available():
 # ---------------------------------------------------------------------------
 
 
-@given(parsers.parse("Qdrant 中 user_id={uid:d} 的 bucket collection 存在 {n:d} 个 sparse_text 向量"))
+@given(parsers.parse("Qdrant 业务 collection 中 user_id={uid:d} 存在 {n:d} 个 sparse_text 向量"))
 def _given_qdrant_has_n_vectors(recall_state: _RecallState, uid: int, n: int):
     recall_state.fake_hits = [
         VectorSearchHit(
-            chunk_id=f"c{i}", doc_id=10 + i, set_id=10003,
-            score=round(1.0 - i * 0.1, 2), vector_kind="sparse",
+            chunk_id=f"c{i}",
+            doc_id=10 + i,
+            set_id=10003,
+            score=round(1.0 - i * 0.1, 2),
+            vector_kind="sparse",
         )
         for i in range(n)
     ]
 
 
-@given(parsers.parse("写入链路对 user_id {uid:d} 计算得到 bucket_id {bid:d}"))
-def _given_bucket_id(recall_state: _RecallState, uid: int, bid: int):
-    recall_state.bucket_id = bid
-    recall_state.qdrant_store.bucket_router.route_user.return_value = BucketRoute(
-        bucket_id=bid, collection_name=f"kb_bucket_{bid}",
+@given(
+    parsers.parse(
+        "Qdrant 接收到 score_threshold 为 {threshold:f} 时仅返回 score 不低于 {threshold2:f} 的命中"
     )
-
-
-@given(parsers.parse(
-    "Qdrant 接收到 score_threshold 为 {threshold:f} 时仅返回 score 不低于 {threshold2:f} 的命中"
-))
+)
 def _given_threshold_filtered_hits(recall_state: _RecallState, threshold: float, threshold2: float):
     # 模拟 Qdrant 端按 score_threshold 过滤后的结果
     recall_state.fake_hits = [
@@ -215,24 +209,28 @@ def _given_threshold_filtered_hits(recall_state: _RecallState, threshold: float,
 def _given_truncated_hits(recall_state: _RecallState, limit: int, n: int):
     recall_state.fake_hits = [
         VectorSearchHit(
-            chunk_id=f"c{i}", doc_id=10 + i, set_id=10003,
-            score=round(1.0 - i * 0.05, 2), vector_kind="sparse",
+            chunk_id=f"c{i}",
+            doc_id=10 + i,
+            set_id=10003,
+            score=round(1.0 - i * 0.05, 2),
+            vector_kind="sparse",
         )
         for i in range(n)
     ]
 
 
-@given(parsers.parse("Qdrant 中 user_id {uid:d} 路由到的 bucket collection 不存在"))
+@given(parsers.parse("Qdrant 业务 collection 对 user_id {uid:d} 不存在"))
 def _given_collection_missing(recall_state: _RecallState, uid: int):
     # 让 store._search_chunks 直接返空 list（store 单测已断言 collection_exists 短路逻辑）
     async def _empty(**kwargs):
         recall_state.qdrant_search_call_count += 1
         recall_state.last_search_kwargs = kwargs
         return []
+
     recall_state.qdrant_store._search_chunks = AsyncMock(side_effect=_empty)
 
 
-@given(parsers.parse("Qdrant 中 user_id {uid:d} 路由到的 bucket collection 存在"))
+@given(parsers.parse("Qdrant 业务 collection 对 user_id {uid:d} 存在"))
 def _given_collection_exists(recall_state: _RecallState, uid: int):
     return None  # 默认就是 exists；下个 step 决定 named vector 缺失
 
@@ -243,6 +241,7 @@ def _given_named_vector_missing(recall_state: _RecallState, name: str):
         recall_state.qdrant_search_call_count += 1
         recall_state.last_search_kwargs = kwargs
         return []
+
     recall_state.qdrant_store._search_chunks = AsyncMock(side_effect=_empty)
 
 
@@ -302,72 +301,103 @@ def _run_invoke(recall_state: _RecallState, **kwargs) -> None:
     asyncio.run(_invoke(recall_state, **kwargs))
 
 
-@when(parsers.parse(
-    '调用 search_sparse_chunks 传入 query "{query}" user_id {uid:d} set_id {sid:d}'
-))
+@when(
+    parsers.parse('调用 search_sparse_chunks 传入 query "{query}" user_id {uid:d} set_id {sid:d}')
+)
 def _when_call_basic(recall_state: _RecallState, query: str, uid: int, sid: int):
     _run_invoke(recall_state, query=query, user_id=uid, set_id=sid)
 
 
-@when(parsers.parse(
-    '调用 search_sparse_chunks 传入 query "{query}" user_id {uid:d} set_id {sid:d} top_k {k:d}'
-))
+@when(
+    parsers.parse(
+        '调用 search_sparse_chunks 传入 query "{query}" user_id {uid:d} set_id {sid:d} top_k {k:d}'
+    )
+)
 def _when_call_with_top_k(recall_state: _RecallState, query: str, uid: int, sid: int, k: int):
     _run_invoke(recall_state, query=query, user_id=uid, set_id=sid, top_k=k)
 
 
-@when(parsers.parse(
-    '调用 search_sparse_chunks 传入 query "{query}" user_id {uid:d} set_id {sid:d} score_threshold {st:f}'
-))
-def _when_call_with_threshold(recall_state: _RecallState, query: str, uid: int, sid: int, st: float):
+@when(
+    parsers.parse(
+        '调用 search_sparse_chunks 传入 query "{query}" user_id {uid:d} set_id {sid:d} score_threshold {st:f}'
+    )
+)
+def _when_call_with_threshold(
+    recall_state: _RecallState, query: str, uid: int, sid: int, st: float
+):
     _run_invoke(recall_state, query=query, user_id=uid, set_id=sid, score_threshold=st)
 
 
-@when(parsers.parse(
-    '调用 search_sparse_chunks 传入 query "{query}" user_id {uid:d} set_id {sid:d} top_k {k:d} score_threshold {st:f}'
-))
+@when(
+    parsers.parse(
+        '调用 search_sparse_chunks 传入 query "{query}" user_id {uid:d} set_id {sid:d} top_k {k:d} score_threshold {st:f}'
+    )
+)
 def _when_call_with_top_k_and_threshold(
-    recall_state: _RecallState, query: str, uid: int, sid: int, k: int, st: float,
+    recall_state: _RecallState,
+    query: str,
+    uid: int,
+    sid: int,
+    k: int,
+    st: float,
 ):
     _run_invoke(recall_state, query=query, user_id=uid, set_id=sid, top_k=k, score_threshold=st)
 
 
-@when(parsers.parse(
-    '调用 search_sparse_chunks 传入 query "{query}" user_id {uid:d} set_id {sid:d} 不传 doc_id'
-))
+@when(
+    parsers.parse(
+        '调用 search_sparse_chunks 传入 query "{query}" user_id {uid:d} set_id {sid:d} 不传 doc_id'
+    )
+)
 def _when_call_no_doc_id(recall_state: _RecallState, query: str, uid: int, sid: int):
     _run_invoke(recall_state, query=query, user_id=uid, set_id=sid, doc_id=None)
 
 
-@when(parsers.parse(
-    '调用 search_sparse_chunks 传入 query "{query}" user_id {uid:d} set_id {sid:d} doc_id 空列表'
-))
+@when(
+    parsers.parse(
+        '调用 search_sparse_chunks 传入 query "{query}" user_id {uid:d} set_id {sid:d} doc_id 空列表'
+    )
+)
 def _when_call_empty_doc_id(recall_state: _RecallState, query: str, uid: int, sid: int):
     _run_invoke(recall_state, query=query, user_id=uid, set_id=sid, doc_id=[])
 
 
-@when(parsers.parse(
-    '调用 search_sparse_chunks 传入 query "{query}" user_id {uid:d} set_id {sid:d} doc_id 列表 "{ids}"'
-))
+@when(
+    parsers.parse(
+        '调用 search_sparse_chunks 传入 query "{query}" user_id {uid:d} set_id {sid:d} doc_id 列表 "{ids}"'
+    )
+)
 def _when_call_with_doc_ids(
-    recall_state: _RecallState, query: str, uid: int, sid: int, ids: str,
+    recall_state: _RecallState,
+    query: str,
+    uid: int,
+    sid: int,
+    ids: str,
 ):
     doc_id = [int(x.strip()) for x in ids.split(",") if x.strip()]
     _run_invoke(recall_state, query=query, user_id=uid, set_id=sid, doc_id=doc_id)
 
 
-@when(parsers.parse(
-    '调用 search_sparse_chunks 传入 空白 query 标识 "{token}" user_id {uid:d} set_id {sid:d}'
-))
+@when(
+    parsers.parse(
+        '调用 search_sparse_chunks 传入 空白 query 标识 "{token}" user_id {uid:d} set_id {sid:d}'
+    )
+)
 def _when_call_blank_query(recall_state: _RecallState, token: str, uid: int, sid: int):
     _run_invoke(recall_state, query=_resolve_blank_query(token), user_id=uid, set_id=sid)
 
 
-@when(parsers.parse(
-    '调用 search_sparse_chunks 传入越界参数 user_id {uid} set_id {sid} top_k {k} score_threshold {st}'
-))
+@when(
+    parsers.parse(
+        "调用 search_sparse_chunks 传入越界参数 user_id {uid} set_id {sid} top_k {k} score_threshold {st}"
+    )
+)
 def _when_call_out_of_range(
-    recall_state: _RecallState, uid: str, sid: str, k: str, st: str,
+    recall_state: _RecallState,
+    uid: str,
+    sid: str,
+    k: str,
+    st: str,
 ):
     kwargs: dict[str, Any] = {
         "query": "q",
@@ -383,17 +413,24 @@ def _when_call_out_of_range(
     _run_invoke(recall_state, **kwargs)
 
 
-@when(parsers.parse(
-    '连续调用 search_sparse_chunks 两次 query "{query}" user_id {uid:d} set_id {sid:d}'
-))
+@when(
+    parsers.parse(
+        '连续调用 search_sparse_chunks 两次 query "{query}" user_id {uid:d} set_id {sid:d}'
+    )
+)
 def _when_call_twice(recall_state: _RecallState, query: str, uid: int, sid: int):
     async def _twice():
         recall_state.result_first = await recall_state.facade.search_sparse_chunks(
-            query=query, user_id=uid, set_id=sid,
+            query=query,
+            user_id=uid,
+            set_id=sid,
         )
         recall_state.result_second = await recall_state.facade.search_sparse_chunks(
-            query=query, user_id=uid, set_id=sid,
+            query=query,
+            user_id=uid,
+            set_id=sid,
         )
+
     asyncio.run(_twice())
 
 
@@ -467,11 +504,6 @@ def _then_search_threshold(recall_state: _RecallState, v: float):
     assert recall_state.last_search_kwargs["score_threshold"] == v
 
 
-@then(parsers.parse("Qdrant 搜索使用 bucket_id 等于 {bid:d}"))
-def _then_search_bucket(recall_state: _RecallState, bid: int):
-    assert recall_state.last_search_kwargs["bucket_id"] == bid
-
-
 @then(parsers.parse('Qdrant 搜索使用 named sparse vector "{name}"'))
 def _then_search_using(recall_state: _RecallState, name: str):
     assert recall_state.last_search_kwargs["query_vector_spec"].vector_name == name
@@ -490,11 +522,6 @@ def _then_result_threshold(recall_state: _RecallState, v: float):
 @then(parsers.parse('返回 VectorSearchResult.vector_name 等于 "{name}"'))
 def _then_result_vector_name(recall_state: _RecallState, name: str):
     assert recall_state.result.vector_name == name
-
-
-@then("VectorSearchResult 不含字段 bucket_id")
-def _then_result_no_bucket_id():
-    assert "bucket_id" not in VectorSearchResult.__dataclass_fields__
 
 
 def _filter_must_by_key(payload_filter: Any, key: str) -> Any:
@@ -562,17 +589,23 @@ def _then_value_error(recall_state: _RecallState):
 
 @then("抛出 VectorRetrievalConfigurationError")
 def _then_config_error(recall_state: _RecallState):
-    assert isinstance(recall_state.error, VectorRetrievalConfigurationError), f"got {recall_state.error!r}"
+    assert isinstance(
+        recall_state.error, VectorRetrievalConfigurationError
+    ), f"got {recall_state.error!r}"
 
 
 @then("抛出 VectorRetrievalEncodingError")
 def _then_encoding_error(recall_state: _RecallState):
-    assert isinstance(recall_state.error, VectorRetrievalEncodingError), f"got {recall_state.error!r}"
+    assert isinstance(
+        recall_state.error, VectorRetrievalEncodingError
+    ), f"got {recall_state.error!r}"
 
 
 @then("抛出 VectorRetrievalBackendError")
 def _then_backend_error(recall_state: _RecallState):
-    assert isinstance(recall_state.error, VectorRetrievalBackendError), f"got {recall_state.error!r}"
+    assert isinstance(
+        recall_state.error, VectorRetrievalBackendError
+    ), f"got {recall_state.error!r}"
 
 
 @then("不抛任何异常")
@@ -606,28 +639,29 @@ def _then_can_import_facade():
 
 @then("从 vector_storage 包可以导入 VectorSearchHit, VectorSearchResult")
 def _then_can_import_dataclasses():
-    from src.core.storage.vector import VectorSearchHit as H, VectorSearchResult as R  # noqa: F401
+    from src.core.storage.vector import VectorSearchHit as H  # noqa: F401
+    from src.core.storage.vector import VectorSearchResult as R
 
 
 @then("从 vector_storage 包可以导入召回侧异常族")
 def _then_can_import_exceptions():
-    from src.core.storage.vector import (  # noqa: F401
-        VectorRetrievalBackendError as B,
-        VectorRetrievalConfigurationError as C,
-        VectorRetrievalEncodingError as E,
-        VectorRetrievalError as Base,
-    )
+    from src.core.storage.vector import VectorRetrievalBackendError as B  # noqa: F401
+    from src.core.storage.vector import VectorRetrievalConfigurationError as C
+    from src.core.storage.vector import VectorRetrievalEncodingError as E
+    from src.core.storage.vector import VectorRetrievalError as Base
 
 
 @then("SparseVectorSearchRequest 不在 vector_storage 包的 __all__ 中")
 def _then_request_not_in_all():
     import src.core.storage.vector as vs
+
     assert "SparseVectorSearchRequest" not in vs.__all__
 
 
 @then("SparseQueryVectorSpec 不在 vector_storage 包的 __all__ 中")
 def _then_spec_not_in_all():
     import src.core.storage.vector as vs
+
     assert "SparseQueryVectorSpec" not in vs.__all__
     assert "QueryVectorSpec" not in vs.__all__
 

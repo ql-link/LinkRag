@@ -43,7 +43,6 @@ def _draft(chunk: Chunk, index: int, *, doc_id: int = 10001) -> StoredChunkDraft
         user_id=123,
         set_id=10,
         doc_id=doc_id,
-        bucket_id=0,
         content=chunk.content,
         content_hash="hash",
         chunk_type="paragraph",

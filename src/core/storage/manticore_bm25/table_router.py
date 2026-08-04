@@ -1,8 +1,7 @@
 """按 dataset_id 直接映射 Manticore 表名。
 
-跟 Qdrant 侧 ``BucketRouter`` 不是一回事：``BucketRouter`` 是按 ``user_id`` 哈希
-取模，多个用户共享固定数量的桶；这里是按 ``dataset_id`` 精确建表，一个 dataset
-一张表，没有哈希、没有共享——表名与 dataset 是一一对应关系。
+Manticore 按 ``dataset_id`` 精确建表，一个 dataset 一张表，没有哈希、没有共享，
+表名与 dataset 是一一对应关系。
 """
 
 from __future__ import annotations
