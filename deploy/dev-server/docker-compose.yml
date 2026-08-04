@@ -60,6 +60,7 @@ services:
     env_file:
       - ${DEV_RABBITMQ_BROKER_ENV_FILE:-/opt/tolink/dev/config/rabbitmq/broker.env}
     ports:
+      - "${TAILSCALE_IP:-100.86.10.52}:${DEV_RABBITMQ_PORT:-5672}:5672"
       - "${TAILSCALE_IP:-100.86.10.52}:${DEV_RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
     volumes:
       - dev_rabbitmq_data:/var/lib/rabbitmq

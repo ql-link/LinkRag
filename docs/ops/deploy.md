@@ -60,8 +60,9 @@ Java 的 `application-prod.yml` 随镜像发布，并通过 `spring.config.impor
 基础配置。
 
 生产 RAG/Java 继续通过 Primary 的 Tailscale 地址访问 Qdrant；RabbitMQ 与生产应用同机部署在
-Cloud 的 `tolink-app-net`，容器名 `tolink-rabbitmq`。管理端口只绑定 Cloud 回环地址，AMQP
-端口不发布到公网。Broker 与应用凭据分别保存在 `/opt/tolink/rabbitmq/broker.env` 和
+Cloud 的 `tolink-app-net`，容器名 `tolink-rabbitmq`。管理端口只绑定 Cloud 回环地址；AMQP
+端口仅绑定 Cloud 的 Tailscale 地址 `100.77.31.79:5672`，供本地 `prod` profile 调试，不发布到公网。
+Broker 与应用凭据分别保存在 `/opt/tolink/rabbitmq/broker.env` 和
 `/opt/tolink/rabbitmq/app.env`，权限均为 `600`。
 
 ## Primary 开发环境
@@ -72,7 +73,8 @@ Manticore 和 Loki 独立运行；Primary 上的开发 MinIO 使用 `tolink-dev-
 `tolink-dev-net`，同时使用独立开发账号和 `tolink-dev-*` bucket。
 开发账号的策略只允许访问 `tolink-dev-raw`、`tolink-dev-docs` 和 `tolink-dev-public`。
 
-开发端口只绑定 Tailscale 地址 `100.86.10.52`，不得通过 FRP 或公网安全组暴露。首次部署时从
+开发端口只绑定 Tailscale 地址 `100.86.10.52`；RabbitMQ AMQP 使用 `100.86.10.52:5672`，
+本地与 `dev` profile 共用该入口，不得通过 FRP 或公网安全组暴露。首次部署时从
 `.env.dev.example` 生成服务器本地 `.env.dev`，随机密钥不得提交到 Git：
 
 ```bash
@@ -159,7 +161,8 @@ uvicorn src.main:app --host 0.0.0.0 --port 8000
 
 - 所有密码硬编码为 `ql354210`，生产必须替换。
 - MySQL/Redis/MinIO 用 root/默认账号且无 TLS，生产应改用专用账户与加密连接。
-- RabbitMQ AMQP 端口只在 `tolink-app-net` 暴露；跨主机访问时必须启用 TLS。
+- RabbitMQ AMQP 端口仅绑定对应服务器的 Tailscale 地址；本地跨主机调试依赖 Tailscale 加密隧道，
+  不得将 `5672` 暴露到公网。正式公网跨主机访问必须改用 TLS（AMQPS）。
 - 数据卷为本地 docker volume，生产应挂载持久化存储或使用托管服务。
 
 生产环境建议：

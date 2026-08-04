@@ -280,9 +280,11 @@ RAG 问答在 Python 端（`/api/v1/rag/stream`）以**后台任务**执行，�
 - **传输格式**：JSON。
 - **字符集**：UTF-8。
 - **幂等键**：`task_id`。toLink-Rag 内部以 `task_id` 做去重，重复投递不会重复处理。
-- **MQ 中间件**：默认 Kafka（`MQ_VENDOR=kafka`），可切换为 RabbitMQ（`MQ_VENDOR=rabbitmq`）。
-- **认证**：Kafka 默认 SASL_PLAINTEXT + PLAIN 机制，生产环境应改用 SASL_SSL。
-- **超时**：toLink-Rag 侧 `KAFKA_MAX_POLL_INTERVAL_MS` 默认 900000（15 分钟），单条任务处理需在该窗口内完成或下一轮 poll 前不会被踢出 group。
+- **MQ 中间件**：默认 RabbitMQ（`MQ_VENDOR=rabbitmq`）；Kafka 仅保留回滚兼容。
+- **认证**：RabbitMQ 按环境使用独立用户与 vhost；服务器内走 Compose 网络，本地调试只通过
+  Tailscale AMQP 入口连接，不向公网暴露 `5672`。
+- **消费控制**：toLink-Rag 默认 `RABBITMQ_PREFETCH_COUNT=10`；失败消息按
+  `MQ_MAX_RETRIES` 本地重试，耗尽后进入同名 `.DLT` Queue。
 
 ## 同步调试接口
 

@@ -18,6 +18,7 @@ services:
     env_file:
       - ${RABBITMQ_BROKER_ENV_FILE:-/opt/tolink/rabbitmq/broker.env}
     ports:
+      - "${TAILSCALE_IP:-100.77.31.79}:${RABBITMQ_PORT:-5672}:5672"
       - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
     volumes:
       - rabbitmq_data:/var/lib/rabbitmq
