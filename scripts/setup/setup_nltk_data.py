@@ -1,7 +1,7 @@
 """下载项目所需的 NLTK 数据资源到项目内固定目录，摆脱对用户家目录 ``~/nltk_data`` 的依赖。
 
 为什么需要它：
-- ``deepdoc_lib`` / ``infinity-sdk`` / ``langchain_text_splitters`` / ``transformers`` 等依赖会在
+- ``infinity-sdk`` 等依赖会在
   运行时请求 NLTK 资源（``punkt`` / ``punkt_tab`` / ``stopwords`` 等）。
 - NLTK 默认优先搜索 ``~/nltk_data``，这在本机能跑，但部署到服务器（家目录无数据）会触发
   运行时联网下载，甚至直接失败。
