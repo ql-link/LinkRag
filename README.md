@@ -125,6 +125,7 @@ LinkRag 由三个仓库协作组成：
 | [docker-compose.yml](./docker-compose.yml) | 主机服务器中间件栈：MySQL、Redis、MinIO、Qdrant、Manticore、Loki；生产 RabbitMQ 位于 Cloud 应用栈 |
 | [deploy/host-server/docker-compose.yml](./deploy/host-server/docker-compose.yml) | 主机服务器中间件栈的 deploy 目录版本 |
 | [deploy/cloud-server/docker-compose.yml](./deploy/cloud-server/docker-compose.yml) | 云服务器生产栈：RabbitMQ、Java、Python RAG、Web、Promtail |
+| [deploy/cloud-server/data-compose.yml](./deploy/cloud-server/data-compose.yml) | 云服务器生产数据栈：MySQL、Redis、MinIO、Qdrant、Manticore、Loki |
 | [deploy/docker-compose.yml](./deploy/docker-compose.yml) | 保留的 Python RAG 单服务部署入口 |
 
 日志拓扑：Loki 部署在主机服务器；Promtail 跟随云服务器应用部署，读取 Java/Python 本机日志并通过 VPN 推送到 Loki。
