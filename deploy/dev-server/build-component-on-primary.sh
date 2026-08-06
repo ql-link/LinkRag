@@ -236,6 +236,13 @@ fi
 
 docker compose --env-file .env.dev --profile apps up -d "$compose_service"
 
+# Service 重建后容器 IP 可能变化；刷新 Web Nginx，避免其 worker 继续使用旧的
+# Docker DNS 解析结果，导致前端通过 /api/ 访问 Service 时返回 502。
+if [[ "$component" == service ]]; then
+  echo "[$component] refresh web proxy after service redeploy"
+  docker compose --env-file .env.dev --profile apps up -d --force-recreate linkrag-web
+fi
+
 case "$component" in
   rag)
     health_url=http://100.86.10.52:18000/health

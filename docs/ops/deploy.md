@@ -15,7 +15,6 @@
 | `minio` | `minio/minio` | 9000 / 9001 | 原始文档、解析产物的对象存储 | 二选一¹ |
 | `qdrant` | `qdrant/qdrant:v1.17.1` | 6333 / 6334 | 稠密 / learned sparse 向量存储 | ✅ |
 | `manticore` | `manticoresearch/manticore:27.1.5` | 9306 / 9308 | BM25 全文索引 | ✅ |
-| `rabbitmq` | `rabbitmq:4.3.4-management` | 5672 / 15672 | 异步消息中台 | ✅ |
 | `loki` | `grafana/loki:2.9.8` | 3100 | 集中日志存储与查询 | ✅ |
 
 注 1：当前可用对象存储实现为 `STORAGE_TYPE=minio`；OSS 适配器仍为占位实现。
@@ -160,7 +159,7 @@ uvicorn src.main:app --host 0.0.0.0 --port 8000
 
 ## 生产部署注意事项
 
-`docker-compose.yml` 是**开发用编排**，不适合直接用于生产：
+根目录 `docker-compose.yml` 只覆盖主机服务器中间件，且使用本地数据卷和示例配置，不能直接作为完整生产拓扑使用：
 
 - 所有密码硬编码为 `ql354210`，生产必须替换。
 - MySQL/Redis/MinIO 用 root/默认账号且无 TLS，生产应改用专用账户与加密连接。
@@ -174,7 +173,7 @@ uvicorn src.main:app --host 0.0.0.0 --port 8000
 2. **配置外部化**：`.env` 通过 Secret Manager（如 K8s Secret、Vault）注入，不打进镜像。
 3. **多副本与扩缩容**：FastAPI 进程可水平扩展；RabbitMQ 同一 Queue 的多个消费者采用竞争消费，使用 prefetch 控制单消费者在途任务数。
 4. **拓扑初始化**：Java/Python 使用完全一致的 durable Queue、DLX 和 DLT 参数幂等声明，禁止单独手工创建参数不同的同名 Queue。
-5. **Manticore 高可用**：BM25 固定依赖 Manticore；根 Compose 仅为单节点，不具备生产 HA。生产部署前必须另行完成副本/备份、故障恢复演练与容量压测；迁移步骤见 [Manticore BM25 上线手册](manticore_bm25_migration.md)。
+5. **Manticore 高可用**：BM25 固定依赖 Manticore；根 Compose 仅为单节点，不具备生产 HA。生产部署前必须另行完成副本/备份、故障恢复演练与容量压测。
 6. **Qdrant 单 collection 切换**：历史向量无需保留时，先停止写入并删除旧 bucket collections，再部署使用 `CHUNK_INDEX_COLLECTION_NAME` 的应用，由首次 dense/sparse 写入创建统一业务 collection。操作后需验证 Qdrant、Manticore、RAG readiness 和一次真实解析/召回链路。
 
 ## Python 依赖变更
