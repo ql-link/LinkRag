@@ -26,7 +26,7 @@
 | `implementation-execution` | 需求/方案确认后执行编码，必要时产出 implementation_report.md；spec 缺口强制回写 + 留痕 | 无冻结 spec → 回 brief-generator；编码完成 → run-all-tests + code-review-and-quality |
 | `run-all-tests` | 跑 `tests` 全量回归，回报结论 | 收口前的测试关口；详见「测试与质量」 |
 | `code-review-and-quality` | 提交/合并前五维质量门禁 | 过关后 → branch-pr-workflow |
-| `branch-pr-workflow` | 从 dev 新建规范分支、提交并发起合并 PR；收口硬门槛拦截 | 链路终点；测试未过 / 契约失同步 / acceptance 未提升则拒绝收口并回退对应 skill |
+| `branch-pr-workflow` | 从 master 创建业务分支，先 PR 到 dev，验收后由同一分支 PR 到 master；收口硬门槛拦截 | 禁止 dev -> master；测试未过 / 契约失同步 / acceptance 未提升 / Dev 验收证据缺失则拒绝收口 |
 
 ### 测试与质量
 | skill | 职责 | 边界 / 转交 |

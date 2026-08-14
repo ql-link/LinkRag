@@ -14,11 +14,10 @@
 | --- | --- | --- |
 | `master` | 稳定发布分支，只保存已发布或待发布状态 | 只能 PR 合入 |
 | `dev` | 当前迭代集成分支 | 只能 PR 合入 |
-| `release/<version>` | 发布准备分支，用于冻结本周发布内容 | 开发者推，最终 PR 到 `master` |
-| `hotfix/<topic>` | 线上紧急修复 | 从 `master` 拉出，最终 PR 到 `master` 并回合 `dev` |
-| `feature/<topic>` | 新功能 | 开发者推 |
-| `refactor/<topic>` | 重构（不改变行为） | 开发者推 |
-| `chore/<topic>` | 依赖、工具、CI | 开发者推 |
+| `feature/<topic>` | 新功能，从 `master` 拉出 | 先 PR 到 `dev`，验收后由同一分支 PR 到 `master` |
+| `fix/<topic>` / `hotfix/<topic>` | Bug 修复 / 线上紧急修复，从 `master` 拉出 | 先 PR 到 `dev`，验收后由同一分支 PR 到 `master` |
+| `refactor/<topic>` | 重构（不改变行为），从 `master` 拉出 | 先 PR 到 `dev`，验收后由同一分支 PR 到 `master` |
+| `chore/<topic>` | 依赖、工具、CI，从 `master` 拉出 | 先 PR 到 `dev`，验收后由同一分支 PR 到 `master` |
 
 **命名约定**：
 
@@ -46,47 +45,57 @@
 - 中文 / 英文皆可，单仓库内保持一致。
 - 一次提交一个原子改动。
 
-### 1.3 功能 PR 流程
+### 1.3 业务分支双 PR 流程
+
+需求、Bug 修复、重构和工程改动统一从最新 `master` 创建业务分支。同一业务分支先合入
+`dev` 做集成测试，验收通过后再直接合入 `master`；**禁止把 `dev` 合入 `master`**。
 
 ```bash
-# 1. 起分支
-git checkout dev && git pull
-git checkout -b feature/<topic>
+# 1. 从最新 master 创建业务分支
+git fetch origin
+git switch master
+git pull --ff-only origin master
+git switch -c feature/<topic>
 
 # 2. 开发、小步提交
 
-# 3. 同步上游
-git fetch && git rebase dev
+# 3. 同步 master；不要把 dev 合入业务分支
+git fetch origin
+git rebase origin/master
 
 # 4. 自检（见 1.5）
-# 5. gh pr create → base = dev
+# 5. 创建 Dev PR：base = dev, compare = feature/<topic>
+# 6. Dev 合入并完成测试后，保留业务分支
+# 7. 创建 Master PR：base = master, compare = feature/<topic>
 ```
 
-合并方式由仓库设置决定，不绕过设置。合并后删除本地与远程分支。
+两次 PR 必须使用同一业务分支。Dev PR 合入后不要删除分支；只有 Master PR 合入后，才删除
+本地与远程业务分支。合并方式由仓库设置决定，不绕过设置。
 
-### 1.4 发布到 master
+### 1.4 Dev 验收与发布到 master
 
-`dev` 是日常集成线，`master` 是稳定发布线。每周发布时，从当前 `dev` 发起
-`release/<version>` 或直接 `dev -> master` 的 release PR，CI 和发布检查通过后合入
-`master`，再在 `master` 合入提交上打 tag。
+`dev` 是日常集成与测试线，`master` 是稳定发布线。Dev 环境测试通过后，使用已测试的同一
+业务分支向 `master` 发起 PR。`dev` 上同时存在的其他未发布改动不会因此进入 `master`。
 
 发布合并规则：
 
-- `dev -> master` 必须使用普通 merge commit，保留 PR 父子关系；不要 squash。
-- release PR 描述必须列出本次包含的业务 PR、数据库迁移、配置变更、文档同步项、测试结果和已知风险。
-- `master` 不接受日常 feature/refactor/chore 直接合入；这些改动先进入 `dev`。
-- hotfix 从 `master` 拉 `hotfix/<topic>`，修复后 PR 到 `master`；发布后必须再把 hotfix merge 或 cherry-pick 回 `dev`，避免修复只存在于发布线。
+- Master PR 的 head 必须是完成 Dev 验收的原业务分支，不能使用 `dev` 或从 `dev` 新建的发布分支。
+- Master PR 描述必须关联 Dev PR，并列出 Dev 测试结果、数据库迁移、配置变更、文档同步项和已知风险。
+- 记录 Dev 验收对应的业务分支 head SHA。验收后如果业务分支发生任何变化，必须重新进入 Dev PR 和测试流程，不能直接合入 `master`。
+- 若同步最新 `master` 或解决冲突改变了业务分支，更新后的分支也必须先回到 `dev` 重新验收。
+- 不创建 `dev -> master` PR，也不通过 merge、rebase 或 cherry-pick 把整条 `dev` 集成线带入 `master`。
 - 发布 tag 使用语义化版本格式，例如 `v0.2.0`、`v0.2.1`。
 
 推荐命令：
 
 ```bash
-# 从 dev 准备发布分支
-git fetch
-git checkout -b release/v0.2.0 origin/dev
+# Dev 测试通过且业务分支未变化
+git fetch origin
+git switch feature/<topic>
+git status --short --branch
 
-# 创建 release PR：base = master, compare = release/v0.2.0
-# 合入方式：Create a merge commit
+# 创建 Master PR：base = master, compare = feature/<topic>
+gh pr create --base master --head feature/<topic>
 ```
 
 ### 1.5 PR 自检清单
@@ -106,7 +115,9 @@ git checkout -b release/v0.2.0 origin/dev
 - ❌ `--force` 推已被他人 review 的分支
 - ❌ `--no-verify` 跳过 pre-commit hook
 - ❌ 提交未通过单测的代码
-- ❌ `dev -> master` 发布 PR 使用 squash 合并
+- ❌ 从 `dev` 创建业务分支或发布分支
+- ❌ 把 `dev` 合入、rebase 或 cherry-pick 到 `master`
+- ❌ Dev 验收后修改业务分支却不重新测试就合入 `master`
 
 ---
 
@@ -364,10 +375,10 @@ scripts/quality/check_docs_sync.py       # 检测脚本
 ### 5.4 手动运行
 
 ```bash
-python scripts/quality/check_docs_sync.py --staged          # 检查暂存区
-python scripts/quality/check_docs_sync.py --working         # 检查工作区
-python scripts/quality/check_docs_sync.py --base origin/dev # 检查相对分支
-python scripts/quality/check_docs_sync.py --self-check      # 仅验证 yaml 合法
+python scripts/quality/check_docs_sync.py --staged            # 检查暂存区
+python scripts/quality/check_docs_sync.py --working           # 检查工作区
+python scripts/quality/check_docs_sync.py --base origin/master # 检查相对业务分支基线
+python scripts/quality/check_docs_sync.py --self-check        # 仅验证 yaml 合法
 ```
 
 ### 5.5 内容级事实校验（check_docs_facts）
