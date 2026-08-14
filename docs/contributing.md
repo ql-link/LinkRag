@@ -52,16 +52,16 @@
 
 ```bash
 # 1. 从最新 master 创建业务分支
-git fetch origin
+git fetch linkrag
 git switch master
-git pull --ff-only origin master
+git pull --ff-only linkrag master
 git switch -c feature/<topic>
 
 # 2. 开发、小步提交
 
 # 3. 同步 master；不要把 dev 合入业务分支
-git fetch origin
-git rebase origin/master
+git fetch linkrag
+git rebase linkrag/master
 
 # 4. 自检（见 1.5）
 # 5. 创建 Dev PR：base = dev, compare = feature/<topic>
@@ -90,7 +90,7 @@ git rebase origin/master
 
 ```bash
 # Dev 测试通过且业务分支未变化
-git fetch origin
+git fetch linkrag
 git switch feature/<topic>
 git status --short --branch
 
@@ -377,7 +377,7 @@ scripts/quality/check_docs_sync.py       # 检测脚本
 ```bash
 python scripts/quality/check_docs_sync.py --staged            # 检查暂存区
 python scripts/quality/check_docs_sync.py --working           # 检查工作区
-python scripts/quality/check_docs_sync.py --base origin/master # 检查相对业务分支基线
+python scripts/quality/check_docs_sync.py --base linkrag/master # 检查相对业务分支基线
 python scripts/quality/check_docs_sync.py --self-check        # 仅验证 yaml 合法
 ```
 
