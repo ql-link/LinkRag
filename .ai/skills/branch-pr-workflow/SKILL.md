@@ -1,38 +1,43 @@
 ---
 name: branch-pr-workflow
-description: 当用户认为当前模块代码实现完毕，且当前分支应为 dev，需要从 dev 基于当前修改创建规范分支、提交并发起合并到 dev 的 GitHub PR 时使用；也用于发布收口，即直接创建 dev -> master 的 release PR，不新建 release 分支。适用于“从 dev 新建分支”“把当前修改提 PR”“实现完成创建 feature/refactor 分支并 PR”“发布新版本”“dev 合并 master”等交付收口场景。本 skill 是交付链终点，并在建分支/提 PR 前执行收口门槛：测试未过、契约文档失同步、acceptance 未提升者拒绝收口。
-when_to_use: "当代码实现完成、准备从 dev 新建规范分支并发起合并 PR 时（交付链终点），或准备发布版本、需要创建 dev -> master release PR 时激活。触发示例：'代码写完了提个 PR'、'从 dev 建个分支提交'、'实现完成创建 feature 分支并 PR'、'发布新版本'、'把 dev 合并 master'。进入即执行收口门槛校验：测试未全绿 / 契约改动未同步文档 / acceptance 仍停在 .specs 未提升时，停止并回退到对应 skill（run-all-tests、contract-guard、acceptance-generator），不强行收口。发布 PR 不创建新分支，直接使用远端 dev 作为 head、master 作为 base。"
+description: 当需求或 Bug 修复完成，需要从 master 创建规范业务分支，先提交 PR 到 dev 测试，再由同一业务分支提交 PR 到 master 时使用。适用于“代码写完了提 PR”“从 master 建业务分支”“提交 Dev 测试”“Dev 验收后发布”等交付收口场景。禁止 dev -> master，也禁止从 dev 派生发布分支。本 skill 是交付链终点，并在建分支、Dev PR 和 Master PR 前执行收口门槛：测试未过、契约文档失同步、acceptance 未提升或 Dev 验收证据缺失者拒绝收口。
+when_to_use: "当代码实现完成、准备从 master 新建规范业务分支并发起 Dev PR，或该业务分支已在 dev 验收通过、准备发起 Master PR 时激活。触发示例：'代码写完了提个 PR'、'从 master 建分支提交'、'提交到 dev 测试'、'Dev 测试通过后发布'。进入即执行收口门槛校验：测试未全绿 / 契约改动未同步文档 / acceptance 仍停在 .specs 未提升时，停止并回退到对应 skill（run-all-tests、contract-guard、acceptance-generator），不强行收口。Master PR 必须复用已完成 Dev 验收的同一业务分支，禁止使用 dev 作为 head。"
 ---
 
 # Branch PR Workflow
 
 ## Goal
 
-在当前模块实现完成后，把 `dev` 上的当前修改安全迁移到规范分支，并创建合并回 `dev` 的 PR；或在版本发布时直接创建 `dev -> master` release PR。
+在当前模块实现完成后，从最新 `master` 创建规范业务分支，先创建合并到 `dev` 的 PR；Dev
+验收通过后，再由同一业务分支创建合并到 `master` 的 PR。
 
 ## Preconditions
 
-1. 当前仓库必须在 `dev` 分支。
-2. 当前工作区应包含本次模块实现需要提交的修改。
+1. 新业务分支必须基于最新远端 `master`，不能基于 `dev`。
+2. 当前工作区应只包含本次模块实现需要提交的修改。
 3. 不要把无关本地修改混入分支、提交或 PR。
+4. Dev PR 合入后必须保留业务分支，直到对应 Master PR 合入。
 
-如果当前分支不是 `dev`，停止并说明当前分支；不要自动切分支。
+如果已有业务分支，先确认它以 `master` 为基线；如果尚未创建分支，先切到最新 `master` 再创建。
 
-## Release PR Mode
+## Master PR Mode
 
-当用户要求“发布新版本”“发版”“把 dev 合并 master”或语义等价的版本发布收口时，进入本模式。
+当用户要求“发布新版本”“发版”“Dev 测试通过后合入 master”或语义等价的发布收口时，进入本模式。
 
-发布 PR 的目标是把已经集成到远端 `dev` 的内容合入 `master`，因此默认不创建任何新分支：
+发布 PR 的目标是把已在 `dev` 验收通过的业务分支合入 `master`，不能把整条 `dev` 集成线发布：
 
-1. 执行 `git fetch --all --prune`，确认远端 `dev` 与 `master` 状态。
-2. 检查是否已有打开的 `dev -> master` PR；有则复用并更新说明，不重复创建。
-3. 使用远端 `dev` 作为 head、`master` 作为 base 创建 release PR。
-4. PR 标题使用 `release: vX.Y.Z` 或仓库既有发布标题格式。
-5. PR 描述必须列出本次 `master..dev` 的主要变更、数据库迁移、配置变更、文档同步项、测试证据和已知风险。
+1. 执行 `git fetch --all --prune`，确认业务分支、`dev` 与 `master` 的远端状态。
+2. 确认该业务分支已有已合入的 Dev PR，并记录 Dev 验收对应的业务分支 head SHA 和测试证据。
+3. 确认验收后业务分支没有变化；若 SHA 已变化，停止发布并重新进入 Dev PR 与测试流程。
+4. 检查是否已有该业务分支到 `master` 的打开 PR；有则复用，不重复创建。
+5. 使用业务分支作为 head、`master` 作为 base 创建 Master PR。
+6. PR 描述必须关联 Dev PR，并列出 Dev 测试结果、数据库迁移、配置变更、文档同步项和已知风险。
 
-只有用户明确要求冻结发布内容、准备候选分支，或项目规范在当前仓库强制要求时，才创建 `release/<version>` 分支。不要为了创建 release PR 自动从 `dev` 派生新分支。
+禁止创建 `dev -> master` PR，禁止从 `dev` 派生 `release/<version>`，也禁止把 `dev` merge、
+rebase 或 cherry-pick 到业务分支。若同步最新 `master` 或解决冲突改变了业务分支，更新后的 SHA
+必须先回到 `dev` 重新验收。
 
-发布 PR 合并方式必须是普通 merge commit，不要 squash。合并后再在 `master` 合入提交上打 tag。
+Master PR 合入后，按发布计划在 `master` 合入提交上打 tag；此后才删除业务分支。
 
 ## 收口硬门槛（建分支 / 提 PR 前必须满足）
 
@@ -67,20 +72,22 @@ when_to_use: "当代码实现完成、准备从 dev 新建规范分支并发起�
 分支名前缀根据修改性质选择：
 
 - `feature/`：新增能力、新接口、新流程、新模块、新用户可见行为。
+- `fix/`：普通 Bug 修复；线上紧急修复可使用 `hotfix/`。
 - `refactor/`：重构、结构调整、性能优化、内部实现替换，且没有新增业务能力。
+- `chore/`：依赖、工具和 CI 等工程改动。
 
-分支主题来自当前修改内容，使用英文小写单词，并用 `_` 分割：
+分支主题来自当前修改内容，使用英文小写单词，并用 `-` 分割：
 
 ```text
-feature/pdf_async_image_enhancement
-refactor/parser_entry_pipeline
+feature/pdf-async-image-enhancement
+fix/parser-entry-timeout
 ```
 
 避免使用空格、中文、驼峰、连续分隔符和泛泛名称，例如 `feature/update`。
 
 ## Workflow
 
-以下流程只适用于功能 / 重构 / 修复等日常 PR；发布收口使用上方 Release PR Mode。
+以下流程适用于功能 / 重构 / 修复等日常 Dev PR；发布收口使用上方 Master PR Mode。
 
 1. 检查状态：
    - `git branch --show-current`
@@ -92,13 +99,16 @@ refactor/parser_entry_pipeline
    - 识别无关修改。若无关修改会混入提交，先向用户说明并只暂存相关文件。
 
 3. 决定分支类型和名称：
-   - 新增功能用 `feature/<topic_with_underscores>`。
-   - 重构/优化用 `refactor/<topic_with_underscores>`。
+   - 新增功能用 `feature/<topic-with-hyphens>`。
+   - Bug 修复用 `fix/<topic-with-hyphens>`；线上紧急修复可用 `hotfix/`。
+   - 重构/优化用 `refactor/<topic-with-hyphens>`，工程改动用 `chore/`。
    - 如果类型不明确，根据 diff 的主要意图做保守判断，并在最终说明中写明依据。
 
-4. 从当前 `dev` 创建分支：
-   - 使用 `git switch -c <branch-name>`。
-   - 当前未提交改动会随工作区留在新分支上。
+4. 从最新 `master` 创建分支：
+   - 使用 `git fetch <remote> --prune` 更新远端引用。
+   - 使用 `git switch master` 和 `git pull --ff-only <remote> master` 更新本地基线。
+   - 使用 `git switch -c <branch-name>` 创建业务分支。
+   - 不要把 `dev` 合入或 rebase 到业务分支。
 
 5. 验证与提交：
    - 运行与改动范围匹配的测试。
@@ -119,6 +129,7 @@ feat(parser): 支持 PDF 图片异步上传与内存增强
    - 如果 `gh` 可用，优先用 `gh pr create`。
    - 如果 `gh` 不可用但本机 GitHub 凭据可用，可调用 GitHub API 创建 PR。
    - 如果没有权限或凭据，输出可直接使用的 PR 标题和完整描述。
+   - Dev PR 合入后保留业务分支；Dev 验收通过后，按 Master PR Mode 由同一分支提 PR 到 `master`。
 
 ## PR Description
 
@@ -147,6 +158,7 @@ PR 描述必须完整，不只写一句摘要。至少包含：
 - [ ] 改动范围测试已跑过且全绿（命令与结论见 Tests）
 - [ ] 契约改动已同步文档（`check_docs_sync.py` 绿）且语义已核对（contract-guard）—— L1 无契约变更可标 N/A
 - [ ] acceptance 已提升到 `tests/acceptance/features/` —— L1 / 无 acceptance 可标 N/A
+- [ ] Master PR 已关联 Dev PR、验收 SHA 与测试证据 —— Dev PR 阶段标 N/A
 ```
 
 如果 PR 涉及外部服务、MQ、数据库、对象存储、LLM 或异步任务，必须在 `Risks` 中说明运行时前提和潜在影响。
@@ -157,6 +169,6 @@ PR 描述必须完整，不只写一句摘要。至少包含：
 
 - 创建的分支名。
 - 提交哈希和提交信息。
-- PR URL；如果无法创建 PR，给出原因和可手动使用的标题/描述。
+- 当前阶段的 PR URL；Master PR 阶段同时给出关联 Dev PR 与验收 SHA。
 - 已运行的测试命令和结果。
 - 是否有未纳入本次提交的本地修改。

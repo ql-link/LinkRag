@@ -43,7 +43,7 @@ when_to_use: "当用户要求生成测试用例、补齐单元测试、修复失
 - HTTP 外部依赖（系统 Embedding/LLM、远程 bge-m3-server）优先用 `httpx.MockTransport` 注入受控 `AsyncClient`，不要打真实网络。
 - DB 用 `AsyncSession` 的测试替身或 fixture，禁止单测连真实 MySQL。
 - 真实连通性/冒烟测试由开关控制（如 `TOLINK_RUN_REAL_SPARSE_VECTOR_TESTS`），默认关闭，不混入单测。
-- 参考既有用例风格：`tests/unit/core/sparse_vector/`。
+- 参考既有用例风格：`tests/unit/core/encoding/sparse/` 与 `tests/unit/core/storage/vector/`。
 
 ## OutputFormat
 
