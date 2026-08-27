@@ -12,16 +12,22 @@ pipeline {
     }
 
     environment {
-        IMAGE      = 'tolink-rag'
-        TAG        = "${env.GIT_COMMIT?.take(8) ?: env.BUILD_NUMBER}"
-        DEPLOY_DIR = '/opt/tolink/toLink-Rag'   // 基础配置由 Jenkins 更新，本机密钥文件长期保留
-        RAG_ENV_FILE = '/opt/tolink/toLink-Rag/.env.production'
-        RAG_SECRET_ENV_FILE = '/opt/tolink/toLink-Rag/.env.production.local'
+        CLOUD_HOST = '100.77.31.79'
+        CLOUD_USER = 'root'
+        CLOUD_SSH_KEY = '/var/jenkins_home/.ssh/cloud_prod'
     }
 
     stages {
         stage('Checkout') {
-            steps { checkout scm }
+            steps {
+                checkout scm
+                script {
+                    env.COMMIT_SHORT = sh(
+                        script: 'git rev-parse --short=8 HEAD',
+                        returnStdout: true
+                    ).trim()
+                }
+            }
         }
 
         stage('Test') {
@@ -29,7 +35,7 @@ pipeline {
                 expression { return params.RUN_TESTS }
             }
             agent {
-                // 挂载 pip 缓存到 jenkins_home，跨构建复用已下载的包
+                // 挂载 pip 缓存到 jenkins_home，跨构建复用已下载的包。
                 docker { image 'python:3.11-slim'; args '-v $HOME/.cache/pip:/root/.cache/pip'; reuseNode true }
             }
             steps {
@@ -41,63 +47,61 @@ pipeline {
             }
         }
 
-        stage('Build Image') {
-            steps {
-                sh "DOCKER_BUILDKIT=1 docker build -t ${IMAGE}:${TAG} -t ${IMAGE}:latest ."
-            }
-        }
-
-        stage('Migrate Database') {
+        stage('Package Commit') {
             steps {
                 sh '''
-                    test -f .env.production || { echo "Missing tracked RAG base config: .env.production"; exit 13; }
-                    install -d "$DEPLOY_DIR/deploy" "$DEPLOY_DIR/logs"
-                    cmp -s .env.production "$RAG_ENV_FILE" || install -m 0644 .env.production "$RAG_ENV_FILE"
-                    cmp -s deploy/docker-compose.yml "$DEPLOY_DIR/deploy/docker-compose.yml" || \
-                        install -m 0644 deploy/docker-compose.yml "$DEPLOY_DIR/deploy/docker-compose.yml"
-
-                    test -r "$RAG_SECRET_ENV_FILE" || {
-                        echo "Missing or unreadable RAG secret env file: $RAG_SECRET_ENV_FILE"
-                        exit 14
-                    }
-                    test "$(stat -c '%a' "$RAG_SECRET_ENV_FILE")" = "600" || {
-                        echo "RAG secret env file must use mode 600: $RAG_SECRET_ENV_FILE"
-                        exit 15
-                    }
-
-                    cd "$DEPLOY_DIR"
-                    export TAG RAG_ENV_FILE RAG_SECRET_ENV_FILE
-                    docker network inspect tolink-app-net >/dev/null
-                    echo "Running Alembic with production config: $RAG_ENV_FILE + $RAG_SECRET_ENV_FILE"
-                    docker run --rm \
-                        --network tolink-app-net \
-                        --env-file "$RAG_ENV_FILE" \
-                        --env-file "$RAG_SECRET_ENV_FILE" \
-                        -e PYTHONPATH=/app \
-                        "$IMAGE:$TAG" \
-                        python scripts/release/run_alembic.py \
-                            --expected-app-env production \
-                            --expected-host tolink-mysql \
-                            --expected-port 3306 \
-                            --expected-database tolink_rag_db
+                    set -eu
+                    git archive --format=tar.gz --output=linkrag-rag-source.tar.gz HEAD
                 '''
             }
         }
 
-        stage('Deploy') {
+        stage('Deploy Production on Cloud') {
             steps {
                 sh '''
-                    cd "$DEPLOY_DIR"
-                    export TAG RAG_ENV_FILE RAG_SECRET_ENV_FILE
-                    docker compose -f deploy/docker-compose.yml up -d
+                    set -eu
+                    case "${BUILD_NUMBER}" in
+                        ''|*[!0-9]*) echo 'BUILD_NUMBER must be numeric'; exit 20 ;;
+                    esac
+                    test -f "${CLOUD_SSH_KEY}" || {
+                        echo "Missing Cloud SSH key: ${CLOUD_SSH_KEY}"
+                        exit 21
+                    }
+
+                    remote_dir="/tmp/linkrag-rag-prod-jenkins-${BUILD_NUMBER}"
+                    ssh_opts="-i ${CLOUD_SSH_KEY} -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+
+                    ssh ${ssh_opts} "${CLOUD_USER}@${CLOUD_HOST}" \
+                        "mkdir -p '${remote_dir}'"
+                    scp ${ssh_opts} \
+                        linkrag-rag-source.tar.gz \
+                        deploy/scripts/build-production-on-cloud.sh \
+                        "${CLOUD_USER}@${CLOUD_HOST}:${remote_dir}/"
+                    ssh ${ssh_opts} "${CLOUD_USER}@${CLOUD_HOST}" \
+                        "bash '${remote_dir}/build-production-on-cloud.sh' '${BUILD_NUMBER}' '${COMMIT_SHORT}' '${remote_dir}/linkrag-rag-source.tar.gz'"
                 '''
             }
         }
     }
 
     post {
-        always  { sh 'docker image prune -f || true' }
-        success { echo "Deployed ${IMAGE}:${TAG}" }
-        failure { echo 'Build failed.' }
+        always {
+            sh '''
+                case "${BUILD_NUMBER}" in
+                    ''|*[!0-9]*) exit 0 ;;
+                esac
+                if [ -f "${CLOUD_SSH_KEY}" ]; then
+                    ssh -i "${CLOUD_SSH_KEY}" \
+                        -o BatchMode=yes \
+                        -o IdentitiesOnly=yes \
+                        -o StrictHostKeyChecking=accept-new \
+                        "${CLOUD_USER}@${CLOUD_HOST}" \
+                        "rm -rf '/tmp/linkrag-rag-prod-jenkins-${BUILD_NUMBER}'" || true
+                fi
+                rm -f linkrag-rag-source.tar.gz
+            '''
+        }
+        success { echo "Production deployed from commit ${env.COMMIT_SHORT}" }
+        failure { echo 'Production build or deployment failed.' }
     }
 }

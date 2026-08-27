@@ -14,19 +14,33 @@ def _read_env(path: Path) -> dict[str, str]:
     }
 
 
-def test_production_jenkins_migrates_before_deploy_with_production_env() -> None:
-    source = (ROOT / "Jenkinsfile").read_text(encoding="utf-8")
+def test_production_jenkins_delegates_migration_and_deploy_to_cloud() -> None:
+    jenkinsfile = (ROOT / "Jenkinsfile").read_text(encoding="utf-8")
+    cloud_script = (ROOT / "deploy/scripts/build-production-on-cloud.sh").read_text(
+        encoding="utf-8"
+    )
 
-    migration_stage = source.index("stage('Migrate Database')")
-    deploy_stage = source.index("stage('Deploy')")
+    package_stage = jenkinsfile.index("stage('Package Commit')")
+    deploy_stage = jenkinsfile.index("stage('Deploy Production on Cloud')")
+    migration = cloud_script.index("python scripts/release/run_alembic.py")
+    cutover = cloud_script.index('cutover_started="true"')
 
-    assert migration_stage < deploy_stage
-    assert '--env-file "$RAG_ENV_FILE"' in source
-    assert '--env-file "$RAG_SECRET_ENV_FILE"' in source
-    assert "python scripts/release/run_alembic.py" in source
-    assert "--expected-app-env production" in source
-    assert "--expected-port 3306" in source
-    assert "--expected-database tolink_rag_db" in source
+    assert package_stage < deploy_stage
+    assert "git archive --format=tar.gz" in jenkinsfile
+    assert "deploy/scripts/build-production-on-cloud.sh" in jenkinsfile
+    assert 'CLOUD_HOST = \'100.77.31.79\'' in jenkinsfile
+
+    assert migration < cutover
+    assert '--env-file "${candidate_base_env}"' in cloud_script
+    assert '--env-file "${secret_env}"' in cloud_script
+    assert "--expected-app-env production" in cloud_script
+    assert "--expected-host tolink-mysql" in cloud_script
+    assert "--expected-port 3306" in cloud_script
+    assert "--expected-database tolink_rag_db" in cloud_script
+    assert 'compose_project="linkrag-production"' in cloud_script
+    assert "up -d --no-deps tolink-rag" in cloud_script
+    assert 'curl -fsS "http://127.0.0.1:${http_port}/ready"' in cloud_script
+    assert "rollback_old_application" in cloud_script
 
 
 def test_dev_deploy_migrates_with_development_env() -> None:

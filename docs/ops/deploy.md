@@ -40,7 +40,16 @@ Promtail 必须部署在产生日志文件的云服务器上；Loki 部署在主
 Jenkins 每次部署会自动更新基础配置和 `deploy/docker-compose.yml`，但不会覆盖密钥文件；
 Compose 按基础文件、密钥文件的顺序加载，后者覆盖前者中的空值。
 
-生产 `master` 作业构建新镜像后、启动新容器前，会先用该镜像执行一次
+生产 Jenkins 运行在 Primary，只负责 checkout、可选测试和打包精确 Git 提交；随后通过专用 SSH
+密钥把源码归档和云端发布脚本传到 Cloud。镜像构建、Alembic 迁移、Compose 切换和健康检查都在
+Cloud 执行，避免 Jenkins 迁移后误用 Primary 的开发 Docker 环境。云端发布显式使用 Compose 项目
+`linkrag-production`，且只更新 `tolink-rag` 服务，不清理同项目中的 Java、Web、RabbitMQ 或
+Promtail 容器。
+
+生产作业的 SCM 固定只拉取 `master`，启用 depth 1 浅克隆、禁用 tag，并把 checkout 超时设为
+60 分钟。Jenkins Home 迁移或 Git 缓存丢失后，首次构建也不应退化为完整历史克隆。
+
+生产 `master` 作业在 Cloud 构建新镜像后、启动新容器前，会先用该镜像执行一次
 `python -m alembic upgrade head`，并通过 `python -m alembic current` 输出最终 revision。
 迁移容器固定加载 `.env.production` + `.env.production.local`；迁移失败会立即终止本次部署，
 不会把新镜像切换为运行实例。迁移过程具有幂等性，数据库已经在 `head` 时不会重复执行 DDL。
@@ -55,6 +64,9 @@ install -m 0600 /path/to/.env.production.local \
 ```
 
 缺少密钥文件或权限不是 `600` 时，Jenkins 会在启动容器之前直接失败，避免以空密码启动。
+发布前还会校验生产网络、端口占用、磁盘空间和 Compose 配置；切换后必须同时通过 `/health` 与
+`/ready`。若新容器无法就绪，脚本会恢复上一个镜像及其基础配置；已经成功执行的数据库迁移保持
+前向状态，不执行 downgrade。
 Java 的 `application-prod.yml` 随镜像发布，并通过 `spring.config.import` 加载服务器上的
 `application-prod-local.yml`；Cloud Compose 只读挂载该密钥文件，不再用服务器目录覆盖镜像中的
 基础配置。
