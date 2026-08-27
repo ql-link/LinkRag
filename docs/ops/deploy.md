@@ -47,7 +47,9 @@ Cloud 执行，避免 Jenkins 迁移后误用 Primary 的开发 Docker 环境。
 Promtail 容器。
 
 生产作业的 SCM 固定只拉取 `master`，启用 depth 1 浅克隆、禁用 tag，并把 checkout 超时设为
-60 分钟。Jenkins Home 迁移或 Git 缓存丢失后，首次构建也不应退化为完整历史克隆。
+60 分钟；同时关闭 Pipeline from SCM 的 lightweight checkout。Git 插件的 lightweight Jenkinsfile
+预取不会应用 CloneOption，保持开启会让冷缓存再次拉取完整历史。Jenkins Home 迁移或 Git 缓存
+丢失后，首次构建也不应退化为完整历史克隆。
 
 生产 `master` 作业在 Cloud 构建新镜像后、启动新容器前，会先用该镜像执行一次
 `python -m alembic upgrade head`，并通过 `python -m alembic current` 输出最终 revision。
