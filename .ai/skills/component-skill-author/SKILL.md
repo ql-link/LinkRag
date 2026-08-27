@@ -8,7 +8,7 @@ when_to_use: "当开发者想把某个现有组件/模块固化成 AI 可复用�
 
 ## 1. 定位
 
-skill 分两类：**套件托管**（flow-router、brief-generator 这种谁的项目都能用的通用方法论）和**项目自有**（mq-middleware 这种只有本项目才有的组件知识）。本 skill 专门生产后者。
+skill 分两类：**流程方法**（如 flow-router、backend-delivery）和**项目自有能力**（如 mq-middleware）。本 skill 专门生产后者。
 
 它解决一个具体问题：项目里有些组件（MQ 中台、解析 pipeline、缓存层…）有自己的架构和约定，希望 **AI 每次接入都遵守、复用，而不是每次重新摸索或自由发挥**。办法就是把这份组件知识固化成一份 skill 放进 `.ai/skills/`——AI 启动会自动扫描并按 description 触发。
 

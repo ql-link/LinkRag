@@ -22,14 +22,13 @@ when_to_use: "当用户说'写一篇博客'、'生成博客/技术博客'、'把
 使用本 skill：
 
 - 用户要求写博客、技术博客、项目实践文章、实现解读、架构改造文章、故障复盘文章。
-- 用户希望把某个 brief、acceptance、technical_design、implementation_report 或已完成实现整理成面向读者的文章。
+- 用户希望把某个 solution、acceptance、manual acceptance、implementation report 或已完成实现整理成面向读者的文章。
 - 用户要求文章既说明需求本身，又结合 toLink-Rag 的真实实现讲清楚落地逻辑。
 
 不要使用本 skill：
 
-- 用户要生成需求 brief：转 `brief-generator`。
 - 用户要生成验收契约：转 `acceptance-generator`。
-- 用户要生成技术方案：转 `technical-design`。
+- 用户要生成技术方案：转 `solution-generator`。
 - 用户要实现或修改代码：转 `implementation-execution`。
 - 用户要接口文档、README、用户手册、产品公告或营销文案，除非明确要求写成技术博客。
 - 用户明确要求“只在聊天里给草稿，不落文件”时，不要写入 `.specs/blog/`。
@@ -51,7 +50,7 @@ when_to_use: "当用户说'写一篇博客'、'生成博客/技术博客'、'把
 写博客前先读最小必要上下文。优先级如下：
 
 1. 用户指定的需求、文档、代码、PR、issue 或聊天上下文。
-2. 同一需求目录下的 `brief.md`、`acceptance.feature`、`technical_design.md`、`implementation_report.md`。
+2. 同一任务目录下的 `solution.md`、`acceptance.feature`、`manual_acceptance.md`、`implementation_report.md`。
 3. 与主题直接相关的 `docs/` 文档，尤其是 `docs/api/`、`docs/internals/`、`docs/ops/`。
 4. 与主题直接相关的真实代码入口，例如 `src/api/routes/`、`src/core/`、`src/models/`、`src/config.py`、`src/core/mq/`、`src/core/pipeline/`。
 5. 能证明行为的测试、脚本、配置样例、迁移或日志材料。
@@ -130,8 +129,8 @@ when_to_use: "当用户说'写一篇博客'、'生成博客/技术博客'、'把
 下列内容**应放在同一章**，用 `###` 或段落区分，而不是拆成多个同级 `##`：
 
 - 同一基础设施的不同侧面（例如 `docs/` 目录职责 + 文档同步机器规则 → 「长期契约：docs 与机器同步」）。
-- 同一工作流的上下游（例如 `.specs/` 定位 + spec-as-test 四步 + flow-guard → 「开发期约束：.specs 与 spec-as-test」）。
-- 同一执行层的分工与策略（例如 skills 分岗 + L1/L2/L3 车道 → 「协议层：skills 与车道」）。
+- 同一工作流的上下游（例如 `.specs/` 定位 + 直接实现/方案先行 + 验证 → 「开发期约束：方案与实施」）。
+- 同一执行层的分工与策略（例如 skills 分岗 + 七维判断 + 工作包 → 「协议层：skills 与交付路径」）。
 - 元认知类收尾（硬/软约束 + 风险 + 验证 + 演进 → 「边界与有效性」）。
 
 ### 何时保留独立 `##`
@@ -141,7 +140,7 @@ when_to_use: "当用户说'写一篇博客'、'生成博客/技术博客'、'把
 
 ### 何时用 `###`，何时不用标题
 
-**用 `###`：** 同一章内有多块**并列且各有多段**的内容（例如 spec-as-test 的 brief / acceptance / design 各成一节；或「机器层 vs 协议层」下的子表）。
+**用 `###`：** 同一章内有多块**并列且各有多段**的内容（例如 solution / acceptance / implementation 各成一节；或「机器层 vs 协议层」下的子表）。
 
 **不用标题：** 仅 1～2 段说明；或章内三点并列且每点很短——用列表或段首粗体即可（例如 docs 的「读者分层 / 单一来源 / 长期与临时分离」）。
 
@@ -183,10 +182,10 @@ when_to_use: "当用户说'写一篇博客'、'生成博客/技术博客'、'把
 ## 为什么用 docs
 ## 文档同步
 ## 为什么用 specs
-## spec-as-test
-## flow-guard
+## 方案先行
+## 契约验收
 ## skills
-## L1 L2 L3
+## 七维判断
 ## 硬约束
 ## 风险
 ## 如何验证
@@ -200,11 +199,11 @@ when_to_use: "当用户说'写一篇博客'、'生成博客/技术博客'、'把
 ## 长期契约：docs 分层与机器同步
    ### 为什么先搭 docs
    ### 文档同步的机器门槛
-## 开发期约束：specs、spec-as-test 与 flow-guard
+## 开发期约束：solution 与按需验收
    ### 为什么需要 specs
-   ### spec-as-test 链路
-   ### state.yaml 与 flow-guard
-## 协议层：skills 与 L1/L2/L3 车道
+   ### 直接实现与方案先行
+   ### 契约验收与验证映射
+## 协议层：skills 与七维判断
 ## 边界与有效性
 ## 总结
 ```

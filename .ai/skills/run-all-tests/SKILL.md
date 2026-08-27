@@ -1,79 +1,28 @@
 ---
 name: run-all-tests
-description: 运行当前仓库 tests 目录下的全部 pytest 测试并直接返回结果报告，不落本地测试文档。适用于用户要求“运行当前所有测试”“跑全量测试”“把 tests 全跑一遍并告诉我结果”等场景。
-when_to_use: "当用户要求运行当前仓库的所有测试、全量 pytest、tests 目录下全部测试，并希望直接获得测试结果结论时激活。触发示例：'运行当前所有测试'、'把 tests 全跑一遍'、'执行全量测试并告诉我结果'"
+description: 根据 toLink-Rag 的实际改动范围选择并运行单元、集成、质量和迁移验证，区分代码失败与环境阻塞，报告真实命令、结果和未覆盖区域。
 ---
 
-# Run All Tests
+# 测试与验证
 
-## 目标
+区分两种模式：任务范围验证只运行与改动和风险匹配的检查；PR 全量验证在当前可提交内容上运行仓库要求的完整本地门禁。较早的局部结果和共享 CI 不能替代本次本地执行。
 
-在当前仓库根目录执行 `tests` 目录下的全部 pytest 测试，并把测试结果整理成响应中的结果文档返回给用户，不创建、不修改任何本地测试结果文档。
+## 选择命令
 
-## 仓库约定
+| 范围 | 命令 |
+| --- | --- |
+| 单元测试 | `pytest tests/unit` |
+| 指定单元模块 | `pytest tests/unit/<path>` |
+| 集成测试 | `pytest --run-integration tests/integration` |
+| 真实环境集成 | `pytest --run-integration -m real_env`（需明确环境与授权） |
+| 项目 skill | `python scripts/quality/check_skills.py` |
+| AI 链接 | `python scripts/quality/check_ai_links.py` |
+| 文档同步 | `python scripts/quality/check_docs_sync.py --working` 与 `--self-check` |
+| Acceptance step | `python scripts/acceptance/check_acceptance_steps.py` |
+| 格式与静态检查 | 按 `docs/contributing.md` 的当前命令执行 |
 
-- 本项目的集成测试位于 `tests/integration`
-- 若不带 `--run-integration`，集成测试不会被收集
-- 因此“运行当前所有测试”默认指执行：
+数据库变更还要验证 Alembic heads、空库向前升级、受支持历史 revision 到 head 的升级和目标 MySQL；不执行 downgrade。MQ、对象存储、Qdrant、模型或 Java 对接的真实链路不能由 fake 或单元测试冒充。
 
-```bash
-pytest --run-integration tests
-```
+先读取差异与相关测试，运行最窄有区分度的检查，再扩大到任务范围。检查退出码和完整结尾。失败分为代码或断言失败、环境/依赖/权限/网络阻塞、命令或测试基础设施错误。只读请求不得自动修复；实现任务只修复本次引入的问题。
 
-## 执行规则
-
-1. 默认在仓库根目录执行命令。
-2. 如根目录存在 `.venv`，优先使用虚拟环境中的 pytest：
-
-```bash
-. .venv/bin/activate && pytest --run-integration tests
-```
-
-3. 不要生成 `testing_delivery.md`、`test_report.md`、临时 markdown 报告或其他本地结果文件。
-4. 不要因为测试失败就自动修改代码，除非用户明确要求继续修复。
-5. 若命令执行失败、环境缺失、外部依赖不可达，也要照样返回结果总结，并明确失败发生在“测试失败”还是“测试无法执行”。
-
-## 输出要求
-
-最终响应必须直接给出一份简洁的“测试结果文档”，至少包含：
-
-1. 执行命令
-2. 执行范围（说明已覆盖 `tests`，且包含 `tests/integration`）
-3. 结果概览：
-   - 通过数
-   - 失败数
-   - 报错数
-   - 跳过数（若有）
-   - 总耗时（若 pytest 输出中可得）
-4. 失败明细：
-   - 每个失败/报错测试的路径或用例名
-   - 失败原因一句话总结
-5. 结论：
-   - `PASS`：全部通过
-   - `FAIL`：存在失败或报错
-   - `BLOCKED`：环境问题导致无法完成测试
-
-## 结果文档模板
-
-```text
-测试结果文档
-
-执行命令:
-<实际执行命令>
-
-执行范围:
-覆盖 tests 目录全部测试，包含 tests/unit 与 tests/integration
-
-结果概览:
-- pass: X
-- failed: X
-- error: X
-- skipped: X
-- duration: X
-
-失败明细:
-- <test case>: <一句话原因>
-
-结论:
-PASS | FAIL | BLOCKED
-```
+报告必须包含验证模式、实际命令、覆盖范围、结果摘要、失败明细、未覆盖区域、完整检查是否执行和下一步。计划运行不能写成已执行，Gherkin 存在、测试收集、构建或 fake 通过不能夸大为真实端到端证明。

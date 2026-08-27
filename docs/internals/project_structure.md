@@ -7,22 +7,24 @@ toLink-Rag/                         # 仓库根目录
 ├── .agents/                      # Agent/Skill 配置
 │   └── skills/                   # 项目专用 Agent 技能
 │       ├── agents-tree-sync/     # AGENTS.md 目录树同步规则
-│       ├── auto-test/            # 自动化测试生成工作流
+│       ├── backend-delivery/     # 后端七维判断与交付编排
 │       ├── branch-pr-workflow/   # dev 分支交付收口与 PR 创建工作流
 │       ├── code-annotator/       # 代码注释生成工作流
 │       ├── code-review-and-quality/ # 代码审查与质量门禁
 │       ├── contract-guard/       # 跨模块公共契约校验
 │       ├── doc-maintenance-sync/ # 项目文档同步维护规则
-│       ├── implementation-execution/ # 需求实现执行流程
+│       ├── decision-grilling/    # 单项高影响决策确认协议
+│       ├── flow-router/          # 开发流程薄入口
+│       ├── implementation-execution/ # 确认范围内的实施执行
+│       ├── manual-acceptance/    # 真实服务人工验收记录
+│       ├── module-planning/      # 模块级前置规划
 │       ├── mq-middleware/        # MQ 中台开发规范
 │       ├── mysql-ddl-conventions/ # MySQL DDL 规范
-│       ├── acceptance-generator/ # Gherkin 验收契约生成工作流（替代旧版 PRD）
-│       ├── brief-generator/      # 需求 brief 生成工作流（替代旧版需求预分析）
+│       ├── acceptance-generator/ # 按需生成 Gherkin 验收契约
+│       ├── solution-generator/   # 方案中心文档生成与收敛
+│       ├── test-authoring/       # 自动化测试设计与编写
 │       ├── run-all-tests/        # 全量测试运行工作流
-│       ├── skill-optimizer/      # 既有 Skill 优化工作流
-│       ├── swagger-annotation/   # Swagger 注解生成工作流
-│       ├── tdd/                  # 测试驱动开发工作流
-│       └── technical-design/     # 技术设计生成工作流
+│       └── swagger-annotation/   # Swagger 注解生成工作流
 ├── .env.example                  # 环境变量样例
 ├── AGENTS.md                     # 项目级 Agent 入口（与 CLAUDE.md 内容同步）
 ├── CLAUDE.md                     # 项目统一入口：使用说明 + 文档目录
@@ -67,7 +69,7 @@ toLink-Rag/                         # 仓库根目录
 │   ├── db.sql                    # 0001 baseline 冻结快照（DDL，冷启动用；禁止改动）
 │   └── versions/                 # 版本化迁移脚本（NNNN_YYYYMMDD_slug.py）
 ├── scripts/                      # 可执行脚本
-│   ├── acceptance/               # 验收流程与 spec-as-test 辅助脚本
+│   ├── acceptance/               # Gherkin 提升与 pytest-bdd 校验脚本
 │   ├── dev/                      # 本地开发、诊断、冒烟脚本
 │   ├── db/                       # 数据库初始化脚本
 │   │   ├── init.sql              # 叠加全部 migration 后的当前完整结构快照（仅供查阅）

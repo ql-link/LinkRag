@@ -72,7 +72,7 @@ logs/
 /tests/evaluation_datasets/
 /docs/evaluation_reports/
 
-# Feature spec-as-test 临时产物 (brief/acceptance/design/report)
+# 本地任务产物 (solution/acceptance/manual acceptance/report)
 # 只有 .specs/README.md 入 git；其他全部本地工作产物，合并后清理。
 /.specs/*
 !/.specs/README.md
@@ -82,8 +82,6 @@ logs/
 .claude/worktrees/
 # Claude Code per-user permission allowlist
 .claude/settings.local.json
-/.agents/skills
-
 /requirements
 
 # 本地 Docker Compose 覆盖（KRaft Kafka、无认证），不入 Git
