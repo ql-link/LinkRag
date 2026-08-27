@@ -117,6 +117,10 @@ Web 构建把 npm 缓存持久化到 `/opt/tolink/dev/jenkins/npm-cache`，`npm 
 `/opt/tolink/dev/jenkins/incoming/<workspace>-dev.tgz`；下一次对应构建会校验并消费该文件，随后仍在
 Primary 完成镜像构建。
 
+`linkrag-service-dev` 完成 Service 容器重建后，会额外强制重建 `linkrag-web`。这是为了刷新 Web
+Nginx 对 Service 容器 DNS 的解析，避免前端经 `/api/` 访问刚重建的 Service 时继续命中旧容器 IP 而返回
+502；因此一次 Service Dev 部署会同时触发 Web 容器重建。
+
 ## 启动顺序
 
 应用 startup 钩子依赖以下服务**已就绪**（见 [src/main.py](../../src/main.py)）：
