@@ -348,27 +348,33 @@ p50/p95/p99 推理延迟。服务完成启动后若 active/shadow 出现 `loaded
 配置边界：`RECALL_*_TOP_K` 驱动 `off` RAG 流和纯召回 JSON 的三路召回深度；LTR RAG 流由上述候选契约动态路由。`DENSE_RETRIEVAL_TOP_K` / `SPARSE_RETRIEVAL_TOP_K` 只在直接调用 `VectorStorageFacade.search_*_chunks()` 且调用方未传 `top_k` 时兜底。
 Wiki 标题搜索只复用 `RECALL_STRICT_DEFAULT` 与 `RECALL_STREAM_TIMEOUT_MS`；分页游标固定 10 分钟有效，单 Chunk 搜索位置固定最多 10 条，两者均为模块内部常量，不增加环境变量。Wiki 不使用 Redis。
 
-### 对外会话鉴权配置（RAG 流 / 纯召回 JSON）
+### 对外访问鉴权配置（RAG / Recall / Wiki）
 
-对外端点 `POST /api/v1/rag/stream`（RAG 问答流）与 `POST /api/v1/recall`（纯召回 JSON）的
-会话鉴权配置。前端凭 Java 签发的短期 session token 直连，使用**独立专用密钥**验签。并发限流
-（`RECALL_SESSION_MAX_CONCURRENT`）**仅 RAG 流生效**，纯召回不限流。详见
+Java 登录返回的同一枚 RS256 access JWT 可直接访问 Python。Java 保存私钥并负责签发，Python 只挂载
+公钥文件并本地验签；Python 不回调 Java，也不读取 Sa-Token Redis。并发限流
+（`RAG_MAX_CONCURRENT_PER_USER`）**仅 RAG 流生效**，Recall/Wiki 不使用该计数。详见
 [recall_http_api.md](../internals/recall_http_api.md)。
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `RECALL_SESSION_AUTH_ENABLED` | `true` | 是否启用 session token 验签；**生产必须为 true** |
-| `RECALL_SESSION_JWT_ISSUER` | `tolink-java` | 期望的 session JWT `iss` |
-| `RECALL_SESSION_JWT_AUDIENCE` | `tolink-rag-frontend` | 期望的 session JWT `aud` |
-| `RECALL_SESSION_JWT_SCOPE` | `recall:stream` | 期望的 session JWT `scope` |
-| `RECALL_SESSION_JWT_SECRET` | 本地联调占位值 | **独立专用** HS256 密钥，可单独轮转；**生产务必覆盖** |
-| `RECALL_SESSION_MAX_CONCURRENT` | `3` | 单用户最大并发召回流数；token 短期可复用，此为资源滥用主闸门，超限返回 `429` |
+| `JAVA_ACCESS_JWT_ENABLED` | `false` | 是否接受 Java access JWT；启用后会在启动时校验公钥配置 |
+| `JAVA_ACCESS_JWT_PUBLIC_KEY_PATH` | 空 | Java RS256 PEM 公钥文件路径；启用时必填、必须可读且格式有效，否则启动失败 |
+| `JAVA_ACCESS_JWT_ISSUER` | `tolink-java` | 期望的 access JWT `iss` |
+| `JAVA_ACCESS_JWT_AUDIENCE` | `tolink-rag-api` | 期望 audience；JWT 的 `aud` 可为包含该值的数组 |
+| `JAVA_ACCESS_JWT_TOKEN_USE` | `access` | 凭证类型隔离值，必须精确匹配 |
+| `WIKI_CURSOR_SIGNING_SECRET` | 本地占位值 | Wiki 无状态分页游标签名密钥；与用户 token 无关，生产必须覆盖 |
+| `RAG_MAX_CONCURRENT_PER_USER` | `3` | 单用户最大并发 RAG 流数；仅用于资源保护，超限返回 `429` |
 | `CORS_ORIGINS` | `["*"]` | **生产对外环境必须收敛为前端可信域名清单**（不可用 `*`，否则带 `Authorization` 头的跨域预检失败）|
 
-> token 短期可复用：Python 只校验 `exp`（建议 Java 签发 30s，仅够建连），不做一次性 /
-> 防重放 / 撤销。RAG 生成跑在独立后台任务、断连不取消，并发名额绑任务生命周期释放（非连接）；
+> 新 access JWT 固定 2 小时，可在到期前复用。Python 不维护 `jti` 撤销状态，所以 Java logout 后
+> Python 最迟在 `exp` 时拒绝；用户禁用和角色降级通过共享数据库实时生效。RAG 生成跑在独立后台任务、
+> 断连不取消，并发名额绑任务生命周期释放（非连接）；
 > 任务存活由召回超时 `RECALL_STREAM_TIMEOUT_MS` + 生成超时 `RECALL_GENERATION_TIMEOUT_MS` 共同约束，
 > 名额安全 TTL 取二者较大值兜底。并发计数依赖 Redis，Redis 不可用时 fail-open（放行，因限流是资源保护非鉴权）。
+
+部署时应把公钥以只读文件挂载到 Python 容器，并令 `JAVA_ACCESS_JWT_PUBLIC_KEY_PATH` 指向容器内路径。
+Java 私钥不得进入 Python 环境、代码仓库或日志。轮换时先让 Python 信任新公钥并完成灰度，再切换 Java
+签发私钥；当前实现一次只加载一把公钥，因此应保留足够的 token 过渡窗口或安排短暂停机切换。
 
 ## 配置加载与覆盖
 

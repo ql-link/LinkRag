@@ -95,13 +95,16 @@ async def test_recall_json_maps_dataset_fusion_config_to_internal_request(monkey
         captured["request"] = recall_req
         return {"hits": [], "failed_sources": []}
 
-    monkeypatch.setattr(recall, "resolve_dataset_scope", lambda _body_ids, _ctx: [7])
+    async def _dataset_scope(_db, *, user_id, requested_dataset_ids):
+        return [7]
+
+    monkeypatch.setattr(recall, "resolve_user_dataset_scope", _dataset_scope)
     monkeypatch.setattr(recall, "aresolve_recall_execution", _recall_execution)
     monkeypatch.setattr(recall, "run_recall_json", _run_recall_json)
 
     ctx = SimpleNamespace(user_id=42, request_id="rid")
     response = await recall.recall_json(
-        _req_with_payload({"query": "q"}), ctx=ctx, pipeline=object()
+        _req_with_payload({"query": "q"}), ctx=ctx, pipeline=object(), db=object()
     )
 
     assert response.status_code == 200

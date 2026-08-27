@@ -91,6 +91,15 @@ class Settings(BaseSettings):
         "0000000000000000000000000000000000000000000000000000000000000000"
     )
 
+    # Java 是唯一登录与 access token 签发方。Python 只使用 RS256 公钥独立验签。
+    JAVA_ACCESS_JWT_ENABLED: bool = False
+    JAVA_ACCESS_JWT_PUBLIC_KEY_PATH: str = ""
+    JAVA_ACCESS_JWT_ISSUER: str = "tolink-java"
+    JAVA_ACCESS_JWT_AUDIENCE: str = "tolink-rag-api"
+    JAVA_ACCESS_JWT_TOKEN_USE: str = "access"
+    # Wiki 无状态分页游标的独立签名密钥，不参与用户 token 验证。
+    WIKI_CURSOR_SIGNING_SECRET: str = "change-me-wiki-cursor-signing-secret"
+
     # ==========================================
     # 召回执行配置 (Recall Pipeline)
     # ==========================================
@@ -197,24 +206,8 @@ class Settings(BaseSettings):
             raise ValueError("RECALL_LTR_SHADOW_MAX_PENDING must be >= 0")
         return v
 
-    # ==========================================
-    # 对外会话鉴权配置 (RAG 流 / 纯召回 JSON / LINK-40, LINK-131)
-    # ==========================================
-    # 前端凭 Java 签发的短期 session token 直连 Python 对外端点
-    # `POST /api/v1/rag/stream`（RAG 问答流）与 `POST /api/v1/recall`（纯召回 JSON）。
-    # 详见 docs/internals/recall_http_api.md。
-    RECALL_SESSION_AUTH_ENABLED: bool = True
-    RECALL_SESSION_JWT_ISSUER: str = "tolink-java"
-    # 前端面凭证独立受众标识，避免与其他 token 混用。
-    RECALL_SESSION_JWT_AUDIENCE: str = "tolink-rag-frontend"
-    RECALL_SESSION_JWT_SCOPE: str = "recall:stream"
-    # 独立 HS256 密钥：前端面 token 疑似泄露时可单独轮转。
-    # 默认值仅供本地联调，生产必须用环境变量覆盖。
-    RECALL_SESSION_JWT_SECRET: str = (
-        "3f8c1d6a90b74e2f8a5c0d1e7b3f9a26c4d8e0f1a2b3c4d5e6f7081929a3b4c5d"
-    )
-    # 单用户最大并发召回流数。token 短期可复用、不做一次性，此为资源滥用的主闸门。
-    RECALL_SESSION_MAX_CONCURRENT: int = 3
+    # 单用户最大并发 RAG 流数；这是资源保护，不参与鉴权。
+    RAG_MAX_CONCURRENT_PER_USER: int = 3
 
     # ==========================================
     # 召回后 LLM 答案生成 (Recall Answer Generation)

@@ -10,7 +10,7 @@ Wiki 标题树是内部 RAG 导航能力：每篇文档从解析期的同一份 
 | `src/core/storage/wiki_tree/repository.py` | `wiki_tree_node` 原子替换、scope/就绪 SQL、标题/路径/树/Chunk 批量读取 |
 | `src/core/wiki/search_service.py` | 5/10 配额、跨库轮询、去重、HMAC 游标 |
 | `src/application/wiki_runtime.py` | exact 短路、mixed 并发与容错、正文/路径回填 |
-| `src/api/routes/wiki.py` | 四个带 session token 的 HTTP 入口 |
+| `src/api/routes/wiki.py` | 四个带 access token 的 HTTP 入口 |
 
 `wiki_tree_node` 是混合节点表：`HEADING` 保存标题结构，`CHUNK_REF` 只保存 `chunk_id` 引用。表间故意不设物理 FK，正文、租户归属、数据集和 Chunk 类型仍以 `kb_document_chunk` 为真值。虚拟文档根没有实体节点；无标题文档的引用直接使用 `parent_id=NULL`。
 
@@ -28,7 +28,7 @@ Wiki 标题树是内部 RAG 导航能力：每篇文档从解析期的同一份 
 
 mixed 页默认 15 条：标题目标 `ceil(15/3)=5`，BM25 目标 10，任一路不足由另一条补位；标题始终排在本页 BM25 前。BM25 每库最多 50 条，库内保留自身分数顺序，跨库按 `dataset_id` 升序进行 rank-major 轮询，不比较跨库原始分数。候选必须先过 MySQL 就绪门禁，隐藏候选不占页面名额。
 
-游标是 URL-safe base64 的 `payload.signature`，签名密钥从 `RECALL_SESSION_JWT_SECRET` 通过 `wiki-search-cursor:v1` 域隔离派生。顶层搜索游标绑定版本、10 分钟有效期、分支、用户、规范 query、完整有效 scope 指纹和下一 keyset/轮询位置；标题展开游标改为绑定用户、标题当前所属数据集、文档和 `heading_key` 的规范资源身份。来源搜索可能覆盖多个数据集，而展开接口会按 `doc_id` 重新收敛为单文档范围，因此不能把来源搜索集合当作标题资源身份；每次展开仍先重新执行所有权、claims、当前数据集归属和就绪校验，文档改归属后旧游标会失效。任一绑定不符返回 422。游标不保存服务端状态或快照：数据不变时无重复遗漏，翻页期间数据改变时允许少量重复或遗漏，客户端按 `heading_key`/`chunk_id` 累计去重或从第一页重启。
+游标是 URL-safe base64 的 `payload.signature`，签名密钥从 `WIKI_CURSOR_SIGNING_SECRET` 通过 `wiki-search-cursor:v1` 域隔离派生。顶层搜索游标绑定版本、10 分钟有效期、分支、用户、规范 query、完整有效 scope 指纹和下一 keyset/轮询位置；标题展开游标改为绑定用户、标题当前所属数据集、文档和 `heading_key` 的规范资源身份。来源搜索可能覆盖多个数据集，而展开接口会按 `doc_id` 重新收敛为单文档范围，因此不能把来源搜索集合当作标题资源身份；每次展开仍先重新执行所有权、claims、当前数据集归属和就绪校验，文档改归属后旧游标会失效。任一绑定不符返回 422。游标不保存服务端状态或快照：数据不变时无重复遗漏，翻页期间数据改变时允许少量重复或遗漏，客户端按 `heading_key`/`chunk_id` 累计去重或从第一页重启。
 
 mixed 分支在分页前为正文建立确定性归属：若可见 BM25 候选同时是本次规范 query 与有效 scope 下任意匹配标题的首个可见直属 Chunk，该 Chunk 固定由标题预览返回，并从所有 BM25 分页中移除，后续候选按原跨库轮询顺序补位。归属查询从已经有界的 BM25 candidate IDs 出发，并用 `NOT EXISTS` 确认同一标题下没有排序更早的可见直属引用；这样既不会把第二条引用误判为预览，也无需对全部匹配标题引用做无界排名或把历史 Chunk ID 写入游标，数据不变时后页标题预览不会重复前页 BM25 结果。
 

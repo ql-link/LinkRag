@@ -32,6 +32,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from src.api.java_access_auth import validate_java_access_jwt_configuration
 from src.api.routes import internal, llm, mq, parse, rag, recall, wiki
 from src.application.ltr_provider import (
     get_ltr_runtime_status,
@@ -107,6 +108,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     - Redis 连接
     - MySQL 连接池
     """
+    # 鉴权公钥属于启动契约：启用新 access JWT 却缺少/损坏公钥时禁止带病接流量。
+    validate_java_access_jwt_configuration()
     # 启动时初始化
     # LTR 文件读取、LightGBM 导入、Booster 构造与测试向量校验全部在 worker thread
     # 预加载；失败会固化为本进程 baseline 状态，不把首次初始化成本留给真实请求。

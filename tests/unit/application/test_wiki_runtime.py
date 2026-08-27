@@ -6,7 +6,7 @@ from unittest.mock import ANY, AsyncMock
 import pytest
 
 import src.application.wiki_runtime as runtime_module
-from src.api.recall_session_auth import SessionAuthContext
+from src.api.java_access_auth import AuthContext
 from src.application.recall_errors import RecallApiError
 from src.application.wiki_runtime import WikiRuntime
 from src.core.pipeline.recall.models import RetrieverHit
@@ -93,8 +93,8 @@ def _runtime(monkeypatch, *, strict: bool = False, page_size: int = 15):
     return runtime, repository, bm25
 
 
-def _ctx() -> SessionAuthContext:
-    return SessionAuthContext(user_id=7, dataset_ids=[10], request_id="req")
+def _ctx() -> AuthContext:
+    return AuthContext(user_id=7, request_id="req")
 
 
 @pytest.mark.asyncio
@@ -455,7 +455,7 @@ async def test_heading_cursor_from_cross_dataset_search_expands_in_document_scop
         (WikiChunkRefRecord(202, 1, "C2"),),
         False,
     )
-    ctx = SessionAuthContext(user_id=7, dataset_ids=[10, 20], request_id="req")
+    ctx = AuthContext(user_id=7, request_id="req")
 
     search = await runtime.search(
         ctx,
@@ -485,7 +485,7 @@ async def test_heading_cursor_rejects_changed_document_dataset(monkeypatch):
     repository.find_heading_page.return_value = ((_heading(1),), False)
     repository.load_heading_previews.side_effect = None
     repository.load_heading_previews.return_value = {1: WikiHeadingPreview(1, 2, "C1", 0, 201)}
-    ctx = SessionAuthContext(user_id=7, dataset_ids=[10, 20], request_id="req")
+    ctx = AuthContext(user_id=7, request_id="req")
 
     search = await runtime.search(
         ctx,

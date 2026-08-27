@@ -5,7 +5,7 @@
   以便在不复制正文、不改变现有 Chunk 真值的前提下获得结构化导航能力
 
   背景:
-    假如 用户 123 持有授权数据集 [10,20] 的有效 session token
+    假如 用户 123 持有授权数据集 [10,20] 的有效 access token
     并且 文档 D1 属于用户 123 和数据集 10
     并且 文档 D1 的最新解析流水线状态为 SUCCESS
     并且 文档 D1 的待查询 Chunk 均为 ACTIVE
@@ -350,7 +350,7 @@
   场景大纲: Wiki 搜索按用户知识库文档三级范围约束标题与 BM25
     假如 用户 123 拥有知识库 10 和 20
     并且 文档 D1 属于知识库 10 而文档 D2 属于知识库 20
-    并且 session token 的知识库 claims 为 <claims>
+    并且 access token 的知识库 claims 为 <claims>
     当 用户以 dataset_ids=<dataset_ids> 和 doc_ids=<doc_ids> 执行 Wiki 搜索
     那么 有效知识库范围为 <effective_datasets>
     并且 有效文档范围为 <effective_docs>
@@ -374,8 +374,8 @@
 
     例子:
       | condition                                  | status | error_code                  |
-      | 缺少 session token                        | 401    | RECALL_SESSION_UNAUTHORIZED |
-      | session token 无效或过期                  | 401    | RECALL_SESSION_UNAUTHORIZED |
+      | 缺少 access token                        | 401    | ACCESS_TOKEN_UNAUTHORIZED |
+      | access token 无效或过期                  | 401    | ACCESS_TOKEN_UNAUTHORIZED |
       | query 为空或纯空白                        | 400    | RECALL_INVALID_REQUEST      |
       | 请求 JSON 非法                            | 422    | RECALL_INVALID_REQUEST      |
       | 请求含未知字段                            | 422    | RECALL_INVALID_REQUEST      |

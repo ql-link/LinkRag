@@ -19,7 +19,7 @@ from pytest_bdd import parsers, step
 
 import src.application.wiki_runtime as runtime_module
 import src.core.pipeline.document_delete.purger as purger_module
-from src.api.recall_session_auth import SessionAuthContext, verify_session_token
+from src.api.java_access_auth import AuthContext, verify_user_token
 from src.api.routes import wiki as wiki_routes
 from src.api.schemas.wiki import WikiChunkLocationsRequest, WikiSearchRequest
 from src.application.recall_errors import RecallApiError
@@ -380,15 +380,15 @@ def _acceptance_runtime(
     return runtime, repository, bm25, readiness
 
 
-def _acceptance_context() -> SessionAuthContext:
-    return SessionAuthContext(user_id=123, dataset_ids=[10, 20], request_id="wiki-acceptance")
+def _acceptance_context() -> AuthContext:
+    return AuthContext(user_id=123, request_id="wiki-acceptance")
 
 
 def _acceptance_app(runtime, *, authenticated: bool = True) -> FastAPI:
     app = FastAPI()
     app.include_router(wiki_routes.router)
     if authenticated:
-        app.dependency_overrides[verify_session_token] = _acceptance_context
+        app.dependency_overrides[verify_user_token] = _acceptance_context
     app.dependency_overrides[get_wiki_runtime] = lambda: runtime
 
     @app.exception_handler(RecallApiError)
@@ -1284,8 +1284,8 @@ def _assert_scenario_contract(node_name: str, state: WikiAcceptanceState, monkey
     if scenario == "无效凭证请求或越权范围在查询前被拒绝":
         condition = state.parameters["condition"]
         expected = {
-            "缺少 session token": ("401", "RECALL_SESSION_UNAUTHORIZED"),
-            "session token 无效或过期": ("401", "RECALL_SESSION_UNAUTHORIZED"),
+            "缺少 access token": ("401", "ACCESS_TOKEN_UNAUTHORIZED"),
+            "access token 无效或过期": ("401", "ACCESS_TOKEN_UNAUTHORIZED"),
             "query 为空或纯空白": ("400", "RECALL_INVALID_REQUEST"),
             "请求 JSON 非法": ("422", "RECALL_INVALID_REQUEST"),
             "请求含未知字段": ("422", "RECALL_INVALID_REQUEST"),
@@ -1301,7 +1301,7 @@ def _assert_scenario_contract(node_name: str, state: WikiAcceptanceState, monkey
         repository = None
         bm25 = None
         request_body: dict[str, object] = {"query": "x"}
-        authenticated = condition not in {"缺少 session token", "session token 无效或过期"}
+        authenticated = condition not in {"缺少 access token", "access token 无效或过期"}
         if expected[0] == "403":
             runtime, repository, bm25, _readiness = _acceptance_runtime(monkeypatch)
             repository.resolve_scope.side_effect = RecallApiError(
@@ -1330,7 +1330,7 @@ def _assert_scenario_contract(node_name: str, state: WikiAcceptanceState, monkey
                     return await client.post("/api/v1/wiki/search", json={"query": "  "})
                 headers = (
                     {"Authorization": "Bearer invalid"}
-                    if condition == "session token 无效或过期"
+                    if condition == "access token 无效或过期"
                     else None
                 )
                 return await client.post("/api/v1/wiki/search", json=request_body, headers=headers)

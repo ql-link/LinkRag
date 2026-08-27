@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 from pydantic import TypeAdapter, ValidationError
 
-from src.api.recall_session_auth import SessionAuthContext, verify_session_token
+from src.api.java_access_auth import AuthContext, verify_user_token
 from src.api.routes import wiki
 from src.api.schemas.wiki import WikiSearchResult
 from src.application.recall_errors import RecallApiError
@@ -17,8 +17,8 @@ from src.application.wiki_runtime import get_wiki_runtime
 def _app(runtime: AsyncMock) -> FastAPI:
     app = FastAPI()
     app.include_router(wiki.router)
-    app.dependency_overrides[verify_session_token] = lambda: SessionAuthContext(
-        user_id=7, dataset_ids=[10, 20], request_id="req-wiki"
+    app.dependency_overrides[verify_user_token] = lambda: AuthContext(
+        user_id=7, request_id="req-wiki"
     )
     app.dependency_overrides[get_wiki_runtime] = lambda: runtime
 

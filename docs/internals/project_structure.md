@@ -81,7 +81,8 @@ toLink-Rag/                         # 仓库根目录
 │   ├── bootstrap/                # 进程启动期引导（须先于业务模块 import）
 │   │   └── nltk_data.py          # NLTK 数据路径引导（项目内 nltk_data 优先）
 │   ├── api/                      # HTTP API 分层
-│   │   ├── recall_session_auth.py # 召回会话鉴权
+│   │   ├── java_access_auth.py  # Java 登录 access JWT 独立验签与当前用户上下文
+│   │   ├── recall_concurrency.py  # RAG Redis 并发保护（不参与 token 验证）
 │   │   ├── routes/               # 路由层
 │   │   │   ├── internal.py        # Java 管理端内部 LLM 配置/用量接口
 │   │   │   ├── llm.py

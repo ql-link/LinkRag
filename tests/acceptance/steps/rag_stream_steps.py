@@ -1,8 +1,8 @@
 """对外 RAG 问答流 SSE 验收 step 实现（pytest-bdd 8.x）。
 
 把 ``tests/acceptance/features/rag_stream.feature`` 的中文 Gherkin 绑定到对真实
-FastAPI 应用（``src.main.app``）的行为断言。pipeline 用 FakePipeline 隔离，session
-JWT 用独立 session 密钥真实签发，Redis 并发计数用内存 FakeRedis 替身隔离，模型解析 /
+FastAPI 应用（``src.main.app``）的行为断言。pipeline 用 FakePipeline 隔离，Java access
+JWT 的密码学契约由独立鉴权验收覆盖；这里注入已验签身份。Redis 并发计数用内存 FakeRedis 替身隔离，模型解析 /
 正文回填 / 流式生成用状态可控的确定性替身隔离。
 
 state 通过 ``rag_acc_state`` fixture 跨 step 共享；每个 Scenario 一份独立状态，
@@ -13,19 +13,19 @@ from __future__ import annotations
 
 import asyncio
 import json
-import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
-import jwt
 import pytest
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.testclient import TestClient
 from pytest_bdd import given, parsers, then, when
 
+from src.api.java_access_auth import AuthContext, verify_user_token
 from src.api.routes import rag
 from src.application import recall_stream_runtime
+from src.application.recall_errors import CODE_SCOPE_FORBIDDEN, RecallApiError
 from src.application.recall_pipeline_provider import get_recall_pipeline, get_reranker
 from src.cache.redis_client import redis_client
 from src.config import settings
@@ -146,8 +146,6 @@ class _FakeRedis:
 @dataclass
 class _State:
     claims: dict = field(default_factory=dict)
-    defect: str | None = None
-    sign_with_foreign: bool = False
     body: dict | None = None
     raw_body: str | None = None
     omit_dataset: bool = False
@@ -232,7 +230,7 @@ class _State:
 
 
 @pytest.fixture
-def rag_acc_state():
+def rag_acc_state(monkeypatch):
     state = _State()
     state.claims = {"sub": "123", "dataset_ids": [1, 2]}
     state.fake.response = RecallResponse(
@@ -247,10 +245,21 @@ def rag_acc_state():
     )
     state.install_redis()
     state.install_generation_stubs()
+
+    async def _dataset_scope(_db, *, user_id: int, requested_dataset_ids):
+        owned = set(state.claims.get("dataset_ids", []))
+        if requested_dataset_ids:
+            if not set(requested_dataset_ids) <= owned:
+                raise RecallApiError(403, CODE_SCOPE_FORBIDDEN, "dataset scope is not authorized")
+            return list(requested_dataset_ids)
+        return sorted(owned)
+
+    monkeypatch.setattr(rag, "resolve_user_dataset_scope", _dataset_scope)
     yield state
     state.restore()
     app.dependency_overrides.pop(get_recall_pipeline, None)
     app.dependency_overrides.pop(get_reranker, None)
+    app.dependency_overrides.pop(verify_user_token, None)
 
 
 # ---------------------------------------------------------------------------
@@ -259,42 +268,8 @@ def rag_acc_state():
 
 
 def _make_token(state: _State) -> str:
-    """按 state 签发 session token（含缺陷注入）。"""
-    if state.sign_with_foreign:
-        return jwt.encode(
-            {
-                "iss": settings.RECALL_SESSION_JWT_ISSUER,
-                "aud": settings.RECALL_SESSION_JWT_AUDIENCE,
-                "scope": settings.RECALL_SESSION_JWT_SCOPE,
-                "sub": state.claims.get("sub", "123"),
-                "dataset_ids": state.claims.get("dataset_ids", [1]),
-                "exp": int(time.time()) + 300,
-            },
-            "some-other-service-secret-not-the-session-key",
-            algorithm="HS256",
-        )
-
-    secret = settings.RECALL_SESSION_JWT_SECRET
-    payload = {
-        "iss": settings.RECALL_SESSION_JWT_ISSUER,
-        "aud": settings.RECALL_SESSION_JWT_AUDIENCE,
-        "scope": settings.RECALL_SESSION_JWT_SCOPE,
-        "sub": state.claims.get("sub", "123"),
-        "dataset_ids": state.claims.get("dataset_ids", [1, 2]),
-        "exp": int(time.time()) + 300,
-    }
-    defect = state.defect
-    if defect == "签名不匹配":
-        secret = "wrong-secret"
-    elif defect and "iss" in defect:
-        payload["iss"] = "evil"
-    elif defect and "aud" in defect:
-        payload["aud"] = "other"
-    elif defect and "scope" in defect:
-        payload["scope"] = "x:y"
-    elif defect and "exp" in defect:
-        payload["exp"] = int(time.time()) - 10
-    return jwt.encode(payload, secret, algorithm="HS256")
+    """本特性只需模拟浏览器携带 Java access token。"""
+    return "java-access-token-for-rag-acceptance"
 
 
 def _parse_ds(text: str) -> list[int]:
@@ -321,7 +296,12 @@ def _fire(state: _State, *, with_token: bool) -> None:
     )
     headers = {"Accept": "text/event-stream"}
     if with_token:
+        app.dependency_overrides[verify_user_token] = lambda: AuthContext(
+            user_id=int(state.claims.get("sub", "123")), request_id="rag-acceptance"
+        )
         headers["Authorization"] = f"Bearer {_make_token(state)}"
+    else:
+        app.dependency_overrides.pop(verify_user_token, None)
     client = TestClient(app)
     if state.raw_body is not None:
         resp = client.post(URL, content=state.raw_body, headers=headers)
@@ -357,7 +337,12 @@ def _fire_to(state: _State, url: str, *, with_token: bool) -> None:
     app.dependency_overrides[get_recall_pipeline] = lambda: state.fake
     headers = {"Accept": "text/event-stream"}
     if with_token:
+        app.dependency_overrides[verify_user_token] = lambda: AuthContext(
+            user_id=int(state.claims.get("sub", "123")), request_id="rag-acceptance"
+        )
         headers["Authorization"] = f"Bearer {_make_token(state)}"
+    else:
+        app.dependency_overrides.pop(verify_user_token, None)
     client = TestClient(app)
     state.response = client.post(
         url, json={"query": "任意", "config_id": CONFIG_ID, "dataset_ids": [1]}, headers=headers
@@ -392,30 +377,15 @@ def _set_config(rag_acc_state, name, value):
     rag_acc_state.set_setting(name, casted)
 
 
-@given(parsers.re(r"配置 session token 的 (?P<name>[A-Z_]+)=(?P<value>.+)"))
-def _set_session_config(rag_acc_state, name, value):
-    rag_acc_state.set_setting(name, value)
-
-
-@given(parsers.parse("session token 使用 RECALL_SESSION_JWT_SECRET 这一独立专用签名密钥"))
-def _distinct_secret(rag_acc_state):
-    assert settings.RECALL_SESSION_JWT_SECRET
-
-
-@given(parsers.parse("session token 短期可复用，有效期内只校验 exp，不做一次性消费"))
-def _reusable(rag_acc_state):
-    pass
-
-
 @given(parsers.re(r"配置对外 CORS 允许来源为 (?P<origins>.+)"))
 def _cors_config(rag_acc_state, origins):
     inner = origins.strip().strip("[]")
     rag_acc_state.cors_origins = [p.strip().strip('"') for p in inner.split(",") if p.strip()]
 
 
-@given(parsers.re(r"配置单用户最大并发召回流数 RECALL_SESSION_MAX_CONCURRENT=(?P<n>\d+)"))
+@given(parsers.re(r"配置单用户最大并发召回流数 RAG_MAX_CONCURRENT_PER_USER=(?P<n>\d+)"))
 def _max_concurrent(rag_acc_state, n):
-    rag_acc_state.set_setting("RECALL_SESSION_MAX_CONCURRENT", int(n))
+    rag_acc_state.set_setting("RAG_MAX_CONCURRENT_PER_USER", int(n))
 
 
 @given(parsers.parse("Redis 可用用于并发流计数"))
@@ -433,21 +403,9 @@ def _two_sources(rag_acc_state):
 # ---------------------------------------------------------------------------
 
 
-@given(parsers.re(r"session token claims sub=(?P<sub>\d+).*dataset_ids=\[(?P<ds>[^\]]*)\].*"))
+@given(parsers.re(r"Java access token 对应用户 sub=(?P<sub>\d+).*dataset_ids=\[(?P<ds>[^\]]*)\].*"))
 def _claims(rag_acc_state, sub, ds):
     rag_acc_state.claims = {"sub": sub, "dataset_ids": _parse_ds(ds)}
-
-
-@given(parsers.re(r'session token 存在缺陷 "(?P<defect>[^"]+)"'))
-def _claims_defect(rag_acc_state, defect):
-    rag_acc_state.claims = {"sub": "123", "dataset_ids": [1]}
-    rag_acc_state.defect = defect
-
-
-@given(parsers.parse("一个 token 用非 session 密钥的其它密钥签发 claims 全对"))
-def _foreign_signed(rag_acc_state):
-    rag_acc_state.claims = {"sub": "123", "dataset_ids": [1]}
-    rag_acc_state.sign_with_foreign = True
 
 
 @given(parsers.parse("config_id 指向的 CHAT 模型对用户 123 可用"))
@@ -623,7 +581,7 @@ def _w_omit_dataset(rag_acc_state, query):
 
 @when(
     parsers.re(
-        r"前端在 token 未过期时携带同一 token 再次调用 POST /api/v1/rag/stream "
+        r"前端在 token 有效时携带同一 access token 再次调用 POST /api/v1/rag/stream "
         r'body query="(?P<query>[^"]*)" dataset_ids=\[(?P<ds>[^\]]*)\]'
     )
 )
@@ -632,7 +590,7 @@ def _w_reuse(rag_acc_state, query, ds):
     _fire(rag_acc_state, with_token=True)
 
 
-@when(parsers.parse("token 的 exp 在流执行期间到达"))
+@when(parsers.parse("Java 端管理的 token 有效期在流执行期间到达"))
 def _w_exp_during_stream(rag_acc_state):
     rag_acc_state.body = {"query": "q"}
     rag_acc_state.omit_dataset = True
@@ -871,7 +829,7 @@ def _acao_ne(rag_acc_state, origin):
     assert rag_acc_state.response.headers.get("access-control-allow-origin") != origin
 
 
-@then(parsers.parse("当前 SSE 流不因 token 过期被中断"))
+@then(parsers.parse("当前 SSE 流不因 token 生命周期变化被中断"))
 def _stream_not_interrupted(rag_acc_state):
     assert rag_acc_state.response.status_code == 200
     assert any(n == "answer_done" for n, _ in rag_acc_state.events)

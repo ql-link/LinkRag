@@ -9,7 +9,7 @@ from collections.abc import Mapping, Sequence
 from functools import lru_cache
 from typing import Any
 
-from src.api.recall_session_auth import SessionAuthContext
+from src.api.java_access_auth import AuthContext
 from src.application.recall_errors import (
     CODE_ALL_SOURCES_FAILED,
     CODE_INTERNAL_ERROR,
@@ -78,7 +78,7 @@ class WikiRuntime:
 
     async def search(
         self,
-        ctx: SessionAuthContext,
+        ctx: AuthContext,
         *,
         query: str,
         dataset_ids: Sequence[int] | None,
@@ -114,7 +114,7 @@ class WikiRuntime:
             event="wiki_search_completed",
             request_id=ctx.request_id,
             user_id=ctx.user_id,
-            dataset_count=len(dataset_ids or ctx.dataset_ids or ()),
+            dataset_count=len(dataset_ids or ()),
             doc_count=len(doc_ids or ()),
             branch=branch,
             result_count=len(payload["results"]),
@@ -126,7 +126,7 @@ class WikiRuntime:
 
     async def _search(
         self,
-        ctx: SessionAuthContext,
+        ctx: AuthContext,
         *,
         normalized_query: str,
         dataset_ids: Sequence[int] | None,
@@ -731,7 +731,7 @@ class WikiRuntime:
 
     async def expand_heading_chunks(
         self,
-        ctx: SessionAuthContext,
+        ctx: AuthContext,
         *,
         doc_id: int,
         heading_key: str,
@@ -833,7 +833,7 @@ class WikiRuntime:
 
     async def locate_chunks(
         self,
-        ctx: SessionAuthContext,
+        ctx: AuthContext,
         *,
         chunk_ids: Sequence[str],
         dataset_ids: Sequence[int] | None,
@@ -868,7 +868,7 @@ class WikiRuntime:
 
     async def get_document_tree(
         self,
-        ctx: SessionAuthContext,
+        ctx: AuthContext,
         *,
         doc_id: int,
     ) -> dict[str, Any]:
@@ -922,7 +922,7 @@ class WikiRuntime:
 
     async def _resolve_scope(
         self,
-        ctx: SessionAuthContext,
+        ctx: AuthContext,
         *,
         dataset_ids: Sequence[int] | None,
         doc_ids: Sequence[int] | None,
@@ -934,7 +934,7 @@ class WikiRuntime:
                 return await self._repository.resolve_scope(
                     db,
                     user_id=ctx.user_id,
-                    claims_dataset_ids=ctx.dataset_ids,
+                    claims_dataset_ids=None,
                     requested_dataset_ids=dataset_ids,
                     requested_doc_ids=doc_ids,
                 )
@@ -1100,7 +1100,7 @@ def get_wiki_runtime() -> WikiRuntime:
             tokenizer=RagFlowTokenizer(),
         ),
         readiness_gate=MySqlDocumentReadinessGate(),
-        cursor_codec=WikiCursorCodec(settings.RECALL_SESSION_JWT_SECRET),
+        cursor_codec=WikiCursorCodec(settings.WIKI_CURSOR_SIGNING_SECRET),
         page_size=settings.WIKI_SEARCH_PAGE_SIZE,
         bm25_top_k_per_dataset=settings.WIKI_BM25_TOP_K_PER_DATASET,
         strict=settings.RECALL_STRICT_DEFAULT,

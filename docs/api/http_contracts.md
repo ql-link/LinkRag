@@ -194,7 +194,8 @@ parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权�
 
 ## 6. RAG / Recall API（对外）
 
-**面向浏览器前端**：前端凭 Java 签发的**短期 session token** 直连，绕过 Java 中转。
+**面向浏览器前端**：前端凭 Java 登录返回的同一枚 **access JWT** 直连 Python，
+无需再向 Java 换取召回 token；旧短期 session token 不再接受。
 两个端点拆分语义（LINK-131）——`/api/v1/rag/stream` 承接「召回 + LLM 流式生成」的完整 RAG
 问答（SSE），`/api/v1/recall` 是纯召回 JSON（一次性返回 hits，不生成）。运行时与会话鉴权细节见
 [docs/internals/recall_http_api.md](../internals/recall_http_api.md)。
@@ -206,18 +207,20 @@ parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权�
 
 | Method | Path | 用途 | 返回 | 鉴权 |
 | --- | --- | --- | --- | --- |
-| `POST` | `/api/v1/rag/stream` | 召回 + LLM 流式生成的完整 RAG 问答 | `text/event-stream` | Header `Authorization: Bearer <session-token>` |
-| `POST` | `/api/v1/recall` | 纯召回，一次性返回融合候选（预留实现） | `application/json` | Header `Authorization: Bearer <session-token>` |
+| `POST` | `/api/v1/rag/stream` | 召回 + LLM 流式生成的完整 RAG 问答 | `text/event-stream` | Header `Authorization: Bearer <access-token>` |
+| `POST` | `/api/v1/recall` | 纯召回，一次性返回融合候选（预留实现） | `application/json` | Header `Authorization: Bearer <access-token>` |
 
 ### POST /api/v1/rag/stream
 
 前端以 fetch 流式（`ReadableStream`）建连，**不使用** `EventSource`（无法设鉴权头）。
-请求头：`Authorization: Bearer <session-token>`、`Content-Type: application/json`、可选
+请求头：`Authorization: Bearer <access-token>`、`Content-Type: application/json`、可选
 `Origin`（CORS）、`X-Request-Id`。
 
-session token 由 Java 签发、Python 用**独立专用密钥**验签；claims：
-`iss=tolink-java`、`aud=tolink-rag-frontend`、`scope=recall:stream`、`sub`、`dataset_ids`、
-`exp`。**token 短期可复用**（只校验 `exp`，不做一次性 / 防重放 / 撤销）。
+access token 由 Java 登录签发，Java 以 RS256 私钥签名，Python 只持有公钥并独立校验；
+claims 至少包含 `iss=tolink-java`、`aud` 含 `tolink-rag-api`、`token_use=access`、
+`sub`、`iat`、`exp`、`jti`。Python 不回调 Java，也不解析 Sa-Token Redis。
+access token 不携带 `dataset_ids`；用户状态、角色和数据集归属均读取当前 MySQL 事实。
+Python 只接受上述 RS256 access JWT，不支持 HS256 recall session token，也不调用 Java 做远程校验。
 
 请求体（仅以下字段；出现 `user_id` / `top_k` / `sources` / `strict` / `doc_ids` 等任何未知
 字段返回 `422`）：
@@ -229,7 +232,7 @@ session token 由 Java 签发、Python 用**独立专用密钥**验签；claims�
 | `conversation_id` | int | 是 | 本轮所属对话 id（Java 预先创建），作为对话落库挂载锚点。缺失 `422`，不进入召回生成、不发对话轮次消息 |
 | `turn_id` | string | 是 | 本轮落库幂等键：前端每轮生成的稳定 UUID（断连重连不变）。缺失 `422`。Java 据此 upsert 同一行，断连续跑/重连不重复落库 |
 | `is_first_turn` | bool | 否 | 是否会话首条用户消息，默认 `false`。为 `true` 时触发服务端基于 `query` 生成会话标题（SSE `conversation_title` 即时回前端 + `chat_turn.title` 落库），见下文 |
-| `dataset_ids` | list[int] | 否 | 本次查询的数据集**子集选择**，必须 ⊆ token 授权范围（超出 `403`）；省略/空 = 用 token 全量授权范围 |
+| `dataset_ids` | list[int] | 否 | 本次查询的数据集**子集选择**；必须全部属于当前用户且 ACTIVE/未删除，省略/空则查询本人全部有效数据集 |
 
 > 生成跑在**独立后台任务**（断连不取消）：任务起点发一条 `tolink.rag.chat_turn`（`status=GENERATING`），终态再发 `COMPLETED`/`FAILED`，同 `turn_id`，供 Java upsert 落库对话内容（空召回也发 `COMPLETED` 占位）。客户端断连只停 SSE 转发、生成续跑到落库；本轮 generate 的 token 用量另走 `tolink.rag.usage_report`（LINK-191）。契约见 [mq_contracts.md §对话轮次上报](mq_contracts.md#对话轮次上报pythonjava)。
 
@@ -248,7 +251,7 @@ session token 由 Java 签发、Python 用**独立专用密钥**验签；claims�
 请求覆盖。其中 `off`/纯召回配置的 `recall_enabled_sources` **只能在系统已装配的召回路集合内收窄**（不能启用系统未
 装配的路）。模型按 `(user_id, capability, config_id)` 精确解析，SYSTEM / USER 配置使用同一 ID 空间。
 
-并发：按 `user_id` 限并发流数（`RECALL_SESSION_MAX_CONCURRENT`），超限返回 `429`。
+并发：按 `user_id` 限并发流数（`RAG_MAX_CONCURRENT_PER_USER`），超限返回 `429`。
 
 **召回即包含排序 + LLM 答案生成**：召回前置先校验模型；`active` 默认使用本地 LambdaMART，
 失败回退 frozen weighted score 且不调用远程 rerank；`off` 保留旧 rerank，`shadow` 旁路比较但不改结果。
@@ -344,7 +347,7 @@ data: {"title": "<会话标题>"}
 ### POST /api/v1/recall
 
 纯召回 JSON：一次性返回融合候选，**不调 CHAT 模型、不回填正文、不建立 SSE、不做并发限流**。
-当前阶段为接口预留实现，前端暂不真正接入。请求头：`Authorization: Bearer <session-token>`、
+当前阶段为接口预留实现，前端暂不真正接入。请求头：`Authorization: Bearer <access-token>`、
 `Content-Type: application/json`、可选 `Origin`（CORS）、`X-Request-Id`。
 
 会话鉴权与 `dataset_ids` scope 校验同 `/api/v1/rag/stream`。请求体（仅以下字段；出现 `config_id` /
@@ -354,7 +357,7 @@ data: {"title": "<会话标题>"}
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `query` | string | 是 | 检索词，不能为空或纯空白 |
-| `dataset_ids` | list[int] | 否 | 数据集**子集选择**，必须 ⊆ token 授权范围（超出 `403`）；省略/空 = 用 token 全量授权范围 |
+| `dataset_ids` | list[int] | 否 | 数据集**子集选择**；按当前用户数据库归属实时解析 |
 
 **不要求 `config_id`**（纯召回不生成）。成功返回 `200`。**纯召回不经 rerank**，`hits` 为当前融合策略
 融合候选、**不含** `rerank_score` / `rerank_rank` 字段，也无顶层 `rerank_applied`（与 RAG 流的
@@ -374,7 +377,7 @@ RAG SSE 成功终态同构。三路执行期 top_k / 分数阈值 / 融合策略
 
 ## 7. Wiki API（对外）
 
-四个端点均使用 `/api/v1/wiki` 前缀和 `Authorization: Bearer <session-token>`，鉴权 claims 与 §6 相同。成功响应为 JSON，并回显/生成 `X-Request-Id`；两个 POST 请求体中的未知字段一律 422，ID 必须为正整数。身份只取 token claims。两个 POST 的运行时 OpenAPI `requestBody` 直接由对应 Pydantic 请求模型生成并标记为必填，与本节字段契约保持同源。
+四个端点均使用 `/api/v1/wiki` 前缀和 `Authorization: Bearer <access-token>`，鉴权契约与 §6 相同。成功响应为 JSON，并回显/生成 `X-Request-Id`；两个 POST 请求体中的未知字段一律 422，ID 必须为正整数。身份只取已验签的 `sub`，用户状态、角色和资源范围读取当前数据库事实。两个 POST 的运行时 OpenAPI `requestBody` 直接由对应 Pydantic 请求模型生成并标记为必填，与本节字段契约保持同源。
 
 | Method | Path | 用途 |
 | --- | --- | --- |

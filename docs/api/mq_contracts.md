@@ -233,7 +233,7 @@ RAG 问答在 Python 端（`/api/v1/rag/stream`）以**后台任务**执行，�
 - **空召回也落库**：0 命中或全部片段缺正文时回 `recall_done`，并发 `COMPLETED`（`answer` 空占位），不再「不产生对话轮次」。
 - **缺 `conversation_id` / `turn_id` 不发消息**：`/rag/stream` 缺任一直接 422，不进入召回生成。
 - **最终一致**：Python 端发送失败仅告警、不影响已返回答案；Java 侧以 `turn_id` 幂等 upsert，配合对账补偿。
-- **归属校验（Java 必做）**：`conversation_id` 来自前端请求体，`user_id` 取自 session token claims，Python 仅透传、不校验二者归属关系。Java 落库前**必须**校验 `conversation_id` 属于该 `user_id`（不匹配则丢弃/告警），否则存在跨用户写入他人对话的风险。
+- **归属校验（Java 必做）**：`conversation_id` 来自前端请求体，`user_id` 取自 access token claims，Python 仅透传、不校验二者归属关系。Java 落库前**必须**校验 `conversation_id` 属于该 `user_id`（不匹配则丢弃/告警），否则存在跨用户写入他人对话的风险。
 
 ## 用量上报（Python→Java/统计侧）
 

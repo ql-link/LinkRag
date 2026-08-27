@@ -72,7 +72,7 @@ Feature: 固定 weighted score 召回融合
     And 构造的 RecallRequest.fusion_dense_weight_override 等于 0.7
 
   Scenario Outline: HTTP 请求体不接受融合内部字段
-    Given session token claims sub=123 dataset_ids=[1] 合法未过期
+    Given Java access token 对应用户 sub=123 dataset_ids=[1] 有效
     When 前端调用 POST /api/v1/recall 或 POST /api/v1/rag/stream body 额外包含字段 "<field>"
     Then HTTP 响应状态为 422
     And 响应体 code 等于 "RECALL_INVALID_REQUEST"
