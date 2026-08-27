@@ -52,7 +52,7 @@ Maven 多模块划分：
 
 - 启动类：`link-api/.../LinkApplication.java`，端口 `8080`
 - 鉴权：sa-token；数据库 `tolink_rag_db`（MySQL）
-- 新需求采用 Spec-as-Test 工作流：`brief.md → acceptance.feature → technical_design.md → 代码 + 测试`
+- 新需求由后端交付流程判断直接实现或方案先行；方案先行使用 `solution.md → 可选 acceptance.feature → 代码 + 测试`
 
 ### 2.3 toLink-Rag —— Python RAG 执行端
 

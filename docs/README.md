@@ -9,7 +9,7 @@
 | **对接方 / 业务方**：调 HTTP API、收 MQ 消息、读写共享数据库 | [api/](api/) |
 | **内部开发者**：改代码、看模块边界、加新模块 | [internals/](internals/) |
 | **运维 / 部署方**：起服务、调配置、看依赖 | [ops/](ops/) |
-| **贡献者**：提 PR、跑测试、写迁移、走 spec-as-test 流程 | [contributing.md](contributing.md) |
+| **贡献者**：提 PR、跑测试、写迁移、走方案驱动流程 | [contributing.md](contributing.md) |
 | **AI Agent / 新成员**：从 0 理解项目 | [../CLAUDE.md](../CLAUDE.md) |
 
 ## 目录速览
@@ -61,11 +61,11 @@
 
 ### [contributing.md](contributing.md) — 贡献者规范
 
-涵盖分支、提交、代码风格、测试、Alembic 迁移、文档同步、spec-as-test 工作流。
+涵盖分支、提交、代码风格、测试、Alembic 迁移、文档同步和方案驱动开发流程。
 
 ## 文档体系约定
 
 - 每个事实**只在一处**正式描述，其他位置用链接引用。
 - 文档是代码的摘要，代码是权威源。冲突时**改文档不改代码**。
-- 临时交付物（PRD、技术方案、实施报告）放 [.specs/](../.specs/)，不进 docs/。
+- 临时交付物（solution、Acceptance、人工验收、实施补充）放 [.specs/](../.specs/)，不进 docs/。
 - 修改文档前阅读 [contributing.md §七](contributing.md#七文档体系约定修改-docs-前必读)。

@@ -47,7 +47,7 @@ docs/
 ├── contributing.md   贡献者规范（分支、PR、测试、迁移、文档同步）
 └── README.md     按读者旅程的一页索引
 
-.specs/           feature 临时交付物（brief / acceptance / design / report）
+.specs/           方案先行任务的本地产物（solution / acceptance / manual acceptance / report）
 ```
 
 按角色查阅入口：
@@ -81,6 +81,9 @@ docs/
 
 ## 五、工作规则（Agent / 开发者）
 
+- **开发分流**：代码改动先按 [.ai/skills/README.md](../skills/README.md) 进入 `flow-router` 与 `backend-delivery`；不再使用 L1/L2/L3、brief、technical design 或 `state.yaml` 阶段机。
+- **用户控制**：支持“工作流：自动/开启/关闭、路径：自动/直接实现/方案先行、后续：自动/直接施工/契约验收”；用户最新明确选择优先。
+- **方案任务**：方案先行以 `.specs/<KEY>/solution.md` 为中心，只有选定契约验收时增加 `acceptance.feature`；直接实现不创建 Spec。
 - **改动前**：按角色看 [docs/README.md](docs/README.md) 找到最小必要文档；查第四节确认本次会触发的同步规则。
 - **实现中**：优先复用现有模块边界、配置入口、错误处理；不为业务需求轻易改动 framework 层。
 - **改动后**：同步更新受影响的对外契约文档；内部模块文档按需更新。

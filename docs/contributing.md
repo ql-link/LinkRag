@@ -1,6 +1,6 @@
 # Contributing
 
-贡献者指南：分支、提交、代码风格、测试、数据库迁移、文档同步、spec-as-test 工作流。
+贡献者指南：分支、提交、代码风格、测试、数据库迁移、文档同步和方案驱动开发流程。
 
 本篇是开发流程的**唯一规范文档**。其他 docs/ 下的文档只描述项目本身（API、内部架构、运维），不重复这里的内容。
 
@@ -413,20 +413,20 @@ python scripts/quality/check_docs_facts.py --quiet  # 只打印问题
 
 ---
 
-## 六、spec-as-test 工作流（feature 开发）
+## 六、方案驱动开发流程
 
-涉及一个新功能从想法到合入的全流程时使用。短小改动（一行 bugfix、一处配置）直接 PR 即可，不必走全流程。
+代码改动先由 `flow-router` 进入 `backend-delivery`。后者基于准备程度、影响面、规则与状态、实现确定度、验证难度、风险和协作持续性，选择直接实现或方案先行；不再使用 L1/L2/L3 车道和机器阶段状态。
 
 ### 6.1 产物（本地，不入 git）
 
-每个 feature 在 [.specs/](../.specs/) 下建一个目录，依次产出：
+直接实现不创建 Spec。方案先行任务在 [.specs/](../.specs/) 下按任务 key 建目录，按需包含：
 
 | 文件 | 角色 | 由谁/何时产出 |
 | --- | --- | --- |
-| `brief.md` | 需求理解 + 待确认项 | 接到需求 → 开发者初稿 → 与提需者迭代到冻结 |
-| `acceptance.feature` | Gherkin 验收契约（机器可消费） | brief 冻结后 |
-| `technical_design.md` | 技术方案 | acceptance 冻结后 |
-| `implementation_report.md` | 实施记录、决策、遗留 | 开发完成后 |
+| `solution.md` | 业务与技术中心：结果、规则、状态、数据、契约、实施步骤和验证映射 | 选定方案先行后创建并由用户确认 |
+| `acceptance.feature` | Gherkin 验收契约 | 方案选择契约验收时按需创建 |
+| `manual_acceptance.md` | 真实服务或跨系统人工验收记录 | 自动化无法覆盖必要结果时 |
+| `implementation_report.md` | 已允许偏差、已接受限制或跨会话遗留 | 真实命中时才创建 |
 
 `.specs/` **整目录已 git-ignored**——这些文件只活在本地工作目录，不进版本控制。
 
@@ -436,27 +436,20 @@ PR 合并前，把 `.specs/<feature>/` 里**有长期价值**的东西搬出去�
 
 | 来自 `.specs/` | 沉淀到 |
 | --- | --- |
-| 关键设计决策、风险、权衡 | PR 描述 |
+| 实际交付、重要方案差异、风险和权衡 | PR 描述 |
 | 可执行的 Gherkin 场景 | `tests/acceptance/features/<name>.feature` + `tests/acceptance/test_<name>.py` + step 实现（用 `python scripts/acceptance/promote_acceptance.py <feature>` 提升：搬运 + 改名 + scaffold + 校验 0 undefined step + 防漂移；CI `acceptance-steps.yml` 长期守 undefined step） |
 | 新模块或边界变化 | `docs/internals/<module>.md` |
 | 新对外契约 | `docs/api/` 对应文件 |
 | 新配置项 | `docs/ops/configure.md` |
 | 数据库表变化 | `docs/api/schemas/mysql.md` + Alembic 迁移 |
 
-### 6.3 合并后清理
+### 6.3 生命周期
 
-合并后**必须** `rm -rf .specs/<feature>/`。`brief.md` / `technical_design.md` / `implementation_report.md` 是一次性产物，长期留着就是误导信息。
-
-需要查阅历史时：
-
-```bash
-git log --all --oneline -- '.specs/<feature>/'
-git show <commit-sha>:.specs/<feature>/brief.md
-```
+`.specs/<KEY>/` 是本地执行上下文，不进入提交。它不保存 `state.yaml`、冻结标记、文档哈希或历史测试状态；跨会话通过当前请求、方案、Git 差异和真实代码恢复，验证必须重新执行。
 
 ### 6.4 关联 skills
 
-`.ai/skills/` 下有对应自动化 skill：`brief-generator` / `acceptance-generator` / `technical-design` / `implementation-execution`。在 Agent 模式下按顺序触发即可。
+主链 skills 为 `flow-router` → `backend-delivery` → `implementation-execution`，方案先行时插入 `solution-generator`，选定契约验收时再插入 `acceptance-generator`。测试、人工验收、质量审查和 Git 交付分别由对应 skill 承担。
 
 详见 [.specs/README.md](../.specs/README.md)。
 
@@ -499,4 +492,4 @@ git show <commit-sha>:.specs/<feature>/brief.md
 - 项目入口：[CLAUDE.md](../CLAUDE.md) / [AGENTS.md](../AGENTS.md)（同一份文件的 symlink）
 - 用户介绍：[README.md](../README.md)
 - 文档导航：[docs/README.md](README.md)
-- spec-as-test 工作流：[.specs/README.md](../.specs/README.md)
+- 方案驱动开发流程：[.specs/README.md](../.specs/README.md)

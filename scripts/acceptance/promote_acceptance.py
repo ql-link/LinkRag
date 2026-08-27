@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""把 acceptance.feature 从 .specs 提升到 tests/——搬运 + 校验,取代手工 copy(LINK-110)。
+"""按需把 acceptance.feature 从 .specs 提升到 tests/ 并校验。
 
-合并前需把 ``.specs/<feature>/acceptance.feature`` 提升到 ``tests/acceptance/features/``
-才能进 git、被 pytest-bdd 长期运行。过去这步是手工 copy(脚本里写在 skill 文本里),
+当方案选择契约验收且场景需要成为长期自动化回归时，把
+``.specs/<feature>/acceptance.feature`` 提升到 ``tests/acceptance/features/``。
+过去这步是手工 copy，
 两份会漂、且没人校验提升后每条 Scenario 的 step 都绑定了。本脚本把它变成可验证操作:
 
 1. 搬运:``.specs/<feature>/acceptance.feature`` → ``tests/acceptance/features/<name>.feature``
@@ -41,7 +42,7 @@ def _err(msg: str) -> None:
 
 
 def validate_feature_name(name: str) -> None:
-    """拒绝空名、路径穿越与非法字符(同 flow-guard 口径)。"""
+    """拒绝空名、路径穿越与非法字符。"""
     if not name or ".." in name or "/" in name or "\\" in name:
         _err(f"非法 feature 名: '{name}'")
         sys.exit(2)
@@ -116,7 +117,10 @@ def promote(feature: str, name: str | None) -> int:
                 file=sys.stderr,
             )
     feature_dst.write_text(src_text, encoding="utf-8")
-    print(f"[PROMOTE] {src.relative_to(REPO_ROOT)} → {feature_dst.relative_to(REPO_ROOT)}", file=sys.stderr)
+    print(
+        f"[PROMOTE] {src.relative_to(REPO_ROOT)} → {feature_dst.relative_to(REPO_ROOT)}",
+        file=sys.stderr,
+    )
 
     # 一致性自检:写入后两版必须逐字相等(锁定口径:promote 时令两者一致即可)。
     assert feature_dst.read_text(encoding="utf-8") == src_text

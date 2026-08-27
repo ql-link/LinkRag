@@ -59,14 +59,14 @@ gh pr view <number> --json title,body,files
 
 按存在与否尽量收齐，缺哪项要在报告里点明「证据不足」：
 
-1. **原始需求原文**——最高权威源。优先级：用户在会话中给出的需求描述 > `.specs/<feature-name>/brief.md` > `.specs/<feature-name>/acceptance.feature` > PR/issue 描述。
+1. **当前确认依据**——直接实现优先使用用户在会话中确认的需求；方案先行使用当前 `.specs/<KEY>/solution.md`。PR/Issue 和飞书是初始来源，若与已确认方案冲突不能覆盖方案。
 2. `.specs/<feature-name>/acceptance.feature`（若存在）——逐条 Given/When/Then 是核验清单的天然来源。
-3. `.specs/<feature-name>/technical_design.md`、`implementation_report.md`（若存在）——了解设计意图，但**不能**当作「已完成」的证据。
+3. `.specs/<KEY>/manual_acceptance.md`、`implementation_report.md`（若存在）——了解人工结果、允许偏差和遗留事项，但**不能**替代真实代码与自动化证据。
 4. 实际代码改动——`git diff`、关键文件、`src/` 下相关模块。
 5. 测试证据——`tests/unit`、`tests/integration`、`tests/acceptance` 下对应用例是否存在且通过。
 6. 受影响的对外契约文档（若改动涉及）——`docs/api/`、`docs/internals/` 下相关条目。
 
-> 注意：`brief.md` / `acceptance.feature` / `technical_design.md` / `implementation_report.md` 是 `.specs/<feature-name>/` 下的临时产物，可能不存在；不存在时以会话中的需求原文为准，并在报告里说明依据。
+> 注意：直接实现没有 Spec；方案任务的 `solution.md`、`acceptance.feature`、`manual_acceptance.md`、`implementation_report.md` 也可能只存在部分。不存在时以当前请求和明确确认结论为准，并在报告里说明依据。
 
 ## 4. 六个核验维度（固定）
 

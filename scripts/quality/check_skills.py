@@ -3,7 +3,7 @@
 
 针对每个 ``.ai/skills/<name>/SKILL.md`` 执行四类机器化质量门禁：
 
-1. frontmatter 完整性：``name``（须等于目录名）、``description`` 必填；``when_to_use`` 缺失告警。
+1. frontmatter 完整性：``name``（须等于目录名）、``description`` 必填。
 2. 死引用扫描：正文里出现的 ``docs/`` ``src/`` ``tests/`` ``scripts/`` ``migrations/``
    ``.ai/`` ``.claude/`` 路径必须真实存在（含 glob 前缀目录判定）。
 3. 技术栈黑名单：命中非本项目栈的关键词（如 Java/Milvus）即报错，防止通用模板腐化。
@@ -46,11 +46,10 @@ BARE_DOC_RE = re.compile(r"`([A-Za-z0-9_.\-]+\.(?:md|feature))`")
 # 工作流在 .specs/<feature>/ 下临时生成、不进仓库的产物：不做存在性校验。
 GENERATED_ARTIFACTS = frozenset(
     {
-        "brief.md",
+        "solution.md",
         "acceptance.feature",
-        "technical_design.md",
+        "manual_acceptance.md",
         "implementation_report.md",
-        "state.yaml",
         "feature_info.md",
         "requirement.md",
         "testing_delivery.md",
@@ -136,7 +135,16 @@ def _path_exists(token: str) -> bool:
 
 
 _REPO_BASENAMES: set[str] | None = None
-_SKIP_DIRS = {".git", ".venv", "venv", "node_modules", "__pycache__", ".specs", ".mypy_cache", ".pytest_cache"}
+_SKIP_DIRS = {
+    ".git",
+    ".venv",
+    "venv",
+    "node_modules",
+    "__pycache__",
+    ".specs",
+    ".mypy_cache",
+    ".pytest_cache",
+}
 
 
 def _repo_basenames() -> set[str]:
@@ -189,8 +197,6 @@ def check_skill(skill_dir: Path) -> list[Issue]:
             issues.append(Issue(name, "error", "frontmatter 缺少 description"))
         elif len(desc) < 20:
             issues.append(Issue(name, "warning", "description 过短（<20 字符），触发可能不准"))
-        if not str(fm.get("when_to_use", "")).strip():
-            issues.append(Issue(name, "warning", "frontmatter 缺少 when_to_use（建议补充触发/转交说明）"))
 
     # 技术栈黑名单（全文匹配）
     for kw in STACK_BLACKLIST:
@@ -247,7 +253,9 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ERROR: skills 目录不存在: {skills_root}", file=sys.stderr)
         return 2
 
-    skill_dirs = sorted(p for p in skills_root.iterdir() if p.is_dir() and not p.name.startswith("."))
+    skill_dirs = sorted(
+        p for p in skills_root.iterdir() if p.is_dir() and not p.name.startswith(".")
+    )
     if not skill_dirs:
         print(f"未发现任何 skill: {skills_root}")
         return 0
@@ -265,9 +273,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"[{mark}] {i.skill}: {i.msg}")
         print("-" * 60)
 
-    print(
-        f"扫描 {len(skill_dirs)} 个 skill | errors={len(errors)} warnings={len(warnings)}"
-    )
+    print(f"扫描 {len(skill_dirs)} 个 skill | errors={len(errors)} warnings={len(warnings)}")
     return 1 if errors else 0
 
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """建立 AI 资产软链接。
 
-.ai/ 是 skills / agents / prompts 的唯一物理来源。各 AI 工具按自己的固定
-路径加载（.claude/、.agent/、CLAUDE.md、AGENTS.md），本脚本把这些路径建
+.ai/ 是 skills / prompts 的唯一物理来源。各 AI 工具按自己的固定
+路径加载（.claude/、.agents/、.agent/、CLAUDE.md、AGENTS.md），本脚本把这些路径建
 为指向 .ai/ 的符号链接，从而保证多工具共享同一份内容。
 
 新人入职、worktree 初始化、链接被误删时运行一次即可：
@@ -21,9 +21,10 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # link_path -> target_path（都相对仓库根）
 LINKS: dict[str, str] = {
     ".claude/skills": ".ai/skills",
-    ".agent/skills":  ".ai/skills",
-    "CLAUDE.md":      ".ai/prompts/project.md",
-    "AGENTS.md":      ".ai/prompts/project.md",
+    ".agents/skills": ".ai/skills",
+    ".agent/skills": ".ai/skills",
+    "CLAUDE.md": ".ai/prompts/project.md",
+    "AGENTS.md": ".ai/prompts/project.md",
 }
 
 
