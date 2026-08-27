@@ -1,6 +1,6 @@
 # 召回 HTTP API（对外 RAG 流 / 纯召回 JSON）
 
-本文描述 Python 侧对外召回与 Wiki 导航端点的运行时：暴露面、会话鉴权、请求装配与降级语义。
+本文描述 Python 侧对外召回与 Wiki 导航端点的运行时：暴露面、访问鉴权、请求装配与降级语义。
 LINK-131 拆分语义——`POST /api/v1/rag/stream` 承接「召回 + LLM 流式生成」的完整 RAG 问答（SSE），
 `POST /api/v1/recall` 是纯召回 JSON（一次性返回 hits、不生成、不限流、预留实现）。
 对外契约见 [docs/api/http_contracts.md §6](../api/http_contracts.md#6-rag--recall-api对外)；
@@ -15,12 +15,13 @@ LINK-131 拆分语义——`POST /api/v1/rag/stream` 承接「召回 + LLM 流�
 
 ## 1. 边界：身份与授权归属
 
-外部用户态的登录态、用户状态、数据集 / 文档归属校验都在 Java 端完成（Sa-Token）。
-Python **不接受前端 Sa-Token，也不信任请求体里自报的 `user_id`**——身份只取 Java 为每次
-会话签发的短期 session token 的 claims，避免绕过租户隔离、伪造身份越权召回他人数据集。
+Java 仍是唯一登录入口。登录成功后，Java 返回的 `accessToken` 同时是 Java Sa-Token 登录凭证和
+RS256 JWT；前端把**同一枚 token**作为 Bearer token 访问 Python，不再先调用
+`POST /api/v1/recall/sessions` 换取 Python 专用凭证。Python 不回调 Java，也不读取 Sa-Token Redis，
+而是使用 Java 公钥本地验签，并从共享数据库读取当前用户状态、角色及资源归属。
 
-前端流程：先 `POST /api/v1/recall/sessions`（向 Java，带登录态）换取短期 session token，
-再凭 token 直连 Python 下述端点。Java 只负责签发 token，不在召回 / 生成请求路径上。
+Python 不信任请求体里自报的 `user_id`。身份始终来自验签后的 `sub`；新 access JWT 还会在每次请求
+核验当前 `sys_user.status/role`。旧 recall session JWT 不再接受。
 
 ## 2. 暴露面
 
@@ -36,41 +37,40 @@ Python **不接受前端 Sa-Token，也不信任请求体里自报的 `user_id`*
   返回 `application/json`，一次性 `{hits, failed_sources}`（**融合候选，不经 rerank**，hits 不含 rerank
   字段）。**不调 CHAT 模型、不回填正文、不建 SSE、不限流**。请求体仅 `query` + 可选 `dataset_ids`，出现 `config_id` → 422。
   执行期错误走 HTTP 状态码（见错误码）。当前为接口预留实现。
-- **Wiki 导航 JSON**：`POST /api/v1/wiki/search`、`GET /api/v1/wiki/documents/{doc_id}/headings/{heading_key}/chunks`、`POST /api/v1/wiki/chunk-locations`、`GET /api/v1/wiki/documents/{doc_id}/tree`（[src/api/routes/wiki.py](../../src/api/routes/wiki.py)）。四者复用同一 session token，但不使用 Redis 并发计数；SQL 会再次核验用户、ACTIVE 数据集、可选文档范围、当前成功解析任务与 ACTIVE Chunk。完整字段和错误语义见 [HTTP 契约 Wiki 章节](../api/http_contracts.md#7-wiki-api对外)。
+- **Wiki 导航 JSON**：`POST /api/v1/wiki/search`、`GET /api/v1/wiki/documents/{doc_id}/headings/{heading_key}/chunks`、`POST /api/v1/wiki/chunk-locations`、`GET /api/v1/wiki/documents/{doc_id}/tree`（[src/api/routes/wiki.py](../../src/api/routes/wiki.py)）。四者复用同一 access token，但不使用 Redis 并发计数；SQL 会再次核验用户、ACTIVE 数据集、可选文档范围、当前成功解析任务与 ACTIVE Chunk。完整字段和错误语义见 [HTTP 契约 Wiki 章节](../api/http_contracts.md#7-wiki-api对外)。
 
-## 3. 会话鉴权（HS256 JWT）
+## 3. 访问鉴权（仅 RS256 access JWT）
 
-实现见 [src/api/recall_session_auth.py](../../src/api/recall_session_auth.py) 的
-`verify_session_token` 依赖——用**独立密钥** `RECALL_SESSION_JWT_SECRET` HS256 验签，校验
-`aud=tolink-rag-frontend` / `iss=tolink-java` / `scope=recall:stream` / `exp`。独立密钥便于
-前端面 token 疑似泄露时单独轮转。任一失败 → `RecallApiError(401, RECALL_SESSION_UNAUTHORIZED)`。
+统一依赖是 [src/api/java_access_auth.py](../../src/api/java_access_auth.py) 的 `verify_user_token`。
+它固定使用 Java 公钥和 `RS256`，校验 `iss`、Python audience、`exp`、`iat`、`sub`、`jti` 与
+`token_use=access`；验签后查询当前 `sys_user.status/role`。旧 HS256 recall session token 和远程
+Java token 校验均不再支持，任一验证失败统一返回 `401 ACCESS_TOKEN_UNAUTHORIZED`。
 
-产出 `SessionAuthContext(user_id, dataset_ids, request_id)`。`user_id` 取 claims `sub`；
-`request_id` 取 `X-Request-Id`，缺省时生成 `uuid4().hex`（见
-[recall_errors.py](../../src/application/recall_errors.py) `_request_id`）并回写响应头，用于贯穿日志。
-
-JWT 推荐 claims：
+新 access JWT 示例：
 
 ```json
 {
-  "iss": "tolink-java", "aud": "tolink-rag-frontend", "sub": "123",
-  "scope": "recall:stream", "dataset_ids": [1, 2], "exp": 1710000300
+  "iss": "tolink-java", "aud": ["tolink-java-api", "tolink-rag-api"],
+  "sub": "123", "token_use": "access", "role": "USER",
+  "iat": 1787760000, "exp": 1787767200, "jti": "uuid"
 }
 ```
 
-**token 短期可复用**：只校验 `exp`，**不做一次性 / 防重放 / 撤销**。本场景只读、不可越权
-（只能召回本人授权范围）、且有并发上限作资源闸门，一次性收益不抵复杂度（决策见
-`.specs/recall-direct-sse/brief.md §3.3`）。断线重连可复用未过期 token，过期后回 Java 重申。
-`RECALL_SESSION_AUTH_ENABLED=False` 仅供本地联调（跳过验签，仍需 token 解析身份），生产恒开启。
+统一产出 `AuthContext(user_id, role, request_id, token_id)`。`user_id` 取验签后的 `sub`；
+`request_id` 取 `X-Request-Id`，缺省时生成 `uuid4().hex`（见
+[recall_errors.py](../../src/application/recall_errors.py) `_request_id`）并回写响应头，用于贯穿日志。
+
+access JWT 有效期为 2 小时，可在到期前复用。Python 不实现 `jti` 撤销，因此 Java logout 不会让
+Python 侧立即失效，最迟在 `exp` 时失效；用户禁用和角色降级通过共享数据库实时生效。
 
 ## 4. 身份与授权一致性（scope 校验）
 
-握手前在各路由的 `_resolve_dataset_ids`（[rag.py](../../src/api/routes/rag.py) /
-[recall.py](../../src/api/routes/recall.py)）完成：
+新 access JWT 不携带资源列表。RAG/Recall 在握手前通过
+[dataset_scope.py](../../src/core/storage/dataset_scope.py) 实时查询共享数据库：
 
-- body 省略 / 空 `dataset_ids` → 用 claims 全量授权范围（claims 也空表示 Java 已授权全库，
-  交由 pipeline 全库召回）。
-- body 指定子集 → 必须 ⊆ claims 授权范围，否则 `403 RECALL_SCOPE_FORBIDDEN`。
+- body 省略 / 空 `dataset_ids` → 返回当前用户全部 ACTIVE、未删除数据集；
+- body 指定集合 → 每个 ID 都必须属于当前用户且 ACTIVE、未删除，否则整体返回
+  `403 RECALL_SCOPE_FORBIDDEN`，不返回部分结果。
 
 下传 pipeline 的 `user_id` 始终取 claims `sub`，不信任 body 自报值（body 不含 `user_id`）。
 
@@ -78,8 +78,8 @@ Wiki 还支持可选 `doc_ids`：只传文档时，服务端从已完整校验�
 
 ## 5. 请求装配与执行
 
-两端点握手前都做：JWT 校验 → JSON 解析 + Pydantic 校验（`extra=forbid`）→ `query` 空白 → 400 →
-scope 校验。RAG 流额外要求 `config_id`（缺失 → 422）并在建流前做并发 acquire；纯召回请求体出现
+两端点握手前都做：JWT 校验 → 当前用户校验（access JWT）→ JSON 解析 + Pydantic 校验（`extra=forbid`）→
+`query` 空白 → 400 → scope 校验。RAG 流额外要求 `config_id`（缺失 → 422）并在建流前做并发 acquire；纯召回请求体出现
 `config_id` 即视为未知字段 → 422，且不限流。任一握手前失败走 HTTP JSON 错误。
 
 通过后读取数据集级 `recall_config`（多数据集混合取首个 dataset，空数据集回退系统默认）并组装
@@ -123,16 +123,16 @@ frozen weighted score 或旧 rerank。LTR 输出固定 Top10；旧 rerank 不可
 仅载体由 SSE `error` 帧变为 HTTP 状态码）。`recall_serialization.py`（两个序列化函数）
 与错误码常量（[recall_errors.py](../../src/application/recall_errors.py) `CODE_*`）是两条链路的单一来源；异常→错误码的
 **映射**则按载体各实现一份（SSE 帧 vs HTTP 状态码），用同一套 `CODE_*` 常量保证两端错误码一致。
-`dataset_ids` scope 授权校验亦抽为单一来源 `recall_session_auth.resolve_dataset_scope`，两端点共用。
+access JWT 的 `dataset_ids` 授权校验统一由 `dataset_scope.resolve_user_dataset_scope` 完成。
 
 `top_k`（融合候选池）、三路 per-route top_k、`sources` / `strict` 由配置而非请求决定，因此
 pipeline 与各路 retriever 都是无用户态的长期实例。
 
 ## 6. 并发限流
 
-**仅 RAG 流**限流：[recall_session_auth.py](../../src/api/recall_session_auth.py) 的
+**仅 RAG 流**限流：[recall_concurrency.py](../../src/api/recall_concurrency.py) 的
 `acquire_stream_slot` / `release_stream_slot` 按 `user_id` 用 Redis `INCR/DECR` 计数，上限
-`RECALL_SESSION_MAX_CONCURRENT`，超限 `429 RECALL_RATE_LIMITED`。`_guarded_stream` 在流收尾
+`RAG_MAX_CONCURRENT_PER_USER`，超限 `429 RECALL_RATE_LIMITED`。`_guarded_stream` 在流收尾
 （含断连 `CancelledError`）的 `finally` 中释放名额。握手顺序：验签 → body 校验 → scope →
 并发 acquire → 建流。Redis 不可用时 acquire **fail-open**（限流是资源保护非鉴权）。
 **纯召回 JSON 不做并发限流**（不调 `acquire_stream_slot`）。

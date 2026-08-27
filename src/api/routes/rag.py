@@ -1,16 +1,16 @@
 """对外 RAG 问答流 SSE 路由（LINK-131）。
 
-端点：``POST /api/v1/rag/stream``（面向**浏览器前端**）。前端凭 Java 签发的短期
-session token 直连，绕过 Java 中转。承接完整 RAG 行为：召回 → 候选融合 → rerank 精排
+端点：``POST /api/v1/rag/stream``（面向**浏览器前端**）。前端凭 Java 登录签发的
+access JWT 直连。承接完整 RAG 行为：召回 → 候选融合 → rerank 精排
 （不可用即降级当前融合顺序）→ 正文回填 → 上下文组装 → CHAT 模型流式生成。
 
 由旧端点 ``POST /api/v1/recall/stream``（``routes/recall_direct.py``）改名搬迁而来：
 「召回 = stream」的旧契约语义不再扩散，SSE 的合理性来自 LLM 生成阶段。
 
 握手顺序（全部在建流前，失败走 HTTP JSON）：
-1. ``verify_session_token`` 依赖：独立密钥验签 + iss/aud/scope/exp；
+1. ``verify_user_token`` 依赖：access JWT 公钥验签并查询当前用户；
 2. 解析并校验请求体（``extra=forbid``，无 ``user_id``，``config_id`` 必填）；query 空白 → 400；
-3. scope：body ``dataset_ids`` 必须是 claims 授权范围子集（省略 = 全量授权范围）；
+3. scope：按当前数据库中的数据集归属解析；
 4. 并发 acquire：按 ``user_id`` 限并发流数，超限 → 429。
 
 通过后建流，SSE 执行复用 ``recall_stream_runtime``。
@@ -28,13 +28,12 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.recall_session_auth import (
-    SessionAuthContext,
+from src.api.java_access_auth import AuthContext, verify_user_token
+from src.api.recall_concurrency import (
     acquire_stream_slot,
     release_stream_slot,
-    resolve_dataset_scope,
-    verify_session_token,
 )
 from src.application.recall_errors import (
     CODE_DATASET_MODEL_BINDING_REQUIRED,
@@ -57,6 +56,8 @@ from src.core.llm.exceptions import (
 from src.core.pipeline.ltr.candidate_routing import FROZEN_OUTPUT_TOP_N
 from src.core.pipeline.recall import RecallPipeline, RecallRequest
 from src.core.pipeline.rerank import PostRecallReranker
+from src.core.storage.dataset_scope import resolve_user_dataset_scope
+from src.database import get_db
 
 router = APIRouter(prefix="/api/v1/rag", tags=["rag"])
 
@@ -234,13 +235,18 @@ async def _sse_consumer(channel: _StreamChannel) -> AsyncGenerator[str, None]:
 @router.post("/stream")
 async def rag_stream(
     request: Request,
-    ctx: SessionAuthContext = Depends(verify_session_token),
+    ctx: AuthContext = Depends(verify_user_token),
     pipeline: RecallPipeline = Depends(get_recall_pipeline),
     reranker: PostRecallReranker = Depends(get_reranker),
+    db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     """对外 RAG 问答流 SSE 入口。"""
     body = await _parse_and_validate_body(request)
-    dataset_ids = resolve_dataset_scope(body.dataset_ids, ctx)
+    dataset_ids = await resolve_user_dataset_scope(
+        db,
+        user_id=ctx.user_id,
+        requested_dataset_ids=body.dataset_ids,
+    )
 
     # 数据集级 recall 配置在建流前读出（短 session），把融合候选池 / per-route top_k /
     # 阈值 / 融合策略 / token 预算固化为普通值带进流，避免 SSE 生成器执行期再触 DB。

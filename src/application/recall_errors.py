@@ -1,8 +1,8 @@
 """召回 API 的共享错误类型与错误码。
 
-外部用户态 Recall API 归属 Java（复用 Sa-Token + dataset/doc 归属校验）；Python 暴露
-对外 RAG 问答流 ``/api/v1/rag/stream`` 与纯召回 JSON ``/api/v1/recall``（鉴权见
-``src/api/recall_session_auth``）。本模块提供两条召回链路共用的：
+Java 负责唯一登录和 access token 签发；Python 独立验签后暴露对外 RAG 问答流
+``/api/v1/rag/stream`` 与纯召回 JSON ``/api/v1/recall``（鉴权见
+``src/api/java_access_auth``）。本模块提供：
 
 - ``RecallApiError``：握手前错误的统一类型，由 ``src/main.py`` 注册的异常处理器
   序列化为 ``{code, message, data}`` JSON + 对应 HTTP 状态。
@@ -24,8 +24,8 @@ CODE_INTERNAL_ERROR = "RECALL_INTERNAL_ERROR"
 # 发起用户无默认 EMBEDDING 配置：dense 召回无法编码 query，整请求硬失败。
 CODE_EMBEDDING_CONFIG_MISSING = "RECALL_EMBEDDING_CONFIG_MISSING"
 CODE_DATASET_MODEL_BINDING_REQUIRED = "DATASET_MODEL_BINDING_REQUIRED"
-# 对外直连 SSE（LINK-40）专属错误码。
-CODE_SESSION_UNAUTHORIZED = "RECALL_SESSION_UNAUTHORIZED"
+# Java access token 验证失败；供所有 Python 用户态接口复用。
+CODE_ACCESS_TOKEN_UNAUTHORIZED = "ACCESS_TOKEN_UNAUTHORIZED"
 CODE_RATE_LIMITED = "RECALL_RATE_LIMITED"
 # 召回后 LLM 生成（recall-answer-generation）：
 # 前置模型校验失败——所选 config_id 不属于本用户 / 非 CHAT 能力 / 已停用 / 不存在；

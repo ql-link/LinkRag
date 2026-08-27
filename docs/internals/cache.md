@@ -55,4 +55,4 @@ LLM 运行缓存只做 `config_id -> RuntimeModelConfig` 物理行快照，不�
 4. 用户密钥在 DB 与 LLM runtime cache 中均为密文，只在构造 provider 前解密，不记录日志。
 
 两类缓存共用 `FencedJsonCacheStore` 的 Redis 原子实现，但各自拥有独立 key 家族、TTL 和开关。
-`src/api/recall_session_auth.py` 的并发槽计数也是独立能力，不得使用宽泛删除或清空整库。
+`src/api/recall_concurrency.py` 的并发槽计数也是独立能力，不得使用宽泛删除或清空整库。

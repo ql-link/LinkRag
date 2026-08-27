@@ -481,7 +481,10 @@ def _when_route_maps_dataset_config(weighted_fusion_state: _State, monkeypatch) 
         weighted_fusion_state.captured_request = recall_req
         return {"hits": [], "failed_sources": []}
 
-    monkeypatch.setattr(recall, "resolve_dataset_scope", lambda _body_ids, _ctx: [10])
+    async def _dataset_scope(_db, *, user_id, requested_dataset_ids):
+        return [10]
+
+    monkeypatch.setattr(recall, "resolve_user_dataset_scope", _dataset_scope)
     monkeypatch.setattr(recall, "aresolve_recall_execution", _recall_execution)
     monkeypatch.setattr(recall, "run_recall_json", _run_recall_json)
     ctx = SimpleNamespace(user_id=123, request_id="rid")
@@ -518,7 +521,7 @@ def _then_request_dense(weighted_fusion_state: _State, value: float) -> None:
     )
 
 
-@given("session token claims sub=123 dataset_ids=[1] 合法未过期")
+@given("Java access token 对应用户 sub=123 dataset_ids=[1] 有效")
 def _given_http_claims() -> None:
     return None
 

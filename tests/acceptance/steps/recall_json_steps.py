@@ -12,16 +12,16 @@ teardown 还原被改写的 settings、清空 dependency_overrides。
 from __future__ import annotations
 
 import asyncio
-import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
-import jwt
 import pytest
 from fastapi.testclient import TestClient
 from pytest_bdd import given, parsers, then, when
 
+from src.api.java_access_auth import AuthContext, verify_user_token
 from src.api.routes import recall
+from src.application.recall_errors import CODE_SCOPE_FORBIDDEN, RecallApiError
 from src.application.recall_pipeline_provider import get_recall_pipeline
 from src.config import settings
 from src.core.dataset_config.models import RecallConfig
@@ -104,9 +104,20 @@ def recall_json_state(monkeypatch):
         return recall_cfg, contexts
 
     monkeypatch.setattr(recall, "aresolve_recall_execution", _recall_execution)
+
+    async def _dataset_scope(_db, *, user_id: int, requested_dataset_ids):
+        owned = set(state.claims.get("dataset_ids", []))
+        if requested_dataset_ids:
+            if not set(requested_dataset_ids) <= owned:
+                raise RecallApiError(403, CODE_SCOPE_FORBIDDEN, "dataset scope is not authorized")
+            return list(requested_dataset_ids)
+        return sorted(owned)
+
+    monkeypatch.setattr(recall, "resolve_user_dataset_scope", _dataset_scope)
     yield state
     state.restore()
     app.dependency_overrides.pop(get_recall_pipeline, None)
+    app.dependency_overrides.pop(verify_user_token, None)
 
 
 # ---------------------------------------------------------------------------
@@ -115,15 +126,7 @@ def recall_json_state(monkeypatch):
 
 
 def _make_token(state: _State) -> str:
-    payload = {
-        "iss": settings.RECALL_SESSION_JWT_ISSUER,
-        "aud": settings.RECALL_SESSION_JWT_AUDIENCE,
-        "scope": settings.RECALL_SESSION_JWT_SCOPE,
-        "sub": state.claims.get("sub", "123"),
-        "dataset_ids": state.claims.get("dataset_ids", [1, 2]),
-        "exp": int(time.time()) + 300,
-    }
-    return jwt.encode(payload, settings.RECALL_SESSION_JWT_SECRET, algorithm="HS256")
+    return "java-access-token-for-acceptance"
 
 
 def _parse_ds(text: str) -> list[int]:
@@ -135,7 +138,12 @@ def _fire(state: _State, *, with_token: bool) -> None:
     app.dependency_overrides[get_recall_pipeline] = lambda: state.fake
     headers = {}
     if with_token:
+        app.dependency_overrides[verify_user_token] = lambda: AuthContext(
+            user_id=int(state.claims.get("sub", "123")), request_id="recall-json-acceptance"
+        )
         headers["Authorization"] = f"Bearer {_make_token(state)}"
+    else:
+        app.dependency_overrides.pop(verify_user_token, None)
     client = TestClient(app)
     state.response = client.post(URL, json=state.body, headers=headers)
 
@@ -156,11 +164,6 @@ def _set_config(recall_json_state, name, value):
     recall_json_state.set_setting(name, casted)
 
 
-@given(parsers.re(r"配置 session token 的 (?P<name>[A-Z_]+)=(?P<value>.+)"))
-def _set_session_config(recall_json_state, name, value):
-    recall_json_state.set_setting(name, value)
-
-
 @given(parsers.parse("服务端已装配 bm25 与 sparse 两路 retriever"))
 def _two_sources(recall_json_state):
     pass
@@ -171,7 +174,7 @@ def _two_sources(recall_json_state):
 # ---------------------------------------------------------------------------
 
 
-@given(parsers.re(r"session token claims sub=(?P<sub>\d+).*dataset_ids=\[(?P<ds>[^\]]*)\].*"))
+@given(parsers.re(r"Java access token 对应用户 sub=(?P<sub>\d+).*dataset_ids=\[(?P<ds>[^\]]*)\].*"))
 def _claims(recall_json_state, sub, ds):
     recall_json_state.claims = {"sub": sub, "dataset_ids": _parse_ds(ds)}
 

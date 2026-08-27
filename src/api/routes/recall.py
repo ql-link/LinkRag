@@ -4,14 +4,14 @@
 **不调 CHAT 模型、不回填 chunk 正文、不建立 SSE、不做并发限流**。当前阶段为接口
 预留实现，前端暂不真正接入。
 
-与 RAG 问答流（``routes/rag.py``）共用 session token 鉴权与 dataset scope 校验；
+与 RAG 问答流（``routes/rag.py``）共用 Java access token 鉴权与 dataset scope 校验；
 关键差异：不要求 ``config_id``、出现 ``config_id`` 即 422、返回 ``application/json``、
 执行期错误走 HTTP 状态码（由 ``recall_json_runtime`` 抛 ``RecallApiError``）而非 SSE error 帧。
 
 握手顺序（全部失败走 HTTP JSON）：
-1. ``verify_session_token`` 依赖：独立密钥验签 + iss/aud/scope/exp；
+1. ``verify_user_token`` 依赖：access JWT 公钥验签并查询当前用户；
 2. 解析并校验请求体（``extra=forbid``，仅 ``query`` + 可选 ``dataset_ids``）；query 空白 → 400；
-3. scope：body ``dataset_ids`` 必须是 claims 授权范围子集（省略 = 全量授权范围）。
+3. scope：按当前数据库中的数据集归属解析。
 
 身份只取 claims，前端自报一律不信任；``top_k`` / ``sources`` / ``strict`` / 融合策略由服务端配置控制。
 返回 hits 结构与 RAG 流的 ``recall_done`` 帧 payload 同构。
@@ -24,12 +24,9 @@ import json
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.recall_session_auth import (
-    SessionAuthContext,
-    resolve_dataset_scope,
-    verify_session_token,
-)
+from src.api.java_access_auth import AuthContext, verify_user_token
 from src.application.recall_errors import (
     CODE_DATASET_MODEL_BINDING_REQUIRED,
     CODE_INVALID_REQUEST,
@@ -41,11 +38,13 @@ from src.application.recall_pipeline_provider import (
     build_recall_request_from_config,
     get_recall_pipeline,
 )
-from src.core.pipeline.recall import RecallPipeline
 from src.core.llm.exceptions import (
     DatasetModelBindingRequiredError,
     LLMConfigResolutionError,
 )
+from src.core.pipeline.recall import RecallPipeline
+from src.core.storage.dataset_scope import resolve_user_dataset_scope
+from src.database import get_db
 
 router = APIRouter(prefix="/api/v1/recall", tags=["recall"])
 
@@ -86,23 +85,24 @@ async def _parse_and_validate_body(request: Request) -> RecallJsonRequest:
 @router.post("")
 async def recall_json(
     request: Request,
-    ctx: SessionAuthContext = Depends(verify_session_token),
+    ctx: AuthContext = Depends(verify_user_token),
     pipeline: RecallPipeline = Depends(get_recall_pipeline),
+    db: AsyncSession = Depends(get_db),
 ) -> JSONResponse:
     """对外纯召回 JSON 入口。"""
     body = await _parse_and_validate_body(request)
-    dataset_ids = resolve_dataset_scope(body.dataset_ids, ctx)
+    dataset_ids = await resolve_user_dataset_scope(
+        db,
+        user_id=ctx.user_id,
+        requested_dataset_ids=body.dataset_ids,
+    )
 
     # 与 RAG 流入口一致：融合候选池 / per-route top_k / 分数阈值 / 融合策略取数据集级
     # recall 配置（多数据集取首个，空则系统默认）。
     try:
-        recall_cfg, dataset_contexts = await aresolve_recall_execution(
-            ctx.user_id, dataset_ids
-        )
+        recall_cfg, dataset_contexts = await aresolve_recall_execution(ctx.user_id, dataset_ids)
     except DatasetModelBindingRequiredError as exc:
-        raise RecallApiError(
-            409, CODE_DATASET_MODEL_BINDING_REQUIRED, str(exc)
-        ) from exc
+        raise RecallApiError(409, CODE_DATASET_MODEL_BINDING_REQUIRED, str(exc)) from exc
     except LLMConfigResolutionError as exc:
         raise RecallApiError(exc.http_status, exc.code, str(exc)) from exc
 

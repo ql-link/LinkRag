@@ -127,11 +127,11 @@ CODE: 中文业务原因；底层详情
 
 | 场景 | HTTP | code |
 | --- | --- | --- |
-| 缺失 / 验签 / iss / aud / scope / exp 失败、用非 session 密钥签发的 token | `401` | `RECALL_SESSION_UNAUTHORIZED` |
-| `dataset_ids` 超出 token 授权范围 | `403` | `RECALL_SCOPE_FORBIDDEN` |
+| token 缺失；RS256 签名、iss、aud、token_use、exp、iat、sub、jti 失败；当前用户不存在或已禁用 | `401` | `ACCESS_TOKEN_UNAUTHORIZED` |
+| `dataset_ids` 不属于当前用户、非 ACTIVE 或已删除 | `403` | `RECALL_SCOPE_FORBIDDEN` |
 | JSON 非法 / 缺字段 / 类型错 / 出现未知字段（含 `user_id`；纯召回端点的 `config_id` 亦属未知字段；RAG 流缺 `config_id`） | `422` | `RECALL_INVALID_REQUEST` |
 | `query` 为空或纯空白 | `400` | `RECALL_INVALID_REQUEST` |
-| 单用户并发流数超过 `RECALL_SESSION_MAX_CONCURRENT`（**仅 RAG 流**；纯召回不限流） | `429` | `RECALL_RATE_LIMITED` |
+| 单用户并发流数超过 `RAG_MAX_CONCURRENT_PER_USER`（**仅 RAG 流**；纯召回不限流） | `429` | `RECALL_RATE_LIMITED` |
 
 **RAG 流握手后**（pipeline 执行期 / 召回前置 / 生成阶段）→ SSE `error` 事件，发送后关闭流：
 
@@ -163,11 +163,11 @@ CODE: 中文业务原因；底层详情
 
 ### 5.1 Wiki 端点错误映射
 
-四个 `/api/v1/wiki/**` 端点复用相同 session token 与 `{code,message,data}` 错误体：
+四个 `/api/v1/wiki/**` 端点复用相同 Java access token 与 `{code,message,data}` 错误体：
 
 | 场景 | HTTP | code |
 | --- | --- | --- |
-| token 缺失、无效或过期 | `401` | `RECALL_SESSION_UNAUTHORIZED` |
+| token 缺失、无效或过期 | `401` | `ACCESS_TOKEN_UNAUTHORIZED` |
 | dataset/doc/chunk/heading 越权，或资源非当前就绪/ACTIVE 版本 | `403` | `RECALL_SCOPE_FORBIDDEN` |
 | query 空白 | `400` | `RECALL_INVALID_REQUEST` |
 | JSON/字段/path 非法，游标格式、签名、10 分钟有效期、分支或指纹不符 | `422` | `RECALL_INVALID_REQUEST` |

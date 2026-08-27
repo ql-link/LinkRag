@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ValidationError
 
-from src.api.recall_session_auth import SessionAuthContext, verify_session_token
+from src.api.java_access_auth import AuthContext, verify_user_token
 from src.api.schemas.wiki import (
     WikiChunkLocationsRequest,
     WikiChunkLocationsResponse,
@@ -108,7 +108,7 @@ def _omit_optional_none(value: object) -> None:
 )
 async def search_wiki(
     request: Request,
-    ctx: SessionAuthContext = Depends(verify_session_token),
+    ctx: AuthContext = Depends(verify_user_token),
     runtime: WikiRuntime = Depends(get_wiki_runtime),
 ) -> JSONResponse:
     """在授权范围内执行标题优先、BM25 补充的 Wiki 搜索。"""
@@ -134,7 +134,7 @@ async def expand_heading_chunks(
     doc_id: str,
     heading_key: str,
     cursor: str | None = None,
-    ctx: SessionAuthContext = Depends(verify_session_token),
+    ctx: AuthContext = Depends(verify_user_token),
     runtime: WikiRuntime = Depends(get_wiki_runtime),
 ) -> JSONResponse:
     """分页读取指定标题的直属 Chunk，不递归进入子标题。"""
@@ -157,7 +157,7 @@ async def expand_heading_chunks(
 )
 async def locate_chunks(
     request: Request,
-    ctx: SessionAuthContext = Depends(verify_session_token),
+    ctx: AuthContext = Depends(verify_user_token),
     runtime: WikiRuntime = Depends(get_wiki_runtime),
 ) -> JSONResponse:
     """批量返回可见 Chunk 的全部直接标题路径。"""
@@ -177,7 +177,7 @@ async def locate_chunks(
 )
 async def get_document_tree(
     doc_id: str,
-    ctx: SessionAuthContext = Depends(verify_session_token),
+    ctx: AuthContext = Depends(verify_user_token),
     runtime: WikiRuntime = Depends(get_wiki_runtime),
 ) -> JSONResponse:
     """读取一篇授权且解析成功文档的完整 Wiki 标题树。"""
