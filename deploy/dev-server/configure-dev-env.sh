@@ -8,6 +8,9 @@ rag_secrets="$secrets_dir/rag.env"
 app_secrets="$secrets_dir/app.env"
 rag_config_dir="$dev_root/config/rag"
 service_config_dir="$dev_root/config/service"
+access_jwt_dir="$dev_root/config/auth"
+access_jwt_private_key="$access_jwt_dir/java-access-jwt-private.pem"
+access_jwt_public_key="$access_jwt_dir/java-access-jwt-public.pem"
 rag_local_config="$rag_config_dir/.env.development.local"
 service_local_config="$service_config_dir/application-dev-local.yml"
 rabbitmq_app_env="$dev_root/config/rabbitmq/app.env"
@@ -66,8 +69,16 @@ mineru_api_key=$(read_env_value "$rag_secrets" MINERU_API_KEY)
 [[ -n "$mineru_api_key" ]] || mineru_api_key=$(read_env_value "$legacy_rag_env" MINERU_API_KEY)
 
 install -d -m 700 "$secrets_dir"
-install -d -m 700 "$rag_config_dir" "$service_config_dir"
+install -d -m 700 "$rag_config_dir" "$service_config_dir" "$access_jwt_dir"
 umask 077
+
+if [[ ! -s "$access_jwt_private_key" ]]; then
+  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 \
+    -out "$access_jwt_private_key"
+fi
+openssl pkey -in "$access_jwt_private_key" -pubout -out "$access_jwt_public_key"
+chmod 600 "$access_jwt_private_key"
+chmod 644 "$access_jwt_public_key"
 
 rag_tmp=$(mktemp "$secrets_dir/rag.env.XXXXXX")
 {
@@ -89,6 +100,11 @@ rag_local_tmp=$(mktemp "$rag_config_dir/.env.development.local.XXXXXX")
   printf 'DB_USER=%s\n' "$DEV_MYSQL_USER"
   printf 'MINIO_ACCESS_KEY=%s\n' "$DEV_MINIO_ACCESS_KEY"
   printf 'RABBITMQ_URL=%s\n' "$rabbitmq_url"
+  printf 'JAVA_ACCESS_JWT_ENABLED=true\n'
+  printf 'JAVA_ACCESS_JWT_PUBLIC_KEY_PATH=/run/secrets/java-access-jwt-public.pem\n'
+  printf 'JAVA_ACCESS_JWT_ISSUER=tolink-java\n'
+  printf 'JAVA_ACCESS_JWT_AUDIENCE=tolink-rag-api\n'
+  printf 'JAVA_ACCESS_JWT_TOKEN_USE=access\n'
   cat "$rag_secrets"
 } >"$rag_local_tmp"
 mv "$rag_local_tmp" "$rag_local_config"
@@ -137,6 +153,15 @@ spring:
     username: {quoted(values['rabbitmq_username'])}
     password: {quoted(values['rabbitmq_password'])}
 tolink:
+  auth:
+    access-token:
+      enabled: true
+      private-key-path: /run/secrets/java-access-jwt-private.pem
+      issuer: tolink-java
+      audiences:
+        - tolink-java-api
+        - tolink-rag-api
+      ttl-seconds: 7200
   oss:
     minio:
       access-key: {quoted(values['minio_user'])}

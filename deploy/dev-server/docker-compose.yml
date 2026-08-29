@@ -156,6 +156,7 @@ services:
       - "${TAILSCALE_IP:-100.86.10.52}:${DEV_RAG_PORT:-18000}:8000"
     volumes:
       - ${RAG_LOG_PATH:-/opt/tolink/dev/toLink-Rag/logs}:/app/logs
+      - /opt/tolink/dev/config/auth/java-access-jwt-public.pem:/run/secrets/java-access-jwt-public.pem:ro
     networks: [tolink-dev-net]
     depends_on:
       mysql: {condition: service_healthy}
@@ -190,6 +191,7 @@ services:
     volumes:
       - ${SERVICE_DEV_CONFIG_DIR:-/opt/tolink/dev/config/service}:/app/config:ro
       - ${SERVICE_LOG_PATH:-/opt/tolink/dev/toLink-Service/logs}:/app/logs
+      - /opt/tolink/dev/config/auth/java-access-jwt-private.pem:/run/secrets/java-access-jwt-private.pem:ro
     networks: [tolink-dev-net]
     depends_on:
       mysql: {condition: service_healthy}
