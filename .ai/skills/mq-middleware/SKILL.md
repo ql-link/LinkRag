@@ -28,19 +28,20 @@ when_to_use: "当用户要求接入 Kafka/RabbitMQ、发送或订阅消息、新
 - `src/core/mq/vendors/kafka/kafka_adapter.py`：Kafka 厂商适配器，底层封装 `aiokafka`，保持 Topic、ConsumerGroup、Offset 语义，消费成功后手动提交 offset。
 - `src/core/mq/vendors/kafka/topic_admin.py`：Kafka Topic Admin 实现，供 Kafka Topic 管理流程使用。
 - `src/core/mq/vendors/rabbitmq_adapter.py`：RabbitMQ 厂商适配器，底层封装 `aio-pika`；统一声明 durable Queue + `<queue>.DLX` + `<queue>.DLT`，发送侧启用 publisher confirms/mandatory return，消费侧使用手动 ACK/NACK。默认交换器始终按 Queue 名路由，Kafka key 仅保留为 `message_id`。
-- `src/core/mq/consumers/`：消息消费回调实现；当前文档解析消费者位于 `src/core/mq/consumers/parse_task_consumer.py`，启动入口为 `start_parse_consumer()`。
+- `src/core/mq/consumers/`：消息消费回调实现；当前解析与删除消费者分别位于 `parse_task_consumer.py`、`document_delete_consumer.py`，由 `src/main.py` 订阅。
 - `src/core/mq/topic_admin.py`：应用启动阶段可调用的 Kafka Topic Admin 逻辑，当前由 `src/main.py` 在 `MQ_VENDOR=kafka` 且 `INIT_KAFKA_TOPICS_ON_STARTUP=true` 时调用。
 
-当前已落地的 MQ 业务消息有 4 类：
+当前运行中的 MQ 业务消息有 2 类，另保留 2 类历史兼容定义：
 - `src/core/mq/messages/parse_task.py`：`ParseTaskMessage` / `ParseTaskPayload`，Topic 为 `tolink.rag.parse_task`，用于文档解析任务投递。
 - `src/core/mq/messages/document_delete.py`：`DocumentDeleteMessage` / `DocumentDeletePayload`，Topic 为 `tolink.rag.document_delete`，用于清理解析域衍生产物。
-- `src/core/mq/messages/token_usage.py`：`TokenUsageMessage` / `TokenUsagePayload`，Topic 为 `tolink.rag.usage_report`，用于 LLM 用量上报。
-- `src/core/mq/messages/chat_turn.py`：`ChatTurnMessage` / `ChatTurnPayload`，Topic 为 `tolink.rag.chat_turn`，用于向 Java 上报对话轮次内容。
+- `src/core/mq/messages/token_usage.py`：旧 `TokenUsageMessage` / `TokenUsagePayload`，B7 后仅保留兼容定义；用量由 Python 直接写库，不再发送该 Topic。
+- `src/core/mq/messages/chat_turn.py`：旧 `ChatTurnMessage` / `ChatTurnPayload`，B6 后仅保留兼容定义；RAG 轮次由 Python 直接写库，不再发送该 Topic。
 
 当前应用启动流程中的 MQ 行为：
 - `src/main.py` lifespan 中会初始化 Redis、数据库后进入 MQ 初始化逻辑。
 - 当 `settings.MQ_VENDOR.lower() == "kafka"` 且 `settings.INIT_KAFKA_TOPICS_ON_STARTUP` 为 `true` 时，调用 `src/core/mq/topic_admin.py::ensure_topics()`。
 - 当前组合根订阅 `parse_task` 与 `document_delete` 两个消费者，然后统一启动 `MQService` 消费。
+- Kafka 自动建 Topic 只包含 `parse_task`、`document_delete` 及各自 DLT；旧 `usage_report` / `chat_turn` Topic 不由应用自动删除。
 - 当 `MQ_VENDOR=rabbitmq` 时，Sender/Receiver 使用相同 Queue/DLX/DLT 参数幂等声明拓扑；不依赖 `rabbitmq_delayed_message_exchange` 插件。
 
 不要把消息模型拆成 `payload.py` / `message.py` 两个文件，也不要把 HTTP DTO 放进 `src/core/mq/messages/`。

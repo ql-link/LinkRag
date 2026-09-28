@@ -5,7 +5,7 @@
 断连不再产生 partial / turn_id 透传 / 发送容错（不阻塞用户流）。
 
 直接驱动 ``_generate_answer``，用假 provider 模拟流式生成，patch 模块内
-``MQService`` 捕获发出的 ChatTurnMessage。
+``persist_chat_turn`` 捕获直接写入的 ChatTurnPayload。
 """
 
 from __future__ import annotations
@@ -56,13 +56,7 @@ def _resolved(provider):
     )
 
 
-class _CapturingMQ:
-    """patch 进模块的假 MQService，把 send 的消息收集到类级列表。"""
-
-    sent = []
-
-    async def send(self, msg):
-        _CapturingMQ.sent.append(msg)
+_PERSISTED: list = []
 
 
 # generate token 用量改走 report_usage_nowait（与 chat_turn 解耦，LINK-191）；
@@ -72,9 +66,20 @@ _USAGE_REPORTS: list[dict] = []
 
 @pytest.fixture(autouse=True)
 def _patch_mq(monkeypatch):
-    _CapturingMQ.sent = []
+    _PERSISTED.clear()
     _USAGE_REPORTS.clear()
-    monkeypatch.setattr(rt, "MQService", _CapturingMQ)
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def fake_transaction():
+        yield object()
+
+    async def fake_persist(_db, payload):
+        _PERSISTED.append(payload)
+        return True
+
+    monkeypatch.setattr(rt, "write_transaction", fake_transaction)
+    monkeypatch.setattr(rt, "persist_chat_turn", fake_persist)
     monkeypatch.setattr(rt, "report_usage_nowait", lambda **kw: _USAGE_REPORTS.append(kw))
     yield
 
@@ -165,7 +170,7 @@ async def _drain(gen):
 
 
 def _payloads():
-    return [m.get_payload() for m in _CapturingMQ.sent]
+    return list(_PERSISTED)
 
 
 # --------- 场景 ---------
@@ -199,7 +204,7 @@ async def test_success_emits_chat_turn_with_usage_and_references():
     assert data["usage"]["total_tokens"] == 200
 
     # chat_turn 只承载对话内容，不再带 token（LINK-191）
-    assert len(_CapturingMQ.sent) == 1
+    assert len(_PERSISTED) == 1
     p = _payloads()[0]
     assert p.status == "COMPLETED"
     assert p.turn_id == "t-1"
@@ -277,7 +282,7 @@ async def test_client_disconnect_no_longer_emits_partial():
         await _drain(gen)
 
     # 不再发 partial（也不发任何终态）：CancelledError 直接传播
-    assert _CapturingMQ.sent == []
+    assert _PERSISTED == []
 
 
 async def test_empty_hits_emits_completed_placeholder():
@@ -286,7 +291,7 @@ async def test_empty_hits_emits_completed_placeholder():
     events = await _drain(gen)
     assert any(e.startswith("event: recall_done") for e in events)
 
-    assert len(_CapturingMQ.sent) == 1
+    assert len(_PERSISTED) == 1
     p = _payloads()[0]
     assert p.status == "COMPLETED"
     assert p.turn_id == "t-5"
@@ -411,25 +416,19 @@ async def test_first_turn_generation_failure_persists_fallback_title():
     assert p.title == fallback and fallback
 
 
-async def test_send_failure_does_not_break_stream():
-    # Scenario: 轮次消息发送失败仅告警不影响 SSE 答案返回
-    class _FailingMQ:
-        async def send(self, msg):
-            raise RuntimeError("mq down")
+async def test_persist_failure_does_not_break_stream(monkeypatch):
+    # 数据库写入失败不阻断已经生成的 SSE 答案。
+    async def failing_persist(_db, _payload):
+        raise RuntimeError("database down")
 
-    import src.application.recall_stream_runtime as mod
-
-    mod.MQService = _FailingMQ  # type: ignore[assignment]
-    try:
-        gen = _gen(
-            _resolved(_FakeProvider([StreamChunk(delta="答案")])),
-            _hits(),
-            True,
-            _contents(),
-            _recall_req(),
-            "req-6",
-        )
-        events = await _drain(gen)
-        assert any(e.startswith("event: answer_done") for e in events)
-    finally:
-        mod.MQService = _CapturingMQ  # 还原（autouse fixture 下轮会再 patch）
+    monkeypatch.setattr(rt, "persist_chat_turn", failing_persist)
+    gen = _gen(
+        _resolved(_FakeProvider([StreamChunk(delta="答案")])),
+        _hits(),
+        True,
+        _contents(),
+        _recall_req(),
+        "req-6",
+    )
+    events = await _drain(gen)
+    assert any(e.startswith("event: answer_done") for e in events)

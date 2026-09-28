@@ -45,6 +45,8 @@ Java 签发的旧令牌尚在有效期内时，继续保留 Java 会话桥接和
 | --- | --- |
 | `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` | MySQL 连接 |
 | `REDIS_HOST` / `REDIS_PORT` | Redis 连接 |
+| `LOKI_BASE_URL` | B8 管理日志代理访问的内网 Loki 地址，默认 `http://localhost:3100`；不由请求方指定。 |
+| `B8_DOCUMENT_CONFIG_WRITES_ENABLED` | B8 上传配置写入切流开关，默认关闭；Java 配置写入退场且默认指纹对齐后才启用。 |
 | `API_KEY_ENCRYPTION_SECRET` | API Key 加密 Secret，必须与 Java 管理端一致；64 位 hex，解码后 32 字节，用于 AES-256-GCM |
 | `LLM_RUNTIME_CACHE_ENABLED` / `LLM_RUNTIME_CACHE_TTL_SECONDS` | 全局 `config_id` runtime cache 开关与 TTL |
 | `DATASET_PARSE_CONFIG_CACHE_ENABLED` / `DATASET_PARSE_CONFIG_CACHE_TTL_SECONDS` | `dataset_parse_config` 共享原始快照开关与 TTL；默认关闭，正常值默认 7 天 |

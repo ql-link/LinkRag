@@ -45,6 +45,7 @@ toLink-Rag/                         # 仓库根目录
 │   │   ├── recall_pipeline.md
 │   │   ├── recall_generation.md
 │   │   ├── recall_http_api.md
+│   │   ├── b6_b8_migration.md
 │   │   ├── file_parser.md
 │   │   ├── markdown_parser.md
 │   │   ├── chunking.md

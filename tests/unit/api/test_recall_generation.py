@@ -31,15 +31,19 @@ from src.core.pipeline.rerank import RerankedHit, RerankResponse
 
 @pytest.fixture(autouse=True)
 def _stub_chat_turn_mq(monkeypatch):
-    """隔离对话轮次落库通知：生成终态会发 ChatTurnMessage，这里用无操作 MQ 替身，
-    避免单测触达真实 MQ（chat-message-persistence）。旧 rerank 用例显式固定在 off 模式，
-    LTR 模式用例再按各自目标覆盖。"""
+    """隔离 B6 本地轮次写入；LTR 模式用例按各自目标覆盖。"""
 
-    class _NoopMQ:
-        async def send(self, msg):
-            return None
+    from contextlib import asynccontextmanager
 
-    monkeypatch.setattr(rt, "MQService", _NoopMQ)
+    @asynccontextmanager
+    async def no_transaction():
+        yield object()
+
+    async def no_persist(_db, _payload):
+        return True
+
+    monkeypatch.setattr(rt, "write_transaction", no_transaction)
+    monkeypatch.setattr(rt, "persist_chat_turn", no_persist)
     monkeypatch.setattr(settings, "RECALL_LTR_MODE", "off")
 
 

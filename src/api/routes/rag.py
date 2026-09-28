@@ -31,6 +31,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.java_access_auth import AuthContext, verify_user_token
+from src.api.management_http import BusinessError
+from src.application.chat_service import owned_conversation
 from src.api.recall_concurrency import (
     acquire_stream_slot,
     release_stream_slot,
@@ -81,11 +83,11 @@ class RagStreamRequest(BaseModel):
     config_id: int = Field(..., gt=0)
     conversation_id: int
     # turn_id：前端每轮生成的稳定 UUID，断连重连不变，作落库幂等键（贯穿 GENERATING 起点与
-    # 终态，Java 据此 upsert 同一行）。必填——缺失 → 422 RECALL_INVALID_REQUEST。
+    # 终态，Python 据此 upsert 同一行）。必填——缺失 → 422 RECALL_INVALID_REQUEST。
     turn_id: str
     # is_first_turn：是否会话首条用户消息。前端在新建会话首问时置 true，触发 Python 基于
     # query 生成会话标题（随 chat_turn.title 上报 + SSE conversation_title 即时回前端）。
-    # 仅作生成开关；省不省钱由它决定，正确性由 Java「空/默认才写」兜底。默认 false 兼容老前端。
+    # 仅作生成开关；正确性由本地落库的「空/默认才写」保护。默认 false 兼容老前端。
     is_first_turn: bool = False
     dataset_ids: list[int] | None = None
 
@@ -247,6 +249,12 @@ async def rag_stream(
         user_id=ctx.user_id,
         requested_dataset_ids=body.dataset_ids,
     )
+    try:
+        conversation = await owned_conversation(db, ctx.user_id, body.conversation_id)
+    except BusinessError as exc:
+        raise RecallApiError(404, "CONVERSATION_NOT_FOUND", exc.message) from exc
+    if conversation.dataset_id not in dataset_ids:
+        raise RecallApiError(403, "CONVERSATION_DATASET_FORBIDDEN", "对话数据集不在本次请求范围内")
 
     # 数据集级 recall 配置在建流前读出（短 session），把融合候选池 / per-route top_k /
     # 阈值 / 融合策略 / token 预算固化为普通值带进流，避免 SSE 生成器执行期再触 DB。

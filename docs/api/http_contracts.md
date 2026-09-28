@@ -46,6 +46,21 @@
 
 B5 解析和删除消息使用 0041 `management_mq_outbox` 同事务记账，再由现有 `MQService` 投递；Broker 确认不确定时可能按同一业务 ID 重发。目标环境未执行 0040/0041、未配内部文件 token/URL 或旧 Java 仍写同一路径时，不能打开对应写入开关。状态与缺口见[迁移进度](../internals/java_python_migration_progress.md)。
 
+### B6–B8 新接入路由（待 Dev 对照与切流）
+
+这些路由使用 F0 的 `{code,message,data}` 响应和 B1 登录态；对话与用量只按当前登录用户查询，管理运维只允许 `ADMIN`。
+
+| 范围 | 路径 | 行为 |
+| --- | --- | --- |
+| B6 会话 | `POST/GET /api/v1/chat/conversations`、`GET /api/v1/chat/conversations/{id}/messages`、`PATCH/DELETE /api/v1/chat/conversations/{id}` | 创建、分页、标题/置顶更新和删除；轮次由 RAG 运行时直接持久化。 |
+| B6 引用 | `POST /api/v1/knowledge/chunks/batch` | 请求 `{chunkIds:[...]}`；仅返回当前用户可见的 ACTIVE Chunk。 |
+| B7 用量 | `GET /api/v1/llm/usage/{summary,daily,logs,by-model,trend}` | 必传 `startDate,endDate`；前三项 `stage` 默认 `chat`，`all` 表示全链路；日志分页用 `page,pageSize`。 |
+| B8 看板 | `GET /api/v1/admin/users/dashboard?days=7\|30\|90` | 默认 30 日，返回角色/状态分布、新增/活跃与逐日趋势。 |
+| B8 上传配置 | `GET/PUT /api/v1/admin/document-file-config` | PUT 完整覆盖 `{maxSizeBytes,allowedSuffixes}`；写入默认关闭，需切流后设置 `B8_DOCUMENT_CONFIG_WRITES_ENABLED=true` 且默认指纹一致，Redis 写入成功后生效。 |
+| B8 日志 | `GET /api/v1/admin/logs`、`GET /api/v1/admin/logs/labels` | 日志筛选参数 `service,level,trace_id,keyword,start_time,end_time,page,page_size`；代理 Loki。 |
+
+实现与切流边界见 [B6–B8 迁移说明](../internals/b6_b8_migration.md)。
+
 ## 2. Parser API
 
 路由前缀：`/api/v1/parser`

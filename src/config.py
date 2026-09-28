@@ -65,6 +65,8 @@ class Settings(BaseSettings):
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
     REDIS_PASSWORD: Optional[str] = None
+    LOKI_BASE_URL: str = "http://localhost:3100"
+    B8_DOCUMENT_CONFIG_WRITES_ENABLED: bool = False
 
     # 支持直接从 env 读取 REDIS_URL
     REDIS_URL: Optional[str] = None

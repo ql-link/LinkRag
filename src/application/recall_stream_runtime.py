@@ -29,7 +29,6 @@ from src.application.recall_errors import (
     CODE_GENERATION_FAILED,
     CODE_INTERNAL_ERROR,
     CODE_INVALID_REQUEST,
-    CODE_MODEL_CONFIG_MISSING,
     CODE_TIMEOUT,
 )
 from src.application.recall_serialization import (
@@ -40,7 +39,7 @@ from src.config import settings
 from src.core.llm.exceptions import LLMConfigResolutionError
 from src.core.llm.response import UsageInfo
 from src.core.llm.user_model_resolver import aresolve_model
-from src.core.mq.messages import ChatTurnMessage
+from src.core.mq.messages.chat_turn import ChatTurnPayload
 from src.core.pipeline.ltr import LtrRankResult
 from src.core.pipeline.ltr.features import weighted_baseline_order
 from src.core.pipeline.recall import (
@@ -71,7 +70,8 @@ from src.core.prompts import (
 )
 from src.core.prompts.conversation_title import TITLE_MAX_OUTPUT_TOKENS
 from src.observability.logging import safe_exception_stack, truncate_log_value
-from src.services.mq_service import MQService
+from src.application.chat_service import persist_chat_turn
+from src.database import write_transaction
 from src.services.usage_reporter import report_usage_nowait
 
 
@@ -1067,17 +1067,14 @@ async def _emit_chat_turn(
     error_message: str | None = None,
     title: str | None = None,
 ) -> None:
-    """构造并发送对话轮次消息 + generate token 用量（两者解耦，LINK-191）。
+    """直接持久化对话轮次，并独立记录 generate token 用量。
 
-    起点 GENERATING / 各终态均经此发送，``turn_id`` 贯穿同一轮供 Java upsert 同一行。
-    后续终态补齐。chat_turn 只承载对话内容（**不含 token**）；本轮 generate 的 token 用量另走
-    统一 ``TokenUsageMessage``（stage='chat'、operation='generate'，LINK-191）。``title`` 仅会话
-    首轮终态非空（Python 基于 query 生成或首问截断兜底），GENERATING / 非首轮为 None，Java 仅在
-    标题空/默认时落库。三者均最终一致、不进关键路径：chat_turn 发送失败仅告警，用量上报旁路
-    fire-and-forget，标题为增强项失败回落兜底。
+    起点 GENERATING / 各终态均经此写入，``turn_id`` 贯穿同一轮供 Python upsert 同一行。
+    对话内容与用量分别写入；``title`` 仅首轮终态非空，且仅在标题空或默认时覆盖。
+    持久化失败仅告警，不阻断已生成的 SSE 答案；用量仍在后台旁路写入。
     """
     try:
-        msg = ChatTurnMessage.build(
+        payload = ChatTurnPayload(
             conversation_id=conversation_id,
             request_id=request_id,
             turn_id=turn_id,
@@ -1094,10 +1091,13 @@ async def _emit_chat_turn(
             error_message=error_message,
             title=title,
         )
-        await MQService().send(msg)
-    except Exception as exc:  # noqa: BLE001 - 落库通知失败不影响问答主流程
+        async with write_transaction() as db:
+            accepted = await persist_chat_turn(db, payload)
+        if not accepted:
+            logger.warning("[recall] chat_turn rejected conversation_id={} turn_id={}", conversation_id, turn_id)
+    except Exception as exc:  # noqa: BLE001 - 落库失败不影响已生成答案
         logger.bind(
-            event="chat_turn_emit_failed",
+            event="chat_turn_persist_failed",
             outcome="skipped",
             request_id=request_id,
             turn_id=turn_id,
@@ -1113,7 +1113,7 @@ async def _emit_chat_turn(
             error_message=truncate_log_value(exc),
             stack_trace=safe_exception_stack(exc),
         ).warning(
-            "[recall] chat_turn emit failed request_id={} turn_id={} status={}",
+            "[recall] chat_turn persist failed request_id={} turn_id={} status={}",
             request_id,
             turn_id,
             status,
