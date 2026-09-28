@@ -24,6 +24,7 @@ from src.observability.logging import (
 setup_logger()
 
 from contextlib import asynccontextmanager
+import asyncio
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -31,9 +32,19 @@ import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from sqlalchemy import text
 
 from src.api.java_access_auth import validate_java_access_jwt_configuration
-from src.api.routes import internal, llm, mq, parse, rag, recall, wiki
+from src.api.routes import admin_model_catalog, admin_model_configs, admin_model_sync, datasets, document_files, identity_users, internal, internal_document_files, llm, model_configs, mq, object_uploads, parse, rag, recall, wiki
+from src.api.management_auth import (
+    ManagementAuthenticator,
+    SqlUserAuthorizationRepository,
+    build_access_token_verifier,
+)
+from src.application.identity_session import AccessTokenIssuer, build_session_state
+from src.application.document_deletion import replay_pending_deletions
+from src.application.document_uploads import DocumentUploadExecutor, fail_stuck_uploads
+from src.application.management_outbox import publish_due
 from src.application.ltr_provider import (
     get_ltr_runtime_status,
     preload_ltr_ranker,
@@ -64,9 +75,10 @@ from src.core.mq.topic_admin import ensure_topics
 
 # 解析任务临时落盘目录治理：启动时清空 PARSE_TEMP_DIR，回收上次异常退出残留的临时文件。
 from src.core.pipeline.parse_task import temp_workspace
-from src.database import close_database, init_database
+from src.database import close_database, get_db_context, init_database
 from src.observability.middleware import TraceContextMiddleware
 from src.services.mq_service import MQService
+from src.services.storage.factory import StorageFactory
 
 
 async def _start_mq_consumers() -> None:
@@ -94,6 +106,39 @@ async def _start_mq_consumers() -> None:
     )
 
 
+async def _replay_delete_notifications() -> None:
+    """Repair post-commit publish failures without a second MQ consumer group."""
+    while True:
+        await asyncio.sleep(300)
+        try:
+            await replay_pending_deletions()
+        except Exception as exc:
+            logger.bind(event="document_delete_replay_failed",
+                        error_type=type(exc).__name__).error("删除通知对账失败")
+
+
+async def _publish_management_outbox() -> None:
+    while True:
+        await asyncio.sleep(30)
+        try:
+            await publish_due()
+        except Exception as exc:
+            logger.bind(event="management_outbox_publish_failed",
+                        error_type=type(exc).__name__).error("管理端消息补发失败")
+
+
+async def _scan_stuck_uploads() -> None:
+    while True:
+        await asyncio.sleep(60)
+        try:
+            count = await fail_stuck_uploads()
+            if count:
+                logger.warning("已将 {} 条超时上传记录置为失败", count)
+        except Exception as exc:
+            logger.bind(event="document_upload_stuck_scan_failed",
+                        error_type=type(exc).__name__).error("超时上传扫描失败")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """应用生命周期管理
@@ -110,6 +155,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
     # 鉴权公钥属于启动契约：启用新 access JWT 却缺少/损坏公钥时禁止带病接流量。
     validate_java_access_jwt_configuration()
+    if settings.B5_FILE_WRITES_ENABLED and (
+        not settings.B5_INTERNAL_FILE_SERVICE_TOKEN
+        or not settings.B5_INTERNAL_FILE_BASE_URL
+    ):
+        raise RuntimeError("B5 文件写入需要内部文件服务 token 与可访问的 base URL")
+    # 在连接外部依赖前拒绝尚未实现的存储 provider。
+    StorageFactory.validate_provider()
     # 启动时初始化
     # LTR 文件读取、LightGBM 导入、Booster 构造与测试向量校验全部在 worker thread
     # 预加载；失败会固化为本进程 baseline 状态，不把首次初始化成本留给真实请求。
@@ -117,19 +169,77 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     initialize_ltr_shadow_executor()
     await redis_client.initialize()
     await init_database()
+    if settings.B3_CONTROL_WRITES_ENABLED or settings.B5_FILE_WRITES_ENABLED or settings.B5_DELETE_WRITES_ENABLED:
+        async with get_db_context() as db:
+            if settings.B3_CONTROL_WRITES_ENABLED:
+                await db.execute(text("SELECT id FROM llm_provider_model_sync_job LIMIT 0"))
+                await db.execute(text("SELECT id FROM llm_provider_model_sync_candidate LIMIT 0"))
+            if settings.B5_FILE_WRITES_ENABLED or settings.B5_DELETE_WRITES_ENABLED:
+                await db.execute(text("SELECT id FROM management_mq_outbox LIMIT 0"))
+    if settings.B1_PYTHON_ISSUER_ENABLED:
+        # 启用签发时在接流量前验证阶段门槛及密钥配对。
+        probe, _ = AccessTokenIssuer.from_settings().sign(1, "USER")
+        build_access_token_verifier().verify(probe)
+    app.state.identity_sessions = build_session_state()
+    app.state.management_authenticator = (
+        ManagementAuthenticator(
+            build_access_token_verifier(),
+            app.state.identity_sessions,
+            SqlUserAuthorizationRepository(),
+        )
+        if settings.JAVA_ACCESS_JWT_ENABLED
+        else None
+    )
     # 在拉起消费者之前清空临时落盘目录：兜底回收上次进程异常退出残留的源文件副本，
     # 失败让 worker 启动失败暴露问题，避免后续 download_to_path 永远失败但运维无感知。
     temp_workspace.ensure_clean_on_startup(Path(settings.PARSE_TEMP_DIR))
     if settings.MQ_VENDOR.lower() == "kafka" and settings.INIT_KAFKA_TOPICS_ON_STARTUP:
         ensure_topics()
     await _start_mq_consumers()
-    yield
+    app.state.document_upload_executor = None
+    upload_scan_task = None
+    if settings.B5_FILE_WRITES_ENABLED:
+        app.state.document_upload_executor = DocumentUploadExecutor()
+        app.state.document_upload_executor.start()
+        upload_scan_task = asyncio.create_task(_scan_stuck_uploads())
+    delete_replay_task = (
+        asyncio.create_task(_replay_delete_notifications())
+        if settings.B5_DELETE_WRITES_ENABLED else None
+    )
+    outbox_task = (
+        asyncio.create_task(_publish_management_outbox())
+        if settings.B5_FILE_WRITES_ENABLED or settings.B5_DELETE_WRITES_ENABLED else None
+    )
+    try:
+        yield
+    finally:
+        if upload_scan_task is not None:
+            upload_scan_task.cancel()
+            try:
+                await upload_scan_task
+            except asyncio.CancelledError:
+                pass
+        if app.state.document_upload_executor is not None:
+            await app.state.document_upload_executor.close()
+        if delete_replay_task is not None:
+            delete_replay_task.cancel()
+            try:
+                await delete_replay_task
+            except asyncio.CancelledError:
+                pass
+        if outbox_task is not None:
+            outbox_task.cancel()
+            try:
+                await outbox_task
+            except asyncio.CancelledError:
+                pass
     # 关闭时清理（MQ 连接优先关闭，避免消息丢失）
     try:
         mq_factory = MQFactory()
         await mq_factory.close_all()
     except Exception:
         pass
+    await app.state.identity_sessions.close()
     await redis_client.close()
     from src.core.storage.manticore_bm25 import close_manticore_bm25_store
 
@@ -170,6 +280,17 @@ app.include_router(mq.router)  # 挂载 MQ 消息中台路由
 app.include_router(rag.router)  # 挂载对外 RAG 问答流 SSE 路由（LINK-131）
 app.include_router(recall.router)  # 挂载对外纯召回 JSON 路由（LINK-131）
 app.include_router(wiki.router)  # 挂载 Wiki 标题树对外读取路由
+app.include_router(identity_users.auth_router)
+app.include_router(identity_users.user_router)
+app.include_router(identity_users.admin_router)
+app.include_router(object_uploads.router)
+app.include_router(model_configs.router)
+app.include_router(admin_model_configs.router)
+app.include_router(admin_model_catalog.router)
+app.include_router(admin_model_sync.router)
+app.include_router(datasets.router)
+app.include_router(document_files.router)
+app.include_router(internal_document_files.router)
 
 
 @app.exception_handler(RecallApiError)

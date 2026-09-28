@@ -2,11 +2,11 @@
 数据库连接管理
 提供异步 MySQL 连接池和 Session 管理
 """
+
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
 from sqlalchemy import text
-from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -77,7 +77,7 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
     async with session_factory() as session:
         try:
             yield session
-        except SQLAlchemyError:
+        except BaseException:
             await session.rollback()
             raise
         finally:
@@ -91,11 +91,19 @@ async def get_db_context() -> AsyncGenerator[AsyncSession, None]:
     async with session_factory() as session:
         try:
             yield session
-        except SQLAlchemyError:
+        except BaseException:
             await session.rollback()
             raise
         finally:
             await session.close()
+
+
+@asynccontextmanager
+async def write_transaction() -> AsyncGenerator[AsyncSession, None]:
+    """一个写用例一个事务；退出后才执行 MQ/缓存/对象存储副作用。"""
+    async with get_async_session_factory()() as session:
+        async with session.begin():
+            yield session
 
 
 async def init_database() -> None:

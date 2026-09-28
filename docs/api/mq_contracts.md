@@ -310,3 +310,6 @@ Swagger 文档：`http://<host>:<port>/docs`
 - 配置项详解：[configure.md](../ops/configure.md)
 - MQ 模块架构：[mq.md](../internals/mq.md)
 - 解析任务流水线：[parse_task_pipeline.md](../internals/parse_task_pipeline.md)
+## B5 Python 生产者迁移状态
+
+迁移中的 Python 文件/数据集控制面沿用 `tolink.rag.parse_task` 与 `tolink.rag.document_delete` 的既有 topic 和扁平裸 JSON 字段，发送复用 `MQService.send_raw`。`management_mq_outbox`（0041）保存事务内待发消息；未确认时会用同一 `task_id` 或删除业务身份重发，因此消费端必须继续按原幂等规则处理。未完成真实 MQ 对照前，B5 写入默认关闭。

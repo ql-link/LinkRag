@@ -88,6 +88,23 @@ async def test_disabled_user_rejected_even_when_access_token_is_valid(access_key
     assert exc.value.code == "ACCESS_TOKEN_UNAUTHORIZED"
 
 
+@pytest.mark.asyncio
+async def test_migrated_session_rejection_also_blocks_rag(access_key, monkeypatch):
+    monkeypatch.setattr(settings, "B1_JAVA_AUTH_BASE_URL", "http://java.internal")
+    sessions = AsyncMock()
+    sessions.is_active.return_value = False
+    request = _Request(_access_token(access_key))
+    request.app = SimpleNamespace(state=SimpleNamespace(identity_sessions=sessions))
+    with pytest.raises(RecallApiError) as exc:
+        await verify_user_token(request, _db_row())
+    assert exc.value.status_code == 401
+    sessions.is_active.assert_awaited_once()
+    sessions.is_active.side_effect = ConnectionError("java unavailable")
+    with pytest.raises(RecallApiError) as unavailable:
+        await verify_user_token(request, _db_row())
+    assert unavailable.value.status_code == 503
+
+
 @pytest.mark.parametrize(
     "overrides",
     [

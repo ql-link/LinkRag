@@ -4,13 +4,47 @@
 
 ## 1. 通用约定
 
-- API 前缀按模块划分：`/api/v1/parser`、`/api/v1/mq`、`/api/v1/llm`、`/api/v1/internal/llm`、`/api/v1/rag`、`/api/v1/recall`、`/api/v1/wiki`。
+- API 前缀按模块划分：`/api/v1/parser`、`/api/v1/mq`、`/api/v1/llm`、`/api/v1/internal/llm`、`/api/v1/rag`、`/api/v1/recall`、`/api/v1/wiki`、`/api/v1/auth`、`/api/v1/user`、`/api/v1/admin/users`。
+
 - 所有 HTTP 请求可带 `X-Trace-Id` 请求头；未携带时 Python 端生成 UUID。响应会回显本次请求使用的 `X-Trace-Id`，日志上下文同步写入该值。
 - 普通 JSON 响应通常使用 `{code, message, data}` 或模块自定义响应模型。
 - 解析和 MQ 路由异常通常返回 HTTP `500`，`detail` 为异常文本。
 - LLM 路由在业务异常中多返回 `APIResponse(code=500, message=..., data=null)`。
 - LLM 用户级接口要求请求头 `X-User-Id`。
 - 内部 LLM 配置和用量接口为 Java 管理端内部使用，不应直接暴露给公网。
+
+### B1 身份与用户接口（按路径切流）
+
+这些路由在 Python 已注册，使用整数 `code` 的 `{code,message,data}` 响应。受保护请求从 `satoken` 请求头读取 Java/Python RS256 access JWT，验签后还要验证会话状态与 `sys_user` 当前角色/状态。未配置 Java 会话桥接或 Python 签发开关时，对应路由会明确拒绝请求；注册路由不代表已切换前端流量。
+
+| Method | Path | 身份 | `data` / 行为 |
+| --- | --- | --- | --- |
+| POST | `/api/v1/auth/login` | 匿名 | `{account,password}`；返回 `accessToken,tokenType,expiresIn,userId`。仅 Java 受保护路由已退场并显式启用 Python 签发后可用。 |
+| POST | `/api/v1/auth/register` | 匿名 | `{username,password,email}`；创建 `USER` 后自动登录，响应同上。 |
+| POST | `/api/v1/auth/logout` | 可匿名调用 | 无效或缺失 token 幂等返回成功；有效 token 撤销本次登录态，`data:null`，Java 旧会话还通过 Java 登出接口撤销。 |
+| GET / PATCH | `/api/v1/user/profile` | 登录用户 | 读取/更新当前用户资料；可修改 `nickname,email,phone,avatarUrl`，响应分别为资料对象/`null`。 |
+| POST | `/api/v1/user/avatar` | 登录用户 | multipart `file`；按文件后缀允许 jpg/jpeg/png/gif/webp，最大 5 MiB，返回更新后的资料对象；格式/大小错误码 40001，上传失败码 50002。 |
+| POST | `/api/v1/oss-files/{bizType}` | Java 现行为匿名；Python 入口默认关闭 | multipart `file`；六类规则见对象存储内部文档。PUBLIC 返回公开 URL，RAW/PRIVATE 返回 key。需确认权限矩阵后设置 `B2_GENERIC_UPLOAD_ENABLED=true` 并按路径切流；关闭时返回 503。 |
+| GET | `/api/v1/oss-files/public/{objectKey}` | 匿名，仅 PUBLIC 桶 | Python 接管此路径且启用 `B2_PUBLIC_PREVIEW_ENABLED` 时，经现有 MinIO 适配器读取公开桶；返回原字节、后缀对应 Content-Type 和 30 天缓存头。非法或不存在 key 返回 404，存储故障返回 503；关闭时返回 503。RAW/PRIVATE 不可由此读取。 |
+| GET | `/api/v1/admin/users` | ADMIN | `page` 默认 1、`size` 默认 10；返回 `items,total,page,pageSize,totalPages`。 |
+| PATCH | `/api/v1/admin/users/{user_id}/status` | ADMIN | `{status:0|1}`；`data:null`。Java 受保护路由退场前返回 503，避免禁用状态与旧会话不一致。 |
+| PATCH | `/api/v1/admin/users/{user_id}/role` | ADMIN | `{role:"ADMIN"|"USER"}`；`data:null`。 |
+
+资料对象字段为 `id,username,nickname,email,phone,avatarUrl,role,status`，不包含密码哈希。用户管理看板仍属 B8。身份模块边界与切流条件见 [identity_users.md](../internals/identity_users.md)。
+
+### B3–B5 管理与知识文件迁移接口（实施中）
+
+以下 Python 路由已注册，统一使用 B1 当前用户、数据库角色/归属与 `{code,message,data}`。注册不表示网关已切流；写入开关默认关闭。B3 旧 API Key 无法解密时配置读取返回 503，不能用空密钥替代。
+
+| 范围 | 已实现路径 | 当前限制 |
+| --- | --- | --- |
+| B3 USER | `GET /api/v1/llm/providers`、`GET /api/v1/llm/configs`、`POST /api/v1/llm/configs/setup-provider`、`PATCH/POST/DELETE /api/v1/llm/configs/{id}/*`、`GET/PUT/DELETE /api/v1/llm/defaults*` | 写入依赖 `B3_CONTROL_WRITES_ENABLED`；现有 Python runtime config cache 写后 fence 失效。 |
+| B3 ADMIN | `/api/v1/admin/llm/configs*`、`/api/v1/admin/providers*`、`/api/v1/admin/provider-models*`、`/api/v1/admin/model-sync-*` | ADMIN 身份从数据库读取；图标上传复用 B2。候选只在审核发布后进入正式目录；0040 尚未在 Dev 执行。 |
+| B4 数据集 | `GET/POST /api/v1/datasets`、`GET/PATCH/DELETE /api/v1/datasets/{id}`、`GET/PUT /api/v1/datasets/{id}/parse-config` | 创建/更新依赖 `B4_DATASET_WRITES_ENABLED`；删除另依赖 `B5_DELETE_WRITES_ENABLED`。 |
+| B5 文件 | `GET /api/v1/document-file-capabilities`、`GET/POST /api/v1/datasets/{id}/files`、`GET /api/v1/files/recent`、`GET/POST/DELETE /api/v1/files/{id}`、`GET /api/v1/datasets/{id}/files/parse-results` | 上传与解析依赖 `B5_FILE_WRITES_ENABLED`，删除依赖 `B5_DELETE_WRITES_ENABLED`。无本地图片引用的普通 Markdown 可按 RAW 原件上传；带配套图片的资源包尚未迁移，会返回 503。能力响应不宣称完整可用。 |
+| B5 内部内容 | `GET /api/v1/internal/files/{id}/content` | 仅接受独立服务 Bearer token；浏览器 access JWT 不能代替。 |
+
+B5 解析和删除消息使用 0041 `management_mq_outbox` 同事务记账，再由现有 `MQService` 投递；Broker 确认不确定时可能按同一业务 ID 重发。目标环境未执行 0040/0041、未配内部文件 token/URL 或旧 Java 仍写同一路径时，不能打开对应写入开关。状态与缺口见[迁移进度](../internals/java_python_migration_progress.md)。
 
 ## 2. Parser API
 

@@ -209,6 +209,18 @@ class Settings(BaseSettings):
     # 单用户最大并发 RAG 流数；这是资源保护，不参与鉴权。
     RAG_MAX_CONCURRENT_PER_USER: int = 3
 
+    # 管理 API 与 RAG 共用 JAVA_ACCESS_JWT_* 公钥和签发者，仅 audience 不同。
+    MANAGEMENT_ACCESS_JWT_AUDIENCE: str = "tolink-java-api"
+    # B1 过渡：使用 Java 现有受保护接口核验/注销旧 Sa-Token 会话。
+    B1_JAVA_AUTH_BASE_URL: Optional[str] = None
+    B1_JAVA_AUTH_TIMEOUT_SECONDS: float = 2.0
+    # Java 受保护路由全部退场后才允许 Python 签发新 access token。
+    B1_PYTHON_ISSUER_ENABLED: bool = False
+    B1_JAVA_PROTECTED_ROUTES_RETIRED: bool = False
+    B1_ACCESS_JWT_PRIVATE_KEY_PATH: Optional[str] = None
+    B1_ACCESS_JWT_AUDIENCES: str = "tolink-java-api,tolink-rag-api"
+    B1_ACCESS_TOKEN_TTL_SECONDS: int = 7200
+
     # ==========================================
     # 召回后 LLM 答案生成 (Recall Answer Generation)
     # ==========================================
@@ -580,7 +592,19 @@ class Settings(BaseSettings):
     # worker 启动时由 src/main.py lifespan 调用 temp_workspace.ensure_clean_on_startup 清空兜底。
     PARSE_TEMP_DIR: str = "/tmp/tolink-rag-parse"
 
-    STORAGE_TYPE: str = "minio"  # minio / local
+    STORAGE_TYPE: str = "minio"  # 当前仅 minio 可用；oss 占位会在启动时拒绝
+    # 通用上传在 Java 中允许匿名调用；权限矩阵确认与网关切流前保持关闭。
+    B2_GENERIC_UPLOAD_ENABLED: bool = False
+    B2_PUBLIC_PREVIEW_ENABLED: bool = False
+    # B3 写入切流前，Java 必须是唯一模型配置写入者。
+    B3_CONTROL_WRITES_ENABLED: bool = False
+    # B4 数据集写入按路径切流；删除另受 B5/B6 协调门禁约束。
+    B4_DATASET_WRITES_ENABLED: bool = False
+    # B5 控制面必须与 Java 文件入口保持单一生产者。
+    B5_FILE_WRITES_ENABLED: bool = False
+    B5_DELETE_WRITES_ENABLED: bool = False
+    B5_INTERNAL_FILE_SERVICE_TOKEN: Optional[str] = None
+    B5_INTERNAL_FILE_BASE_URL: Optional[str] = None
     MINIO_ENDPOINT: str = "localhost:9000"
     MINIO_ACCESS_KEY: str = "minioadmin"
     MINIO_SECRET_KEY: str = "minioadmin"
@@ -589,6 +613,9 @@ class Settings(BaseSettings):
     # · 私有桶（DOCS）   = Python 解析产物（Markdown + 图片），不对外匿名读；
     MINIO_RAW_BUCKET: str = "tolink-rag-raw"
     MINIO_PRIVATE_BUCKET: str = "tolink-rag-docs"
+    MINIO_PUBLIC_BUCKET: str = "tolink-public"
+    # 前端资源 URL 的对外入口，必须显式配置，不回退到内部 MinIO 地址。
+    MINIO_PUBLIC_BASE_URL: Optional[str] = None
     MINIO_USE_SSL: bool = False
     # Java 规范化 Markdown 中的 ``tolink-raw://`` 图片按批读取。单图上限必须不高于
     # Java 上传侧限制，避免两个服务对同一资源包作出不同判断。

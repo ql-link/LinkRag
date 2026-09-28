@@ -69,7 +69,7 @@ toLink-Rag/                         # 仓库根目录
 │   ├── db.sql                    # 0001 baseline 冻结快照（DDL，冷启动用；禁止改动）
 │   └── versions/                 # 版本化迁移脚本（NNNN_YYYYMMDD_slug.py）
 ├── scripts/                      # 可执行脚本
-│   ├── acceptance/               # Gherkin 提升与 pytest-bdd 校验脚本
+│   ├── acceptance/               # Gherkin 校验与 B1 真实 API 对照脚本
 │   ├── dev/                      # 本地开发、诊断、冒烟脚本
 │   ├── db/                       # 数据库初始化脚本
 │   │   ├── init.sql              # 叠加全部 migration 后的当前完整结构快照（仅供查阅）
@@ -84,9 +84,20 @@ toLink-Rag/                         # 仓库根目录
 │   │   └── nltk_data.py          # NLTK 数据路径引导（项目内 nltk_data 优先）
 │   ├── api/                      # HTTP API 分层
 │   │   ├── java_access_auth.py  # Java 登录 access JWT 独立验签与当前用户上下文
+│   │   ├── management_auth.py   # B1 当前用户、数据库角色和会话鉴权
+│   │   ├── management_http.py   # Java 管理接口响应与异常边界
 │   │   ├── recall_concurrency.py  # RAG Redis 并发保护（不参与 token 验证）
 │   │   ├── routes/               # 路由层
 │   │   │   ├── internal.py        # Java 管理端内部 LLM 配置/用量接口
+│   │   │   ├── identity_users.py  # B1 身份与用户入口
+│   │   │   ├── object_uploads.py  # B2 通用对象上传入口
+│   │   │   ├── model_configs.py   # B3 USER 模型配置入口
+│   │   │   ├── admin_model_catalog.py # B3 ADMIN 正式目录入口
+│   │   │   ├── admin_model_sync.py # B3 ADMIN 候选同步入口
+│   │   │   ├── admin_model_configs.py # B3 ADMIN SYSTEM 配置入口
+│   │   │   ├── datasets.py        # B4 数据集与解析配置入口
+│   │   │   ├── document_files.py  # B5 文件与任务控制入口
+│   │   │   ├── internal_document_files.py # B5 服务令牌原文件下载
 │   │   │   ├── llm.py
 │   │   │   ├── mq.py
 │   │   │   ├── parse.py
@@ -96,6 +107,16 @@ toLink-Rag/                         # 仓库根目录
 │   │       ├── mq.py
 │   │       └── parse.py
 │   ├── application/              # Application 层：业务用例 runtime 与装配（api → application → core）
+│   │   ├── object_uploads.py     # B2 六类业务上传规则，复用 StorageFactory
+│   │   ├── model_configs.py      # B3 配置与默认关系，复用 fenced runtime cache
+│   │   ├── admin_model_catalog.py # B3 正式厂商/模型目录
+│   │   ├── model_sync.py         # B3 外部候选与审核发布
+│   │   ├── datasets.py           # B4 数据集与解析配置
+│   │   ├── document_files.py     # B5 文件读取及终态轮询
+│   │   ├── document_uploads.py   # B5 有界异步上传，复用 StorageFactory
+│   │   ├── parse_task_control.py # B5 解析任务提交
+│   │   ├── document_deletion.py  # B5 删除协调与历史残留对账
+│   │   ├── management_outbox.py  # B5 MQ 投递账本，发送复用 MQService
 │   │   ├── recall_errors.py       # 召回链路共享错误类型与错误码（CODE_*）
 │   │   ├── recall_pipeline_provider.py # 召回 Pipeline 装配/提供
 │   │   ├── recall_stream_runtime.py    # RAG 问答流 SSE 运行时（/api/v1/rag/stream）

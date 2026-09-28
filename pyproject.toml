@@ -46,6 +46,7 @@ dependencies = [
     "loguru>=0.7.0",
     "cryptography>=42.0.0",
     "PyJWT>=2.8.0",
+    "bcrypt>=4.0.0",
     "aiokafka>=0.11.0",
     "confluent-kafka>=2.6.0",
     "aio-pika>=9.4.0",

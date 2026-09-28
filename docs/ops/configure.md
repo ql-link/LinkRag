@@ -12,6 +12,8 @@
 | 数据库 | `DB_*` | 始终 |
 | 缓存 | `REDIS_*` | 始终 |
 | 安全 | `API_KEY_ENCRYPTION_SECRET` | 始终（必须与 Java 管理端一致） |
+| 管理端迁移 | `MANAGEMENT_ACCESS_JWT_*`, `B1_*` | B1 路由按路径联调与切流；Python 签发默认关闭 |
+
 | LLM runtime cache | `LLM_RUNTIME_CACHE_*` | 可选缓存旁路；MySQL 仍是事实源 |
 | Dataset 原始快照缓存 | `DATASET_PARSE_CONFIG_CACHE_*` | Java/Python 共用；仅在 Java CDC health READY 后开启 |
 | Markdown 增强 | `MARKDOWN_PARSER_*` | 调整解析增强行为时 |
@@ -24,6 +26,16 @@
 | PDF 解析 | `PDF_PARSER_*`, `MINERU_*` | 处理 PDF 时 |
 | MQ | `MQ_VENDOR`, `KAFKA_*`, `RABBITMQ_*`, `*_TOPIC` | 始终 |
 | CORS | `CORS_ORIGINS` | 前端跨域时 |
+
+### B1 登录态配置与切流
+
+管理接口与 RAG/Wiki 共用 `JAVA_ACCESS_JWT_ENABLED`、`JAVA_ACCESS_JWT_PUBLIC_KEY_PATH` 和 `JAVA_ACCESS_JWT_ISSUER`；管理接口仅用独立的 `MANAGEMENT_ACCESS_JWT_AUDIENCE`（默认 `tolink-java-api`）区分受众。未启用统一 access JWT 鉴权时，Python 受保护 B1 路由拒绝访问。
+
+并存阶段设置 `B1_JAVA_AUTH_BASE_URL` 为仅后端可访问的 Java 基地址，Python 管理接口与 RAG/Wiki 共用 Java 现有资料接口核验 Sa-Token 会话，退出时调用 Java 现有退出接口；`B1_JAVA_AUTH_TIMEOUT_SECONDS` 默认 2 秒。该地址必须走可信内部网络，HTTP 客户端不记录 token。Java 不可用时，旧登录态校验失败，不退化为只验 JWT。当前调用的是 Java 公开资料接口，专用服务间校验接口及其身份保护仍需在切流前落实。
+
+`B1_PYTHON_ISSUER_ENABLED=false` 和 `B1_JAVA_PROTECTED_ROUTES_RETIRED=false` 是默认值，登录/注册路由因此返回 503；Java 路由仍在使用时，Python 修改用户状态的接口也返回 503，避免禁用用户的旧 Sa-Token 继续访问 Java。确认所有需要 Sa-Token 的 Java 用户路由已退场后，才可同时设为 `true`，并提供 `B1_ACCESS_JWT_PRIVATE_KEY_PATH`、与之匹配的统一公钥、`B1_ACCESS_JWT_AUDIENCES`（默认 `tolink-java-api,tolink-rag-api`）及 `B1_ACCESS_TOKEN_TTL_SECONDS`（默认 7200）。私钥仅挂载给 Python API，不能提交到仓库或写入日志。启用前需用同一环境验证 Web、RAG/Wiki、网关、Redis 撤销和回退路径；配置开关本身不证明切流已完成。
+
+Java 签发的旧令牌尚在有效期内时，继续保留 Java 会话桥接和 Java 服务可达性；待最长旧令牌有效期过去且已验收无旧会话请求，再移除桥接和停用 Java。
 
 ## 必填配置
 
@@ -52,6 +64,9 @@
 | `STORAGE_TYPE` | `minio` | 对象存储实现；当前可用实现为 MinIO，OSS 适配器仍为占位 |
 | `MINIO_RAW_BUCKET` | `tolink-rag-raw` | 用户上传原文件桶，由 Java 写入；Python 解析时从此桶下载源文件，不写入。需在 MinIO 控制台预先创建 |
 | `MINIO_PUBLIC_ENDPOINT` | 空 | 可选公网对象访问入口；为空时复用 `MINIO_ENDPOINT`。用于给 MinerU 等云端解析器生成可访问 URL，SDK 读写仍走 `MINIO_ENDPOINT` |
+| `MINIO_PUBLIC_BUCKET` | `tolink-public` | 后续管理业务公开资源桶；与 RAW/PRIVATE 隔离 |
+| `MINIO_PUBLIC_BASE_URL` | 空 | 公开资源路由前缀，如 `https://example.com/api/v1/oss-files/public`；对象 key 直接接在此前缀之后，不拼桶名；必须显式配置，否则 `build_public_url` 失败 |
+| `B2_PUBLIC_PREVIEW_ENABLED` | `false` | 仅当网关将 `/api/v1/oss-files/public/*` 交给 Python 时启用；仅从 PUBLIC 桶匿名读取。Dev 为 `true`，并使用 `MINIO_PUBLIC_BUCKET=tolink-dev-public` 与相对公开路径；生产若由现有网关提供公开读取则保持关闭 |
 | `PARSE_TEMP_DIR` | `/tmp/tolink-rag-parse` | 解析任务源文件临时落盘目录。流式下载在此创建临时文件；解析为 markdown 后立即清理；worker 启动时清空兜底。不预设最小容量，沿用部署机系统盘大小；写满会归类为 `TEMP_DISK_FULL` 错误码。扩消费者时容量需要 ≥ 单文件上限 × 并发数 |
 | `PDF_PARSER_BACKEND` | `mineru` | PDF 解析后端：`auto` / `mineru` / `opendataloader` / `naive` |
 | `PDF_PARSER_FALLBACKS` | 空 | 逗号分隔回退链，空表示不回退 |
@@ -351,7 +366,7 @@ Wiki 标题搜索只复用 `RECALL_STRICT_DEFAULT` 与 `RECALL_STREAM_TIMEOUT_MS
 ### 对外访问鉴权配置（RAG / Recall / Wiki）
 
 Java 登录返回的同一枚 RS256 access JWT 可直接访问 Python。Java 保存私钥并负责签发，Python 只挂载
-公钥文件并本地验签；Python 不回调 Java，也不读取 Sa-Token Redis。并发限流
+公钥文件并本地验签；B1 并存阶段配置 `B1_JAVA_AUTH_BASE_URL` 后，Python 还通过 Java 资料接口核验会话和通过 Java 退出接口撤销会话，不直接读取 Sa-Token Redis。未配置该桥接的其他旧部署仍只做 JWT 验签。并发限流
 （`RAG_MAX_CONCURRENT_PER_USER`）**仅 RAG 流生效**，Recall/Wiki 不使用该计数。详见
 [recall_http_api.md](../internals/recall_http_api.md)。
 
@@ -366,8 +381,7 @@ Java 登录返回的同一枚 RS256 access JWT 可直接访问 Python。Java 保
 | `RAG_MAX_CONCURRENT_PER_USER` | `3` | 单用户最大并发 RAG 流数；仅用于资源保护，超限返回 `429` |
 | `CORS_ORIGINS` | `["*"]` | **生产对外环境必须收敛为前端可信域名清单**（不可用 `*`，否则带 `Authorization` 头的跨域预检失败）|
 
-> 新 access JWT 固定 2 小时，可在到期前复用。Python 不维护 `jti` 撤销状态，所以 Java logout 后
-> Python 最迟在 `exp` 时拒绝；用户禁用和角色降级通过共享数据库实时生效。RAG 生成跑在独立后台任务、
+> 新 access JWT 固定 2 小时，可在到期前复用。启用 B1 Java 会话桥接后，Python 在每次受保护请求中核验 Java 会话并维护 `jti` 撤销状态；未启用桥接的旧部署仍只能在 `exp` 时保证拒绝已登出的 JWT。用户禁用和角色降级通过共享数据库实时生效。RAG 生成跑在独立后台任务、
 > 断连不取消，并发名额绑任务生命周期释放（非连接）；
 > 任务存活由召回超时 `RECALL_STREAM_TIMEOUT_MS` + 生成超时 `RECALL_GENERATION_TIMEOUT_MS` 共同约束，
 > 名额安全 TTL 取二者较大值兜底。并发计数依赖 Redis，Redis 不可用时 fail-open（放行，因限流是资源保护非鉴权）。
@@ -377,6 +391,13 @@ Java 私钥不得进入 Python 环境、代码仓库或日志。轮换时先让 
 签发私钥；当前实现一次只加载一把公钥，因此应保留足够的 token 过渡窗口或安排短暂停机切换。
 
 ## 配置加载与覆盖
+
+### B2–B5 迁移开关（默认关闭）
+
+`B2_GENERIC_UPLOAD_ENABLED` 控制通用六类对象上传；`B3_CONTROL_WRITES_ENABLED` 控制模型配置 USER/SYSTEM 写入；`B4_DATASET_WRITES_ENABLED` 控制数据集创建、更新与解析配置写入；`B5_FILE_WRITES_ENABLED` 控制普通文件上传和解析提交；`B5_DELETE_WRITES_ENABLED` 控制文件/数据集删除。按路径确认 Java/Python 单一写入者、目标 schema 和真实依赖验收后再分别启用。
+
+B5 写入还要求 0041 outbox migration 已执行、`B5_INTERNAL_FILE_SERVICE_TOKEN` 有独立服务令牌、`B5_INTERNAL_FILE_BASE_URL` 指向解析服务可访问的 Python 内部文件路由；缺任一项时启动拒绝接流量。当前 Markdown 资源包上传尚未完成；B3 ADMIN 候选同步代码尚未经过真实外部源/Dev 写入验收，相关路径不得切流。B3 旧密文需要与 Java 使用同一受控密钥材料；解密失败时读配置返回 503。
+
 
 - `.env` 由 [src/config.py](../../src/config.py) 通过 `Settings`（pydantic-settings）加载。
 - 运行时环境变量**优先级高于** `.env`（部署时通过容器环境变量注入即可覆盖）。

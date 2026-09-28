@@ -105,6 +105,13 @@ class DatasetParseConfigCache:
     def lock_key(cls, dataset_id: int) -> str:
         return f"cache:lock:dataset:parse-config:{cls._tag(dataset_id)}"
 
+    async def invalidate(self, dataset_id: int) -> None:
+        await self._store.invalidate(
+            data_key=self.data_key(dataset_id),
+            fence_key=self.fence_key(dataset_id),
+            fence_ttl_seconds=settings.DATASET_PARSE_CONFIG_FENCE_TTL_SECONDS,
+        )
+
     async def get(self, user_id: int, dataset_id: int) -> DatasetParseConfigCacheLookup:
         raw = await self._store.get_raw(self.data_key(dataset_id))
         if raw is None:

@@ -3,13 +3,14 @@ SQLAlchemy ORM 模型
 对应 MySQL 数据库表结构
 """
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import List, Optional
 
 from sqlalchemy import (
     JSON,
     BigInteger,
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -100,6 +101,64 @@ class ProviderModelDB(Base):
             name="uk_provider_model_cap",
         ),
         Index("idx_provider_cap", "provider_id", "capability"),
+    )
+
+
+class ProviderModelSyncJobDB(Base):
+    """External catalog refresh audit; never used by runtime model resolution."""
+
+    __tablename__ = "llm_provider_model_sync_job"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    provider_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sync_source: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    added_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    stale_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_message: Mapped[str | None] = mapped_column(String(512))
+    started_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=func.now())
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    __table_args__ = (
+        Index("idx_sync_job_provider", "provider_id", "started_at"),
+        Index("idx_sync_job_source_status", "sync_source", "status"),
+    )
+
+
+class ProviderModelSyncCandidateDB(Base):
+    """Reviewed external candidates, separate from published provider models."""
+
+    __tablename__ = "llm_provider_model_sync_candidate"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    job_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    provider_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sync_source: Mapped[str] = mapped_column(String(32), nullable=False)
+    external_model_id: Mapped[str] = mapped_column(String(192), nullable=False)
+    model_name: Mapped[str] = mapped_column(String(128), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(64))
+    inferred_capability: Mapped[str] = mapped_column(String(32), nullable=False)
+    inferred_protocol: Mapped[str | None] = mapped_column(String(32))
+    inferred_api_base_url: Mapped[str | None] = mapped_column(String(512))
+    context_window: Mapped[int | None] = mapped_column(Integer)
+    max_output_tokens: Mapped[int | None] = mapped_column(Integer)
+    model_release_date: Mapped[date | None] = mapped_column(Date)
+    input_modalities: Mapped[dict | None] = mapped_column(JSON)
+    output_modalities: Mapped[dict | None] = mapped_column(JSON)
+    raw_metadata: Mapped[dict | None] = mapped_column(JSON)
+    review_status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
+    matched_provider_model_id: Mapped[int | None] = mapped_column(BigInteger)
+    last_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=func.now())
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("provider_id", "sync_source", "model_name", "inferred_capability",
+                         name="uk_sync_candidate_provider_source_model_cap"),
+        Index("idx_sync_candidate_job", "job_id"),
+        Index("idx_sync_candidate_provider_status", "provider_id", "review_status"),
+        Index("idx_sync_candidate_model_cap", "provider_id", "model_name", "inferred_capability"),
     )
 
 
@@ -388,4 +447,29 @@ class UserFeedbackDB(Base):
         Index("idx_feedback_created", "created_at"),
         Index("idx_feedback_status_priority", "status", "priority", "created_at"),
         Index("idx_feedback_type_created", "type", "created_at"),
+    )
+
+
+class ManagementMQOutboxDB(Base):
+    """B5 durable publish record; the existing MQService remains the sender."""
+
+    __tablename__ = "management_mq_outbox"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    event_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    topic: Mapped[str] = mapped_column(String(128), nullable=False)
+    message_body: Mapped[str] = mapped_column(MEDIUMTEXT, nullable=False)
+    message_key: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
+    attempt_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    sent_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=func.now(), onupdate=func.now()
+    )
+
+    __table_args__ = (
+        UniqueConstraint("event_key", name="uk_management_outbox_event"),
+        Index("idx_management_outbox_due", "status", "next_attempt_at", "id"),
     )

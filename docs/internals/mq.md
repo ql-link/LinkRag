@@ -232,3 +232,6 @@ Kafka Topic 初始化还会读取：
 - `KafkaReceiver._commit_partition_offset` 精确提交、跨分区隔离。
 - `RabbitMQReceiver.start()` 声明 DLX/DLT；`_on_message` 手动 ack/reject。
 - 验收套件：`tests/acceptance/test_mq_dlq_poison_pill.py`。
+## B5 Python 生产者（迁移中）
+
+B5 文件解析提交与文件/数据集删除继续使用既有 `MQService.send_raw`、原 topic、裸 JSON snake_case 载荷和现有 Python 消费组。控制面新增 `management_mq_outbox`（0041）作为提交后投递账本：业务指针或软删与消息体同事务保存，后台按租约补发。Broker 确认丢失可能造成同一 task ID 或删除范围重复到达，现有消费者应保持幂等。0041 尚未执行、Java 同一路径仍为写入者或真实 MQ 验收未完成时，B5 写入开关保持关闭。
