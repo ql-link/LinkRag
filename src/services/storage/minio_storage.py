@@ -61,6 +61,31 @@ class MinioStorage(BaseObjectStorage):
             ExtraArgs={"ContentType": content_type},
         )
 
+    def upload_path(self, bucket: str, object_key: str, source: Path, content_type: str) -> None:
+        with source.open("rb") as stream:
+            self._client.upload_fileobj(
+                stream, bucket, object_key, ExtraArgs={"ContentType": content_type}
+            )
+
+    def remove_object(self, bucket: str, object_key: str) -> None:
+        if not object_key or object_key.endswith("/"):
+            raise ValueError("单对象删除必须提供非目录 key")
+        self._client.delete_object(Bucket=bucket, Key=object_key)
+
+    def build_public_url(self, bucket: str, object_key: str) -> str:
+        if (
+            bucket != settings.MINIO_PUBLIC_BUCKET
+            or not object_key
+            or any(part in {"", ".", ".."} for part in object_key.split("/"))
+        ):
+            raise ValueError("仅允许为公开桶的对象构造公开 URL")
+        base = settings.MINIO_PUBLIC_BASE_URL
+        if not base:
+            raise ValueError("MINIO_PUBLIC_BASE_URL 未配置")
+        escaped_key = "/".join(quote(part, safe="") for part in object_key.split("/"))
+        # Java public-base-url 已包含公开资源路由；对象 key 后不再插入桶名。
+        return f"{base.rstrip('/')}/{escaped_key}"
+
     def build_object_url(self, bucket: str, object_key: str) -> str:
         escaped_key = "/".join(quote(part) for part in object_key.split("/"))
         return f"{self._public_endpoint_url}/{bucket}/{escaped_key}"

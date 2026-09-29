@@ -37,6 +37,11 @@
 | [ltr_quality_alignment.md](internals/ltr_quality_alignment.md) | LambdaMART 质检对齐、兼容保留项与上线边界 |
 | [ltr_quality_test_plan.md](internals/ltr_quality_test_plan.md) | LambdaMART 质检成果生产化完整测试方案、场景矩阵与发布门禁 |
 | [recall_http_api.md](internals/recall_http_api.md) | 召回 HTTP 入口与会话/鉴权 |
+| [management_foundation.md](internals/management_foundation.md) | Java 管理端迁移基座（F0）与启用门槛 |
+| [identity_users.md](internals/identity_users.md) | B1 身份与用户模块及跨端登录态过渡 |
+| [java_python_migration_progress.md](internals/java_python_migration_progress.md) | Java 至 Python 各模块的迁移进度与切流门槛 |
+| [b2_b5_migration_verification.md](internals/b2_b5_migration_verification.md) | B2–B5 测试场景、执行层级与当前验收缺口 |
+| [b6_b8_migration.md](internals/b6_b8_migration.md) | B6–B8 对话、用量和管理运维迁移边界 |
 | [wiki_heading_tree.md](internals/wiki_heading_tree.md) | Wiki 标题树构建、搜索、权限、游标与生命周期 |
 | [file_parser.md](internals/file_parser.md) | 文件解析器（含回退链） |
 | [markdown_parser.md](internals/markdown_parser.md) | Markdown 解析与 LLM 增强 |

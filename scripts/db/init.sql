@@ -83,6 +83,51 @@ CREATE TABLE IF NOT EXISTS llm_provider_model (
     INDEX idx_provider_cap (provider_id, capability)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '厂商模型能力目录表';
 
+-- 2.1.1 外部模型目录同步任务（migration 0040；不参与运行决策）
+CREATE TABLE IF NOT EXISTS llm_provider_model_sync_job (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    provider_id BIGINT UNSIGNED NOT NULL,
+    sync_source VARCHAR(32) NOT NULL,
+    status VARCHAR(16) NOT NULL,
+    added_count INT NOT NULL DEFAULT 0,
+    updated_count INT NOT NULL DEFAULT 0,
+    stale_count INT NOT NULL DEFAULT 0,
+    error_message VARCHAR(512),
+    started_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    finished_at DATETIME,
+    INDEX idx_sync_job_provider (provider_id, started_at),
+    INDEX idx_sync_job_source_status (sync_source, status)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '外部模型目录同步任务表';
+
+-- 2.1.2 外部模型目录候选（migration 0040；审核发布后才进入正式目录）
+CREATE TABLE IF NOT EXISTS llm_provider_model_sync_candidate (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    job_id BIGINT UNSIGNED NOT NULL,
+    provider_id BIGINT UNSIGNED NOT NULL,
+    sync_source VARCHAR(32) NOT NULL,
+    external_model_id VARCHAR(192) NOT NULL,
+    model_name VARCHAR(128) NOT NULL,
+    display_name VARCHAR(64),
+    inferred_capability VARCHAR(32) NOT NULL,
+    inferred_protocol VARCHAR(32),
+    inferred_api_base_url VARCHAR(512),
+    context_window INT,
+    max_output_tokens INT,
+    model_release_date DATE,
+    input_modalities JSON,
+    output_modalities JSON,
+    raw_metadata JSON,
+    review_status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+    matched_provider_model_id BIGINT UNSIGNED,
+    last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_sync_candidate_provider_source_model_cap (provider_id, sync_source, model_name, inferred_capability),
+    INDEX idx_sync_candidate_job (job_id),
+    INDEX idx_sync_candidate_provider_status (provider_id, review_status),
+    INDEX idx_sync_candidate_model_cap (provider_id, model_name, inferred_capability)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 AUTO_INCREMENT=10000 COMMENT '外部模型目录同步候选表';
+
 -- 2.2 统一可执行 LLM 配置表
 CREATE TABLE IF NOT EXISTS llm_model_config (
     id                  BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '全局配置 ID',
@@ -503,6 +548,23 @@ CREATE TABLE IF NOT EXISTS workflow_node_run (
     KEY idx_workflow_node_run_inherited (inherited_from_run_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '通用流程编排节点运行记录表';
 
+-- 20. 管理端 MQ 可靠投递账本（migration 0041；发送仍使用既有 MQService）
+CREATE TABLE IF NOT EXISTS management_mq_outbox (
+    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '物理主键',
+    event_key       VARCHAR(128) NOT NULL COMMENT '业务事件幂等键',
+    topic           VARCHAR(128) NOT NULL COMMENT '目标 MQ topic',
+    message_body    MEDIUMTEXT NOT NULL COMMENT '裸 JSON 消息体',
+    message_key     VARCHAR(128) DEFAULT NULL COMMENT '分区或路由 key',
+    status          VARCHAR(16) NOT NULL DEFAULT 'PENDING' COMMENT 'PENDING/CLAIMED/SENT',
+    attempt_count   INT NOT NULL DEFAULT 0 COMMENT '投递尝试次数',
+    next_attempt_at DATETIME NOT NULL COMMENT '下次允许投递时间；CLAIMED 为租约到期时间',
+    sent_at         DATETIME DEFAULT NULL COMMENT '确认投递时间',
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    UNIQUE KEY uk_management_outbox_event (event_key),
+    KEY idx_management_outbox_due (status, next_attempt_at, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '管理端解析与删除消息可靠投递账本';
+
 -- 自增起始值统一为 10000
 ALTER TABLE sys_user AUTO_INCREMENT = 10000;
 ALTER TABLE llm_system_provider AUTO_INCREMENT = 10000;
@@ -524,3 +586,4 @@ ALTER TABLE kb_document_chunk AUTO_INCREMENT = 10000;
 ALTER TABLE dataset_parse_config AUTO_INCREMENT = 10000;
 ALTER TABLE workflow_run AUTO_INCREMENT = 10000;
 ALTER TABLE workflow_node_run AUTO_INCREMENT = 10000;
+ALTER TABLE management_mq_outbox AUTO_INCREMENT = 10000;

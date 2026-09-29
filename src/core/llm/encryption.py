@@ -58,14 +58,14 @@ def decrypt_api_key(encrypted: str) -> str:
 
 
 def mask_api_key(api_key: str) -> str:
-    """掩码 API Key，只显示前4后4位
+    """按 Java ApiKeyEncryptService 的规则只显示前 3 位与后 4 位。
 
     Args:
         api_key: 原始 API Key
 
     Returns:
-        掩码后的字符串，如 sk-****....****1234
+        掩码后的字符串，如 sk-****....1234
     """
-    if len(api_key) <= 8:
+    if len(api_key) < 10:
         return "****"
-    return f"{api_key[:4]}****....****{api_key[-4:]}"
+    return f"{api_key[:3]}****....{api_key[-4:]}"

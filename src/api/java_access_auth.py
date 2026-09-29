@@ -1,8 +1,8 @@
 """Java 登录 access JWT 的 Python 独立验证入口。
 
-Java 仍是唯一登录与签发方。Python 使用 RS256 公钥离线验签，再从共享 MySQL 读取
-用户当前状态与角色；不回调 Java，也不解析 Sa-Token Redis 内部结构，同时不接受
-任何旧 recall session token。
+Java 仍是唯一实际登录与签发方。Python 使用 RS256 公钥验签，再从共享 MySQL 读取
+用户当前状态与角色。配置 B1 桥接后，还回调 Java 核验 Sa-Token 会话；不解析其
+Redis 内部结构，也不接受旧 recall session token。
 """
 
 from __future__ import annotations
@@ -84,19 +84,40 @@ def _positive_subject(claims: dict) -> int:
     return user_id
 
 
+def verify_access_claims(
+    token: str, public_key: bytes | str, issuer: str, audience: str, token_use: str
+) -> tuple[dict, int]:
+    """RAG 与管理 API 共用的 RS256 access JWT 声明校验。"""
+    claims = jwt.decode(
+        token,
+        public_key,
+        algorithms=["RS256"],
+        audience=audience,
+        issuer=issuer,
+        options={"require": ["iss", "aud", "exp", "iat", "sub", "jti", "token_use"]},
+    )
+    if claims.get("token_use") != token_use:
+        raise _unauthorized("credential type not permitted")
+    if not isinstance(claims.get("jti"), str) or not claims["jti"].strip():
+        raise _unauthorized("invalid token id in credential")
+    for name in ("iat", "exp"):
+        if isinstance(claims.get(name), bool) or not isinstance(claims.get(name), (int, float)):
+            raise _unauthorized("invalid time in credential")
+    return claims, _positive_subject(claims)
+
+
 def decode_java_access_token(token: str, request_id: str) -> tuple[dict, int]:
     """严格验证 Java RS256 access JWT，返回可信 claims 与正整数用户 ID。"""
 
     if not settings.JAVA_ACCESS_JWT_ENABLED:
         raise _unauthorized()
     try:
-        claims = jwt.decode(
+        return verify_access_claims(
             token,
             _load_public_key(settings.JAVA_ACCESS_JWT_PUBLIC_KEY_PATH),
-            algorithms=["RS256"],
-            audience=settings.JAVA_ACCESS_JWT_AUDIENCE,
-            issuer=settings.JAVA_ACCESS_JWT_ISSUER,
-            options={"require": ["exp", "iat", "sub", "jti", "token_use"]},
+            settings.JAVA_ACCESS_JWT_ISSUER,
+            settings.JAVA_ACCESS_JWT_AUDIENCE,
+            settings.JAVA_ACCESS_JWT_TOKEN_USE,
         )
     except (OSError, ValueError, jwt.PyJWTError) as exc:
         logger.bind(
@@ -108,23 +129,31 @@ def decode_java_access_token(token: str, request_id: str) -> tuple[dict, int]:
         ).info("[java-access-auth] token rejected request_id={}", request_id)
         raise _unauthorized() from exc
 
-    if claims.get("token_use") != settings.JAVA_ACCESS_JWT_TOKEN_USE:
-        raise _unauthorized("credential type not permitted")
-    token_id = claims.get("jti")
-    if not isinstance(token_id, str) or not token_id.strip():
-        raise _unauthorized("invalid token id in credential")
-    return claims, _positive_subject(claims)
-
 
 async def verify_user_token(
     request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> AuthContext:
-    """独立验证 Java 登录 access JWT；不调用 Java，不接受其他 token 类型。"""
+    """验证 Java 登录 access JWT；配置 B1 桥接时同时核验会话。"""
 
     token = _extract_bearer_token(request)
     request_id = _request_id(request)
     claims, user_id = decode_java_access_token(token, request_id)
+    # Once Python issues sessions, its Redis registration/revocation is the
+    # authority for every user-facing API, including RAG and Wiki.  Otherwise
+    # a logged-out token remains usable here until its JWT expiry.
+    if settings.B1_PYTHON_ISSUER_ENABLED or settings.B1_JAVA_AUTH_BASE_URL:
+        from src.api.management_auth import AccessClaims
+
+        sessions = getattr(request.app.state, "identity_sessions", None)
+        try:
+            active = sessions is not None and await sessions.is_active(
+                token, AccessClaims(user_id, str(claims["jti"]), int(claims["exp"]))
+            )
+        except Exception as exc:
+            raise RecallApiError(503, CODE_INTERNAL_ERROR, "session lookup failed") from exc
+        if not active:
+            raise _unauthorized()
     try:
         identity = await load_current_user_identity(db, user_id)
     except Exception as exc:  # noqa: BLE001 - 数据库不可用时鉴权必须 fail-closed

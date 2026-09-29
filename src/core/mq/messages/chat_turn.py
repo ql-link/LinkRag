@@ -1,12 +1,9 @@
-"""对话轮次完成 MQ 消息（chat-message-persistence）。
+"""历史对话轮次 MQ 契约；B6 后仅复用 Payload 做本地落库参数。
 
-RAG 问答在 Python 端流式生成结束后，把一轮问答的**对话内容**（query / answer / 召回引用 /
-状态）汇成一条消息发往 Java；Java 消费后落库 chat_message 行并更新 chat_conversation。
-Python 不直接写这两张表的行数据。
+RAG 问答现在由 Python 直接写 chat_message 与 chat_conversation，不再生产该 MQ 消息。
+保留类型以便解析和排空迁移前已进入 Broker 的历史消息。
 
-职责拆分（LINK-191）：本消息**只负责对话内容持久化**，不再携带 token。对话 generate 的
-token 用量随统一的 ``TokenUsageMessage`` 单独上报（stage='chat'、operation='generate'），
-与对话内容解耦——避免 token 统计链路依赖携带大文本（query/answer）的消息。
+职责拆分（LINK-191）：该载荷只含对话内容，不携带 token；generate 用量独立入账。
 """
 
 from typing import List, Optional, Protocol
@@ -21,7 +18,7 @@ class ChatTurnPayload(MessagePayload):
 
     conversation_id: int = Field(..., title="所属对话ID")
     request_id: str = Field(..., title="请求追踪ID（仅追踪，不再充当幂等键）")
-    turn_id: str = Field(..., title="轮次幂等键：前端每轮稳定 UUID，Java 据此 upsert 同一行")
+    turn_id: str = Field(..., title="轮次幂等键：前端每轮稳定 UUID，Python 据此 upsert 同一行")
     user_id: int = Field(..., title="用户ID")
     query: str = Field(..., title="用户提问")
     answer: str = Field("", title="LLM回答（GENERATING/FAILED 可空或半截）")
@@ -40,16 +37,17 @@ class ChatTurnPayload(MessagePayload):
     )
     error_message: Optional[str] = Field(None, title="失败原因，不含堆栈（仅 FAILED）")
     # 会话标题：仅会话首轮携带（Python 基于 query 生成，LLM 不可用时回落首问截断）。
-    # Java 仅在当前标题为空或仍为默认「新对话」时写入并按列宽截断，不覆盖用户手改标题；
+    # Python 仅在当前标题为空或仍为默认「新对话」时写入并按列宽截断，不覆盖用户手改标题；
     # 非首轮、GENERATING 起点一律为 None。
-    title: Optional[str] = Field(None, title="首轮会话标题（Python 生成，供 Java 条件落库）")
+    title: Optional[str] = Field(None, title="首轮会话标题（Python 生成并条件落库）")
 
     # token 已从对话消息剥离（LINK-191）：generate 用量改走统一 TokenUsageMessage。
 
     model_config = {"title": "对话轮次完成载荷"}
 
+
 class ChatTurnMessage(AbstractMessage):
-    """对话轮次完成 MQ 消息（Python -> Java，供 Java 落库）。"""
+    """迁移前 Python -> Java 的历史消息类型；运行时不再发送。"""
 
     MQ_NAME = "tolink.rag.chat_turn"
     MQ_TYPE = "CHAT_TURN"

@@ -16,7 +16,7 @@ ORM 或 `scripts/db/init.sql` 与 migration 不一致时，以 migration 为准�
 | 业务域 | 表 | 主键 ID 起始 |
 | --- | --- | --- |
 | [用户](#1-用户) | `sys_user` | 10000 |
-| [LLM 配置与用量](#2-llm-配置与用量) | `llm_system_provider`, `llm_provider_model`, `llm_model_config`, `llm_capability_default`, `llm_usage_log` | 10000 |
+| [LLM 配置与用量](#2-llm-配置与用量) | `llm_system_provider`, `llm_provider_model`, `llm_provider_model_sync_job`, `llm_provider_model_sync_candidate`, `llm_model_config`, `llm_capability_default`, `llm_usage_log` | 10000 |
 | [数据集与对话](#3-数据集与对话) | `dataset`, `dataset_parse_config`, `chat_conversation`, `chat_message` | 10000 |
 | [文档解析](#4-文档解析) | `document_original_file`, `document_parse_file`, `document_parsed_log`, `document_parse_pipeline` | 10000 |
 | [博客](#5-博客) | `blog_post`, `blog_asset` | 10000 |
@@ -100,6 +100,17 @@ ORM：[`ProviderModelDB`](../../../src/models/db_models.py)
 索引：
 - `uk_provider_model_cap(provider_id, model_name, capability)`
 - `idx_provider_cap(provider_id, capability)`
+
+### `llm_provider_model_sync_job` / `llm_provider_model_sync_candidate` — 外部目录候选
+
+ORM：[`ProviderModelSyncJobDB`](../../../src/models/db_models.py) 与 [`ProviderModelSyncCandidateDB`](../../../src/models/db_models.py)；由 Alembic `0040` 新增。两表只记录外部刷新和审核候选，运行时解析只读取正式的 `llm_provider_model` 与 `llm_model_config`。
+
+| 表 | 关键字段 | 约束与索引 |
+| --- | --- | --- |
+| `llm_provider_model_sync_job` | `id BIGINT UNSIGNED PK`，`provider_id BIGINT UNSIGNED`，`sync_source VARCHAR(32)`，`status VARCHAR(16)`，`added_count/updated_count/stale_count INT`，`error_message VARCHAR(512)`，`started_at/finished_at DATETIME` | `idx_sync_job_provider(provider_id, started_at)`；`idx_sync_job_source_status(sync_source, status)`。 |
+| `llm_provider_model_sync_candidate` | `id BIGINT UNSIGNED PK`，`job_id/provider_id BIGINT UNSIGNED`，`sync_source VARCHAR(32)`，`external_model_id VARCHAR(192)`，`model_name VARCHAR(128)`，`display_name VARCHAR(64)`，`inferred_capability/inferred_protocol VARCHAR(32)`，`inferred_api_base_url VARCHAR(512)`，`context_window/max_output_tokens INT`，`model_release_date DATE`，`input_modalities/output_modalities/raw_metadata JSON`，`review_status VARCHAR(16)`，`matched_provider_model_id BIGINT UNSIGNED`，`last_seen_at/created_at/updated_at DATETIME` | `uk_sync_candidate_provider_source_model_cap(provider_id, sync_source, model_name, inferred_capability)`；按 job、provider/status、model/capability 建索引。 |
+
+候选默认 `PENDING`，发布前不改变正式模型目录。Dev 在迁移前仅有 Alembic `0039`，尚无这两张表；部署时须执行 `0040`，不可直接运行 Java 的本地初始化脚本。
 
 ### `llm_model_config` — 统一可执行配置
 
@@ -480,7 +491,7 @@ ORM：[`BlogPostDB`](../../../src/models/db_models.py)
 | --- | --- | --- |
 | `id` | BIGINT UNSIGNED PK | 博客文章唯一标识 |
 | `title` | VARCHAR(255) | 文章标题 |
-| `slug` | VARCHAR(255) | 公开访问标识，由 Java 侧生成 |
+| `slug` | VARCHAR(255) | 公开访问标识，由当前博客写入端生成 |
 | `summary` | VARCHAR(1000) | 文章摘要 |
 | `content_object_key` | VARCHAR(512) | Markdown 正文对象 Key |
 | `cover_asset_id` | BIGINT UNSIGNED | 封面资源 ID，对应 `blog_asset.id` |
@@ -518,7 +529,7 @@ ORM：[`BlogAssetDB`](../../../src/models/db_models.py)
 - `uk_blog_asset_object_key(object_key)`
 - `idx_blog_asset_post_type(post_id, asset_type, is_deleted, created_at)`
 
-说明：博客 HTTP 工作流由 Java 侧负责；Python 侧迁移链负责创建共享库表。博客资源与反馈附件的公开桶及匿名读策略由 Java 服务配置，RAG 服务不读取该配置。
+说明：B9 博客 HTTP 工作流已在 Python 实现，使用现有 PUBLIC 对象存储适配器和共享表；网关切流前 Java 仍为唯一写入端。Python 博客写入默认由 `B9_BLOG_WRITES_ENABLED=false` 关闭。
 
 ---
 
@@ -534,7 +545,7 @@ ORM：[`UserFeedbackDB`](../../../src/models/db_models.py)
 | `type` | VARCHAR(32) | 反馈类型：`BUG` / `FEATURE` / `EXPERIENCE` / `OTHER`，默认 `OTHER` |
 | `title` | VARCHAR(128) | 反馈标题 |
 | `content` | TEXT | 反馈详细内容 |
-| `attachment_object_key` | VARCHAR(512) | 附件 MinIO object key，由 Java 上传后写入 |
+| `attachment_object_key` | VARCHAR(512) | 附件 PUBLIC 桶 object key，由当前反馈写入端上传后写入 |
 | `status` | VARCHAR(32) | 处理状态：`PENDING` / `PROCESSING` / `RESOLVED` / `CLOSED`，默认 `PENDING` |
 | `priority` | TINYINT | 处理优先级：1=高，2=中，3=低，默认 3 |
 | `admin_id` | BIGINT UNSIGNED | 处理该反馈的管理员用户 ID |
@@ -679,6 +690,24 @@ ORM：[`WorkflowNodeRunDB`](../../../src/models/workflow.py)
 - `idx_workflow_node_run_inherited(inherited_from_run_id)`
 
 ---
+
+## 9. 管理端 MQ 投递账本
+
+### `management_mq_outbox` — B5 消息投递账本（migration 0041）
+
+ORM：[`ManagementMQOutboxDB`](../../../src/models/db_models.py)。解析任务指针或文件/数据集软删与对应事件在同一 MySQL 事务中写入。`event_key` 唯一，`message_body` 保存与 Java 兼容的裸 JSON；发送仍调用现有 `MQService.send_raw`。`PENDING/CLAIMED/SENT` 与 `next_attempt_at` 支持租约到期补发。Broker 已收但确认丢失时可能重复投递，消费者仍按业务 task ID 或删除范围幂等处理。该表不得保存 API Key 明文。
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | BIGINT UNSIGNED PK | 物理主键 |
+| `event_key` | VARCHAR(128) UNIQUE | 解析 task ID 或删除对象的稳定事件键 |
+| `topic` / `message_key` | VARCHAR(128) | 目标 topic 与可空路由 key |
+| `message_body` | MEDIUMTEXT | 裸 JSON 消息体 |
+| `status` / `attempt_count` | VARCHAR(16) / INT | 投递状态与尝试次数 |
+| `next_attempt_at` / `sent_at` | DATETIME | 重试租约及发送确认时间 |
+| `created_at` / `updated_at` | DATETIME | 创建及更新时间 |
+
+索引：`uk_management_outbox_event(event_key)`、`idx_management_outbox_due(status,next_attempt_at,id)`。
 
 ## 字段命名约定
 

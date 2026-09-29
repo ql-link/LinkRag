@@ -14,11 +14,11 @@ def test_build_default_topic_specs_emits_dlt_siblings() -> None:
 
     # 业务 topic 与 DLT 一一对应（每个业务 topic 对应一个 DLT）
     assert len(business) == len(dlt)
-    assert len(business) >= 4  # parse_task / usage_report / chat_turn / document_delete
+    assert {s.name for s in business} == {"tolink.rag.parse_task", "tolink.rag.document_delete"}
 
     biz_by_name = {s.name: s for s in business}
     for d in dlt:
-        original = d.name[:-len(".DLT")]
+        original = d.name[: -len(".DLT")]
         assert original in biz_by_name, f"DLT {d.name} 没有对应业务 topic"
         b = biz_by_name[original]
         # 同规格：partition / replication / retention / 副本约束 / 单消息大小一致

@@ -4,13 +4,76 @@
 
 ## 1. 通用约定
 
-- API 前缀按模块划分：`/api/v1/parser`、`/api/v1/mq`、`/api/v1/llm`、`/api/v1/internal/llm`、`/api/v1/rag`、`/api/v1/recall`、`/api/v1/wiki`。
+- API 前缀按模块划分：`/api/v1/parser`、`/api/v1/mq`、`/api/v1/llm`、`/api/v1/internal/llm`、`/api/v1/rag`、`/api/v1/recall`、`/api/v1/wiki`、`/api/v1/auth`、`/api/v1/user`、`/api/v1/admin/users`。
+
 - 所有 HTTP 请求可带 `X-Trace-Id` 请求头；未携带时 Python 端生成 UUID。响应会回显本次请求使用的 `X-Trace-Id`，日志上下文同步写入该值。
 - 普通 JSON 响应通常使用 `{code, message, data}` 或模块自定义响应模型。
 - 解析和 MQ 路由异常通常返回 HTTP `500`，`detail` 为异常文本。
 - LLM 路由在业务异常中多返回 `APIResponse(code=500, message=..., data=null)`。
 - LLM 用户级接口要求请求头 `X-User-Id`。
 - 内部 LLM 配置和用量接口为 Java 管理端内部使用，不应直接暴露给公网。
+
+### B1 身份与用户接口（按路径切流）
+
+这些路由在 Python 已注册，使用整数 `code` 的 `{code,message,data}` 响应。受保护请求从 `satoken` 请求头读取 Java/Python RS256 access JWT，验签后还要验证会话状态与 `sys_user` 当前角色/状态。未配置 Java 会话桥接或 Python 签发开关时，对应路由会明确拒绝请求；注册路由不代表已切换前端流量。
+
+| Method | Path | 身份 | `data` / 行为 |
+| --- | --- | --- | --- |
+| POST | `/api/v1/auth/login` | 匿名 | `{account,password}`；返回 `accessToken,tokenType,expiresIn,userId`。仅 Java 受保护路由已退场并显式启用 Python 签发后可用。 |
+| POST | `/api/v1/auth/register` | 匿名 | `{username,password,email}`；创建 `USER` 后自动登录，响应同上。 |
+| POST | `/api/v1/auth/logout` | 可匿名调用 | 无效或缺失 token 幂等返回成功；有效 token 撤销本次登录态，`data:null`，Java 旧会话还通过 Java 登出接口撤销。 |
+| GET / PATCH | `/api/v1/user/profile` | 登录用户 | 读取/更新当前用户资料；可修改 `nickname,email,phone,avatarUrl`，响应分别为资料对象/`null`。 |
+| POST | `/api/v1/user/avatar` | 登录用户 | multipart `file`；按文件后缀允许 jpg/jpeg/png/gif/webp，最大 5 MiB，返回更新后的资料对象；格式/大小错误码 40001，上传失败码 50002。 |
+| POST | `/api/v1/oss-files/{bizType}` | Java 现行为匿名；Python 入口默认关闭 | multipart `file`；六类规则见对象存储内部文档。PUBLIC 返回公开 URL，RAW/PRIVATE 返回 key。需确认权限矩阵后设置 `B2_GENERIC_UPLOAD_ENABLED=true` 并按路径切流；关闭时返回 503。 |
+| GET | `/api/v1/oss-files/public/{objectKey}` | 匿名，仅 PUBLIC 桶 | Python 接管此路径且启用 `B2_PUBLIC_PREVIEW_ENABLED` 时，经现有 MinIO 适配器读取公开桶；返回原字节、后缀对应 Content-Type 和 30 天缓存头。非法或不存在 key 返回 404，存储故障返回 503；关闭时返回 503。RAW/PRIVATE 不可由此读取。 |
+| GET | `/api/v1/admin/users` | ADMIN | `page` 默认 1、`size` 默认 10；返回 `items,total,page,pageSize,totalPages`。 |
+| PATCH | `/api/v1/admin/users/{user_id}/status` | ADMIN | `{status:0|1}`；`data:null`。Java 受保护路由退场前返回 503，避免禁用状态与旧会话不一致。 |
+| PATCH | `/api/v1/admin/users/{user_id}/role` | ADMIN | `{role:"ADMIN"|"USER"}`；`data:null`。 |
+
+资料对象字段为 `id,username,nickname,email,phone,avatarUrl,role,status`，不包含密码哈希。用户管理看板仍属 B8。身份模块边界与切流条件见 [identity_users.md](../internals/identity_users.md)。
+
+### B3–B5 管理与知识文件迁移接口（实施中）
+
+以下 Python 路由已注册，统一使用 B1 当前用户、数据库角色/归属与 `{code,message,data}`。注册不表示网关已切流；写入开关默认关闭。B3 旧 API Key 无法解密时配置读取返回 503，不能用空密钥替代。
+
+| 范围 | 已实现路径 | 当前限制 |
+| --- | --- | --- |
+| B3 USER | `GET /api/v1/llm/providers`、`GET /api/v1/llm/configs`、`POST /api/v1/llm/configs/setup-provider`、`PATCH/POST/DELETE /api/v1/llm/configs/{id}/*`、`GET/PUT/DELETE /api/v1/llm/defaults*` | 写入依赖 `B3_CONTROL_WRITES_ENABLED`；现有 Python runtime config cache 写后 fence 失效。 |
+| B3 ADMIN | `/api/v1/admin/llm/configs*`、`/api/v1/admin/providers*`、`/api/v1/admin/provider-models*`、`/api/v1/admin/model-sync-*` | ADMIN 身份从数据库读取；图标上传复用 B2。候选只在审核发布后进入正式目录；0040 尚未在 Dev 执行。 |
+| B4 数据集 | `GET/POST /api/v1/datasets`、`GET/PATCH/DELETE /api/v1/datasets/{id}`、`GET/PUT /api/v1/datasets/{id}/parse-config` | 创建/更新依赖 `B4_DATASET_WRITES_ENABLED`；删除另依赖 `B5_DELETE_WRITES_ENABLED`。 |
+| B5 文件 | `GET /api/v1/document-file-capabilities`、`GET/POST /api/v1/datasets/{id}/files`、`GET /api/v1/files/recent`、`GET/POST/DELETE /api/v1/files/{id}`、`GET /api/v1/datasets/{id}/files/parse-results` | 上传与解析依赖 `B5_FILE_WRITES_ENABLED`，删除依赖 `B5_DELETE_WRITES_ENABLED`。普通 Markdown 无本地图片引用时按 RAW 原件上传。资源包请求接收 `matchMode`（`FULL_PATH`/`SHALLOW_BASENAME`）、`documentPath`、重复的 `assets`、对应的 `assetRelativePaths` 和可选 `assetInventoryPaths`；响应含 `assetSummary`。上传成功后原件、规范化 Markdown、命中图片和 v1 manifest 均在 RAW 桶，解析仍通过 MQ。能力接口只在文件写入开关启用时宣告资源包支持。 |
+| B5 内部内容 | `GET /api/v1/internal/files/{id}/content` | 仅接受独立服务 Bearer token；浏览器 access JWT 不能代替。 |
+
+B5 解析和删除消息使用 0041 `management_mq_outbox` 同事务记账，再由现有 `MQService` 投递；Broker 确认不确定时可能按同一业务 ID 重发。目标环境未执行 0040/0041、未配内部文件 token/URL 或旧 Java 仍写同一路径时，不能打开对应写入开关。状态与缺口见[迁移进度](../internals/java_python_migration_progress.md)。
+
+### B6–B8 新接入路由（待 Dev 对照与切流）
+
+这些路由使用 F0 的 `{code,message,data}` 响应和 B1 登录态；对话与用量只按当前登录用户查询，管理运维只允许 `ADMIN`。
+
+| 范围 | 路径 | 行为 |
+| --- | --- | --- |
+| B6 会话 | `POST/GET /api/v1/chat/conversations`、`GET /api/v1/chat/conversations/{id}/messages`、`PATCH/DELETE /api/v1/chat/conversations/{id}` | 创建、分页、标题/置顶更新和删除；轮次由 RAG 运行时直接持久化。 |
+| B6 引用 | `POST /api/v1/knowledge/chunks/batch` | 请求 `{chunkIds:[...]}`；仅返回当前用户可见的 ACTIVE Chunk。 |
+| B7 用量 | `GET /api/v1/llm/usage/{summary,daily,logs,by-model,trend}` | 必传 `startDate,endDate`；前三项 `stage` 默认 `chat`，`all` 表示全链路；日志分页用 `page,pageSize`。 |
+| B8 看板 | `GET /api/v1/admin/users/dashboard?days=7\|30\|90` | 默认 30 日，返回角色/状态分布、新增/活跃与逐日趋势。 |
+| B8 上传配置 | `GET/PUT /api/v1/admin/document-file-config` | PUT 完整覆盖 `{maxSizeBytes,allowedSuffixes}`；写入默认关闭，需切流后设置 `B8_DOCUMENT_CONFIG_WRITES_ENABLED=true` 且默认指纹一致，Redis 写入成功后生效。 |
+| B8 日志 | `GET /api/v1/admin/logs`、`GET /api/v1/admin/logs/labels` | 日志筛选参数 `service,level,trace_id,keyword,start_time,end_time,page,page_size`；代理 Loki。 |
+
+实现与切流边界见 [B6–B8 迁移说明](../internals/b6_b8_migration.md)。
+
+### B9 博客与 B10 反馈（代码已接入，待切流）
+
+| 范围 | 路径 | 行为 |
+| --- | --- | --- |
+| B9 管理 | `GET/POST /api/v1/admin/blog/posts`、`GET/PATCH/DELETE /api/v1/admin/blog/posts/{id}` | 仅 ADMIN；文章列表、草稿创建、详情、元数据更新和软删。写操作依赖 `B9_BLOG_WRITES_ENABLED`。 |
+| B9 正文 | `PUT /api/v1/admin/blog/posts/{id}/content`、`POST /api/v1/admin/blog/posts/{id}/content/import`（兼容 `/content`） | 保存 Markdown 或上传 UTF-8 Markdown；对象写入现有 PUBLIC 桶。支持内联 data URI 图片入库；远程 HTTP(S) 图片在安全和大小校验通过时转存，失败时保留原链接。 |
+| B9 发布 | `POST /api/v1/admin/blog/posts/{id}/publish`、`/unpublish` | 发布前校验正文对象存在；首次发布记录时间；撤回后公开接口返回 404。 |
+| B9 资源 | `GET/POST /api/v1/admin/blog/posts/{id}/assets`、`DELETE /api/v1/admin/blog/posts/{id}/assets/{assetId}` | COVER/CONTENT_IMAGE 图片上传、列表与删除；被正文引用的图片不可删除。 |
+| B9 公开 | `GET /api/v1/blog/posts`、`GET /api/v1/blog/posts/{slug}` | 匿名读取仅已发布文章；详情支持 ETag、`If-None-Match` 和 304。 |
+| B10 提交 | `POST /api/v1/feedback` | 匿名 multipart `type,title,content,file?`；附件复用 B2 feedback 上传规则及 PUBLIC 桶，DB 失败补偿删除对象。依赖 `B10_FEEDBACK_WRITES_ENABLED`。 |
+| B10 管理 | `GET /api/v1/admin/feedback`、`GET/PATCH /api/v1/admin/feedback/{id}/*` | 仅 ADMIN；按状态/类型分页与详情，更新 `status`、`priority`、`reply`。写操作依赖 `B10_FEEDBACK_WRITES_ENABLED`。 |
+
+两项写入开关默认关闭。启用前应保证 Java 对应写入口已退场，并核验共享数据库、PUBLIC 桶访问及公开 URL。
 
 ## 2. Parser API
 
@@ -194,8 +257,11 @@ parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权�
 
 ## 6. RAG / Recall API（对外）
 
-**面向浏览器前端**：前端凭 Java 登录返回的同一枚 **access JWT** 直连 Python，
-无需再向 Java 换取召回 token；旧短期 session token 不再接受。
+**面向浏览器前端**：前端凭登录返回的同一枚 **access JWT** 直连 Python。
+本地统一后端模式下，现有前端仍调用 `POST /api/v1/recall/sessions`；该 Python 兼容入口
+先核验 `satoken` 和显式非空的 `datasetIds` 归属，再返回同一枚有效 access JWT、
+`streamUrl=/api/v1/rag/stream`、已验证的数据集 ID 和剩余有效秒数。它不签发另一种令牌。
+旧短期 session token 不再接受。
 两个端点拆分语义（LINK-131）——`/api/v1/rag/stream` 承接「召回 + LLM 流式生成」的完整 RAG
 问答（SSE），`/api/v1/recall` 是纯召回 JSON（一次性返回 hits，不生成）。运行时与会话鉴权细节见
 [docs/internals/recall_http_api.md](../internals/recall_http_api.md)。
@@ -209,6 +275,7 @@ parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权�
 | --- | --- | --- | --- | --- |
 | `POST` | `/api/v1/rag/stream` | 召回 + LLM 流式生成的完整 RAG 问答 | `text/event-stream` | Header `Authorization: Bearer <access-token>` |
 | `POST` | `/api/v1/recall` | 纯召回，一次性返回融合候选（预留实现） | `application/json` | Header `Authorization: Bearer <access-token>` |
+| `POST` | `/api/v1/recall/sessions` | 兼容浏览器现有召回握手，校验当前数据集归属 | `Result<{token,streamUrl,datasetIds,expiresIn}>` | Header `satoken: <access-token>` |
 
 ### POST /api/v1/rag/stream
 
@@ -216,11 +283,13 @@ parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权�
 请求头：`Authorization: Bearer <access-token>`、`Content-Type: application/json`、可选
 `Origin`（CORS）、`X-Request-Id`。
 
-access token 由 Java 登录签发，Java 以 RS256 私钥签名，Python 只持有公钥并独立校验；
+access token 在双端过渡期由 Java 登录签发；本地 Java 退场模式由 Python 签发并登记 Redis 会话。
+两种模式都以 RS256 私钥签名、公钥验签；
 claims 至少包含 `iss=tolink-java`、`aud` 含 `tolink-rag-api`、`token_use=access`、
 `sub`、`iat`、`exp`、`jti`。Python 不回调 Java，也不解析 Sa-Token Redis。
 access token 不携带 `dataset_ids`；用户状态、角色和数据集归属均读取当前 MySQL 事实。
-Python 只接受上述 RS256 access JWT，不支持 HS256 recall session token，也不调用 Java 做远程校验。
+Python 只接受上述 RS256 access JWT，不支持 HS256 recall session token。本地 Python 签发模式
+还会逐次校验 Redis 会话有效性，注销后管理、RAG 与 Wiki 请求均会被拒绝。
 
 请求体（仅以下字段；出现 `user_id` / `top_k` / `sources` / `strict` / `doc_ids` 等任何未知
 字段返回 `422`）：

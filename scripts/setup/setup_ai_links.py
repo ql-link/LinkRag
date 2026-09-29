@@ -9,6 +9,7 @@
 
     python scripts/setup/setup_ai_links.py
 """
+
 from __future__ import annotations
 
 import os

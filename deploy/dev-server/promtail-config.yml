@@ -14,7 +14,7 @@ scrape_configs:
       - targets: [localhost]
         labels:
           environment: dev
-          service_name: tolink-service
+          service: tolink-service
           __path__: /var/log/tolink-service/**/*.log
 
   - job_name: tolink-rag-dev
@@ -22,5 +22,5 @@ scrape_configs:
       - targets: [localhost]
         labels:
           environment: dev
-          service_name: tolink-rag
+          service: tolink-rag
           __path__: /var/log/tolink-rag/**/*.log

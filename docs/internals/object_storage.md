@@ -26,12 +26,15 @@ PdfParserService
 
 ## 2. 核心接口
 
-`BaseObjectStorage` 定义三个方法：
+`BaseObjectStorage` 定义以下方法（另外保留按前缀删除）：
 
 ```python
 download_to_path(bucket: str, object_key: str, dst: pathlib.Path) -> None
 upload_bytes(bucket: str, object_key: str, content: bytes, content_type: str) -> None
 build_object_url(bucket: str, object_key: str) -> str
+upload_path(bucket: str, object_key: str, source: pathlib.Path, content_type: str) -> None
+remove_object(bucket: str, object_key: str) -> None
+build_public_url(bucket: str, object_key: str) -> str
 ```
 
 约定：
@@ -42,6 +45,11 @@ build_object_url(bucket: str, object_key: str) -> str
   `download_bytes` 已于"解析任务 OOM 风险治理"中下线。
 - `upload_bytes` 负责写入对象和 content type；markdown 上传体积小（KB 级），保持现状。
 - `build_object_url` 返回服务内部或外部可访问 URL；MinerU 官方云端解析依赖该 URL 可被外部访问。
+- `upload_path` 从路径流式上传大对象；在异步 API 中调用同步 boto3 方法时应移到 worker thread。
+- `remove_object` 只删除非空、非目录的精确 key；S3 删除不存在对象仍可幂等成功。
+- `build_public_url` 只接受 `MINIO_PUBLIC_BUCKET`，且必须显式设置 `MINIO_PUBLIC_BASE_URL`。
+  `MINIO_PUBLIC_BASE_URL` 是公开资源路由前缀，返回值为此前缀加对象 key，不再插入桶名，
+  与 Java `public-base-url` 保持一致。公开 URL 不回退到内部 MinIO 地址，私有桶不得调用此方法。
 
 ## 3. 当前实现
 
@@ -53,7 +61,10 @@ build_object_url(bucket: str, object_key: str) -> str
 `StorageFactory.get_storage()` 根据 `settings.STORAGE_TYPE` 选择实现：
 
 - `minio` -> `MinioStorage`
-- `oss` -> `OssStorage`
+- `oss` -> 明确拒绝（占位实现尚不可用于运行环境）
+
+应用启动时调用 `StorageFactory.validate_provider()`，因此选择 `oss` 或未知 provider
+会在拉起 MQ 消费者之前失败。
 
 ## 4. 配置
 
@@ -65,6 +76,8 @@ build_object_url(bucket: str, object_key: str) -> str
 - `MINIO_SECRET_KEY`
 - `MINIO_PRIVATE_BUCKET`
 - `MINIO_RAW_BUCKET`
+- `MINIO_PUBLIC_BUCKET`
+- `MINIO_PUBLIC_BASE_URL`
 - `MINIO_USE_SSL`
 - `MINIO_PUBLIC_ENDPOINT`
 
@@ -72,6 +85,11 @@ MinIO endpoint 可带 `http://` 或 `https://`；不带 scheme 时由 `MINIO_USE
 `MINIO_PUBLIC_ENDPOINT` 可选，仅用于 `build_object_url` 生成给云端解析器或浏览器访问的对象 URL；为空时复用 `MINIO_ENDPOINT`。S3 SDK 读写仍固定使用 `MINIO_ENDPOINT`，避免公网反向代理影响签名请求。
 `MINIO_PRIVATE_BUCKET` 是 RAG 文档默认桶，也是 Python 侧全部格式（含 `md`/`markdown`）解析产物的实际写入桶；
 `MINIO_RAW_BUCKET` 是 Java 写、Python 只读的原文件桶。Markdown v1 的规范化源文件和配套图片都在此桶，Python 不通过 Java HTTP 或预签名 URL 取图；
+`MINIO_PUBLIC_BUCKET` 默认 `tolink-public`，用于后续头像、博客等公开资源业务；Dev 与 Java 对齐为 `tolink-dev-public`。
+`MINIO_PUBLIC_BASE_URL` 是其浏览器路由前缀，可以是同源相对路径 `/api/v1/oss-files/public` 或网关完整地址；为空时公开 URL 构造失败。
+Dev 公开桶没有匿名读取策略，不能直接把 MinIO 桶 URL 返回给浏览器。Python 在 `B2_PUBLIC_PREVIEW_ENABLED=true` 时复用 `StorageFactory`，只从 PUBLIC 桶读取 `/api/v1/oss-files/public/{objectKey}`，按后缀返回 Content-Type；公开路径的网关切流须与该开关配套。该路由不访问 RAW/PRIVATE。生产环境若已有网关公开路由，也可保持该开关关闭。
+
+迁移中的 B2 通用上传复用同一 `StorageFactory`。`src/application/object_uploads.py` 保存 Java 的六类业务规则：`avatar`、`providerIcon`、`chatImage` 为 PUBLIC 图片 5 MiB；`feedback` 为 PUBLIC 指定后缀 10 MiB；`document` 为 RAW 的 `pdf/doc/docx/txt/md`、上限 20 MiB；`cert` 为 PRIVATE 5 MiB。PUBLIC 返回公开 URL，RAW/PRIVATE 只返回对象 key。`B2_GENERIC_UPLOAD_ENABLED=false` 默认关闭兼容入口，待匿名访问权限矩阵和网关切流确认后启用；B1 头像已复用其校验和上传流程。
 
 ## 5. 在解析链路中的使用
 

@@ -29,6 +29,18 @@ class BaseObjectStorage(ABC):
         """上传对象内容。"""
 
     @abstractmethod
+    def upload_path(self, bucket: str, object_key: str, source: Path, content_type: str) -> None:
+        """从磁盘流式上传，调用方负责路径生命周期。"""
+
+    @abstractmethod
+    def remove_object(self, bucket: str, object_key: str) -> None:
+        """按精确 key 删除单个对象；重复删除应幂等。"""
+
+    @abstractmethod
+    def build_public_url(self, bucket: str, object_key: str) -> str:
+        """仅为公开桶返回浏览器可访问 URL，不允许私有桶。"""
+
+    @abstractmethod
     def build_object_url(self, bucket: str, object_key: str) -> str:
         """构造对象访问 URL。"""
 

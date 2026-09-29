@@ -1,19 +1,14 @@
-"""统一 Token 用量上报 MQ 消息（Python -> Java/统计侧，供 Java 落库 llm_usage_log）。
+"""历史 Token 用量 MQ 契约；B7 后仅复用 Payload 做本地入账参数。
 
 承载**全部**模型调用的 token 用量：对话 chat generate、解析 embed/vision/table、召回
 embed/rerank。每条消息描述「某用户、某阶段、某操作、用了哪个模型、消耗多少 token」，由
-Java 消费后直接落 llm_usage_log 一行（可空字段缺失时落 NULL）。
+Python 直接落 llm_usage_log 一行，不再生产该 MQ 消息。
 
 口径：token 一律由模型返回，向量类调用 completion_tokens=0。stage/operation 标识归属，
 由发起调用的业务层填——provider 层不知道自己处在哪个阶段。
 
-与 ``chat_turn`` 区分：``chat_turn`` 只承载对话内容（query/answer/references），负责
-``chat_message`` 持久化，**不再携带 token**；对话 generate 的 token 用量随本消息上报
-（stage='chat'、operation='generate'）。
-
-> 兼容性：MQ topic 与 mq_type 沿用历史值 ``tolink.rag.usage_report`` / ``USAGE_REPORT``，
-> Java 现有 usage_report 消费者无需重新绑定 topic——本次变化对 Java 是纯增量（该消费者现在
-> 也会收到 generate 行），仅需 chat_turn 消费者停止据其写 llm_usage_log generate 行。
+与对话内容分离：`chat_turn` 只承载 query/answer/references，generate 用量记录
+`stage='chat'`、`operation='generate'`。Topic 和 mq_type 常量保留用于历史消息排障。
 """
 
 from typing import Optional, Protocol
@@ -45,9 +40,9 @@ class TokenUsagePayload(MessagePayload):
 
 
 class TokenUsageMessage(AbstractMessage):
-    """统一 Token 用量上报 MQ 消息。"""
+    """迁移前 Python -> Java 的历史消息类型；运行时不再发送。"""
 
-    # topic / type 沿用历史值，避免 Java 重新绑定 queue（详见模块 docstring）。
+    # topic / type 沿用历史值，仅用于兼容旧消息。
     MQ_NAME = "tolink.rag.usage_report"
     MQ_TYPE = "USAGE_REPORT"
 

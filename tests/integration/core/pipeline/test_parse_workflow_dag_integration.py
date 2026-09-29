@@ -6,7 +6,7 @@
   - 失败注入重试：某阶段首跑失败 → 续跑跳过已成功节点、按需 restore、重跑失败链。
 
 真实依赖：MinIO / MySQL / Qdrant / Manticore / 嵌入模型。
-使用 user_id=10000（DB 内已配置 default+active 的 EMBEDDING 与 SPARSE_EMBEDDING）。
+使用 user_id=10000 的现有测试数据集，并像生产入口一样加载其模型绑定快照。
 markdown passthrough 源文件，避免依赖 MinerU 公网解析。
 
 运行：
@@ -27,6 +27,7 @@ from sqlalchemy import delete, func, select
 
 from src.bootstrap.nltk_data import configure_nltk_data_path
 from src.config import settings
+from src.core.dataset_config import DatasetExecutionContextLoader, DatasetExecutionPurpose
 from src.core.mq.messages.parse_task import ParseTaskMessage
 from src.core.pipeline.parse_task.workflow_demo import (
     ParseWorkflowRunner,
@@ -87,7 +88,7 @@ def _bootstrap_nltk() -> None:
     configure_nltk_data_path()
 
 
-_ISOLATED_QDRANT_COLLECTION = "__dagtest_chunks"
+_ISOLATED_QDRANT_COLLECTION = f"__dagtest_chunks_{uuid.uuid4().hex[:8]}"
 
 
 @pytest.fixture(scope="module", autouse=True)
@@ -110,7 +111,7 @@ def _isolated_qdrant_collection():
 
             host = str(settings.QDRANT_HOST)
             url = host if host.startswith("http") else f"http://{host}:{settings.QDRANT_PORT}"
-            client = AsyncQdrantClient(url=url, timeout=30)
+            client = AsyncQdrantClient(url=url, api_key=settings.QDRANT_API_KEY, timeout=30)
             cols = await client.get_collections()
             for c in cols.collections:
                 if c.name == _ISOLATED_QDRANT_COLLECTION:
@@ -147,7 +148,7 @@ async def _db_lifecycle():
 async def parse_case():
     """准备一次真实解析所需的源文件与 DB 行，结束后清理产物。
 
-    yield 出 ``(payload, doc_id)``。清理覆盖：MinIO 源/markdown 对象、chunk 真值行、
+    yield 出 ``(payload, doc_id, execution_context)``。清理覆盖：MinIO 源/markdown 对象、chunk 真值行、
     ES 文档索引、DocumentParseTask 行。Qdrant 向量点以唯一 chunk_id 落库，不会跨用例
     冲突，最佳努力随 chunk 行一并清理（删 chunk 行即移除真值，向量点为孤儿无副作用）。
     """
@@ -180,6 +181,9 @@ async def parse_case():
             )
         )
         await db.commit()
+        execution_context = await DatasetExecutionContextLoader(db).load(
+            _TEST_USER_ID, _TEST_DATASET_ID, DatasetExecutionPurpose.PARSE
+        )
 
     payload = ParseTaskMessage.build(
         task_id=task_id,
@@ -196,7 +200,7 @@ async def parse_case():
     ).get_payload()
 
     try:
-        yield payload, doc_id
+        yield payload, doc_id, execution_context
     finally:
         # ---- 清理：chunk 行 / BM25 索引 / DB 任务行 / MinIO 对象 ----
         async with factory() as db:
@@ -249,7 +253,7 @@ async def _point_vector_names(doc_id: int) -> dict[str, set[str]]:
         )
     host = str(settings.QDRANT_HOST)
     url = host if host.startswith("http") else f"http://{host}:{settings.QDRANT_PORT}"
-    client = AsyncQdrantClient(url=url, timeout=60)
+    client = AsyncQdrantClient(url=url, api_key=settings.QDRANT_API_KEY, timeout=60)
     out: dict[str, set[str]] = {}
     try:
         records = await client.retrieve(
@@ -337,13 +341,14 @@ def _assert_run_ok(run) -> None:
     ids=["serial", "parallel"],
 )
 async def test_full_success(parse_case, build_definition, max_concurrency):
-    payload, doc_id = parse_case
+    payload, doc_id, execution_context = parse_case
     runner = ParseWorkflowRunner(store=InMemoryWorkflowStore())
 
     run = await runner.run(
         payload,
         definition=build_definition(biz_key=payload.task_id),
         max_concurrency=max_concurrency,
+        execution_context=execution_context,
     )
 
     _assert_run_ok(run)
@@ -356,11 +361,16 @@ async def test_full_success(parse_case, build_definition, max_concurrency):
 
 
 async def test_resume_after_success_skips_all_nodes(parse_case):
-    payload, doc_id = parse_case
+    payload, doc_id, execution_context = parse_case
     runner = ParseWorkflowRunner(store=InMemoryWorkflowStore())
     definition = build_parse_task_demo_workflow(biz_key=payload.task_id)
 
-    first = await runner.run(payload, definition=definition, max_concurrency=4)
+    first = await runner.run(
+        payload,
+        definition=definition,
+        max_concurrency=4,
+        execution_context=execution_context,
+    )
     _assert_run_ok(first)
 
     second = await runner.run(
@@ -368,6 +378,7 @@ async def test_resume_after_success_skips_all_nodes(parse_case):
         definition=definition,
         previous_run_id=first.run_id,
         max_concurrency=4,
+        execution_context=execution_context,
     )
     assert second.status == RunStatus.SUCCESS
     for key in _ALL_NODES:
@@ -389,7 +400,7 @@ async def test_resume_after_success_skips_all_nodes(parse_case):
     ids=["serial", "parallel"],
 )
 async def test_retry_after_dense_failure(parse_case, build_definition, max_concurrency):
-    payload, doc_id = parse_case
+    payload, doc_id, execution_context = parse_case
     store = InMemoryWorkflowStore()
 
     base = ParseWorkflowRunner(store=store)
@@ -398,7 +409,12 @@ async def test_retry_after_dense_failure(parse_case, build_definition, max_concu
     definition = build_definition(biz_key=payload.task_id)
 
     # 首跑：dense 写向量阶段抛错。
-    first = await runner.run(payload, definition=definition, max_concurrency=max_concurrency)
+    first = await runner.run(
+        payload,
+        definition=definition,
+        max_concurrency=max_concurrency,
+        execution_context=execution_context,
+    )
     assert first.status == RunStatus.FAILED
     assert first.nodes["dense_vectorizing"].status == NodeStatus.FAILED
     assert injected.tripped
@@ -412,6 +428,7 @@ async def test_retry_after_dense_failure(parse_case, build_definition, max_concu
         definition=definition,
         previous_run_id=first.run_id,
         max_concurrency=max_concurrency,
+        execution_context=execution_context,
     )
     _assert_run_ok(second)
     assert second.nodes["cleaning"].status == NodeStatus.SKIPPED
@@ -441,13 +458,14 @@ async def test_retry_after_dense_failure(parse_case, build_definition, max_concu
     ids=["serial", "parallel"],
 )
 async def test_dense_sparse_coexist_on_same_point(parse_case, build_definition, max_concurrency):
-    payload, doc_id = parse_case
+    payload, doc_id, execution_context = parse_case
     runner = ParseWorkflowRunner(store=InMemoryWorkflowStore())
 
     run = await runner.run(
         payload,
         definition=build_definition(biz_key=payload.task_id),
         max_concurrency=max_concurrency,
+        execution_context=execution_context,
     )
     _assert_run_ok(run)
 
@@ -469,7 +487,7 @@ async def test_dense_sparse_coexist_on_same_point(parse_case, build_definition, 
     ids=["serial", "parallel"],
 )
 async def test_retry_after_sparse_failure(parse_case, build_definition, max_concurrency):
-    payload, doc_id = parse_case
+    payload, doc_id, execution_context = parse_case
     store = InMemoryWorkflowStore()
 
     base = ParseWorkflowRunner(store=store)
@@ -478,7 +496,12 @@ async def test_retry_after_sparse_failure(parse_case, build_definition, max_conc
     definition = build_definition(biz_key=payload.task_id)
 
     # 首跑：sparse 阶段抛错；dense 不依赖 sparse，应已成功。
-    first = await runner.run(payload, definition=definition, max_concurrency=max_concurrency)
+    first = await runner.run(
+        payload,
+        definition=definition,
+        max_concurrency=max_concurrency,
+        execution_context=execution_context,
+    )
     assert first.status == RunStatus.FAILED
     assert first.nodes["sparse_vectorizing"].status == NodeStatus.FAILED
     assert injected.tripped
@@ -491,6 +514,7 @@ async def test_retry_after_sparse_failure(parse_case, build_definition, max_conc
         definition=definition,
         previous_run_id=first.run_id,
         max_concurrency=max_concurrency,
+        execution_context=execution_context,
     )
     _assert_run_ok(second)
     assert second.nodes["dense_vectorizing"].status == NodeStatus.SKIPPED
@@ -512,7 +536,7 @@ async def test_retry_after_ensure_points_failure(parse_case):
     """ensure_points 是 dense/sparse 解耦的单写者前置。它失败时两路都不应推进；
     续跑补建点后，dense / sparse 各自写入，最终共存。仅测并行拓扑（解耦的关键路径）。
     """
-    payload, doc_id = parse_case
+    payload, doc_id, execution_context = parse_case
     store = InMemoryWorkflowStore()
 
     base = ParseWorkflowRunner(store=store)
@@ -521,7 +545,12 @@ async def test_retry_after_ensure_points_failure(parse_case):
     definition = build_parse_task_demo_workflow(biz_key=payload.task_id)
 
     # 首跑：ensure_points 抛错 → dense / sparse 因 POINTS_READY 缺失而不被调度。
-    first = await runner.run(payload, definition=definition, max_concurrency=4)
+    first = await runner.run(
+        payload,
+        definition=definition,
+        max_concurrency=4,
+        execution_context=execution_context,
+    )
     assert first.status == RunStatus.FAILED
     assert first.nodes["ensure_points"].status == NodeStatus.FAILED
     assert injected.tripped
@@ -537,6 +566,7 @@ async def test_retry_after_ensure_points_failure(parse_case):
         definition=definition,
         previous_run_id=first.run_id,
         max_concurrency=4,
+        execution_context=execution_context,
     )
     _assert_run_ok(second)
     assert second.nodes["chunking"].status == NodeStatus.SKIPPED

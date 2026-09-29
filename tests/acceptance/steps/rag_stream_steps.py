@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
@@ -161,6 +162,7 @@ class _State:
     no_content: bool = False
     rerank_unavailable: bool = False
     provider_stream_called: bool = False
+    persisted_turns: list = field(default_factory=list)
     _settings_snapshot: dict = field(default_factory=dict)
     _redis_snapshot: dict = field(default_factory=dict)
     _runtime_snapshot: dict = field(default_factory=dict)
@@ -180,8 +182,10 @@ class _State:
         # 模型解析与正文回填用状态可控替身，隔离 DB / LLM。
         self._runtime_snapshot["aresolve_model"] = recall_stream_runtime.aresolve_model
         self._runtime_snapshot["fetch_chunk_contents"] = recall_stream_runtime.fetch_chunk_contents
-        self._runtime_snapshot["MQService"] = recall_stream_runtime.MQService
+        self._runtime_snapshot["write_transaction"] = recall_stream_runtime.write_transaction
+        self._runtime_snapshot["persist_chat_turn"] = recall_stream_runtime.persist_chat_turn
         self._route_snapshot["aresolve_recall_execution"] = rag.aresolve_recall_execution
+        self._route_snapshot["owned_conversation"] = rag.owned_conversation
 
         async def _resolve(*args, **kwargs):
             if not self.model_available:
@@ -204,9 +208,17 @@ class _State:
             }
             return cfg, contexts
 
-        class _NoopMQ:
-            async def send(self, message):
-                return None
+        async def _owned_conversation(_db, _user_id, _conversation_id):
+            requested = (self.body or {}).get("dataset_ids") or self.claims.get("dataset_ids", [1])
+            return SimpleNamespace(dataset_id=requested[0])
+
+        @asynccontextmanager
+        async def _transaction():
+            yield object()
+
+        async def _persist(_db, payload):
+            self.persisted_turns.append(payload)
+            return True
 
         async def _fetch(chunk_ids, user_id):
             if self.no_content:
@@ -215,8 +227,10 @@ class _State:
 
         recall_stream_runtime.aresolve_model = _resolve
         recall_stream_runtime.fetch_chunk_contents = _fetch
-        recall_stream_runtime.MQService = _NoopMQ
+        recall_stream_runtime.write_transaction = _transaction
+        recall_stream_runtime.persist_chat_turn = _persist
         rag.aresolve_recall_execution = _recall_execution
+        rag.owned_conversation = _owned_conversation
 
     def restore(self) -> None:
         for name, value in self._settings_snapshot.items():
@@ -345,7 +359,9 @@ def _fire_to(state: _State, url: str, *, with_token: bool) -> None:
         app.dependency_overrides.pop(verify_user_token, None)
     client = TestClient(app)
     state.response = client.post(
-        url, json={"query": "任意", "config_id": CONFIG_ID, "dataset_ids": [1]}, headers=headers
+        url,
+        json={"query": "任意", "config_id": CONFIG_ID, "dataset_ids": [1]},
+        headers=headers,
     )
 
 

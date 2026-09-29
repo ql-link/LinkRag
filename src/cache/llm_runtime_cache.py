@@ -62,6 +62,14 @@ class LLMRuntimeCache:
             return RuntimeCacheLookup(hit=True, not_found=True)
         return RuntimeCacheLookup(hit=True, value=envelope.value)
 
+    async def invalidate(self, config_id: int) -> None:
+        """Fence before deleting data so an in-flight DB read cannot refill stale state."""
+        await self._store.invalidate(
+            data_key=self.data_key(config_id),
+            fence_key=self.fence_key(config_id),
+            fence_ttl_seconds=2592000,
+        )
+
     async def read_fence(self, config_id: int) -> int:
         return await self._store.read_fence(self.fence_key(config_id))
 

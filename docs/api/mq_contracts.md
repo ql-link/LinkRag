@@ -1,6 +1,6 @@
 # MQ Integration
 
-本文面向**业务方**（通常是 Java 管理端）介绍如何通过 MQ 与 toLink-Rag 协作：投递解析任务、读取解析终态。
+本文面向业务方介绍解析和删除任务的 MQ 契约。B6/B7 迁移代码已将 `chat_turn`、`usage_report` 改为 Python 本地持久化，后文这两种消息仅为旧 Java 消费者排空和历史兼容保留；新接入方不得继续投递。文档解析的 `parse_task` 和异步清理的 `document_delete` 仍使用 MQ。详见 [B6–B8 迁移说明](../internals/b6_b8_migration.md)。
 
 权威消息定义见 [src/core/mq/messages](../../src/core/mq/messages)，本文是面向接入方的精简版。
 
@@ -310,3 +310,6 @@ Swagger 文档：`http://<host>:<port>/docs`
 - 配置项详解：[configure.md](../ops/configure.md)
 - MQ 模块架构：[mq.md](../internals/mq.md)
 - 解析任务流水线：[parse_task_pipeline.md](../internals/parse_task_pipeline.md)
+## B5 Python 生产者迁移状态
+
+迁移中的 Python 文件/数据集控制面沿用 `tolink.rag.parse_task` 与 `tolink.rag.document_delete` 的既有 topic 和扁平裸 JSON 字段，发送复用 `MQService.send_raw`。`management_mq_outbox`（0041）保存事务内待发消息；未确认时会用同一 `task_id` 或删除业务身份重发，因此消费端必须继续按原幂等规则处理。未完成真实 MQ 对照前，B5 写入默认关闭。

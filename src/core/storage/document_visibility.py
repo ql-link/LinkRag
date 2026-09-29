@@ -25,6 +25,7 @@ document_original_file_table = table(
     column("id", Integer),
     column("dataset_id", Integer),
     column("user_id", Integer),
+    column("original_filename", String),
     column("is_deleted", Boolean),
 )
 

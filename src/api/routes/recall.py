@@ -20,13 +20,16 @@
 from __future__ import annotations
 
 import json
+import time
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.java_access_auth import AuthContext, verify_user_token
+from src.api.management_auth import CurrentUser, require_login
+from src.api.management_http import BusinessError, ManagementRouter, success
 from src.application.recall_errors import (
     CODE_DATASET_MODEL_BINDING_REQUIRED,
     CODE_INVALID_REQUEST,
@@ -38,6 +41,7 @@ from src.application.recall_pipeline_provider import (
     build_recall_request_from_config,
     get_recall_pipeline,
 )
+from src.config import settings
 from src.core.llm.exceptions import (
     DatasetModelBindingRequiredError,
     LLMConfigResolutionError,
@@ -47,6 +51,42 @@ from src.core.storage.dataset_scope import resolve_user_dataset_scope
 from src.database import get_db
 
 router = APIRouter(prefix="/api/v1/recall", tags=["recall"])
+session_router = ManagementRouter(prefix="/api/v1/recall", tags=["recall"])
+
+
+class RecallSessionRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    datasetIds: list[int] = Field(min_length=1)
+
+
+@session_router.post("/sessions")
+async def create_recall_session(
+    request: Request,
+    body: RecallSessionRequest,
+    user: CurrentUser = Depends(require_login),
+    db: AsyncSession = Depends(get_db),
+):
+    """Adapt the browser's existing handshake to Python's active access JWT."""
+    if not settings.B1_PYTHON_ISSUER_ENABLED:
+        raise BusinessError(503, "Python 登录签发尚未启用", 503)
+    if any(type(dataset_id) is not int or dataset_id <= 0 for dataset_id in body.datasetIds):
+        raise BusinessError(400, "数据集 ID 不合法", 400)
+    try:
+        dataset_ids = await resolve_user_dataset_scope(
+            db, user_id=user.user_id, requested_dataset_ids=body.datasetIds
+        )
+    except RecallApiError as exc:
+        raise BusinessError(exc.status_code, exc.message, exc.status_code) from exc
+    token = request.headers.get("satoken", "")
+    claims = request.app.state.management_authenticator._verifier.verify(token)
+    return success(
+        {
+            "token": token,
+            "streamUrl": "/api/v1/rag/stream",
+            "datasetIds": dataset_ids,
+            "expiresIn": max(0, claims.expires_at - int(time.time())),
+        }
+    )
 
 
 class RecallJsonRequest(BaseModel):

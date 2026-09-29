@@ -151,6 +151,7 @@ update_tag() {
 if [[ "$component" == rag ]]; then
   config_source="$source_dir/deploy/dev-server"
   for name in Dockerfile.service loki-config.yml promtail-config.yml nginx.conf \
+    nginx-b9-b10.conf \
     configure-dev-env.sh \
     generate-dev-llm-migration-inputs.py; do
     install -m 600 "$config_source/$name" "$dev_root/$name"

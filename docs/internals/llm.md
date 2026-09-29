@@ -128,7 +128,7 @@ API Key 不写入文档 / 测试 / 提交；用户密钥库内密文保存，读
 1. 在 `src/core/llm/providers/` 下新增 adapter 文件，继承 `BaseProvider`，按协议实现 `generate/stream/embed/rerank`，声明 `_capabilities`。
 2. 在 `ModelFactory._register_default_providers()` 按 `protocol` 注册（key 为协议名）。
 3. 若协议有特殊 URL 规则（如 google），在 adapter 内封装，不要外泄到分发层。
-4. DB 侧由 Java 管理端维护 `protocol` / `api_base_url` 事实列。
+4. DB 侧由当前单一写入者维护 `protocol` / `api_base_url` 事实列。B3 Python 管理端已实现正式目录与候选审核/发布代码，切流前仍由 Java 写入。
 5. 在 `tests/unit/core/llm` 补单测（分发、能力矩阵、URL、未知组合）。
 
 ## 8. 测试建议
