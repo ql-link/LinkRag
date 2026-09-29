@@ -187,27 +187,27 @@ Kafka 以 `file_type` 作为 partition key。RabbitMQ 使用默认交换器按
 
 不存在 "部分成功" 状态。中间步骤的细节状态由 toLink-Rag 写入 `document_parse_pipeline`，前端通过 Java 查询接口读取。
 
-## 对话轮次上报（Python→Java）
+## 历史对话轮次载荷（不再投递）
 
-RAG 问答在 Python 端（`/api/v1/rag/stream`）以**后台任务**执行，生成起点与终态各发一条 `ChatTurnMessage`，由 **Java 消费并落库**：在单事务里 upsert `chat_message` 一行（一行一轮：query + answer 同行），并更新 `chat_conversation` 的 `last_config_id` / `last_model_name` / `updated_at`。Python 侧不写这两张表。
+`ChatTurnMessage` 是迁入前 Python→Java 的兼容载荷，不再是当前 MQ 契约。RAG 问答在 Python 端（`/api/v1/rag/stream`）以后台任务执行；起点与终态均由 `recall_stream_runtime` 在本地事务中调用 `persist_chat_turn`，按 `turn_id` upsert `chat_message` 并更新 `chat_conversation`。该类型只作为进程内参数对象和排空既有 Broker 消息的参考，新接入方不得投递。
 
-> 职责拆分（LINK-191）：本消息**只负责对话内容持久化，不再携带 token**；本轮 `generate` 的 token 用量随统一的[用量上报消息](#用量上报pythonjava统计侧)单独上报（`stage='chat'`、`operation='generate'`），不再由 `chat_turn` 触发 `llm_usage_log` 落库。动机：token 统计链路不应依赖携带大文本（query/answer）的消息。
+> 职责拆分（B6/B7）：对话内容和用量仍分开持久化；`generate` 由 Python 用 `stage='chat'`、`operation='generate'` 在后台写入 `llm_usage_log`，不随对话轮次写入。历史载荷不含 token。
 
-落库时序（chat-stream-resilient-persist）：生成任务**起点**先发 `status=GENERATING`（`answer` 空），**终态**再发 `COMPLETED`/`FAILED`，两条消息携带同一 `turn_id`，Java 据 `turn_id` **upsert 同一行**（起点插「生成中」行，终态更新该行）。客户端断连不取消任务，生成续跑到终态并落库。
+落库时序（chat-stream-resilient-persist）：生成任务在本地先写 `status=GENERATING`（`answer` 空），终态再写 `COMPLETED`/`FAILED`；两次使用同一 `turn_id`，由 Python upsert 同一行（起点插「生成中」行，终态更新该行）。客户端断连不取消任务，生成续跑到终态并落库。
 
-会话标题（LINK-209）：标题**生成职责完全在 Python**——首轮（前端在 `/rag/stream` 传 `is_first_turn=true`）基于 `query` 调用本轮对话模型生成短标题，随终态 `chat_turn.title` 上报，并通过 SSE `conversation_title` 事件即时回前端。Java 不再发起任何标题 LLM 调用、也不再用首问截断造临时标题，仅作条件落库：当 `chat_conversation.title` 为空或仍为默认「新对话」时写入上游 `title`，否则跳过（不覆盖用户手改）。
+会话标题由 Python 生成并通过 SSE `conversation_title` 回前端；首轮终态仅在 `chat_conversation.title` 为空或仍为默认「新对话」时由 Python 条件写入，不覆盖用户手改。
 
 ### Topic
 
-- 实际收发 topic：`tolink.rag.chat_turn`（由 `ChatTurnMessage.MQ_NAME` 固定）。
+- `tolink.rag.chat_turn` 是保留的历史常量；当前运行时不收发，也不会自动创建该 Topic/Queue。
 
 ### 消息体（ChatTurnPayload）
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `conversation_id` | int | ✅ | 所属对话 ID（前端请求 `/rag/stream` 时传入，由 Java 预先创建） |
+| `conversation_id` | int | ✅ | 所属对话 ID（由 `/api/v1/chat/conversations` 创建） |
 | `request_id` | string | ✅ | 请求追踪 ID（每 HTTP 请求级，**不再充当幂等键**；幂等键改用 `turn_id`） |
-| `turn_id` | string | ✅ | 轮次幂等键：前端每轮生成的稳定 UUID（断连重连不变），Java 据此 **upsert 同一行** → `chat_message.turn_id`（唯一） |
+| `turn_id` | string | ✅ | 轮次幂等键：前端每轮生成的稳定 UUID（断连重连不变），Python 据此 **upsert 同一行** → `chat_message.turn_id`（唯一） |
 | `user_id` | int | ✅ | 用户 ID |
 | `query` | string | ✅ | 用户提问 → `chat_message.query` |
 | `answer` | string | ✅ | LLM 回答 → `chat_message.answer`（`GENERATING`/`FAILED` 可空或半截串） |
@@ -219,30 +219,27 @@ RAG 问答在 Python 端（`/api/v1/rag/stream`）以**后台任务**执行，�
 | `status` | string | ✅ | `GENERATING`（生成起点占位）/ `COMPLETED`（成功或空命中占位）/ `FAILED`（任意失败，含生成超时） |
 | `error_code` | string | ⬜ | 失败码（仅 `FAILED`）：`RECALL_*`（前置/生成失败）或 `GENERATION_TIMEOUT`（生成超时）→ `chat_message.error_code` |
 | `error_message` | string | ⬜ | 失败原因（仅 `FAILED`），不含堆栈 → `chat_message.error_message` |
-| `title` | string | ⬜ | 会话标题，**仅会话首轮终态携带**（Python 基于 `query` 生成，LLM 不可用/失败时回落首问截断）→ `chat_conversation.title`。Java 仅在当前标题为空或仍为默认「新对话」时写入并按列宽（255）截断，**不覆盖用户手动改过的标题**；`GENERATING` 起点与非首轮一律为 `null` |
+| `title` | string | ⬜ | 会话标题，**仅会话首轮终态携带**（Python 基于 `query` 生成，LLM 不可用/失败时回落首问截断）→ `chat_conversation.title`。Python 仅在当前标题为空或仍为默认「新对话」时写入并按列宽（255）截断，**不覆盖用户手动改过的标题**；`GENERATING` 起点与非首轮一律为 `null` |
 
-> `prompt_tokens` / `completion_tokens` / `total_tokens` 已从本消息**移除**（LINK-191），改由统一用量消息承载；`provider_type` / `latency_ms` 仍保留供 Java 落库快照。
+> `prompt_tokens` / `completion_tokens` / `total_tokens` 已从本消息移除；`provider_type` / `latency_ms` 仍保留，供 Python 直接落库时写入对话快照。
 
 > 公共信封字段 `message_id` / `timestamp` 由消息基类自动附带（见 [§协议要点](#协议要点)）。
 > 旧值 `success`/`partial`/`failed` 已退役；`partial` 取消——断连不再产生半截终态（任务续跑到 `COMPLETED`），唯一半截场景为生成超时 → `FAILED` + `GENERATION_TIMEOUT`（保留已生成文本）。
 
 ### 路由键与语义
 
-- 路由键：`conversation_id`，保证同一对话的起点与终态有序投递；Java upsert 以 `turn_id` 为准、按 `status` 不回退。
-- **每轮至少两条**：起点 `GENERATING` + 终态（`COMPLETED`/`FAILED`），同 `turn_id`。
-- **空召回也落库**：0 命中或全部片段缺正文时回 `recall_done`，并发 `COMPLETED`（`answer` 空占位），不再「不产生对话轮次」。
-- **缺 `conversation_id` / `turn_id` 不发消息**：`/rag/stream` 缺任一直接 422，不进入召回生成。
-- **最终一致**：Python 端发送失败仅告警、不影响已返回答案；Java 侧以 `turn_id` 幂等 upsert，配合对账补偿。
-- **归属校验（Java 必做）**：`conversation_id` 来自前端请求体，`user_id` 取自 access token claims，Python 仅透传、不校验二者归属关系。Java 落库前**必须**校验 `conversation_id` 属于该 `user_id`（不匹配则丢弃/告警），否则存在跨用户写入他人对话的风险。
+- **每轮至少两次本地写入**：起点 `GENERATING` + 终态（`COMPLETED`/`FAILED`），同 `turn_id`。
+- **空召回也落库**：0 命中或全部片段缺正文时回 `recall_done`，并写 `COMPLETED`（`answer` 空占位），不再「不产生对话轮次」。
+- **缺 `conversation_id` / `turn_id` 不进入生成**：`/rag/stream` 缺任一直接 422。
+- **归属校验（Python）**：`conversation_id` 与 token 中的 `user_id` 在建流前和持久化时都校验所有权；不匹配拒绝写入。
 
-## 用量上报（Python→Java/统计侧）
+## 历史用量载荷（不再投递）
 
-**全部模型调用**的 token 用量经统一的 `TokenUsageMessage` 上报，由 Java 消费后落 `llm_usage_log` 一行：对话 `generate`（stage=`chat`）、解析侧 dense embed / 图片增强(vision) / 表格增强(table)、召回侧 query embed / rerank。对话内容持久化另走 [`chat_turn`](#对话轮次上报pythonjava)，与本用量解耦（LINK-191）。
+`TokenUsageMessage` 是迁入前 Python→Java 的兼容载荷，不再是当前 MQ 契约。全部模型调用的 token 用量（对话 `generate`、解析 dense embed / 图片增强(vision) / 表格增强(table)、召回 query embed / rerank）由 Python 的 `usage_reporter` 在后台直接写 `llm_usage_log`；对话内容持久化另走本地 `persist_chat_turn`。
 
 ### Topic
 
-- 实际收发 topic：`tolink.rag.usage_report`（由 `TokenUsageMessage.MQ_NAME` 固定）。
-- **topic / mq_type 沿用历史值**（`tolink.rag.usage_report` / `USAGE_REPORT`）：Java 现有 usage_report 消费者无需重新绑定 queue，本次对 Java 是纯增量——该消费者现在也会收到 `generate` 行。
+- `tolink.rag.usage_report` / `USAGE_REPORT` 是保留的历史常量；当前运行时不收发，也不会自动创建该 Topic/Queue。
 
 ### 消息体（TokenUsagePayload）
 
@@ -265,15 +262,11 @@ RAG 问答在 Python 端（`/api/v1/rag/stream`）以**后台任务**执行，�
 
 ### 路由键与语义
 
-- 路由键：`user_id`，按用户分区。
 - **口径**：token 一律由模型返回，Python 不自算；向量类 `completion_tokens=0`。
 - **token 由模型返回的取舍**：`sparse` 向量模型若返回 `usage`，Python 会按 `operation='sparse'` 上报并带实际绑定的 `config_id`；未返回 token 时跳过上报。
 - **解析侧粒度**：task 级聚合——每个解析任务每 operation 上报一条（token 在任务内累加），不落 chunk 级明细。全缓存命中（token=0）不上报。
-- **旁路、最终一致**：用量是事后算账的旁路记录。Python 上报失败仅告警、不阻断解析/召回主链路，丢一条用量可接受。
-- **发送观测**：成功日志记录 `message_id`、用户、厂商、模型、`stage`、`operation`、
-  三类 token、任务锚点和发送耗时；失败日志记录同一摘要与异常类型。不会记录模型请求或
-  响应正文。
-- **Java 落库**：字段直映射 `llm_usage_log`；历史表列 `config_id` 仍可空，但新消息必须是正整数。对话 `generate` 的行也经本消息上报（`stage='chat'`、`operation='generate'`），不再由 `chat_turn` 落 `llm_usage_log`。
+- **旁路、最终一致**：用量是事后算账的旁路记录。Python 后台写入失败仅告警、不阻断解析/召回主链路，丢一条用量可接受。
+- **本地入账**：字段直映射 `llm_usage_log`；历史表列 `config_id` 仍可空，但 Python 新写入必须为正整数。对话 `generate` 同样由该后台写入处理，不随对话轮次入账。
 
 ## 协议要点
 
