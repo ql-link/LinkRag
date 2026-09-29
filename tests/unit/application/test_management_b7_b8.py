@@ -12,7 +12,7 @@ from sqlalchemy import BigInteger, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.ext.compiler import compiles
 
-from src.api.management_auth import require_login, require_role
+from src.api.management_auth import require_login
 from src.api.routes import admin_operations as admin_routes
 from src.application import admin_operations, usage_ledger
 from src.models.db_models import UsageLogDB
@@ -111,15 +111,9 @@ async def test_admin_only_and_upload_config_failure_keeps_snapshot(monkeypatch):
     app.dependency_overrides[require_login] = lambda: SimpleNamespace(user_id=7, role="USER")
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         assert (await client.get("/api/v1/admin/logs/labels")).status_code == 403
-    admin_dependency = require_role("ADMIN")
-    # The route stores the dependency callable in its graph; override the exact object.
-    for route in app.routes:
-        for dependency in getattr(
-            route, "dependant", SimpleNamespace(dependencies=[])
-        ).dependencies:
-            if dependency.call.__name__ == "dependency":
-                admin_dependency = dependency.call
-    app.dependency_overrides[admin_dependency] = lambda: SimpleNamespace(user_id=7, role="ADMIN")
+    # require_role 的闭包依赖 require_login，改为 ADMIN 身份即可通过角色校验，
+    # 不依赖 FastAPI 内部路由结构（0.140 起 include_router 惰性展开，app.routes 取不到 dependant）。
+    app.dependency_overrides[require_login] = lambda: SimpleNamespace(user_id=7, role="ADMIN")
     monkeypatch.setattr(admin_routes.settings, "B8_DOCUMENT_CONFIG_WRITES_ENABLED", True)
 
     async def failing_set(*_args, **_kwargs):

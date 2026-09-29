@@ -25,6 +25,13 @@ class CacheInvalidationError(RuntimeError):
     """数据库已提交，但跨端用户资料缓存失效失败。"""
 
 
+def _iso(value) -> str | None:
+    """DATETIME 列按驱动不同可能返回 datetime 或字符串，统一输出 ISO 文本。"""
+    if not value:
+        return None
+    return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+
 def _profile(row: Mapping[Any, Any]) -> dict:
     return {
         "id": int(row["id"]),
@@ -35,7 +42,13 @@ def _profile(row: Mapping[Any, Any]) -> dict:
         "avatarUrl": row["avatar_url"],
         "role": row["role"],
         "status": int(row["status"]),
+        "bio": row.get("bio"),
+        "team": row.get("team"),
+        "createdAt": _iso(row.get("created_at")),
     }
+
+
+_PROFILE_COLUMNS = "id,username,nickname,email,phone,avatar_url,role,status,bio,team,created_at"
 
 
 def _shanghai_now() -> datetime:
@@ -198,10 +211,7 @@ class IdentityUsers:
             row = (
                 (
                     await session.execute(
-                        text(
-                            "SELECT id,username,nickname,email,phone,avatar_url,role,status "
-                            "FROM sys_user WHERE id=:uid"
-                        ),
+                        text(f"SELECT {_PROFILE_COLUMNS} FROM sys_user WHERE id=:uid"),
                         {"uid": user_id},
                     )
                 )
@@ -218,10 +228,16 @@ class IdentityUsers:
             "email": "email",
             "phone": "phone",
             "avatarUrl": "avatar_url",
+            "bio": "bio",
+            "team": "team",
         }
         values = {columns[k]: v for k, v in changes.items() if k in columns and v is not None}
         if "email" in values:
             values["email"] = values["email"].strip() or None
+        for optional in ("bio", "team"):
+            # 简介 / 团队允许清空：空白字符串存为 NULL。
+            if optional in values:
+                values[optional] = values[optional].strip() or None
         if not values:
             return
         assignments = ",".join(f"{name}=:{name}" for name in values)
@@ -242,6 +258,68 @@ class IdentityUsers:
             raise BusinessError(20007, "邮箱已被使用", 409) from exc
         await _evict_profile(user_id)
 
+    async def refresh(self, token: str, claims: AccessClaims) -> dict:
+        """用仍有效的令牌换取新令牌（滑动续期），并撤销旧令牌。"""
+        AccessTokenIssuer.from_settings()
+        async with get_db_context() as session:
+            row = (
+                (
+                    await session.execute(
+                        text("SELECT role,status FROM sys_user WHERE id=:uid"),
+                        {"uid": claims.user_id},
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if row is None:
+            raise BusinessError(401, "未登录或登录已过期", 401)
+        if int(row["status"]) != 1:
+            raise BusinessError(20003, "账号已被禁用", 403)
+        result, _ = await self._issue(claims.user_id, str(row["role"]))
+        await self._sessions.revoke(token, claims)
+        audit_event("TOKEN_REFRESH", "success", actor_id=claims.user_id)
+        return result
+
+    async def change_password(
+        self, token: str, claims: AccessClaims, current: str, new: str
+    ) -> dict:
+        """校验当前密码后更新；使该用户此前签发的全部令牌失效，并为当前客户端签发新令牌。"""
+        issuer = AccessTokenIssuer.from_settings()
+        async with get_db_context() as session:
+            row = (
+                (
+                    await session.execute(
+                        text("SELECT password_hash,role FROM sys_user WHERE id=:uid"),
+                        {"uid": claims.user_id},
+                    )
+                )
+                .mappings()
+                .one_or_none()
+            )
+        if row is None:
+            raise BusinessError(20001, "用户不存在", 404)
+        valid = await asyncio.to_thread(
+            bcrypt.checkpw, _bcrypt_input(current), row["password_hash"].encode("utf-8")
+        )
+        if not valid:
+            raise BusinessError(20008, "当前密码不正确", 400)
+        if current == new:
+            raise BusinessError(20009, "新密码不能与当前密码相同", 400)
+        password_hash = await asyncio.to_thread(
+            bcrypt.hashpw, _bcrypt_input(new), bcrypt.gensalt(prefix=b"2a")
+        )
+        async with write_transaction() as session:
+            await session.execute(
+                text("UPDATE sys_user SET password_hash=:h WHERE id=:uid"),
+                {"h": password_hash.decode("ascii"), "uid": claims.user_id},
+            )
+        # 先签发新令牌再设置失效时间点：新令牌 iat 取当前秒，失效点取下一秒之前的所有签发。
+        result, fresh = await self._issue(claims.user_id, str(row["role"]))
+        await self._sessions.revoke_all_before(claims.user_id, fresh.issued_at, issuer.ttl_seconds)
+        audit_event("PASSWORD_CHANGE", "success", actor_id=claims.user_id)
+        return result
+
     async def set_avatar(self, user_id: int, url: str) -> dict:
         await self.update_profile(user_id, {"avatarUrl": url})
         return await self.profile(user_id)
@@ -253,8 +331,8 @@ class IdentityUsers:
                 (
                     await session.execute(
                         text(
-                            "SELECT id,username,nickname,email,phone,avatar_url,role,status "
-                            "FROM sys_user ORDER BY created_at DESC,id DESC LIMIT :size OFFSET :offset"
+                            f"SELECT {_PROFILE_COLUMNS} FROM sys_user "
+                            "ORDER BY created_at DESC,id DESC LIMIT :size OFFSET :offset"
                         ),
                         {"size": size, "offset": (page - 1) * size},
                     )

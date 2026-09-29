@@ -34,6 +34,7 @@ class CreateDatasetBody(BaseModel):
 class UpdateDatasetBody(BaseModel):
     name: str | None = Field(default=None, max_length=128)
     description: str | None = Field(default=None, max_length=512)
+    status: str | None = Field(default=None, pattern="^(ACTIVE|DISABLED)$")
 
 
 class ParseConfigBody(BaseModel):

@@ -30,7 +30,8 @@ class ChatTurnPayload(MessagePayload):
     references: List[str] = Field(default_factory=list, title="召回片段 chunk_id 列表（不含正文）")
     latency_ms: Optional[int] = Field(None, title="生成延迟(毫秒)")
     status: str = Field(
-        ..., title="轮次状态：GENERATING（起点）/COMPLETED（成功或空命中）/FAILED（任意失败）"
+        ...,
+        title="轮次状态：GENERATING（起点）/COMPLETED（成功或空命中）/FAILED（任意失败）/STOPPED（用户停止）",
     )
     error_code: Optional[str] = Field(
         None, title="失败码：RECALL_*/GENERATION_TIMEOUT（仅 FAILED）"

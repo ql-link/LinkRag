@@ -48,9 +48,66 @@ async def owned_dataset(db: AsyncSession, user_id: int, dataset_id: int) -> dict
     return dict(row)
 
 
+DATASET_STATUSES = ("ACTIVE", "DISABLED")
+
+
+def _empty_stats() -> dict:
+    return {
+        "fileCount": 0,
+        "uploadingCount": 0,
+        "failedCount": 0,
+        "storageBytes": 0,
+        "chunkCount": 0,
+    }
+
+
+async def dataset_stats(db: AsyncSession, user_id: int, dataset_ids: list[int]) -> dict[int, dict]:
+    """批量聚合数据集的文件数 / 上传中 / 失败数 / 存储字节 / 有效分块数（列表页一次查询）。"""
+    stats = {dataset_id: _empty_stats() for dataset_id in dataset_ids}
+    if not dataset_ids:
+        return stats
+    params = {"uid": user_id, **{f"d{i}": v for i, v in enumerate(dataset_ids)}}
+    in_clause = ",".join(f":d{i}" for i in range(len(dataset_ids)))
+    files = (
+        await db.execute(
+            text(
+                "SELECT dataset_id, COUNT(*) AS total, "
+                "SUM(upload_status='uploading') AS uploading, "
+                "SUM(upload_status='failed') AS failed, "
+                "COALESCE(SUM(file_size),0) AS bytes "
+                "FROM document_original_file "
+                f"WHERE user_id=:uid AND is_deleted=0 AND dataset_id IN ({in_clause}) "
+                "GROUP BY dataset_id"
+            ),
+            params,
+        )
+    ).mappings()
+    for row in files:
+        item = stats[int(row["dataset_id"])]
+        item["fileCount"] = int(row["total"] or 0)
+        item["uploadingCount"] = int(row["uploading"] or 0)
+        item["failedCount"] = int(row["failed"] or 0)
+        item["storageBytes"] = int(row["bytes"] or 0)
+    chunks = (
+        await db.execute(
+            text(
+                "SELECT set_id, COUNT(*) AS total FROM kb_document_chunk "
+                f"WHERE user_id=:uid AND lifecycle_status='ACTIVE' AND set_id IN ({in_clause}) "
+                "GROUP BY set_id"
+            ),
+            params,
+        )
+    ).mappings()
+    for row in chunks:
+        stats[int(row["set_id"])]["chunkCount"] = int(row["total"] or 0)
+    return stats
+
+
 async def detail(user_id: int, dataset_id: int) -> dict:
     async with get_db_context() as db:
-        return _dto(await owned_dataset(db, user_id, dataset_id))
+        dto = _dto(await owned_dataset(db, user_id, dataset_id))
+        dto["stats"] = (await dataset_stats(db, user_id, [dataset_id]))[dataset_id]
+        return dto
 
 
 async def list_datasets(user_id: int, page: int, page_size: int) -> dict:
@@ -75,8 +132,9 @@ async def list_datasets(user_id: int, page: int, page_size: int) -> dict:
             .mappings()
             .all()
         )
+        stats = await dataset_stats(db, user_id, [int(row["id"]) for row in rows])
     return {
-        "items": [_dto(dict(row)) for row in rows],
+        "items": [_dto(dict(row)) | {"stats": stats[int(row["id"])]} for row in rows],
         "total": int(total),
         "page": page,
         "pageSize": page_size,
@@ -171,6 +229,11 @@ async def update_dataset(user_id: int, dataset_id: int, changes: dict[str, Any])
             raise BusinessError(400, "数据集名称不能为空", 400)
     if changes.get("description") is not None:
         values["description"] = changes["description"].strip()
+    if changes.get("status") is not None:
+        # 停用后 RAG / 召回 / Wiki 会按 status 排除该数据集（见 core/storage/dataset_scope.py）。
+        if changes["status"] not in DATASET_STATUSES:
+            raise BusinessError(400, "数据集状态不合法", 400)
+        values["status"] = changes["status"]
     if not values:
         raise BusinessError(400, "请至少提供一个需要更新的字段", 400)
     try:
@@ -183,6 +246,14 @@ async def update_dataset(user_id: int, dataset_id: int, changes: dict[str, Any])
             )
     except IntegrityError as exc:
         raise BusinessError(400, "当前用户下已存在同名数据集", 400) from exc
+    if "status" in values:
+        await _evict(dataset_id)
+        audit_event(
+            "DATASET_STATUS_CHANGE",
+            values["status"].lower(),
+            actor_id=user_id,
+            target_id=dataset_id,
+        )
     return await detail(user_id, dataset_id)
 
 

@@ -81,6 +81,21 @@ class UpdateProfileRequest(BaseModel):
     email: str | None = None
     phone: str | None = None
     avatar_url: str | None = Field(default=None, alias="avatarUrl")
+    bio: str | None = Field(default=None, max_length=200)
+    team: str | None = Field(default=None, max_length=64)
+
+
+class ChangePasswordRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    current_password: str = Field(min_length=1, max_length=128, alias="currentPassword")
+    new_password: str = Field(min_length=8, max_length=128, alias="newPassword")
+
+    @field_validator("new_password")
+    @classmethod
+    def reject_blank_password(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("新密码不能为空")
+        return value
 
 
 class UpdateStatusRequest(BaseModel):
@@ -143,6 +158,37 @@ async def logout(request: Request):
     except Exception as exc:
         raise BusinessError(503, "登录状态暂无法注销", 503) from exc
     return success()
+
+
+def _verified_claims(request: Request):
+    """已通过 require_login 的请求：取出当前令牌及其声明，供续期 / 改密撤销旧令牌。"""
+    token = request.headers.get("satoken") or ""
+    authenticator = getattr(request.app.state, "management_authenticator", None)
+    if authenticator is None:
+        raise BusinessError(503, "管理端认证尚未配置", 503)
+    return token, authenticator._verifier.verify(token)
+
+
+@auth_router.post("/refresh")
+async def refresh(request: Request, user: Annotated[CurrentUser, Depends(require_login)]):
+    _issuer_ready()
+    token, claims = _verified_claims(request)
+    return success(await _users(request).refresh(token, claims))
+
+
+@user_router.post("/password")
+async def change_password(
+    request: Request,
+    body: ChangePasswordRequest,
+    user: Annotated[CurrentUser, Depends(require_login)],
+):
+    _issuer_ready()
+    token, claims = _verified_claims(request)
+    return success(
+        await _users(request).change_password(
+            token, claims, body.current_password, body.new_password
+        )
+    )
 
 
 @user_router.get("/profile")

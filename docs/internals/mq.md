@@ -69,7 +69,7 @@ FastAPI lifespan（src/main.py 组合根装配 _start_mq_consumers）
 | `ParseTaskMessage` | `tolink.rag.parse_task` | Java -> Python | 触发文档解析任务（含首次解析与重试，由 `is_retry` + `previous_task_id` 区分；详见 [mq_integration.md §ParseTaskPayload](../api/mq_contracts.md)） |
 | `DocumentDeleteMessage` | `tolink.rag.document_delete` | Java -> Python | 删除通知：按 `delete_type`（dataset/file）清理解析域衍生产物，不碰原文件（详见 [mq_contracts.md §删除通知](../api/mq_contracts.md)） |
 | `TokenUsageMessage` | `tolink.rag.usage_report` | 历史兼容 | B7 后用量埋点由 Python 后台任务直接写 `llm_usage_log`，不再生产该消息；旧载荷仅供排空与兼容。 |
-| `ChatTurnMessage` | `tolink.rag.chat_turn` | 历史兼容 | B6 后 RAG 轮次在 Python 直接写 `chat_message`，不再生产该消息；同名 Payload 暂用作进程内数据对象。 |
+| `ChatTurnMessage` | `tolink.rag.chat_turn` | 历史兼容 | B6 后 RAG 轮次在 Python 直接写 `chat_message`，不再生产该消息；同名 Payload 暂用作进程内数据对象（`status` 新增 `STOPPED`：用户停止生成）。 |
 
 `ParseTaskMessage` 中的 `md_bucket` 为历史兼容字段；不论 `file_type`（含 `md`/`markdown`），解析产物实际都写入 `MINIO_PRIVATE_BUCKET` 配置桶，`md_object_key` 仍来自消息。`md`/`markdown` 透传只跳过解析引擎转换，不跳过落盘。
 

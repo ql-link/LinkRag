@@ -45,6 +45,8 @@ ORM：（未在 `src/models/` 中映射，由业务侧管理）
 | `email` | VARCHAR(128) UNIQUE | 邮箱 |
 | `phone` | VARCHAR(20) | 手机号 |
 | `avatar_url` | VARCHAR(512) | 头像地址 |
+| `bio` | VARCHAR(200) | 个人简介，可空（0042） |
+| `team` | VARCHAR(64) | 所属团队 / 部门，可空（0042） |
 | `role` | ENUM(`ADMIN`,`USER`) | 角色，默认 `USER` |
 | `status` | TINYINT | 1=正常，0=禁用 |
 | `last_login_at` | DATETIME | 最后登录时间 |
@@ -330,7 +332,7 @@ ORM：[`ChatMessageDB`](../../../src/models/db_models.py)
 | `references` | JSON | 召回片段 `chunk_id` 列表（仅标识，不含正文） |
 | `request_id` | VARCHAR(64) | 请求追踪 ID（每 HTTP 请求级，不再作幂等键） |
 | `turn_id` | VARCHAR(64) | 轮次幂等键：前端每轮稳定 UUID，Java 据此 upsert 同一行（唯一索引，既有行为 NULL） |
-| `status` | VARCHAR(16) | `GENERATING` / `COMPLETED` / `FAILED`（旧 `success`/`partial`/`failed` 退役） |
+| `status` | VARCHAR(16) | `GENERATING` / `COMPLETED` / `FAILED` / `STOPPED`（用户停止生成，保留部分答案）（旧 `success`/`partial`/`failed` 退役） |
 | `error_code` | VARCHAR(64) | 失败码 `RECALL_*`/`GENERATION_TIMEOUT`，仅 `FAILED` |
 | `error_message` | VARCHAR(512) | 失败原因，不含堆栈，仅 `FAILED` |
 | `created_at` | DATETIME | 创建时间 |

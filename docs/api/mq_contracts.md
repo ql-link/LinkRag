@@ -216,7 +216,7 @@ RAG 问答在 Python 端（`/api/v1/rag/stream`）以**后台任务**执行，�
 | `model_name` | string | ⬜ | 模型名快照（可空时为空串） |
 | `references` | string[] | ⬜ | 召回片段 `chunk_id` 列表（仅标识，不含正文）→ `chat_message.references` |
 | `latency_ms` | int | ⬜ | 生成延迟（毫秒） |
-| `status` | string | ✅ | `GENERATING`（生成起点占位）/ `COMPLETED`（成功或空命中占位）/ `FAILED`（任意失败，含生成超时） |
+| `status` | string | ✅ | `GENERATING`（生成起点占位）/ `COMPLETED`（成功或空命中占位）/ `FAILED`（任意失败，含生成超时）/ `STOPPED`（用户经 `POST /api/v1/rag/stream/{turn_id}/cancel` 停止，`answer` 为已生成部分） |
 | `error_code` | string | ⬜ | 失败码（仅 `FAILED`）：`RECALL_*`（前置/生成失败）或 `GENERATION_TIMEOUT`（生成超时）→ `chat_message.error_code` |
 | `error_message` | string | ⬜ | 失败原因（仅 `FAILED`），不含堆栈 → `chat_message.error_message` |
 | `title` | string | ⬜ | 会话标题，**仅会话首轮终态携带**（Python 基于 `query` 生成，LLM 不可用/失败时回落首问截断）→ `chat_conversation.title`。Java 仅在当前标题为空或仍为默认「新对话」时写入并按列宽（255）截断，**不覆盖用户手动改过的标题**；`GENERATING` 起点与非首轮一律为 `null` |
@@ -229,7 +229,7 @@ RAG 问答在 Python 端（`/api/v1/rag/stream`）以**后台任务**执行，�
 ### 路由键与语义
 
 - 路由键：`conversation_id`，保证同一对话的起点与终态有序投递；Java upsert 以 `turn_id` 为准、按 `status` 不回退。
-- **每轮至少两条**：起点 `GENERATING` + 终态（`COMPLETED`/`FAILED`），同 `turn_id`。
+- **每轮至少两条**：起点 `GENERATING` + 终态（`COMPLETED`/`FAILED`/`STOPPED`），同 `turn_id`。
 - **空召回也落库**：0 命中或全部片段缺正文时回 `recall_done`，并发 `COMPLETED`（`answer` 空占位），不再「不产生对话轮次」。
 - **缺 `conversation_id` / `turn_id` 不发消息**：`/rag/stream` 缺任一直接 422，不进入召回生成。
 - **最终一致**：Python 端发送失败仅告警、不影响已返回答案；Java 侧以 `turn_id` 幂等 upsert，配合对账补偿。

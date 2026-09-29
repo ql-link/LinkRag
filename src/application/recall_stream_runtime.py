@@ -24,6 +24,7 @@ from loguru import logger
 from src.application.chat_service import persist_chat_turn
 from src.application.ltr_provider import get_initialized_ltr_ranker
 from src.application.ltr_shadow_executor import get_ltr_shadow_executor
+from src.application.rag_cancellation import CancelWatcher
 from src.application.recall_errors import (
     CODE_ALL_SOURCES_FAILED,
     CODE_EMBEDDING_CONFIG_MISSING,
@@ -41,6 +42,7 @@ from src.core.llm.exceptions import LLMConfigResolutionError
 from src.core.llm.response import UsageInfo
 from src.core.llm.user_model_resolver import aresolve_model
 from src.core.mq.messages.chat_turn import ChatTurnPayload
+from src.core.pipeline.chunk_content import fetch_doc_filenames
 from src.core.pipeline.ltr import LtrRankResult
 from src.core.pipeline.ltr.features import weighted_baseline_order
 from src.core.pipeline.recall import (
@@ -284,6 +286,8 @@ async def recall_event_stream(
                 _resolve_title(resolved, recall_req.query, fallback_title, request_id)
             )
 
+        # 进度事件：前端据此展示「检索知识库」步骤（不影响终态语义，旧客户端可忽略）。
+        yield recall_event("recall_started", {})
         response = await asyncio.wait_for(
             pipeline.execute(recall_req), timeout=_remaining_recall_budget()
         )
@@ -353,6 +357,21 @@ async def recall_event_stream(
                 ),
             )
 
+        # 进度事件：召回 + 排序完成即下发最终候选，前端可在生成前先展示引用来源。
+        try:
+            file_names = await fetch_doc_filenames(
+                [h.doc_id for h in reranked_hits], recall_req.user_id
+            )
+        except Exception:  # noqa: BLE001 - 文件名仅用于展示，查询失败不影响生成
+            file_names = {}
+        yield recall_event(
+            "recall_hits",
+            {
+                "hits": serialize_reranked_hits(reranked_hits, contents, file_names),
+                "rerank_applied": rerank_applied,
+            },
+        )
+
         # 空命中 / 上下文拼装 / 流式生成（用 rerank 后的最终候选与已回填正文）。
         # token_budget 来自数据集级 recall 配置（LINK-148），透传给生成阶段上下文拼装。
         async for event in _generate_answer(
@@ -371,6 +390,7 @@ async def recall_event_stream(
             title_task,
             fallback_title,
             recall_diagnostics=response.recall_diagnostics,
+            file_names=file_names,
         ):
             yield event
     except RecallValidationError as exc:
@@ -753,6 +773,12 @@ async def _rerank_hits(
         return _degrade()
 
 
+async def _no_frames() -> AsyncGenerator:
+    """生成开始前已请求停止时的空帧流。"""
+    return
+    yield  # pragma: no cover - 使函数成为异步生成器
+
+
 async def _generate_answer(
     resolved,
     hits: list[RerankedHit],
@@ -769,6 +795,7 @@ async def _generate_answer(
     title_task: asyncio.Task | None,
     fallback_title: str | None,
     recall_diagnostics: RecallDiagnostics | None = None,
+    file_names: dict[int, str] | None = None,
 ) -> AsyncGenerator[str, None]:
     """生成模式后续：空命中判定 → 上下文拼装 → 流式生成 → 对话轮次落库通知。
 
@@ -850,7 +877,7 @@ async def _generate_answer(
             "recall_done",
             _with_recall_diagnostics(
                 {
-                    "hits": serialize_reranked_hits(hits, contents),
+                    "hits": serialize_reranked_hits(hits, contents, file_names),
                     "rerank_applied": rerank_applied,
                     "failed_sources": failed_sources,
                 }
@@ -886,14 +913,26 @@ async def _generate_answer(
     def _elapsed_ms() -> int:
         return int((time.perf_counter() - gen_started) * 1000)
 
+    # 停止生成：取消接口写 Redis 标记，这里在生成前与帧间轮询（跨 worker 生效）。
+    watcher = CancelWatcher(turn_id)
+    stopped = await watcher.cancelled(force=True)
+    if not stopped:
+        yield recall_event("generation_started", {})
     try:
-        async for chunk in resolved.provider.stream(
-            prompt=user_prompt,
-            system_prompt=RAG_GENERATION_SYSTEM_PROMPT,
+        async for chunk in (
+            _no_frames()
+            if stopped
+            else resolved.provider.stream(
+                prompt=user_prompt,
+                system_prompt=RAG_GENERATION_SYSTEM_PROMPT,
+            )
         ):
             # 生成阶段独立超时：帧间检查 deadline，超过即终止落 FAILED+GENERATION_TIMEOUT。
             if time.monotonic() > gen_deadline:
                 raise asyncio.TimeoutError
+            if await watcher.cancelled():
+                stopped = True
+                break
             if chunk.delta:
                 answer_parts.append(chunk.delta)
                 yield recall_event("answer_delta", {"text": chunk.delta})
@@ -979,6 +1018,42 @@ async def _generate_answer(
         )
         return
 
+    if stopped:
+        # 用户停止：保留已生成的半截答案，落 STOPPED 终态（不再覆盖）。
+        logger.info(
+            "[recall] generation stopped by user request_id={} turn_id={}", request_id, turn_id
+        )
+        await watcher.clear()
+        title = sent_title
+        if title_task is not None and title is None:
+            title = await _await_title_result(title_task, fallback_title)
+            if title:
+                yield recall_event("conversation_title", {"title": title})
+        yield recall_event(
+            "answer_stopped",
+            {
+                "answer": "".join(answer_parts),
+                "usage": usage.model_dump(),
+                "hits": serialize_reranked_hits(hits, contents, file_names),
+                "rerank_applied": rerank_applied,
+            },
+        )
+        await _emit_chat_turn(
+            recall_req=recall_req,
+            request_id=request_id,
+            turn_id=turn_id,
+            conversation_id=conversation_id,
+            config_id=config_id,
+            resolved=resolved,
+            answer="".join(answer_parts),
+            usage=usage,
+            references=references,
+            latency_ms=_elapsed_ms(),
+            status="STOPPED",
+            title=title,
+        )
+        return
+
     # 首轮标题：吐字期间已发则复用 sent_title；否则（LLM 比答案慢）在终态前等待并补发。
     # answer_done 必须是最后一帧业务事件，便于消费者收到后立即清除“回复中”状态。
     title = sent_title
@@ -994,7 +1069,7 @@ async def _generate_answer(
             {
                 "answer": "".join(answer_parts),
                 "usage": usage.model_dump(),
-                "hits": serialize_reranked_hits(hits, contents),
+                "hits": serialize_reranked_hits(hits, contents, file_names),
                 "rerank_applied": rerank_applied,
                 "failed_sources": failed_sources,
             }

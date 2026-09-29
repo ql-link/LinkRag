@@ -39,6 +39,7 @@ from src.api.recall_concurrency import (
 from src.application.chat_service import owned_conversation
 from src.application.recall_errors import (
     CODE_DATASET_MODEL_BINDING_REQUIRED,
+    CODE_INTERNAL_ERROR,
     CODE_INVALID_REQUEST,
     CODE_RATE_LIMITED,
     RecallApiError,
@@ -314,3 +315,40 @@ async def rag_stream(
             "X-Request-Id": ctx.request_id,
         },
     )
+
+
+@router.post("/stream/{turn_id}/cancel")
+async def cancel_rag_stream(
+    turn_id: str,
+    ctx: AuthContext = Depends(verify_user_token),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """停止生成：校验本轮归属后写入取消标记，后台生成任务在帧间感知并以 ``STOPPED`` 落库。
+
+    幂等：本轮已结束（COMPLETED/FAILED/STOPPED）时直接返回 ``stopped=False``。
+    """
+    from sqlalchemy import select
+
+    from src.application.chat_service import TERMINAL_STATUSES
+    from src.application.rag_cancellation import request_cancel
+    from src.models.db_models import ChatConversationDB, ChatMessageDB
+
+    turn_id = turn_id.strip()
+    if not turn_id or len(turn_id) > 64:
+        raise RecallApiError(400, CODE_INVALID_REQUEST, "invalid turn_id")
+    row = (
+        await db.execute(
+            select(ChatMessageDB.status)
+            .join(ChatConversationDB, ChatConversationDB.id == ChatMessageDB.conversation_id)
+            .where(ChatMessageDB.turn_id == turn_id, ChatConversationDB.user_id == ctx.user_id)
+        )
+    ).one_or_none()
+    if row is None:
+        raise RecallApiError(404, "TURN_NOT_FOUND", "turn not found")
+    if row[0] in TERMINAL_STATUSES:
+        return {"code": "OK", "message": "turn already finished", "data": {"stopped": False}}
+    try:
+        await request_cancel(turn_id)
+    except Exception as exc:  # noqa: BLE001 - Redis 不可用时无法跨 worker 传递信号
+        raise RecallApiError(503, CODE_INTERNAL_ERROR, "cancel signal unavailable") from exc
+    return {"code": "OK", "message": "cancel requested", "data": {"stopped": True}}

@@ -36,7 +36,11 @@ def serialize_recall_diagnostics(diagnostics: RecallDiagnostics) -> dict:
     }
 
 
-def serialize_reranked_hits(hits: list[RerankedHit], contents: dict[str, str]) -> list[dict]:
+def serialize_reranked_hits(
+    hits: list[RerankedHit],
+    contents: dict[str, str],
+    file_names: dict[int, str] | None = None,
+) -> list[dict]:
     """把重排后命中裁剪为最小候选；在融合字段基础上补 rerank 分与名次与 chunk 正文。
 
     ``rerank_score`` / ``rerank_rank`` 在 rerank 未生效（降级）或某候选未拿到 rerank
@@ -57,6 +61,8 @@ def serialize_reranked_hits(hits: list[RerankedHit], contents: dict[str, str]) -
             "rerank_score": h.rerank_score,
             "rerank_rank": h.rerank_rank,
             "content": contents.get(h.chunk_id, ""),
+            # 来源文件名（前端引用卡片展示）；未回填或查不到时为 None。
+            "file_name": (file_names or {}).get(int(h.doc_id)),
         }
         for h in hits
     ]

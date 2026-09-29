@@ -8,7 +8,7 @@
 --   - ORM 模型与本文件都是逻辑/测试镜像，不能反向替代 migration；
 --   - 修改字段或种子数据必须先新增 migration，再同步 ORM 与本文件。
 -- 同步时机：每条会改动表结构的 migration 落库时一并更新本文件。
--- 末次同步：migration 0038_20260730_unify_mysql_collation
+-- 末次同步：migration 0042_20260929_sys_user_profile_fields（sys_user 新增 bio / team）
 -- 0038 统一数据库及全部基础表为 utf8mb4 / utf8mb4_unicode_ci。
 -- 0036 存量升级自动复用旧系统预设密文；本快照仅表达升级后的最终结构与种子目录。
 -- 备注：0032_20260702_provider_icon_fields 兼容历史 dev 库中 provider icon 误用 0031 revision 的状态；
@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS sys_user (
     email           VARCHAR(128)   COMMENT '邮箱地址',
     phone           VARCHAR(20)    COMMENT '手机号',
     avatar_url      VARCHAR(512)   COMMENT '头像地址',
+    bio             VARCHAR(200)   COMMENT '个人简介',
+    team            VARCHAR(64)    COMMENT '所属团队 / 部门',
     role            ENUM('ADMIN', 'USER') NOT NULL DEFAULT 'USER' COMMENT '角色: ADMIN/USER',
     status          TINYINT        NOT NULL DEFAULT 1 COMMENT '状态: 1-正常, 0-禁用',
     last_login_at   DATETIME       COMMENT '最后登录时间',

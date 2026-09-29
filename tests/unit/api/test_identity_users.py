@@ -131,7 +131,7 @@ async def test_existing_user_login_register_and_admin_writes_on_shared_schema(
     async with engine.begin() as conn:
         await conn.execute(
             text(
-                "CREATE TABLE sys_user (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password_hash TEXT, nickname TEXT, email TEXT UNIQUE, phone TEXT, avatar_url TEXT, role TEXT, status INTEGER, last_login_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)"
+                "CREATE TABLE sys_user (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password_hash TEXT, nickname TEXT, email TEXT UNIQUE, phone TEXT, avatar_url TEXT, role TEXT, status INTEGER, bio TEXT, team TEXT, last_login_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)"
             )
         )
         await conn.execute(
