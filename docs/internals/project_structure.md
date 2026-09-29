@@ -99,6 +99,11 @@ toLink-Rag/                         # 仓库根目录
 │   │   │   ├── datasets.py        # B4 数据集与解析配置入口
 │   │   │   ├── document_files.py  # B5 文件与任务控制入口
 │   │   │   ├── internal_document_files.py # B5 服务令牌原文件下载
+│   │   │   ├── chat.py           # B6 对话入口
+│   │   │   ├── usage.py          # B7 用量入口
+│   │   │   ├── admin_operations.py # B8 管理与运维入口
+│   │   │   ├── blog.py           # B9 博客管理与公开入口
+│   │   │   ├── feedback.py       # B10 反馈提交与管理入口
 │   │   │   ├── llm.py
 │   │   │   ├── mq.py
 │   │   │   ├── parse.py
@@ -118,6 +123,11 @@ toLink-Rag/                         # 仓库根目录
 │   │   ├── parse_task_control.py # B5 解析任务提交
 │   │   ├── document_deletion.py  # B5 删除协调与历史残留对账
 │   │   ├── management_outbox.py  # B5 MQ 投递账本，发送复用 MQService
+│   │   ├── chat_service.py      # B6 对话持久化与查询
+│   │   ├── usage_ledger.py      # B7 用量账本
+│   │   ├── admin_operations.py  # B8 运行配置与日志
+│   │   ├── blog.py              # B9 博客文章与资源
+│   │   ├── feedback.py          # B10 用户反馈
 │   │   ├── recall_errors.py       # 召回链路共享错误类型与错误码（CODE_*）
 │   │   ├── recall_pipeline_provider.py # 召回 Pipeline 装配/提供
 │   │   ├── recall_stream_runtime.py    # RAG 问答流 SSE 运行时（/api/v1/rag/stream）
