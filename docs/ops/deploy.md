@@ -122,10 +122,12 @@ Cloud Jenkins 使用三个独立 dev 作业：`linkrag-rag-dev`、`linkrag-servi
 B9/B10 的 Dev 路由切换须在新版 Python 镜像就绪后进行。先确认容器内
 `B1_JAVA_AUTH_BASE_URL=http://tolink-dev-service:8080`、Java 公钥及 PUBLIC 桶配置可用，
 再在 `.env.dev` 中启用 `B9_BLOG_WRITES_ENABLED=true` 和
-`B10_FEEDBACK_WRITES_ENABLED=true` 并重建 RAG 容器，最后加载本仓库的
-`deploy/dev-server/nginx.conf` 并重载 Web Nginx。切换后通过 Web 网关验证公开博客、
-匿名反馈、管理员博客与反馈读写以及 Java 登录态。回退时先恢复旧 Nginx 配置指向 Java，
-再关闭两个 Python 写入开关；共享数据库记录和 PUBLIC 桶对象不做回滚删除。
+`B10_FEEDBACK_WRITES_ENABLED=true` 并重建 RAG 容器。基础 `nginx.conf` 继续指向 Java；
+发布脚本只把候选 `nginx-b9-b10.conf` 放到 Dev 主机，不会提前启用。待新 Python 直连接口验收后，
+备份 Dev 主机当前 `nginx.conf`，安装候选配置，以 `nginx -t` 校验后重载 Web Nginx。
+切换后通过 Web 网关验证公开博客、匿名反馈、管理员博客与反馈读写以及 Java 登录态。
+回退时先恢复备份的 Nginx 配置并重载，再关闭两个 Python 写入开关；共享数据库记录和
+PUBLIC 桶对象不做回滚删除。
 
 执行前会校验迁移容器实际连接目标必须是
 `development / tolink-dev-mysql:3306 / tolink_rag_dev`，不满足时直接阻断。宿主机暴露的
