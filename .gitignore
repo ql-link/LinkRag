@@ -18,6 +18,8 @@ var/
 wheels/
 *.egg-info/
 .installed.cfg
+# 前端源码目录不受上面 Python 打包规则（lib/ 等）影响
+!web/src/**
 *.egg
 
 # uv 依赖锁文件（本地生成，不入 Git）
@@ -93,3 +95,6 @@ docker-compose.override.yml
 
 # 本地临时产物（草稿、DB 备份等），不入 Git
 /tmp/
+
+# 本地联调 RS256 密钥
+.dev-keys/
