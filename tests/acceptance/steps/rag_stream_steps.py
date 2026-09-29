@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 
@@ -161,6 +162,7 @@ class _State:
     no_content: bool = False
     rerank_unavailable: bool = False
     provider_stream_called: bool = False
+    persisted_turns: list = field(default_factory=list)
     _settings_snapshot: dict = field(default_factory=dict)
     _redis_snapshot: dict = field(default_factory=dict)
     _runtime_snapshot: dict = field(default_factory=dict)
@@ -179,9 +181,19 @@ class _State:
     def install_generation_stubs(self) -> None:
         # 模型解析与正文回填用状态可控替身，隔离 DB / LLM。
         self._runtime_snapshot["aresolve_model"] = recall_stream_runtime.aresolve_model
-        self._runtime_snapshot["fetch_chunk_contents"] = recall_stream_runtime.fetch_chunk_contents
-        self._runtime_snapshot["MQService"] = recall_stream_runtime.MQService
-        self._route_snapshot["aresolve_recall_execution"] = rag.aresolve_recall_execution
+        self._runtime_snapshot["fetch_chunk_contents"] = (
+            recall_stream_runtime.fetch_chunk_contents
+        )
+        self._runtime_snapshot["write_transaction"] = (
+            recall_stream_runtime.write_transaction
+        )
+        self._runtime_snapshot["persist_chat_turn"] = (
+            recall_stream_runtime.persist_chat_turn
+        )
+        self._route_snapshot["aresolve_recall_execution"] = (
+            rag.aresolve_recall_execution
+        )
+        self._route_snapshot["owned_conversation"] = rag.owned_conversation
 
         async def _resolve(*args, **kwargs):
             if not self.model_available:
@@ -194,7 +206,9 @@ class _State:
             )
 
         async def _recall_execution(user_id, dataset_ids):
-            cfg = RecallConfig.from_settings().model_copy(update={"enable_rerank": True})
+            cfg = RecallConfig.from_settings().model_copy(
+                update={"enable_rerank": True}
+            )
             contexts = {
                 dataset_id: SimpleNamespace(
                     config=SimpleNamespace(recall=cfg),
@@ -204,9 +218,19 @@ class _State:
             }
             return cfg, contexts
 
-        class _NoopMQ:
-            async def send(self, message):
-                return None
+        async def _owned_conversation(_db, _user_id, _conversation_id):
+            requested = (self.body or {}).get("dataset_ids") or self.claims.get(
+                "dataset_ids", [1]
+            )
+            return SimpleNamespace(dataset_id=requested[0])
+
+        @asynccontextmanager
+        async def _transaction():
+            yield object()
+
+        async def _persist(_db, payload):
+            self.persisted_turns.append(payload)
+            return True
 
         async def _fetch(chunk_ids, user_id):
             if self.no_content:
@@ -215,8 +239,10 @@ class _State:
 
         recall_stream_runtime.aresolve_model = _resolve
         recall_stream_runtime.fetch_chunk_contents = _fetch
-        recall_stream_runtime.MQService = _NoopMQ
+        recall_stream_runtime.write_transaction = _transaction
+        recall_stream_runtime.persist_chat_turn = _persist
         rag.aresolve_recall_execution = _recall_execution
+        rag.owned_conversation = _owned_conversation
 
     def restore(self) -> None:
         for name, value in self._settings_snapshot.items():
@@ -250,7 +276,9 @@ def rag_acc_state(monkeypatch):
         owned = set(state.claims.get("dataset_ids", []))
         if requested_dataset_ids:
             if not set(requested_dataset_ids) <= owned:
-                raise RecallApiError(403, CODE_SCOPE_FORBIDDEN, "dataset scope is not authorized")
+                raise RecallApiError(
+                    403, CODE_SCOPE_FORBIDDEN, "dataset scope is not authorized"
+                )
             return list(requested_dataset_ids)
         return sorted(owned)
 
@@ -345,7 +373,9 @@ def _fire_to(state: _State, url: str, *, with_token: bool) -> None:
         app.dependency_overrides.pop(verify_user_token, None)
     client = TestClient(app)
     state.response = client.post(
-        url, json={"query": "任意", "config_id": CONFIG_ID, "dataset_ids": [1]}, headers=headers
+        url,
+        json={"query": "任意", "config_id": CONFIG_ID, "dataset_ids": [1]},
+        headers=headers,
     )
 
 
@@ -380,7 +410,9 @@ def _set_config(rag_acc_state, name, value):
 @given(parsers.re(r"配置对外 CORS 允许来源为 (?P<origins>.+)"))
 def _cors_config(rag_acc_state, origins):
     inner = origins.strip().strip("[]")
-    rag_acc_state.cors_origins = [p.strip().strip('"') for p in inner.split(",") if p.strip()]
+    rag_acc_state.cors_origins = [
+        p.strip().strip('"') for p in inner.split(",") if p.strip()
+    ]
 
 
 @given(parsers.re(r"配置单用户最大并发召回流数 RAG_MAX_CONCURRENT_PER_USER=(?P<n>\d+)"))
@@ -403,7 +435,11 @@ def _two_sources(rag_acc_state):
 # ---------------------------------------------------------------------------
 
 
-@given(parsers.re(r"Java access token 对应用户 sub=(?P<sub>\d+).*dataset_ids=\[(?P<ds>[^\]]*)\].*"))
+@given(
+    parsers.re(
+        r"Java access token 对应用户 sub=(?P<sub>\d+).*dataset_ids=\[(?P<ds>[^\]]*)\].*"
+    )
+)
 def _claims(rag_acc_state, sub, ds):
     rag_acc_state.claims = {"sub": sub, "dataset_ids": _parse_ds(ds)}
 
@@ -461,7 +497,9 @@ def _generation_raises(rag_acc_state):
 def _embedding_missing(rag_acc_state):
     from src.core.pipeline.recall import RecallFatalError
 
-    rag_acc_state.fake.exc = RecallFatalError("dataset dense embedding config unavailable")
+    rag_acc_state.fake.exc = RecallFatalError(
+        "dataset dense embedding config unavailable"
+    )
 
 
 @given(parsers.parse("bm25 与 sparse 两路均执行抛异常"))
@@ -598,7 +636,11 @@ def _w_exp_during_stream(rag_acc_state):
     rag_acc_state.omit_dataset = False
 
 
-@when(parsers.re(r"前端携带新 token 为用户 123 发起第 (?P<n>\d+) 条 POST /api/v1/rag/stream"))
+@when(
+    parsers.re(
+        r"前端携带新 token 为用户 123 发起第 (?P<n>\d+) 条 POST /api/v1/rag/stream"
+    )
+)
 def _w_nth_stream(rag_acc_state, n):
     rag_acc_state.body = {"query": "任意", "dataset_ids": [1]}
     _fire(rag_acc_state, with_token=True)
