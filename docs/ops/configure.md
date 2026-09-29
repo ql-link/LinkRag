@@ -402,7 +402,7 @@ Java 私钥不得进入 Python 环境、代码仓库或日志。轮换时先让 
 
 `B2_GENERIC_UPLOAD_ENABLED` 控制通用六类对象上传；`B3_CONTROL_WRITES_ENABLED` 控制模型配置 USER/SYSTEM 写入；`B4_DATASET_WRITES_ENABLED` 控制数据集创建、更新与解析配置写入；`B5_FILE_WRITES_ENABLED` 控制普通文件上传和解析提交；`B5_DELETE_WRITES_ENABLED` 控制文件/数据集删除。按路径确认 Java/Python 单一写入者、目标 schema 和真实依赖验收后再分别启用。
 
-B5 写入还要求 0041 outbox migration 已执行、`B5_INTERNAL_FILE_SERVICE_TOKEN` 有独立服务令牌、`B5_INTERNAL_FILE_BASE_URL` 指向解析服务可访问的 Python 内部文件路由；缺任一项时启动拒绝接流量。当前 Markdown 资源包上传尚未完成；B3 ADMIN 候选同步代码尚未经过真实外部源/Dev 写入验收，相关路径不得切流。B3 旧密文需要与 Java 使用同一受控密钥材料；解密失败时读配置返回 503。
+B5 写入还要求 0041 outbox migration 已执行、`B5_INTERNAL_FILE_SERVICE_TOKEN` 有独立服务令牌、`B5_INTERNAL_FILE_BASE_URL` 指向解析服务可访问的 Python 内部文件路由；缺任一项时启动拒绝接流量。Markdown 资源包上传已在本地 Python 入口接入，并用 Dev 中间件完成上传、manifest 读取及 MQ 解析；仍须核对目标环境的 Java/Python 单一写入者和切流后的前端行为。B3 ADMIN 候选同步已用临时厂商完成真实 models.dev/Dev 写入和清理；目标环境切流仍需确认单一写入者。B3 旧密文需要与 Java 使用同一受控密钥材料；解密失败时读配置返回 503。
 
 
 - `.env` 由 [src/config.py](../../src/config.py) 通过 `Settings`（pydantic-settings）加载。

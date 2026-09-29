@@ -120,6 +120,7 @@ toLink-Rag/                         # 仓库根目录
 │   │   ├── datasets.py           # B4 数据集与解析配置
 │   │   ├── document_files.py     # B5 文件读取及终态轮询
 │   │   ├── document_uploads.py   # B5 有界异步上传，复用 StorageFactory
+│   │   ├── markdown_asset_bundle.py # B5 Markdown 配套图片预检与 v1 RAW 清单
 │   │   ├── parse_task_control.py # B5 解析任务提交
 │   │   ├── document_deletion.py  # B5 删除协调与历史残留对账
 │   │   ├── management_outbox.py  # B5 MQ 投递账本，发送复用 MQService

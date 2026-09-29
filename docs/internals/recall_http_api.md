@@ -15,10 +15,11 @@ LINK-131 拆分语义——`POST /api/v1/rag/stream` 承接「召回 + LLM 流�
 
 ## 1. 边界：身份与授权归属
 
-Java 仍是唯一登录入口。登录成功后，Java 返回的 `accessToken` 同时是 Java Sa-Token 登录凭证和
-RS256 JWT；前端把**同一枚 token**作为 Bearer token 访问 Python，不再先调用
-`POST /api/v1/recall/sessions` 换取 Python 专用凭证。Python 不回调 Java，也不读取 Sa-Token Redis，
-而是使用 Java 公钥本地验签，并从共享数据库读取当前用户状态、角色及资源归属。
+双端过渡期由 Java 签发 access JWT；本地 Java 退场模式由 Python 签发并登记 Redis 会话。
+前端现有代码仍调用 `POST /api/v1/recall/sessions`：Python 校验当前登录态和显式数据集范围，
+返回**同一枚** access JWT 及相对路径 `/api/v1/rag/stream`，不签发独立召回令牌。
+流接口用该 token 本地验签，从数据库读取当前用户状态、角色及资源归属；Python 签发模式
+同时校验 Redis 登录态，使注销立即作用于 RAG 和 Wiki。
 
 Python 不信任请求体里自报的 `user_id`。身份始终来自验签后的 `sub`；新 access JWT 还会在每次请求
 核验当前 `sys_user.status/role`。旧 recall session JWT 不再接受。
@@ -43,7 +44,8 @@ Python 不信任请求体里自报的 `user_id`。身份始终来自验签后的
 
 统一依赖是 [src/api/java_access_auth.py](../../src/api/java_access_auth.py) 的 `verify_user_token`。
 它固定使用 Java 公钥和 `RS256`，校验 `iss`、Python audience、`exp`、`iat`、`sub`、`jti` 与
-`token_use=access`；验签后查询当前 `sys_user.status/role`。旧 HS256 recall session token 和远程
+  `token_use=access`；验签后查询当前 `sys_user.status/role`。Python 签发模式还校验 Redis 会话。
+  旧 HS256 recall session token 和远程
 Java token 校验均不再支持，任一验证失败统一返回 `401 ACCESS_TOKEN_UNAUTHORIZED`。
 
 新 access JWT 示例：

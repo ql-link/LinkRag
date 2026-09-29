@@ -41,7 +41,7 @@
 | B3 USER | `GET /api/v1/llm/providers`、`GET /api/v1/llm/configs`、`POST /api/v1/llm/configs/setup-provider`、`PATCH/POST/DELETE /api/v1/llm/configs/{id}/*`、`GET/PUT/DELETE /api/v1/llm/defaults*` | 写入依赖 `B3_CONTROL_WRITES_ENABLED`；现有 Python runtime config cache 写后 fence 失效。 |
 | B3 ADMIN | `/api/v1/admin/llm/configs*`、`/api/v1/admin/providers*`、`/api/v1/admin/provider-models*`、`/api/v1/admin/model-sync-*` | ADMIN 身份从数据库读取；图标上传复用 B2。候选只在审核发布后进入正式目录；0040 尚未在 Dev 执行。 |
 | B4 数据集 | `GET/POST /api/v1/datasets`、`GET/PATCH/DELETE /api/v1/datasets/{id}`、`GET/PUT /api/v1/datasets/{id}/parse-config` | 创建/更新依赖 `B4_DATASET_WRITES_ENABLED`；删除另依赖 `B5_DELETE_WRITES_ENABLED`。 |
-| B5 文件 | `GET /api/v1/document-file-capabilities`、`GET/POST /api/v1/datasets/{id}/files`、`GET /api/v1/files/recent`、`GET/POST/DELETE /api/v1/files/{id}`、`GET /api/v1/datasets/{id}/files/parse-results` | 上传与解析依赖 `B5_FILE_WRITES_ENABLED`，删除依赖 `B5_DELETE_WRITES_ENABLED`。无本地图片引用的普通 Markdown 可按 RAW 原件上传；带配套图片的资源包尚未迁移，会返回 503。能力响应不宣称完整可用。 |
+| B5 文件 | `GET /api/v1/document-file-capabilities`、`GET/POST /api/v1/datasets/{id}/files`、`GET /api/v1/files/recent`、`GET/POST/DELETE /api/v1/files/{id}`、`GET /api/v1/datasets/{id}/files/parse-results` | 上传与解析依赖 `B5_FILE_WRITES_ENABLED`，删除依赖 `B5_DELETE_WRITES_ENABLED`。普通 Markdown 无本地图片引用时按 RAW 原件上传。资源包请求接收 `matchMode`（`FULL_PATH`/`SHALLOW_BASENAME`）、`documentPath`、重复的 `assets`、对应的 `assetRelativePaths` 和可选 `assetInventoryPaths`；响应含 `assetSummary`。上传成功后原件、规范化 Markdown、命中图片和 v1 manifest 均在 RAW 桶，解析仍通过 MQ。能力接口只在文件写入开关启用时宣告资源包支持。 |
 | B5 内部内容 | `GET /api/v1/internal/files/{id}/content` | 仅接受独立服务 Bearer token；浏览器 access JWT 不能代替。 |
 
 B5 解析和删除消息使用 0041 `management_mq_outbox` 同事务记账，再由现有 `MQService` 投递；Broker 确认不确定时可能按同一业务 ID 重发。目标环境未执行 0040/0041、未配内部文件 token/URL 或旧 Java 仍写同一路径时，不能打开对应写入开关。状态与缺口见[迁移进度](../internals/java_python_migration_progress.md)。
@@ -257,8 +257,11 @@ parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权�
 
 ## 6. RAG / Recall API（对外）
 
-**面向浏览器前端**：前端凭 Java 登录返回的同一枚 **access JWT** 直连 Python，
-无需再向 Java 换取召回 token；旧短期 session token 不再接受。
+**面向浏览器前端**：前端凭登录返回的同一枚 **access JWT** 直连 Python。
+本地统一后端模式下，现有前端仍调用 `POST /api/v1/recall/sessions`；该 Python 兼容入口
+先核验 `satoken` 和显式非空的 `datasetIds` 归属，再返回同一枚有效 access JWT、
+`streamUrl=/api/v1/rag/stream`、已验证的数据集 ID 和剩余有效秒数。它不签发另一种令牌。
+旧短期 session token 不再接受。
 两个端点拆分语义（LINK-131）——`/api/v1/rag/stream` 承接「召回 + LLM 流式生成」的完整 RAG
 问答（SSE），`/api/v1/recall` 是纯召回 JSON（一次性返回 hits，不生成）。运行时与会话鉴权细节见
 [docs/internals/recall_http_api.md](../internals/recall_http_api.md)。
@@ -272,6 +275,7 @@ parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权�
 | --- | --- | --- | --- | --- |
 | `POST` | `/api/v1/rag/stream` | 召回 + LLM 流式生成的完整 RAG 问答 | `text/event-stream` | Header `Authorization: Bearer <access-token>` |
 | `POST` | `/api/v1/recall` | 纯召回，一次性返回融合候选（预留实现） | `application/json` | Header `Authorization: Bearer <access-token>` |
+| `POST` | `/api/v1/recall/sessions` | 兼容浏览器现有召回握手，校验当前数据集归属 | `Result<{token,streamUrl,datasetIds,expiresIn}>` | Header `satoken: <access-token>` |
 
 ### POST /api/v1/rag/stream
 
@@ -279,11 +283,13 @@ parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权�
 请求头：`Authorization: Bearer <access-token>`、`Content-Type: application/json`、可选
 `Origin`（CORS）、`X-Request-Id`。
 
-access token 由 Java 登录签发，Java 以 RS256 私钥签名，Python 只持有公钥并独立校验；
+access token 在双端过渡期由 Java 登录签发；本地 Java 退场模式由 Python 签发并登记 Redis 会话。
+两种模式都以 RS256 私钥签名、公钥验签；
 claims 至少包含 `iss=tolink-java`、`aud` 含 `tolink-rag-api`、`token_use=access`、
 `sub`、`iat`、`exp`、`jti`。Python 不回调 Java，也不解析 Sa-Token Redis。
 access token 不携带 `dataset_ids`；用户状态、角色和数据集归属均读取当前 MySQL 事实。
-Python 只接受上述 RS256 access JWT，不支持 HS256 recall session token，也不调用 Java 做远程校验。
+Python 只接受上述 RS256 access JWT，不支持 HS256 recall session token。本地 Python 签发模式
+还会逐次校验 Redis 会话有效性，注销后管理、RAG 与 Wiki 请求均会被拒绝。
 
 请求体（仅以下字段；出现 `user_id` / `top_k` / `sources` / `strict` / `doc_ids` 等任何未知
 字段返回 `422`）：

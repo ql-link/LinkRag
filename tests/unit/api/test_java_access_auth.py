@@ -105,6 +105,20 @@ async def test_migrated_session_rejection_also_blocks_rag(access_key, monkeypatc
     assert unavailable.value.status_code == 503
 
 
+@pytest.mark.asyncio
+async def test_python_issued_logout_blocks_rag_without_java_bridge(access_key, monkeypatch):
+    monkeypatch.setattr(settings, "B1_JAVA_AUTH_BASE_URL", None)
+    monkeypatch.setattr(settings, "B1_PYTHON_ISSUER_ENABLED", True)
+    sessions = AsyncMock()
+    sessions.is_active.return_value = False
+    request = _Request(_access_token(access_key))
+    request.app = SimpleNamespace(state=SimpleNamespace(identity_sessions=sessions))
+    with pytest.raises(RecallApiError) as exc:
+        await verify_user_token(request, _db_row())
+    assert exc.value.status_code == 401
+    sessions.is_active.assert_awaited_once()
+
+
 @pytest.mark.parametrize(
     "overrides",
     [

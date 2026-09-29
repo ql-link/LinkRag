@@ -279,6 +279,7 @@ app.include_router(parse.router)  # 挂载文档解析路由
 app.include_router(mq.router)  # 挂载 MQ 消息中台路由
 app.include_router(rag.router)  # 挂载对外 RAG 问答流 SSE 路由（LINK-131）
 app.include_router(recall.router)  # 挂载对外纯召回 JSON 路由（LINK-131）
+app.include_router(recall.session_router)  # 本地统一后端兼容浏览器召回握手
 app.include_router(wiki.router)  # 挂载 Wiki 标题树对外读取路由
 app.include_router(identity_users.auth_router)
 app.include_router(identity_users.user_router)

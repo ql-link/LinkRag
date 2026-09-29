@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass
 
 from src.cache.redis_client import redis_client
+from src.config import settings
 from src.observability.audit import audit_event
 
 _DEFAULT_SUFFIX_ORDER = ("md", "markdown", "pdf", "docx", "html", "htm")
@@ -45,7 +46,7 @@ async def current_limits() -> DocumentUploadLimits:
 async def capabilities() -> dict:
     limits = await current_limits()
     return {
-        "featureEnabled": False,
+        "featureEnabled": settings.B5_FILE_WRITES_ENABLED,
         "document": {"allowedSuffixes": sorted(limits.allowed_suffixes),
                      "maxSizeBytes": limits.max_size_bytes},
         "image": {"extensions": ["jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff"],
@@ -58,5 +59,5 @@ async def capabilities() -> dict:
         "zip": {"maxCompressedBytes": 100 * 1024 * 1024, "maxEntries": 5000,
                 "maxExpandedBytes": 500 * 1024 * 1024, "maxRatio": 100,
                 "maxDepth": 20},
-        "matchModes": [],
+        "matchModes": ["FULL_PATH", "SHALLOW_BASENAME"] if settings.B5_FILE_WRITES_ENABLED else [],
     }

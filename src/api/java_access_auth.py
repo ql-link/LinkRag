@@ -138,7 +138,10 @@ async def verify_user_token(
     token = _extract_bearer_token(request)
     request_id = _request_id(request)
     claims, user_id = decode_java_access_token(token, request_id)
-    if settings.B1_JAVA_AUTH_BASE_URL:
+    # Once Python issues sessions, its Redis registration/revocation is the
+    # authority for every user-facing API, including RAG and Wiki.  Otherwise
+    # a logged-out token remains usable here until its JWT expiry.
+    if settings.B1_PYTHON_ISSUER_ENABLED or settings.B1_JAVA_AUTH_BASE_URL:
         from src.api.management_auth import AccessClaims
 
         sessions = getattr(request.app.state, "identity_sessions", None)

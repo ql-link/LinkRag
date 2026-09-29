@@ -2,7 +2,8 @@
 
 from typing import Annotated
 
-from fastapi import Depends, File, Form, Query, Request, UploadFile
+from fastapi import Depends, Query, Request
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from src.api.management_auth import CurrentUser, require_login
 from src.api.management_http import BusinessError, ManagementRouter, success
@@ -16,26 +17,77 @@ from src.config import settings
 router = ManagementRouter(prefix="/api/v1", tags=["document-files"])
 
 
-@router.post("/datasets/{dataset_id}/files")
+@router.post(
+    "/datasets/{dataset_id}/files",
+    openapi_extra={
+        "requestBody": {
+            "required": True,
+            "content": {
+                "multipart/form-data": {
+                    "schema": {
+                        "type": "object",
+                        "required": ["file"],
+                        "properties": {
+                            "file": {"type": "string", "format": "binary"},
+                            "parseImmediately": {"type": "boolean", "default": False},
+                            "matchMode": {
+                                "type": "string",
+                                "enum": ["FULL_PATH", "SHALLOW_BASENAME"],
+                            },
+                            "documentPath": {"type": "string"},
+                            "assets": {
+                                "type": "array", "items": {"type": "string", "format": "binary"},
+                            },
+                            "assetRelativePaths": {
+                                "type": "array", "items": {"type": "string"},
+                            },
+                            "assetInventoryPaths": {
+                                "type": "array", "items": {"type": "string"},
+                            },
+                        },
+                    }
+                }
+            },
+        }
+    },
+)
 async def upload_file(
     dataset_id: int, request: Request,
     user: Annotated[CurrentUser, Depends(require_login)],
-    file: UploadFile = File(...), parseImmediately: bool = Form(False),
-    matchMode: str | None = Form(None), documentPath: str | None = Form(None),
 ):
     if not settings.B5_FILE_WRITES_ENABLED:
         raise BusinessError(503, "文件上传尚未切流", 503)
-    form = await request.form()
-    if matchMode or documentPath or any(
-        key in form for key in ("assets", "assetRelativePaths", "assetInventoryPaths")
-    ):
-        raise BusinessError(503, "Markdown 资源包上传尚未切流", 503)
+    # Starlette's default 1000-field cap is below Java's 5000 inventory paths.
+    form = await request.form(max_fields=5500)
+    file = form.get("file")
+    if not isinstance(file, StarletteUploadFile):
+        raise BusinessError(400, "请选择要上传的文件", 400)
+    parse_raw = str(form.get("parseImmediately", "false")).strip().lower()
+    if parse_raw not in {"true", "false"}:
+        raise BusinessError(400, "parseImmediately 参数不合法", 400)
+    parse_immediately = parse_raw == "true"
+    match_mode = form.get("matchMode")
+    document_path = form.get("documentPath")
+    if any(value is not None and not isinstance(value, str)
+           for value in (match_mode, document_path)):
+        raise BusinessError(400, "资源包参数不合法", 400)
+    assets = form.getlist("assets")
+    if any(not isinstance(asset, StarletteUploadFile) for asset in assets):
+        raise BusinessError(400, "配套图片格式不合法", 400)
+    relative_paths = form.getlist("assetRelativePaths")
+    inventory_paths = form.getlist("assetInventoryPaths")
+    if any(not isinstance(path, str) for path in (*relative_paths, *inventory_paths)):
+        raise BusinessError(400, "资源路径格式不合法", 400)
     executor: DocumentUploadExecutor | None = getattr(request.app.state, "document_upload_executor", None)
     if executor is None:
         raise BusinessError(503, "文件上传队列尚未就绪", 503)
     return success(await upload(
         user.user_id, dataset_id, file,
-        parse_immediately=parseImmediately, executor=executor,
+        parse_immediately=parse_immediately, executor=executor,
+        match_mode=match_mode, document_path=document_path,
+        assets=assets,
+        asset_relative_paths=relative_paths,
+        asset_inventory_paths=inventory_paths,
     ))
 
 
