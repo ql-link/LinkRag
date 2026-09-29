@@ -491,7 +491,7 @@ ORM：[`BlogPostDB`](../../../src/models/db_models.py)
 | --- | --- | --- |
 | `id` | BIGINT UNSIGNED PK | 博客文章唯一标识 |
 | `title` | VARCHAR(255) | 文章标题 |
-| `slug` | VARCHAR(255) | 公开访问标识，由 Java 侧生成 |
+| `slug` | VARCHAR(255) | 公开访问标识，由当前博客写入端生成 |
 | `summary` | VARCHAR(1000) | 文章摘要 |
 | `content_object_key` | VARCHAR(512) | Markdown 正文对象 Key |
 | `cover_asset_id` | BIGINT UNSIGNED | 封面资源 ID，对应 `blog_asset.id` |
@@ -529,7 +529,7 @@ ORM：[`BlogAssetDB`](../../../src/models/db_models.py)
 - `uk_blog_asset_object_key(object_key)`
 - `idx_blog_asset_post_type(post_id, asset_type, is_deleted, created_at)`
 
-说明：博客 HTTP 工作流由 Java 侧负责；Python 侧迁移链负责创建共享库表。博客资源与反馈附件的公开桶及匿名读策略由 Java 服务配置，RAG 服务不读取该配置。
+说明：B9 博客 HTTP 工作流已在 Python 实现，使用现有 PUBLIC 对象存储适配器和共享表；网关切流前 Java 仍为唯一写入端。Python 博客写入默认由 `B9_BLOG_WRITES_ENABLED=false` 关闭。
 
 ---
 
@@ -545,7 +545,7 @@ ORM：[`UserFeedbackDB`](../../../src/models/db_models.py)
 | `type` | VARCHAR(32) | 反馈类型：`BUG` / `FEATURE` / `EXPERIENCE` / `OTHER`，默认 `OTHER` |
 | `title` | VARCHAR(128) | 反馈标题 |
 | `content` | TEXT | 反馈详细内容 |
-| `attachment_object_key` | VARCHAR(512) | 附件 MinIO object key，由 Java 上传后写入 |
+| `attachment_object_key` | VARCHAR(512) | 附件 PUBLIC 桶 object key，由当前反馈写入端上传后写入 |
 | `status` | VARCHAR(32) | 处理状态：`PENDING` / `PROCESSING` / `RESOLVED` / `CLOSED`，默认 `PENDING` |
 | `priority` | TINYINT | 处理优先级：1=高，2=中，3=低，默认 3 |
 | `admin_id` | BIGINT UNSIGNED | 处理该反馈的管理员用户 ID |

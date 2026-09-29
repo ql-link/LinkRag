@@ -26,6 +26,7 @@ from src.application.chat_service import (
 from src.core.mq.messages.chat_turn import ChatTurnMessage
 from src.database import get_db
 from src.models.db_models import ChatConversationDB, ChatMessageDB
+from src.models.chunk_record import ChunkRecordDB
 
 
 @compiles(BigInteger, "sqlite")
@@ -195,5 +196,33 @@ async def test_chat_lifecycle_against_sql_tables():
             await delete_conversation(db, 3, row["id"])
             assert (await list_conversations(db, 3, 1, 20))["total"] == 0
             await db.commit()
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_batch_chunk_details_with_owned_file_and_missing_filename():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    try:
+        async with engine.begin() as conn:
+            await conn.run_sync(ChunkRecordDB.metadata.create_all, tables=[ChunkRecordDB.__table__])
+            await conn.execute(text("CREATE TABLE document_original_file (id INTEGER PRIMARY KEY, user_id INTEGER, original_filename TEXT)"))
+            await conn.execute(text("INSERT INTO document_original_file VALUES (11, 3, 'source.md')"))
+            for chunk_id, doc_id, owner, status in (("owned", 11, 3, "ACTIVE"), ("fallback", 12, 3, "ACTIVE"), ("other", 11, 4, "ACTIVE"), ("removed", 11, 3, "REMOVED")):
+                await conn.execute(text("INSERT INTO kb_document_chunk (chunk_id, doc_id, set_id, user_id, content, content_hash, chunk_type, dense_vector_status, sparse_vector_status, es_status, lifecycle_status, create_time, update_time) VALUES (:chunk_id, :doc_id, 5, :owner, 'body', 'hash', 'TEXT', 'PENDING', 'PENDING', 'PENDING', :status, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)"), {"chunk_id": chunk_id, "doc_id": doc_id, "owner": owner, "status": status})
+        app = FastAPI()
+        app.include_router(chat.chunk_router)
+        factory = async_sessionmaker(engine)
+
+        async def db_override():
+            async with factory() as db:
+                yield db
+
+        app.dependency_overrides[get_db] = db_override
+        app.dependency_overrides[require_login] = lambda: SimpleNamespace(user_id=3)
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            response = await client.post("/api/v1/knowledge/chunks/batch", json={"chunkIds": [" owned ", "fallback", "other", "removed", "owned"]})
+        assert response.status_code == 200
+        assert [(item["chunkId"], item["fileName"]) for item in response.json()["data"]] == [("owned", "source.md"), ("fallback", "文档 #12")]
     finally:
         await engine.dispose()

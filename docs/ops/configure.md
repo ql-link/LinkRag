@@ -47,6 +47,8 @@ Java 签发的旧令牌尚在有效期内时，继续保留 Java 会话桥接和
 | `REDIS_HOST` / `REDIS_PORT` | Redis 连接 |
 | `LOKI_BASE_URL` | B8 管理日志代理访问的内网 Loki 地址，默认 `http://localhost:3100`；不由请求方指定。 |
 | `B8_DOCUMENT_CONFIG_WRITES_ENABLED` | B8 上传配置写入切流开关，默认关闭；Java 配置写入退场且默认指纹对齐后才启用。 |
+| `B9_BLOG_WRITES_ENABLED` | B9 博客管理写入开关，默认关闭；Java 博客写入口退场且 PUBLIC 桶联调通过后启用。 |
+| `B10_FEEDBACK_WRITES_ENABLED` | B10 匿名反馈及管理员处理写入开关，默认关闭；Java 反馈写入口退场且附件补偿联调通过后启用。 |
 | `API_KEY_ENCRYPTION_SECRET` | API Key 加密 Secret，必须与 Java 管理端一致；64 位 hex，解码后 32 字节，用于 AES-256-GCM |
 | `LLM_RUNTIME_CACHE_ENABLED` / `LLM_RUNTIME_CACHE_TTL_SECONDS` | 全局 `config_id` runtime cache 开关与 TTL |
 | `DATASET_PARSE_CONFIG_CACHE_ENABLED` / `DATASET_PARSE_CONFIG_CACHE_TTL_SECONDS` | `dataset_parse_config` 共享原始快照开关与 TTL；默认关闭，正常值默认 7 天 |
@@ -151,6 +153,8 @@ logs/
 HTTP 请求链路通过 `X-Trace-Id` 头串联：请求带该头时沿用；未带时 Python 端生成 UUID 并在响应头回显。MQ 发送和消费会通过可选 `X-Trace-Id` 消息头透传当前 trace id。
 
 服务名约定：Java 业务服务日志使用 `service=tolink-service`，Python RAG 服务日志使用 `service=tolink-rag`。部署环境可以覆盖 `LOG_SERVICE_NAME`，但必须保持 Java / Python 服务名不同，否则集中采集到 Loki 后无法通过 `service` 标签区分筛选。
+
+Dev Promtail 曾把服务名写在 `service_name` 标签，B8 Python 日志代理会兼容查询这部分历史日志；`deploy/dev-server/promtail-config.yml` 的新写入已改用 `service`。部署该配置后，应分别验证 Loki 的 `service` 标签包含 Java 与 Python 服务，并确认两端日志都有实际样本。未部署该配置的 Java 日志代理仍只按 `service` 查询，无法检索 `service_name` 历史流。
 
 `LOG_DIR` 支持绝对路径和相对路径。相对路径统一以项目根目录为基准，例如默认 `LOG_DIR=logs` 始终写入项目根目录的 `logs/`，不会因为进程从 `src` 目录启动而改写到该目录下的 `logs/`。
 

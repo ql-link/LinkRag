@@ -605,6 +605,10 @@ class Settings(BaseSettings):
     # B5 控制面必须与 Java 文件入口保持单一生产者。
     B5_FILE_WRITES_ENABLED: bool = False
     B5_DELETE_WRITES_ENABLED: bool = False
+    # Blog and feedback share Java's tables. Enable each only after its write
+    # paths are routed to Python so there is one owner during migration.
+    B9_BLOG_WRITES_ENABLED: bool = False
+    B10_FEEDBACK_WRITES_ENABLED: bool = False
     B5_INTERNAL_FILE_SERVICE_TOKEN: Optional[str] = None
     B5_INTERNAL_FILE_BASE_URL: Optional[str] = None
     MINIO_ENDPOINT: str = "localhost:9000"

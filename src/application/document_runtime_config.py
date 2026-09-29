@@ -8,7 +8,8 @@ from dataclasses import dataclass
 from src.cache.redis_client import redis_client
 from src.observability.audit import audit_event
 
-_SUPPORTED = frozenset({"md", "markdown", "pdf", "docx", "html", "htm"})
+_DEFAULT_SUFFIX_ORDER = ("md", "markdown", "pdf", "docx", "html", "htm")
+_SUPPORTED = frozenset(_DEFAULT_SUFFIX_ORDER)
 _KEY = "runtime:document-file:upload-config"
 
 

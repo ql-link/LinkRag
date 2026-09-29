@@ -69,7 +69,7 @@ async def logs(db: AsyncSession, user_id: int, start: date, end: date,
     conditions = scope(user_id, a, b, stage)
     total = await db.scalar(select(func.count()).select_from(UsageLogDB).where(*conditions)) or 0
     rows = (await db.scalars(select(UsageLogDB).where(*conditions)
-                             .order_by(UsageLogDB.created_at.desc(), UsageLogDB.id.desc())
+                             .order_by(UsageLogDB.created_at.desc())
                              .offset((page - 1) * size).limit(size))).all()
     return _page([{"id": r.id, "configId": r.config_id, "providerType": r.provider_type,
                    "modelName": r.model_name, "stage": r.stage, "operation": r.operation,

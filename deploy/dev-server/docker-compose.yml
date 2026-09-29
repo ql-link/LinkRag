@@ -150,6 +150,9 @@ services:
       MANTICORE_HOST: tolink-dev-manticore
       MANTICORE_PORT: 9306
       MINIO_ENDPOINT: tolink-dev-minio:9000
+      B1_JAVA_AUTH_BASE_URL: http://tolink-dev-service:8080
+      B9_BLOG_WRITES_ENABLED: ${B9_BLOG_WRITES_ENABLED:-false}
+      B10_FEEDBACK_WRITES_ENABLED: ${B10_FEEDBACK_WRITES_ENABLED:-false}
     extra_hosts:
       - host.docker.internal:host-gateway
     ports:

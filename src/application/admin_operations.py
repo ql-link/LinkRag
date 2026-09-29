@@ -1,5 +1,6 @@
 """B8 管理统计、运行配置和日志代理。"""
 
+import asyncio
 import json
 import re
 import hashlib
@@ -80,18 +81,25 @@ async def user_dashboard(db: AsyncSession, days: int) -> dict:
 async def get_upload_config() -> dict:
     limits = await upload_config.current_limits()
     metadata = {"updatedBy": None, "updatedAt": None}
+    allowed_suffixes = [suffix for suffix in upload_config._DEFAULT_SUFFIX_ORDER
+                        if suffix in limits.allowed_suffixes]
+    allowed_suffixes.extend(sorted(limits.allowed_suffixes.difference(allowed_suffixes)))
     try:
         raw = await redis_client.get(upload_config._KEY)
         if raw:
             snapshot = json.loads(raw)
+            snapshot_suffixes = [str(value).strip().lower()
+                                 for value in snapshot.get("allowedSuffixes", [])]
             if (int(snapshot.get("maxSizeBytes", 0)) == limits.max_size_bytes
-                    and frozenset(snapshot.get("allowedSuffixes", [])) == limits.allowed_suffixes):
+                    and frozenset(snapshot_suffixes) == limits.allowed_suffixes
+                    and len(snapshot_suffixes) == len(limits.allowed_suffixes)):
+                allowed_suffixes = snapshot_suffixes
                 metadata = {"updatedBy": snapshot.get("updatedBy"),
                             "updatedAt": snapshot.get("updatedAt")}
     except Exception:
         pass
     return {"maxSizeBytes": limits.max_size_bytes,
-            "allowedSuffixes": sorted(limits.allowed_suffixes), **metadata}
+            "allowedSuffixes": allowed_suffixes, **metadata}
 
 
 async def update_upload_config(user_id: int, max_size_bytes: int,
@@ -142,12 +150,12 @@ def _iso(value: str | None, fallback: datetime) -> datetime:
 
 
 def _redact(value: str | None) -> str | None:
-    return _SENSITIVE.sub(r"\1***", value) if value is not None else None
+    return _SENSITIVE.sub(r"\1******", value) if value is not None else None
 
 
 def _entry(timestamp: str, line: str, labels: dict) -> dict:
     result = {"time": datetime.fromtimestamp(int(timestamp) / 1_000_000_000, timezone.utc).isoformat(),
-              "level": labels.get("level"), "service": labels.get("service"),
+              "level": labels.get("level"), "service": labels.get("service") or labels.get("service_name"),
               "host": labels.get("host"), "pid": None, "trace_id": None,
               "logger_name": None, "message": None, "exception": None}
     try:
@@ -155,23 +163,27 @@ def _entry(timestamp: str, line: str, labels: dict) -> dict:
         if "record" in data:
             record = data["record"]
             extra = record.get("extra") or {}
-            result.update(level=(record.get("level") or {}).get("name"),
+            record_time = record.get("time") or {}
+            result.update(time=record_time.get("repr") or result["time"],
+                          level=(record.get("level") or {}).get("name"),
                           service=extra.get("service") or result["service"],
                           host=extra.get("host") or result["host"],
-                          pid=str((record.get("process") or {}).get("id") or "") or None,
-                          trace_id=extra.get("trace_id"),
-                          logger_name=extra.get("logger_name") or record.get("name"),
+                          pid=str(extra.get("pid") or (record.get("process") or {}).get("id") or "") or None,
+                          trace_id=extra.get("trace_id") or extra.get("traceId"),
+                          logger_name=extra.get("logger_name") or extra.get("loggerName") or record.get("name"),
                           message=_redact(record.get("message")),
                           exception=_redact(str(record.get("exception"))) if record.get("exception") else None)
         else:
             result.update(time=data.get("time") or data.get("@timestamp") or result["time"],
-                          level=data.get("level") or result["level"],
+                          level=data.get("level"),
                           service=data.get("service") or result["service"],
                           host=data.get("host") or result["host"], pid=data.get("pid"),
                           trace_id=data.get("trace_id") or data.get("traceId"),
-                          logger_name=data.get("logger_name") or data.get("logger"),
+                          logger_name=data.get("logger_name") or data.get("loggerName") or data.get("logger"),
                           message=_redact(data.get("message")),
-                          exception=_redact(data.get("exception") or data.get("stack_trace")))
+                          exception=_redact(data.get("exception") or data.get("stack_trace") or data.get("stackTrace")))
+        if result["logger_name"] in {"ACCESS", "AUDIT"}:
+            result["level"] = result["logger_name"]
     except (ValueError, TypeError, AttributeError):
         result["message"] = _redact(line)
         result["raw"] = _redact(line)
@@ -195,30 +207,52 @@ async def query_logs(service: str | None, level: str | None, trace_id: str | Non
     start = _iso(start_time, end - timedelta(hours=24))
     if start > end:
         raise BusinessError(400, "start_time 不能晚于 end_time", 400)
-    selectors = []
-    if service:
-        selectors.append(f'service="{service}"')
-    if level and level not in {"ACCESS", "AUDIT"}:
-        selectors.append(f'level="{level}"')
-    query = "{" + (", ".join(selectors) or 'service=~".+"') + "}"
-    for value in ([f'"logger_name":"{level}"'] if level in {"ACCESS", "AUDIT"} else []) + [v for v in (trace_id, keyword) if v]:
-        query += " |= " + json.dumps(value)
+    def build_query(service_label: str) -> str:
+        selectors = [f'{service_label}="{service}"' if service else f'{service_label}=~".+"']
+        if level and level not in {"ACCESS", "AUDIT"}:
+            selectors.append(f'level="{level}"')
+        query = "{" + ", ".join(selectors) + "}"
+        for value in ([f'"logger_name":"{level}"'] if level in {"ACCESS", "AUDIT"} else []) + [v for v in (trace_id, keyword) if v]:
+            query += " |= " + json.dumps(value)
+        return query
+
     limit = min(page * page_size, 1000)
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(8, connect=3)) as client:
-            response = await client.get(settings.LOKI_BASE_URL.rstrip("/") + "/loki/api/v1/query_range",
-                                        params={"query": query, "start": int(start.timestamp() * 1e9),
-                                                "end": int(end.timestamp() * 1e9), "limit": limit,
-                                                "direction": "BACKWARD"})
-            response.raise_for_status()
-            values = response.json()["data"]["result"]
+            async def fetch(service_label: str) -> list:
+                response = await client.get(
+                    settings.LOKI_BASE_URL.rstrip("/") + "/loki/api/v1/query_range",
+                    params={"query": build_query(service_label),
+                            "start": int(start.timestamp() * 1e9),
+                            "end": int(end.timestamp() * 1e9), "limit": limit,
+                            "direction": "BACKWARD"},
+                )
+                response.raise_for_status()
+                return response.json()["data"]["result"]
+
+            # Dev Promtail historically used service_name; newer streams use service.
+            primary, legacy = await asyncio.gather(fetch("service"), fetch("service_name"))
     except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
         raise BusinessError(502, "日志服务暂不可用", 502) from exc
+    values = (primary if isinstance(primary, list) else []) + (legacy if isinstance(legacy, list) else [])
     stamped = []
+    seen = set()
     for result in values:
-        for t, line in result.get("values", []):
+        if not isinstance(result, dict) or not isinstance(result.get("values"), list):
+            continue
+        labels = result.get("stream")
+        if not isinstance(labels, dict):
+            labels = {}
+        for pair in result["values"]:
+            if not isinstance(pair, (list, tuple)) or len(pair) < 2 or not isinstance(pair[1], str):
+                continue
+            t, line = pair[0], pair[1]
             try:
-                stamped.append((int(t), _entry(t, line, result.get("stream") or {})))
+                identity = (str(t), line, tuple(sorted(labels.items())))
+                if identity in seen:
+                    continue
+                seen.add(identity)
+                stamped.append((int(t), _entry(t, line, labels)))
             except (ValueError, TypeError, OverflowError):
                 continue
     stamped.sort(key=lambda item: item[0], reverse=True)
@@ -232,12 +266,17 @@ async def log_labels() -> dict:
     services = ["tolink-service", "tolink-rag"]
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(8, connect=3)) as client:
-            response = await client.get(settings.LOKI_BASE_URL.rstrip("/") + "/loki/api/v1/label/service/values")
-            response.raise_for_status()
-            values = response.json().get("data", [])
+            async def labels(name: str) -> list:
+                response = await client.get(settings.LOKI_BASE_URL.rstrip("/") + f"/loki/api/v1/label/{name}/values")
+                response.raise_for_status()
+                values = response.json().get("data", [])
+                return values if isinstance(values, list) else []
+
+            current, legacy = await asyncio.gather(labels("service"), labels("service_name"))
+            values = current + legacy
             valid = sorted({s for s in values if isinstance(s, str) and _IDENTIFIER.fullmatch(s)})
             if valid:
                 services = valid
-    except (httpx.HTTPError, ValueError, TypeError):
+    except (httpx.HTTPError, ValueError, TypeError, AttributeError):
         pass
     return {"services": services, "levels": _LEVELS}

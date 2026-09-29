@@ -158,6 +158,39 @@ async def test_upload_config_rejects_mixed_instance_defaults(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_upload_config_read_preserves_shared_java_suffix_order(monkeypatch):
+    async def current_limits():
+        return admin_operations.upload_config.DocumentUploadLimits(
+            frozenset({"md", "pdf", "docx"}), 4096
+        )
+
+    async def redis_get(key):
+        assert key == admin_operations.upload_config._KEY
+        return json.dumps({"maxSizeBytes": 4096,
+                           "allowedSuffixes": ["md", "pdf", "docx"],
+                           "updatedBy": 7, "updatedAt": "2026-09-29T10:00:00"})
+
+    monkeypatch.setattr(admin_operations.upload_config, "current_limits", current_limits)
+    monkeypatch.setattr(admin_operations.redis_client, "get", redis_get)
+    assert (await admin_operations.get_upload_config())["allowedSuffixes"] == ["md", "pdf", "docx"]
+
+
+@pytest.mark.asyncio
+async def test_upload_config_default_preserves_declared_suffix_order(monkeypatch):
+    async def current_limits():
+        return admin_operations.upload_config.DocumentUploadLimits()
+
+    async def redis_get(_key):
+        return None
+
+    monkeypatch.setattr(admin_operations.upload_config, "current_limits", current_limits)
+    monkeypatch.setattr(admin_operations.redis_client, "get", redis_get)
+    assert (await admin_operations.get_upload_config())["allowedSuffixes"] == list(
+        admin_operations.upload_config._DEFAULT_SUFFIX_ORDER
+    )
+
+
+@pytest.mark.asyncio
 async def test_loki_proxy_sorts_and_redacts(monkeypatch):
     class Response:
         def raise_for_status(self):
@@ -179,11 +212,113 @@ async def test_loki_proxy_sorts_and_redacts(monkeypatch):
             return None
 
         async def get(self, url, *, params=None):
-            assert params["query"].startswith('{service="tolink-rag"')
-            return Response()
+            assert params["query"].startswith(('{service="tolink-rag"',
+                                               '{service_name="tolink-rag"'))
+            return Response() if params["query"].startswith('{service="') else SimpleNamespace(
+                raise_for_status=lambda: None, json=lambda: {"data": {"result": []}}
+            )
 
     monkeypatch.setattr(admin_operations.httpx, "AsyncClient", Client)
     result = await admin_operations.query_logs("tolink-rag", "ERROR", None, None,
                                                None, None, 1, 50)
     assert result["total"] == 2
-    assert result["items"][0]["message"] == "token=***"
+    assert result["items"][0]["message"] == "token=******"
+
+
+def test_loki_entry_matches_java_loguru_and_access_contract():
+    line = json.dumps({"record": {"time": {"repr": "2026-09-29 10:00:00+08:00"},
+                                  "level": {"name": "INFO"},
+                                  "extra": {"pid": 17, "traceId": "trace-1", "loggerName": "ACCESS"},
+                                  "message": "password=secret-value", "process": {"id": 99}}})
+    entry = admin_operations._entry("1000000000", line, {"service": "tolink-rag"})
+    assert entry["time"] == "2026-09-29 10:00:00+08:00"
+    assert entry["level"] == "ACCESS"
+    assert entry["pid"] == "17"
+    assert entry["trace_id"] == "trace-1"
+    assert entry["message"] == "password=******"
+    java = admin_operations._entry("1000000000", json.dumps({"loggerName": "AUDIT", "stackTrace": "token=abc"}), {})
+    assert java["level"] == "AUDIT"
+    assert java["exception"] == "token=******"
+
+
+@pytest.mark.asyncio
+async def test_loki_historical_service_name_streams_remain_queryable(monkeypatch):
+    class Response:
+        def __init__(self, data):
+            self.data = data
+
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"data": self.data}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def get(self, url, *, params=None):
+            if url.endswith("/query_range"):
+                if params["query"].startswith('{service_name="tolink-service"'):
+                    return Response({"result": [{"stream": {"service_name": "tolink-service"},
+                                                  "values": [["1000000000", "legacy log"]]}]})
+                return Response({"result": []})
+            return Response(["tolink-service"] if "/service_name/" in url else ["linkresume"])
+
+    monkeypatch.setattr(admin_operations.httpx, "AsyncClient", lambda **kwargs: Client())
+    result = await admin_operations.query_logs("tolink-service", None, None, None,
+                                               None, None, 1, 50)
+    assert result["total"] == 1
+    assert result["items"][0]["service"] == "tolink-service"
+    assert (await admin_operations.log_labels())["services"] == ["linkresume", "tolink-service"]
+
+
+@pytest.mark.asyncio
+async def test_loki_malformed_success_payload_is_bounded(monkeypatch):
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"data": {"result": [{"stream": "malformed", "values": [None, ["1000000000"], ["1000000000", "plain"]]}]}}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def get(self, *args, **kwargs):
+            return Response()
+
+    monkeypatch.setattr(admin_operations.httpx, "AsyncClient", lambda **kwargs: Client())
+    result = await admin_operations.query_logs(None, None, None, None, None, None, 1, 50)
+    assert result["total"] == 1
+    assert result["items"][0]["message"] == "plain"
+
+
+@pytest.mark.asyncio
+async def test_loki_bad_labels_payload_uses_fallback(monkeypatch):
+    class Response:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            return {"data": "malformed"}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            pass
+
+        async def get(self, *args, **kwargs):
+            return Response()
+
+    monkeypatch.setattr(admin_operations.httpx, "AsyncClient", lambda **kwargs: Client())
+    assert (await admin_operations.log_labels())["services"] == ["tolink-service", "tolink-rag"]

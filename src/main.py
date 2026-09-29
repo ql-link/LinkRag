@@ -35,7 +35,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from src.api.java_access_auth import validate_java_access_jwt_configuration
-from src.api.routes import admin_model_catalog, admin_model_configs, admin_model_sync, admin_operations, chat, datasets, document_files, identity_users, internal, internal_document_files, llm, model_configs, mq, object_uploads, parse, rag, recall, usage, wiki
+from src.api.routes import admin_model_catalog, admin_model_configs, admin_model_sync, admin_operations, blog, chat, datasets, document_files, feedback, identity_users, internal, internal_document_files, llm, model_configs, mq, object_uploads, parse, rag, recall, usage, wiki
 from src.api.management_auth import (
     ManagementAuthenticator,
     SqlUserAuthorizationRepository,
@@ -287,6 +287,10 @@ app.include_router(chat.router)
 app.include_router(chat.chunk_router)
 app.include_router(usage.router)
 app.include_router(admin_operations.router)
+app.include_router(feedback.public_router)
+app.include_router(feedback.admin_router)
+app.include_router(blog.admin_router)
+app.include_router(blog.public_router)
 app.include_router(object_uploads.router)
 app.include_router(model_configs.router)
 app.include_router(admin_model_configs.router)

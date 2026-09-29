@@ -61,6 +61,20 @@ B5 解析和删除消息使用 0041 `management_mq_outbox` 同事务记账，再
 
 实现与切流边界见 [B6–B8 迁移说明](../internals/b6_b8_migration.md)。
 
+### B9 博客与 B10 反馈（代码已接入，待切流）
+
+| 范围 | 路径 | 行为 |
+| --- | --- | --- |
+| B9 管理 | `GET/POST /api/v1/admin/blog/posts`、`GET/PATCH/DELETE /api/v1/admin/blog/posts/{id}` | 仅 ADMIN；文章列表、草稿创建、详情、元数据更新和软删。写操作依赖 `B9_BLOG_WRITES_ENABLED`。 |
+| B9 正文 | `PUT /api/v1/admin/blog/posts/{id}/content`、`POST /api/v1/admin/blog/posts/{id}/content/import`（兼容 `/content`） | 保存 Markdown 或上传 UTF-8 Markdown；对象写入现有 PUBLIC 桶。支持内联 data URI 图片入库；远程 HTTP(S) 图片在安全和大小校验通过时转存，失败时保留原链接。 |
+| B9 发布 | `POST /api/v1/admin/blog/posts/{id}/publish`、`/unpublish` | 发布前校验正文对象存在；首次发布记录时间；撤回后公开接口返回 404。 |
+| B9 资源 | `GET/POST /api/v1/admin/blog/posts/{id}/assets`、`DELETE /api/v1/admin/blog/posts/{id}/assets/{assetId}` | COVER/CONTENT_IMAGE 图片上传、列表与删除；被正文引用的图片不可删除。 |
+| B9 公开 | `GET /api/v1/blog/posts`、`GET /api/v1/blog/posts/{slug}` | 匿名读取仅已发布文章；详情支持 ETag、`If-None-Match` 和 304。 |
+| B10 提交 | `POST /api/v1/feedback` | 匿名 multipart `type,title,content,file?`；附件复用 B2 feedback 上传规则及 PUBLIC 桶，DB 失败补偿删除对象。依赖 `B10_FEEDBACK_WRITES_ENABLED`。 |
+| B10 管理 | `GET /api/v1/admin/feedback`、`GET/PATCH /api/v1/admin/feedback/{id}/*` | 仅 ADMIN；按状态/类型分页与详情，更新 `status`、`priority`、`reply`。写操作依赖 `B10_FEEDBACK_WRITES_ENABLED`。 |
+
+两项写入开关默认关闭。启用前应保证 Java 对应写入口已退场，并核验共享数据库、PUBLIC 桶访问及公开 URL。
+
 ## 2. Parser API
 
 路由前缀：`/api/v1/parser`

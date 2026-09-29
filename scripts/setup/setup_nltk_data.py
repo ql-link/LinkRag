@@ -25,16 +25,17 @@ import io
 import os
 import sys
 import zipfile
-import urllib.request
 from pathlib import Path
+
+import httpx
 
 # 需要的资源 -> (NLTK 类别目录, 官方 packages 下的相对 zip 路径)
 PACKAGE_LAYOUT = {
-    "punkt":     ("tokenizers", "tokenizers/punkt.zip"),
+    "punkt": ("tokenizers", "tokenizers/punkt.zip"),
     "punkt_tab": ("tokenizers", "tokenizers/punkt_tab.zip"),
     "stopwords": ("corpora", "corpora/stopwords.zip"),
-    "wordnet":   ("corpora", "corpora/wordnet.zip"),
-    "omw-1.4":   ("corpora", "corpora/omw-1.4.zip"),
+    "wordnet": ("corpora", "corpora/wordnet.zip"),
+    "omw-1.4": ("corpora", "corpora/omw-1.4.zip"),
 }
 REQUIRED_PACKAGES = tuple(PACKAGE_LAYOUT.keys())
 
@@ -53,9 +54,12 @@ def resolve_target_dir() -> Path:
 def _download_and_extract(url: str, dest_category_dir: Path) -> bool:
     """下载 zip 并解压到指定类别目录。成功返回 True。"""
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            data = resp.read()
+        # httpx uses its maintained CA bundle; urllib's platform trust store can
+        # reject the official GitHub certificate on otherwise healthy macOS hosts.
+        with httpx.Client(timeout=60, follow_redirects=True) as client:
+            resp = client.get(url, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            data = resp.content
         with zipfile.ZipFile(io.BytesIO(data)) as zf:
             zf.extractall(dest_category_dir)
         return True
@@ -92,19 +96,27 @@ def main() -> int:
             # 最后兜底：交给 nltk 自身的下载器（官方源）
             try:
                 import nltk
+
                 ok = bool(nltk.download(pkg, download_dir=str(target_dir), quiet=True))
             except Exception as exc:  # noqa: BLE001
-                print(f"  [setup_nltk_data] nltk.download 兜底失败 {pkg} -> {exc}", file=sys.stderr)
+                print(
+                    f"  [setup_nltk_data] nltk.download 兜底失败 {pkg} -> {exc}",
+                    file=sys.stderr,
+                )
                 ok = False
 
         if not ok:
             failed.append(pkg)
 
     if failed:
-        print(f"[setup_nltk_data] 以下资源下载失败: {', '.join(failed)}", file=sys.stderr)
+        print(
+            f"[setup_nltk_data] 以下资源下载失败: {', '.join(failed)}", file=sys.stderr
+        )
         return 1
 
-    print(f"[setup_nltk_data] 完成，共 {len(REQUIRED_PACKAGES)} 个资源就绪于 {target_dir}")
+    print(
+        f"[setup_nltk_data] 完成，共 {len(REQUIRED_PACKAGES)} 个资源就绪于 {target_dir}"
+    )
     return 0
 
 
