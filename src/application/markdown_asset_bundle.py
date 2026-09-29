@@ -12,13 +12,21 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 from urllib.parse import unquote
 
 from src.api.management_http import BusinessError
 
-_IMAGE_MIME = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
-               "gif": "image/gif", "webp": "image/webp", "bmp": "image/bmp",
-               "tif": "image/tiff", "tiff": "image/tiff"}
+_IMAGE_MIME = {
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "png": "image/png",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "bmp": "image/bmp",
+    "tif": "image/tiff",
+    "tiff": "image/tiff",
+}
 _SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
 _WINDOWS_ABSOLUTE = re.compile(r"^[A-Za-z]:[/\\]")
 _INLINE = re.compile(r"!\[((?:\\.|[^\]])*)\]\(((?:\\.|[^)])*)\)")
@@ -90,7 +98,11 @@ def _local(target: str) -> bool:
     if not value:
         return False
     lower = value.lower()
-    if lower.startswith("file:") or value.startswith(("/", "\\\\")) or _WINDOWS_ABSOLUTE.match(value):
+    if (
+        lower.startswith("file:")
+        or value.startswith(("/", "\\\\"))
+        or _WINDOWS_ABSOLUTE.match(value)
+    ):
         raise _error(30011, "不支持本地绝对图片路径")
     if value.startswith(("#", "//")) or lower.startswith(("http:", "https:", "data:")):
         return False
@@ -118,26 +130,40 @@ def scan(markdown: str) -> tuple[Reference, ...]:
             label = _unescape(match.group(2) or match.group(1))
             target = definitions.get(" ".join(label.split()).lower(), "")
             if _local(target):
-                refs.append(Reference("MARKDOWN_REFERENCE", target,
-                                      _unescape(match.group(1)), *match.span()))
+                refs.append(
+                    Reference(
+                        "MARKDOWN_REFERENCE", target, _unescape(match.group(1)), *match.span()
+                    )
+                )
     for match in _HTML.finditer(markdown):
         if excluded[match.start()]:
             continue
         source = re.search(_ATTR.format("src"), match.group(), re.I | re.S)
         if source:
-            target = html.unescape(next((value for value in source.groups() if value is not None), ""))
+            target = html.unescape(
+                next((value for value in source.groups() if value is not None), "")
+            )
             if _local(target):
                 alt = re.search(_ATTR.format("alt"), match.group(), re.I | re.S)
-                alt_text = html.unescape(next((value for value in alt.groups() if value is not None), "")) if alt else ""
+                alt_text = (
+                    html.unescape(next((value for value in alt.groups() if value is not None), ""))
+                    if alt
+                    else ""
+                )
                 refs.append(Reference("HTML", target, alt_text, *match.span()))
     for match in _OBSIDIAN.finditer(markdown):
         if not excluded[match.start()]:
             parts = re.split(r"(?<!\\)\|", match.group(1), maxsplit=1)
             target = _unescape(parts[0]).strip()
             if _local(target):
-                refs.append(Reference("OBSIDIAN", target,
-                                      _unescape(parts[1]).strip() if len(parts) > 1 else "",
-                                      *match.span()))
+                refs.append(
+                    Reference(
+                        "OBSIDIAN",
+                        target,
+                        _unescape(parts[1]).strip() if len(parts) > 1 else "",
+                        *match.span(),
+                    )
+                )
     refs.sort(key=lambda item: item.start)
     output: list[Reference] = []
     end = -1
@@ -155,8 +181,10 @@ def catalog_path(raw: str | None) -> str:
     if value.startswith("/") or _WINDOWS_ABSOLUTE.match(value) or _SCHEME.match(value):
         raise _error(400, "图片路径非法")
     parts = value.split("/")
-    if any(not part or part in {".", ".."} or any(ord(ch) < 32 or ord(ch) == 127 for ch in part)
-           for part in parts):
+    if any(
+        not part or part in {".", ".."} or any(ord(ch) < 32 or ord(ch) == 127 for ch in part)
+        for part in parts
+    ):
         raise _error(400, "图片路径非法")
     return "/".join(parts)
 
@@ -230,8 +258,12 @@ def _image_type(asset: AssetFile) -> tuple[str, str, str]:
 
 
 def preflight(
-    markdown_path: Path, original_filename: str, match_mode: str | None,
-    document_path: str | None, assets: list[AssetFile], inventory_paths: list[str],
+    markdown_path: Path,
+    original_filename: str,
+    match_mode: str | None,
+    document_path: str | None,
+    assets: list[AssetFile],
+    inventory_paths: list[str],
 ) -> BundlePlan:
     if match_mode not in {"FULL_PATH", "SHALLOW_BASENAME"}:
         raise _error(30010, "Markdown 包含本地图片，请选择图片文件夹或确认缺图上传")
@@ -252,8 +284,14 @@ def preflight(
         if match_mode == "SHALLOW_BASENAME" and "/" in path:
             raise _error(400, "单文件补图只允许直接子级图片文件名")
         if path in inventory:
-            raise _error(30012 if match_mode == "SHALLOW_BASENAME" else 30013,
-                         "图片文件名规范化后发生冲突" if match_mode == "SHALLOW_BASENAME" else "资源路径规范化后发生冲突")
+            raise _error(
+                30012 if match_mode == "SHALLOW_BASENAME" else 30013,
+                (
+                    "图片文件名规范化后发生冲突"
+                    if match_mode == "SHALLOW_BASENAME"
+                    else "资源路径规范化后发生冲突"
+                ),
+            )
         inventory[path] = None
     for asset in assets:
         path = catalog_path(asset.path)
@@ -262,20 +300,35 @@ def preflight(
         if match_mode == "SHALLOW_BASENAME" and "/" in path:
             raise _error(400, "单文件补图只允许直接子级图片文件名")
         if path in paths:
-            raise _error(30012 if match_mode == "SHALLOW_BASENAME" else 30013,
-                         "图片文件名规范化后发生冲突" if match_mode == "SHALLOW_BASENAME" else "资源路径规范化后发生冲突")
-        paths[path] = AssetFile(path, path.rsplit("/", 1)[-1], asset.temp_path,
-                                asset.content_type, asset.size)
+            raise _error(
+                30012 if match_mode == "SHALLOW_BASENAME" else 30013,
+                (
+                    "图片文件名规范化后发生冲突"
+                    if match_mode == "SHALLOW_BASENAME"
+                    else "资源路径规范化后发生冲突"
+                ),
+            )
+        paths[path] = AssetFile(
+            path, path.rsplit("/", 1)[-1], asset.temp_path, asset.content_type, asset.size
+        )
         inventory[path] = None
     try:
         markdown = markdown_path.read_text(encoding="utf-8-sig")
     except UnicodeDecodeError as exc:
         raise _error(400, "Markdown 文件必须使用 UTF-8 编码") from exc
     references = scan(markdown)
-    summary = {"matchMode": match_mode, "outcome": "READY", "matchedCount": 0,
-               "missingCount": 0, "ambiguousCount": 0, "unsupportedCount": 0,
-               "blockingIssues": False, "missingPaths": [],
-               "candidateFilenames": [], "issues": []}
+    summary: dict[str, Any] = {
+        "matchMode": match_mode,
+        "outcome": "READY",
+        "matchedCount": 0,
+        "missingCount": 0,
+        "ambiguousCount": 0,
+        "unsupportedCount": 0,
+        "blockingIssues": False,
+        "missingPaths": [],
+        "candidateFilenames": [],
+        "issues": [],
+    }
     matched: list[tuple[int, AssetFile]] = []
     validated: dict[str, tuple[str, str, str]] = {}
     parent = document.rsplit("/", 1)[0] if "/" in document else ""
@@ -292,21 +345,42 @@ def preflight(
                     candidate = _resolve(base, variant)
                     if candidate not in candidates:
                         candidates.append(candidate)
-        if (match_mode == "FULL_PATH" and reference.syntax == "OBSIDIAN"
-                and all("/" not in variant for variant in variants)):
+        if (
+            match_mode == "FULL_PATH"
+            and reference.syntax == "OBSIDIAN"
+            and all("/" not in variant for variant in variants)
+        ):
             basenames = {variant.rsplit("/", 1)[-1] for variant in variants}
             for path in inventory:
                 if path.rsplit("/", 1)[-1] in basenames and path not in candidates:
                     candidates.append(path)
         existing = [candidate for candidate in candidates if candidate in inventory]
         chosen = existing[0] if len(existing) == 1 else (candidates[0] if candidates else "")
-        status = ("AMBIGUOUS" if len(existing) > 1 else "MISSING" if not existing else
-                  "UNSUPPORTED" if chosen.rsplit(".", 1)[-1].lower() not in _IMAGE_MIME else
-                  "MISSING" if chosen not in paths else "MATCHED")
-        issue = {"syntax": reference.syntax, "originalTarget": reference.target,
-                 "normalizedTarget": chosen, "resolution": status, "issueKind": None,
-                 "originalFilename": None, "storedFilename": None, "logicalUri": None,
-                 "basenameCandidates": candidates, "candidateFilenames": existing}
+        status = (
+            "AMBIGUOUS"
+            if len(existing) > 1
+            else (
+                "MISSING"
+                if not existing
+                else (
+                    "UNSUPPORTED"
+                    if chosen.rsplit(".", 1)[-1].lower() not in _IMAGE_MIME
+                    else "MISSING" if chosen not in paths else "MATCHED"
+                )
+            )
+        )
+        issue = {
+            "syntax": reference.syntax,
+            "originalTarget": reference.target,
+            "normalizedTarget": chosen,
+            "resolution": status,
+            "issueKind": None,
+            "originalFilename": None,
+            "storedFilename": None,
+            "logicalUri": None,
+            "basenameCandidates": candidates,
+            "candidateFilenames": existing,
+        }
         summary[status.lower() + "Count"] += 1
         if status == "MATCHED":
             asset = paths[chosen]
@@ -327,19 +401,29 @@ def preflight(
             issue["issueKind"] = "UNSUPPORTED_IMAGE_TYPE"
             issue["originalFilename"] = chosen.rsplit("/", 1)[-1]
         summary["issues"].append(issue)
-    for status, outcome in (("ambiguousCount", "ASSET_AMBIGUOUS"),
-                            ("unsupportedCount", "UNSUPPORTED_IMAGE_TYPE"),
-                            ("missingCount", "ASSET_MISSING")):
+    for status, outcome in (
+        ("ambiguousCount", "ASSET_AMBIGUOUS"),
+        ("unsupportedCount", "UNSUPPORTED_IMAGE_TYPE"),
+        ("missingCount", "ASSET_MISSING"),
+    ):
         if summary[status]:
             summary["outcome"] = outcome
             break
     summary["blockingIssues"] = summary["outcome"] != "READY"
-    return BundlePlan(document, match_mode, summary, markdown, references,
-                      tuple(matched), validated)
+    return BundlePlan(
+        document, match_mode, summary, markdown, references, tuple(matched), validated
+    )
 
 
-def materialize(plan: BundlePlan, original_path: Path, *, user_id: int,
-                dataset_id: int, file_id: int, directory: Path) -> tuple[str, tuple[BundleUpload, ...], tuple[Path, ...]]:
+def materialize(
+    plan: BundlePlan,
+    original_path: Path,
+    *,
+    user_id: int,
+    dataset_id: int,
+    file_id: int,
+    directory: Path,
+) -> tuple[str, tuple[BundleUpload, ...], tuple[Path, ...]]:
     prefix = f"markdown-assets/v1/user-{user_id}/dataset-{dataset_id}/file-{file_id}/"
     original_key, normalized_key = prefix + "source/original.md", prefix + "source/normalized.md"
     image_entries: dict[str, dict] = {}
@@ -353,11 +437,18 @@ def materialize(plan: BundlePlan, original_path: Path, *, user_id: int,
         issue = plan.summary["issues"][index]
         issue["storedFilename"] = filename
         issue["logicalUri"] = uri
-        image_entries.setdefault(filename, {"originalFilename": asset.original_filename,
-                                            "normalizedPath": asset.path,
-                                            "storedFilename": filename, "objectKey": key,
-                                            "sha256": digest, "mimeType": mime,
-                                            "sizeBytes": asset.size})
+        image_entries.setdefault(
+            filename,
+            {
+                "originalFilename": asset.original_filename,
+                "normalizedPath": asset.path,
+                "storedFilename": filename,
+                "objectKey": key,
+                "sha256": digest,
+                "mimeType": mime,
+                "sizeBytes": asset.size,
+            },
+        )
         image_uploads.setdefault(filename, BundleUpload(asset.temp_path, key, mime))
         reference = plan.references[index]
         alt = reference.alt.replace("\\", "\\\\").replace("]", "\\]")
@@ -372,25 +463,35 @@ def materialize(plan: BundlePlan, original_path: Path, *, user_id: int,
         normalized_path = Path(name)
         generated.append(normalized_path)
         normalized_path.write_text(normalized, encoding="utf-8")
-        manifest = {"version": 1, "userId": user_id, "datasetId": dataset_id,
-                    "fileId": file_id, "documentPath": plan.document_path,
-                    "matchMode": plan.match_mode,
-                    "source": {"originalObjectKey": original_key,
-                               "normalizedObjectKey": normalized_key,
-                               "originalSha256": hashlib.sha256(original_path.read_bytes()).hexdigest(),
-                               "normalizedSha256": hashlib.sha256(normalized.encode()).hexdigest()},
-                    "images": list(image_entries.values()),
-                    "references": plan.summary["issues"], "summary": plan.summary,
-                    "generatedAt": datetime.now().isoformat()}
+        manifest = {
+            "version": 1,
+            "userId": user_id,
+            "datasetId": dataset_id,
+            "fileId": file_id,
+            "documentPath": plan.document_path,
+            "matchMode": plan.match_mode,
+            "source": {
+                "originalObjectKey": original_key,
+                "normalizedObjectKey": normalized_key,
+                "originalSha256": hashlib.sha256(original_path.read_bytes()).hexdigest(),
+                "normalizedSha256": hashlib.sha256(normalized.encode()).hexdigest(),
+            },
+            "images": list(image_entries.values()),
+            "references": plan.summary["issues"],
+            "summary": plan.summary,
+            "generatedAt": datetime.now().isoformat(),
+        }
         fd, name = tempfile.mkstemp(prefix="manifest-", suffix=".json", dir=directory)
         os.close(fd)
         manifest_path = Path(name)
         generated.append(manifest_path)
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
-        uploads = (BundleUpload(original_path, original_key, "text/markdown"),
-                   *image_uploads.values(),
-                   BundleUpload(normalized_path, normalized_key, "text/markdown"),
-                   BundleUpload(manifest_path, prefix + "manifest.json", "application/json"))
+        uploads = (
+            BundleUpload(original_path, original_key, "text/markdown"),
+            *image_uploads.values(),
+            BundleUpload(normalized_path, normalized_key, "text/markdown"),
+            BundleUpload(manifest_path, prefix + "manifest.json", "application/json"),
+        )
         return normalized_key, tuple(uploads), (normalized_path, manifest_path)
     except Exception:
         for path in generated:

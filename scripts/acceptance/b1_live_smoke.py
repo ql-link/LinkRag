@@ -29,8 +29,17 @@ def _curl(
     token: str | None = None,
 ) -> tuple[int, dict[str, Any]]:
     command = [
-        "curl", "--noproxy", "*", "--silent", "--show-error", "--max-time", "10",
-        "--request", method, "--write-out", "\n%{http_code}",
+        "curl",
+        "--noproxy",
+        "*",
+        "--silent",
+        "--show-error",
+        "--max-time",
+        "10",
+        "--request",
+        method,
+        "--write-out",
+        "\n%{http_code}",
     ]
     if token:
         command.extend(["--header", f"satoken: {token}"])
@@ -113,7 +122,9 @@ def main() -> int:
     java_profile_data: dict[str, Any] | None = None
     try:
         status, response = _curl(
-            args.java_url, "POST", "/api/v1/auth/register",
+            args.java_url,
+            "POST",
+            "/api/v1/auth/register",
             body={"username": username, "email": email, "password": password},
         )
         print(f"java_register: status={status} code={response.get('code')}")
@@ -123,18 +134,14 @@ def main() -> int:
         user_id = response["data"]["userId"]
         print(f"fixture_user_id={user_id}")
         for label, base in (("java", args.java_url), ("python", args.python_url)):
-            profile_status, profile = _curl(
-                base, "GET", "/api/v1/user/profile", token=token
-            )
+            profile_status, profile = _curl(base, "GET", "/api/v1/user/profile", token=token)
             data = profile.get("data")
             fields = sorted(data) if isinstance(data, dict) else []
             print(
                 f"{label}_profile: status={profile_status} "
                 f"code={profile.get('code')} fields={fields}"
             )
-            if label == "java" and (
-                profile_status != 200 or data.get("id") != user_id
-            ):
+            if label == "java" and (profile_status != 200 or data.get("id") != user_id):
                 raise RuntimeError("Java registered user profile differs from register")
             if label == "java":
                 java_profile_data = data
@@ -147,9 +154,7 @@ def main() -> int:
     finally:
         if token:
             try:
-                status, response = _curl(
-                    args.java_url, "POST", "/api/v1/auth/logout", token=token
-                )
+                status, response = _curl(args.java_url, "POST", "/api/v1/auth/logout", token=token)
                 print(f"java_logout: status={status} code={response.get('code')}")
             except Exception as exc:
                 print(f"java_logout: ERROR {type(exc).__name__}")

@@ -70,22 +70,16 @@ async def update(post_id: int, body: UpdatePost, admin: Admin, db: DB):
 @admin_router.put("/posts/{post_id}/content")
 async def save_content(post_id: int, body: ContentBody, admin: Admin, db: DB):
     _write_ready()
-    return success(
-        await blog.save_content(db, post_id, admin.user_id, body.contentMarkdown)
-    )
+    return success(await blog.save_content(db, post_id, admin.user_id, body.contentMarkdown))
 
 
 @admin_router.post("/posts/{post_id}/content/import")
 @admin_router.post("/posts/{post_id}/content")
-async def import_content(
-    post_id: int, admin: Admin, db: DB, file: UploadFile = File(...)
-):
+async def import_content(post_id: int, admin: Admin, db: DB, file: UploadFile = File(...)):
     _write_ready()
     content = await file.read(100 * 1024 * 1024 + 1)
     return success(
-        await blog.import_content(
-            db, post_id, admin.user_id, file.filename or "", content
-        )
+        await blog.import_content(db, post_id, admin.user_id, file.filename or "", content)
     )
 
 
@@ -144,9 +138,7 @@ async def delete_asset(post_id: int, asset_id: int, admin: Admin, db: DB):
 
 
 @public_router.get("/posts")
-async def public_posts(
-    db: DB, page: int = Query(1, ge=1), pageSize: int = Query(20, ge=1, le=100)
-):
+async def public_posts(db: DB, page: int = Query(1, ge=1), pageSize: int = Query(20, ge=1, le=100)):
     return success(await blog.public_list(db, page, pageSize))
 
 
@@ -160,9 +152,7 @@ async def public_detail(slug: str, db: DB, if_none_match: str | None = Header(No
         ):
             return Response(status_code=304, headers=headers)
         data = await blog.public_detail(row, cover_url)
-        return JSONResponse(
-            content=success(data).model_dump(mode="json"), headers=headers
-        )
+        return JSONResponse(content=success(data).model_dump(mode="json"), headers=headers)
     except BusinessError as exc:
         return JSONResponse(
             status_code=exc.http_status,

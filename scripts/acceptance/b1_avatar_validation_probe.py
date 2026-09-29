@@ -24,9 +24,19 @@ from src.database import close_database
 
 def _avatar_request(base: str, token: str, file: Path | None, filename: str = ""):
     command = [
-        "curl", "--noproxy", "*", "--silent", "--show-error", "--max-time", "30",
-        "--request", "POST", "--header", f"satoken: {token}",
-        "--write-out", "\n%{http_code}",
+        "curl",
+        "--noproxy",
+        "*",
+        "--silent",
+        "--show-error",
+        "--max-time",
+        "30",
+        "--request",
+        "POST",
+        "--header",
+        f"satoken: {token}",
+        "--write-out",
+        "\n%{http_code}",
     ]
     if file is not None:
         command.extend(["--form", f"file=@{file};filename={filename}"])
@@ -49,9 +59,7 @@ async def run(java_url: str, python_url: str, include_oversized: bool = False) -
         or db_url.host != "100.86.10.52"
     ):
         raise RuntimeError("avatar probe accepts only Dev MySQL")
-    status, payload = _curl(
-        python_url, "GET", "/api/v1/user/profile", token="invalid-b1-preflight"
-    )
+    status, payload = _curl(python_url, "GET", "/api/v1/user/profile", token="invalid-b1-preflight")
     if status != 401 or payload.get("code") != 401:
         print("auth_preflight=BLOCKED")
         return 2
@@ -83,7 +91,9 @@ async def run(java_url: str, python_url: str, include_oversized: bool = False) -
                 python = _avatar_request(python_url, fixture.token, file, filename)
                 matched = java == python
                 failures += not matched
-                print(f"{name}: {'PASS' if matched else 'DIFF'} java={java[:3]} python={python[:3]}")
+                print(
+                    f"{name}: {'PASS' if matched else 'DIFF'} java={java[:3]} python={python[:3]}"
+                )
         return 0 if failures == 0 else 1
     finally:
         try:

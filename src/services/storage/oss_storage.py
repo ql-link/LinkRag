@@ -26,9 +26,7 @@ class OssStorage(BaseObjectStorage):
     def build_object_url(self, bucket: str, object_key: str) -> str:
         raise NotImplementedError("OSS 存储适配器尚未实现")
 
-    def upload_path(
-        self, bucket: str, object_key: str, source: Path, content_type: str
-    ) -> None:
+    def upload_path(self, bucket: str, object_key: str, source: Path, content_type: str) -> None:
         raise NotImplementedError("OSS 存储适配器尚未实现")
 
     def remove_object(self, bucket: str, object_key: str) -> None:

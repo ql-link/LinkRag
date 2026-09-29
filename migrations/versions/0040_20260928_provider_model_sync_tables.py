@@ -30,16 +30,21 @@ def upgrade() -> None:
         sa.Column("updated_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("stale_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("error_message", sa.String(512)),
-        sa.Column("started_at", sa.DateTime(), nullable=False,
-                  server_default=sa.text("CURRENT_TIMESTAMP")),
+        sa.Column(
+            "started_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")
+        ),
         sa.Column("finished_at", sa.DateTime()),
-        mysql_engine="InnoDB", mysql_charset="utf8mb4", mysql_auto_increment="10000",
+        mysql_engine="InnoDB",
+        mysql_charset="utf8mb4",
+        mysql_auto_increment="10000",
         comment="外部模型目录同步任务表",
     )
-    op.create_index("idx_sync_job_provider", "llm_provider_model_sync_job",
-                    ["provider_id", "started_at"])
-    op.create_index("idx_sync_job_source_status", "llm_provider_model_sync_job",
-                    ["sync_source", "status"])
+    op.create_index(
+        "idx_sync_job_provider", "llm_provider_model_sync_job", ["provider_id", "started_at"]
+    )
+    op.create_index(
+        "idx_sync_job_source_status", "llm_provider_model_sync_job", ["sync_source", "status"]
+    )
     op.create_table(
         "llm_provider_model_sync_candidate",
         sa.Column("id", mysql.BIGINT(unsigned=True), primary_key=True, autoincrement=True),
@@ -60,27 +65,51 @@ def upgrade() -> None:
         sa.Column("raw_metadata", sa.JSON()),
         sa.Column("review_status", sa.String(16), nullable=False, server_default="PENDING"),
         sa.Column("matched_provider_model_id", mysql.BIGINT(unsigned=True)),
-        sa.Column("last_seen_at", sa.DateTime(), nullable=False,
-                  server_default=sa.text("CURRENT_TIMESTAMP")),
-        sa.Column("created_at", sa.DateTime(), nullable=False,
-                  server_default=sa.text("CURRENT_TIMESTAMP")),
-        sa.Column("updated_at", sa.DateTime(), nullable=False,
-                  server_default=sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP")),
-        sa.UniqueConstraint("provider_id", "sync_source", "model_name", "inferred_capability",
-                            name="uk_sync_candidate_provider_source_model_cap"),
-        mysql_engine="InnoDB", mysql_charset="utf8mb4", mysql_auto_increment="10000",
+        sa.Column(
+            "last_seen_at",
+            sa.DateTime(),
+            nullable=False,
+            server_default=sa.text("CURRENT_TIMESTAMP"),
+        ),
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(),
+            nullable=False,
+            server_default=sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+        ),
+        sa.UniqueConstraint(
+            "provider_id",
+            "sync_source",
+            "model_name",
+            "inferred_capability",
+            name="uk_sync_candidate_provider_source_model_cap",
+        ),
+        mysql_engine="InnoDB",
+        mysql_charset="utf8mb4",
+        mysql_auto_increment="10000",
         comment="外部模型目录同步候选表",
     )
     op.create_index("idx_sync_candidate_job", "llm_provider_model_sync_candidate", ["job_id"])
-    op.create_index("idx_sync_candidate_provider_status", "llm_provider_model_sync_candidate",
-                    ["provider_id", "review_status"])
-    op.create_index("idx_sync_candidate_model_cap", "llm_provider_model_sync_candidate",
-                    ["provider_id", "model_name", "inferred_capability"])
+    op.create_index(
+        "idx_sync_candidate_provider_status",
+        "llm_provider_model_sync_candidate",
+        ["provider_id", "review_status"],
+    )
+    op.create_index(
+        "idx_sync_candidate_model_cap",
+        "llm_provider_model_sync_candidate",
+        ["provider_id", "model_name", "inferred_capability"],
+    )
 
 
 def downgrade() -> None:
     op.drop_index("idx_sync_candidate_model_cap", table_name="llm_provider_model_sync_candidate")
-    op.drop_index("idx_sync_candidate_provider_status", table_name="llm_provider_model_sync_candidate")
+    op.drop_index(
+        "idx_sync_candidate_provider_status", table_name="llm_provider_model_sync_candidate"
+    )
     op.drop_index("idx_sync_candidate_job", table_name="llm_provider_model_sync_candidate")
     op.drop_table("llm_provider_model_sync_candidate")
     op.drop_index("idx_sync_job_source_status", table_name="llm_provider_model_sync_job")

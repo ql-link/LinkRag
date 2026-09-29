@@ -44,11 +44,7 @@ class _Users:
 @pytest.fixture
 def auth_fixture():
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    pub = (
-        key.public_key()
-        .public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
-        .decode()
-    )
+    pub = key.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode()
     sessions, users = _Sessions(), _Users()
     auth = ManagementAuthenticator(
         AccessTokenVerifier(pub, "tolink-java", "tolink-java-api"), sessions, users
@@ -102,8 +98,9 @@ async def test_management_http_and_auth_isolation(auth_fixture):
 
     @router.get("/binding")
     async def binding():
-        raise BusinessError(10028, "数据集模型绑定不合法", 400,
-                            data={"field": "dense_embedding_config_id"})
+        raise BusinessError(
+            10028, "数据集模型绑定不合法", 400, data={"field": "dense_embedding_config_id"}
+        )
 
     @router.get("/broken")
     async def broken():
@@ -119,15 +116,13 @@ async def test_management_http_and_auth_isolation(auth_fixture):
         assert (await client.post("/existing", json={})).status_code == 422
         token = make_token()
         headers = {"satoken": token}
-        assert (
-            await client.post("/management/value", json={}, headers=headers)
-        ).json() == {"code": 400, "message": "请求参数不合法", "data": None}
-        assert (
-            await client.post("/management/value", json={}, headers=headers)
-        ).status_code == 400
-        assert (
-            await client.post("/management/value", json={"count": 1})
-        ).status_code == 401
+        assert (await client.post("/management/value", json={}, headers=headers)).json() == {
+            "code": 400,
+            "message": "请求参数不合法",
+            "data": None,
+        }
+        assert (await client.post("/management/value", json={}, headers=headers)).status_code == 400
+        assert (await client.post("/management/value", json={"count": 1})).status_code == 401
         ok = await client.post("/management/value", json={"count": 1}, headers=headers)
         assert ok.json() == {
             "code": 200,
@@ -138,12 +133,8 @@ async def test_management_http_and_auth_isolation(auth_fixture):
             "/management/value", json={"count": 2, "user_id": 8}, headers=headers
         )
         assert spoofed.json()["data"]["user_id"] == 7
-        assert (
-            await client.get("/management/admin", headers=headers)
-        ).status_code == 403
-        assert (
-            await client.get("/management/owned", headers=headers)
-        ).status_code == 403
+        assert (await client.get("/management/admin", headers=headers)).status_code == 403
+        assert (await client.get("/management/owned", headers=headers)).status_code == 403
         assert (await client.get("/management/missing")).json()["code"] == 20001
         assert (await client.get("/management/conflict")).status_code == 409
         assert (await client.get("/management/binding")).json()["data"] == {
@@ -153,28 +144,20 @@ async def test_management_http_and_auth_isolation(auth_fixture):
         assert broken.status_code == 500
         assert broken.json() == {"code": 50001, "message": "系统内部错误", "data": None}
         users.user = UserAuthorization(7, "ADMIN", 1)
-        assert (
-            await client.get("/management/admin", headers=headers)
-        ).status_code == 200
+        assert (await client.get("/management/admin", headers=headers)).status_code == 200
         users.user = UserAuthorization(7, "USER", 0)
-        assert (
-            await client.post("/management/value", json={"count": 1}, headers=headers)
-        ).json()["code"] == 20003
+        assert (await client.post("/management/value", json={"count": 1}, headers=headers)).json()[
+            "code"
+        ] == 20003
         users.user = UserAuthorization(7, "USER", 1)
         sessions.active = False
-        assert (
-            await client.get("/management/admin", headers=headers)
-        ).status_code == 401
+        assert (await client.get("/management/admin", headers=headers)).status_code == 401
         sessions.active = True
         users.user = None
-        assert (
-            await client.get("/management/admin", headers=headers)
-        ).status_code == 401
+        assert (await client.get("/management/admin", headers=headers)).status_code == 401
         users.user = UserAuthorization(7, "USER", 1)
         sessions.fail = True
-        assert (
-            await client.get("/management/admin", headers=headers)
-        ).status_code == 503
+        assert (await client.get("/management/admin", headers=headers)).status_code == 503
 
 
 @pytest.mark.parametrize(

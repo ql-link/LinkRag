@@ -21,20 +21,36 @@ def _dto(row: dict, summary: dict | None = None) -> dict:
     status = {"success": "UPLOAD_SUCCESS", "failed": "UPLOAD_FAILED"}.get(
         row["upload_status"], "UPLOADING"
     )
-    return {"id": int(row["id"]), "datasetId": int(row["dataset_id"]),
-            "originalFilename": row["original_filename"],
-            "fileSuffix": row["file_suffix"], "fileSize": int(row["file_size"]),
-            "uploadStatus": status, "isUploadSuccess": bool(row["is_upload_success"]),
-            "failureReason": row["failure_reason"], "assetSummary": summary,
-            "createdAt": row["created_at"], "updatedAt": row["updated_at"]}
+    return {
+        "id": int(row["id"]),
+        "datasetId": int(row["dataset_id"]),
+        "originalFilename": row["original_filename"],
+        "fileSuffix": row["file_suffix"],
+        "fileSize": int(row["file_size"]),
+        "uploadStatus": status,
+        "isUploadSuccess": bool(row["is_upload_success"]),
+        "failureReason": row["failure_reason"],
+        "assetSummary": summary,
+        "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
+    }
 
 
 async def owned_file(db: AsyncSession, user_id: int, file_id: int) -> dict:
-    row = (await db.execute(text("""
+    row = (
+        (
+            await db.execute(
+                text("""
         SELECT f.* FROM document_original_file f
         JOIN dataset d ON d.id=f.dataset_id AND d.user_id=f.user_id AND d.is_deleted=0
         WHERE f.id=:fid AND f.user_id=:uid AND f.is_deleted=0
-    """), {"fid": file_id, "uid": user_id})).mappings().one_or_none()
+    """),
+                {"fid": file_id, "uid": user_id},
+            )
+        )
+        .mappings()
+        .one_or_none()
+    )
     if row is None:
         raise BusinessError(404, "文件不存在或无权访问", 404)
     return dict(row)
@@ -42,8 +58,7 @@ async def owned_file(db: AsyncSession, user_id: int, file_id: int) -> dict:
 
 async def _asset_summary(row: dict, *, required: bool) -> dict | None:
     key = row.get("object_key") or ""
-    if not (key.startswith("markdown-assets/v1/") and
-            key.endswith("/source/normalized.md")):
+    if not (key.startswith("markdown-assets/v1/") and key.endswith("/source/normalized.md")):
         return None
     manifest_key = key.removesuffix("source/normalized.md") + "manifest.json"
     try:
@@ -51,14 +66,19 @@ async def _asset_summary(row: dict, *, required: bool) -> dict | None:
             path = Path(directory) / "manifest.json"
             await asyncio.to_thread(
                 StorageFactory.get_storage().download_to_path,
-                settings.MINIO_RAW_BUCKET, manifest_key, path,
+                settings.MINIO_RAW_BUCKET,
+                manifest_key,
+                path,
             )
             manifest = json.loads(path.read_text(encoding="utf-8"))
-        if (manifest.get("version") != 1 or manifest.get("fileId") != row["id"]
+        if (
+            manifest.get("version") != 1
+            or manifest.get("fileId") != row["id"]
             or manifest.get("userId") != row["user_id"]
             or manifest.get("datasetId") != row["dataset_id"]
             or manifest.get("source", {}).get("normalizedObjectKey") != key
-            or not isinstance(manifest.get("summary"), dict)):
+            or not isinstance(manifest.get("summary"), dict)
+        ):
             raise ValueError("invalid manifest identity")
         return manifest["summary"]
     except Exception as exc:
@@ -74,7 +94,10 @@ async def detail(user_id: int, file_id: int) -> dict:
 
 
 async def list_files(
-    user_id: int, dataset_id: int | None, page: int, page_size: int,
+    user_id: int,
+    dataset_id: int | None,
+    page: int,
+    page_size: int,
     upload_status: str | None = None,
 ) -> dict:
     params: dict = {"uid": user_id, "limit": page_size, "offset": (page - 1) * page_size}
@@ -91,12 +114,26 @@ async def list_files(
         if dataset_id is not None:
             await owned_dataset(db, user_id, dataset_id)
         total = (await db.execute(text("SELECT COUNT(*)" + base), params)).scalar_one()
-        rows = (await db.execute(text("SELECT f.*" + base +
-                                      " ORDER BY f.created_at DESC,f.id DESC "
-                                      "LIMIT :limit OFFSET :offset"), params)).mappings().all()
-    return {"items": [_dto(dict(row)) for row in rows], "total": int(total),
-            "page": page, "pageSize": page_size,
-            "totalPages": (int(total) + page_size - 1) // page_size}
+        rows = (
+            (
+                await db.execute(
+                    text(
+                        "SELECT f.*" + base + " ORDER BY f.created_at DESC,f.id DESC "
+                        "LIMIT :limit OFFSET :offset"
+                    ),
+                    params,
+                )
+            )
+            .mappings()
+            .all()
+        )
+    return {
+        "items": [_dto(dict(row)) for row in rows],
+        "total": int(total),
+        "page": page,
+        "pageSize": page_size,
+        "totalPages": (int(total) + page_size - 1) // page_size,
+    }
 
 
 async def parse_results(user_id: int, dataset_id: int, file_ids: list[int]) -> list[dict]:
@@ -114,8 +151,11 @@ async def parse_results(user_id: int, dataset_id: int, file_ids: list[int]) -> l
     """).bindparams(bindparam("ids", expanding=True))
     async with get_db_context() as db:
         await owned_dataset(db, user_id, dataset_id)
-        rows = (await db.execute(stmt, {"ids": ids, "uid": user_id,
-                                        "did": dataset_id})).mappings().all()
+        rows = (
+            (await db.execute(stmt, {"ids": ids, "uid": user_id, "did": dataset_id}))
+            .mappings()
+            .all()
+        )
     by_id = {int(row["id"]): dict(row) for row in rows}
     if len(by_id) != len(ids):
         raise BusinessError(404, "文件不存在或无权访问", 404)
@@ -133,11 +173,15 @@ async def parse_results(user_id: int, dataset_id: int, file_ids: list[int]) -> l
             parsed, frontend = None, "parse_waiting"
         filename = row["original_filename"]
         parsed_name = row["parsed_filename"] or filename.rsplit(".", 1)[0] + ".md"
-        result.append({
-            "fileId": file_id, "originalFilename": filename,
-            "parsedFilename": parsed_name, "frontendStatus": frontend,
-            "parseStatus": parsed,
-            "failureReason": row["parse_failure_reason"] if status == "FAILED" else None,
-            "assetSummary": await _asset_summary(row, required=False),
-        })
+        result.append(
+            {
+                "fileId": file_id,
+                "originalFilename": filename,
+                "parsedFilename": parsed_name,
+                "frontendStatus": frontend,
+                "parseStatus": parsed,
+                "failureReason": row["parse_failure_reason"] if status == "FAILED" else None,
+                "assetSummary": await _asset_summary(row, required=False),
+            }
+        )
     return result

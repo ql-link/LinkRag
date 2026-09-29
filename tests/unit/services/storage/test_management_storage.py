@@ -43,9 +43,7 @@ def test_public_url_never_falls_back_to_private_endpoint(monkeypatch):
     monkeypatch.setattr(minio_storage.settings, "MINIO_PUBLIC_BASE_URL", None)
     with pytest.raises(ValueError):
         storage.build_public_url("tolink-public", "a.png")
-    monkeypatch.setattr(
-        minio_storage.settings, "MINIO_PUBLIC_BASE_URL", "https://cdn.example.test"
-    )
+    monkeypatch.setattr(minio_storage.settings, "MINIO_PUBLIC_BASE_URL", "https://cdn.example.test")
     assert storage.build_public_url("tolink-public", "头像/a b.png") == (
         "https://cdn.example.test/%E5%A4%B4%E5%83%8F/a%20b.png"
     )

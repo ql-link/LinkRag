@@ -18,7 +18,7 @@ def test_build_default_topic_specs_emits_dlt_siblings() -> None:
 
     biz_by_name = {s.name: s for s in business}
     for d in dlt:
-        original = d.name[:-len(".DLT")]
+        original = d.name[: -len(".DLT")]
         assert original in biz_by_name, f"DLT {d.name} 没有对应业务 topic"
         b = biz_by_name[original]
         # 同规格：partition / replication / retention / 副本约束 / 单消息大小一致

@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 import certifi
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.sql.elements import ColumnElement
 
 from src.api.management_http import BusinessError
 from src.config import settings
@@ -62,9 +63,7 @@ def _storage() -> BaseObjectStorage:
 async def _remove(storage: BaseObjectStorage, keys: list[str]) -> None:
     for key in keys:
         try:
-            await asyncio.to_thread(
-                storage.remove_object, settings.MINIO_PUBLIC_BUCKET, key
-            )
+            await asyncio.to_thread(storage.remove_object, settings.MINIO_PUBLIC_BUCKET, key)
         except Exception as exc:
             # Object cleanup is best effort after a successful DB transaction.
             logger.bind(
@@ -79,17 +78,13 @@ async def _read(storage: BaseObjectStorage, key: str) -> bytes:
     os.close(fd)
     path = Path(name)
     try:
-        await asyncio.to_thread(
-            storage.download_to_path, settings.MINIO_PUBLIC_BUCKET, key, path
-        )
+        await asyncio.to_thread(storage.download_to_path, settings.MINIO_PUBLIC_BUCKET, key, path)
         return path.read_bytes()
     finally:
         path.unlink(missing_ok=True)
 
 
-def _post_dto(
-    row: BlogPostDB, *, detail: bool = False, markdown: str | None = None
-) -> dict:
+def _post_dto(row: BlogPostDB, *, detail: bool = False, markdown: str | None = None) -> dict:
     result = {
         "id": row.id,
         "title": row.title,
@@ -108,9 +103,7 @@ def _post_dto(
     return result
 
 
-def _public_dto(
-    row: BlogPostDB, cover_url: str | None, markdown: str | None = None
-) -> dict:
+def _public_dto(row: BlogPostDB, cover_url: str | None, markdown: str | None = None) -> dict:
     result = {
         "id": row.id,
         "title": row.title,
@@ -147,9 +140,7 @@ def _asset_dto(row: BlogAssetDB) -> dict:
 
 
 async def _post(db: AsyncSession, post_id: int, *, lock: bool = False) -> BlogPostDB:
-    query = select(BlogPostDB).where(
-        BlogPostDB.id == post_id, BlogPostDB.is_deleted.is_(False)
-    )
+    query = select(BlogPostDB).where(BlogPostDB.id == post_id, BlogPostDB.is_deleted.is_(False))
     if lock:
         query = query.with_for_update()
     row = await db.scalar(query)
@@ -171,9 +162,7 @@ async def _cover(db: AsyncSession, row: BlogPostDB) -> str | None:
     return asset.public_url if asset else None
 
 
-async def create(
-    db: AsyncSession, admin_id: int, title: str, summary: str | None
-) -> dict:
+async def create(db: AsyncSession, admin_id: int, title: str, summary: str | None) -> dict:
     title = (title or "").strip()
     if not title or len(title) > 255:
         raise _bad("博客标题不能为空且不能超过 255 个字符")
@@ -197,19 +186,14 @@ async def create(
     return _post_dto(row, detail=True)
 
 
-async def admin_list(
-    db: AsyncSession, page: int, size: int, status: str | None
-) -> dict:
-    clauses = [BlogPostDB.is_deleted.is_(False)]
+async def admin_list(db: AsyncSession, page: int, size: int, status: str | None) -> dict:
+    clauses: list[ColumnElement[bool]] = [BlogPostDB.is_deleted.is_(False)]
     if status and status.strip():
         value = status.strip().upper()
         if value not in {"DRAFT", "PUBLISHED"}:
             raise _bad("博客状态不支持")
         clauses.append(BlogPostDB.status == value)
-    total = (
-        await db.scalar(select(func.count()).select_from(BlogPostDB).where(*clauses))
-        or 0
-    )
+    total = await db.scalar(select(func.count()).select_from(BlogPostDB).where(*clauses)) or 0
     rows = (
         await db.scalars(
             select(BlogPostDB)
@@ -242,9 +226,7 @@ async def detail(db: AsyncSession, post_id: int) -> dict:
 
 async def update(db: AsyncSession, post_id: int, changes: dict) -> dict:
     row = await _post(db, post_id, lock=True)
-    if not any(
-        changes.get(name) is not None for name in ("title", "summary", "coverAssetId")
-    ):
+    if not any(changes.get(name) is not None for name in ("title", "summary", "coverAssetId")):
         raise _bad("请至少提供一个需要更新的字段")
     if changes.get("title") is not None:
         title = (changes["title"] or "").strip()
@@ -303,7 +285,7 @@ def _fetch_remote_image(url: str) -> tuple[str, bytes, str] | None:
     """Fetch only a resolved public IP while retaining the original TLS hostname."""
     current = url
     for _ in range(4):
-        connection = None
+        connection: http.client.HTTPConnection | None = None
         try:
             parsed = urlsplit(current)
             if (
@@ -323,18 +305,14 @@ def _fetch_remote_image(url: str) -> tuple[str, bytes, str] | None:
             pinned_ip = addresses[0][4][0]
             if parsed.scheme == "https":
                 context = ssl.create_default_context(cafile=certifi.where())
-                connection = http.client.HTTPSConnection(
-                    host, port, timeout=10, context=context
-                )
+                connection = http.client.HTTPSConnection(host, port, timeout=10, context=context)
             else:
                 connection = http.client.HTTPConnection(host, port, timeout=10)
 
             def connect_pinned(_address, timeout, source_address):
-                return socket.create_connection(
-                    (pinned_ip, port), timeout, source_address
-                )
+                return socket.create_connection((pinned_ip, port), timeout, source_address)
 
-            connection._create_connection = connect_pinned
+            setattr(connection, "_create_connection", connect_pinned)
             target = parsed.path or "/"
             if parsed.query:
                 target += "?" + parsed.query
@@ -428,9 +406,7 @@ async def upload_asset(
         raise _bad("博客资源类型不支持")
     row = await _post(db, post_id, lock=True)
     storage = _storage()
-    asset = await _upload_asset(
-        db, post_id, admin_id, kind, filename, content, mime, storage
-    )
+    asset = await _upload_asset(db, post_id, admin_id, kind, filename, content, mime, storage)
     cleanup: list[str] = []
     try:
         db.add(asset)
@@ -458,9 +434,7 @@ async def upload_asset(
     return _asset_dto(asset)
 
 
-async def assets(
-    db: AsyncSession, post_id: int, asset_type: str | None = None
-) -> list[dict]:
+async def assets(db: AsyncSession, post_id: int, asset_type: str | None = None) -> list[dict]:
     await _post(db, post_id)
     clauses = [BlogAssetDB.post_id == post_id, BlogAssetDB.is_deleted.is_(False)]
     if asset_type and asset_type.strip():
@@ -506,9 +480,7 @@ async def delete_asset(db: AsyncSession, post_id: int, asset_id: int) -> None:
     await _remove(_storage(), [asset.object_key])
 
 
-async def save_content(
-    db: AsyncSession, post_id: int, admin_id: int, markdown: str
-) -> dict:
+async def save_content(db: AsyncSession, post_id: int, admin_id: int, markdown: str) -> dict:
     if not markdown or not markdown.strip():
         raise _bad("博客正文不能为空")
     if len(markdown.encode("utf-8")) > _MAX_CONTENT:
@@ -541,11 +513,7 @@ async def save_content(
                 mime_match = re.fullmatch(
                     r"data:(image/(?:jpeg|png|gif|webp));base64", header, re.I
                 )
-                if (
-                    not sep
-                    or mime_match is None
-                    or len(encoded) > _MAX_IMAGE * 4 // 3 + 8
-                ):
+                if not sep or mime_match is None or len(encoded) > _MAX_IMAGE * 4 // 3 + 8:
                     raise _bad("Markdown 图片数据不合法")
                 try:
                     content = base64.b64decode(encoded, validate=True)
@@ -568,11 +536,7 @@ async def save_content(
                 )
                 created_keys.append(asset.object_key)
                 db.add(asset)
-                markdown = (
-                    markdown[: match.start(2)]
-                    + asset.public_url
-                    + markdown[match.end(2) :]
-                )
+                markdown = markdown[: match.start(2)] + asset.public_url + markdown[match.end(2) :]
             elif url.startswith(("https://", "http://")):
                 remote = await _safe_remote_image(url)
                 if remote is not None:
@@ -589,9 +553,7 @@ async def save_content(
                     created_keys.append(asset.object_key)
                     db.add(asset)
                     markdown = (
-                        markdown[: match.start(2)]
-                        + asset.public_url
-                        + markdown[match.end(2) :]
+                        markdown[: match.start(2)] + asset.public_url + markdown[match.end(2) :]
                     )
             else:
                 raise _bad("Markdown 图片必须使用当前文章资源或公开链接")
@@ -670,10 +632,7 @@ async def delete(db: AsyncSession, post_id: int) -> None:
 
 async def public_list(db: AsyncSession, page: int, size: int) -> dict:
     clauses = [BlogPostDB.is_deleted.is_(False), BlogPostDB.status == "PUBLISHED"]
-    total = (
-        await db.scalar(select(func.count()).select_from(BlogPostDB).where(*clauses))
-        or 0
-    )
+    total = await db.scalar(select(func.count()).select_from(BlogPostDB).where(*clauses)) or 0
     rows = (
         await db.scalars(
             select(BlogPostDB)
@@ -692,9 +651,7 @@ async def public_list(db: AsyncSession, page: int, size: int) -> dict:
     }
 
 
-async def public_snapshot(
-    db: AsyncSession, slug: str
-) -> tuple[BlogPostDB, str | None, str]:
+async def public_snapshot(db: AsyncSession, slug: str) -> tuple[BlogPostDB, str | None, str]:
     if not re.fullmatch(r"[0-9a-f]{32}", slug):
         raise _bad("slug格式不合法")
     row = await db.scalar(

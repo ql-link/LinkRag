@@ -8,19 +8,19 @@ MQ 消息中台 API 路由
 from fastapi import APIRouter, HTTPException
 from loguru import logger
 
+from src.api.schemas.mq import (
+    MQResponse,
+    MQVendorInfoResponse,
+    SendParseTaskRequest,
+    SendRawMessageRequest,
+)
 from src.config import settings
-from src.observability.logging import safe_exception_stack, truncate_log_value
-from src.services.mq_service import MQService
 from src.core.mq.factory import MQFactory
 from src.core.mq.messages import (
     ParseTaskMessage,
 )
-from src.api.schemas.mq import (
-    SendParseTaskRequest,
-    SendRawMessageRequest,
-    MQResponse,
-    MQVendorInfoResponse,
-)
+from src.observability.logging import safe_exception_stack, truncate_log_value
+from src.services.mq_service import MQService
 
 router = APIRouter(
     prefix="/api/v1/mq",

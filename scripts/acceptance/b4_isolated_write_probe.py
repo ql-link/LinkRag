@@ -36,34 +36,57 @@ async def _models() -> tuple[int, int]:
 
 async def _cleanup_dataset(user_id: int, dataset_id: int, name_prefix: str) -> tuple[int, int]:
     async with write_transaction() as db:
-        row = (await db.execute(text("SELECT name FROM dataset WHERE id=:did AND user_id=:uid FOR UPDATE"),
-                                {"did": dataset_id, "uid": user_id})).scalar_one_or_none()
+        row = (
+            await db.execute(
+                text("SELECT name FROM dataset WHERE id=:did AND user_id=:uid FOR UPDATE"),
+                {"did": dataset_id, "uid": user_id},
+            )
+        ).scalar_one_or_none()
         if row is None:
             return 0, 0
         if not row.startswith(name_prefix):
             raise RuntimeError("fixture dataset name guard failed")
-        files = (await db.execute(text("SELECT COUNT(*) FROM document_original_file WHERE dataset_id=:did"),
-                                  {"did": dataset_id})).scalar_one()
-        chats = (await db.execute(text("SELECT COUNT(*) FROM chat_conversation WHERE dataset_id=:did"),
-                                  {"did": dataset_id})).scalar_one()
+        files = (
+            await db.execute(
+                text("SELECT COUNT(*) FROM document_original_file WHERE dataset_id=:did"),
+                {"did": dataset_id},
+            )
+        ).scalar_one()
+        chats = (
+            await db.execute(
+                text("SELECT COUNT(*) FROM chat_conversation WHERE dataset_id=:did"),
+                {"did": dataset_id},
+            )
+        ).scalar_one()
         if files or chats:
             raise RuntimeError("fixture dataset unexpectedly has files or chats")
-        configs = await db.execute(text("DELETE FROM dataset_parse_config WHERE dataset_id=:did AND user_id=:uid"),
-                                   {"did": dataset_id, "uid": user_id})
-        datasets = await db.execute(text("DELETE FROM dataset WHERE id=:did AND user_id=:uid"),
-                                    {"did": dataset_id, "uid": user_id})
+        configs = await db.execute(
+            text("DELETE FROM dataset_parse_config WHERE dataset_id=:did AND user_id=:uid"),
+            {"did": dataset_id, "uid": user_id},
+        )
+        datasets = await db.execute(
+            text("DELETE FROM dataset WHERE id=:did AND user_id=:uid"),
+            {"did": dataset_id, "uid": user_id},
+        )
     await DatasetParseConfigCache().invalidate(dataset_id)
     return int(configs.rowcount), int(datasets.rowcount)
 
 
 async def run(java_url: str, python_url: str) -> int:
     url = make_url(settings.DATABASE_URL or "")
-    if (settings.APP_ENV != "development" or url.database != "tolink_rag_dev"
-            or url.host != "100.86.10.52"):
+    if (
+        settings.APP_ENV != "development"
+        or url.database != "tolink_rag_dev"
+        or url.host != "100.86.10.52"
+    ):
         raise RuntimeError("probe accepts only the named Dev database")
-    if (not settings.B4_DATASET_WRITES_ENABLED or settings.B2_GENERIC_UPLOAD_ENABLED
-            or settings.B3_CONTROL_WRITES_ENABLED or settings.B5_FILE_WRITES_ENABLED
-            or settings.B5_DELETE_WRITES_ENABLED):
+    if (
+        not settings.B4_DATASET_WRITES_ENABLED
+        or settings.B2_GENERIC_UPLOAD_ENABLED
+        or settings.B3_CONTROL_WRITES_ENABLED
+        or settings.B5_FILE_WRITES_ENABLED
+        or settings.B5_DELETE_WRITES_ENABLED
+    ):
         raise RuntimeError("only B4 writes may be enabled")
     dense, sparse = await _models()
     await redis_client.initialize()
@@ -73,7 +96,9 @@ async def run(java_url: str, python_url: str) -> int:
     dataset_id = 0
     failures = 0
 
-    def check(name: str, status: int, payload: dict, expected: int, code: int | None = None) -> None:
+    def check(
+        name: str, status: int, payload: dict, expected: int, code: int | None = None
+    ) -> None:
         nonlocal failures
         okay = status == expected and payload.get("code") == (code or expected)
         failures += not okay
@@ -83,8 +108,12 @@ async def run(java_url: str, python_url: str) -> int:
         if not _register(java_url, fixture):
             raise RuntimeError("fixture registration failed")
         path = "/api/v1/datasets"
-        body = {"name": f"  {name_prefix}  ", "description": "isolated test",
-                "dense_embedding_config_id": dense, "sparse_embedding_config_id": sparse}
+        body = {
+            "name": f"  {name_prefix}  ",
+            "description": "isolated test",
+            "dense_embedding_config_id": dense,
+            "sparse_embedding_config_id": sparse,
+        }
         status, payload = _curl(python_url, "POST", path, token=fixture.token, body=body)
         check("create", status, payload, 200)
         if status != 200:
@@ -99,49 +128,79 @@ async def run(java_url: str, python_url: str) -> int:
         check("duplicate_name", status, payload, 400)
         status, payload = _curl(python_url, "GET", f"{path}/{dataset_id}", token=fixture.token)
         check("detail", status, payload, 200)
-        status, payload = _curl(python_url, "GET", f"{path}/{dataset_id}/parse-config", token=fixture.token)
+        status, payload = _curl(
+            python_url, "GET", f"{path}/{dataset_id}/parse-config", token=fixture.token
+        )
         check("default_parse_config", status, payload, 200)
-        if status == 200 and (payload["data"].get("dense_embedding_config_id"),
-                              payload["data"].get("sparse_embedding_config_id")) != (dense, sparse):
+        if status == 200 and (
+            payload["data"].get("dense_embedding_config_id"),
+            payload["data"].get("sparse_embedding_config_id"),
+        ) != (dense, sparse):
             failures += 1
             print("default_bindings: FAIL")
         else:
             print("default_bindings: PASS")
-        status, payload = _curl(python_url, "PATCH", f"{path}/{dataset_id}",
-                                token=fixture.token, body={"name": f" {name_prefix}_renamed ",
-                                                           "description": " updated "})
+        status, payload = _curl(
+            python_url,
+            "PATCH",
+            f"{path}/{dataset_id}",
+            token=fixture.token,
+            body={"name": f" {name_prefix}_renamed ", "description": " updated "},
+        )
         check("update", status, payload, 200)
         if status == 200 and payload["data"]["name"] != f"{name_prefix}_renamed":
             failures += 1
             print("update_trim: FAIL")
         else:
             print("update_trim: PASS")
-        config = {"dense_embedding_config_id": dense, "sparse_embedding_config_id": sparse,
-                  "chunking": {"stage_two_algorithm": "NOOP"},
-                  "recall": {"recall_enabled_sources": ["DENSE", "dense", None, " sparse "],
-                             "rerank_top_n": 7}}
-        status, payload = _curl(python_url, "PUT", f"{path}/{dataset_id}/parse-config",
-                                token=fixture.token, body=config)
+        config = {
+            "dense_embedding_config_id": dense,
+            "sparse_embedding_config_id": sparse,
+            "chunking": {"stage_two_algorithm": "NOOP"},
+            "recall": {
+                "recall_enabled_sources": ["DENSE", "dense", None, " sparse "],
+                "rerank_top_n": 7,
+            },
+        }
+        status, payload = _curl(
+            python_url, "PUT", f"{path}/{dataset_id}/parse-config", token=fixture.token, body=config
+        )
         check("replace_parse_config", status, payload, 200)
-        if status == 200 and payload["data"]["recall"].get("recall_enabled_sources") != ["dense", "sparse"]:
+        if status == 200 and payload["data"]["recall"].get("recall_enabled_sources") != [
+            "dense",
+            "sparse",
+        ]:
             failures += 1
             print("recall_sources_normalized: FAIL")
         else:
             print("recall_sources_normalized: PASS")
-        status, payload = _curl(python_url, "PUT", f"{path}/{dataset_id}/parse-config",
-                                token=fixture.token,
-                                body={**config, "recall": {"dense_score_threshold": -0.1}})
+        status, payload = _curl(
+            python_url,
+            "PUT",
+            f"{path}/{dataset_id}/parse-config",
+            token=fixture.token,
+            body={**config, "recall": {"dense_score_threshold": -0.1}},
+        )
         check("negative_threshold", status, payload, 400)
-        status, payload = _curl(python_url, "PUT", f"{path}/{dataset_id}/parse-config",
-                                token=fixture.token,
-                                body={**config, "dense_embedding_config_id": 99999999})
+        status, payload = _curl(
+            python_url,
+            "PUT",
+            f"{path}/{dataset_id}/parse-config",
+            token=fixture.token,
+            body={**config, "dense_embedding_config_id": 99999999},
+        )
         check("immutable_dense_binding", status, payload, 400, 10028)
-        if status == 400 and (payload.get("data") or {}).get("field") != "dense_embedding_config_id":
+        if (
+            status == 400
+            and (payload.get("data") or {}).get("field") != "dense_embedding_config_id"
+        ):
             failures += 1
             print("immutable_field_detail: FAIL")
         else:
             print("immutable_field_detail: PASS")
-        status, payload = _curl(python_url, "GET", f"{path}/{dataset_id}/parse-config", token=fixture.token)
+        status, payload = _curl(
+            python_url, "GET", f"{path}/{dataset_id}/parse-config", token=fixture.token
+        )
         check("config_unchanged_after_reject", status, payload, 200)
         if status == 200 and payload["data"]["recall"].get("rerank_top_n") != 7:
             failures += 1
@@ -154,7 +213,9 @@ async def run(java_url: str, python_url: str) -> int:
         try:
             try:
                 if dataset_id and fixture.user_id:
-                    configs, datasets = await _cleanup_dataset(int(fixture.user_id), dataset_id, name_prefix)
+                    configs, datasets = await _cleanup_dataset(
+                        int(fixture.user_id), dataset_id, name_prefix
+                    )
                     print(f"cleanup_dataset: config_rows={configs} dataset_rows={datasets}")
             finally:
                 if fixture.token:

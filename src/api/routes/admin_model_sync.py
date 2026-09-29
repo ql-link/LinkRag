@@ -44,15 +44,18 @@ class ReviewBody(BaseModel):
 @router.post("/providers/{provider_id}/model-sync")
 async def refresh(provider_id: int, admin: Admin, body: RefreshBody | None = None):
     _write_ready()
-    return success(await model_sync.refresh(
-        provider_id, body.syncSource if body else None, admin.user_id
-    ))
+    return success(
+        await model_sync.refresh(provider_id, body.syncSource if body else None, admin.user_id)
+    )
 
 
 @router.get("/model-sync-jobs")
 async def jobs(
-    admin: Admin, page: int = Query(1, ge=1), size: int = Query(10, ge=1, le=100),
-    providerId: int | None = None, syncSource: str | None = None,
+    admin: Admin,
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100),
+    providerId: int | None = None,
+    syncSource: str | None = None,
     status: str | None = None,
 ):
     return success(await model_sync.list_jobs(page, size, providerId, syncSource, status))
@@ -60,13 +63,17 @@ async def jobs(
 
 @router.get("/model-sync-candidates")
 async def candidates(
-    admin: Admin, page: int = Query(1, ge=1), size: int = Query(10, ge=1, le=100),
-    providerId: int | None = None, jobId: int | None = None,
-    reviewStatus: str | None = None, capability: str | None = None,
+    admin: Admin,
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100),
+    providerId: int | None = None,
+    jobId: int | None = None,
+    reviewStatus: str | None = None,
+    capability: str | None = None,
 ):
-    return success(await model_sync.list_candidates(
-        page, size, providerId, jobId, reviewStatus, capability
-    ))
+    return success(
+        await model_sync.list_candidates(page, size, providerId, jobId, reviewStatus, capability)
+    )
 
 
 @router.post("/model-sync-candidates/{candidate_id}/publish")
@@ -81,10 +88,13 @@ async def publish_one(candidate_id: int, admin: Admin, body: PublishBody | None 
 @router.post("/model-sync-candidates/publish")
 async def publish_many(body: BulkPublishBody, admin: Admin):
     _write_ready()
-    return success(await model_sync.publish(
-        body.candidateIds, body.model_dump(exclude_none=True, exclude={"candidateIds"}),
-        admin.user_id,
-    ))
+    return success(
+        await model_sync.publish(
+            body.candidateIds,
+            body.model_dump(exclude_none=True, exclude={"candidateIds"}),
+            admin.user_id,
+        )
+    )
 
 
 @router.patch("/model-sync-candidates/{candidate_id}/review")

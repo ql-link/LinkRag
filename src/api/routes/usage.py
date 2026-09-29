@@ -17,22 +17,32 @@ DB = Annotated[AsyncSession, Depends(get_db)]
 
 
 @router.get("/summary")
-async def summary(startDate: date, endDate: date, user: User, db: DB,
-                  stage: str = "chat") -> ApiResult[dict]:
+async def summary(
+    startDate: date, endDate: date, user: User, db: DB, stage: str = "chat"
+) -> ApiResult[dict]:
     return success(await usage_ledger.summary(db, user.user_id, startDate, endDate, stage))
 
 
 @router.get("/daily")
-async def daily(startDate: date, endDate: date, user: User, db: DB,
-                stage: str = "chat") -> ApiResult[list[dict]]:
+async def daily(
+    startDate: date, endDate: date, user: User, db: DB, stage: str = "chat"
+) -> ApiResult[list[dict]]:
     return success(await usage_ledger.daily(db, user.user_id, startDate, endDate, stage))
 
 
 @router.get("/logs")
-async def logs(startDate: date, endDate: date, user: User, db: DB,
-               stage: str = "chat", page: int = Query(1, ge=1),
-               pageSize: int = Query(20, ge=1, le=200)) -> ApiResult[dict]:
-    return success(await usage_ledger.logs(db, user.user_id, startDate, endDate, stage, page, pageSize))
+async def logs(
+    startDate: date,
+    endDate: date,
+    user: User,
+    db: DB,
+    stage: str = "chat",
+    page: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=200),
+) -> ApiResult[dict]:
+    return success(
+        await usage_ledger.logs(db, user.user_id, startDate, endDate, stage, page, pageSize)
+    )
 
 
 @router.get("/by-model")

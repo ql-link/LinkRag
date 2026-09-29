@@ -41,6 +41,7 @@ from src.application.recall_pipeline_provider import (
     build_recall_request_from_config,
     get_recall_pipeline,
 )
+from src.config import settings
 from src.core.llm.exceptions import (
     DatasetModelBindingRequiredError,
     LLMConfigResolutionError,
@@ -48,7 +49,6 @@ from src.core.llm.exceptions import (
 from src.core.pipeline.recall import RecallPipeline
 from src.core.storage.dataset_scope import resolve_user_dataset_scope
 from src.database import get_db
-from src.config import settings
 
 router = APIRouter(prefix="/api/v1/recall", tags=["recall"])
 session_router = ManagementRouter(prefix="/api/v1/recall", tags=["recall"])
@@ -79,12 +79,14 @@ async def create_recall_session(
         raise BusinessError(exc.status_code, exc.message, exc.status_code) from exc
     token = request.headers.get("satoken", "")
     claims = request.app.state.management_authenticator._verifier.verify(token)
-    return success({
-        "token": token,
-        "streamUrl": "/api/v1/rag/stream",
-        "datasetIds": dataset_ids,
-        "expiresIn": max(0, claims.expires_at - int(time.time())),
-    })
+    return success(
+        {
+            "token": token,
+            "streamUrl": "/api/v1/rag/stream",
+            "datasetIds": dataset_ids,
+            "expiresIn": max(0, claims.expires_at - int(time.time())),
+        }
+    )
 
 
 class RecallJsonRequest(BaseModel):

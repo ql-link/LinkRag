@@ -27,11 +27,20 @@ async def download(file_id: int, request: Request):
     if not expected or not secrets.compare_digest(authorization, "Bearer " + expected):
         raise BusinessError(401, "服务鉴权失败", 401)
     async with get_db_context() as db:
-        row = (await db.execute(text("""
+        row = (
+            (
+                await db.execute(
+                    text("""
             SELECT original_filename,content_type,bucket_name,object_key
             FROM document_original_file
             WHERE id=:fid AND is_deleted=0 AND is_upload_success=1
-        """), {"fid": file_id})).mappings().one_or_none()
+        """),
+                    {"fid": file_id},
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
     if row is None or not row["object_key"]:
         raise BusinessError(404, "文件不存在", 404)
     temporary = TemporaryDirectory(prefix="tolink-original-file-")
@@ -39,7 +48,9 @@ async def download(file_id: int, request: Request):
     try:
         await asyncio.to_thread(
             StorageFactory.get_storage().download_to_path,
-            row["bucket_name"], row["object_key"], path,
+            row["bucket_name"],
+            row["object_key"],
+            path,
         )
         if not path.is_file():
             raise FileNotFoundError
@@ -47,7 +58,8 @@ async def download(file_id: int, request: Request):
         temporary.cleanup()
         raise BusinessError(404, "文件不存在", 404) from exc
     return FileResponse(
-        path, filename=row["original_filename"],
+        path,
+        filename=row["original_filename"],
         media_type=row["content_type"] or "application/octet-stream",
         background=BackgroundTask(temporary.cleanup),
     )

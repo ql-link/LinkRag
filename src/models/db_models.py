@@ -151,11 +151,18 @@ class ProviderModelSyncCandidateDB(Base):
     matched_provider_model_id: Mapped[int | None] = mapped_column(BigInteger)
     last_seen_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=func.now())
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=func.now())
-    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, default=func.now(), onupdate=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=func.now(), onupdate=func.now()
+    )
 
     __table_args__ = (
-        UniqueConstraint("provider_id", "sync_source", "model_name", "inferred_capability",
-                         name="uk_sync_candidate_provider_source_model_cap"),
+        UniqueConstraint(
+            "provider_id",
+            "sync_source",
+            "model_name",
+            "inferred_capability",
+            name="uk_sync_candidate_provider_source_model_cap",
+        ),
         Index("idx_sync_candidate_job", "job_id"),
         Index("idx_sync_candidate_provider_status", "provider_id", "review_status"),
         Index("idx_sync_candidate_model_cap", "provider_id", "model_name", "inferred_capability"),

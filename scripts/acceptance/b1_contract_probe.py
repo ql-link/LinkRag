@@ -25,8 +25,18 @@ class Case:
 CASES = (
     Case("profile_anonymous", "GET", "/api/v1/user/profile"),
     Case("admin_anonymous", "GET", "/api/v1/admin/users"),
-    Case("profile_invalid_token", "GET", "/api/v1/user/profile", headers=("satoken: invalid-b1-probe",)),
-    Case("profile_bearer_only", "GET", "/api/v1/user/profile", headers=("Authorization: Bearer invalid-b1-probe",)),
+    Case(
+        "profile_invalid_token",
+        "GET",
+        "/api/v1/user/profile",
+        headers=("satoken: invalid-b1-probe",),
+    ),
+    Case(
+        "profile_bearer_only",
+        "GET",
+        "/api/v1/user/profile",
+        headers=("Authorization: Bearer invalid-b1-probe",),
+    ),
     Case("profile_update_anonymous", "PATCH", "/api/v1/user/profile", {"nickname": "probe"}),
     Case("avatar_anonymous", "POST", "/api/v1/user/avatar"),
     Case("admin_role_anonymous", "PATCH", "/api/v1/admin/users/1/role", {"role": "ADMIN"}),
@@ -36,25 +46,89 @@ CASES = (
     Case("login_blank_account", "POST", "/api/v1/auth/login", {"account": "   ", "password": "x"}),
     Case("login_null_account", "POST", "/api/v1/auth/login", {"account": None, "password": "x"}),
     Case("login_numeric_account", "POST", "/api/v1/auth/login", {"account": 123, "password": "x"}),
-    Case("register_missing_email", "POST", "/api/v1/auth/register", {"username": "probe", "password": "123456"}),
-    Case("register_blank_username", "POST", "/api/v1/auth/register", {"username": "   ", "password": "123456", "email": "probe@example.invalid"}),
-    Case("register_short_username", "POST", "/api/v1/auth/register", {"username": "ab", "password": "123456", "email": "probe@example.invalid"}),
-    Case("register_blank_password", "POST", "/api/v1/auth/register", {"username": "probe", "password": "      ", "email": "probe@example.invalid"}),
-    Case("register_short_password", "POST", "/api/v1/auth/register", {"username": "probe", "password": "abc", "email": "probe@example.invalid"}),
-    Case("register_bad_email", "POST", "/api/v1/auth/register", {"username": "probe", "password": "123456", "email": "invalid"}),
-    Case("register_trimmed_short_username_bad_email", "POST", "/api/v1/auth/register", {"username": " ab ", "password": "123456", "email": "invalid"}),
-    Case("register_null_email", "POST", "/api/v1/auth/register", {"username": "probe", "password": "123456", "email": None}),
-    Case("register_long_username", "POST", "/api/v1/auth/register", {"username": "x" * 65, "password": "123456", "email": "probe@example.invalid"}),
-    Case("register_long_password", "POST", "/api/v1/auth/register", {"username": "probe", "password": "x" * 129, "email": "probe@example.invalid"}),
+    Case(
+        "register_missing_email",
+        "POST",
+        "/api/v1/auth/register",
+        {"username": "probe", "password": "123456"},
+    ),
+    Case(
+        "register_blank_username",
+        "POST",
+        "/api/v1/auth/register",
+        {"username": "   ", "password": "123456", "email": "probe@example.invalid"},
+    ),
+    Case(
+        "register_short_username",
+        "POST",
+        "/api/v1/auth/register",
+        {"username": "ab", "password": "123456", "email": "probe@example.invalid"},
+    ),
+    Case(
+        "register_blank_password",
+        "POST",
+        "/api/v1/auth/register",
+        {"username": "probe", "password": "      ", "email": "probe@example.invalid"},
+    ),
+    Case(
+        "register_short_password",
+        "POST",
+        "/api/v1/auth/register",
+        {"username": "probe", "password": "abc", "email": "probe@example.invalid"},
+    ),
+    Case(
+        "register_bad_email",
+        "POST",
+        "/api/v1/auth/register",
+        {"username": "probe", "password": "123456", "email": "invalid"},
+    ),
+    Case(
+        "register_trimmed_short_username_bad_email",
+        "POST",
+        "/api/v1/auth/register",
+        {"username": " ab ", "password": "123456", "email": "invalid"},
+    ),
+    Case(
+        "register_null_email",
+        "POST",
+        "/api/v1/auth/register",
+        {"username": "probe", "password": "123456", "email": None},
+    ),
+    Case(
+        "register_long_username",
+        "POST",
+        "/api/v1/auth/register",
+        {"username": "x" * 65, "password": "123456", "email": "probe@example.invalid"},
+    ),
+    Case(
+        "register_long_password",
+        "POST",
+        "/api/v1/auth/register",
+        {"username": "probe", "password": "x" * 129, "email": "probe@example.invalid"},
+    ),
     Case("logout_anonymous", "POST", "/api/v1/auth/logout"),
-    Case("logout_invalid_token", "POST", "/api/v1/auth/logout", headers=("satoken: invalid-b1-probe",)),
+    Case(
+        "logout_invalid_token",
+        "POST",
+        "/api/v1/auth/logout",
+        headers=("satoken: invalid-b1-probe",),
+    ),
 )
 
 
 def request(base_url: str, case: Case) -> tuple[int, int, str, Any]:
     command = [
-        "curl", "--noproxy", "*", "--silent", "--show-error", "--max-time", "8",
-        "--request", case.method, "--write-out", "\n%{http_code}",
+        "curl",
+        "--noproxy",
+        "*",
+        "--silent",
+        "--show-error",
+        "--max-time",
+        "8",
+        "--request",
+        case.method,
+        "--write-out",
+        "\n%{http_code}",
     ]
     if case.body is not None:
         command.extend(["--header", "Content-Type: application/json", "--data-binary", "@-"])

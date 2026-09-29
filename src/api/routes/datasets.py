@@ -45,10 +45,12 @@ class ParseConfigBody(BaseModel):
         validation_alias=AliasChoices("dense_embedding_config_id", "denseEmbeddingConfigId")
     )
     enhancement_chat_config_id: int | None = Field(
-        default=None, validation_alias=AliasChoices("enhancement_chat_config_id", "enhancementChatConfigId")
+        default=None,
+        validation_alias=AliasChoices("enhancement_chat_config_id", "enhancementChatConfigId"),
     )
     enhancement_vision_config_id: int | None = Field(
-        default=None, validation_alias=AliasChoices("enhancement_vision_config_id", "enhancementVisionConfigId")
+        default=None,
+        validation_alias=AliasChoices("enhancement_vision_config_id", "enhancementVisionConfigId"),
     )
     rerank_config_id: int | None = Field(
         default=None, validation_alias=AliasChoices("rerank_config_id", "rerankConfigId")
@@ -62,61 +64,75 @@ class ParseConfigBody(BaseModel):
 @router.get("")
 async def list_datasets(
     user: Annotated[CurrentUser, Depends(require_login)],
-    page: int = Query(1, ge=1), pageSize: int = Query(20, ge=1, le=100),
+    page: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=100),
 ):
     return success(await datasets.list_datasets(user.user_id, page, pageSize))
 
 
 @router.post("")
 async def create_dataset(
-    body: CreateDatasetBody, user: Annotated[CurrentUser, Depends(require_login)],
+    body: CreateDatasetBody,
+    user: Annotated[CurrentUser, Depends(require_login)],
 ):
     _write_ready()
-    return success(await datasets.create_dataset(
-        user.user_id, body.name, body.description,
-        body.dense_embedding_config_id, body.sparse_embedding_config_id,
-    ))
+    return success(
+        await datasets.create_dataset(
+            user.user_id,
+            body.name,
+            body.description,
+            body.dense_embedding_config_id,
+            body.sparse_embedding_config_id,
+        )
+    )
 
 
 @router.get("/{dataset_id}")
 async def detail(
-    dataset_id: int, user: Annotated[CurrentUser, Depends(require_login)],
+    dataset_id: int,
+    user: Annotated[CurrentUser, Depends(require_login)],
 ):
     return success(await datasets.detail(user.user_id, dataset_id))
 
 
 @router.patch("/{dataset_id}")
 async def update_dataset(
-    dataset_id: int, body: UpdateDatasetBody,
+    dataset_id: int,
+    body: UpdateDatasetBody,
     user: Annotated[CurrentUser, Depends(require_login)],
 ):
     _write_ready()
-    return success(await datasets.update_dataset(
-        user.user_id, dataset_id, body.model_dump(exclude_unset=True)
-    ))
+    return success(
+        await datasets.update_dataset(user.user_id, dataset_id, body.model_dump(exclude_unset=True))
+    )
 
 
 @router.get("/{dataset_id}/parse-config")
 async def get_parse_config(
-    dataset_id: int, user: Annotated[CurrentUser, Depends(require_login)],
+    dataset_id: int,
+    user: Annotated[CurrentUser, Depends(require_login)],
 ):
     return success(await datasets.get_parse_config(user.user_id, dataset_id))
 
 
 @router.put("/{dataset_id}/parse-config")
 async def update_parse_config(
-    dataset_id: int, body: ParseConfigBody,
+    dataset_id: int,
+    body: ParseConfigBody,
     user: Annotated[CurrentUser, Depends(require_login)],
 ):
     _write_ready()
-    return success(await datasets.update_parse_config(
-        user.user_id, dataset_id, body.model_dump(exclude_unset=True)
-    ))
+    return success(
+        await datasets.update_parse_config(
+            user.user_id, dataset_id, body.model_dump(exclude_unset=True)
+        )
+    )
 
 
 @router.delete("/{dataset_id}")
 async def delete(
-    dataset_id: int, user: Annotated[CurrentUser, Depends(require_login)],
+    dataset_id: int,
+    user: Annotated[CurrentUser, Depends(require_login)],
 ):
     if not settings.B5_DELETE_WRITES_ENABLED:
         raise BusinessError(503, "数据集删除尚未切流", 503)

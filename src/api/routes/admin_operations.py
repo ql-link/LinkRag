@@ -33,12 +33,16 @@ async def get_document_file_config(admin: Admin) -> ApiResult[dict]:
 
 
 @router.put("/document-file-config")
-async def put_document_file_config(body: UpdateDocumentFileConfigRequest,
-                                   admin: Admin) -> ApiResult[dict]:
+async def put_document_file_config(
+    body: UpdateDocumentFileConfigRequest, admin: Admin
+) -> ApiResult[dict]:
     if not settings.B8_DOCUMENT_CONFIG_WRITES_ENABLED:
         raise BusinessError(503, "文档文件配置写入尚未切换", 503)
-    return success(await admin_operations.update_upload_config(
-        admin.user_id, body.maxSizeBytes, body.allowedSuffixes))
+    return success(
+        await admin_operations.update_upload_config(
+            admin.user_id, body.maxSizeBytes, body.allowedSuffixes
+        )
+    )
 
 
 @router.get("/logs/labels")
@@ -47,9 +51,19 @@ async def log_labels(admin: Admin) -> ApiResult[dict]:
 
 
 @router.get("/logs")
-async def logs(admin: Admin, service: str | None = None, level: str | None = None,
-               trace_id: str | None = None, keyword: str | None = None,
-               start_time: str | None = None, end_time: str | None = None,
-               page: int = Query(1, ge=1), page_size: int = Query(50, ge=1, le=200)) -> ApiResult[dict]:
-    return success(await admin_operations.query_logs(
-        service, level, trace_id, keyword, start_time, end_time, page, page_size))
+async def logs(
+    admin: Admin,
+    service: str | None = None,
+    level: str | None = None,
+    trace_id: str | None = None,
+    keyword: str | None = None,
+    start_time: str | None = None,
+    end_time: str | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+) -> ApiResult[dict]:
+    return success(
+        await admin_operations.query_logs(
+            service, level, trace_id, keyword, start_time, end_time, page, page_size
+        )
+    )

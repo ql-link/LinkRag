@@ -81,9 +81,7 @@ async def test_blog_publish_public_etag_and_asset_reference(database, storage):
         asset = await blog.upload_asset(
             db, post["id"], 7, "CONTENT_IMAGE", "a.png", png, "image/png"
         )
-        await blog.save_content(
-            db, post["id"], 7, f"# 正文\n![图]({asset['publicUrl']})"
-        )
+        await blog.save_content(db, post["id"], 7, f"# 正文\n![图]({asset['publicUrl']})")
         with pytest.raises(BusinessError):
             await blog.delete_asset(db, post["id"], asset["id"])
         await blog.publish(db, post["id"], True)
@@ -286,18 +284,14 @@ async def test_http_gates_permissions_and_public_cache(database, storage, monkey
     app.include_router(blog_routes.public_router)
     app.include_router(feedback_routes.admin_router)
     app.include_router(feedback_routes.public_router)
-    app.dependency_overrides[require_login] = lambda: SimpleNamespace(
-        user_id=7, role="USER"
-    )
+    app.dependency_overrides[require_login] = lambda: SimpleNamespace(user_id=7, role="USER")
 
     async def db_override():
         async with database() as db:
             yield db
 
     app.dependency_overrides[get_db] = db_override
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         assert (
             await client.post("/api/v1/admin/blog/posts", json={"title": "x"})
         ).status_code == 403
@@ -305,17 +299,11 @@ async def test_http_gates_permissions_and_public_cache(database, storage, monkey
             await client.post("/api/v1/feedback", data={"title": "x", "content": "y"})
         ).status_code == 503
 
-    app.dependency_overrides[require_login] = lambda: SimpleNamespace(
-        user_id=7, role="ADMIN"
-    )
+    app.dependency_overrides[require_login] = lambda: SimpleNamespace(user_id=7, role="ADMIN")
     monkeypatch.setattr(settings, "B9_BLOG_WRITES_ENABLED", True)
     monkeypatch.setattr(settings, "B10_FEEDBACK_WRITES_ENABLED", True)
-    async with AsyncClient(
-        transport=ASGITransport(app=app), base_url="http://test"
-    ) as client:
-        post = (
-            await client.post("/api/v1/admin/blog/posts", json={"title": "x"})
-        ).json()["data"]
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        post = (await client.post("/api/v1/admin/blog/posts", json={"title": "x"})).json()["data"]
         assert (
             await client.put(
                 f"/api/v1/admin/blog/posts/{post['id']}/content",
@@ -326,10 +314,7 @@ async def test_http_gates_permissions_and_public_cache(database, storage, monkey
             await client.post(f"/api/v1/admin/blog/posts/{post['id']}/publish")
         ).status_code == 200
         first = await client.get(f"/api/v1/blog/posts/{post['slug']}")
-        assert (
-            first.status_code == 200
-            and first.headers["cache-control"] == "public, no-cache"
-        )
+        assert first.status_code == 200 and first.headers["cache-control"] == "public, no-cache"
         second = await client.get(
             f"/api/v1/blog/posts/{post['slug']}",
             headers={"If-None-Match": first.headers["etag"]},

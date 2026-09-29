@@ -129,6 +129,7 @@ def decode_java_access_token(token: str, request_id: str) -> tuple[dict, int]:
         ).info("[java-access-auth] token rejected request_id={}", request_id)
         raise _unauthorized() from exc
 
+
 async def verify_user_token(
     request: Request,
     db: AsyncSession = Depends(get_db),

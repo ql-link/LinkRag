@@ -53,9 +53,7 @@ async def list_conversations(
     page: int = Query(default=1, ge=1),
     pageSize: int = Query(default=20, ge=1, le=100),
 ) -> ApiResult[dict]:
-    return success(
-        await chat_service.list_conversations(db, user.user_id, page, pageSize)
-    )
+    return success(await chat_service.list_conversations(db, user.user_id, page, pageSize))
 
 
 @router.get("/{conversation_id}/messages")
@@ -67,9 +65,7 @@ async def list_messages(
     pageSize: int = Query(default=50, ge=1, le=100),
 ) -> ApiResult[dict]:
     return success(
-        await chat_service.list_messages(
-            db, user.user_id, conversation_id, page, pageSize
-        )
+        await chat_service.list_messages(db, user.user_id, conversation_id, page, pageSize)
     )
 
 
@@ -104,9 +100,7 @@ async def batch_chunk_details(
     user: Annotated[CurrentUser, Depends(require_login)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ApiResult[list[dict]]:
-    chunk_ids = list(
-        dict.fromkeys(value.strip() for value in body.chunkIds if value.strip())
-    )
+    chunk_ids = list(dict.fromkeys(value.strip() for value in body.chunkIds if value.strip()))
     if not chunk_ids:
         return success([])
     rows = (
@@ -120,21 +114,20 @@ async def batch_chunk_details(
     ).all()
     chunks = {row.chunk_id: row for row in rows if row.content and row.content.strip()}
     doc_ids = {row.doc_id for row in chunks.values()}
-    filenames = {}
+    filenames: dict[int, str] = {}
     if doc_ids:
-        filenames = dict(
-            (
-                await db.execute(
-                    select(
-                        document_original_file_table.c.id,
-                        document_original_file_table.c.original_filename,
-                    ).where(
-                        document_original_file_table.c.id.in_(doc_ids),
-                        document_original_file_table.c.user_id == user.user_id,
-                    )
+        filename_rows = (
+            await db.execute(
+                select(
+                    document_original_file_table.c.id,
+                    document_original_file_table.c.original_filename,
+                ).where(
+                    document_original_file_table.c.id.in_(doc_ids),
+                    document_original_file_table.c.user_id == user.user_id,
                 )
-            ).all()
-        )
+            )
+        ).all()
+        filenames = dict((int(row[0]), str(row[1])) for row in filename_rows)
     return success(
         [
             {

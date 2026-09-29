@@ -22,14 +22,20 @@ async def test_session_handshake_reuses_active_python_token_and_checks_scope(mon
         return [7]
 
     monkeypatch.setattr(recall, "resolve_user_dataset_scope", resolve)
-    verifier = SimpleNamespace(verify=lambda token: SimpleNamespace(expires_at=int(time.time()) + 60))
+    verifier = SimpleNamespace(
+        verify=lambda token: SimpleNamespace(expires_at=int(time.time()) + 60)
+    )
     request = SimpleNamespace(
         headers={"satoken": "python-access-token"},
-        app=SimpleNamespace(state=SimpleNamespace(management_authenticator=SimpleNamespace(_verifier=verifier))),
+        app=SimpleNamespace(
+            state=SimpleNamespace(management_authenticator=SimpleNamespace(_verifier=verifier))
+        ),
     )
     result = await recall.create_recall_session(
-        request, recall.RecallSessionRequest(datasetIds=[7]),
-        CurrentUser(11, "USER"), object(),
+        request,
+        recall.RecallSessionRequest(datasetIds=[7]),
+        CurrentUser(11, "USER"),
+        object(),
     )
     assert checked == [(11, [7])]
     assert result.data["token"] == "python-access-token"
@@ -48,7 +54,9 @@ async def test_session_handshake_rejects_foreign_dataset(monkeypatch):
     monkeypatch.setattr(recall, "resolve_user_dataset_scope", reject)
     with pytest.raises(BusinessError) as exc:
         await recall.create_recall_session(
-            SimpleNamespace(), recall.RecallSessionRequest(datasetIds=[8]),
-            CurrentUser(11, "USER"), object(),
+            SimpleNamespace(),
+            recall.RecallSessionRequest(datasetIds=[8]),
+            CurrentUser(11, "USER"),
+            object(),
         )
     assert exc.value.http_status == 403

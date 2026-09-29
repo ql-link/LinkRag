@@ -30,11 +30,17 @@ class FakeStorage:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("biz_type,bucket,public", [
-    ("avatar", "public", True), ("providerIcon", "public", True),
-    ("chatImage", "public", True), ("document", "raw", False),
-    ("cert", "private", False), ("feedback", "public", True),
-])
+@pytest.mark.parametrize(
+    "biz_type,bucket,public",
+    [
+        ("avatar", "public", True),
+        ("providerIcon", "public", True),
+        ("chatImage", "public", True),
+        ("document", "raw", False),
+        ("cert", "private", False),
+        ("feedback", "public", True),
+    ],
+)
 async def test_b2_multipart_http_uses_shared_storage(monkeypatch, biz_type, bucket, public):
     from src.application import object_uploads as uploads
 
@@ -47,10 +53,13 @@ async def test_b2_multipart_http_uses_shared_storage(monkeypatch, biz_type, buck
     app = FastAPI()
     app.include_router(object_uploads.router)
     suffix = "pdf" if biz_type == "document" else "pem" if biz_type == "cert" else "png"
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                 base_url="http://test") as client:
-        response = await client.post(f"/api/v1/oss-files/{biz_type}",
-                                     files={"file": (f"probe.{suffix}", b"probe", "application/octet-stream")})
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post(
+            f"/api/v1/oss-files/{biz_type}",
+            files={"file": (f"probe.{suffix}", b"probe", "application/octet-stream")},
+        )
     assert response.status_code == 200
     assert response.json()["code"] == 200
     assert len(storage.uploads) == 1
@@ -58,24 +67,21 @@ async def test_b2_multipart_http_uses_shared_storage(monkeypatch, biz_type, buck
     assert actual_bucket == bucket
     assert key.startswith(f"{biz_type}/")
     assert content == b"probe"
-    assert response.json()["data"] == (
-        f"https://cdn.example.invalid/{key}" if public else key
-    )
+    assert response.json()["data"] == (f"https://cdn.example.invalid/{key}" if public else key)
 
 
 @pytest.mark.asyncio
 async def test_b2_multipart_validation_and_disabled_gate(monkeypatch):
     app = FastAPI()
     app.include_router(object_uploads.router)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                 base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
         monkeypatch.setattr(settings, "B2_GENERIC_UPLOAD_ENABLED", False)
-        disabled = await client.post("/api/v1/oss-files/avatar",
-                                     files={"file": ("a.png", b"a")})
+        disabled = await client.post("/api/v1/oss-files/avatar", files={"file": ("a.png", b"a")})
         assert disabled.status_code == 503
         monkeypatch.setattr(settings, "B2_GENERIC_UPLOAD_ENABLED", True)
-        bad = await client.post("/api/v1/oss-files/avatar",
-                                files={"file": ("a.exe", b"a")})
+        bad = await client.post("/api/v1/oss-files/avatar", files={"file": ("a.exe", b"a")})
         assert bad.status_code == 400
         assert bad.json()["code"] == 40001
 
@@ -90,8 +96,9 @@ async def test_b2_public_preview_reads_only_public_bucket(monkeypatch):
     monkeypatch.setattr(route.StorageFactory, "get_storage", lambda: storage)
     app = FastAPI()
     app.include_router(object_uploads.router)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                 base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
         result = await client.get("/api/v1/oss-files/public/avatar/probe.png")
         assert result.status_code == 200
         assert result.content == b"image-data"
@@ -120,8 +127,9 @@ async def test_b2_public_preview_missing_object_is_404(monkeypatch):
     monkeypatch.setattr(route.StorageFactory, "get_storage", MissingStorage)
     app = FastAPI()
     app.include_router(object_uploads.router)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                 base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
         result = await client.get("/api/v1/oss-files/public/avatar/missing.png")
     assert result.status_code == 404
     assert result.json()["code"] == 404
@@ -136,18 +144,22 @@ async def test_b4_route_uses_authenticated_id_and_write_gate(monkeypatch):
 
     async def list_datasets(user_id, page, page_size):
         called.append((user_id, page, page_size))
-        return {"items": [], "total": 0, "page": page, "pageSize": page_size,
-                "totalPages": 0}
+        return {"items": [], "total": 0, "page": page, "pageSize": page_size, "totalPages": 0}
 
     monkeypatch.setattr(dataset_routes.datasets, "list_datasets", list_datasets)
     monkeypatch.setattr(settings, "B4_DATASET_WRITES_ENABLED", False)
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                 base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
         listed = await client.get("/api/v1/datasets?page=2&pageSize=3&userId=99")
-        blocked = await client.post("/api/v1/datasets", json={
-            "name": "probe", "dense_embedding_config_id": 1,
-            "sparse_embedding_config_id": 2,
-        })
+        blocked = await client.post(
+            "/api/v1/datasets",
+            json={
+                "name": "probe",
+                "dense_embedding_config_id": 1,
+                "sparse_embedding_config_id": 2,
+            },
+        )
     assert listed.status_code == 200
     assert called == [(7, 2, 3)]
     assert blocked.status_code == 503
@@ -164,8 +176,12 @@ async def test_b5_internal_download_requires_service_token_and_returns_bytes(mon
             return self
 
         def one_or_none(self):
-            return {"original_filename": "report.pdf", "content_type": "application/pdf",
-                    "bucket_name": "raw", "object_key": "7/5/report.pdf"}
+            return {
+                "original_filename": "report.pdf",
+                "content_type": "application/pdf",
+                "bucket_name": "raw",
+                "object_key": "7/5/report.pdf",
+            }
 
     class DB:
         async def execute(self, *_args, **_kwargs):
@@ -182,13 +198,16 @@ async def test_b5_internal_download_requires_service_token_and_returns_bytes(mon
 
     monkeypatch.setattr(internal_document_files, "get_db_context", context)
     monkeypatch.setattr(internal_document_files.StorageFactory, "get_storage", lambda: Storage())
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),
-                                 base_url="http://test") as client:
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
         missing = await client.get("/api/v1/internal/files/3/content")
-        user_jwt = await client.get("/api/v1/internal/files/3/content",
-                                    headers={"Authorization": "Bearer user-jwt"})
-        valid = await client.get("/api/v1/internal/files/3/content",
-                                 headers={"Authorization": "Bearer service-only"})
+        user_jwt = await client.get(
+            "/api/v1/internal/files/3/content", headers={"Authorization": "Bearer user-jwt"}
+        )
+        valid = await client.get(
+            "/api/v1/internal/files/3/content", headers={"Authorization": "Bearer service-only"}
+        )
     assert missing.status_code == user_jwt.status_code == 401
     assert valid.status_code == 200
     assert valid.content == b"%PDF-probe"

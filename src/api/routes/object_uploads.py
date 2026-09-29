@@ -6,7 +6,7 @@ import os
 import tempfile
 from pathlib import Path
 
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError  # type: ignore[import-untyped]
 from fastapi import File, UploadFile
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
@@ -20,9 +20,11 @@ router = ManagementRouter(prefix="/api/v1/oss-files", tags=["object-uploads"])
 
 
 def _valid_public_key(key: str) -> bool:
-    return bool(key) and not any(
-        part in {"", ".", ".."} for part in key.split("/")
-    ) and not any(char == "\\" or ord(char) < 32 for char in key)
+    return (
+        bool(key)
+        and not any(part in {"", ".", ".."} for part in key.split("/"))
+        and not any(char == "\\" or ord(char) < 32 for char in key)
+    )
 
 
 @router.get("/public/{object_key:path}")
@@ -37,8 +39,9 @@ async def preview_public_object(object_key: str):
     path = Path(name)
     try:
         storage = StorageFactory.get_storage()
-        await asyncio.to_thread(storage.download_to_path,
-                                settings.MINIO_PUBLIC_BUCKET, object_key, path)
+        await asyncio.to_thread(
+            storage.download_to_path, settings.MINIO_PUBLIC_BUCKET, object_key, path
+        )
     except ClientError as exc:
         path.unlink(missing_ok=True)
         code = str(exc.response.get("Error", {}).get("Code", ""))
@@ -50,7 +53,8 @@ async def preview_public_object(object_key: str):
         raise BusinessError(503, "公开文件暂不可读取", 503) from exc
     mime = mimetypes.guess_type(object_key)[0] or "application/octet-stream"
     return FileResponse(
-        path, media_type=mime,
+        path,
+        media_type=mime,
         headers={"Cache-Control": "public, max-age=2592000"},
         background=BackgroundTask(path.unlink, missing_ok=True),
     )

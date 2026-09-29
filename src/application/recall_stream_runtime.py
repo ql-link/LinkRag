@@ -21,6 +21,7 @@ from collections.abc import AsyncGenerator
 
 from loguru import logger
 
+from src.application.chat_service import persist_chat_turn
 from src.application.ltr_provider import get_initialized_ltr_ranker
 from src.application.ltr_shadow_executor import get_ltr_shadow_executor
 from src.application.recall_errors import (
@@ -69,9 +70,8 @@ from src.core.prompts import (
     fallback_title_from_query,
 )
 from src.core.prompts.conversation_title import TITLE_MAX_OUTPUT_TOKENS
-from src.observability.logging import safe_exception_stack, truncate_log_value
-from src.application.chat_service import persist_chat_turn
 from src.database import write_transaction
+from src.observability.logging import safe_exception_stack, truncate_log_value
 from src.services.usage_reporter import report_usage_nowait
 
 
@@ -1094,7 +1094,11 @@ async def _emit_chat_turn(
         async with write_transaction() as db:
             accepted = await persist_chat_turn(db, payload)
         if not accepted:
-            logger.warning("[recall] chat_turn rejected conversation_id={} turn_id={}", conversation_id, turn_id)
+            logger.warning(
+                "[recall] chat_turn rejected conversation_id={} turn_id={}",
+                conversation_id,
+                turn_id,
+            )
     except Exception as exc:  # noqa: BLE001 - 落库失败不影响已生成答案
         logger.bind(
             event="chat_turn_persist_failed",

@@ -29,9 +29,7 @@ class FakeSession:
 @pytest.mark.asyncio
 async def test_write_transaction_commits_before_side_effect(monkeypatch):
     events = []
-    monkeypatch.setattr(
-        database, "get_async_session_factory", lambda: lambda: FakeSession(events)
-    )
+    monkeypatch.setattr(database, "get_async_session_factory", lambda: lambda: FakeSession(events))
     async with database.write_transaction():
         events.append("db-write")
     events.append("invalidate-cache")
@@ -43,9 +41,7 @@ async def test_write_transaction_rolls_back_on_business_or_external_failure(
     monkeypatch,
 ):
     events = []
-    monkeypatch.setattr(
-        database, "get_async_session_factory", lambda: lambda: FakeSession(events)
-    )
+    monkeypatch.setattr(database, "get_async_session_factory", lambda: lambda: FakeSession(events))
     with pytest.raises(ValueError):
         async with database.write_transaction():
             events.append("db-write")

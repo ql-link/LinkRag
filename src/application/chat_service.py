@@ -10,10 +10,10 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.management_http import BusinessError
+from src.application.model_configs import require_executable
 from src.core.mq.messages.chat_turn import ChatTurnPayload
 from src.core.storage.document_visibility import dataset_table
 from src.models.db_models import ChatConversationDB, ChatMessageDB
-from src.application.model_configs import require_executable
 
 DEFAULT_TITLE = "新对话"
 
@@ -110,13 +110,9 @@ async def create_conversation(
     return _conversation(row)
 
 
-async def list_conversations(
-    db: AsyncSession, user_id: int, page: int, page_size: int
-) -> dict:
+async def list_conversations(db: AsyncSession, user_id: int, page: int, page_size: int) -> dict:
     where = ChatConversationDB.user_id == user_id
-    total = await db.scalar(
-        select(func.count()).select_from(ChatConversationDB).where(where)
-    )
+    total = await db.scalar(select(func.count()).select_from(ChatConversationDB).where(where))
     rows = (
         await db.scalars(
             select(ChatConversationDB)
@@ -138,9 +134,7 @@ async def list_messages(
 ) -> dict:
     await owned_conversation(db, user_id, conversation_id)
     where = ChatMessageDB.conversation_id == conversation_id
-    total = await db.scalar(
-        select(func.count()).select_from(ChatMessageDB).where(where)
-    )
+    total = await db.scalar(select(func.count()).select_from(ChatMessageDB).where(where))
     rows = (
         await db.scalars(
             select(ChatMessageDB)
@@ -175,13 +169,9 @@ async def update_conversation(
     return _conversation(row)
 
 
-async def delete_conversation(
-    db: AsyncSession, user_id: int, conversation_id: int
-) -> None:
+async def delete_conversation(db: AsyncSession, user_id: int, conversation_id: int) -> None:
     row = await owned_conversation(db, user_id, conversation_id, lock=True)
-    await db.execute(
-        delete(ChatMessageDB).where(ChatMessageDB.conversation_id == row.id)
-    )
+    await db.execute(delete(ChatMessageDB).where(ChatMessageDB.conversation_id == row.id))
     await db.delete(row)
 
 
@@ -195,9 +185,7 @@ async def persist_chat_turn(db: AsyncSession, payload: ChatTurnPayload) -> bool:
         return False
     # The DB index is globally unique, even though the business lookup includes conversation_id.
     existing = (
-        await db.execute(
-            select(ChatMessageDB).where(ChatMessageDB.turn_id == payload.turn_id)
-        )
+        await db.execute(select(ChatMessageDB).where(ChatMessageDB.turn_id == payload.turn_id))
     ).scalar_one_or_none()
     if existing is not None and existing.conversation_id != conversation.id:
         return False
@@ -206,9 +194,7 @@ async def persist_chat_turn(db: AsyncSession, payload: ChatTurnPayload) -> bool:
     if existing is not None and payload.status == "GENERATING":
         return True
     if existing is None:
-        existing = ChatMessageDB(
-            conversation_id=conversation.id, turn_id=payload.turn_id
-        )
+        existing = ChatMessageDB(conversation_id=conversation.id, turn_id=payload.turn_id)
         db.add(existing)
         existing.query = payload.query
         existing.created_at = _now()
@@ -224,9 +210,7 @@ async def persist_chat_turn(db: AsyncSession, payload: ChatTurnPayload) -> bool:
     if payload.model_name:
         conversation.last_model_name = payload.model_name
     title = re.sub(r"\s+", " ", (payload.title or "").strip())[:255]
-    if title and (
-        not conversation.title or conversation.title.strip() in {DEFAULT_TITLE, title}
-    ):
+    if title and (not conversation.title or conversation.title.strip() in {DEFAULT_TITLE, title}):
         conversation.title = title
     conversation.updated_at = _now()
     await db.flush()

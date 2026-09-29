@@ -5,14 +5,16 @@ from __future__ import annotations
 import asyncio
 import secrets
 from datetime import datetime
+from typing import Any, Mapping, cast
 from zoneinfo import ZoneInfo
 
 import bcrypt
 from sqlalchemy import text
+from sqlalchemy.engine import CursorResult
 from sqlalchemy.exc import IntegrityError
 
-from src.api.management_http import BusinessError
 from src.api.management_auth import AccessClaims
+from src.api.management_http import BusinessError
 from src.application.identity_session import AccessTokenIssuer, HybridSessionState
 from src.cache.fenced_json_cache import FencedJsonCacheStore
 from src.database import get_db_context, write_transaction
@@ -23,7 +25,7 @@ class CacheInvalidationError(RuntimeError):
     """数据库已提交，但跨端用户资料缓存失效失败。"""
 
 
-def _profile(row: dict) -> dict:
+def _profile(row: Mapping[Any, Any]) -> dict:
     return {
         "id": int(row["id"]),
         "username": row["username"],
@@ -156,7 +158,7 @@ class IdentityUsers:
                         "when": _shanghai_now(),
                     },
                 )
-                user_id = int(result.lastrowid)
+                user_id = int(cast(CursorResult[Any], result).lastrowid)
                 # 会话登记失败时，数据库事务一并回滚，避免客户端收到错误却留下账号。
                 issued = await self._issue(user_id, "USER")
         except IntegrityError as exc:
@@ -167,14 +169,12 @@ class IdentityUsers:
             if issued is not None:
                 await self._revoke_failed_registration(issued)
             raise
-        result, _ = issued
+        login_result, _ = issued
         await _record_login(user_id, "REGISTER")
         audit_event("REGISTER", "success", actor_id=user_id)
-        return result
+        return login_result
 
-    async def _revoke_failed_registration(
-        self, issued: tuple[dict, AccessClaims]
-    ) -> None:
+    async def _revoke_failed_registration(self, issued: tuple[dict, AccessClaims]) -> None:
         try:
             await self._sessions.revoke(issued[0]["accessToken"], issued[1])
         except Exception:
@@ -219,9 +219,7 @@ class IdentityUsers:
             "phone": "phone",
             "avatarUrl": "avatar_url",
         }
-        values = {
-            columns[k]: v for k, v in changes.items() if k in columns and v is not None
-        }
+        values = {columns[k]: v for k, v in changes.items() if k in columns and v is not None}
         if "email" in values:
             values["email"] = values["email"].strip() or None
         if not values:
@@ -250,11 +248,7 @@ class IdentityUsers:
 
     async def list_users(self, page: int, size: int) -> dict:
         async with get_db_context() as session:
-            total = int(
-                (
-                    await session.execute(text("SELECT COUNT(*) FROM sys_user"))
-                ).scalar_one()
-            )
+            total = int((await session.execute(text("SELECT COUNT(*) FROM sys_user"))).scalar_one())
             rows = (
                 (
                     await session.execute(

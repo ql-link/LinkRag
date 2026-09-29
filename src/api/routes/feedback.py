@@ -13,9 +13,7 @@ from src.config import settings
 from src.database import get_db
 
 public_router = ManagementRouter(prefix="/api/v1/feedback", tags=["feedback"])
-admin_router = ManagementRouter(
-    prefix="/api/v1/admin/feedback", tags=["admin-feedback"]
-)
+admin_router = ManagementRouter(prefix="/api/v1/admin/feedback", tags=["admin-feedback"])
 Admin = Annotated[CurrentUser, Depends(require_role("ADMIN"))]
 DB = Annotated[AsyncSession, Depends(get_db)]
 
@@ -96,8 +94,6 @@ async def update_priority(
 
 
 @admin_router.patch("/{feedback_id}/reply")
-async def reply(
-    feedback_id: int, body: ReplyRequest, admin: Admin, db: DB
-) -> ApiResult[dict]:
+async def reply(feedback_id: int, body: ReplyRequest, admin: Admin, db: DB) -> ApiResult[dict]:
     _writes_enabled()
     return success(await feedback.reply(db, admin.user_id, feedback_id, body.reply))

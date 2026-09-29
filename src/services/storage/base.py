@@ -29,9 +29,7 @@ class BaseObjectStorage(ABC):
         """上传对象内容。"""
 
     @abstractmethod
-    def upload_path(
-        self, bucket: str, object_key: str, source: Path, content_type: str
-    ) -> None:
+    def upload_path(self, bucket: str, object_key: str, source: Path, content_type: str) -> None:
         """从磁盘流式上传，调用方负责路径生命周期。"""
 
     @abstractmethod

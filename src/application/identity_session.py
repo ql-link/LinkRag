@@ -23,9 +23,7 @@ class JavaSessionBridge:
         self._client = httpx.AsyncClient(timeout=timeout_seconds, base_url=self._base_url)
 
     async def is_active(self, token: str, expected_user_id: int) -> bool:
-        response = await self._client.get(
-            "/api/v1/user/profile", headers={"satoken": token}
-        )
+        response = await self._client.get("/api/v1/user/profile", headers={"satoken": token})
         if response.status_code in {401, 403}:
             return False
         response.raise_for_status()
@@ -38,9 +36,7 @@ class JavaSessionBridge:
         )
 
     async def logout(self, token: str) -> None:
-        response = await self._client.post(
-            "/api/v1/auth/logout", headers={"satoken": token}
-        )
+        response = await self._client.post("/api/v1/auth/logout", headers={"satoken": token})
         response.raise_for_status()
         if response.json().get("code") != 200:
             raise RuntimeError("Java 会话注销未成功")
@@ -128,11 +124,7 @@ class AccessTokenIssuer:
         return cls(
             Path(settings.B1_ACCESS_JWT_PRIVATE_KEY_PATH).read_text(encoding="utf-8"),
             settings.JAVA_ACCESS_JWT_ISSUER,
-            [
-                x.strip()
-                for x in settings.B1_ACCESS_JWT_AUDIENCES.split(",")
-                if x.strip()
-            ],
+            [x.strip() for x in settings.B1_ACCESS_JWT_AUDIENCES.split(",") if x.strip()],
             settings.B1_ACCESS_TOKEN_TTL_SECONDS,
         )
 
@@ -163,9 +155,7 @@ class AccessTokenIssuer:
 
 def build_session_state() -> HybridSessionState:
     java = (
-        JavaSessionBridge(
-            settings.B1_JAVA_AUTH_BASE_URL, settings.B1_JAVA_AUTH_TIMEOUT_SECONDS
-        )
+        JavaSessionBridge(settings.B1_JAVA_AUTH_BASE_URL, settings.B1_JAVA_AUTH_TIMEOUT_SECONDS)
         if settings.B1_JAVA_AUTH_BASE_URL
         else None
     )

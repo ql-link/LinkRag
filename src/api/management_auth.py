@@ -48,9 +48,7 @@ class SqlUserAuthorizationRepository:
             row = (
                 (
                     await session.execute(
-                        text(
-                            "SELECT id, role, status FROM sys_user WHERE id = :user_id"
-                        ),
+                        text("SELECT id, role, status FROM sys_user WHERE id = :user_id"),
                         {"user_id": user_id},
                     )
                 )

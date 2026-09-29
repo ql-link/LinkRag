@@ -44,11 +44,14 @@ class EmergencyBody(BaseModel):
 @router.get("/configs")
 async def configs(
     admin: Annotated[CurrentUser, Depends(require_role("ADMIN"))],
-    capability: str | None = None, isActive: bool | None = None,
+    capability: str | None = None,
+    isActive: bool | None = None,
 ):
-    return success(await model_configs.list_visible_configs(
-        admin.user_id, capability=capability, is_active=isActive, system_only=True
-    ))
+    return success(
+        await model_configs.list_visible_configs(
+            admin.user_id, capability=capability, is_active=isActive, system_only=True
+        )
+    )
 
 
 @router.post("/configs")
@@ -57,25 +60,29 @@ async def create(
     admin: Annotated[CurrentUser, Depends(require_role("ADMIN"))],
 ):
     _write_ready()
-    return success(await model_configs.save_system_config(
-        admin.user_id, body.model_dump(exclude_none=True)
-    ))
+    return success(
+        await model_configs.save_system_config(admin.user_id, body.model_dump(exclude_none=True))
+    )
 
 
 @router.put("/configs/{config_id}")
 async def update(
-    config_id: int, body: SaveConfigBody,
+    config_id: int,
+    body: SaveConfigBody,
     admin: Annotated[CurrentUser, Depends(require_role("ADMIN"))],
 ):
     _write_ready()
-    return success(await model_configs.save_system_config(
-        admin.user_id, body.model_dump(exclude_none=True), config_id=config_id
-    ))
+    return success(
+        await model_configs.save_system_config(
+            admin.user_id, body.model_dump(exclude_none=True), config_id=config_id
+        )
+    )
 
 
 @router.patch("/configs/{config_id}/active")
 async def change_active(
-    config_id: int, body: ActiveBody,
+    config_id: int,
+    body: ActiveBody,
     admin: Annotated[CurrentUser, Depends(require_role("ADMIN"))],
 ):
     _write_ready()
@@ -85,12 +92,17 @@ async def change_active(
 
 @router.post("/configs/{config_id}/emergency-disable")
 async def emergency_disable(
-    config_id: int, body: EmergencyBody,
+    config_id: int,
+    body: EmergencyBody,
     admin: Annotated[CurrentUser, Depends(require_role("ADMIN"))],
 ):
     _write_ready()
     await model_configs.change_active(
-        admin.user_id, config_id, False, admin=True, emergency=True,
+        admin.user_id,
+        config_id,
+        False,
+        admin=True,
+        emergency=True,
         confirmed=bool(body.confirmed),
     )
     return success()

@@ -12,8 +12,8 @@ from uuid import uuid4
 import pytest
 
 from src.config import settings
-from src.core.pipeline.parse_task import temp_workspace
 from src.core.parse_task_service import ParseTaskService
+from src.core.pipeline.parse_task import temp_workspace
 from src.services.storage.factory import StorageFactory
 
 PDF_PARSE_CASES = [
@@ -31,10 +31,13 @@ def _pdf_fixture(expect_images: bool) -> bytes:
         if expect_images:
             image_module = pytest.importorskip("PIL.Image")
             image = image_module.new("RGB", (96, 96))
-            image.putdata([
-                ((x * 17 + y * 13) % 256, (x * 29 + y * 7) % 256, (x * 3 + y * 41) % 256)
-                for y in range(96) for x in range(96)
-            ])
+            image.putdata(
+                [
+                    ((x * 17 + y * 13) % 256, (x * 29 + y * 7) % 256, (x * 3 + y * 41) % 256)
+                    for y in range(96)
+                    for x in range(96)
+                ]
+            )
             output = BytesIO()
             image.save(output, format="PNG")
             page.insert_image(fitz.Rect(72, 100, 240, 268), stream=output.getvalue())
@@ -62,7 +65,9 @@ async def test_parse_pdf_from_minio_and_upload_markdown(
     target_object_key = prefix + "result.md"
     source_bucket = target_bucket = settings.MINIO_PRIVATE_BUCKET
     try:
-        storage.upload_bytes(source_bucket, source_object_key, _pdf_fixture(expect_images), "application/pdf")
+        storage.upload_bytes(
+            source_bucket, source_object_key, _pdf_fixture(expect_images), "application/pdf"
+        )
         # 与生产 pipeline 一致：流式下载到临时文件，验证完后立即清理。
         temp_dir = Path(settings.PARSE_TEMP_DIR)
         temp_dir.mkdir(parents=True, exist_ok=True)
@@ -112,7 +117,7 @@ async def test_parse_pdf_from_minio_and_upload_markdown(
             content_type="text/markdown; charset=utf-8",
         )
 
-    # 验证 markdown 已成功落到对象存储：再次流式下载到独立临时路径并比对。
+        # 验证 markdown 已成功落到对象存储：再次流式下载到独立临时路径并比对。
         verify_path = temp_workspace.create_temp_file("integ-verify", temp_dir)
         try:
             storage.download_to_path(

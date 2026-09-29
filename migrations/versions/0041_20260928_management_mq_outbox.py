@@ -29,16 +29,24 @@ def upgrade() -> None:
         sa.Column("attempt_count", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("next_attempt_at", sa.DateTime(), nullable=False),
         sa.Column("sent_at", sa.DateTime()),
-        sa.Column("created_at", sa.DateTime(), nullable=False,
-                  server_default=sa.text("CURRENT_TIMESTAMP")),
-        sa.Column("updated_at", sa.DateTime(), nullable=False,
-                  server_default=sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP")),
+        sa.Column(
+            "created_at", sa.DateTime(), nullable=False, server_default=sa.text("CURRENT_TIMESTAMP")
+        ),
+        sa.Column(
+            "updated_at",
+            sa.DateTime(),
+            nullable=False,
+            server_default=sa.text("CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP"),
+        ),
         sa.UniqueConstraint("event_key", name="uk_management_outbox_event"),
-        mysql_engine="InnoDB", mysql_charset="utf8mb4", mysql_auto_increment="10000",
+        mysql_engine="InnoDB",
+        mysql_charset="utf8mb4",
+        mysql_auto_increment="10000",
         comment="管理端解析与删除消息可靠投递账本",
     )
-    op.create_index("idx_management_outbox_due", "management_mq_outbox",
-                    ["status", "next_attempt_at", "id"])
+    op.create_index(
+        "idx_management_outbox_due", "management_mq_outbox", ["status", "next_attempt_at", "id"]
+    )
 
 
 def downgrade() -> None:

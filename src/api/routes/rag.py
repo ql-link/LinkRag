@@ -32,11 +32,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.java_access_auth import AuthContext, verify_user_token
 from src.api.management_http import BusinessError
-from src.application.chat_service import owned_conversation
 from src.api.recall_concurrency import (
     acquire_stream_slot,
     release_stream_slot,
 )
+from src.application.chat_service import owned_conversation
 from src.application.recall_errors import (
     CODE_DATASET_MODEL_BINDING_REQUIRED,
     CODE_INVALID_REQUEST,

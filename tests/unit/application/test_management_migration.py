@@ -12,23 +12,45 @@ from pymysql.err import ProgrammingError
 from sqlalchemy.exc import DBAPIError
 
 from src.api.management_http import BusinessError
-from src.application import datasets, document_files, document_runtime_config, management_outbox, model_configs, model_sync
+from src.application import (
+    datasets,
+    document_files,
+    document_runtime_config,
+    management_outbox,
+    model_configs,
+    model_sync,
+)
 from src.application.document_uploads import (
-    DocumentUploadExecutor, UploadJob, _validate_plain_markdown, upload,
+    DocumentUploadExecutor,
+    UploadJob,
+    _validate_plain_markdown,
+    upload,
 )
 
 
 def test_b3_wrong_decryption_key_fails_closed(monkeypatch):
     row = {
-        "id": 19, "api_key": "encrypted", "scope": "USER", "provider_id": 1,
-        "provider_type": "demo", "provider_name": "Demo", "icon_url": None,
-        "model_name": "m", "display_name": "M", "capability": "CHAT",
-        "protocol": "openai", "api_base_url": "https://example.invalid",
-        "is_active": True, "owner_user_id": 7, "snapshot_version": 1,
-        "created_at": None, "updated_at": None,
+        "id": 19,
+        "api_key": "encrypted",
+        "scope": "USER",
+        "provider_id": 1,
+        "provider_type": "demo",
+        "provider_name": "Demo",
+        "icon_url": None,
+        "model_name": "m",
+        "display_name": "M",
+        "capability": "CHAT",
+        "protocol": "openai",
+        "api_base_url": "https://example.invalid",
+        "is_active": True,
+        "owner_user_id": 7,
+        "snapshot_version": 1,
+        "created_at": None,
+        "updated_at": None,
     }
-    monkeypatch.setattr(model_configs, "decrypt_api_key",
-                        lambda _: (_ for _ in ()).throw(ValueError("secret")))
+    monkeypatch.setattr(
+        model_configs, "decrypt_api_key", lambda _: (_ for _ in ()).throw(ValueError("secret"))
+    )
     monkeypatch.setattr(model_configs, "audit_event", lambda *args, **kwargs: None)
     with pytest.raises(BusinessError) as error:
         model_configs._dto(row, 7)
@@ -37,17 +59,24 @@ def test_b3_wrong_decryption_key_fails_closed(monkeypatch):
 
 
 def test_models_dev_candidates_are_isolated_until_review():
-    catalog = {"anthropic": {"models": {
-        "claude-test": {"id": "claude-test", "name": "Claude Test",
-                        "modalities": {"input": ["text", "image"], "output": ["text"]},
-                        "limit": {"context": 1000}},
-    }}}
+    catalog = {
+        "anthropic": {
+            "models": {
+                "claude-test": {
+                    "id": "claude-test",
+                    "name": "Claude Test",
+                    "modalities": {"input": ["text", "image"], "output": ["text"]},
+                    "limit": {"context": 1000},
+                },
+            }
+        }
+    }
     entries = model_sync._models_for_provider(catalog, "claude")
     assert {item["capability"] for item in entries} == {"CHAT", "VISION"}
     assert {item["external_model_id"] for item in entries} == {"claude-test"}
-    assert model_sync._facts({"provider_type": "claude",
-                              "api_base_url": "https://api.example/v1"}, "CHAT") == (
-                                  "anthropic", "https://api.example/v1/messages")
+    assert model_sync._facts(
+        {"provider_type": "claude", "api_base_url": "https://api.example/v1"}, "CHAT"
+    ) == ("anthropic", "https://api.example/v1/messages")
     with pytest.raises(BusinessError):
         model_sync._models_for_provider(catalog, "unknown")
 
@@ -72,13 +101,16 @@ async def test_b3_sync_read_reports_missing_migration_as_503(monkeypatch):
 @pytest.mark.asyncio
 async def test_b5_upload_limits_keep_last_valid_shared_snapshot(monkeypatch):
     document_runtime_config._last_valid = document_runtime_config.DocumentUploadLimits()
-    monkeypatch.setattr(document_runtime_config.redis_client, "get", AsyncMock(
-        return_value='{"allowedSuffixes":["pdf"],"maxSizeBytes":1048576}'
-    ))
+    monkeypatch.setattr(
+        document_runtime_config.redis_client,
+        "get",
+        AsyncMock(return_value='{"allowedSuffixes":["pdf"],"maxSizeBytes":1048576}'),
+    )
     current = await document_runtime_config.current_limits()
     assert current.allowed_suffixes == {"pdf"}
-    monkeypatch.setattr(document_runtime_config.redis_client, "get",
-                        AsyncMock(side_effect=ConnectionError("redis")))
+    monkeypatch.setattr(
+        document_runtime_config.redis_client, "get", AsyncMock(side_effect=ConnectionError("redis"))
+    )
     monkeypatch.setattr(document_runtime_config, "audit_event", lambda *args, **kwargs: None)
     assert await document_runtime_config.current_limits() == current
 
@@ -87,17 +119,23 @@ def test_plain_markdown_upload_rejects_unresolved_images(tmp_path):
     path = tmp_path / "readme.md"
     path.write_text("# Guide\n\nNo images.\n", encoding="utf-8")
     _validate_plain_markdown(path, "md")
-    for source in ("![logo](./logo.png)", "![logo][ref]\n[ref]: ./logo.png",
-                   '<img src="logo.png">',
-                   "![[logo.png]]"):
+    for source in (
+        "![logo](./logo.png)",
+        "![logo][ref]\n[ref]: ./logo.png",
+        '<img src="logo.png">',
+        "![[logo.png]]",
+    ):
         path.write_text(source, encoding="utf-8")
         with pytest.raises(BusinessError) as error:
             _validate_plain_markdown(path, "md")
         assert error.value.code == 30010
-    for source in ("![logo](https://example.invalid/logo.png)",
-                   "![logo][ref]\n\n[ref]: https://example.invalid/logo.png",
-                   '<img src="data:image/png;base64,abc">',
-                   "![logo][undefined]", "![empty]()"):
+    for source in (
+        "![logo](https://example.invalid/logo.png)",
+        "![logo][ref]\n\n[ref]: https://example.invalid/logo.png",
+        '<img src="data:image/png;base64,abc">',
+        "![logo][undefined]",
+        "![empty]()",
+    ):
         path.write_text(source, encoding="utf-8")
         _validate_plain_markdown(path, "md")
     path.write_text("```md\n![example](local.png)\n```\n", encoding="utf-8")
@@ -117,12 +155,9 @@ def test_dataset_recall_rejects_negative_threshold_like_java(field):
     ("row", "expected"),
     [
         (None, 10020),
-        ({"scope": "USER", "owner_user_id": 8, "is_active": 0,
-          "capability": "VISION"}, 10021),
-        ({"scope": "USER", "owner_user_id": 8, "is_active": 1,
-          "capability": "VISION"}, 10022),
-        ({"scope": "USER", "owner_user_id": 7, "is_active": 1,
-          "capability": "VISION"}, 10023),
+        ({"scope": "USER", "owner_user_id": 8, "is_active": 0, "capability": "VISION"}, 10021),
+        ({"scope": "USER", "owner_user_id": 8, "is_active": 1, "capability": "VISION"}, 10022),
+        ({"scope": "USER", "owner_user_id": 7, "is_active": 1, "capability": "VISION"}, 10023),
     ],
 )
 async def test_b3_execution_binding_preserves_java_error_order(monkeypatch, row, expected):
@@ -135,15 +170,33 @@ async def test_b3_execution_binding_preserves_java_error_order(monkeypatch, row,
 @pytest.mark.asyncio
 async def test_b5_parse_result_uses_pipeline_terminal_status(monkeypatch):
     rows = [
-        {"id": 1, "original_filename": "a.pdf", "parsed_filename": "a.md",
-         "pipeline_status": "SUCCESS", "parse_failure_reason": None,
-         "latest_parse_task_id": "task-a", "object_key": "raw/a.pdf"},
-        {"id": 2, "original_filename": "b.pdf", "parsed_filename": None,
-         "pipeline_status": "FAILED", "parse_failure_reason": "parse failed",
-         "latest_parse_task_id": "task-b", "object_key": "raw/b.pdf"},
-        {"id": 3, "original_filename": "c.pdf", "parsed_filename": None,
-         "pipeline_status": None, "parse_failure_reason": None,
-         "latest_parse_task_id": "task-c", "object_key": "raw/c.pdf"},
+        {
+            "id": 1,
+            "original_filename": "a.pdf",
+            "parsed_filename": "a.md",
+            "pipeline_status": "SUCCESS",
+            "parse_failure_reason": None,
+            "latest_parse_task_id": "task-a",
+            "object_key": "raw/a.pdf",
+        },
+        {
+            "id": 2,
+            "original_filename": "b.pdf",
+            "parsed_filename": None,
+            "pipeline_status": "FAILED",
+            "parse_failure_reason": "parse failed",
+            "latest_parse_task_id": "task-b",
+            "object_key": "raw/b.pdf",
+        },
+        {
+            "id": 3,
+            "original_filename": "c.pdf",
+            "parsed_filename": None,
+            "pipeline_status": None,
+            "parse_failure_reason": None,
+            "latest_parse_task_id": "task-c",
+            "object_key": "raw/c.pdf",
+        },
     ]
 
     class Query:
@@ -165,7 +218,9 @@ async def test_b5_parse_result_uses_pipeline_terminal_status(monkeypatch):
     monkeypatch.setattr(document_files, "owned_dataset", AsyncMock(return_value={"id": 5}))
     result = await document_files.parse_results(7, 5, [1, 2, 3])
     assert [(item["frontendStatus"], item["parseStatus"]) for item in result] == [
-        ("parse_success", "success"), ("parse_failed", "failed"), ("parsing", "created")
+        ("parse_success", "success"),
+        ("parse_failed", "failed"),
+        ("parsing", "created"),
     ]
     assert result[1]["failureReason"] == "parse failed"
     assert result[0]["failureReason"] is None
@@ -175,16 +230,29 @@ async def test_b5_parse_result_uses_pipeline_terminal_status(monkeypatch):
 async def test_b5_asset_manifest_identity_must_match_owned_file(monkeypatch):
     class Storage:
         def download_to_path(self, _bucket, _key, path):
-            path.write_text(json.dumps({
-                "version": 1, "fileId": 999, "userId": 7, "datasetId": 5,
-                "source": {"normalizedObjectKey":
-                           "markdown-assets/v1/user-7/dataset-5/file-3/source/normalized.md"},
-                "summary": {"matchedCount": 1},
-            }), encoding="utf-8")
+            path.write_text(
+                json.dumps(
+                    {
+                        "version": 1,
+                        "fileId": 999,
+                        "userId": 7,
+                        "datasetId": 5,
+                        "source": {
+                            "normalizedObjectKey": "markdown-assets/v1/user-7/dataset-5/file-3/source/normalized.md"
+                        },
+                        "summary": {"matchedCount": 1},
+                    }
+                ),
+                encoding="utf-8",
+            )
 
     monkeypatch.setattr(document_files.StorageFactory, "get_storage", lambda: Storage())
-    row = {"id": 3, "user_id": 7, "dataset_id": 5,
-           "object_key": "markdown-assets/v1/user-7/dataset-5/file-3/source/normalized.md"}
+    row = {
+        "id": 3,
+        "user_id": 7,
+        "dataset_id": 5,
+        "object_key": "markdown-assets/v1/user-7/dataset-5/file-3/source/normalized.md",
+    }
     with pytest.raises(BusinessError) as error:
         await document_files._asset_summary(row, required=True)
     assert error.value.http_status == 503
@@ -205,8 +273,7 @@ async def test_upload_checks_dataset_ownership_before_reading_body(monkeypatch):
     monkeypatch.setattr(document_uploads, "owned_dataset", reject)
     file = SimpleNamespace(filename="large.pdf", read=AsyncMock())
     with pytest.raises(BusinessError) as error:
-        await upload(7, 99, file, parse_immediately=False,
-                     executor=DocumentUploadExecutor())
+        await upload(7, 99, file, parse_immediately=False, executor=DocumentUploadExecutor())
     assert error.value.http_status == 404
     file.read.assert_not_awaited()
 
@@ -229,8 +296,9 @@ async def test_upload_executor_drains_accepted_job_before_shutdown(monkeypatch, 
     executor.start()
     path = tmp_path / "upload.pdf"
     path.write_bytes(b"data")
-    executor.submit(UploadJob(1, 1, 1, "upload.pdf", "application/pdf",
-                              path, "1/1/upload.pdf", False))
+    executor.submit(
+        UploadJob(1, 1, 1, "upload.pdf", "application/pdf", path, "1/1/upload.pdf", False)
+    )
     await asyncio.wait_for(entered.wait(), 1)
     closing = asyncio.create_task(executor.close())
     await asyncio.sleep(0)
@@ -241,8 +309,7 @@ async def test_upload_executor_drains_accepted_job_before_shutdown(monkeypatch, 
     assert completed.is_set()
     assert not path.exists()
     with pytest.raises(RuntimeError):
-        executor.submit(UploadJob(2, 1, 1, "x", "application/pdf",
-                                  Path("x"), "x", False))
+        executor.submit(UploadJob(2, 1, 1, "x", "application/pdf", Path("x"), "x", False))
 
 
 @pytest.mark.asyncio
@@ -257,8 +324,11 @@ async def test_outbox_retries_the_same_payload_after_broker_failure(monkeypatch)
             return self
 
         def one(self):
-            return {"topic": "tolink.rag.parse_task", "message_body": state["body"],
-                    "message_key": "pdf"}
+            return {
+                "topic": "tolink.rag.parse_task",
+                "message_body": state["body"],
+                "message_key": "pdf",
+            }
 
     class DB:
         async def execute(self, stmt, params):

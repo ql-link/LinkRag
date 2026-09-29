@@ -109,14 +109,10 @@ def main() -> int:
             failed.append(pkg)
 
     if failed:
-        print(
-            f"[setup_nltk_data] 以下资源下载失败: {', '.join(failed)}", file=sys.stderr
-        )
+        print(f"[setup_nltk_data] 以下资源下载失败: {', '.join(failed)}", file=sys.stderr)
         return 1
 
-    print(
-        f"[setup_nltk_data] 完成，共 {len(REQUIRED_PACKAGES)} 个资源就绪于 {target_dir}"
-    )
+    print(f"[setup_nltk_data] 完成，共 {len(REQUIRED_PACKAGES)} 个资源就绪于 {target_dir}")
     return 0
 
 

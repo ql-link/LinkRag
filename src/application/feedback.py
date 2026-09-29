@@ -90,9 +90,7 @@ async def submit(
         if not attachment:
             raise _bad("反馈附件不能为空")
         storage = StorageFactory.get_storage()
-        uploaded = await upload_object(
-            "feedback", filename, attachment, mime, storage=storage
-        )
+        uploaded = await upload_object("feedback", filename, attachment, mime, storage=storage)
         key = uploaded.key
     row = UserFeedbackDB(
         type=feedback_type,
@@ -111,9 +109,7 @@ async def submit(
         await db.rollback()
         if key and storage:
             try:
-                await asyncio.to_thread(
-                    storage.remove_object, settings.MINIO_PUBLIC_BUCKET, key
-                )
+                await asyncio.to_thread(storage.remove_object, settings.MINIO_PUBLIC_BUCKET, key)
             except Exception:
                 audit_event("FEEDBACK_ATTACHMENT_CLEANUP", "failed")
         raise
@@ -140,12 +136,7 @@ async def list_feedback(
         filters.append(UserFeedbackDB.status == _status(status))
     if type_value and type_value.strip():
         filters.append(UserFeedbackDB.type == _type(type_value))
-    total = (
-        await db.scalar(
-            select(func.count()).select_from(UserFeedbackDB).where(*filters)
-        )
-        or 0
-    )
+    total = await db.scalar(select(func.count()).select_from(UserFeedbackDB).where(*filters)) or 0
     rows = (
         await db.scalars(
             select(UserFeedbackDB)

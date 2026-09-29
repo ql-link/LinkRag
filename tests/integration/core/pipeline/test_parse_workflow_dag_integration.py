@@ -111,9 +111,7 @@ def _isolated_qdrant_collection():
 
             host = str(settings.QDRANT_HOST)
             url = host if host.startswith("http") else f"http://{host}:{settings.QDRANT_PORT}"
-            client = AsyncQdrantClient(
-                url=url, api_key=settings.QDRANT_API_KEY, timeout=30
-            )
+            client = AsyncQdrantClient(url=url, api_key=settings.QDRANT_API_KEY, timeout=30)
             cols = await client.get_collections()
             for c in cols.collections:
                 if c.name == _ISOLATED_QDRANT_COLLECTION:
@@ -255,9 +253,7 @@ async def _point_vector_names(doc_id: int) -> dict[str, set[str]]:
         )
     host = str(settings.QDRANT_HOST)
     url = host if host.startswith("http") else f"http://{host}:{settings.QDRANT_PORT}"
-    client = AsyncQdrantClient(
-        url=url, api_key=settings.QDRANT_API_KEY, timeout=60
-    )
+    client = AsyncQdrantClient(url=url, api_key=settings.QDRANT_API_KEY, timeout=60)
     out: dict[str, set[str]] = {}
     try:
         records = await client.retrieve(
@@ -370,7 +366,9 @@ async def test_resume_after_success_skips_all_nodes(parse_case):
     definition = build_parse_task_demo_workflow(biz_key=payload.task_id)
 
     first = await runner.run(
-        payload, definition=definition, max_concurrency=4,
+        payload,
+        definition=definition,
+        max_concurrency=4,
         execution_context=execution_context,
     )
     _assert_run_ok(first)
@@ -412,7 +410,9 @@ async def test_retry_after_dense_failure(parse_case, build_definition, max_concu
 
     # 首跑：dense 写向量阶段抛错。
     first = await runner.run(
-        payload, definition=definition, max_concurrency=max_concurrency,
+        payload,
+        definition=definition,
+        max_concurrency=max_concurrency,
         execution_context=execution_context,
     )
     assert first.status == RunStatus.FAILED
@@ -497,7 +497,9 @@ async def test_retry_after_sparse_failure(parse_case, build_definition, max_conc
 
     # 首跑：sparse 阶段抛错；dense 不依赖 sparse，应已成功。
     first = await runner.run(
-        payload, definition=definition, max_concurrency=max_concurrency,
+        payload,
+        definition=definition,
+        max_concurrency=max_concurrency,
         execution_context=execution_context,
     )
     assert first.status == RunStatus.FAILED
@@ -544,7 +546,9 @@ async def test_retry_after_ensure_points_failure(parse_case):
 
     # 首跑：ensure_points 抛错 → dense / sparse 因 POINTS_READY 缺失而不被调度。
     first = await runner.run(
-        payload, definition=definition, max_concurrency=4,
+        payload,
+        definition=definition,
+        max_concurrency=4,
         execution_context=execution_context,
     )
     assert first.status == RunStatus.FAILED

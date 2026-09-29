@@ -15,12 +15,23 @@ from src.config import settings
 from src.services.storage.factory import StorageFactory
 
 
-def _request(base_url: str, biz_type: str, file: Path, filename: str,
-             mime: str) -> tuple[int, dict]:
+def _request(
+    base_url: str, biz_type: str, file: Path, filename: str, mime: str
+) -> tuple[int, dict]:
     command = [
-        "curl", "--noproxy", "*", "--silent", "--show-error", "--max-time", "20",
-        "--request", "POST", "--write-out", "\n%{http_code}",
-        "--form", f"file=@{file};filename={filename};type={mime}",
+        "curl",
+        "--noproxy",
+        "*",
+        "--silent",
+        "--show-error",
+        "--max-time",
+        "20",
+        "--request",
+        "POST",
+        "--write-out",
+        "\n%{http_code}",
+        "--form",
+        f"file=@{file};filename={filename};type={mime}",
         f"{base_url.rstrip('/')}/api/v1/oss-files/{biz_type}",
     ]
     result = subprocess.run(command, text=True, capture_output=True)
@@ -31,8 +42,20 @@ def _request(base_url: str, biz_type: str, file: Path, filename: str,
 
 
 def _get(url: str) -> tuple[int, bytes, str]:
-    command = ["curl", "--noproxy", "*", "--silent", "--show-error", "--max-time", "12",
-               "--output", "-", "--write-out", "\n%{http_code}\n%{content_type}", url]
+    command = [
+        "curl",
+        "--noproxy",
+        "*",
+        "--silent",
+        "--show-error",
+        "--max-time",
+        "12",
+        "--output",
+        "-",
+        "--write-out",
+        "\n%{http_code}\n%{content_type}",
+        url,
+    ]
     result = subprocess.run(command, capture_output=True)
     if result.returncode:
         raise RuntimeError("public URL transport failed")
@@ -45,12 +68,20 @@ def main() -> int:
     parser.add_argument("--python-url", required=True)
     args = parser.parse_args()
     db = make_url(settings.DATABASE_URL or "")
-    if (settings.APP_ENV != "development" or db.database != "tolink_rag_dev"
-            or db.host != "100.86.10.52" or settings.STORAGE_TYPE != "minio"):
+    if (
+        settings.APP_ENV != "development"
+        or db.database != "tolink_rag_dev"
+        or db.host != "100.86.10.52"
+        or settings.STORAGE_TYPE != "minio"
+    ):
         raise RuntimeError("probe accepts only named Dev MySQL and MinIO")
-    if (not settings.B2_GENERIC_UPLOAD_ENABLED or settings.B3_CONTROL_WRITES_ENABLED
-            or settings.B4_DATASET_WRITES_ENABLED or settings.B5_FILE_WRITES_ENABLED
-            or settings.B5_DELETE_WRITES_ENABLED):
+    if (
+        not settings.B2_GENERIC_UPLOAD_ENABLED
+        or settings.B3_CONTROL_WRITES_ENABLED
+        or settings.B4_DATASET_WRITES_ENABLED
+        or settings.B5_FILE_WRITES_ENABLED
+        or settings.B5_DELETE_WRITES_ENABLED
+    ):
         raise RuntimeError("only B2 generic upload may be enabled")
     public_base = (settings.MINIO_PUBLIC_BASE_URL or "").rstrip("/")
     if not public_base:
@@ -81,7 +112,7 @@ def main() -> int:
                 if public:
                     if not result.startswith(public_base + "/"):
                         raise RuntimeError("public URL does not match configured cleanup base")
-                    key = unquote(result[len(public_base) + 1:])
+                    key = unquote(result[len(public_base) + 1 :])
                 else:
                     key = result
                 if not key.startswith(biz_type + "/"):
@@ -96,8 +127,12 @@ def main() -> int:
                         public_url = urljoin(args.python_url.rstrip("/") + "/", result)
                         public_status, public_bytes, actual_mime = _get(public_url)
                         expected_mime = "text/plain" if biz_type == "feedback" else "image/png"
-                        okay = (okay and public_status == 200 and public_bytes == content
-                                and actual_mime.startswith(expected_mime))
+                        okay = (
+                            okay
+                            and public_status == 200
+                            and public_bytes == content
+                            and actual_mime.startswith(expected_mime)
+                        )
                     except RuntimeError:
                         okay = False
                 else:
@@ -117,10 +152,14 @@ def main() -> int:
                 ("size_over", "avatar", "probe.png", b"x" * (5 * 1024 * 1024 + 1), 40001),
             ):
                 file.write_bytes(content)
-                status, response = _request(args.python_url, kind, file, filename, "application/octet-stream")
+                status, response = _request(
+                    args.python_url, kind, file, filename, "application/octet-stream"
+                )
                 okay = status == 400 and response.get("code") == expected
                 failures += not okay
-                print(f"{label}: {'PASS' if okay else 'FAIL'} http={status} code={response.get('code')}")
+                print(
+                    f"{label}: {'PASS' if okay else 'FAIL'} http={status} code={response.get('code')}"
+                )
     finally:
         for bucket, key in created:
             storage.remove_object(bucket, key)

@@ -4,6 +4,7 @@
 防止有人把 .claude/skills、.agents/skills、.agent/skills 等链接误删后重建为实目录，
 导致 .ai/ 失去单一事实源的地位。pre-commit 与 CI 会执行此脚本。
 """
+
 from __future__ import annotations
 
 import os

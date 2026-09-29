@@ -23,8 +23,8 @@ from src.observability.logging import (
 
 setup_logger()
 
-from contextlib import asynccontextmanager
 import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -35,16 +35,37 @@ from fastapi.responses import JSONResponse
 from sqlalchemy import text
 
 from src.api.java_access_auth import validate_java_access_jwt_configuration
-from src.api.routes import admin_model_catalog, admin_model_configs, admin_model_sync, admin_operations, blog, chat, datasets, document_files, feedback, identity_users, internal, internal_document_files, llm, model_configs, mq, object_uploads, parse, rag, recall, usage, wiki
 from src.api.management_auth import (
     ManagementAuthenticator,
     SqlUserAuthorizationRepository,
     build_access_token_verifier,
 )
-from src.application.identity_session import AccessTokenIssuer, build_session_state
+from src.api.routes import (
+    admin_model_catalog,
+    admin_model_configs,
+    admin_model_sync,
+    admin_operations,
+    blog,
+    chat,
+    datasets,
+    document_files,
+    feedback,
+    identity_users,
+    internal,
+    internal_document_files,
+    llm,
+    model_configs,
+    mq,
+    object_uploads,
+    parse,
+    rag,
+    recall,
+    usage,
+    wiki,
+)
 from src.application.document_deletion import replay_pending_deletions
 from src.application.document_uploads import DocumentUploadExecutor, fail_stuck_uploads
-from src.application.management_outbox import publish_due
+from src.application.identity_session import AccessTokenIssuer, build_session_state
 from src.application.ltr_provider import (
     get_ltr_runtime_status,
     preload_ltr_ranker,
@@ -55,6 +76,7 @@ from src.application.ltr_shadow_executor import (
     initialize_ltr_shadow_executor,
     shutdown_ltr_shadow_executor,
 )
+from src.application.management_outbox import publish_due
 from src.application.recall_errors import RecallApiError
 from src.cache.redis_client import redis_client
 from src.config import settings
@@ -113,8 +135,9 @@ async def _replay_delete_notifications() -> None:
         try:
             await replay_pending_deletions()
         except Exception as exc:
-            logger.bind(event="document_delete_replay_failed",
-                        error_type=type(exc).__name__).error("删除通知对账失败")
+            logger.bind(event="document_delete_replay_failed", error_type=type(exc).__name__).error(
+                "删除通知对账失败"
+            )
 
 
 async def _publish_management_outbox() -> None:
@@ -123,8 +146,9 @@ async def _publish_management_outbox() -> None:
         try:
             await publish_due()
         except Exception as exc:
-            logger.bind(event="management_outbox_publish_failed",
-                        error_type=type(exc).__name__).error("管理端消息补发失败")
+            logger.bind(
+                event="management_outbox_publish_failed", error_type=type(exc).__name__
+            ).error("管理端消息补发失败")
 
 
 async def _scan_stuck_uploads() -> None:
@@ -135,8 +159,9 @@ async def _scan_stuck_uploads() -> None:
             if count:
                 logger.warning("已将 {} 条超时上传记录置为失败", count)
         except Exception as exc:
-            logger.bind(event="document_upload_stuck_scan_failed",
-                        error_type=type(exc).__name__).error("超时上传扫描失败")
+            logger.bind(
+                event="document_upload_stuck_scan_failed", error_type=type(exc).__name__
+            ).error("超时上传扫描失败")
 
 
 @asynccontextmanager
@@ -156,8 +181,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # 鉴权公钥属于启动契约：启用新 access JWT 却缺少/损坏公钥时禁止带病接流量。
     validate_java_access_jwt_configuration()
     if settings.B5_FILE_WRITES_ENABLED and (
-        not settings.B5_INTERNAL_FILE_SERVICE_TOKEN
-        or not settings.B5_INTERNAL_FILE_BASE_URL
+        not settings.B5_INTERNAL_FILE_SERVICE_TOKEN or not settings.B5_INTERNAL_FILE_BASE_URL
     ):
         raise RuntimeError("B5 文件写入需要内部文件服务 token 与可访问的 base URL")
     # 在连接外部依赖前拒绝尚未实现的存储 provider。
@@ -169,7 +193,11 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     initialize_ltr_shadow_executor()
     await redis_client.initialize()
     await init_database()
-    if settings.B3_CONTROL_WRITES_ENABLED or settings.B5_FILE_WRITES_ENABLED or settings.B5_DELETE_WRITES_ENABLED:
+    if (
+        settings.B3_CONTROL_WRITES_ENABLED
+        or settings.B5_FILE_WRITES_ENABLED
+        or settings.B5_DELETE_WRITES_ENABLED
+    ):
         async with get_db_context() as db:
             if settings.B3_CONTROL_WRITES_ENABLED:
                 await db.execute(text("SELECT id FROM llm_provider_model_sync_job LIMIT 0"))
@@ -204,11 +232,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         upload_scan_task = asyncio.create_task(_scan_stuck_uploads())
     delete_replay_task = (
         asyncio.create_task(_replay_delete_notifications())
-        if settings.B5_DELETE_WRITES_ENABLED else None
+        if settings.B5_DELETE_WRITES_ENABLED
+        else None
     )
     outbox_task = (
         asyncio.create_task(_publish_management_outbox())
-        if settings.B5_FILE_WRITES_ENABLED or settings.B5_DELETE_WRITES_ENABLED else None
+        if settings.B5_FILE_WRITES_ENABLED or settings.B5_DELETE_WRITES_ENABLED
+        else None
     )
     try:
         yield

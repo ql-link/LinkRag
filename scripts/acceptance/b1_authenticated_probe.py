@@ -93,7 +93,9 @@ def _pair_profile(java_url: str, python_url: str, token: str) -> tuple[bool, dic
         and java.get("code") == python.get("code") == 200
         and java.get("data") == python.get("data")
     )
-    print(f"profile_pair: {'PASS' if matched else 'DIFF'} java={java_status}/{java.get('code')} python={python_status}/{python.get('code')}")
+    print(
+        f"profile_pair: {'PASS' if matched else 'DIFF'} java={java_status}/{java.get('code')} python={python_status}/{python.get('code')}"
+    )
     return matched, java.get("data") if matched else None
 
 
@@ -131,16 +133,22 @@ async def run(java_url: str, python_url: str) -> int:
         failures += not matched
 
         status, payload = _curl(
-            java_url, "PATCH", "/api/v1/user/profile",
-            token=user.token, body={"nickname": "B1-Java-probe"},
+            java_url,
+            "PATCH",
+            "/api/v1/user/profile",
+            token=user.token,
+            body={"nickname": "B1-Java-probe"},
         )
         failures += not _check("java_profile_patch", status, payload)
         matched, data = _pair_profile(java_url, python_url, user.token)
         failures += not matched or data is None or data.get("nickname") != "B1-Java-probe"
 
         status, payload = _curl(
-            python_url, "PATCH", "/api/v1/user/profile",
-            token=user.token, body={"phone": "13800000000"},
+            python_url,
+            "PATCH",
+            "/api/v1/user/profile",
+            token=user.token,
+            body={"phone": "13800000000"},
         )
         failures += not _check("python_profile_patch", status, payload)
         matched, data = _pair_profile(java_url, python_url, user.token)
@@ -149,11 +157,12 @@ async def run(java_url: str, python_url: str) -> int:
         path = "/api/v1/admin/users?page=1&size=10"
         java_status, java_list = _curl(java_url, "GET", path, token=admin.token)
         python_status, python_list = _curl(python_url, "GET", path, token=admin.token)
-        lists_match = (
-            java_status == python_status == 200
-            and java_list.get("data") == python_list.get("data")
+        lists_match = java_status == python_status == 200 and java_list.get(
+            "data"
+        ) == python_list.get("data")
+        print(
+            f"admin_list: {'PASS' if lists_match else 'DIFF'} java={java_status} python={python_status}"
         )
-        print(f"admin_list: {'PASS' if lists_match else 'DIFF'} java={java_status} python={python_status}")
         if not lists_match:
             java_data = java_list.get("data") or {}
             python_data = python_list.get("data") or {}
@@ -168,23 +177,19 @@ async def run(java_url: str, python_url: str) -> int:
             python_by_id = {item.get("id"): item for item in python_data.get("items", [])}
             for uid in java_by_id.keys() & python_by_id.keys():
                 differing = sorted(
-                    key for key in java_by_id[uid].keys() | python_by_id[uid].keys()
+                    key
+                    for key in java_by_id[uid].keys() | python_by_id[uid].keys()
                     if java_by_id[uid].get(key) != python_by_id[uid].get(key)
                 )
                 if differing:
                     print(f"list_item_diff: id={uid} fields={differing}")
         failures += not lists_match
         page_path = "/api/v1/admin/users?page=2&size=1"
-        java_page_status, java_page = _curl(
-            java_url, "GET", page_path, token=admin.token
-        )
-        python_page_status, python_page = _curl(
-            python_url, "GET", page_path, token=admin.token
-        )
-        page_match = (
-            java_page_status == python_page_status == 200
-            and java_page.get("data") == python_page.get("data")
-        )
+        java_page_status, java_page = _curl(java_url, "GET", page_path, token=admin.token)
+        python_page_status, python_page = _curl(python_url, "GET", page_path, token=admin.token)
+        page_match = java_page_status == python_page_status == 200 and java_page.get(
+            "data"
+        ) == python_page.get("data")
         print(
             f"admin_page_2_size_1: {'PASS' if page_match else 'DIFF'} "
             f"java_items={len((java_page.get('data') or {}).get('items', []))} "
@@ -194,16 +199,22 @@ async def run(java_url: str, python_url: str) -> int:
 
         role_path = f"/api/v1/admin/users/{user.user_id}/role"
         status, payload = _curl(
-            java_url, "PATCH", role_path,
-            token=admin.token, body={"role": "ADMIN"},
+            java_url,
+            "PATCH",
+            role_path,
+            token=admin.token,
+            body={"role": "ADMIN"},
         )
         failures += not _check("java_role_patch", status, payload)
         matched, data = _pair_profile(java_url, python_url, user.token)
         failures += not matched or data is None or data.get("role") != "ADMIN"
 
         status, payload = _curl(
-            python_url, "PATCH", role_path,
-            token=admin.token, body={"role": "USER"},
+            python_url,
+            "PATCH",
+            role_path,
+            token=admin.token,
+            body={"role": "USER"},
         )
         failures += not _check("python_role_patch", status, payload)
         matched, data = _pair_profile(java_url, python_url, user.token)
@@ -211,8 +222,11 @@ async def run(java_url: str, python_url: str) -> int:
 
         status_path = f"/api/v1/admin/users/{user.user_id}/status"
         status, payload = _curl(
-            java_url, "PATCH", status_path,
-            token=admin.token, body={"status": 0},
+            java_url,
+            "PATCH",
+            status_path,
+            token=admin.token,
+            body={"status": 0},
         )
         failures += not _check("java_disable_fixture", status, payload)
         java_disabled_status, java_disabled = _curl(
@@ -221,10 +235,9 @@ async def run(java_url: str, python_url: str) -> int:
         python_disabled_status, python_disabled = _curl(
             python_url, "GET", "/api/v1/user/profile", token=user.token
         )
-        disabled_match = (
-            java_disabled_status == python_disabled_status
-            and java_disabled.get("code") == python_disabled.get("code")
-        )
+        disabled_match = java_disabled_status == python_disabled_status and java_disabled.get(
+            "code"
+        ) == python_disabled.get("code")
         print(
             f"disabled_session: {'PASS' if disabled_match else 'DIFF'} "
             f"java={java_disabled_status}/{java_disabled.get('code')} "
@@ -232,21 +245,20 @@ async def run(java_url: str, python_url: str) -> int:
         )
         failures += not disabled_match
         status, payload = _curl(
-            java_url, "PATCH", status_path,
-            token=admin.token, body={"status": 1},
+            java_url,
+            "PATCH",
+            status_path,
+            token=admin.token,
+            body={"status": 1},
         )
         failures += not _check("java_reenable_fixture", status, payload)
         matched, _ = _pair_profile(java_url, python_url, user.token)
         failures += not matched
 
-        status, payload = _curl(
-            python_url, "POST", "/api/v1/auth/logout", token=user.token
-        )
+        status, payload = _curl(python_url, "POST", "/api/v1/auth/logout", token=user.token)
         failures += not _check("python_logout_java_token", status, payload)
         for label, base in (("java", java_url), ("python", python_url)):
-            result_status, result = _curl(
-                base, "GET", "/api/v1/user/profile", token=user.token
-            )
+            result_status, result = _curl(base, "GET", "/api/v1/user/profile", token=user.token)
             failures += not _check(f"{label}_after_logout", result_status, result, 401)
         return 0 if failures == 0 else 1
     finally:

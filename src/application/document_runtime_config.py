@@ -34,7 +34,11 @@ async def current_limits() -> DocumentUploadLimits:
         suffixes = value.get("allowedSuffixes") or value.get("allowed_suffixes")
         limit = value.get("maxSizeBytes") or value.get("max_size_bytes")
         allowed = frozenset(str(item).strip().lower() for item in suffixes)
-        if not allowed or not allowed.issubset(_SUPPORTED) or not 0 < int(limit) <= 100 * 1024 * 1024:
+        if (
+            not allowed
+            or not allowed.issubset(_SUPPORTED)
+            or not 0 < int(limit) <= 100 * 1024 * 1024
+        ):
             raise ValueError("invalid shared upload snapshot")
         _last_valid = DocumentUploadLimits(allowed, int(limit))
         return _last_valid
@@ -47,17 +51,33 @@ async def capabilities() -> dict:
     limits = await current_limits()
     return {
         "featureEnabled": settings.B5_FILE_WRITES_ENABLED,
-        "document": {"allowedSuffixes": sorted(limits.allowed_suffixes),
-                     "maxSizeBytes": limits.max_size_bytes},
-        "image": {"extensions": ["jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff"],
-                  "mimeTypes": ["image/jpeg", "image/png", "image/gif", "image/webp",
-                                "image/bmp", "image/tiff"],
-                  "maxAssetBytes": 20 * 1024 * 1024,
-                  "maxAssetCount": 200, "maxInventoryCount": 5000,
-                  "maxBundleBytes": 80 * 1024 * 1024,
-                  "maxPathLength": 512, "maxDocumentPathLength": 255},
-        "zip": {"maxCompressedBytes": 100 * 1024 * 1024, "maxEntries": 5000,
-                "maxExpandedBytes": 500 * 1024 * 1024, "maxRatio": 100,
-                "maxDepth": 20},
+        "document": {
+            "allowedSuffixes": sorted(limits.allowed_suffixes),
+            "maxSizeBytes": limits.max_size_bytes,
+        },
+        "image": {
+            "extensions": ["jpg", "jpeg", "png", "gif", "webp", "bmp", "tif", "tiff"],
+            "mimeTypes": [
+                "image/jpeg",
+                "image/png",
+                "image/gif",
+                "image/webp",
+                "image/bmp",
+                "image/tiff",
+            ],
+            "maxAssetBytes": 20 * 1024 * 1024,
+            "maxAssetCount": 200,
+            "maxInventoryCount": 5000,
+            "maxBundleBytes": 80 * 1024 * 1024,
+            "maxPathLength": 512,
+            "maxDocumentPathLength": 255,
+        },
+        "zip": {
+            "maxCompressedBytes": 100 * 1024 * 1024,
+            "maxEntries": 5000,
+            "maxExpandedBytes": 500 * 1024 * 1024,
+            "maxRatio": 100,
+            "maxDepth": 20,
+        },
         "matchModes": ["FULL_PATH", "SHALLOW_BASENAME"] if settings.B5_FILE_WRITES_ENABLED else [],
     }

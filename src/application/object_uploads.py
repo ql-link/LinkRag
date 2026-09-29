@@ -14,7 +14,6 @@ from src.config import settings
 from src.services.storage.base import BaseObjectStorage
 from src.services.storage.factory import StorageFactory
 
-
 _IMAGE = frozenset({"jpg", "jpeg", "png", "gif", "webp"})
 _FEEDBACK = _IMAGE | {"pdf", "doc", "docx", "txt", "md"}
 _DOCUMENT = frozenset({"pdf", "doc", "docx", "txt", "md"})
@@ -53,13 +52,11 @@ def validate_upload(biz_type: str, filename: str | None, content: bytes) -> tupl
         raise BusinessError(40001, "上传业务类型不支持", 400)
     original = filename or ""
     last_dot = original.rfind(".")
-    suffix = original[last_dot + 1:].lower() if 0 <= last_dot < len(original) - 1 else ""
+    suffix = original[last_dot + 1 :].lower() if 0 <= last_dot < len(original) - 1 else ""
     if rule.suffixes is not None and suffix not in rule.suffixes:
         raise BusinessError(40001, "上传文件格式不支持", 400)
     if len(content) > rule.max_bytes:
-        raise BusinessError(
-            40001, f"上传大小请限制在 {rule.max_bytes // 1024 // 1024}M 以内", 400
-        )
+        raise BusinessError(40001, f"上传大小请限制在 {rule.max_bytes // 1024 // 1024}M 以内", 400)
     return rule, suffix
 
 

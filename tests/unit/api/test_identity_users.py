@@ -1,6 +1,6 @@
+import re
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-import re
 
 import bcrypt
 import httpx
@@ -68,9 +68,7 @@ async def test_java_bridge_rejects_wrong_profile_identity(monkeypatch):
 
     def handler(request):
         assert request.headers["satoken"] == "access-token"
-        return httpx.Response(
-            200, json={"code": 200, "data": {"id": returned_id["value"]}}
-        )
+        return httpx.Response(200, json={"code": 200, "data": {"id": returned_id["value"]}})
 
     transport = httpx.MockTransport(handler)
     monkeypatch.setattr(
@@ -88,9 +86,7 @@ async def test_java_bridge_rejects_wrong_profile_identity(monkeypatch):
 async def test_python_and_legacy_java_sessions_revoke_without_fallthrough():
     redis, java = _Redis(), _Java()
     sessions = HybridSessionState(redis=redis, java=java)
-    claims = AccessClaims(
-        7, "python-jti", int(datetime.now(timezone.utc).timestamp()) + 600
-    )
+    claims = AccessClaims(7, "python-jti", int(datetime.now(timezone.utc).timestamp()) + 600)
     await sessions.register(claims)
     assert await sessions.is_active("python-token", claims)
     await sessions.revoke("python-token", claims)
@@ -110,29 +106,20 @@ async def test_python_and_legacy_java_sessions_revoke_without_fallthrough():
 
 def test_bcrypt_java_prefix_and_python_jwt_claims():
     password = "password-123"
-    spring_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).replace(
-        b"$2b$", b"$2a$", 1
-    )
+    spring_hash = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).replace(b"$2b$", b"$2a$", 1)
     assert bcrypt.checkpw(password.encode(), spring_hash)
     assert len(_bcrypt_input("中" * 40)) == 72
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     from cryptography.hazmat.primitives.serialization import NoEncryption, PrivateFormat
 
-    private_pem = key.private_bytes(
-        Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()
-    ).decode()
+    private_pem = key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()).decode()
     public_pem = (
-        key.public_key()
-        .public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
-        .decode()
+        key.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode()
     )
-    token, claims = AccessTokenIssuer(
-        private_pem, "tolink-java", ["tolink-java-api"], 7200
-    ).sign(7, "USER")
-    assert (
-        AccessTokenVerifier(public_pem, "tolink-java", "tolink-java-api").verify(token)
-        == claims
+    token, claims = AccessTokenIssuer(private_pem, "tolink-java", ["tolink-java-api"], 7200).sign(
+        7, "USER"
     )
+    assert AccessTokenVerifier(public_pem, "tolink-java", "tolink-java-api").verify(token) == claims
 
 
 @pytest.mark.asyncio
@@ -174,26 +161,16 @@ async def test_existing_user_login_register_and_admin_writes_on_shared_schema(
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     from cryptography.hazmat.primitives.serialization import NoEncryption, PrivateFormat
 
-    private_pem = key.private_bytes(
-        Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()
-    ).decode()
+    private_pem = key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()).decode()
     public_pem = (
-        key.public_key()
-        .public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
-        .decode()
+        key.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode()
     )
     issuer = AccessTokenIssuer(private_pem, "tolink-java", ["tolink-java-api"], 7200)
     verifier = AccessTokenVerifier(public_pem, "tolink-java", "tolink-java-api")
     monkeypatch.setattr("src.application.identity_users.get_db_context", read_context)
-    monkeypatch.setattr(
-        "src.application.identity_users.write_transaction", write_context
-    )
-    monkeypatch.setattr(
-        "src.api.management_auth.build_access_token_verifier", lambda: verifier
-    )
-    monkeypatch.setattr(
-        AccessTokenIssuer, "from_settings", classmethod(lambda cls: issuer)
-    )
+    monkeypatch.setattr("src.application.identity_users.write_transaction", write_context)
+    monkeypatch.setattr("src.api.management_auth.build_access_token_verifier", lambda: verifier)
+    monkeypatch.setattr(AccessTokenIssuer, "from_settings", classmethod(lambda cls: issuer))
 
     async def no_cache(user_id):
         return None
@@ -209,15 +186,9 @@ async def test_existing_user_login_register_and_admin_writes_on_shared_schema(
     registered_profile = await users.profile(registered["userId"])
     assert re.fullmatch(r"用户[A-Z0-9]{7}", registered_profile["nickname"])
     assert (await users.list_users(1, 10))["total"] == 2
-    await users.update_admin_field(
-        logged_in["userId"], registered["userId"], "role", "ADMIN"
-    )
-    await users.update_admin_field(
-        logged_in["userId"], registered["userId"], "status", 0
-    )
-    await users.update_admin_field(
-        logged_in["userId"], registered["userId"], "status", 0
-    )
+    await users.update_admin_field(logged_in["userId"], registered["userId"], "role", "ADMIN")
+    await users.update_admin_field(logged_in["userId"], registered["userId"], "status", 0)
+    await users.update_admin_field(logged_in["userId"], registered["userId"], "status", 0)
     assert (await users.profile(registered["userId"]))["status"] == 0
     with pytest.raises(Exception) as disabled:
         await users.login("new-user", "new-password")
@@ -231,11 +202,7 @@ async def test_existing_user_login_register_and_admin_writes_on_shared_schema(
     assert str(duplicate_email.value) == "邮箱已被使用"
     async with session_factory() as session:
         sources = (
-            (
-                await session.execute(
-                    text("SELECT login_source FROM user_login_event ORDER BY id")
-                )
-            )
+            (await session.execute(text("SELECT login_source FROM user_login_event ORDER BY id")))
             .scalars()
             .all()
         )
@@ -246,9 +213,7 @@ async def test_existing_user_login_register_and_admin_writes_on_shared_schema(
             )
         ).scalar_one()
     assert sources == ["LOGIN", "REGISTER"]
-    assert new_hash.startswith("$2a$") and bcrypt.checkpw(
-        b"new-password", new_hash.encode()
-    )
+    assert new_hash.startswith("$2a$") and bcrypt.checkpw(b"new-password", new_hash.encode())
     await engine.dispose()
 
 
@@ -260,12 +225,13 @@ def test_blank_credentials_rejected_and_username_trimmed_after_length_check():
     with pytest.raises(ValidationError):
         identity_users.LoginRequest(account="user", password="   ")
     with pytest.raises(ValidationError):
+        identity_users.RegisterRequest(username="   ", password="secret", email="valid@example.com")
+    assert (
         identity_users.RegisterRequest(
-            username="   ", password="secret", email="valid@example.com"
-        )
-    assert identity_users.RegisterRequest(
-        username=" ab ", password="secret", email="valid@example.com"
-    ).username == "ab"
+            username=" ab ", password="secret", email="valid@example.com"
+        ).username
+        == "ab"
+    )
     normalized = identity_users.RegisterRequest(
         username=" abc ", password="secret", email="valid@example.com"
     )
@@ -278,7 +244,9 @@ async def test_failed_session_registration_rolls_back_new_user(monkeypatch):
     factory = async_sessionmaker(engine, expire_on_commit=False)
     async with engine.begin() as connection:
         await connection.execute(
-            text("CREATE TABLE sys_user (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password_hash TEXT, nickname TEXT, email TEXT UNIQUE, role TEXT, status INTEGER, last_login_at DATETIME)")
+            text(
+                "CREATE TABLE sys_user (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password_hash TEXT, nickname TEXT, email TEXT UNIQUE, role TEXT, status INTEGER, last_login_at DATETIME)"
+            )
         )
 
     @asynccontextmanager
@@ -296,14 +264,20 @@ async def test_failed_session_registration_rolls_back_new_user(monkeypatch):
 
     issuer = AccessTokenIssuer(
         key.private_bytes(Encoding.PEM, PrivateFormat.PKCS8, NoEncryption()).decode(),
-        "tolink-java", ["tolink-java-api"], 7200,
+        "tolink-java",
+        ["tolink-java-api"],
+        7200,
     )
     monkeypatch.setattr("src.application.identity_users.write_transaction", write_context)
     monkeypatch.setattr(AccessTokenIssuer, "from_settings", classmethod(lambda cls: issuer))
-    monkeypatch.setattr("src.api.management_auth.build_access_token_verifier", lambda: AccessTokenVerifier(
-        key.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode(),
-        "tolink-java", "tolink-java-api",
-    ))
+    monkeypatch.setattr(
+        "src.api.management_auth.build_access_token_verifier",
+        lambda: AccessTokenVerifier(
+            key.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode(),
+            "tolink-java",
+            "tolink-java-api",
+        ),
+    )
     with pytest.raises(ConnectionError):
         await IdentityUsers(FailingSessions()).register("new-user", "secret", "new@example.com")
     async with factory() as session:
@@ -314,11 +288,7 @@ async def test_failed_session_registration_rolls_back_new_user(monkeypatch):
 @pytest.mark.asyncio
 async def test_user_routes_require_current_db_role_and_keep_contract(monkeypatch):
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
-    pub = (
-        key.public_key()
-        .public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo)
-        .decode()
-    )
+    pub = key.public_key().public_bytes(Encoding.PEM, PublicFormat.SubjectPublicKeyInfo).decode()
     now = datetime.now(timezone.utc)
     token = jwt.encode(
         {
@@ -393,21 +363,21 @@ async def test_user_routes_require_current_db_role_and_keep_contract(monkeypatch
     app.include_router(identity_users.admin_router)
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-        assert (await client.post(
-            "/api/v1/auth/login", json={"account": "   ", "password": "x"}
-        )).json() == {"code": 400, "message": "account: 账号不能为空", "data": None}
-        assert (await client.post(
-            "/api/v1/auth/register",
-            json={"username": "ab", "password": "123456", "email": "x@example.com"},
-        )).json()["message"] == "username: 用户名长度必须在3-64之间"
-        assert (await client.post("/api/v1/auth/logout")).json()["code"] == 200
-        assert (await client.post(
-            "/api/v1/auth/logout", headers={"satoken": "invalid-token"}
-        )).json()["code"] == 200
+        assert (
+            await client.post("/api/v1/auth/login", json={"account": "   ", "password": "x"})
+        ).json() == {"code": 400, "message": "account: 账号不能为空", "data": None}
         assert (
             await client.post(
-                "/api/v1/auth/login", json={"account": "x", "password": "x"}
+                "/api/v1/auth/register",
+                json={"username": "ab", "password": "123456", "email": "x@example.com"},
             )
+        ).json()["message"] == "username: 用户名长度必须在3-64之间"
+        assert (await client.post("/api/v1/auth/logout")).json()["code"] == 200
+        assert (
+            await client.post("/api/v1/auth/logout", headers={"satoken": "invalid-token"})
+        ).json()["code"] == 200
+        assert (
+            await client.post("/api/v1/auth/login", json={"account": "x", "password": "x"})
         ).status_code == 503
         anonymous_profile = await client.get("/api/v1/user/profile")
         assert anonymous_profile.status_code == 401
@@ -422,9 +392,11 @@ async def test_user_routes_require_current_db_role_and_keep_contract(monkeypatch
         assert response.status_code == 200
         assert response.json()["data"]["pageSize"] == 10
         monkeypatch.setattr(settings, "B1_JAVA_PROTECTED_ROUTES_RETIRED", False)
-        assert (await client.patch(
-            "/api/v1/admin/users/8/status", json={"status": 0}, headers={"satoken": token}
-        )).status_code == 503
+        assert (
+            await client.patch(
+                "/api/v1/admin/users/8/status", json={"status": 0}, headers={"satoken": token}
+            )
+        ).status_code == 503
         for filename, content, message in (
             ("empty.txt", b"", "请选择要上传的文件"),
             ("bad.txt", b"data", "上传文件格式不支持"),

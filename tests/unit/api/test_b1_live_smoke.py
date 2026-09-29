@@ -14,8 +14,10 @@ def test_auth_preflight_blocks_registration_before_dev_write(monkeypatch, capsys
         "sys.argv",
         [
             "b1_live_smoke.py",
-            "--java-url", "http://java.test",
-            "--python-url", "http://python.test",
+            "--java-url",
+            "http://java.test",
+            "--python-url",
+            "http://python.test",
         ],
     )
     calls = []

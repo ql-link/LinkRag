@@ -45,6 +45,7 @@ class ChatTurnPayload(MessagePayload):
 
     model_config = {"title": "对话轮次完成载荷"}
 
+
 class ChatTurnMessage(AbstractMessage):
     """迁移前 Python -> Java 的历史消息类型；运行时不再发送。"""
 

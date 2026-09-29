@@ -61,9 +61,7 @@ class MinioStorage(BaseObjectStorage):
             ExtraArgs={"ContentType": content_type},
         )
 
-    def upload_path(
-        self, bucket: str, object_key: str, source: Path, content_type: str
-    ) -> None:
+    def upload_path(self, bucket: str, object_key: str, source: Path, content_type: str) -> None:
         with source.open("rb") as stream:
             self._client.upload_fileobj(
                 stream, bucket, object_key, ExtraArgs={"ContentType": content_type}

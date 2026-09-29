@@ -50,9 +50,11 @@ async def configs(
     capability: str | None = None,
     isActive: bool | None = None,
 ):
-    return success(await model_configs.list_visible_configs(
-        user.user_id, provider_type=providerType, capability=capability, is_active=isActive
-    ))
+    return success(
+        await model_configs.list_visible_configs(
+            user.user_id, provider_type=providerType, capability=capability, is_active=isActive
+        )
+    )
 
 
 @router.post("/configs/setup-provider")
@@ -60,14 +62,13 @@ async def setup_provider(
     user: Annotated[CurrentUser, Depends(require_login)], body: SetupProviderBody
 ):
     _write_ready()
-    return success(await model_configs.setup_provider(
-        user.user_id, body.providerType, body.apiKey
-    ))
+    return success(await model_configs.setup_provider(user.user_id, body.providerType, body.apiKey))
 
 
 @router.patch("/configs/{config_id}/active")
 async def change_active(
-    config_id: int, body: ChangeActiveBody,
+    config_id: int,
+    body: ChangeActiveBody,
     user: Annotated[CurrentUser, Depends(require_login)],
 ):
     _write_ready()
@@ -77,7 +78,8 @@ async def change_active(
 
 @router.post("/configs/{config_id}/emergency-disable")
 async def emergency_disable(
-    config_id: int, body: EmergencyDisableBody,
+    config_id: int,
+    body: EmergencyDisableBody,
     user: Annotated[CurrentUser, Depends(require_login)],
 ):
     _write_ready()
@@ -89,7 +91,8 @@ async def emergency_disable(
 
 @router.delete("/configs/{config_id}")
 async def delete_config(
-    config_id: int, user: Annotated[CurrentUser, Depends(require_login)],
+    config_id: int,
+    user: Annotated[CurrentUser, Depends(require_login)],
 ):
     _write_ready()
     await model_configs.delete_config(user.user_id, config_id)
@@ -102,26 +105,21 @@ async def defaults(user: Annotated[CurrentUser, Depends(require_login)]):
 
 
 @router.get("/defaults/{capability}")
-async def get_default(
-    capability: str, user: Annotated[CurrentUser, Depends(require_login)]
-):
+async def get_default(capability: str, user: Annotated[CurrentUser, Depends(require_login)]):
     return success(await model_configs.get_default(user.user_id, capability))
 
 
 @router.put("/defaults/{capability}")
 async def set_default(
-    capability: str, body: SetDefaultBody,
+    capability: str,
+    body: SetDefaultBody,
     user: Annotated[CurrentUser, Depends(require_login)],
 ):
     _write_ready()
-    return success(await model_configs.set_default(
-        user.user_id, capability, body.configId
-    ))
+    return success(await model_configs.set_default(user.user_id, capability, body.configId))
 
 
 @router.delete("/defaults/{capability}")
-async def clear_default(
-    capability: str, user: Annotated[CurrentUser, Depends(require_login)]
-):
+async def clear_default(capability: str, user: Annotated[CurrentUser, Depends(require_login)]):
     _write_ready()
     return success(await model_configs.clear_default(user.user_id, capability))

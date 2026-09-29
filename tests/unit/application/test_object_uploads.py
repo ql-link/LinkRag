@@ -3,7 +3,12 @@ from unittest.mock import Mock
 import pytest
 
 from src.api.management_http import BusinessError
-from src.application.object_uploads import RULES, generate_object_key, upload_object, validate_upload
+from src.application.object_uploads import (
+    RULES,
+    generate_object_key,
+    upload_object,
+    validate_upload,
+)
 
 
 @pytest.mark.parametrize(

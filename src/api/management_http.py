@@ -21,8 +21,7 @@ class ApiResult(BaseModel, Generic[T]):
 
 
 class BusinessError(Exception):
-    def __init__(self, code: int, message: str, http_status: int,
-                 data: Any | None = None) -> None:
+    def __init__(self, code: int, message: str, http_status: int, data: Any | None = None) -> None:
         super().__init__(message)
         self.code = code
         self.message = message
@@ -86,8 +85,9 @@ class ManagementRoute(APIRoute):
             except BusinessError as exc:
                 return JSONResponse(
                     status_code=exc.http_status,
-                    content=ApiResult(code=exc.code, message=exc.message,
-                                      data=exc.data).model_dump(),
+                    content=ApiResult(
+                        code=exc.code, message=exc.message, data=exc.data
+                    ).model_dump(),
                 )
             except RequestValidationError as exc:
                 return JSONResponse(
@@ -99,9 +99,7 @@ class ManagementRoute(APIRoute):
             except HTTPException as exc:
                 return JSONResponse(
                     status_code=exc.status_code,
-                    content=ApiResult(
-                        code=exc.status_code, message=str(exc.detail)
-                    ).model_dump(),
+                    content=ApiResult(code=exc.status_code, message=str(exc.detail)).model_dump(),
                     headers=exc.headers,
                 )
             except Exception as exc:

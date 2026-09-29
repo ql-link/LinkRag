@@ -69,16 +69,22 @@ async def report_usage(
             status=status,
         )
         async with write_transaction() as db:
-            db.add(UsageLogDB(
-                user_id=int(payload.user_id), config_id=payload.config_id,
-                provider_type=payload.provider_type, model_name=payload.model_name,
-                stage=payload.stage, operation=payload.operation,
-                prompt_tokens=payload.prompt_tokens,
-                completion_tokens=payload.completion_tokens,
-                total_tokens=payload.total_tokens, latency_ms=payload.latency_ms,
-                status=payload.status,
-                created_at=datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None),
-            ))
+            db.add(
+                UsageLogDB(
+                    user_id=int(payload.user_id),
+                    config_id=payload.config_id,
+                    provider_type=payload.provider_type,
+                    model_name=payload.model_name,
+                    stage=payload.stage,
+                    operation=payload.operation,
+                    prompt_tokens=payload.prompt_tokens,
+                    completion_tokens=payload.completion_tokens,
+                    total_tokens=payload.total_tokens,
+                    latency_ms=payload.latency_ms,
+                    status=payload.status,
+                    created_at=datetime.now(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None),
+                )
+            )
     except Exception as exc:  # noqa: BLE001 - 旁路上报，任何异常都不得冒泡到主链路
         logger.bind(
             event="usage_report_dropped",

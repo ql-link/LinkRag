@@ -63,8 +63,7 @@ class UpdateModelBody(BaseModel):
 
 
 @router.get("/providers")
-async def providers(admin: Admin, page: int = Query(1, ge=1),
-                    size: int = Query(10, ge=1, le=100)):
+async def providers(admin: Admin, page: int = Query(1, ge=1), size: int = Query(10, ge=1, le=100)):
     return success(await catalog.list_providers(page, size))
 
 
@@ -112,8 +111,11 @@ async def set_provider_active(provider_id: int, admin: Admin, isActive: bool):
 
 @router.get("/provider-models")
 async def provider_models(
-    admin: Admin, page: int = Query(1, ge=1), size: int = Query(10, ge=1, le=100),
-    providerId: int | None = None, capability: str | None = None,
+    admin: Admin,
+    page: int = Query(1, ge=1),
+    size: int = Query(10, ge=1, le=100),
+    providerId: int | None = None,
+    capability: str | None = None,
     isActive: bool | None = None,
 ):
     return success(await catalog.list_models(page, size, providerId, capability, isActive))
@@ -128,8 +130,9 @@ async def add_model(provider_id: int, body: AddModelBody, admin: Admin):
 @router.patch("/provider-models/{model_id}")
 async def update_model(model_id: int, body: UpdateModelBody, admin: Admin):
     _write_ready()
-    return success(await catalog.update_model(model_id, body.model_dump(exclude_unset=True),
-                                              admin.user_id))
+    return success(
+        await catalog.update_model(model_id, body.model_dump(exclude_unset=True), admin.user_id)
+    )
 
 
 @router.patch("/provider-models/{model_id}/active")

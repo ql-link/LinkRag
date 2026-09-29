@@ -18,7 +18,6 @@ from src.application.object_uploads import upload_object, validate_upload
 from src.config import settings
 from src.services.storage.factory import StorageFactory
 
-
 auth_router = ManagementRouter(prefix="/api/v1/auth", tags=["auth"])
 user_router = ManagementRouter(prefix="/api/v1/user", tags=["user"])
 admin_router = ManagementRouter(prefix="/api/v1/admin", tags=["admin-users"])
@@ -49,9 +48,7 @@ class LoginRequest(BaseModel):
 class RegisterRequest(BaseModel):
     username: str = Field(min_length=3, max_length=64)
     password: str = Field(min_length=6, max_length=128)
-    email: str = Field(
-        min_length=3, max_length=128, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$"
-    )
+    email: str = Field(min_length=3, max_length=128, pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
     @field_validator("username", "password", "email", mode="before")
     @classmethod
@@ -123,9 +120,7 @@ async def login(request: Request, body: LoginRequest):
 @auth_router.post("/register")
 async def register(request: Request, body: RegisterRequest):
     _issuer_ready()
-    return success(
-        await _users(request).register(body.username, body.password, body.email)
-    )
+    return success(await _users(request).register(body.username, body.password, body.email))
 
 
 @auth_router.post("/logout")
@@ -151,9 +146,7 @@ async def logout(request: Request):
 
 
 @user_router.get("/profile")
-async def profile(
-    request: Request, user: Annotated[CurrentUser, Depends(require_login)]
-):
+async def profile(request: Request, user: Annotated[CurrentUser, Depends(require_login)]):
     return success(await _users(request).profile(user.user_id))
 
 
@@ -194,8 +187,12 @@ async def upload_avatar(
     bucket = settings.MINIO_PUBLIC_BUCKET
     storage = StorageFactory.get_storage()
     uploaded = await upload_object(
-        "avatar", file.filename, content, _IMAGE_MIME[suffix],
-        object_key=key, storage=storage,
+        "avatar",
+        file.filename,
+        content,
+        _IMAGE_MIME[suffix],
+        object_key=key,
+        storage=storage,
     )
     url = uploaded.result
     try:
@@ -228,9 +225,7 @@ async def update_user_status(
 ):
     if not settings.B1_JAVA_PROTECTED_ROUTES_RETIRED:
         raise BusinessError(503, "Java 路由仍在使用，暂不可从 Python 修改账号状态", 503)
-    await _users(request).update_admin_field(
-        actor.user_id, user_id, "status", body.status
-    )
+    await _users(request).update_admin_field(actor.user_id, user_id, "status", body.status)
     return success()
 
 
