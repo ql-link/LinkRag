@@ -101,7 +101,7 @@ def test_web_is_built_from_this_repository() -> None:
     assert "github_repo=LinkRag\n" in web
     assert "service)" not in source
     assert '-v "$source_dir/web:/workspace"' in source
-    assert 'docker build -t "$image_name:$image_tag" "$source_dir/web"' in source
+    assert 'docker build ${build_proxy_args[@]+"${build_proxy_args[@]}"} -t "$image_name:$image_tag" "$source_dir/web"' in source
 
     assert (ROOT / "web/Dockerfile").is_file()
     assert "proxy_pass http://tolink-rag:8000;" in (ROOT / "web/deploy/nginx.default.conf").read_text(
@@ -141,4 +141,23 @@ def test_production_deploys_python_as_sole_backend_and_web_from_this_repository(
     web_script = (ROOT / "deploy/scripts/build-web-production-on-cloud.sh").read_text(encoding="utf-8")
     assert web_script.index("nginx -t") < web_script.index('cutover_started="true"')
     assert "rollback_old_site" in web_script
-    assert 'docker build \\\n  --label "org.opencontainers.image.revision=${commit_short}" \\\n  -t "${image}:${tag}" \\\n  "${build_dir}/web"' in web_script
+    assert '-t "${image}:${tag}" \\\n  "${build_dir}/web"' in web_script
+
+
+def test_build_proxy_is_opt_in_and_scoped_to_builds() -> None:
+    """代理只在服务器显式提供 build-proxy.env 时注入本次构建，并排除国内镜像与内网。"""
+    for rel in (
+        "deploy/dev-server/build-component-on-primary.sh",
+        "deploy/scripts/build-production-on-cloud.sh",
+        "deploy/scripts/build-web-production-on-cloud.sh",
+    ):
+        source = (ROOT / rel).read_text(encoding="utf-8")
+        assert "if [[ -f /opt/tolink/build-proxy.env ]]; then" in source, rel
+        assert ".aliyun.com" in source and ".npmmirror.com" in source and "100.64.0.0/10" in source, rel
+        # bash 4.2（生产）在 set -u 下展开空数组会报错，必须使用 +alternate 写法。
+        assert '"${build_proxy_args[@]}"' not in source.replace('${build_proxy_args[@]+"${build_proxy_args[@]}"}', ""), rel
+        assert "export HTTP_PROXY" not in source and "daemon.json" not in source, rel
+
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "pip install '.[mq-all,pretokenization]'" in dockerfile
+    assert "'.[all]'" not in dockerfile

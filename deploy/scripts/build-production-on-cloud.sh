@@ -118,7 +118,30 @@ RABBITMQ_APP_ENV_FILE="${rabbitmq_env}" \
     -f "${candidate_compose_file}" \
     config >/dev/null
 
-DOCKER_BUILDKIT=1 docker build \
+# 可选的构建代理：仅在服务器存在 /opt/tolink/build-proxy.env（BUILD_PROXY=http://host:port）时启用，
+# 且只作用于本次 docker build / npm ci，不修改系统或 Docker daemon 代理。
+# 代理端（Clash rule 模式）负责只转发境外流量；NO_PROXY 再显式排除国内镜像与内网地址。
+build_proxy_args=()
+build_proxy_env=()
+if [[ -f /opt/tolink/build-proxy.env ]]; then
+  BUILD_PROXY=$(sed -n 's/^BUILD_PROXY=//p' /opt/tolink/build-proxy.env | tail -1)
+  if [[ "${BUILD_PROXY}" =~ ^http://[A-Za-z0-9._-]+:[0-9]+$ ]]; then
+    build_no_proxy="localhost,127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,100.64.0.0/10,.aliyun.com,.aliyuncs.com,.npmmirror.com,.tuna.tsinghua.edu.cn,.cn"
+    for name in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy; do
+      build_proxy_args+=(--build-arg "${name}=${BUILD_PROXY}")
+      build_proxy_env+=(-e "${name}=${BUILD_PROXY}")
+    done
+    for name in NO_PROXY no_proxy; do
+      build_proxy_args+=(--build-arg "${name}=${build_no_proxy}")
+      build_proxy_env+=(-e "${name}=${build_no_proxy}")
+    done
+    echo "build proxy enabled for this build: ${BUILD_PROXY}"
+  else
+    echo "ignore invalid BUILD_PROXY in /opt/tolink/build-proxy.env" >&2
+  fi
+fi
+
+DOCKER_BUILDKIT=1 docker build ${build_proxy_args[@]+"${build_proxy_args[@]}"} \
   --label "org.opencontainers.image.revision=${commit_short}" \
   -t "${image}:${tag}" \
   "${build_dir}"

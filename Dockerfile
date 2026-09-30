@@ -31,8 +31,9 @@ RUN --mount=type=cache,id=tolink-rag-pip,target=/root/.cache/pip,sharing=locked 
 # README、业务代码、迁移和部署文件都在依赖层之后拷入，修改它们不会重装依赖。
 COPY pyproject.toml ./
 RUN mkdir -p src && touch src/__init__.py README.md
+# 运行镜像只装运行期依赖（MQ 客户端 + 预分词）；pytest / black / mypy 等开发工具在 CI 的独立容器中安装。
 RUN --mount=type=cache,id=tolink-rag-pip,target=/root/.cache/pip,sharing=locked \
-    pip install '.[all]' -i https://mirrors.aliyun.com/pypi/simple --timeout 120
+    pip install '.[mq-all,pretokenization]' -i https://mirrors.aliyun.com/pypi/simple --timeout 120
 
 # 再拷入真实源码与其余文件（迁移、脚本、alembic 配置等）；
 # 这层变动不影响上面的依赖层缓存。运行时 uvicorn 从 /app/src 直接加载。
