@@ -32,7 +32,8 @@ MQ_MESSAGES_DIR = REPO_ROOT / "src" / "core" / "mq" / "messages"
 # A. 死路径引用：仅校验这些"权威源码目录"开头的路径（最不可能是示意性文字，最该真实存在）
 PATH_ROOTS = ("src/", "migrations/", "scripts/")
 # 行内 code 或链接里、形如 src/a/b.py 的路径片段
-_PATH_TOKEN = re.compile(r"(?:src|migrations|scripts)/[\w./-]+")
+# 左边界：前一字符不能是路径字符，避免把 deploy/scripts/x.sh 截成仓库根下的 scripts/x.sh 误报。
+_PATH_TOKEN = re.compile(r"(?<![\w./-])(?:src|migrations|scripts)/[\w./-]+")
 # B. MQ topic：真实 topic 命名空间是点状 `tolink.<...>`（如 tolink.rag.parse_task）。
 #    只校验点状 token —— 连字符的 tolink-* 多为主机名/JWT iss-aud/消费组/bucket，非 topic，
 #    纳入会误报。点状命名空间专属于 MQ topic，校验它即可零误报地抓住 topic 串写错。
