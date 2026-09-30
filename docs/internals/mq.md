@@ -17,8 +17,8 @@ src/core/mq/
 │   ├── parse_task_consumer.py      # 解析任务消费 handler（订阅装配在组合根 src/main.py）
 │   └── document_delete_consumer.py # 删除通知消费 handler（LINK-55；委托 DocumentDeletePurger）
 ├── messages/
-│   ├── parse_task.py          # Java -> Python 解析任务消息
-│   ├── document_delete.py     # Java -> Python 删除通知（LINK-55，扁平裸 JSON 无信封）
+│   ├── parse_task.py          # 管理层 / 外部生产者 -> Python 解析任务消息
+│   ├── document_delete.py     # 管理层 / 外部生产者 -> Python 删除通知（LINK-55，扁平裸 JSON 无信封）
 │   ├── token_usage.py         # 统一 Token 用量上报（全部模型调用）
 │   └── chat_turn.py           # 历史 Python -> Java 载荷，B6 后不再由业务生产
 │   # parse_result.py 已删除（LINK-166：终态回传 MQ 下线，终态只写 DB）
@@ -66,18 +66,18 @@ FastAPI lifespan（src/main.py 组合根装配 _start_mq_consumers）
 
 | 消息 | 默认 Topic/Queue | 方向 | 说明 |
 | --- | --- | --- | --- |
-| `ParseTaskMessage` | `tolink.rag.parse_task` | Java -> Python | 触发文档解析任务（含首次解析与重试，由 `is_retry` + `previous_task_id` 区分；详见 [mq_integration.md §ParseTaskPayload](../api/mq_contracts.md)） |
-| `DocumentDeleteMessage` | `tolink.rag.document_delete` | Java -> Python | 删除通知：按 `delete_type`（dataset/file）清理解析域衍生产物，不碰原文件（详见 [mq_contracts.md §删除通知](../api/mq_contracts.md)） |
+| `ParseTaskMessage` | `tolink.rag.parse_task` | 管理层 / 外部生产者 -> Python | 触发文档解析任务（含首次解析与重试，由 `is_retry` + `previous_task_id` 区分；详见 [mq_integration.md §ParseTaskPayload](../api/mq_contracts.md)） |
+| `DocumentDeleteMessage` | `tolink.rag.document_delete` | 管理层 / 外部生产者 -> Python | 删除通知：按 `delete_type`（dataset/file）清理解析域衍生产物，不碰原文件（详见 [mq_contracts.md §删除通知](../api/mq_contracts.md)） |
 | `TokenUsageMessage` | `tolink.rag.usage_report` | 历史兼容 | B7 后用量埋点由 Python 后台任务直接写 `llm_usage_log`，不再生产该消息；旧载荷仅供排空与兼容。 |
 | `ChatTurnMessage` | `tolink.rag.chat_turn` | 历史兼容 | B6 后 RAG 轮次在 Python 直接写 `chat_message`，不再生产该消息；同名 Payload 暂用作进程内数据对象（`status` 新增 `STOPPED`：用户停止生成）。 |
 
 `ParseTaskMessage` 中的 `md_bucket` 为历史兼容字段；不论 `file_type`（含 `md`/`markdown`），解析产物实际都写入 `MINIO_PRIVATE_BUCKET` 配置桶，`md_object_key` 仍来自消息。`md`/`markdown` 透传只跳过解析引擎转换，不跳过落盘。
 
-> 当前 `consumers/` 下有 `parse_task_consumer.py` 与 `document_delete_consumer.py` 两个消费入口。B6/B7 本地实现不再生产 `ChatTurnMessage` / `TokenUsageMessage`；Kafka 自动建 Topic 也仅包含解析与删除及对应 DLT。Broker 上旧 Topic 不由应用删除，待 Java 消费者排空后运维处理。
+> 当前 `consumers/` 下有 `parse_task_consumer.py` 与 `document_delete_consumer.py` 两个消费入口。B6/B7 本地实现不再生产 `ChatTurnMessage` / `TokenUsageMessage`；Kafka 自动建 Topic 也仅包含解析与删除及对应 DLT。Broker 上旧 Topic 不由应用删除，待历史消费者和积压消息排空后由运维处理。
 >
 > 收发 topic 名由各消息类的 `MQ_NAME` 常量固定，`PARSE_TASK_TOPIC` 等环境变量仅用于 §4.1 的 Kafka topic 自动创建，不改变实际收发 topic。
 
-> **parse_result 终态回传 MQ 已下线（LINK-166）**：Python 端解析完成后**只写 DB 终态**（`document_parse_pipeline`），不再向 Java 发送 `ParseResultMessage`。`messages/parse_result.py` 与生产侧 `ParseResultNotifier`、`PARSE_RESULT_TOPIC` 配置项均已删除。前端改由轮询 Java `parse-results` 接口读 DB 获取终态（LINK-98）；Java 端停止消费见 LINK-165。
+> **parse_result 终态回传 MQ 已下线（LINK-166）**：Python 端解析完成后**只写 DB 终态**（`document_parse_pipeline`），不再发送 `ParseResultMessage`。`messages/parse_result.py` 与生产侧 `ParseResultNotifier`、`PARSE_RESULT_TOPIC` 配置项均已删除。前端通过 `GET /api/v1/datasets/{dataset_id}/files/parse-results?fileIds=...` 读取终态。
 
 ### Trace ID 透传
 
@@ -152,7 +152,7 @@ Kafka Topic 初始化还会读取：
   - Kafka：`topic_admin.build_default_topic_specs()` 为每个业务 topic 同规格创建 `.DLT`，
     启动时随 `ensure_topics()` 幂等装配。
   - RabbitMQ：Sender/Receiver 使用同一 helper 幂等声明 `<queue>.DLX`、原 Queue 与死信
-    Queue，确保 Java/Python 任一端先启动时声明参数一致。
+    Queue，确保任一生产者 / 消费者先启动时声明参数一致。
 - 死信消息头携带 `x-original-topic` / `x-exception-class` / `x-exception-message` /
   `x-retry-count` / `x-original-key` / `x-failed-at`，body 沿用原始字节不重新序列化。
 - Kafka 位点提交按 `{TopicPartition: offset + 1}` 精确提交（不再使用无参 commit，

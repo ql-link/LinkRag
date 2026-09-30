@@ -251,7 +251,7 @@ RabbitMQ 使用同名 Queue；Kafka 回滚模式使用同名 topic（见 [mq_con
 | --- | --- | --- |
 | `PARSE_TASK_TOPIC` | `tolink.rag.parse_task` | 解析任务入队 |
 
-> `PARSE_RESULT_TOPIC` 已随终态回传 MQ 下线删除（LINK-166）：解析终态只写 DB（`document_parse_pipeline`），前端轮询 Java 查询读取，不再有 parse_result 回传 topic。
+> `PARSE_RESULT_TOPIC` 已随终态回传 MQ 下线删除（LINK-166）：解析终态只写 DB（`document_parse_pipeline`），前端通过 `GET /api/v1/datasets/{dataset_id}/files/parse-results?fileIds=...` 读取，不再有 parse_result 回传 topic。
 >
 > 这些变量只决定启动时**自动创建**哪些 Kafka topic。实际收发的 topic 名由消息类的 `MQ_NAME` 常量固定（`tolink.rag.parse_task`），改它不会改变 Python 端实际订阅/投递的 topic。
 
@@ -374,38 +374,39 @@ Wiki 标题搜索只复用 `RECALL_STRICT_DEFAULT` 与 `RECALL_STREAM_TIMEOUT_MS
 
 ### 对外访问鉴权配置（RAG / Recall / Wiki）
 
-Java 登录返回的同一枚 RS256 access JWT 可直接访问 Python。Java 保存私钥并负责签发，Python 只挂载
-公钥文件并本地验签；B1 并存阶段配置 `B1_JAVA_AUTH_BASE_URL` 后，Python 还通过 Java 资料接口核验会话和通过 Java 退出接口撤销会话，不直接读取 Sa-Token Redis。未配置该桥接的其他旧部署仍只做 JWT 验签。并发限流
+当前 Dev/生产部署由 Python 签发和验证 RS256 access JWT：私钥与公钥均以只读文件挂载，`B1_PYTHON_ISSUER_ENABLED=true` 和 `B1_JAVA_PROTECTED_ROUTES_RETIRED=true` 允许 Python 接管。`JAVA_ACCESS_JWT_*` 变量和密钥文件名为历史 token、数据与密钥材料兼容而保留，并不要求运行 Java 服务。旧部署只有在显式配置 `B1_JAVA_AUTH_BASE_URL` 时才会启用 Java 会话桥接。并发限流
 （`RAG_MAX_CONCURRENT_PER_USER`）**仅 RAG 流生效**，Recall/Wiki 不使用该计数。详见
 [recall_http_api.md](../internals/recall_http_api.md)。
 
 | 变量 | 默认 | 说明 |
 | --- | --- | --- |
-| `JAVA_ACCESS_JWT_ENABLED` | `false` | 是否接受 Java access JWT；启用后会在启动时校验公钥配置 |
-| `JAVA_ACCESS_JWT_PUBLIC_KEY_PATH` | 空 | Java RS256 PEM 公钥文件路径；启用时必填、必须可读且格式有效，否则启动失败 |
-| `JAVA_ACCESS_JWT_ISSUER` | `tolink-java` | 期望的 access JWT `iss` |
+| `JAVA_ACCESS_JWT_ENABLED` | `false` | 是否启用 access JWT 验签；变量名为历史兼容，启用后会在启动时校验公钥配置 |
+| `JAVA_ACCESS_JWT_PUBLIC_KEY_PATH` | 空 | RS256 PEM 公钥文件路径；启用时必填、必须可读且格式有效，否则启动失败 |
+| `JAVA_ACCESS_JWT_ISSUER` | `tolink-java` | 期望的 access JWT `iss`；保留该默认值以兼容既有 token |
 | `JAVA_ACCESS_JWT_AUDIENCE` | `tolink-rag-api` | 期望 audience；JWT 的 `aud` 可为包含该值的数组 |
 | `JAVA_ACCESS_JWT_TOKEN_USE` | `access` | 凭证类型隔离值，必须精确匹配 |
+| `B1_PYTHON_ISSUER_ENABLED` | `false` | 允许 Python 用 `B1_ACCESS_JWT_PRIVATE_KEY_PATH` 签发 access JWT；Dev/生产 Compose 默认设为 `true` |
+| `B1_JAVA_PROTECTED_ROUTES_RETIRED` | `false` | 确认 Java 受保护路由已退场；与前项同时为 `true` 时由 Python 接管签发；Dev/生产 Compose 默认设为 `true` |
+| `B1_ACCESS_JWT_PRIVATE_KEY_PATH` | 空 | Python 签发用 RS256 私钥路径；启用 Python 签发时必填且只读挂载 |
 | `WIKI_CURSOR_SIGNING_SECRET` | 本地占位值 | Wiki 无状态分页游标签名密钥；与用户 token 无关，生产必须覆盖 |
 | `RAG_MAX_CONCURRENT_PER_USER` | `3` | 单用户最大并发 RAG 流数；仅用于资源保护，超限返回 `429` |
 | `CORS_ORIGINS` | `["*"]` | **生产对外环境必须收敛为前端可信域名清单**（不可用 `*`，否则带 `Authorization` 头的跨域预检失败）|
 
-> 新 access JWT 固定 2 小时，可在到期前复用。启用 B1 Java 会话桥接后，Python 在每次受保护请求中核验 Java 会话并维护 `jti` 撤销状态；未启用桥接的旧部署仍只能在 `exp` 时保证拒绝已登出的 JWT。用户禁用和角色降级通过共享数据库实时生效。RAG 生成跑在独立后台任务、
+> 新 access JWT 固定 2 小时，可在到期前复用。Python 签发的 token 在 Redis 维护 `jti` 活动与撤销状态；旧部署启用 Java 会话桥接时才会额外核验该桥接会话。用户禁用和角色降级通过共享数据库实时生效。RAG 生成跑在独立后台任务、
 > 断连不取消，并发名额绑任务生命周期释放（非连接）；
 > 任务存活由召回超时 `RECALL_STREAM_TIMEOUT_MS` + 生成超时 `RECALL_GENERATION_TIMEOUT_MS` 共同约束，
 > 名额安全 TTL 取二者较大值兜底。并发计数依赖 Redis，Redis 不可用时 fail-open（放行，因限流是资源保护非鉴权）。
 
-部署时应把公钥以只读文件挂载到 Python 容器，并令 `JAVA_ACCESS_JWT_PUBLIC_KEY_PATH` 指向容器内路径。
-Java 私钥不得进入 Python 环境、代码仓库或日志。轮换时先让 Python 信任新公钥并完成灰度，再切换 Java
-签发私钥；当前实现一次只加载一把公钥，因此应保留足够的 token 过渡窗口或安排短暂停机切换。
+部署时应把公钥和签发私钥以只读文件挂载到 Python 容器，分别令 `JAVA_ACCESS_JWT_PUBLIC_KEY_PATH` 与
+`B1_ACCESS_JWT_PRIVATE_KEY_PATH` 指向容器内路径。私钥不得进入代码仓库或日志。轮换时先让 Python 信任新公钥并完成灰度，再切换 Python 签发私钥；当前实现一次只加载一把公钥，因此应保留足够的 token 过渡窗口或安排短暂停机切换。
 
 ## 配置加载与覆盖
 
-### B2–B5 迁移开关（默认关闭）
+### B2–B5 迁移开关
 
-`B2_GENERIC_UPLOAD_ENABLED` 控制通用六类对象上传（开启后仍要求登录）；`B3_CONTROL_WRITES_ENABLED` 控制模型配置 USER/SYSTEM 写入；`B4_DATASET_WRITES_ENABLED` 控制数据集创建、更新与解析配置写入；`B5_FILE_WRITES_ENABLED` 控制普通文件上传和解析提交；`B5_DELETE_WRITES_ENABLED` 控制文件/数据集删除。按路径确认 Java/Python 单一写入者、目标 schema 和真实依赖验收后再分别启用。
+`B2_GENERIC_UPLOAD_ENABLED` 控制通用六类对象上传（开启后仍要求登录）；`B3_CONTROL_WRITES_ENABLED` 控制模型配置 USER/SYSTEM 写入；`B4_DATASET_WRITES_ENABLED` 控制数据集创建、更新与解析配置写入；`B5_FILE_WRITES_ENABLED` 控制普通文件上传和解析提交；`B5_DELETE_WRITES_ENABLED` 控制文件/数据集删除。`Settings` 的安全默认值均为关闭；当前 Dev/生产 Compose 将这些已切流路径设为 `true`，独立本地或自定义部署需按自身路由和依赖状态显式选择。
 
-B5 写入还要求 0041 outbox migration 已执行、`B5_INTERNAL_FILE_SERVICE_TOKEN` 有独立服务令牌、`B5_INTERNAL_FILE_BASE_URL` 指向解析服务可访问的 Python 内部文件路由；缺任一项时启动拒绝接流量。Markdown 资源包上传已在本地 Python 入口接入，并用 Dev 中间件完成上传、manifest 读取及 MQ 解析；仍须核对目标环境的 Java/Python 单一写入者和切流后的前端行为。B3 ADMIN 候选同步已用临时厂商完成真实 models.dev/Dev 写入和清理；目标环境切流仍需确认单一写入者。B3 旧密文需要与 Java 使用同一受控密钥材料；解密失败时读配置返回 503。
+B5 写入还要求 0041 outbox migration 已执行、`B5_INTERNAL_FILE_SERVICE_TOKEN` 有独立服务令牌、`B5_INTERNAL_FILE_BASE_URL` 指向解析服务可访问的 Python 内部文件路由；缺任一项时启动拒绝接流量。Markdown 资源包上传已在 Python 入口接入，并用 Dev 中间件完成上传、manifest 读取及 MQ 解析；目标环境仍须核对其实际迁移、路由和前端行为。B3 旧密文需要沿用受控密钥材料；解密失败时读配置返回 503。
 
 
 - `.env` 由 [src/config.py](../../src/config.py) 通过 `Settings`（pydantic-settings）加载。

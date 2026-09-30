@@ -85,9 +85,9 @@ toLink-Rag/                         # 仓库根目录
 │   │   └── nltk_data.py          # NLTK 数据路径引导（项目内 nltk_data 优先）
 │   ├── api/                      # HTTP API 分层
 │   │   ├── app_auth.py          # 接入应用凭证 + X-App-User-Id → 影子用户鉴权依赖
-│   │   ├── java_access_auth.py  # Java 登录 access JWT 独立验签与当前用户上下文
+│   │   ├── java_access_auth.py  # 历史命名的 access JWT 验签与当前用户上下文
 │   │   ├── management_auth.py   # B1 当前用户、数据库角色和会话鉴权
-│   │   ├── management_http.py   # Java 管理接口响应与异常边界
+│   │   ├── management_http.py   # 管理接口响应与异常边界（历史 Java 兼容格式）
 │   │   ├── recall_concurrency.py  # RAG Redis 并发保护（不参与 token 验证）
 │   │   ├── route_guards.py      # 内部服务令牌与调试入口开关
 │   │   ├── routes/               # 路由层

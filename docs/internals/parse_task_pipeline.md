@@ -276,7 +276,7 @@ demo DAG 当前依赖关系为：`cleaning → chunking`；`chunking → ensure_
 | BM25 入库（阶段名仍为 ES_INDEXING） | `StageServices.run_es_indexing()` | 在 `(doc_id, BM25)` 锁内对 Manticore 执行**前置删除 → 全量写入 → 失败清理**。半成品清理成功后，整篇 ACTIVE chunk 的 `es_status` 统一收敛为 `FAILED`。 |
 | 稀疏向量化 | `StageServices.run_sparse_vectorizing()` → `SparseIndexingPipeline.run(chunks=...)` | 重新加载 chunks 后只过滤 `sparse != SUCCESS`；sparse 使用 `update_vectors` 写统一 Qdrant 业务 collection 的 `sparse_text` named vector，可独立于 dense 写入。encoder 按数据集绑定解析，不回退用户当前默认配置。 |
 | 重试抢占 | `ParsePipelineRepository.mark_superseded()` | CAS 第 2 层只执行 `UPDATE ... WHERE superseded_by_task_id IS NULL` 并返回 rowcount，不主动 commit；调用方必须与新 retry log / pipeline 建行放在同一事务内提交 |
-| 结果落库 | `ParsePipelineRepository.mark_*` | 终态只写 `document_parse_pipeline`（DB 权威源），前端轮询 Java 查询读取；不再发送 parse_result MQ（LINK-166） |
+| 结果落库 | `ParsePipelineRepository.mark_*` | 终态只写 `document_parse_pipeline`（DB 权威源），前端通过 `GET /api/v1/datasets/{dataset_id}/files/parse-results?fileIds=...` 轮询读取；不再发送 parse_result MQ（LINK-166） |
 
 ## 4. 状态语义
 
@@ -301,7 +301,7 @@ demo DAG 当前依赖关系为：`cleaning → chunking`；`chunking → ensure_
 | `sparse_vectorizing_status` | `PENDING/PROCESSING/SUCCESS/FAILED`（migration 0009 新增） |
 | `superseded_by_task_id` | `VARCHAR(36) NULL`（重试 CAS 第 2 层目标列；migration 0009 新增） |
 
-阶段顺序：`CLEANING(PARSING) → CHUNKING → VECTORIZING(dense/Qdrant) → PRETOKENIZE → ES_INDEXING → SPARSE_VECTORIZING`。`pipeline_status=SUCCESS` 是整体成功语义：6 阶段全部成功才算整体成功；任一阶段失败即写 `pipeline_status=FAILED`。终态只写 DB，前端轮询 Java 查询读取（LINK-166）。
+阶段顺序：`CLEANING(PARSING) → CHUNKING → VECTORIZING(dense/Qdrant) → PRETOKENIZE → ES_INDEXING → SPARSE_VECTORIZING`。`pipeline_status=SUCCESS` 是整体成功语义：6 阶段全部成功才算整体成功；任一阶段失败即写 `pipeline_status=FAILED`。终态只写 DB，前端通过 `GET /api/v1/datasets/{dataset_id}/files/parse-results?fileIds=...` 轮询读取（LINK-166）。
 
 召回侧不重新聚合 chunk 三路状态，而是从 `latest_parse_task_id` 找到当前 pipeline，并且只在其 `pipeline_status=SUCCESS` 时放行整篇文档。任一路失败导致当前 pipeline 失败时，该文档三路命中都不可见；补偿只修派生索引和 chunk 分支状态，不会把失败 pipeline 直接翻回成功。
 

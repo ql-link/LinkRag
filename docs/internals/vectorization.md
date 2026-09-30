@@ -68,7 +68,7 @@ ParseTaskPipeline
     -> SparseVectorizingStage
       -> StageServices.run_sparse_vectorizing() # (doc_id, SPARSE) lock
   -> document_parse_pipeline.sparse_vectorizing_status = SUCCESS（开启时）
-  -> document_parse_pipeline.pipeline_status = SUCCESS（终态只写 DB，前端轮询 Java 查询）
+  -> document_parse_pipeline.pipeline_status = SUCCESS（终态只写 DB，前端通过 Python 查询接口轮询）
 ```
 
 ## 2. 核心角色
