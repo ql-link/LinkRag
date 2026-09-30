@@ -22,19 +22,21 @@
 主要入口如下：
 
 - `docker-compose.yml`：开发中间件和应用编排。
-- `build-component-on-primary.sh`：被 Jenkins 的 RAG、Java Service、Web 三个 Dev 作业调用，
-  负责拉取源码、构建镜像、执行必要迁移并部署组件。
+- `build-component-on-primary.sh`：被 Jenkins 的 RAG、Web 两个 Dev 作业调用，
+  负责拉取本仓库源码、构建镜像（Web 在 `web/` 子目录构建）、执行必要迁移并部署组件。
 - `configure-dev-env.sh`：根据开发主机上的配置和密钥生成运行时配置；生成的密钥文件不得提交到 Git。
 - `generate-dev-llm-migration-inputs.py`：为开发环境迁移生成 dev-only 的加密输入。
-- `jenkins-*-dev.xml`：三个开发 Jenkins Pipeline 的 Job 定义。
-- `Dockerfile.service`：Java Service 开发镜像的构建文件。
+- `jenkins-*-dev.xml`：两个开发 Jenkins Pipeline 的 Job 定义。
+- `nginx.conf`：Dev Web 网关，`/api/` 全部转发到 Python 后端。
+
+Java 管理端已下线：Dev / 生产编排中不再包含 `tolink-service`，前端镜像由 `web/Dockerfile` 构建。
 
 开发环境的 `.env`、`.local`、`secrets/` 内容只应保存在开发主机，并使用 `600` 权限；不要把真实
 密码、API Key、JWT Secret 或加密密钥写入仓库或镜像。
 
 ## 生产环境
 
-- `cloud-server/docker-compose.yml`：云服务器生产应用栈，包括 RabbitMQ、Java、Python RAG、Web 和 Promtail。
+- `cloud-server/docker-compose.yml`：云服务器生产应用栈，包括 RabbitMQ、Python 后端、Web 和 Promtail。
 - `cloud-server/data-compose.yml`：生产数据与基础设施栈，包括 MySQL、Redis、MinIO、Qdrant、Manticore 和 Loki。
 - `host-server/docker-compose.yml`：主机服务器共享中间件编排。
 - 根目录 `Jenkinsfile` 使用 `deploy/docker-compose.yml` 作为生产 RAG 的单服务部署入口。

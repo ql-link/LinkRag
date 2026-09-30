@@ -30,7 +30,7 @@
 
 `LinkRag` 是一款从0开始完全自研自建的已上线RAG项目，立意之初是为了作为Agent的数据底座而构建，提供非结构化文档的存储召回。目前已经基于传统路线实现向量RAG，构建出完整的Web服务，可作为通用知识库解决企业/个人知识问答场景。同时我们也在拓展Agent的落地场景，将文档的存与查拓展到辅助写成为长期记忆底座。
 
-本仓库是其中的 **Python RAG 服务**，也是整个系统的引擎：它把各种复杂格式的文档解析成结构化 Markdown，按语义切成可检索的知识单元，建立稠密、稀疏、BM25 三路索引；在查询时多路并行召回、融合、重排，最终基于真正检索到的内容生成有据可查的答案。整个过程通过消息队列与 Java 业务系统异步集成，业务侧只管下发任务，不必关心解析与检索的内部实现。
+本仓库是其中的 **Python RAG 服务**，也是整个系统的引擎：它把各种复杂格式的文档解析成结构化 Markdown，按语义切成可检索的知识单元，建立稠密、稀疏、BM25 三路索引；在查询时多路并行召回、融合、重排，最终基于真正检索到的内容生成有据可查的答案。管理接口（用户、知识库、模型、博客、日志等）也由本服务提供，解析任务通过消息队列异步执行。
 
 能力细节见技术文档：[文件解析](./docs/internals/file_parser.md) · [分块](./docs/internals/chunking.md) · [向量化](./docs/internals/vectorization.md) · [召回](./docs/internals/recall_pipeline.md)。
 
@@ -82,7 +82,7 @@ RAG 最怕"一本正经地胡说"。LinkRag 把召回到的片段回填正文、
 
 **6. 一套服务，多租户各用各的模型——解耦集成与按用户配置**
 
-LinkRag 通过消息队列与 Java 业务系统异步集成，业务侧只负责下发任务、读取终态，不与解析实现耦合。它天生为多租户设计：Embedding、Chat、Vision、Rerank、稀疏编码这五种能力，每一种都按发起用户自己的配置解析，不同用户可以用不同的模型；解析行为还能按数据集粒度配置（PDF 后端、分块参数、增强开关）。每个用户的向量数据按哈希路由到独立分桶，互不干扰。
+文档解析通过消息队列异步执行，管理接口只负责下发任务、读取终态，不与解析实现耦合。它天生为多租户设计：Embedding、Chat、Vision、Rerank、稀疏编码这五种能力，每一种都按发起用户自己的配置解析，不同用户可以用不同的模型；解析行为还能按数据集粒度配置（PDF 后端、分块参数、增强开关）。每个用户的向量数据按哈希路由到独立分桶，互不干扰。
 
 <p align="center">
   <img alt="LLM 接入：按协议分发的统一 Adapter 层" src="./docs/assets/sketches/sketch-llm-adapter.png" width="680">
@@ -110,13 +110,9 @@ LinkRag 通过消息队列与 Java 业务系统异步集成，业务侧只负责
 
 ## 关联仓库
 
-LinkRag 由三个仓库协作组成：
-
-| 仓库 | 角色 |
-| --- | --- |
-| [ql-link/LinkRag](https://github.com/ql-link/LinkRag)（本仓） | Python RAG 服务：文档解析、分片、向量化、索引与召回 |
-| [ql-link/LinkRag-Service](https://github.com/ql-link/LinkRag-Service) | Java 管理端：业务编排、任务下发与终态回收 |
-| [ql-link/LinkRag-Web](https://github.com/ql-link/LinkRag-Web) | 前端：知识库管理与交互界面 |
+LinkRag 现由本仓库统一承载：Python 后端（RAG 与全部管理接口）以及 `web/` 下的 React 前端。
+原 [ql-link/LinkRag-Service](https://github.com/ql-link/LinkRag-Service)（Java 管理端）与
+[ql-link/LinkRag-Web](https://github.com/ql-link/LinkRag-Web)（旧前端）已下线，仅作历史参考。
 
 ## 部署 Compose 说明
 
@@ -124,17 +120,17 @@ LinkRag 由三个仓库协作组成：
 | --- | --- |
 | [docker-compose.yml](./docker-compose.yml) | 主机服务器中间件栈：MySQL、Redis、MinIO、Qdrant、Manticore、Loki；生产 RabbitMQ 位于 Cloud 应用栈 |
 | [deploy/host-server/docker-compose.yml](./deploy/host-server/docker-compose.yml) | 主机服务器中间件栈的 deploy 目录版本 |
-| [deploy/cloud-server/docker-compose.yml](./deploy/cloud-server/docker-compose.yml) | 云服务器生产栈：RabbitMQ、Java、Python RAG、Web、Promtail |
+| [deploy/cloud-server/docker-compose.yml](./deploy/cloud-server/docker-compose.yml) | 云服务器生产栈：RabbitMQ、Python 后端、Web、Promtail |
 | [deploy/cloud-server/data-compose.yml](./deploy/cloud-server/data-compose.yml) | 云服务器生产数据栈：MySQL、Redis、MinIO、Qdrant、Manticore、Loki |
 | [deploy/docker-compose.yml](./deploy/docker-compose.yml) | 保留的 Python RAG 单服务部署入口 |
 
-日志拓扑：Loki 部署在主机服务器；Promtail 跟随云服务器应用部署，读取 Java/Python 本机日志并通过 VPN 推送到 Loki。
+日志拓扑：Loki 部署在主机服务器；Promtail 跟随云服务器应用部署，读取 Python 本机日志并通过 VPN 推送到 Loki。
 
 ## 架构导览
 
-LinkRag 以本仓的 Python RAG 服务为核心，前端与 Java 管理端在业务侧协作，通过消息队列与 RAG 服务异步集成，数据落在共享基础设施。整体结构见文首总览图。
+LinkRag 由本仓的 Python 后端与 `web/` 前端组成：前端经 Nginx 调用 Python 管理与问答接口，解析任务通过消息队列异步执行，数据落在共享基础设施。整体结构见文首总览图（图中 Java 管理端已下线）。
 
-- **外部协作边界**：前端与 Java 管理端负责业务编排，只通过消息队列与 RAG 服务交互（Java 下发 `parse_task` 触发解析，解析终态写入共享数据库、由业务侧轮询读取），不直接耦合解析实现。
+- **内部协作边界**：管理接口下发 `parse_task` 触发解析，解析终态写入共享数据库、由前端轮询读取，管理层不直接耦合解析实现。
 - **本仓内部主链路**：文档接入 → 解析 → Markdown → 分片 → 向量化 → 索引/召回，状态由 MySQL 维护以支持失败补偿与一致性恢复。
 
 ### 解析流水线

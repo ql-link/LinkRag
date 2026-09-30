@@ -72,3 +72,40 @@ def test_dev_base_config_targets_isolated_dev_resources() -> None:
     assert env["MANTICORE_BM25_TABLE_PREFIX"] == "dev_bm25_ds_v2"
     assert env["MINIO_RAW_BUCKET"] == "tolink-dev-raw"
     assert env["MINIO_PRIVATE_BUCKET"] == "tolink-dev-docs"
+
+
+def test_java_service_is_retired_from_deployments() -> None:
+    import yaml
+
+    for rel in ("deploy/dev-server/docker-compose.yml", "deploy/cloud-server/docker-compose.yml"):
+        services = yaml.safe_load((ROOT / rel).read_text(encoding="utf-8"))["services"]
+        assert "tolink-service" not in services, rel
+        assert services["linkrag-web"]["depends_on"] == ["tolink-rag"], rel
+
+    dev_rag = yaml.safe_load((ROOT / "deploy/dev-server/docker-compose.yml").read_text(encoding="utf-8"))[
+        "services"
+    ]["tolink-rag"]
+    env = dev_rag["environment"]
+    assert "B1_JAVA_AUTH_BASE_URL" not in env
+    assert env["B1_ACCESS_JWT_PRIVATE_KEY_PATH"] == "/run/secrets/java-access-jwt-private.pem"
+    assert any(v.endswith(":/run/secrets/java-access-jwt-private.pem:ro") for v in dev_rag["volumes"])
+
+    nginx = (ROOT / "deploy/dev-server/nginx.conf").read_text(encoding="utf-8")
+    assert "tolink-dev-service" not in nginx
+    assert "proxy_pass http://tolink-dev-rag:8000;" in nginx
+
+
+def test_web_is_built_from_this_repository() -> None:
+    source = (ROOT / "deploy/dev-server/build-component-on-primary.sh").read_text(encoding="utf-8")
+    web = source[source.index("  web)\n") : source.index(";;", source.index("  web)\n"))]
+    assert "github_repo=LinkRag\n" in web
+    assert "service)" not in source
+    assert '-v "$source_dir/web:/workspace"' in source
+    assert 'docker build -t "$image_name:$image_tag" "$source_dir/web"' in source
+
+    assert (ROOT / "web/Dockerfile").is_file()
+    assert "proxy_pass http://tolink-rag:8000;" in (ROOT / "web/deploy/nginx.default.conf").read_text(
+        encoding="utf-8"
+    )
+    assert _read_env(ROOT / "web/.env.production")["VITE_USE_MOCK"] == "false"
+    assert "web" in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()

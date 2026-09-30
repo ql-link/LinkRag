@@ -26,7 +26,7 @@
 | --- | --- |
 | `docker-compose.yml` | 主机服务器中间件栈，作为当前主机部署入口 |
 | `deploy/host-server/docker-compose.yml` | 主机服务器中间件栈的 deploy 目录版本 |
-| `deploy/cloud-server/docker-compose.yml` | 云服务器生产栈：RabbitMQ、Java、Python RAG、Web、Promtail |
+| `deploy/cloud-server/docker-compose.yml` | 云服务器生产栈：RabbitMQ、Python 后端、Web、Promtail |
 | `deploy/cloud-server/data-compose.yml` | 云服务器生产数据栈：MySQL、Redis、MinIO、Qdrant、Manticore、Loki |
 | `deploy/docker-compose.yml` | 保留的 Python RAG 单服务部署入口 |
 | `deploy/dev-server/docker-compose.yml` | Primary 开发栈：隔离的 MySQL、Redis、RabbitMQ、Qdrant、Manticore、Loki，以及 dev 应用 |
@@ -43,7 +43,7 @@ Compose 按基础文件、密钥文件的顺序加载，后者覆盖前者中的
 生产 Jenkins 运行在 Primary，只负责 checkout、可选测试和打包精确 Git 提交；随后通过专用 SSH
 密钥把源码归档和云端发布脚本传到 Cloud。镜像构建、Alembic 迁移、Compose 切换和健康检查都在
 Cloud 执行，避免 Jenkins 迁移后误用 Primary 的开发 Docker 环境。云端发布显式使用 Compose 项目
-`linkrag-production`，且只更新 `tolink-rag` 服务，不清理同项目中的 Java、Web、RabbitMQ 或
+`linkrag-production`，且只更新 `tolink-rag` 服务，不清理同项目中的 Web、RabbitMQ 或
 Promtail 容器。
 
 生产作业的 SCM 固定只拉取 `master`，启用 depth 1 浅克隆、禁用 tag，并把 checkout 超时设为
@@ -69,9 +69,6 @@ install -m 0600 /path/to/.env.production.local \
 发布前还会校验生产网络、端口占用、磁盘空间和 Compose 配置；切换后必须同时通过 `/health` 与
 `/ready`。若新容器无法就绪，脚本会恢复上一个镜像及其基础配置；已经成功执行的数据库迁移保持
 前向状态，不执行 downgrade。
-Java 的 `application-prod.yml` 随镜像发布，并通过 `spring.config.import` 加载服务器上的
-`application-prod-local.yml`；Cloud Compose 只读挂载该密钥文件，不再用服务器目录覆盖镜像中的
-基础配置。
 
 生产 RAG 通过 Cloud `tolink-app-net` 内的容器 DNS `tolink-qdrant:6333` 访问独立 Qdrant，
 Qdrant 不映射宿主机端口。RabbitMQ 与生产应用同机部署，容器名 `tolink-rabbitmq`。管理端口只绑定 Cloud 回环地址；AMQP
@@ -99,52 +96,46 @@ docker compose --env-file .env.dev up -d mysql redis rabbitmq qdrant manticore l
 docker compose --env-file .env.dev --profile apps up -d
 ```
 
-开发服务使用各项目既有的开发 profile：Python 设置 `APP_ENV=development`，并从
-`/opt/tolink/dev/config/rag/.env.development` 加载可提交的基础配置，再由权限为 `600` 的
-`.env.development.local` 注入账号、密码、JWT 与 API Key。Java 设置
-`SPRING_PROFILES_ACTIVE=dev`，挂载 `/opt/tolink/dev/config/service/`，其中
-`application-dev.yml` 是可提交基础配置，`application-dev-local.yml` 只保存敏感字段并由前者导入。
-Compose 和构建迁移任务都按“基础配置 → 本机密钥覆盖”的顺序加载，两个 `.local` 文件不得进入
+开发服务设置 `APP_ENV=development`，并从 `/opt/tolink/dev/config/rag/.env.development` 加载
+可提交的基础配置，再由权限为 `600` 的 `.env.development.local` 注入账号、密码、JWT 与 API Key。
+Compose 和构建迁移任务都按“基础配置 → 本机密钥覆盖”的顺序加载，`.local` 文件不得进入
 Git 或 Docker 镜像。开发环境的基础配置固定指向 `tolink-dev-*` 隔离资源，避免误连生产环境。
-部署时 Compose 会把 RAG/Java 的非密钥连接地址覆盖为开发网络内的容器 DNS；本地 IDE 仍可使用
-`.env.development` / `application-dev.yml` 中的 Tailscale 地址与开发端口。
+部署时 Compose 会把非密钥连接地址覆盖为开发网络内的容器 DNS；本地 IDE 仍可使用
+`.env.development` 中的 Tailscale 地址与开发端口。
+
+Java 管理端已下线，Python 是唯一后端：
+- 登录令牌由 Python 签发（`B1_PYTHON_ISSUER_ENABLED`、`B1_JAVA_PROTECTED_ROUTES_RETIRED` 为 `true`），
+  私钥 `/opt/tolink/dev/config/auth/java-access-jwt-private.pem` 只读挂载进 RAG 容器；
+  文件名沿用旧名称，以免旧登录态失效。
+- B2–B10 管理写入开关在 Dev Compose 中默认开启，可在 `.env.dev` 中逐项设为 `false` 排障。
+- B5 上传执行器通过 Python 自身的内部文件接口读取原始文件，令牌
+  `B5_INTERNAL_FILE_SERVICE_TOKEN` 由 `configure-dev-env.sh` 生成并写入 `.env.development.local`。
+- Web Nginx（`deploy/dev-server/nginx.conf`）把 `/api/` 全部转发到 `tolink-dev-rag:8000`。
 
 当前业务 Queue 名由代码常量固定。开发环境使用独立 vhost `/tolink-dev` 与独立 RabbitMQ 数据卷，
 生产使用 `/tolink-prod`，两套环境不共享 Broker 或凭据。开发 Loki 独立保存日志并保留 7 天。
 
-Cloud Jenkins 使用三个独立 dev 作业：`linkrag-rag-dev`、`linkrag-service-dev`、
-`linkrag-web-dev`。Jenkins 只负责调度和保留日志，三个作业均通过 Tailscale SSH 在 Primary
-拉取对应仓库的 `dev` 分支、构建镜像并部署，镜像使用 `dev-b<build>` 标签；现有 `master`
-生产作业保持不变。Primary 通过构建锁避免三个开发作业同时占用 Docker 构建资源。
+Cloud Jenkins 使用两个独立 dev 作业：`linkrag-rag-dev`、`linkrag-web-dev`（原
+`linkrag-service-dev` 已随 Java 下线停用）。Jenkins 只负责调度和保留日志，两个作业均通过
+Tailscale SSH 在 Primary 拉取本仓库的 `dev` 分支、构建镜像并部署，镜像使用 `dev-b<build>` 标签；
+Web 作业在 `web/` 子目录执行 `npm ci`、typecheck、测试与构建，再用 `web/Dockerfile` 打包 Nginx 镜像。
+Primary 通过构建锁避免两个开发作业同时占用 Docker 构建资源。
 其中 `linkrag-rag-dev` 在启动新 RAG 容器前自动执行 Alembic，固定加载
 `.env.development` + `.env.development.local`，并输出最终 revision；迁移失败时不会部署新镜像。
-
-B9/B10 的 Dev 路由切换须在新版 Python 镜像就绪后进行。先确认容器内
-`B1_JAVA_AUTH_BASE_URL=http://tolink-dev-service:8080`、Java 公钥及 PUBLIC 桶配置可用，
-再在 `.env.dev` 中启用 `B9_BLOG_WRITES_ENABLED=true` 和
-`B10_FEEDBACK_WRITES_ENABLED=true` 并重建 RAG 容器。基础 `nginx.conf` 继续指向 Java；
-发布脚本只把候选 `nginx-b9-b10.conf` 放到 Dev 主机，不会提前启用。待新 Python 直连接口验收后，
-备份 Dev 主机当前 `nginx.conf`，安装候选配置，以 `nginx -t` 校验后重载 Web Nginx。
-切换后通过 Web 网关验证公开博客、匿名反馈、管理员博客与反馈读写以及 Java 登录态。
-回退时先恢复备份的 Nginx 配置并重载，再关闭两个 Python 写入开关；共享数据库记录和
-PUBLIC 桶对象不做回滚删除。
 
 执行前会校验迁移容器实际连接目标必须是
 `development / tolink-dev-mysql:3306 / tolink_rag_dev`，不满足时直接阻断。宿主机暴露的
 `100.86.10.52:13306` 只用于 Tailscale 客户端访问，不是容器内 Alembic 的连接地址。
 0036 升级时优先复用库内已有的六类系统密文；只有全新开发库或能力不完整时，才使用部署任务
 自动生成的 dev-only 密文，避免日常 dev 发布覆盖已有可用 Key。
-Java 开发镜像使用 `deploy/dev-server/Dockerfile.service` 构建；Maven 下载设置请求超时，Docker
-构建失败时最多自动重试三次，并复用 BuildKit 的 `.m2` 缓存，避免单条公网连接长期挂起。
 Web 构建把 npm 缓存持久化到 `/opt/tolink/dev/jenkins/npm-cache`，`npm ci` 设置超时并最多重试三次；
 安装失败会立即终止，不再继续执行 typecheck、测试和打包。
 公网源码下载不稳定时，可将完整 tar 包预置到
 `/opt/tolink/dev/jenkins/incoming/<workspace>-dev.tgz`；下一次对应构建会校验并消费该文件，随后仍在
 Primary 完成镜像构建。
 
-`linkrag-service-dev` 完成 Service 容器重建后，会额外强制重建 `linkrag-web`。这是为了刷新 Web
-Nginx 对 Service 容器 DNS 的解析，避免前端经 `/api/` 访问刚重建的 Service 时继续命中旧容器 IP 而返回
-502；因此一次 Service Dev 部署会同时触发 Web 容器重建。
+`linkrag-rag-dev` 完成 RAG 容器重建后，会额外强制重建 `linkrag-web`，刷新 Web Nginx 对 RAG 容器
+DNS 的解析，避免前端经 `/api/` 访问刚重建的后端时命中旧容器 IP 而返回 502。
 
 ## 启动顺序
 
@@ -182,8 +173,8 @@ uvicorn src.main:app --host 0.0.0.0 --port 8000
 
 常见失败：
 
-- **应用启动卡在 RabbitMQ**：检查 `MQ_VENDOR=rabbitmq`、`RABBITMQ_URL` 的 vhost URL 编码、Java `RABBITMQ_*` 配置和 Broker health；容器内使用 Compose DNS，不走宿主机管理端口。
-- **API 调用 LLM 报解密失败**：`API_KEY_ENCRYPTION_SECRET` 必须与 Java 管理端的加密 Secret 一致，否则 `llm_model_config.api_key` 密文无法解密。
+- **应用启动卡在 RabbitMQ**：检查 `MQ_VENDOR=rabbitmq`、`RABBITMQ_URL` 的 vhost URL 编码和 Broker health；容器内使用 Compose DNS，不走宿主机管理端口。
+- **API 调用 LLM 报解密失败**：`API_KEY_ENCRYPTION_SECRET` 必须与写入 `llm_model_config.api_key` 时使用的 Secret 一致（历史数据由 Java 写入，沿用原 Secret），否则密文无法解密。
 - **解析任务消费不到**：运行 `rabbitmqctl list_queues name messages_ready messages_unacknowledged consumers`，确认同名 Queue 已声明且消费者数大于 0。
 
 ## 生产部署注意事项
@@ -201,7 +192,7 @@ uvicorn src.main:app --host 0.0.0.0 --port 8000
 1. **外部依赖托管化**：MySQL、RabbitMQ、MinIO/S3、Qdrant 使用云厂商托管或独立部署，应用容器只跑 FastAPI 进程。
 2. **配置外部化**：`.env` 通过 Secret Manager（如 K8s Secret、Vault）注入，不打进镜像。
 3. **多副本与扩缩容**：FastAPI 进程可水平扩展；RabbitMQ 同一 Queue 的多个消费者采用竞争消费，使用 prefetch 控制单消费者在途任务数。
-4. **拓扑初始化**：Java/Python 使用完全一致的 durable Queue、DLX 和 DLT 参数幂等声明，禁止单独手工创建参数不同的同名 Queue。
+4. **拓扑初始化**：Python 启动时幂等声明 durable Queue、DLX 和 DLT，禁止单独手工创建参数不同的同名 Queue。
 5. **Manticore 高可用**：BM25 固定依赖 Manticore；根 Compose 仅为单节点，不具备生产 HA。生产部署前必须另行完成副本/备份、故障恢复演练与容量压测。
 6. **Qdrant 单 collection 切换**：历史向量无需保留时，先停止写入并删除旧 bucket collections，再部署使用 `CHUNK_INDEX_COLLECTION_NAME` 的应用，由首次 dense/sparse 写入创建统一业务 collection。操作后需验证 Qdrant、Manticore、RAG readiness 和一次真实解析/召回链路。
 

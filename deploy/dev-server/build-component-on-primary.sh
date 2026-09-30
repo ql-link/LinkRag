@@ -21,22 +21,16 @@ case "$component" in
     tag_key=RAG_TAG
     compose_service=tolink-rag
     ;;
-  service)
-    github_repo=LinkRag-Service
-    workspace_name=toLink-Service
-    image_name=tolink-service
-    tag_key=SERVICE_TAG
-    compose_service=tolink-service
-    ;;
   web)
-    github_repo=LinkRag-Web
+    # 前端与后端同仓：拉取 LinkRag 仓库，在 web/ 子目录构建
+    github_repo=LinkRag
     workspace_name=LinkRag-Web
     image_name=linkrag-web
     tag_key=WEB_TAG
     compose_service=linkrag-web
     ;;
   *)
-    echo "usage: $0 {rag|service|web} BUILD_NUMBER" >&2
+    echo "usage: $0 {rag|web} BUILD_NUMBER" >&2
     exit 2
     ;;
 esac
@@ -90,28 +84,10 @@ case "$component" in
   rag)
     DOCKER_BUILDKIT=1 docker build -t "$image_name:$image_tag" "$source_dir"
     ;;
-  service)
-    # Maven Central occasionally leaves an established connection without
-    # returning data on the Primary route. Bound each request and retry the
-    # Docker build; BuildKit keeps the downloaded .m2 cache between attempts.
-    for attempt in 1 2 3; do
-      if DOCKER_BUILDKIT=1 docker build \
-        -f "$dev_root/Dockerfile.service" \
-        -t "$image_name:$image_tag" "$source_dir"; then
-        break
-      fi
-      if [[ "$attempt" == 3 ]]; then
-        echo "[service] Docker build failed after $attempt attempts" >&2
-        exit 1
-      fi
-      echo "[service] Docker build attempt $attempt failed; retrying with cached dependencies" >&2
-      sleep 5
-    done
-    ;;
   web)
     install -d -m 700 "$jenkins_root/npm-cache"
     docker run --rm -u 0:0 \
-      -v "$source_dir:/workspace" \
+      -v "$source_dir/web:/workspace" \
       -v "$jenkins_root/npm-cache:/root/.npm" \
       -w /workspace node:20-alpine sh -lc '
         set -eu
@@ -133,7 +109,7 @@ case "$component" in
         npm run test
         VITE_GITHUB_URL=https://github.com/ql-link/LinkRag npm run build
       '
-    docker build -t "$image_name:$image_tag" "$source_dir"
+    docker build -t "$image_name:$image_tag" "$source_dir/web"
     ;;
 esac
 
@@ -150,8 +126,7 @@ update_tag() {
 
 if [[ "$component" == rag ]]; then
   config_source="$source_dir/deploy/dev-server"
-  for name in Dockerfile.service loki-config.yml promtail-config.yml nginx.conf \
-    nginx-b9-b10.conf \
+  for name in loki-config.yml promtail-config.yml nginx.conf \
     configure-dev-env.sh \
     generate-dev-llm-migration-inputs.py; do
     install -m 600 "$config_source/$name" "$dev_root/$name"
@@ -172,13 +147,6 @@ if [[ "$component" == rag ]]; then
   install -d -m 700 "$dev_root/config/rag"
   install -m 0644 "$source_dir/.env.development" "$dev_root/config/rag/.env.development"
   "$dev_root/configure-dev-env.sh"
-elif [[ "$component" == service ]]; then
-  install -d -m 700 "$dev_root/config/service"
-  if [[ -f "$source_dir/link-api/src/main/resources/application-dev.yml" ]]; then
-    install -m 0644 "$source_dir/link-api/src/main/resources/application-dev.yml" \
-      "$dev_root/config/service/application-dev.yml"
-  fi
-  "$dev_root/configure-dev-env.sh"
 fi
 
 update_tag "$tag_key" "$image_tag"
@@ -188,10 +156,6 @@ case "$component" in
   rag)
     required_dev_config=${RAG_DEV_ENV_FILE:-$dev_root/config/rag/.env.development}
     required_secret_config=${RAG_DEV_SECRET_ENV_FILE:-$dev_root/config/rag/.env.development.local}
-    ;;
-  service)
-    required_dev_config=${SERVICE_DEV_CONFIG_FILE:-$dev_root/config/service/application-dev.yml}
-    required_secret_config=${SERVICE_DEV_SECRET_CONFIG_FILE:-$dev_root/config/service/application-dev-local.yml}
     ;;
   *)
     required_dev_config=
@@ -237,10 +201,10 @@ fi
 
 docker compose --env-file .env.dev --profile apps up -d "$compose_service"
 
-# Service 重建后容器 IP 可能变化；刷新 Web Nginx，避免其 worker 继续使用旧的
-# Docker DNS 解析结果，导致前端通过 /api/ 访问 Service 时返回 502。
-if [[ "$component" == service ]]; then
-  echo "[$component] refresh web proxy after service redeploy"
+# RAG 重建后容器 IP 可能变化；刷新 Web Nginx，避免其 worker 继续使用旧的
+# Docker DNS 解析结果，导致前端通过 /api/ 访问后端时返回 502。
+if [[ "$component" == rag ]] && docker inspect tolink-dev-web >/dev/null 2>&1; then
+  echo "[$component] refresh web proxy after rag redeploy"
   docker compose --env-file .env.dev --profile apps up -d --force-recreate linkrag-web
 fi
 
@@ -248,36 +212,24 @@ case "$component" in
   rag)
     health_url=http://100.86.10.52:18000/health
     ;;
-  service)
-    health_url=http://100.86.10.52:18081/
-    ;;
   web)
     health_url=http://100.86.10.52:18080/
     ;;
 esac
 
 for _ in $(seq 1 60); do
-  if [[ "$component" == service ]]; then
-    http_code=$(curl -sS -o /dev/null -w '%{http_code}' "$health_url" || true)
-    [[ "$http_code" != 000 ]] && break
-  elif curl -fsS "$health_url" >/dev/null; then
+  if curl -fsS "$health_url" >/dev/null; then
     break
   fi
   sleep 5
 done
 
 container_name="tolink-dev-$component"
-[[ "$component" == service ]] && container_name=tolink-dev-service
 if ! docker inspect -f '{{.State.Running}}' "$container_name" 2>/dev/null | grep -qx true; then
   docker logs --tail 150 "$container_name" || true
   exit 1
 fi
 
-if [[ "$component" == service ]]; then
-  http_code=$(curl -sS -o /dev/null -w '%{http_code}' "$health_url" || true)
-  [[ "$http_code" != 000 ]] || exit 1
-else
-  curl -fsS "$health_url" >/dev/null
-fi
+curl -fsS "$health_url" >/dev/null
 
 echo "[$component] deployed $image_name:$image_tag on Primary"
