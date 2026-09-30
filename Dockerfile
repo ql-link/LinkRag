@@ -23,9 +23,12 @@ RUN sed -i 's|http://deb.debian.org|https://mirrors.aliyun.com|g; s|https://deb.
         tzdata \
     && rm -rf /var/lib/apt/lists/*
 
+# 默认走国内镜像；启用构建代理时由构建脚本改为官方 PyPI（经代理访问）。
+ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
+
 # pip 自身的升级与项目依赖声明无关，单独缓存；只有基础镜像或系统库层变化时重跑。
 RUN --mount=type=cache,id=tolink-rag-pip,target=/root/.cache/pip,sharing=locked \
-    pip install --upgrade pip -i https://mirrors.aliyun.com/pypi/simple
+    pip install --upgrade pip -i "${PIP_INDEX_URL}"
 
 # 依赖层只以 pyproject.toml 为业务输入：用占位 src/README 满足构建后端。
 # README、业务代码、迁移和部署文件都在依赖层之后拷入，修改它们不会重装依赖。
@@ -35,7 +38,7 @@ RUN mkdir -p src && touch src/__init__.py README.md
 # requirements.lock 约束全部传递依赖的版本，避免解析到未验证的新版本并在慢网络下长时间回溯下载。
 RUN --mount=type=cache,id=tolink-rag-pip,target=/root/.cache/pip,sharing=locked \
     pip install '.[mq-all,pretokenization]' -c requirements.lock \
-      -i https://mirrors.aliyun.com/pypi/simple --timeout 120
+      -i "${PIP_INDEX_URL}" --timeout 120
 
 # 再拷入真实源码与其余文件（迁移、脚本、alembic 配置等）；
 # 这层变动不影响上面的依赖层缓存。运行时 uvicorn 从 /app/src 直接加载。

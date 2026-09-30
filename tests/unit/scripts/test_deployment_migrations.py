@@ -158,7 +158,13 @@ def test_build_proxy_is_opt_in_and_scoped_to_builds() -> None:
         assert '"${build_proxy_args[@]}"' not in source.replace('${build_proxy_args[@]+"${build_proxy_args[@]}"}', ""), rel
         assert "export HTTP_PROXY" not in source and "daemon.json" not in source, rel
 
+        # 国内镜像在代理规则中直连，启用代理时必须切到官方源才能提速。
+        assert '--build-arg "PIP_INDEX_URL=https://pypi.org/simple"' in source, rel
+        assert "npm_registry=https://registry.npmjs.org" in source, rel
+
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple" in dockerfile
+    assert dockerfile.count('-i "${PIP_INDEX_URL}"') == 2
     assert "pip install '.[mq-all,pretokenization]'" in dockerfile
     assert "'.[all]'" not in dockerfile
 

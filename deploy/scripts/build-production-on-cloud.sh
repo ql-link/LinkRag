@@ -123,6 +123,8 @@ RABBITMQ_APP_ENV_FILE="${rabbitmq_env}" \
 # 代理端（Clash rule 模式）负责只转发境外流量；NO_PROXY 再显式排除国内镜像与内网地址。
 build_proxy_args=()
 build_proxy_env=()
+# 国内镜像在代理规则中直连、不会提速；启用代理时改用官方源，经代理下载。
+npm_registry=https://registry.npmmirror.com
 if [[ -f /opt/tolink/build-proxy.env ]]; then
   BUILD_PROXY=$(sed -n 's/^BUILD_PROXY=//p' /opt/tolink/build-proxy.env | tail -1)
   if [[ "${BUILD_PROXY}" =~ ^http://[A-Za-z0-9._-]+:[0-9]+$ ]]; then
@@ -135,6 +137,8 @@ if [[ -f /opt/tolink/build-proxy.env ]]; then
       build_proxy_args+=(--build-arg "${name}=${build_no_proxy}")
       build_proxy_env+=(-e "${name}=${build_no_proxy}")
     done
+    build_proxy_args+=(--build-arg "PIP_INDEX_URL=https://pypi.org/simple")
+    npm_registry=https://registry.npmjs.org
     echo "build proxy enabled for this build: ${BUILD_PROXY}"
   else
     echo "ignore invalid BUILD_PROXY in /opt/tolink/build-proxy.env" >&2
