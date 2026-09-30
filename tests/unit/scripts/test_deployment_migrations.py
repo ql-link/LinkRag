@@ -161,3 +161,17 @@ def test_build_proxy_is_opt_in_and_scoped_to_builds() -> None:
     dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     assert "pip install '.[mq-all,pretokenization]'" in dockerfile
     assert "'.[all]'" not in dockerfile
+
+
+def test_runtime_image_installs_with_locked_versions() -> None:
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    assert "COPY pyproject.toml requirements.lock ./" in dockerfile
+    assert "-c requirements.lock" in dockerfile
+
+    lock = {
+        line.split("==", 1)[0].lower().replace("_", "-")
+        for line in (ROOT / "requirements.lock").read_text(encoding="utf-8").splitlines()
+        if line and not line.startswith("#")
+    }
+    # opencv 4.12+ 要求 numpy 2，与 infinity-sdk 冲突；锁文件必须固定两者。
+    assert {"numpy", "opencv-python-headless", "infinity-sdk"} <= lock
