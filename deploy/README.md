@@ -26,7 +26,7 @@
   负责拉取本仓库源码、构建镜像（Web 在 `web/` 子目录构建）、执行必要迁移并部署组件。
 - `configure-dev-env.sh`：根据开发主机上的配置和密钥生成运行时配置；生成的密钥文件不得提交到 Git。
 - `generate-dev-llm-migration-inputs.py`：为开发环境迁移生成 dev-only 的加密输入。
-- `jenkins-*-dev.xml`：两个开发 Jenkins Pipeline 的 Job 定义。
+- `jenkins-linkrag-rag-dev.xml`：开发 Jenkins Pipeline 的 Job 定义（RAG 部署后自动部署前端）。
 - `nginx.conf`：Dev Web 网关，`/api/` 全部转发到 Python 后端。
 
 Java 管理端已下线：Dev / 生产编排中不再包含 `tolink-service`，前端镜像由 `web/Dockerfile` 构建。
