@@ -3,13 +3,16 @@
 
 提供同步解析和异步任务提交两个端点。
 异步任务通过 MQ 中台投递，由消费端异步处理。
+联调调试入口：受 ``DEBUG_ENDPOINTS_ENABLED`` 开关（默认关闭，404）与 ADMIN 鉴权双重保护。
 """
 
 from pathlib import Path
 
-from fastapi import APIRouter, UploadFile, File, Form, HTTPException
+from fastapi import APIRouter, Depends, UploadFile, File, Form, HTTPException
 from loguru import logger
 
+from src.api.java_access_auth import require_admin
+from src.api.route_guards import require_debug_endpoints_enabled
 from src.config import settings
 from src.core.parse_task_service import ParseTaskService
 from src.services.mq_service import MQService
@@ -21,6 +24,8 @@ from src.api.schemas.parse import TaskSubmitRequest, TaskSubmitResponse
 router = APIRouter(
     prefix="/api/v1/parser",
     tags=["文档解析"],
+    # 调试入口：开关关闭时 404；开启后仍要求 ADMIN。
+    dependencies=[Depends(require_debug_endpoints_enabled), Depends(require_admin)],
 )
 
 

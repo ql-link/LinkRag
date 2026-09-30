@@ -31,6 +31,10 @@ class Settings(BaseSettings):
     APP_PORT: int = 8000
     LOG_LEVEL: str = "INFO"
     APP_ENV: str = "development"
+    # 服务端到服务端内部接口（/api/v1/internal/llm/*）的 Bearer 令牌；未配置时内部接口一律 401。
+    INTERNAL_API_TOKEN: Optional[str] = None
+    # /api/v1/mq/*、/api/v1/parser/* 联调调试入口；默认关闭（404），开启后仍要求 ADMIN。
+    DEBUG_ENDPOINTS_ENABLED: bool = False
 
     # 日志文件落盘（对齐 Java 端：logs/<YYYY-MM-DD>/<service>.log + <service>-error.log）。
     # 每天 0 点切分，按目录归档；保留 LOG_RETENTION_DAYS 天后自动清理。
@@ -595,7 +599,7 @@ class Settings(BaseSettings):
     PARSE_TEMP_DIR: str = "/tmp/tolink-rag-parse"
 
     STORAGE_TYPE: str = "minio"  # 当前仅 minio 可用；oss 占位会在启动时拒绝
-    # 通用上传在 Java 中允许匿名调用；权限矩阵确认与网关切流前保持关闭。
+    # 通用上传入口要求登录（Java 旧行为允许匿名，Python 已收紧）；开关仍控制是否接流量。
     B2_GENERIC_UPLOAD_ENABLED: bool = False
     B2_PUBLIC_PREVIEW_ENABLED: bool = False
     # B3 写入切流前，Java 必须是唯一模型配置写入者。

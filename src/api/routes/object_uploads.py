@@ -1,16 +1,21 @@
-"""Compatibility endpoint for Java's generic OSS upload contract."""
+"""Compatibility endpoint for Java's generic OSS upload contract.
+
+Uploads require a logged-in user (Java allowed anonymous calls); public preview stays anonymous.
+"""
 
 import asyncio
 import mimetypes
 import os
 import tempfile
 from pathlib import Path
+from typing import Annotated
 
 from botocore.exceptions import ClientError  # type: ignore[import-untyped]
-from fastapi import File, UploadFile
+from fastapi import Depends, File, UploadFile
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
 
+from src.api.management_auth import CurrentUser, require_login
 from src.api.management_http import BusinessError, ManagementRouter, success
 from src.application.object_uploads import RULES, upload_object
 from src.config import settings
@@ -61,7 +66,11 @@ async def preview_public_object(object_key: str):
 
 
 @router.post("/{biz_type}")
-async def upload(biz_type: str, file: UploadFile = File(...)):
+async def upload(
+    biz_type: str,
+    _user: Annotated[CurrentUser, Depends(require_login)],
+    file: UploadFile = File(...),
+):
     if not settings.B2_GENERIC_UPLOAD_ENABLED:
         raise BusinessError(503, "通用上传入口尚未切流", 503)
     # Check the type before reading unbounded user input. Business validation still

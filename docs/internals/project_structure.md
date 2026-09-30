@@ -89,7 +89,7 @@ toLink-Rag/                         # 仓库根目录
 │   │   ├── management_http.py   # Java 管理接口响应与异常边界
 │   │   ├── recall_concurrency.py  # RAG Redis 并发保护（不参与 token 验证）
 │   │   ├── routes/               # 路由层
-│   │   │   ├── internal.py        # Java 管理端内部 LLM 配置/用量接口
+│   │   │   ├── internal.py        # 服务端内部 LLM 配置/用量接口（INTERNAL_API_TOKEN）
 │   │   │   ├── identity_users.py  # B1 身份与用户入口
 │   │   │   ├── object_uploads.py  # B2 通用对象上传入口
 │   │   │   ├── model_configs.py   # B3 USER 模型配置入口

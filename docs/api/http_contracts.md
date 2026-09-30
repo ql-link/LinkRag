@@ -10,8 +10,10 @@
 - 普通 JSON 响应通常使用 `{code, message, data}` 或模块自定义响应模型。
 - 解析和 MQ 路由异常通常返回 HTTP `500`，`detail` 为异常文本。
 - LLM 路由在业务异常中多返回 `APIResponse(code=500, message=..., data=null)`。
-- LLM 用户级接口要求请求头 `X-User-Id`。
-- 内部 LLM 配置和用量接口为 Java 管理端内部使用，不应直接暴露给公网。
+- 路由鉴权覆盖由 `tests/unit/api/test_route_auth_coverage.py` 强制：每条路由必须挂载鉴权依赖，或登记在匿名白名单中。
+- `/api/v1/llm/{generate,generate/stream,embed,rerank,ocr}` 要求 `Authorization: Bearer <access-token>`，用户身份只取自 token；不再接受自报的 `X-User-Id`。
+- `/api/v1/internal/llm/*` 仅供服务端调用：要求 `Authorization: Bearer <INTERNAL_API_TOKEN>`，未配置令牌时一律 `401`；令牌通过后才信任 `X-User-Id`。公网 nginx 对 `/api/v1/internal/` 返回 `404`。
+- `/api/v1/parser/*`、`/api/v1/mq/*` 为联调调试入口：`DEBUG_ENDPOINTS_ENABLED=false`（默认）时返回 `404`；开启后仍要求 ADMIN 的 `Authorization: Bearer <access-token>`。
 
 ### B1 身份与用户接口（按路径切流）
 
@@ -26,7 +28,7 @@
 | GET / PATCH | `/api/v1/user/profile` | 登录用户 | 读取/更新当前用户资料；可修改 `nickname,email,phone,avatarUrl,bio(≤200),team(≤64)`（`bio`/`team` 传空白串即清空），响应分别为资料对象/`null`。 |
 | POST | `/api/v1/user/password` | 登录用户 | `{currentPassword,newPassword(≥8)}`；当前密码错误 `20008`（400），新旧相同 `20009`（400）。成功后该用户**此前签发的全部 token 失效**（Redis `auth:access:not-before:{user_id}`，按 JWT `iat` 判断，同一秒内签发的旧 token 可能保留至下一秒），并返回为当前客户端新签发的 token（响应同登录）。需启用 Python 签发。 |
 | POST | `/api/v1/user/avatar` | 登录用户 | multipart `file`；按文件后缀允许 jpg/jpeg/png/gif/webp，最大 5 MiB，返回更新后的资料对象；格式/大小错误码 40001，上传失败码 50002。 |
-| POST | `/api/v1/oss-files/{bizType}` | Java 现行为匿名；Python 入口默认关闭 | multipart `file`；六类规则见对象存储内部文档。PUBLIC 返回公开 URL，RAW/PRIVATE 返回 key。需确认权限矩阵后设置 `B2_GENERIC_UPLOAD_ENABLED=true` 并按路径切流；关闭时返回 503。 |
+| POST | `/api/v1/oss-files/{bizType}` | 登录用户（`satoken`；Java 旧行为为匿名，Python 已收紧）；入口默认关闭 | multipart `file`；六类规则见对象存储内部文档。PUBLIC 返回公开 URL，RAW/PRIVATE 返回 key。需确认权限矩阵后设置 `B2_GENERIC_UPLOAD_ENABLED=true` 并按路径切流；关闭时返回 503。 |
 | GET | `/api/v1/oss-files/public/{objectKey}` | 匿名，仅 PUBLIC 桶 | Python 接管此路径且启用 `B2_PUBLIC_PREVIEW_ENABLED` 时，经现有 MinIO 适配器读取公开桶；返回原字节、后缀对应 Content-Type 和 30 天缓存头。非法或不存在 key 返回 404，存储故障返回 503；关闭时返回 503。RAW/PRIVATE 不可由此读取。 |
 | GET | `/api/v1/admin/users` | ADMIN | `page` 默认 1、`size` 默认 10；返回 `items,total,page,pageSize,totalPages`。 |
 | GET | `/api/v1/admin/users?keyword=&role=&status=&sort=&withStats=true` | ADMIN | 管理台列表：`keyword` 匹配用户名 / 昵称 / 邮箱，纯数字或 `#数字` 同时匹配 ID；`role` ADMIN/USER；`status` 0/1；`sort` `created`（默认）/`lastLogin`。带任一筛选或 `withStats=true` 时项额外含 `lastLoginAt,datasetCount,tokens30d`（未删除知识库数、近 30 天总 Token）。 |
@@ -203,13 +205,13 @@ parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权�
 
 | Header | 说明 |
 | --- | --- |
-| `X-User-Id` | 用户 ID，用于读取用户 LLM 配置 |
+| `Authorization` | `Bearer <access-token>`；用户身份取自已验证 token 的 `sub`，用于读取用户 LLM 配置。缺失或无效返回 `401` |
 
 配置解析规则：
 
 - 请求体必须携带正整数 `config_id`，精确读取 `llm_model_config.id`。
 - 不再接受 `config_source`、`model`、`override_model` 等旧路由/覆盖字段，未知字段返回 `422`。
-- resolver 统一校验存在、启用、SYSTEM 或归属 `X-User-Id`，以及 capability 匹配；不读默认指针或环境变量兜底。
+- resolver 统一校验存在、启用、SYSTEM 或归属当前 token 用户，以及 capability 匹配；不读默认指针或环境变量兜底。
 
 | Method | Path | 用途 | 请求 |
 | --- | --- | --- | --- |
@@ -255,6 +257,8 @@ parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权�
 | `GET` | `/providers` | 查询系统级 LLM 厂商 | `provider_type` 可选 |
 | `GET` | `/configs` | 查询用户 LLM 配置 | Header `X-User-Id` |
 | `GET` | `/usage` | 查询用户用量统计 | Header `X-User-Id`，`start_date/end_date` 可选 |
+
+所有接口要求 `Authorization: Bearer <INTERNAL_API_TOKEN>`；未配置令牌或令牌不匹配时返回 `401`。
 
 日期参数格式：`YYYY-MM-DD`。
 

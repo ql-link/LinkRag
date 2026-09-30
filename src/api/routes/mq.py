@@ -2,12 +2,14 @@
 MQ 消息中台 API 路由
 
 提供 MQ 消息发送、厂商信息查询等 HTTP 接口。
-用于 Java 管理端通过 HTTP 触发 Python 侧的 MQ 消息投递。
+联调调试入口：受 ``DEBUG_ENDPOINTS_ENABLED`` 开关（默认关闭，404）与 ADMIN 鉴权双重保护。
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from loguru import logger
 
+from src.api.java_access_auth import require_admin
+from src.api.route_guards import require_debug_endpoints_enabled
 from src.api.schemas.mq import (
     MQResponse,
     MQVendorInfoResponse,
@@ -25,6 +27,8 @@ from src.services.mq_service import MQService
 router = APIRouter(
     prefix="/api/v1/mq",
     tags=["MQ消息中台"],
+    # 调试入口：开关关闭时 404；开启后仍要求 ADMIN。
+    dependencies=[Depends(require_debug_endpoints_enabled), Depends(require_admin)],
 )
 
 
