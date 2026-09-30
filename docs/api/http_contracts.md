@@ -21,16 +21,21 @@
 | --- | --- | --- | --- |
 | POST | `/api/v1/auth/login` | 匿名 | `{account,password}`；返回 `accessToken,tokenType,expiresIn,userId`。仅 Java 受保护路由已退场并显式启用 Python 签发后可用。 |
 | POST | `/api/v1/auth/register` | 匿名 | `{username,password,email}`；创建 `USER` 后自动登录，响应同上。 |
+| POST | `/api/v1/auth/refresh` | 登录用户 | 滑动续期：用仍有效的 `satoken` 换取新 access token（响应同登录），旧 token 随即撤销。需启用 Python 签发。 |
 | POST | `/api/v1/auth/logout` | 可匿名调用 | 无效或缺失 token 幂等返回成功；有效 token 撤销本次登录态，`data:null`，Java 旧会话还通过 Java 登出接口撤销。 |
-| GET / PATCH | `/api/v1/user/profile` | 登录用户 | 读取/更新当前用户资料；可修改 `nickname,email,phone,avatarUrl`，响应分别为资料对象/`null`。 |
+| GET / PATCH | `/api/v1/user/profile` | 登录用户 | 读取/更新当前用户资料；可修改 `nickname,email,phone,avatarUrl,bio(≤200),team(≤64)`（`bio`/`team` 传空白串即清空），响应分别为资料对象/`null`。 |
+| POST | `/api/v1/user/password` | 登录用户 | `{currentPassword,newPassword(≥8)}`；当前密码错误 `20008`（400），新旧相同 `20009`（400）。成功后该用户**此前签发的全部 token 失效**（Redis `auth:access:not-before:{user_id}`，按 JWT `iat` 判断，同一秒内签发的旧 token 可能保留至下一秒），并返回为当前客户端新签发的 token（响应同登录）。需启用 Python 签发。 |
 | POST | `/api/v1/user/avatar` | 登录用户 | multipart `file`；按文件后缀允许 jpg/jpeg/png/gif/webp，最大 5 MiB，返回更新后的资料对象；格式/大小错误码 40001，上传失败码 50002。 |
 | POST | `/api/v1/oss-files/{bizType}` | Java 现行为匿名；Python 入口默认关闭 | multipart `file`；六类规则见对象存储内部文档。PUBLIC 返回公开 URL，RAW/PRIVATE 返回 key。需确认权限矩阵后设置 `B2_GENERIC_UPLOAD_ENABLED=true` 并按路径切流；关闭时返回 503。 |
 | GET | `/api/v1/oss-files/public/{objectKey}` | 匿名，仅 PUBLIC 桶 | Python 接管此路径且启用 `B2_PUBLIC_PREVIEW_ENABLED` 时，经现有 MinIO 适配器读取公开桶；返回原字节、后缀对应 Content-Type 和 30 天缓存头。非法或不存在 key 返回 404，存储故障返回 503；关闭时返回 503。RAW/PRIVATE 不可由此读取。 |
 | GET | `/api/v1/admin/users` | ADMIN | `page` 默认 1、`size` 默认 10；返回 `items,total,page,pageSize,totalPages`。 |
+| GET | `/api/v1/admin/users?keyword=&role=&status=&sort=&withStats=true` | ADMIN | 管理台列表：`keyword` 匹配用户名 / 昵称 / 邮箱，纯数字或 `#数字` 同时匹配 ID；`role` ADMIN/USER；`status` 0/1；`sort` `created`（默认）/`lastLogin`。带任一筛选或 `withStats=true` 时项额外含 `lastLoginAt,datasetCount,tokens30d`（未删除知识库数、近 30 天总 Token）。 |
+| GET | `/api/v1/admin/users/{user_id}` | ADMIN | 资料 + `lastLoginAt` + `stats{datasetCount,fileCount,fileBytes,conversationCount,conversations30d,promptTokens30d,completionTokens30d,tokens30d,modelConfigCount,modelProviders[]}` + `datasets[{id,name,status,fileCount,fileBytes,updatedAt}]` + `recentLogins[{time,success,source,reason,ip,userAgent}]`（最近 10 条，成功事件与失败记录按时间合并；`reason` 为 `BAD_PASSWORD`/`DISABLED`；0043 未迁移时仅成功事件且无 IP/UA）。不存在返回 404 / 20001。 |
+| POST | `/api/v1/admin/users/{user_id}/password/reset` | ADMIN | 可选 `{newPassword}`（8–64 位）；不传时生成 12 位临时密码，`data:{temporaryPassword}` 只返回这一次（指定密码时为 null）。该用户此前签发的全部令牌立即失效。与状态修改同受 `B1_JAVA_PROTECTED_ROUTES_RETIRED` 控制，关闭时 503。 |
 | PATCH | `/api/v1/admin/users/{user_id}/status` | ADMIN | `{status:0|1}`；`data:null`。Java 受保护路由退场前返回 503，避免禁用状态与旧会话不一致。 |
 | PATCH | `/api/v1/admin/users/{user_id}/role` | ADMIN | `{role:"ADMIN"|"USER"}`；`data:null`。 |
 
-资料对象字段为 `id,username,nickname,email,phone,avatarUrl,role,status`，不包含密码哈希。用户管理看板仍属 B8。身份模块边界与切流条件见 [identity_users.md](../internals/identity_users.md)。
+资料对象字段为 `id,username,nickname,email,phone,avatarUrl,role,status,bio,team,createdAt`，不包含密码哈希。用户管理看板仍属 B8。身份模块边界与切流条件见 [identity_users.md](../internals/identity_users.md)。
 
 ### B3–B5 管理与知识文件迁移接口（实施中）
 
@@ -40,7 +45,7 @@
 | --- | --- | --- |
 | B3 USER | `GET /api/v1/llm/providers`、`GET /api/v1/llm/configs`、`POST /api/v1/llm/configs/setup-provider`、`PATCH/POST/DELETE /api/v1/llm/configs/{id}/*`、`GET/PUT/DELETE /api/v1/llm/defaults*` | 写入依赖 `B3_CONTROL_WRITES_ENABLED`；现有 Python runtime config cache 写后 fence 失效。 |
 | B3 ADMIN | `/api/v1/admin/llm/configs*`、`/api/v1/admin/providers*`、`/api/v1/admin/provider-models*`、`/api/v1/admin/model-sync-*` | ADMIN 身份从数据库读取；图标上传复用 B2。候选只在审核发布后进入正式目录；0040 尚未在 Dev 执行。 |
-| B4 数据集 | `GET/POST /api/v1/datasets`、`GET/PATCH/DELETE /api/v1/datasets/{id}`、`GET/PUT /api/v1/datasets/{id}/parse-config` | 创建/更新依赖 `B4_DATASET_WRITES_ENABLED`；删除另依赖 `B5_DELETE_WRITES_ENABLED`。 |
+| B4 数据集 | `GET/POST /api/v1/datasets`、`GET/PATCH/DELETE /api/v1/datasets/{id}`、`GET/PUT /api/v1/datasets/{id}/parse-config` | 创建/更新依赖 `B4_DATASET_WRITES_ENABLED`；删除另依赖 `B5_DELETE_WRITES_ENABLED`。列表与详情每项附 `stats:{fileCount,uploadingCount,failedCount,storageBytes,chunkCount}`（未删除文件与 ACTIVE 分块，列表按当前页批量聚合）。PATCH 可传 `status:"ACTIVE"|"DISABLED"` 启停：停用后 RAG / 召回 / Wiki 按既有 `status` 过滤排除该数据集，管理端仍可见可操作。 |
 | B5 文件 | `GET /api/v1/document-file-capabilities`、`GET/POST /api/v1/datasets/{id}/files`、`GET /api/v1/files/recent`、`GET/POST/DELETE /api/v1/files/{id}`、`GET /api/v1/datasets/{id}/files/parse-results` | 上传与解析依赖 `B5_FILE_WRITES_ENABLED`，删除依赖 `B5_DELETE_WRITES_ENABLED`。普通 Markdown 无本地图片引用时按 RAW 原件上传。资源包请求接收 `matchMode`（`FULL_PATH`/`SHALLOW_BASENAME`）、`documentPath`、重复的 `assets`、对应的 `assetRelativePaths` 和可选 `assetInventoryPaths`；响应含 `assetSummary`。上传成功后原件、规范化 Markdown、命中图片和 v1 manifest 均在 RAW 桶，解析仍通过 MQ。能力接口只在文件写入开关启用时宣告资源包支持。 |
 | B5 内部内容 | `GET /api/v1/internal/files/{id}/content` | 仅接受独立服务 Bearer token；浏览器 access JWT 不能代替。 |
 
@@ -54,8 +59,10 @@ B5 解析和删除消息使用 0041 `management_mq_outbox` 同事务记账，再
 | --- | --- | --- |
 | B6 会话 | `POST/GET /api/v1/chat/conversations`、`GET /api/v1/chat/conversations/{id}/messages`、`PATCH/DELETE /api/v1/chat/conversations/{id}` | 创建、分页、标题/置顶更新和删除；轮次由 RAG 运行时直接持久化。 |
 | B6 引用 | `POST /api/v1/knowledge/chunks/batch` | 请求 `{chunkIds:[...]}`；仅返回当前用户可见的 ACTIVE Chunk。 |
+| B6 文件分块 | `GET /api/v1/knowledge/chunks?fileId=&page=&pageSize=` | 按文件分页列出 ACTIVE 分块（`chunk_index` 升序，`pageSize` ≤100）；文件须归当前用户且未删除，否则 404。项字段 `chunkId,fileId,datasetId,index,chunkType,startLine,endLine,content,updatedAt`。 |
 | B7 用量 | `GET /api/v1/llm/usage/{summary,daily,logs,by-model,trend}` | 必传 `startDate,endDate`；前三项 `stage` 默认 `chat`，`all` 表示全链路；日志分页用 `page,pageSize`。 |
 | B8 看板 | `GET /api/v1/admin/users/dashboard?days=7\|30\|90` | 默认 30 日，返回角色/状态分布、新增/活跃与逐日趋势。 |
+| B8 总览 | `GET /api/v1/admin/overview` | 管理台首页计数：`users{total,newThisMonth,active7d{current,previous,growthRate}}`、`models{providers,activeProviderModels,platformConfigs}`、`blog{published,drafts,staleDrafts}`（超过 30 天未更新的草稿）、`feedback{pending}`、`sync{pendingCandidates,failedJobs7d,lastFailure,recentJobs[5]}`；模型同步表未迁移时 `sync` 为 null。 |
 | B8 上传配置 | `GET/PUT /api/v1/admin/document-file-config` | PUT 完整覆盖 `{maxSizeBytes,allowedSuffixes}`；写入默认关闭，需切流后设置 `B8_DOCUMENT_CONFIG_WRITES_ENABLED=true` 且默认指纹一致，Redis 写入成功后生效。 |
 | B8 日志 | `GET /api/v1/admin/logs`、`GET /api/v1/admin/logs/labels` | 日志筛选参数 `service,level,trace_id,keyword,start_time,end_time,page,page_size`；代理 Loki。 |
 
@@ -346,8 +353,39 @@ data: {"answer": "<完整答案>", "hits": [...], "rerank_applied": false, "rank
 - **空命中 / 全部片段缺正文**：不生成，发 `recall_done`（`hits` 可空，同带 `rerank_applied`；全部缺正文时各 hit `content` 为空串）；
 - **生成阶段失败**：整请求失败，发 `error` `RECALL_GENERATION_FAILED`，不返回部分召回片段。
 
-事件顺序为 `stream_started` → 零到多个中间事件（`answer_delta` / `conversation_title`）→ 恰好一个
-终态（`answer_done` / `recall_done` / `error`）。终态是最后一个业务事件；客户端收到任一终态或检测到
+**进度事件**（增量兼容，旧客户端可忽略；用于前端展示「检索 → 生成」步骤与提前展示引用）：
+
+```
+event: recall_started
+data: {}
+
+event: recall_hits
+data: {"hits": [{"chunk_id": "...", "doc_id": 1, "dataset_id": 1, "file_name": "a.pdf", "content": "...", ...}], "rerank_applied": false}
+
+event: generation_started
+data: {}
+```
+
+- `recall_started`：模型校验通过、开始召回前发出；
+- `recall_hits`：召回与排序完成、生成之前发出，`hits` 与随后终态的 `hits` 相同（含 `content`）；
+- `generation_started`：调用模型流式生成前发出（空命中 / 全部缺正文 / 已被停止时不发）。
+
+各 hit（`recall_hits` / `answer_done` / `recall_done` / `answer_stopped`）新增 `file_name`：来源文件原始文件名，查不到为 `null`。
+
+**停止生成**：`POST /api/v1/rag/stream/{turn_id}/cancel`（同 `Authorization: Bearer`）。本轮须属于当前用户，否则 404
+`TURN_NOT_FOUND`；已处于终态时幂等返回 `{"code":"OK","data":{"stopped":false}}`，否则写入 Redis 取消标记
+`rag:cancel:{turn_id}`（跨 worker 生效）并返回 `stopped:true`；Redis 不可用 503。后台生成在生成前与帧间（约 300ms
+节流）检查标记，命中后发终态：
+
+```
+event: answer_stopped
+data: {"answer": "<已生成的部分答案>", "usage": {...}, "hits": [...], "rerank_applied": false}
+```
+
+并以 `STOPPED` 落库（保留部分答案；终态不再被覆盖，用量按实际消耗记为 success）。召回阶段不响应取消。
+
+事件顺序为 `stream_started` → 零到多个中间事件（进度事件 / `answer_delta` / `conversation_title`）→ 恰好一个
+终态（`answer_done` / `recall_done` / `answer_stopped` / `error`）。终态是最后一个业务事件；客户端收到任一终态或检测到
 连接关闭时，必须清除该 `conversation_id` 的“回复中”状态。新增事件遵循增量兼容：消费者应忽略未知
 事件，旧的 `answer_delta` / `answer_done` / `recall_done` / `error` payload 保持不变。
 

@@ -13,7 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from src.api.management_auth import CurrentUser, require_login, require_role
 from src.api.management_http import BusinessError, ManagementRouter, success
 from src.application.identity_session import HybridSessionState
-from src.application.identity_users import CacheInvalidationError, IdentityUsers
+from src.application import identity_users as identity_queries
+from src.application.identity_users import CacheInvalidationError, IdentityUsers, LoginContext
 from src.application.object_uploads import upload_object, validate_upload
 from src.config import settings
 from src.services.storage.factory import StorageFactory
@@ -81,6 +82,21 @@ class UpdateProfileRequest(BaseModel):
     email: str | None = None
     phone: str | None = None
     avatar_url: str | None = Field(default=None, alias="avatarUrl")
+    bio: str | None = Field(default=None, max_length=200)
+    team: str | None = Field(default=None, max_length=64)
+
+
+class ChangePasswordRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+    current_password: str = Field(min_length=1, max_length=128, alias="currentPassword")
+    new_password: str = Field(min_length=8, max_length=128, alias="newPassword")
+
+    @field_validator("new_password")
+    @classmethod
+    def reject_blank_password(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("新密码不能为空")
+        return value
 
 
 class UpdateStatusRequest(BaseModel):
@@ -89,6 +105,11 @@ class UpdateStatusRequest(BaseModel):
 
 class UpdateRoleRequest(BaseModel):
     role: str = Field(pattern="^(ADMIN|USER)$")
+
+
+class ResetPasswordRequest(BaseModel):
+    # 不传则由服务端生成临时密码并在响应中返回一次
+    newPassword: str | None = Field(default=None, min_length=8, max_length=64)
 
 
 def _sessions(request: Request) -> HybridSessionState:
@@ -111,16 +132,29 @@ def _issuer_ready() -> None:
         raise BusinessError(503, "Python 登录签发尚未启用", 503)
 
 
+def _login_context(request: Request) -> LoginContext:
+    """来源 IP 优先取反向代理写入的 X-Forwarded-For 首项，其次为直连地址。"""
+    forwarded = request.headers.get("x-forwarded-for", "").split(",")[0].strip()
+    ip = forwarded or request.headers.get("x-real-ip") or (request.client.host if request.client else None)
+    return LoginContext(ip, request.headers.get("user-agent"))
+
+
 @auth_router.post("/login")
 async def login(request: Request, body: LoginRequest):
     _issuer_ready()
-    return success(await _users(request).login(body.account, body.password))
+    return success(
+        await _users(request).login(body.account, body.password, _login_context(request))
+    )
 
 
 @auth_router.post("/register")
 async def register(request: Request, body: RegisterRequest):
     _issuer_ready()
-    return success(await _users(request).register(body.username, body.password, body.email))
+    return success(
+        await _users(request).register(
+            body.username, body.password, body.email, _login_context(request)
+        )
+    )
 
 
 @auth_router.post("/logout")
@@ -143,6 +177,37 @@ async def logout(request: Request):
     except Exception as exc:
         raise BusinessError(503, "登录状态暂无法注销", 503) from exc
     return success()
+
+
+def _verified_claims(request: Request):
+    """已通过 require_login 的请求：取出当前令牌及其声明，供续期 / 改密撤销旧令牌。"""
+    token = request.headers.get("satoken") or ""
+    authenticator = getattr(request.app.state, "management_authenticator", None)
+    if authenticator is None:
+        raise BusinessError(503, "管理端认证尚未配置", 503)
+    return token, authenticator._verifier.verify(token)
+
+
+@auth_router.post("/refresh")
+async def refresh(request: Request, user: Annotated[CurrentUser, Depends(require_login)]):
+    _issuer_ready()
+    token, claims = _verified_claims(request)
+    return success(await _users(request).refresh(token, claims))
+
+
+@user_router.post("/password")
+async def change_password(
+    request: Request,
+    body: ChangePasswordRequest,
+    user: Annotated[CurrentUser, Depends(require_login)],
+):
+    _issuer_ready()
+    token, claims = _verified_claims(request)
+    return success(
+        await _users(request).change_password(
+            token, claims, body.current_password, body.new_password
+        )
+    )
 
 
 @user_router.get("/profile")
@@ -212,8 +277,24 @@ async def list_users(
     user: Annotated[CurrentUser, Depends(require_role("ADMIN"))],
     page: int = Query(1, ge=1),
     size: int = Query(10, ge=1, le=100),
+    keyword: str | None = Query(None, max_length=128),
+    role: str | None = Query(None, pattern="^(ADMIN|USER)$"),
+    status: int | None = Query(None, ge=0, le=1),
+    sort: str = Query("created", pattern="^(created|lastLogin)$"),
+    withStats: bool = False,
 ):
-    return success(await _users(request).list_users(page, size))
+    # 无筛选且不需统计时保持原契约；管理台列表传 withStats=true 获取知识库数 / 近 30 天 Token / 最近登录
+    if not withStats and keyword is None and role is None and status is None and sort == "created":
+        return success(await _users(request).list_users(page, size))
+    return success(await identity_queries.search_users(page, size, keyword, role, status, sort))
+
+
+@admin_router.get("/users/{user_id:int}")
+async def user_detail(
+    user_id: int,
+    user: Annotated[CurrentUser, Depends(require_role("ADMIN"))],
+):
+    return success(await identity_queries.user_detail(user_id))
 
 
 @admin_router.patch("/users/{user_id}/status")
@@ -238,3 +319,20 @@ async def update_user_role(
 ):
     await _users(request).update_admin_field(actor.user_id, user_id, "role", body.role)
     return success()
+
+
+@admin_router.post("/users/{user_id}/password/reset")
+async def reset_user_password(
+    request: Request,
+    user_id: int,
+    actor: Annotated[CurrentUser, Depends(require_role("ADMIN"))],
+    body: ResetPasswordRequest | None = None,
+):
+    if not settings.B1_JAVA_PROTECTED_ROUTES_RETIRED:
+        raise BusinessError(503, "Java 路由仍在使用，暂不可从 Python 重置密码", 503)
+    _issuer_ready()
+    return success(
+        await _users(request).admin_reset_password(
+            actor.user_id, user_id, body.newPassword if body else None
+        )
+    )

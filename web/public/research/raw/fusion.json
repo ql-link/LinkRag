@@ -1,0 +1,61 @@
+{
+  "dataset": "combined_4domain_clean",
+  "golden": "/Users/jixu/Project/Agent/toLink-Rag/.claude/worktrees/sleepy-margulis-9143dc/.specs/rag-quality-eval/golden/combined_4domain_clean.jsonl",
+  "corpus_chunks": 3200,
+  "n_samples": 394,
+  "config": {
+    "dense_top_k": 20,
+    "sparse_top_k": 5,
+    "dense_threshold": 0.3,
+    "sparse_threshold": 0.4,
+    "final_top_k": 10,
+    "rrf_k": 60
+  },
+  "fusion_weights_raw": {
+    "dense": 0.5,
+    "sparse": 0.3
+  },
+  "fusion_weights_active_normalized": {
+    "dense": 0.625,
+    "sparse": 0.375
+  },
+  "rrf": {
+    "dense_top_k": 20,
+    "sparse_top_k": 5,
+    "dense_threshold": 0.3,
+    "sparse_threshold": 0.4,
+    "final_top_k": 10,
+    "rrf_k": 60,
+    "recall_at_10": 0.9715492629198215,
+    "hit_rate_at_10": 0.9873096446700508,
+    "map": 0.8781823332124723,
+    "mrr": 0.9045000402868423,
+    "n": 394,
+    "failed_source_samples": 0
+  },
+  "weighted_score": {
+    "dense_top_k": 20,
+    "sparse_top_k": 5,
+    "dense_threshold": 0.3,
+    "sparse_threshold": 0.4,
+    "final_top_k": 10,
+    "rrf_k": 60,
+    "recall_at_10": 0.974510345830143,
+    "hit_rate_at_10": 0.9898477157360406,
+    "map": 0.8894243429887457,
+    "mrr": 0.9123116590121664,
+    "n": 394,
+    "failed_source_samples": 0
+  },
+  "delta_weighted_minus_rrf": {
+    "recall_at_10": 0.0029610829103214886,
+    "hit_rate_at_10": 0.0025380710659898,
+    "map": 0.011242009776273432,
+    "mrr": 0.007811618725324099
+  },
+  "failed_source_samples": {
+    "rrf": 0,
+    "weighted_score": 0
+  },
+  "notes": "RRF and weighted_score are computed from the same cached dense/sparse route hits; no rerank."
+}

@@ -19,6 +19,8 @@ class AccessClaims:
     user_id: int
     token_id: str
     expires_at: int = 0
+    # 签发时间（JWT iat），用于「某时刻之前签发的令牌全部失效」；0 表示未知。
+    issued_at: int = 0
 
 
 @dataclass(frozen=True)
@@ -78,7 +80,10 @@ class AccessTokenVerifier:
                 token, self._public_key, self._issuer, self._audience, "access"
             )
             return AccessClaims(
-                user_id=user_id, token_id=str(payload["jti"]), expires_at=int(payload["exp"])
+                user_id=user_id,
+                token_id=str(payload["jti"]),
+                expires_at=int(payload["exp"]),
+                issued_at=int(payload.get("iat") or 0),
             )
         except (jwt.PyJWTError, RecallApiError, ValueError, KeyError, TypeError) as exc:
             raise BusinessError(401, "未登录或登录已过期", 401) from exc

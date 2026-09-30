@@ -10,6 +10,7 @@ from sqlalchemy.exc import IntegrityError
 
 from src.api.management_http import BusinessError
 from src.application.model_configs import _PROTOCOLS, normalize_capability
+from src.application.object_uploads import public_object_url
 from src.database import get_db_context, write_transaction
 from src.observability.audit import audit_event
 
@@ -19,7 +20,7 @@ def _provider(row: dict) -> dict:
         "id": int(row["id"]),
         "providerType": row["provider_type"],
         "providerName": row["provider_name"],
-        "iconUrl": row["icon_url"],
+        "iconUrl": public_object_url(row["icon_object_key"], row["icon_url"]),
         "iconObjectKey": row["icon_object_key"],
         "apiBaseUrl": row["api_base_url"],
         "defaultProtocol": row["default_protocol"],

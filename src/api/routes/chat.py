@@ -4,12 +4,13 @@ from typing import Annotated
 
 from fastapi import Depends, Query
 from pydantic import BaseModel, Field
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.management_auth import CurrentUser, require_login
 from src.api.management_http import ApiResult, ManagementRouter, success
 from src.application import chat_service
+from src.application.document_files import owned_file
 from src.core.storage.document_visibility import document_original_file_table
 from src.database import get_db
 from src.models.chunk_record import ChunkRecordDB
@@ -92,6 +93,61 @@ async def delete_conversation(
     await chat_service.delete_conversation(db, user.user_id, conversation_id)
     await db.commit()
     return success(None)
+
+
+@chunk_router.get("")
+async def list_file_chunks(
+    user: Annotated[CurrentUser, Depends(require_login)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    fileId: int = Query(gt=0),
+    page: int = Query(1, ge=1),
+    pageSize: int = Query(20, ge=1, le=100),
+) -> ApiResult[dict]:
+    """按文件分页列出有效分块（按 chunk_index 顺序），供文件详情页查看解析结果。"""
+    await owned_file(db, user.user_id, fileId)
+    conditions = (
+        ChunkRecordDB.doc_id == fileId,
+        ChunkRecordDB.user_id == user.user_id,
+        ChunkRecordDB.lifecycle_status == "ACTIVE",
+    )
+    total = int(
+        (
+            await db.execute(select(func.count()).select_from(ChunkRecordDB).where(*conditions))
+        ).scalar_one()
+    )
+    rows = (
+        await db.scalars(
+            select(ChunkRecordDB)
+            .where(*conditions)
+            .order_by(
+                ChunkRecordDB.chunk_index.is_(None), ChunkRecordDB.chunk_index, ChunkRecordDB.id
+            )
+            .limit(pageSize)
+            .offset((page - 1) * pageSize)
+        )
+    ).all()
+    return success(
+        {
+            "items": [
+                {
+                    "chunkId": row.chunk_id,
+                    "fileId": row.doc_id,
+                    "datasetId": row.set_id,
+                    "index": row.chunk_index,
+                    "chunkType": row.chunk_type,
+                    "startLine": row.start_line,
+                    "endLine": row.end_line,
+                    "content": row.content,
+                    "updatedAt": row.update_time,
+                }
+                for row in rows
+            ],
+            "total": total,
+            "page": page,
+            "pageSize": pageSize,
+            "totalPages": (total + pageSize - 1) // pageSize,
+        }
+    )
 
 
 @chunk_router.post("/batch")

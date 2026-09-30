@@ -1,0 +1,212 @@
+{
+  "_bundle": {
+    "kind": "derived bundle（派生打包文件，子文件内容未改动）",
+    "report_id": "r10",
+    "title": "R10 · SciFact 三路消融（summary 为召回指标，audit 为延迟 P50/P95）",
+    "files": [
+      {
+        "path": "runs/benchmarks/scifact-20260929/evaluation/summary.json",
+        "sha256": "46f580f536ba4456d028101083fc5c83977c62d8f2c180034386f47cc7effe09"
+      },
+      {
+        "path": "runs/benchmarks/scifact-20260929/evaluation/audit.json",
+        "sha256": "bbd0386a2bf4c80fe6695f0604e5e3c3980b30686542c7c65ce9d0127bd67286"
+      }
+    ]
+  },
+  "files": {
+    "runs/benchmarks/scifact-20260929/evaluation/summary.json": {
+      "finished_utc": "2026-09-29T04:32:42.928254+00:00",
+      "dataset": "BEIR SciFact full test",
+      "corpus_counts": {
+        "eval_sqlite": 5183,
+        "bm25_fts": 5183,
+        "qdrant": 5183
+      },
+      "query_count": 300,
+      "theoretical_doc_recall_at_10_ceiling": 1.0,
+      "failed_source_samples": 0,
+      "route_cache_sha256": "fa4307bd26739a00400b15931565db445ceefb6911efc76c9d594b91fe176700",
+      "results": {
+        "dense": {
+          "routes": [
+            "dense"
+          ],
+          "route_top_k": {
+            "dense": 150,
+            "sparse": 0,
+            "bm25": 0
+          },
+          "fusion": "weighted_score",
+          "weights": {
+            "dense": 0.7,
+            "sparse": 0.15,
+            "bm25": 0.15
+          },
+          "recall@1": 0.5759444444444445,
+          "recall@5": 0.7846666666666667,
+          "recall@10": 0.8508888888888889,
+          "recall@100": 0.9483333333333334,
+          "hit_rate@5": 0.8033333333333333,
+          "mrr@10": 0.6876970899470899,
+          "ndcg_binary@10": 0.7226767291398505,
+          "hit_count@10": 258,
+          "query_count": 300
+        },
+        "sparse": {
+          "routes": [
+            "sparse"
+          ],
+          "route_top_k": {
+            "dense": 0,
+            "sparse": 50,
+            "bm25": 0
+          },
+          "fusion": "weighted_score",
+          "weights": {
+            "dense": 0.7,
+            "sparse": 0.15,
+            "bm25": 0.15
+          },
+          "recall@1": 0.44388888888888883,
+          "recall@5": 0.6449444444444444,
+          "recall@10": 0.7046111111111111,
+          "recall@100": 0.8218333333333334,
+          "hit_rate@5": 0.6633333333333333,
+          "mrr@10": 0.5428902116402117,
+          "ndcg_binary@10": 0.5791890160132586,
+          "hit_count@10": 216,
+          "query_count": 300
+        },
+        "bm25": {
+          "routes": [
+            "bm25"
+          ],
+          "route_top_k": {
+            "dense": 0,
+            "sparse": 0,
+            "bm25": 100
+          },
+          "fusion": "weighted_score",
+          "weights": {
+            "dense": 0.7,
+            "sparse": 0.15,
+            "bm25": 0.15
+          },
+          "recall@1": 0.5066666666666667,
+          "recall@5": 0.7034444444444444,
+          "recall@10": 0.7542777777777778,
+          "recall@100": 0.8777222222222222,
+          "hit_rate@5": 0.7266666666666667,
+          "mrr@10": 0.6062526455026455,
+          "ndcg_binary@10": 0.6382340514427036,
+          "hit_count@10": 232,
+          "query_count": 300
+        },
+        "dense_bm25": {
+          "routes": [
+            "dense",
+            "bm25"
+          ],
+          "route_top_k": {
+            "dense": 150,
+            "sparse": 0,
+            "bm25": 100
+          },
+          "fusion": "weighted_score",
+          "weights": {
+            "dense": 0.7,
+            "sparse": 0.15,
+            "bm25": 0.15
+          },
+          "recall@1": 0.6049444444444444,
+          "recall@5": 0.8002222222222222,
+          "recall@10": 0.8608888888888888,
+          "recall@100": 0.96,
+          "hit_rate@5": 0.8166666666666667,
+          "mrr@10": 0.7135515873015873,
+          "ndcg_binary@10": 0.7432348547086436,
+          "hit_count@10": 261,
+          "query_count": 300
+        },
+        "three_weighted": {
+          "routes": [
+            "dense",
+            "sparse",
+            "bm25"
+          ],
+          "route_top_k": {
+            "dense": 150,
+            "sparse": 50,
+            "bm25": 100
+          },
+          "fusion": "weighted_score",
+          "weights": {
+            "dense": 0.7,
+            "sparse": 0.15,
+            "bm25": 0.15
+          },
+          "recall@1": 0.5909444444444444,
+          "recall@5": 0.7991111111111111,
+          "recall@10": 0.8652222222222222,
+          "recall@100": 0.9633333333333334,
+          "hit_rate@5": 0.8133333333333334,
+          "mrr@10": 0.7036746031746032,
+          "ndcg_binary@10": 0.7379697184816827,
+          "hit_count@10": 263,
+          "query_count": 300
+        },
+        "three_rrf60": {
+          "routes": [
+            "dense",
+            "sparse",
+            "bm25"
+          ],
+          "route_top_k": {
+            "dense": 150,
+            "sparse": 50,
+            "bm25": 100
+          },
+          "fusion": "rrf",
+          "weights": null,
+          "recall@1": 0.5634444444444444,
+          "recall@5": 0.7555000000000001,
+          "recall@10": 0.8105555555555555,
+          "recall@100": 0.9626666666666667,
+          "hit_rate@5": 0.7766666666666666,
+          "mrr@10": 0.6622843915343916,
+          "ndcg_binary@10": 0.6942441926089278,
+          "hit_count@10": 248,
+          "query_count": 300
+        }
+      }
+    },
+    "runs/benchmarks/scifact-20260929/evaluation/audit.json": {
+      "status": "clean",
+      "corpus_counts": {
+        "eval_sqlite": 5183,
+        "bm25_fts": 5183,
+        "qdrant": 5183
+      },
+      "query_count": 300,
+      "offline_product_metric_absolute_differences": {
+        "recall@1": 0.0,
+        "recall@5": 0.0,
+        "recall@10": 0.0,
+        "hit_rate@5": 0.0,
+        "mrr@10": 0.0,
+        "ndcg_binary@10": 0.0
+      },
+      "per_query_recall_checks": 900,
+      "dense_truncated_documents": 0,
+      "sparse_truncated_documents": 0,
+      "retrieval_elapsed_ms": {
+        "p50_linear": 211.0,
+        "p95_linear": 468.25000000000006,
+        "p99_linear": 730.8399999999965,
+        "max": 9909,
+        "mean": 278.02666666666664
+      }
+    }
+  }
+}

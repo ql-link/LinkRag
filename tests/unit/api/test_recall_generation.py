@@ -45,6 +45,26 @@ def _stub_chat_turn_mq(monkeypatch):
     monkeypatch.setattr(rt, "write_transaction", no_transaction)
     monkeypatch.setattr(rt, "persist_chat_turn", no_persist)
     monkeypatch.setattr(settings, "RECALL_LTR_MODE", "off")
+    monkeypatch.setattr(rt, "CancelWatcher", _FakeCancelWatcher)
+    _FakeCancelWatcher.stop_after = None
+
+
+class _FakeCancelWatcher:
+    """替身：不触 Redis；``stop_after`` 为第 N 次检查（0 起）时返回已停止。"""
+
+    stop_after: int | None = None
+
+    def __init__(self, turn_id):
+        self.turn_id = turn_id
+        self.checks = 0
+
+    async def cancelled(self, *, force=False):
+        hit = self.stop_after is not None and self.checks >= self.stop_after
+        self.checks += 1
+        return hit
+
+    async def clear(self):
+        return None
 
 
 class _FakePipeline:
@@ -186,8 +206,17 @@ def _req(*, enable_rerank: bool = True):
     )
 
 
+# 进度事件（前端展示步骤用）不属于终态语义；既有断言只关注业务事件，统一过滤。
+PROGRESS_EVENTS = {"recall_started", "recall_hits", "generation_started"}
+
+
 async def _collect(gen):
-    """把 SSE 文本帧收成 [(event, data_dict_or_str), ...]。"""
+    """把 SSE 文本帧收成 [(event, data_dict_or_str), ...]（不含进度事件）。"""
+    return [item for item in await _collect_all(gen) if item[0] not in PROGRESS_EVENTS]
+
+
+async def _collect_all(gen):
+    """同 ``_collect``，但保留进度事件。"""
     out = []
     async for frame in gen:
         ev = None
@@ -220,8 +249,12 @@ def stub_generation(monkeypatch):
     async def _contents(chunk_ids, user_id):
         return {cid: f"正文-{cid}" for cid in chunk_ids}
 
+    async def _file_names(doc_ids, user_id):
+        return {int(d): f"file-{d}.pdf" for d in doc_ids}
+
     monkeypatch.setattr(rt, "aresolve_model", _resolve)
     monkeypatch.setattr(rt, "fetch_chunk_contents", _contents)
+    monkeypatch.setattr(rt, "fetch_doc_filenames", _file_names)
     return provider
 
 
@@ -1090,3 +1123,90 @@ async def test_generation_failure_fails_whole_request(monkeypatch):
     assert names[-1] == "error"
     assert events[-1][1]["code"] == "RECALL_GENERATION_FAILED"
     assert "answer_done" not in names
+
+
+@pytest.mark.asyncio
+async def test_progress_events_precede_answer_and_carry_file_names(stub_generation):
+    pipe = _FakePipeline(_response(_hits("c1", "c2")))
+    events = await _collect_all(
+        rt.recall_event_stream(
+            pipe,
+            _req(),
+            "rid",
+            config_id=77,
+            conversation_id=1,
+            turn_id="t-progress",
+            reranker=_FakeReranker(),
+            token_budget=4000,
+            rerank_top_n=settings.RERANK_DEFAULT_TOP_N,
+        )
+    )
+    names = [e for e, _ in events]
+    assert names == [
+        "recall_started",
+        "recall_hits",
+        "generation_started",
+        "answer_delta",
+        "answer_delta",
+        "answer_done",
+    ]
+    early = events[1][1]["hits"]
+    assert [h["chunk_id"] for h in early] == [h["chunk_id"] for h in events[-1][1]["hits"]]
+    assert early[0]["file_name"] == "file-10.pdf"
+    assert events[-1][1]["hits"][0]["file_name"] == "file-10.pdf"
+
+
+@pytest.mark.asyncio
+async def test_stop_mid_generation_keeps_partial_answer_and_persists_stopped(
+    monkeypatch, stub_generation
+):
+    persisted = []
+
+    async def capture(_db, payload):
+        persisted.append(payload)
+        return True
+
+    monkeypatch.setattr(rt, "persist_chat_turn", capture)
+    # 第 0 次为生成前检查，第 1 次为首帧后：只保留第一个 delta。
+    _FakeCancelWatcher.stop_after = 2
+    pipe = _FakePipeline(_response(_hits("c1")))
+    events = await _collect(
+        rt.recall_event_stream(
+            pipe,
+            _req(),
+            "rid",
+            config_id=77,
+            conversation_id=1,
+            turn_id="t-stop",
+            reranker=_FakeReranker(),
+            token_budget=4000,
+            rerank_top_n=settings.RERANK_DEFAULT_TOP_N,
+        )
+    )
+    assert [e for e, _ in events] == ["answer_delta", "answer_stopped"]
+    assert events[-1][1]["answer"] == "答"
+    assert [p.status for p in persisted] == ["GENERATING", "STOPPED"]
+    assert persisted[-1].answer == "答"
+
+
+@pytest.mark.asyncio
+async def test_stop_before_generation_skips_model_call(monkeypatch, stub_generation):
+    _FakeCancelWatcher.stop_after = 0
+    pipe = _FakePipeline(_response(_hits("c1")))
+    events = await _collect_all(
+        rt.recall_event_stream(
+            pipe,
+            _req(),
+            "rid",
+            config_id=77,
+            conversation_id=1,
+            turn_id="t-stop-early",
+            reranker=_FakeReranker(),
+            token_budget=4000,
+            rerank_top_n=settings.RERANK_DEFAULT_TOP_N,
+        )
+    )
+    names = [e for e, _ in events]
+    assert "generation_started" not in names and "answer_delta" not in names
+    assert names[-1] == "answer_stopped"
+    assert events[-1][1]["answer"] == ""

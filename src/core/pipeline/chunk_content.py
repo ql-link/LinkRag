@@ -37,3 +37,27 @@ async def fetch_chunk_contents(chunk_ids: list[str], user_id: int) -> dict[str, 
         rows = (await session.execute(stmt)).all()
 
     return {chunk_id: content for chunk_id, content in rows if content and content.strip()}
+
+
+async def fetch_doc_filenames(doc_ids: list[int], user_id: int) -> dict[int, str]:
+    """按文档 ID 批量取原始文件名（召回片段展示来源用），返回 doc_id -> 文件名。
+
+    只取发起用户本人、未删除的文件；查不到的 doc_id 不出现在返回 dict 中。
+    """
+    from src.core.storage.document_visibility import document_original_file_table as files
+
+    unique = sorted({int(doc_id) for doc_id in doc_ids})
+    if not unique:
+        return {}
+    session_factory = get_async_session_factory()
+    async with session_factory() as session:
+        rows = (
+            await session.execute(
+                select(files.c.id, files.c.original_filename).where(
+                    files.c.id.in_(unique),
+                    files.c.user_id == user_id,
+                    files.c.is_deleted.is_(False),
+                )
+            )
+        ).all()
+    return {int(doc_id): str(name) for doc_id, name in rows if name}

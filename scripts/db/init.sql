@@ -8,7 +8,7 @@
 --   - ORM 模型与本文件都是逻辑/测试镜像，不能反向替代 migration；
 --   - 修改字段或种子数据必须先新增 migration，再同步 ORM 与本文件。
 -- 同步时机：每条会改动表结构的 migration 落库时一并更新本文件。
--- 末次同步：migration 0038_20260730_unify_mysql_collation
+-- 末次同步：migration 0042_20260929_sys_user_profile_fields（sys_user 新增 bio / team）
 -- 0038 统一数据库及全部基础表为 utf8mb4 / utf8mb4_unicode_ci。
 -- 0036 存量升级自动复用旧系统预设密文；本快照仅表达升级后的最终结构与种子目录。
 -- 备注：0032_20260702_provider_icon_fields 兼容历史 dev 库中 provider icon 误用 0031 revision 的状态；
@@ -28,6 +28,8 @@ CREATE TABLE IF NOT EXISTS sys_user (
     email           VARCHAR(128)   COMMENT '邮箱地址',
     phone           VARCHAR(20)    COMMENT '手机号',
     avatar_url      VARCHAR(512)   COMMENT '头像地址',
+    bio             VARCHAR(200)   COMMENT '个人简介',
+    team            VARCHAR(64)    COMMENT '所属团队 / 部门',
     role            ENUM('ADMIN', 'USER') NOT NULL DEFAULT 'USER' COMMENT '角色: ADMIN/USER',
     status          TINYINT        NOT NULL DEFAULT 1 COMMENT '状态: 1-正常, 0-禁用',
     last_login_at   DATETIME       COMMENT '最后登录时间',
@@ -45,9 +47,23 @@ CREATE TABLE IF NOT EXISTS user_login_event (
     user_id         BIGINT UNSIGNED NOT NULL COMMENT '登录用户ID',
     login_source    VARCHAR(16) NOT NULL COMMENT '登录来源：LOGIN 普通登录, REGISTER 注册自动登录',
     created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '登录成功时间（Asia/Shanghai）',
+    ip              VARCHAR(64) COMMENT '登录来源 IP（migration 0043）',
+    user_agent      VARCHAR(255) COMMENT '登录 User-Agent（migration 0043）',
 
     INDEX idx_user_login_event_created_user (created_at, user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '用户成功登录事件表';
+
+-- 1.2 用户登录失败记录表（migration 0043）
+CREATE TABLE IF NOT EXISTS user_login_failure (
+    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '失败记录唯一标识',
+    user_id         BIGINT UNSIGNED NOT NULL COMMENT '被尝试登录的用户 ID',
+    reason          VARCHAR(32) NOT NULL COMMENT '失败原因：BAD_PASSWORD / DISABLED',
+    ip              VARCHAR(64) COMMENT '来源 IP',
+    user_agent      VARCHAR(255) COMMENT 'User-Agent（截断至 255）',
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '失败时间（Asia/Shanghai）',
+
+    INDEX idx_user_login_failure_user_created (user_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '用户登录失败记录表';
 
 -- 2. LLM 系统级厂商配置表
 CREATE TABLE IF NOT EXISTS llm_system_provider (

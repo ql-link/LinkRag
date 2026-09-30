@@ -175,6 +175,10 @@ async def delete_conversation(db: AsyncSession, user_id: int, conversation_id: i
     await db.delete(row)
 
 
+# 终态：落库后不再被重放覆盖。STOPPED 为用户主动停止生成（保留半截答案）。
+TERMINAL_STATUSES = frozenset({"COMPLETED", "FAILED", "STOPPED"})
+
+
 async def persist_chat_turn(db: AsyncSession, payload: ChatTurnPayload) -> bool:
     """Serialize by conversation row; terminal turns never regress on replay."""
     try:
@@ -189,7 +193,7 @@ async def persist_chat_turn(db: AsyncSession, payload: ChatTurnPayload) -> bool:
     ).scalar_one_or_none()
     if existing is not None and existing.conversation_id != conversation.id:
         return False
-    if existing is not None and existing.status in {"COMPLETED", "FAILED"}:
+    if existing is not None and existing.status in TERMINAL_STATUSES:
         return True
     if existing is not None and payload.status == "GENERATING":
         return True

@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.management_http import BusinessError
 from src.cache.llm_runtime_cache import LLMRuntimeCache
 from src.core.llm.encryption import decrypt_api_key, encrypt_api_key, mask_api_key
+from src.application.object_uploads import public_object_url
 from src.database import get_db_context, write_transaction
 from src.observability.audit import audit_event
 
@@ -39,7 +40,7 @@ def _dto(row: dict, actor_id: int) -> dict:
         "providerId": int(row["provider_id"]),
         "providerType": row["provider_type"],
         "providerName": row["provider_name"],
-        "iconUrl": row["icon_url"],
+        "iconUrl": public_object_url(row.get("icon_object_key"), row["icon_url"]),
         "modelName": row["model_name"],
         "displayName": row["display_name"] or row["model_name"],
         "capability": row["capability"],
@@ -55,7 +56,7 @@ def _dto(row: dict, actor_id: int) -> dict:
 
 
 _CONFIG_SELECT = """
-SELECT c.*, p.provider_name, p.icon_url
+SELECT c.*, p.provider_name, p.icon_url, p.icon_object_key
 FROM llm_model_config c
 LEFT JOIN llm_system_provider p ON p.id=c.provider_id
 """
@@ -118,7 +119,7 @@ async def list_provider_catalog(capability: str | None) -> list[dict]:
             (
                 await db.execute(
                     text("""
-            SELECT p.id,p.provider_type,p.provider_name,p.icon_url,
+            SELECT p.id,p.provider_type,p.provider_name,p.icon_url,p.icon_object_key,
                    m.model_name,m.display_name,m.capability,m.protocol,m.api_base_url
             FROM llm_system_provider p
             JOIN llm_provider_model m ON m.provider_id=p.id AND m.is_active=1
@@ -139,7 +140,7 @@ async def list_provider_catalog(capability: str | None) -> list[dict]:
             {
                 "providerType": row["provider_type"],
                 "providerName": row["provider_name"],
-                "iconUrl": row["icon_url"],
+                "iconUrl": public_object_url(row.get("icon_object_key"), row["icon_url"]),
                 "models": [],
             },
         )

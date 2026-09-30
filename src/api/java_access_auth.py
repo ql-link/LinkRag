@@ -148,7 +148,10 @@ async def verify_user_token(
         sessions = getattr(request.app.state, "identity_sessions", None)
         try:
             active = sessions is not None and await sessions.is_active(
-                token, AccessClaims(user_id, str(claims["jti"]), int(claims["exp"]))
+                token,
+                AccessClaims(
+                    user_id, str(claims["jti"]), int(claims["exp"]), int(claims.get("iat") or 0)
+                ),
             )
         except Exception as exc:
             raise RecallApiError(503, CODE_INTERNAL_ERROR, "session lookup failed") from exc

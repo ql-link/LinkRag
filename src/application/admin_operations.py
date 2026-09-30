@@ -388,3 +388,125 @@ async def log_labels() -> dict:
     except (httpx.HTTPError, ValueError, TypeError, AttributeError):
         pass
     return {"services": services, "levels": _LEVELS}
+
+
+async def _count(db: AsyncSession, sql: str, params: dict | None = None) -> int:
+    return int((await db.scalar(text(sql), params or {})) or 0)
+
+
+async def overview(db: AsyncSession) -> dict:
+    """管理台总览：跨模块计数 + 待处理事项 + 最近同步任务。模型同步表（migration 0040）缺失时对应字段为 null。"""
+    today = datetime.now(_SHANGHAI).date()
+    month_start = datetime.combine(today.replace(day=1), time.min)
+    week_start = datetime.combine(today - timedelta(days=6), time.min)
+    prev_week_start = week_start - timedelta(days=7)
+    stale = datetime.combine(today - timedelta(days=30), time.min)
+    p = {"month": month_start, "week": week_start, "prev": prev_week_start, "stale": stale}
+    active = await _count(
+        db, "SELECT COUNT(DISTINCT user_id) FROM user_login_event WHERE created_at>=:week", p
+    )
+    prev_active = await _count(
+        db,
+        "SELECT COUNT(DISTINCT user_id) FROM user_login_event WHERE created_at>=:prev AND created_at<:week",
+        p,
+    )
+    result: dict = {
+        "users": {
+            "total": await _count(db, "SELECT COUNT(*) FROM sys_user"),
+            "newThisMonth": await _count(db, "SELECT COUNT(*) FROM sys_user WHERE created_at>=:month", p),
+            "active7d": _metric(active, prev_active),
+        },
+        "models": {
+            "providers": await _count(db, "SELECT COUNT(*) FROM llm_system_provider"),
+            "activeProviderModels": await _count(
+                db, "SELECT COUNT(*) FROM llm_provider_model WHERE is_active=1"
+            ),
+            "platformConfigs": await _count(
+                db, "SELECT COUNT(*) FROM llm_model_config WHERE scope='SYSTEM'"
+            ),
+        },
+        "blog": {
+            "published": await _count(
+                db, "SELECT COUNT(*) FROM blog_post WHERE is_deleted=0 AND status='PUBLISHED'"
+            ),
+            "drafts": await _count(
+                db, "SELECT COUNT(*) FROM blog_post WHERE is_deleted=0 AND status='DRAFT'"
+            ),
+            "staleDrafts": await _count(
+                db,
+                "SELECT COUNT(*) FROM blog_post WHERE is_deleted=0 AND status='DRAFT' AND updated_at<:stale",
+                p,
+            ),
+        },
+        "feedback": {
+            "pending": await _count(db, "SELECT COUNT(*) FROM user_feedback WHERE status='PENDING'"),
+        },
+        "sync": None,
+    }
+    try:
+        pending = await _count(
+            db, "SELECT COUNT(*) FROM llm_provider_model_sync_candidate WHERE review_status='PENDING'"
+        )
+        failed = (
+            (
+                await db.execute(
+                    text(
+                        "SELECT j.id,j.error_message,j.started_at,s.provider_name FROM llm_provider_model_sync_job j "
+                        "LEFT JOIN llm_system_provider s ON s.id=j.provider_id "
+                        "WHERE j.status='FAILED' AND j.started_at>=:week ORDER BY j.started_at DESC"
+                    ),
+                    p,
+                )
+            )
+            .mappings()
+            .all()
+        )
+        recent = (
+            (
+                await db.execute(
+                    text(
+                        "SELECT j.id,j.provider_id,j.status,j.added_count,j.updated_count,j.stale_count,"
+                        "j.error_message,j.started_at,j.finished_at,s.provider_name FROM llm_provider_model_sync_job j "
+                        "LEFT JOIN llm_system_provider s ON s.id=j.provider_id ORDER BY j.started_at DESC LIMIT 5"
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+    except Exception:  # noqa: BLE001 - 同步表未迁移时总览其余部分仍可用
+        await db.rollback()
+        return result
+
+    def iso(v):
+        return v.isoformat() if hasattr(v, "isoformat") else (str(v) if v else None)
+
+    result["sync"] = {
+        "pendingCandidates": pending,
+        "failedJobs7d": len(failed),
+        "lastFailure": (
+            {
+                "providerName": failed[0]["provider_name"],
+                "errorMessage": failed[0]["error_message"],
+                "startedAt": iso(failed[0]["started_at"]),
+            }
+            if failed
+            else None
+        ),
+        "recentJobs": [
+            {
+                "id": int(r["id"]),
+                "providerId": int(r["provider_id"]),
+                "providerName": r["provider_name"],
+                "status": r["status"],
+                "addedCount": r["added_count"],
+                "updatedCount": r["updated_count"],
+                "staleCount": r["stale_count"],
+                "errorMessage": r["error_message"],
+                "startedAt": iso(r["started_at"]),
+                "finishedAt": iso(r["finished_at"]),
+            }
+            for r in recent
+        ],
+    }
+    return result

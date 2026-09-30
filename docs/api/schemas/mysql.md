@@ -11,11 +11,11 @@ ORM 或 `scripts/db/init.sql` 与 migration 不一致时，以 migration 为准�
 
 ## 表清单
 
-按业务域共 22 张表：
+按业务域共 24 张表：
 
 | 业务域 | 表 | 主键 ID 起始 |
 | --- | --- | --- |
-| [用户](#1-用户) | `sys_user` | 10000 |
+| [用户](#1-用户) | `sys_user`, `user_login_event`, `user_login_failure` | 10000 |
 | [LLM 配置与用量](#2-llm-配置与用量) | `llm_system_provider`, `llm_provider_model`, `llm_provider_model_sync_job`, `llm_provider_model_sync_candidate`, `llm_model_config`, `llm_capability_default`, `llm_usage_log` | 10000 |
 | [数据集与对话](#3-数据集与对话) | `dataset`, `dataset_parse_config`, `chat_conversation`, `chat_message` | 10000 |
 | [文档解析](#4-文档解析) | `document_original_file`, `document_parse_file`, `document_parsed_log`, `document_parse_pipeline` | 10000 |
@@ -45,12 +45,44 @@ ORM：（未在 `src/models/` 中映射，由业务侧管理）
 | `email` | VARCHAR(128) UNIQUE | 邮箱 |
 | `phone` | VARCHAR(20) | 手机号 |
 | `avatar_url` | VARCHAR(512) | 头像地址 |
+| `bio` | VARCHAR(200) | 个人简介，可空（0042） |
+| `team` | VARCHAR(64) | 所属团队 / 部门，可空（0042） |
 | `role` | ENUM(`ADMIN`,`USER`) | 角色，默认 `USER` |
 | `status` | TINYINT | 1=正常，0=禁用 |
 | `last_login_at` | DATETIME | 最后登录时间 |
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
 
 索引：`uk_username`, `uk_email`。
+
+### `user_login_event` — 用户成功登录事件表
+
+ORM：（未映射，由 `src/application/identity_users.py` 直接读写）
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | BIGINT UNSIGNED PK | 事件唯一标识 |
+| `user_id` | BIGINT UNSIGNED | 登录用户 ID |
+| `login_source` | VARCHAR(16) | `LOGIN` 普通登录 / `REGISTER` 注册后自动登录 |
+| `created_at` | DATETIME | 登录成功时间（Asia/Shanghai） |
+| `ip` | VARCHAR(64) NULL | 来源 IP，优先取 `X-Forwarded-For` 首项（0043） |
+| `user_agent` | VARCHAR(255) NULL | User-Agent，截断至 255（0043） |
+
+索引：`idx_user_login_event_created_user (created_at, user_id)`。管理看板活跃用户按本表去重统计。
+
+### `user_login_failure` — 用户登录失败记录表（0043）
+
+仅记录账号存在时的失败（账号不存在不落库，避免被用于枚举）。
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | BIGINT UNSIGNED PK | 失败记录唯一标识 |
+| `user_id` | BIGINT UNSIGNED | 被尝试登录的用户 ID |
+| `reason` | VARCHAR(32) | `BAD_PASSWORD` 密码错误 / `DISABLED` 账号已禁用 |
+| `ip` | VARCHAR(64) NULL | 来源 IP |
+| `user_agent` | VARCHAR(255) NULL | User-Agent |
+| `created_at` | DATETIME | 失败时间（Asia/Shanghai） |
+
+索引：`idx_user_login_failure_user_created (user_id, created_at)`。
 
 ---
 
@@ -330,7 +362,7 @@ ORM：[`ChatMessageDB`](../../../src/models/db_models.py)
 | `references` | JSON | 召回片段 `chunk_id` 列表（仅标识，不含正文） |
 | `request_id` | VARCHAR(64) | 请求追踪 ID（每 HTTP 请求级，不再作幂等键） |
 | `turn_id` | VARCHAR(64) | 轮次幂等键：前端每轮稳定 UUID，Java 据此 upsert 同一行（唯一索引，既有行为 NULL） |
-| `status` | VARCHAR(16) | `GENERATING` / `COMPLETED` / `FAILED`（旧 `success`/`partial`/`failed` 退役） |
+| `status` | VARCHAR(16) | `GENERATING` / `COMPLETED` / `FAILED` / `STOPPED`（用户停止生成，保留部分答案）（旧 `success`/`partial`/`failed` 退役） |
 | `error_code` | VARCHAR(64) | 失败码 `RECALL_*`/`GENERATION_TIMEOUT`，仅 `FAILED` |
 | `error_message` | VARCHAR(512) | 失败原因，不含堆栈，仅 `FAILED` |
 | `created_at` | DATETIME | 创建时间 |

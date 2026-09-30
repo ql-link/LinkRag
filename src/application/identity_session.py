@@ -66,8 +66,16 @@ class HybridSessionState:
     def _revoked_key(jti: str) -> str:
         return f"auth:access:revoked:{jti}"
 
+    @staticmethod
+    def _not_before_key(user_id: int) -> str:
+        return f"auth:access:not-before:{user_id}"
+
     async def is_active(self, token: str, claims: AccessClaims) -> bool:
         if await self._redis.get(self._revoked_key(claims.token_id)):
+            return False
+        # 修改密码等操作会使该用户此前签发的全部令牌失效（按签发时间判断）。
+        not_before = await self._redis.get(self._not_before_key(claims.user_id))
+        if not_before is not None and claims.issued_at and claims.issued_at < int(not_before):
             return False
         owner = await self._redis.get(self._active_key(claims.token_id))
         if owner is not None:
@@ -100,6 +108,13 @@ class HybridSessionState:
             raise RuntimeError("登录态撤销失败")
         if local_owner is not None:
             await self._redis.delete(self._active_key(claims.token_id))
+
+    async def revoke_all_before(self, user_id: int, issued_before: int, ttl_seconds: int) -> None:
+        """使 ``issued_before`` 之前签发给该用户的令牌全部失效；TTL 取令牌最长有效期即可。"""
+        if not await self._redis.set(
+            self._not_before_key(user_id), str(issued_before), ex=max(1, ttl_seconds)
+        ):
+            raise RuntimeError("登录态撤销失败")
 
 
 class AccessTokenIssuer:
@@ -146,7 +161,7 @@ class AccessTokenIssuer:
             self._private_key,
             algorithm="RS256",
         )
-        return token, AccessClaims(user_id, token_id, expires_at)
+        return token, AccessClaims(user_id, token_id, expires_at, issued_at)
 
     @property
     def ttl_seconds(self) -> int:
