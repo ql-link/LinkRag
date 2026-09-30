@@ -39,6 +39,7 @@
 | [recall_http_api.md](internals/recall_http_api.md) | 召回 HTTP 入口与会话/鉴权 |
 | [management_foundation.md](internals/management_foundation.md) | Java 管理端迁移基座（F0）与启用门槛 |
 | [identity_users.md](internals/identity_users.md) | B1 身份与用户模块及跨端登录态过渡 |
+| [app_identity.md](internals/app_identity.md) | 接入应用（Link Resume 等）身份层、影子用户与隔离模型 |
 | [java_python_migration_progress.md](internals/java_python_migration_progress.md) | Java 至 Python 各模块的迁移进度与切流门槛 |
 | [b2_b5_migration_verification.md](internals/b2_b5_migration_verification.md) | B2–B5 测试场景、执行层级与当前验收缺口 |
 | [b6_b8_migration.md](internals/b6_b8_migration.md) | B6–B8 对话、用量和管理运维迁移边界 |

@@ -65,6 +65,7 @@ Java 签发的旧令牌尚在有效期内时，继续保留 Java 会话桥接和
 | `MQ_VENDOR` | `rabbitmq` | 当前默认 RabbitMQ；`kafka` 仅保留回滚兼容 |
 | `INTERNAL_API_TOKEN` | 空 | `/api/v1/internal/llm/*` 服务端调用令牌（`Authorization: Bearer <token>`）；为空时这些内部接口一律 401。公网 nginx 另对 `/api/v1/internal/` 返回 404 |
 | `DEBUG_ENDPOINTS_ENABLED` | `false` | `/api/v1/parser/*`、`/api/v1/mq/*` 联调入口；关闭时 404，开启后仍要求 ADMIN。生产保持关闭 |
+| `APPS_API_ENABLED` | `false` | 接入应用服务端 API `/api/v1/apps/*` 总开关；关闭时 404。公网 nginx 对该前缀恒 404，调用方走容器网络。凭证注册见下文“接入应用凭证” |
 | `VECTOR_STORE_TYPE` | `qdrant` | 当前唯一支持 Qdrant；readiness 据此决定是否执行 Qdrant 探测 |
 | `SPARSE_VECTOR_ENABLED` | `true` | 是否在向量化阶段同步生成稀疏向量；关闭后保持旧 dense-only 语义 |
 | `STORAGE_TYPE` | `minio` | 对象存储实现；当前可用实现为 MinIO，OSS 适配器仍为占位 |
@@ -410,6 +411,21 @@ B5 写入还要求 0041 outbox migration 已执行、`B5_INTERNAL_FILE_SERVICE_T
 - `.env` 由 [src/config.py](../../src/config.py) 通过 `Settings`（pydantic-settings）加载。
 - 运行时环境变量**优先级高于** `.env`（部署时通过容器环境变量注入即可覆盖）。
 - 新增配置必须在 `Settings` 中声明，并在 [.env.example](../../.env.example) 补充示例值。
+
+### 接入应用凭证（Link Resume 等）
+
+接入应用以服务端凭证调用 `/api/v1/apps/*`，凭证只能通过 CLI 管理，没有 HTTP 管理接口。在已配置数据库环境变量的容器内执行：
+
+```bash
+python scripts/ops/app_client.py create linkresume --dense-config-id <SYSTEM EMBEDDING 配置 ID> --sparse-config-id <SYSTEM SPARSE_EMBEDDING 配置 ID> --description "Link Resume"
+python scripts/ops/app_client.py rotate-secret linkresume
+python scripts/ops/app_client.py disable linkresume
+python scripts/ops/app_client.py enable linkresume
+```
+
+- `create` 和 `rotate-secret` 只输出一次 `<client_id>.<secret>`，库里只存 bcrypt 哈希。把凭证交给接入应用放进它的密钥配置，不要写进仓库或日志。
+- embedding 配置 ID 必须是 active 的 SYSTEM 配置，且能力要匹配；不满足时 CLI 直接拒绝。
+- 各进程会把校验通过的凭证缓存最多 60 秒。轮换或停用后，旧凭证最迟 60 秒失效；需要立即生效时，重启服务。
 
 ## 相关文档
 

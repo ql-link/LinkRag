@@ -11,7 +11,7 @@ from collections.abc import Callable, Iterator
 import pytest
 from fastapi.routing import APIRoute
 
-from src.api import java_access_auth, management_auth, route_guards
+from src.api import app_auth, java_access_auth, management_auth, route_guards
 
 # 路由自身在处理函数内完成凭证校验（非 Depends），在此登记以免误报。
 _INLINE_AUTH_ROUTES = {
@@ -35,6 +35,7 @@ _AUTH_DEPENDENCIES: set[Callable] = {
     java_access_auth.require_admin,
     management_auth.require_login,
     route_guards.require_internal_service_token,
+    app_auth.require_app_principal,
 }
 
 

@@ -4,7 +4,7 @@
 
 ## 1. 通用约定
 
-- API 前缀按模块划分：`/api/v1/parser`、`/api/v1/mq`、`/api/v1/llm`、`/api/v1/internal/llm`、`/api/v1/rag`、`/api/v1/recall`、`/api/v1/wiki`、`/api/v1/auth`、`/api/v1/user`、`/api/v1/admin/users`。
+- API 前缀按模块划分：`/api/v1/parser`、`/api/v1/mq`、`/api/v1/llm`、`/api/v1/internal/llm`、`/api/v1/rag`、`/api/v1/recall`、`/api/v1/wiki`、`/api/v1/auth`、`/api/v1/user`、`/api/v1/admin/users`、`/api/v1/apps`（接入应用服务端，见 §8）。
 
 - 所有 HTTP 请求可带 `X-Trace-Id` 请求头；未携带时 Python 端生成 UUID。响应会回显本次请求使用的 `X-Trace-Id`，日志上下文同步写入该值。
 - 普通 JSON 响应通常使用 `{code, message, data}` 或模块自定义响应模型。
@@ -13,6 +13,7 @@
 - 路由鉴权覆盖由 `tests/unit/api/test_route_auth_coverage.py` 强制：每条路由必须挂载鉴权依赖，或登记在匿名白名单中。
 - `/api/v1/llm/{generate,generate/stream,embed,rerank,ocr}` 要求 `Authorization: Bearer <access-token>`，用户身份只取自 token；不再接受自报的 `X-User-Id`。
 - `/api/v1/internal/llm/*` 仅供服务端调用：要求 `Authorization: Bearer <INTERNAL_API_TOKEN>`，未配置令牌时一律 `401`；令牌通过后才信任 `X-User-Id`。公网 nginx 对 `/api/v1/internal/` 返回 `404`。
+- `/api/v1/apps/*` 仅接受接入应用凭证（见 §8），公网 nginx 返回 `404`。
 - `/api/v1/parser/*`、`/api/v1/mq/*` 为联调调试入口：`DEBUG_ENDPOINTS_ENABLED=false`（默认）时返回 `404`；开启后仍要求 ADMIN 的 `Authorization: Bearer <access-token>`。
 
 ### B1 身份与用户接口（按路径切流）
@@ -31,7 +32,7 @@
 | POST | `/api/v1/oss-files/{bizType}` | 登录用户（`satoken`；Java 旧行为为匿名，Python 已收紧）；入口默认关闭 | multipart `file`；六类规则见对象存储内部文档。PUBLIC 返回公开 URL，RAW/PRIVATE 返回 key。需确认权限矩阵后设置 `B2_GENERIC_UPLOAD_ENABLED=true` 并按路径切流；关闭时返回 503。 |
 | GET | `/api/v1/oss-files/public/{objectKey}` | 匿名，仅 PUBLIC 桶 | Python 接管此路径且启用 `B2_PUBLIC_PREVIEW_ENABLED` 时，经现有 MinIO 适配器读取公开桶；返回原字节、后缀对应 Content-Type 和 30 天缓存头。非法或不存在 key 返回 404，存储故障返回 503；关闭时返回 503。RAW/PRIVATE 不可由此读取。 |
 | GET | `/api/v1/admin/users` | ADMIN | `page` 默认 1、`size` 默认 10；返回 `items,total,page,pageSize,totalPages`。 |
-| GET | `/api/v1/admin/users?keyword=&role=&status=&sort=&withStats=true` | ADMIN | 管理台列表：`keyword` 匹配用户名 / 昵称 / 邮箱，纯数字或 `#数字` 同时匹配 ID；`role` ADMIN/USER；`status` 0/1；`sort` `created`（默认）/`lastLogin`。带任一筛选或 `withStats=true` 时项额外含 `lastLoginAt,datasetCount,tokens30d`（未删除知识库数、近 30 天总 Token）。 |
+| GET | `/api/v1/admin/users?keyword=&role=&status=&sort=&withStats=true` | ADMIN | 管理台列表：`keyword` 匹配用户名 / 昵称 / 邮箱，纯数字或 `#数字` 同时匹配 ID；`role` ADMIN/USER；`status` 0/1；`sort` `created`（默认）/`lastLogin`；`appCode` 默认 `tolink`，传接入应用编码（如 `linkresume`）查看其影子用户。所有列表项含 `appCode`。带任一筛选或 `withStats=true` 时项额外含 `lastLoginAt,datasetCount,tokens30d`（未删除知识库数、近 30 天总 Token）。 |
 | GET | `/api/v1/admin/users/{user_id}` | ADMIN | 资料 + `lastLoginAt` + `stats{datasetCount,fileCount,fileBytes,conversationCount,conversations30d,promptTokens30d,completionTokens30d,tokens30d,modelConfigCount,modelProviders[]}` + `datasets[{id,name,status,fileCount,fileBytes,updatedAt}]` + `recentLogins[{time,success,source,reason,ip,userAgent}]`（最近 10 条，成功事件与失败记录按时间合并；`reason` 为 `BAD_PASSWORD`/`DISABLED`；0043 未迁移时仅成功事件且无 IP/UA）。不存在返回 404 / 20001。 |
 | POST | `/api/v1/admin/users/{user_id}/password/reset` | ADMIN | 可选 `{newPassword}`（8–64 位）；不传时生成 12 位临时密码，`data:{temporaryPassword}` 只返回这一次（指定密码时为 null）。该用户此前签发的全部令牌立即失效。与状态修改同受 `B1_JAVA_PROTECTED_ROUTES_RETIRED` 控制，关闭时 503。 |
 | PATCH | `/api/v1/admin/users/{user_id}/status` | ADMIN | `{status:0|1}`；`data:null`。Java 受保护路由退场前返回 503，避免禁用状态与旧会话不一致。 |
@@ -543,3 +544,69 @@ RAG SSE 成功终态同构。三路执行期 top_k / 分数阈值 / 融合策略
 响应包含 `doc_id`、`dataset_id`、`original_filename`、递归 `headings`、`root_chunk_ids` 与去重后的完整 `chunks`。每个 heading 含 `heading_key/title/heading_level/direct_chunk_ids/children`；同父 HEADING 与直属 CHUNK_REF 分别按各自 `sort_order` 排序，不声明两类节点间的混合顺序。文档越权或当前 pipeline 非 SUCCESS 时返回 403。
 
 Wiki 错误码见 [error_codes.md §5.1](error_codes.md#51-wiki-端点错误映射)，实现与最终一致性游标语义见 [wiki_heading_tree.md](../internals/wiki_heading_tree.md)。
+
+## 8. Apps API（接入应用服务端）
+
+路由前缀：`/api/v1/apps`。实现：`src/api/routes/apps.py`，设计与隔离模型见 [docs/internals/app_identity.md](../internals/app_identity.md)。
+
+仅供接入应用后端通过容器网络调用，例如 Link Resume 走 `tolink-app-net` 访问 `http://tolink-rag:8000`。公网 nginx 对本前缀返回 `404`。总开关 `APPS_API_ENABLED=false`（默认）时，所有路由返回 `404`。
+
+### 鉴权
+
+| Header | 说明 |
+| --- | --- |
+| `Authorization` | `Bearer <client_id>.<secret>`。凭证由 `scripts/ops/app_client.py create` 生成，只输出一次 |
+| `X-App-User-Id` | 接入应用侧的用户 ID，格式 `[A-Za-z0-9_-]{1,64}`；BIGINT 用十进制字符串传入 |
+
+- 凭证校验通过后，`X-App-User-Id` 映射为该应用命名空间内唯一的影子用户。首次调用时自动创建，之后幂等。
+- 所有数据按影子用户隔离：同一应用的不同用户之间互不可见，与 toLink 用户之间也互不可见。
+- 不接受 Web access token。
+
+错误响应为 `{code, message, data}`，其中 `code` 等于 HTTP 状态码，`data.reason` 为以下之一：
+
+| HTTP | `data.reason` | 场景 |
+| --- | --- | --- |
+| 401 | `APP_CREDENTIAL_INVALID` | 缺少凭证、格式错误、client 不存在或 secret 错误 |
+| 403 | `APP_DISABLED` | 应用已停用 |
+| 403 | `APP_USER_DISABLED` | 影子用户已被管理员禁用 |
+| 400 | `APP_USER_ID_INVALID` | 缺少 `X-App-User-Id` 或格式不合法 |
+
+业务错误沿用管理端的 `BusinessError` 约定。写入类接口受与 Web 端相同的开关约束：`B4_DATASET_WRITES_ENABLED`、`B5_FILE_WRITES_ENABLED`、`B5_DELETE_WRITES_ENABLED`，开关关闭时返回 `503`。
+
+### 路由
+
+| Method | Path | 说明 |
+| --- | --- | --- |
+| `PUT` | `/datasets/default` | 幂等获取或创建该用户的默认资料库（名称为"资料库"，绑定应用登记的 SYSTEM embedding 配置）；已被删除时重建。返回数据集 DTO；应用未登记 embedding 配置时返回 `409` |
+| `POST` | `/files` | multipart 参数：`file`（必填）、`datasetId`（可选，默认使用默认资料库）、`externalRef`（可选，≤128，只在响应中回显，不落库）。上传后自动解析，立即返回文件 DTO（`uploadStatus=UPLOADING`），上传和解析都是异步的 |
+| `GET` | `/files/{fileId}` | 文件 DTO，另附 `parseStatus`（`success`/`failed`/`created`/`null`）、`frontendStatus`（`parse_success`/`parse_failed`/`parsing`/`parse_waiting`）、`parseFailureReason` |
+| `POST` | `/files/{fileId}/parse` | 重新提交解析 |
+| `DELETE` | `/files/{fileId}` | 删除文件，级联清理 chunk、向量、BM25 和对象存储 |
+| `POST` | `/recall` | 纯召回，返回的命中带正文，见下 |
+
+建议的轮询方式：上传后轮询 `GET /files/{fileId}`，直到 `frontendStatus` 为 `parse_success` 或 `parse_failed`。
+
+### POST /api/v1/apps/recall
+
+请求体（未知字段返回 `400`）：
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `query` | string，1–2000 | 必填，不能为空白 |
+| `datasetIds` | int[]，≤20 | 可选；省略时召回该用户全部有效数据集；包含他人或无效数据集时返回 `403` |
+| `fileIds` | int[]，≤100 | 可选，限定在这些文件内召回；必须全部属于该用户且在召回数据集范围内，否则返回 `403`，不做静默过滤 |
+| `topK` | int，1–50 | 可选，覆盖数据集配置里的融合结果条数 |
+
+响应 `data`：
+
+```json
+{
+  "hits": [
+    {"chunkId": "…", "fileId": 3001, "datasetId": 901, "score": 0.83,
+     "fileName": "resume.pdf", "content": "…chunk 正文…"}
+  ],
+  "failedSources": []
+}
+```
+
+`fileId` 即上传返回的文件 `id`。正文按影子用户回读，已删除或不可见的命中会被丢弃。

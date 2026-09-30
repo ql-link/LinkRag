@@ -10,8 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.management_auth import CurrentUser, require_login
 from src.api.management_http import ApiResult, ManagementRouter, success
 from src.application import chat_service
+from src.application.chunk_details import load_owned_chunk_details
 from src.application.document_files import owned_file
-from src.core.storage.document_visibility import document_original_file_table
 from src.database import get_db
 from src.models.chunk_record import ChunkRecordDB
 
@@ -156,45 +156,5 @@ async def batch_chunk_details(
     user: Annotated[CurrentUser, Depends(require_login)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ApiResult[list[dict]]:
-    chunk_ids = list(dict.fromkeys(value.strip() for value in body.chunkIds if value.strip()))
-    if not chunk_ids:
-        return success([])
-    rows = (
-        await db.scalars(
-            select(ChunkRecordDB).where(
-                ChunkRecordDB.chunk_id.in_(chunk_ids),
-                ChunkRecordDB.user_id == user.user_id,
-                ChunkRecordDB.lifecycle_status == "ACTIVE",
-            )
-        )
-    ).all()
-    chunks = {row.chunk_id: row for row in rows if row.content and row.content.strip()}
-    doc_ids = {row.doc_id for row in chunks.values()}
-    filenames: dict[int, str] = {}
-    if doc_ids:
-        filename_rows = (
-            await db.execute(
-                select(
-                    document_original_file_table.c.id,
-                    document_original_file_table.c.original_filename,
-                ).where(
-                    document_original_file_table.c.id.in_(doc_ids),
-                    document_original_file_table.c.user_id == user.user_id,
-                )
-            )
-        ).all()
-        filenames = dict((int(row[0]), str(row[1])) for row in filename_rows)
-    return success(
-        [
-            {
-                "chunkId": chunk_id,
-                "documentId": chunks[chunk_id].doc_id,
-                "fileName": filenames.get(chunks[chunk_id].doc_id)
-                or f"文档 #{chunks[chunk_id].doc_id}",
-                "content": chunks[chunk_id].content,
-                "score": None,
-            }
-            for chunk_id in chunk_ids
-            if chunk_id in chunks
-        ]
-    )
+    details = await load_owned_chunk_details(db, user.user_id, body.chunkIds)
+    return success([item | {"score": None} for item in details])

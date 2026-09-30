@@ -50,7 +50,11 @@ class SqlUserAuthorizationRepository:
             row = (
                 (
                     await session.execute(
-                        text("SELECT id, role, status FROM sys_user WHERE id = :user_id"),
+                        # 接入应用影子用户不持有 Web 会话：按不存在处理。
+                        text(
+                            "SELECT id, role, status FROM sys_user "
+                            "WHERE id = :user_id AND app_code = 'tolink'"
+                        ),
                         {"user_id": user_id},
                     )
                 )

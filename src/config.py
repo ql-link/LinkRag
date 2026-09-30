@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     INTERNAL_API_TOKEN: Optional[str] = None
     # /api/v1/mq/*、/api/v1/parser/* 联调调试入口；默认关闭（404），开启后仍要求 ADMIN。
     DEBUG_ENDPOINTS_ENABLED: bool = False
+    # 接入应用服务端 API（/api/v1/apps/*）总开关；关闭时 404。凭证经 scripts/ops/app_client.py 管理。
+    APPS_API_ENABLED: bool = False
 
     # 日志文件落盘（对齐 Java 端：logs/<YYYY-MM-DD>/<service>.log + <service>-error.log）。
     # 每天 0 点切分，按目录归档；保留 LOG_RETENTION_DAYS 天后自动清理。

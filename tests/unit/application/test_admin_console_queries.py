@@ -42,6 +42,18 @@ async def db(monkeypatch):
             ),
             {"now": now, "old": old},
         )
+        # 与 0044 一致：存量行经列默认值归为 tolink；再放入一个接入应用影子用户，
+        # 验证默认列表 / 看板 / 总览都不计入它。
+        await conn.execute(
+            text("ALTER TABLE sys_user ADD COLUMN app_code TEXT NOT NULL DEFAULT 'tolink'")
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO sys_user (id,username,nickname,role,status,created_at,app_code) "
+                "VALUES (10009,'linkresume_abc','linkresume 用户','USER',1,:now,'linkresume')"
+            ),
+            {"now": now},
+        )
         await conn.execute(
             text(
                 "INSERT INTO dataset VALUES (1,10001,'产品知识库','ACTIVE',0,:now),(2,10001,'旧库','ACTIVE',1,:now),"
@@ -100,6 +112,12 @@ async def test_search_users_filters_and_stats(db):
     assert (await identity_users.search_users(1, 10, status=0))["items"][0]["username"] == "sun"
     by_login = await identity_users.search_users(1, 10, sort="lastLogin")
     assert by_login["items"][0]["id"] == 10001  # 从未登录排在后面
+    # 默认只含 tolink 用户（上面 total==3 已排除影子用户）；按 appCode 可单独查看影子用户。
+    shadow = await identity_users.search_users(1, 10, app_code="linkresume")
+    assert shadow["total"] == 1
+    assert shadow["items"][0]["id"] == 10009
+    assert shadow["items"][0]["appCode"] == "linkresume"
+    assert first["appCode"] == "tolink"
 
 
 @pytest.mark.asyncio

@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 
 from src.api.management_auth import AccessClaims
 from src.api.management_http import BusinessError
+from src.application.app_identity import TOLINK_APP_CODE
 from src.application.identity_session import AccessTokenIssuer, HybridSessionState
 from src.cache.fenced_json_cache import FencedJsonCacheStore
 from src.database import get_db_context, write_transaction
@@ -44,11 +45,14 @@ def _profile(row: Mapping[Any, Any]) -> dict:
         "status": int(row["status"]),
         "bio": row.get("bio"),
         "team": row.get("team"),
+        "appCode": row.get("app_code") or TOLINK_APP_CODE,
         "createdAt": _iso(row.get("created_at")),
     }
 
 
-_PROFILE_COLUMNS = "id,username,nickname,email,phone,avatar_url,role,status,bio,team,created_at"
+_PROFILE_COLUMNS = (
+    "id,username,nickname,email,phone,avatar_url,role,status,bio,team,app_code,created_at"
+)
 
 
 def _shanghai_now() -> datetime:
@@ -164,7 +168,7 @@ class IdentityUsers:
                 (
                     await session.execute(
                         text(
-                            "SELECT id,password_hash,role,status FROM sys_user "
+                            "SELECT id,password_hash,role,status,app_code FROM sys_user "
                             "WHERE username=:account OR email=:account LIMIT 1"
                         ),
                         {"account": account},
@@ -173,7 +177,8 @@ class IdentityUsers:
                 .mappings()
                 .one_or_none()
             )
-        if row is None:
+        # 接入应用影子用户不是登录账号：与不存在账号同一响应，不记失败、不做 bcrypt。
+        if row is None or row["app_code"] != TOLINK_APP_CODE:
             raise BusinessError(20001, "用户不存在", 404)
         valid = await asyncio.to_thread(
             bcrypt.checkpw,
@@ -214,8 +219,8 @@ class IdentityUsers:
                 result = await session.execute(
                     text(
                         "INSERT INTO sys_user "
-                        "(username,password_hash,nickname,email,role,status,last_login_at) "
-                        "VALUES (:username,:password_hash,:nickname,:email,'USER',1,:when)"
+                        "(username,password_hash,nickname,email,role,status,last_login_at,app_code) "
+                        "VALUES (:username,:password_hash,:nickname,:email,'USER',1,:when,'tolink')"
                     ),
                     {
                         "username": username,
@@ -380,12 +385,19 @@ class IdentityUsers:
 
     async def list_users(self, page: int, size: int) -> dict:
         async with get_db_context() as session:
-            total = int((await session.execute(text("SELECT COUNT(*) FROM sys_user"))).scalar_one())
+            # 默认列表只含本系统用户；接入应用影子用户通过 appCode 筛选查看。
+            total = int(
+                (
+                    await session.execute(
+                        text("SELECT COUNT(*) FROM sys_user WHERE app_code='tolink'")
+                    )
+                ).scalar_one()
+            )
             rows = (
                 (
                     await session.execute(
                         text(
-                            f"SELECT {_PROFILE_COLUMNS} FROM sys_user "
+                            f"SELECT {_PROFILE_COLUMNS} FROM sys_user WHERE app_code='tolink' "
                             "ORDER BY created_at DESC,id DESC LIMIT :size OFFSET :offset"
                         ),
                         {"size": size, "offset": (page - 1) * size},
@@ -472,9 +484,10 @@ async def search_users(
     role: str | None = None,
     status: int | None = None,
     sort: str = "created",
+    app_code: str = TOLINK_APP_CODE,
 ) -> dict:
     """管理台用户列表：关键字（用户名 / 昵称 / 邮箱 / ID）+ 角色 / 状态筛选，附带知识库数、近 30 天 Token 与最近登录。"""
-    where, params = ["1=1"], {}
+    where, params = ["u.app_code=:app_code"], {"app_code": app_code}
     if keyword and keyword.strip():
         kw = keyword.strip()
         params["kw"] = f"%{kw}%"
@@ -502,7 +515,8 @@ async def search_users(
                 await session.execute(
                     text(
                         f"SELECT u.id,u.username,u.nickname,u.email,u.phone,u.avatar_url,u.role,u.status,"
-                        f"u.bio,u.team,u.created_at,u.last_login_at FROM sys_user u WHERE {cond} "
+                        f"u.bio,u.team,u.app_code,u.created_at,u.last_login_at "
+                        f"FROM sys_user u WHERE {cond} "
                         f"ORDER BY {_ADMIN_SORTS.get(sort, _ADMIN_SORTS['created'])} "
                         "LIMIT :size OFFSET :offset"
                     ),

@@ -1,8 +1,7 @@
-"""Java 管理用户表的只读身份查询。
+"""``sys_user`` 的只读身份查询。
 
-``sys_user`` 的 DDL 与写入仍归 Java 管理。Python 只定义轻量 TableClause，避免把
-共享业务表纳入本仓 Alembic metadata，同时在验证 Java access JWT 后读取当前
-``status`` 与 ``role``，不信任 token 内的角色快照。
+只定义轻量 TableClause，在验证 access JWT 后读取当前 ``status`` 与 ``role``，
+不信任 token 内的角色快照；接入应用影子用户（``app_code <> 'tolink'``）一律视为无效。
 """
 
 from __future__ import annotations
@@ -17,6 +16,7 @@ sys_user_table = table(
     column("id", BigInteger),
     column("role", String),
     column("status", Integer),
+    column("app_code", String),
 )
 
 
@@ -31,13 +31,17 @@ class CurrentUserIdentity:
 async def load_current_user_identity(
     session: AsyncSession, user_id: int
 ) -> CurrentUserIdentity | None:
-    """读取启用用户的当前角色；不存在或禁用统一返回 ``None``。"""
+    """读取启用用户的当前角色；不存在、禁用或属于接入应用统一返回 ``None``。"""
 
     statement = select(
         sys_user_table.c.id,
         sys_user_table.c.role,
         sys_user_table.c.status,
-    ).where(sys_user_table.c.id == user_id)
+    ).where(
+        sys_user_table.c.id == user_id,
+        # 接入应用影子用户不持有 Web access token；即使出现签发漏洞也在此拒绝。
+        sys_user_table.c.app_code == "tolink",
+    )
     row = (await session.execute(statement)).first()
     if row is None or int(row.status) != 1:
         return None

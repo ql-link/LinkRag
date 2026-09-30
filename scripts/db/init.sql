@@ -8,7 +8,7 @@
 --   - ORM 模型与本文件都是逻辑/测试镜像，不能反向替代 migration；
 --   - 修改字段或种子数据必须先新增 migration，再同步 ORM 与本文件。
 -- 同步时机：每条会改动表结构的 migration 落库时一并更新本文件。
--- 末次同步：migration 0042_20260929_sys_user_profile_fields（sys_user 新增 bio / team）
+-- 末次同步：migration 0044_20260930_app_client_identity（接入应用凭证 / 用户映射，sys_user 新增 app_code）
 -- 0038 统一数据库及全部基础表为 utf8mb4 / utf8mb4_unicode_ci。
 -- 0036 存量升级自动复用旧系统预设密文；本快照仅表达升级后的最终结构与种子目录。
 -- 备注：0032_20260702_provider_icon_fields 兼容历史 dev 库中 provider icon 误用 0031 revision 的状态；
@@ -35,10 +35,12 @@ CREATE TABLE IF NOT EXISTS sys_user (
     last_login_at   DATETIME       COMMENT '最后登录时间',
     created_at      DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at      DATETIME       NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    app_code        VARCHAR(32)    NOT NULL DEFAULT 'tolink' COMMENT '所属应用：tolink 为本系统用户，其余为接入应用影子用户',
 
     UNIQUE KEY uk_username (username),
     UNIQUE KEY uk_email (email),
-    INDEX idx_sys_user_created_at (created_at)
+    INDEX idx_sys_user_created_at (created_at),
+    INDEX idx_sys_user_app_code (app_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '系统用户表';
 
 -- 1.1 用户成功登录事件表
@@ -64,6 +66,37 @@ CREATE TABLE IF NOT EXISTS user_login_failure (
 
     INDEX idx_user_login_failure_user_created (user_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '用户登录失败记录表';
+
+-- 1.3 接入应用凭证表（migration 0044）
+CREATE TABLE IF NOT EXISTS app_client (
+    id                       BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '应用唯一标识',
+    app_code                 VARCHAR(32)  NOT NULL COMMENT '应用编码，如 linkresume',
+    client_id                VARCHAR(64)  NOT NULL COMMENT '公开凭证标识',
+    secret_hash              VARCHAR(255) NOT NULL COMMENT '凭证密钥 bcrypt 哈希',
+    status                   VARCHAR(20)  NOT NULL DEFAULT 'ACTIVE' COMMENT '状态：ACTIVE / DISABLED',
+    default_dense_config_id  BIGINT UNSIGNED COMMENT '默认资料库 dense embedding 配置（SYSTEM scope）',
+    default_sparse_config_id BIGINT UNSIGNED COMMENT '默认资料库 sparse embedding 配置（SYSTEM scope）',
+    description              VARCHAR(255) COMMENT '应用说明',
+    created_at               DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at               DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+
+    UNIQUE KEY uk_app_client_code (app_code),
+    UNIQUE KEY uk_app_client_client_id (client_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '接入应用凭证表';
+
+-- 1.4 接入应用用户与影子用户映射表（migration 0044）
+CREATE TABLE IF NOT EXISTS app_user_binding (
+    id                 BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '绑定唯一标识',
+    app_code           VARCHAR(32) NOT NULL COMMENT '接入应用编码',
+    external_user_id   VARCHAR(64) CHARACTER SET utf8mb4 COLLATE utf8mb4_bin NOT NULL COMMENT '接入应用侧用户 ID（utf8mb4_bin，区分大小写）',
+    user_id            BIGINT UNSIGNED NOT NULL COMMENT '影子 sys_user.id',
+    default_dataset_id BIGINT UNSIGNED COMMENT '默认资料库 dataset.id',
+    created_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+
+    UNIQUE KEY uk_app_user_binding_external (app_code, external_user_id),
+    UNIQUE KEY uk_app_user_binding_user (user_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '接入应用用户与影子用户映射表';
 
 -- 2. LLM 系统级厂商配置表
 CREATE TABLE IF NOT EXISTS llm_system_provider (

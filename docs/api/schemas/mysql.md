@@ -11,11 +11,11 @@ ORM 或 `scripts/db/init.sql` 与 migration 不一致时，以 migration 为准�
 
 ## 表清单
 
-按业务域共 24 张表：
+按业务域共 26 张表：
 
 | 业务域 | 表 | 主键 ID 起始 |
 | --- | --- | --- |
-| [用户](#1-用户) | `sys_user`, `user_login_event`, `user_login_failure` | 10000 |
+| [用户](#1-用户) | `sys_user`, `user_login_event`, `user_login_failure`, `app_client`, `app_user_binding` | 10000 |
 | [LLM 配置与用量](#2-llm-配置与用量) | `llm_system_provider`, `llm_provider_model`, `llm_provider_model_sync_job`, `llm_provider_model_sync_candidate`, `llm_model_config`, `llm_capability_default`, `llm_usage_log` | 10000 |
 | [数据集与对话](#3-数据集与对话) | `dataset`, `dataset_parse_config`, `chat_conversation`, `chat_message` | 10000 |
 | [文档解析](#4-文档解析) | `document_original_file`, `document_parse_file`, `document_parsed_log`, `document_parse_pipeline` | 10000 |
@@ -51,8 +51,13 @@ ORM：（未在 `src/models/` 中映射，由业务侧管理）
 | `status` | TINYINT | 1=正常，0=禁用 |
 | `last_login_at` | DATETIME | 最后登录时间 |
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
+| `app_code` | VARCHAR(32) | 所属应用，默认 `tolink`；其余值为接入应用影子用户（0044） |
 
-索引：`uk_username`, `uk_email`。
+索引：`uk_username`, `uk_email`, `idx_sys_user_created_at`, `idx_sys_user_app_code`。
+
+接入应用影子用户（`app_code <> 'tolink'`）：`username` 为 `{app_code}_{20 位随机 hex}`（不可预测，防止 Web 注册抢注；映射只以 `app_user_binding` 为准），
+`password_hash` 为不可校验的哨兵值 `!app-shadow`，`email` 为空。它不能密码登录，也不能用 Web token 通过鉴权。
+管理端的用户列表、看板和总览默认只统计 `tolink` 用户。
 
 ### `user_login_event` — 用户成功登录事件表
 
@@ -83,6 +88,36 @@ ORM：（未映射，由 `src/application/identity_users.py` 直接读写）
 | `created_at` | DATETIME | 失败时间（Asia/Shanghai） |
 
 索引：`idx_user_login_failure_user_created (user_id, created_at)`。
+
+### `app_client` — 接入应用凭证表（0044）
+
+ORM：（未映射，由 `src/application/app_identity.py` 直接读写；运维经 `scripts/ops/app_client.py`）
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | BIGINT UNSIGNED PK | 应用唯一标识 |
+| `app_code` | VARCHAR(32) UNIQUE | 应用编码，如 `linkresume`；`tolink` 为保留值，不入表 |
+| `client_id` | VARCHAR(64) UNIQUE | 公开凭证标识；轮换时随 secret 一起更换 |
+| `secret_hash` | VARCHAR(255) | 凭证密钥 bcrypt 哈希；明文仅在创建 / 轮换时输出一次 |
+| `status` | VARCHAR(20) | `ACTIVE` / `DISABLED` |
+| `default_dense_config_id` | BIGINT UNSIGNED NULL | 默认资料库 dense embedding（须为 active SYSTEM `EMBEDDING` 配置） |
+| `default_sparse_config_id` | BIGINT UNSIGNED NULL | 默认资料库 sparse embedding（须为 active SYSTEM `SPARSE_EMBEDDING` 配置） |
+| `description` | VARCHAR(255) NULL | 应用说明 |
+| `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
+
+### `app_user_binding` — 接入应用用户映射表（0044）
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | BIGINT UNSIGNED PK | 绑定唯一标识 |
+| `app_code` | VARCHAR(32) | 接入应用编码 |
+| `external_user_id` | VARCHAR(64) `utf8mb4_bin` | 接入应用侧用户 ID（`[A-Za-z0-9_-]{1,64}`），**区分大小写** |
+| `user_id` | BIGINT UNSIGNED UNIQUE | 影子 `sys_user.id` |
+| `default_dataset_id` | BIGINT UNSIGNED NULL | 默认资料库 `dataset.id`，首次 `PUT /api/v1/apps/datasets/default` 写入 |
+| `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
+
+索引：`uk_app_user_binding_external (app_code, external_user_id)`（幂等映射与并发首建兜底）、
+`uk_app_user_binding_user (user_id)`。
 
 ---
 
