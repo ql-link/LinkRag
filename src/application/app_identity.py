@@ -36,6 +36,10 @@ _APP_CODE = re.compile(r"^[a-z][a-z0-9_]{1,31}$")
 _CREDENTIAL_CACHE_TTL_SECONDS = 60.0
 _CREDENTIAL_CACHE_SIZE = 64
 _BINDING_REREAD_DELAYS = (0.0, 0.05, 0.2)
+# 与真实凭证同 cost 的占位哈希，仅用于未知 client_id 的等时校验。
+_DUMMY_SECRET_HASH = bcrypt.hashpw(b"app-client-timing-dummy", bcrypt.gensalt()).decode(
+    "ascii"
+)
 
 
 class AppIdentityError(Exception):
@@ -168,17 +172,17 @@ async def verify_app_credential(token: str) -> AppClient:
             .mappings()
             .one_or_none()
         )
-    if row is None:
-        raise AppIdentityError(401, "APP_CREDENTIAL_INVALID", "invalid app credential")
+    # 未知 client_id 也走一次 bcrypt，避免响应时间暴露 client_id 是否存在。
+    secret_hash = str(row["secret_hash"]) if row is not None else _DUMMY_SECRET_HASH
     try:
         valid = await asyncio.to_thread(
             bcrypt.checkpw,
             secret.encode("utf-8"),
-            str(row["secret_hash"]).encode("utf-8"),
+            secret_hash.encode("utf-8"),
         )
     except ValueError:
         valid = False
-    if not valid:
+    if row is None or not valid:
         raise AppIdentityError(401, "APP_CREDENTIAL_INVALID", "invalid app credential")
     if row["status"] != "ACTIVE":
         raise AppIdentityError(403, "APP_DISABLED", "app client disabled")
