@@ -280,6 +280,125 @@ def _excluded_markdown_positions(markdown: str) -> bytearray:
     return excluded
 
 
+_RENAME_ATTEMPTS = 5
+_RENAME_MAX_INDEX = 1000
+
+
+def _renamed(filename: str, index: int) -> str:
+    """``简历.pdf`` → ``简历 (2).pdf``；保持后缀，整体不超过 255 字符。"""
+
+    stem, dot, ext = filename.rpartition(".")
+    if not dot:
+        stem, ext = filename, ""
+    tail = f" ({index})" + (f".{ext}" if dot else "")
+    return stem[: 255 - len(tail)] + tail
+
+
+async def _next_free_name(db: Any, user_id: int, dataset_id: int, filename: str, suffix: str) -> str:
+    rows = await db.execute(
+        text("""
+            SELECT original_filename FROM document_original_file
+            WHERE dataset_id=:did AND user_id=:uid AND file_suffix=:suffix AND is_deleted=0
+        """),
+        {"did": dataset_id, "uid": user_id, "suffix": suffix},
+    )
+    taken = {str(row[0]) for row in rows}
+    for index in range(2, _RENAME_MAX_INDEX):
+        candidate = _renamed(filename, index)
+        if candidate not in taken:
+            return candidate
+    raise BusinessError(400, "当前数据集下同名原文件过多，请先重命名后再上传", 400)
+
+
+async def _claim_file_record(
+    user_id: int,
+    dataset_id: int,
+    record_filename: str,
+    suffix: str,
+    size: int,
+    content_type: str | None,
+    *,
+    rename: bool,
+) -> tuple[int, Any, str]:
+    """占用（或复用失败记录的）原文件行，返回 ``(file_id, row, 最终文件名)``。"""
+
+    async with write_transaction() as db:
+        await owned_dataset(db, user_id, dataset_id)
+        existing = (
+            (
+                await db.execute(
+                    text("""
+            SELECT id,upload_status FROM document_original_file
+            WHERE dataset_id=:did AND user_id=:uid AND original_filename=:name
+              AND file_suffix=:suffix AND is_deleted=0 FOR UPDATE
+        """),
+                    {
+                        "did": dataset_id,
+                        "uid": user_id,
+                        "name": record_filename,
+                        "suffix": suffix,
+                    },
+                )
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if existing and existing["upload_status"] != "failed":
+            if not rename:
+                raise BusinessError(400, "当前数据集下已存在同名原文件，请先重命名后再上传", 400)
+            record_filename = await _next_free_name(
+                db, user_id, dataset_id, record_filename, suffix
+            )
+            existing = None
+        if existing:
+            file_id = int(existing["id"])
+            await db.execute(
+                text("""
+                UPDATE document_original_file
+                SET upload_status='uploading',is_upload_success=0,failure_reason=NULL,
+                    object_key=NULL,file_url=NULL,file_size=:size,content_type=:mime,
+                    bucket_name=:bucket
+                WHERE id=:fid AND upload_status='failed'
+            """),
+                {
+                    "size": size,
+                    "mime": content_type,
+                    "bucket": settings.MINIO_RAW_BUCKET,
+                    "fid": file_id,
+                },
+            )
+        else:
+            result = await db.execute(
+                text("""
+                INSERT INTO document_original_file
+                  (dataset_id,user_id,original_filename,file_suffix,file_size,content_type,
+                   bucket_name,upload_status,is_upload_success,is_deleted,deleted_seq)
+                VALUES(:did,:uid,:name,:suffix,:size,:mime,:bucket,'uploading',0,0,0)
+            """),
+                {
+                    "did": dataset_id,
+                    "uid": user_id,
+                    "name": record_filename,
+                    "suffix": suffix,
+                    "size": size,
+                    "mime": content_type,
+                    "bucket": settings.MINIO_RAW_BUCKET,
+                },
+            )
+            file_id = int(cast(CursorResult[Any], result).lastrowid)
+        created_row = (
+            (
+                await db.execute(
+                    text("SELECT * FROM document_original_file WHERE id=:fid"),
+                    {"fid": file_id},
+                )
+            )
+            .mappings()
+            .one()
+        )
+    return file_id, created_row, record_filename
+
+
 async def upload(
     user_id: int,
     dataset_id: int,
@@ -292,7 +411,12 @@ async def upload(
     assets: list[UploadFile] | None = None,
     asset_relative_paths: list[str] | None = None,
     asset_inventory_paths: list[str] | None = None,
+    rename_on_conflict: bool = False,
 ) -> dict:
+    """``rename_on_conflict``：同名且未失败的原文件已存在时自动改名为 ``name (n).ext``，
+    而不是返回 400。仅接入应用 API 开启（其用户无法感知资料库内已有文件名）；
+    Web 端保持拒绝重名，Markdown 资源包不改名（路径与图片引用绑定）。
+    """
     # Reject an unrelated dataset before accepting and spooling multipart data.
     # Recheck ownership under the write transaction below to cover deletion races.
     async with get_db_context() as db:
@@ -368,75 +492,24 @@ async def upload(
         else:
             _validate_plain_markdown(path, suffix)
         record_filename = plan.document_path if plan else filename
-        async with write_transaction() as db:
-            await owned_dataset(db, user_id, dataset_id)
-            existing = (
-                (
-                    await db.execute(
-                        text("""
-                SELECT id,upload_status FROM document_original_file
-                WHERE dataset_id=:did AND user_id=:uid AND original_filename=:name
-                  AND file_suffix=:suffix AND is_deleted=0 FOR UPDATE
-            """),
-                        {
-                            "did": dataset_id,
-                            "uid": user_id,
-                            "name": record_filename,
-                            "suffix": suffix,
-                        },
-                    )
+        rename = rename_on_conflict and plan is None
+        attempts = _RENAME_ATTEMPTS if rename else 1
+        for attempt in range(attempts):
+            try:
+                file_id, created_row, record_filename = await _claim_file_record(
+                    user_id,
+                    dataset_id,
+                    record_filename,
+                    suffix,
+                    size,
+                    file.content_type,
+                    rename=rename,
                 )
-                .mappings()
-                .one_or_none()
-            )
-            if existing and existing["upload_status"] != "failed":
-                raise BusinessError(400, "当前数据集下已存在同名原文件，请先重命名后再上传", 400)
-            if existing:
-                file_id = int(existing["id"])
-                await db.execute(
-                    text("""
-                    UPDATE document_original_file
-                    SET upload_status='uploading',is_upload_success=0,failure_reason=NULL,
-                        object_key=NULL,file_url=NULL,file_size=:size,content_type=:mime,
-                        bucket_name=:bucket
-                    WHERE id=:fid AND upload_status='failed'
-                """),
-                    {
-                        "size": size,
-                        "mime": file.content_type,
-                        "bucket": settings.MINIO_RAW_BUCKET,
-                        "fid": file_id,
-                    },
-                )
-            else:
-                result = await db.execute(
-                    text("""
-                    INSERT INTO document_original_file
-                      (dataset_id,user_id,original_filename,file_suffix,file_size,content_type,
-                       bucket_name,upload_status,is_upload_success,is_deleted,deleted_seq)
-                    VALUES(:did,:uid,:name,:suffix,:size,:mime,:bucket,'uploading',0,0,0)
-                """),
-                    {
-                        "did": dataset_id,
-                        "uid": user_id,
-                        "name": record_filename,
-                        "suffix": suffix,
-                        "size": size,
-                        "mime": file.content_type,
-                        "bucket": settings.MINIO_RAW_BUCKET,
-                    },
-                )
-                file_id = int(cast(CursorResult[Any], result).lastrowid)
-            created_row = (
-                (
-                    await db.execute(
-                        text("SELECT * FROM document_original_file WHERE id=:fid"),
-                        {"fid": file_id},
-                    )
-                )
-                .mappings()
-                .one()
-            )
+                break
+            except IntegrityError:
+                # 并发改名撞上同一候选名：唯一键兜底，下一轮会看到对方已占用的名字。
+                if attempt + 1 >= attempts:
+                    raise
         now = datetime.now(ZoneInfo("Asia/Shanghai"))
         # The file ID keeps a same-name reupload from overwriting a soft-
         # deleted RAW original from the same day.

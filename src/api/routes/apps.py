@@ -129,8 +129,14 @@ async def upload_file(
     if datasetId is None:
         _require(settings.B4_DATASET_WRITES_ENABLED, "数据集写入尚未切流")
         datasetId = await _ensure_default_dataset(principal)
+    # 接入应用用户看不到资料库内已有文件名：重名自动改为 ``name (n).ext``，不返回 400。
     result = await upload(
-        principal.user_id, datasetId, file, parse_immediately=True, executor=executor
+        principal.user_id,
+        datasetId,
+        file,
+        parse_immediately=True,
+        executor=executor,
+        rename_on_conflict=True,
     )
     return success(result | {"externalRef": externalRef})
 

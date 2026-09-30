@@ -578,7 +578,7 @@ Wiki 错误码见 [error_codes.md §5.1](error_codes.md#51-wiki-端点错误映�
 | Method | Path | 说明 |
 | --- | --- | --- |
 | `PUT` | `/datasets/default` | 幂等获取或创建该用户的默认资料库（名称为"资料库"，绑定应用登记的 SYSTEM embedding 配置）；已被删除时重建。返回数据集 DTO；应用未登记 embedding 配置时返回 `409` |
-| `POST` | `/files` | multipart 参数：`file`（必填）、`datasetId`（可选，默认使用默认资料库）、`externalRef`（可选，≤128，只在响应中回显，不落库）。上传后自动解析，立即返回文件 DTO（`uploadStatus=UPLOADING`），上传和解析都是异步的 |
+| `POST` | `/files` | multipart 参数：`file`（必填）、`datasetId`（可选，默认使用默认资料库）、`externalRef`（可选，≤128，只在响应中回显，不落库）。上传后自动解析，立即返回文件 DTO（`uploadStatus=UPLOADING`），上传和解析都是异步的。同一数据集已有同名文件时自动改名为 `name (n).ext`（n 从 2 起），以响应中的 `originalFilename` 为准；同名记录上次上传失败时复用该记录，不改名。Web 端上传仍对重名返回 `400` |
 | `GET` | `/files/{fileId}` | 文件 DTO，另附 `parseStatus`（`success`/`failed`/`created`/`null`）、`frontendStatus`（`parse_success`/`parse_failed`/`parsing`/`parse_waiting`）、`parseFailureReason` |
 | `POST` | `/files/{fileId}/parse` | 重新提交解析 |
 | `DELETE` | `/files/{fileId}` | 删除文件，级联清理 chunk、向量、BM25 和对象存储 |

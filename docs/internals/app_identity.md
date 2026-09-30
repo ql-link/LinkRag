@@ -37,6 +37,7 @@
 
 - **创建**：外部用户第一次调用时，在同一个事务里插入 `sys_user` 和 `app_user_binding`。两个请求并发首建时，唯一键会拦下其中一个，失败的一方短暂重读，拿到获胜方写入的绑定。
 - **默认资料库**：第一次调用 `PUT /datasets/default`（或上传时没有指定 `datasetId`）时，按应用登记的 SYSTEM embedding 配置创建，并写入 `app_user_binding.default_dataset_id`。如果这个数据集后来被删除，会自动重建。
+- **重名上传**：`/apps/files` 以 `rename_on_conflict=True` 调用 `document_uploads.upload`，同名时改名为 `name (n).ext`，Web 端不开启。并发同名上传靠 `uk_dof_name_suffix_seq` 兜底，冲突方最多重试 5 次重新选名。Markdown 资源包不改名。
 - **禁用**：管理员在后台禁用影子用户（`sys_user.status=0`）后，`/apps/*` 返回 403 `APP_USER_DISABLED`，已有数据保留。
 - **应用停用**：执行 `scripts/ops/app_client.py disable` 后，该应用的所有请求都返回 403 `APP_DISABLED`，最多有 60 秒的缓存延迟。
 
