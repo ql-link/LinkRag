@@ -1,0 +1,4 @@
+# 镜像只需要构建产物与默认 Nginx 配置
+*
+!dist/
+!deploy/nginx.default.conf

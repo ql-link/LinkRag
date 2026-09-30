@@ -1,12 +1,13 @@
 # 云服务器应用栈。
-# 包含 Java 管理端、Python RAG 服务、前端，以及跟随应用部署的 Promtail。
+# 包含 Python 后端（RAG + 全部管理接口）、前端，以及跟随应用部署的 Promtail。
+# Java 管理端已下线；前端 Nginx 需把 /api/ 全部转发到 tolink-rag:8000。
 # MySQL / Redis / MinIO / Qdrant / Manticore / Loki 已部署在云服务器的
 # tolink-app-net 内网；RabbitMQ 与应用同机部署。
 #
 # 用法示例：
 #   cd deploy/cloud-server
 #   HOST_VPN_IP=100.86.10.52 \
-#   RAG_TAG=a0c0592a SERVICE_TAG=f3c39554 WEB_TAG=4964c6ae \
+#   RAG_TAG=a0c0592a WEB_TAG=4964c6ae \
 #   docker compose up -d
 
 services:
@@ -33,29 +34,6 @@ services:
       start_period: 20s
     mem_limit: 768m
     cpus: 1
-
-  tolink-service:
-    image: tolink-service:${SERVICE_TAG:-latest}
-    container_name: tolink-service
-    restart: always
-    env_file:
-      - ${RABBITMQ_APP_ENV_FILE:-/opt/tolink/rabbitmq/app.env}
-    environment:
-      - TZ=Asia/Shanghai
-      - SPRING_PROFILES_ACTIVE=${SPRING_PROFILES_ACTIVE:-prod}
-      - RECALL_SESSION_STREAM_BASE_URL=${RECALL_SESSION_STREAM_BASE_URL:-https://linkrag.cn}
-      - OBSERVABILITY_LOKI_BASE_URL=${OBSERVABILITY_LOKI_BASE_URL:-http://tolink-loki:3100}
-    volumes:
-      # application-prod.yml 已打入镜像；这里只挂载服务器长期保存的密钥覆盖文件。
-      - ${SERVICE_SECRET_CONFIG_FILE:-/opt/tolink/toLink-Service/config/application-prod-local.yml}:/app/config/${SERVICE_SECRET_CONFIG_NAME:-application-prod-local.yml}:ro
-      - ${SERVICE_LOG_PATH:-/opt/tolink/toLink-Service/logs}:/app/logs
-    ports:
-      - "${SERVICE_HTTP_PORT:-8080}:8080"
-    networks:
-      - tolink-app-net
-    depends_on:
-      rabbitmq:
-        condition: service_healthy
 
   tolink-rag:
     image: tolink-rag:${RAG_TAG:-latest}
@@ -94,7 +72,6 @@ services:
     networks:
       - tolink-app-net
     depends_on:
-      - tolink-service
       - tolink-rag
 
   promtail:
@@ -108,13 +85,11 @@ services:
       LOKI_PUSH_URL: ${LOKI_PUSH_URL:-http://tolink-loki:3100/loki/api/v1/push}
     volumes:
       - ../observability/promtail-remote-config.yml:/etc/promtail/promtail-remote-config.yml:ro
-      - ${SERVICE_LOG_PATH:-/opt/tolink/toLink-Service/logs}:/var/log/tolink-service:ro
       - ${RAG_LOG_PATH:-/opt/tolink/toLink-Rag/logs}:/var/log/tolink-rag:ro
       - promtail_positions:/tmp
     networks:
       - tolink-app-net
     depends_on:
-      - tolink-service
       - tolink-rag
 
 networks:

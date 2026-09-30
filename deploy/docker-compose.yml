@@ -1,9 +1,11 @@
-# 部署用 compose：引用本机 docker build 出来的镜像并启动
-# MySQL / Redis / MinIO / Manticore / Loki 位于云服务器的 tolink-app-net；
-# Qdrant 仍由主机服务器提供；RabbitMQ 位于云服务器 tolink-app-net。
-# 用法：TAG=xxx RAG_ENV_FILE=/opt/tolink/toLink-Rag/.env.production \
-#   RAG_SECRET_ENV_FILE=/opt/tolink/toLink-Rag/.env.production.local \
-#   docker compose -f deploy/docker-compose.yml up -d
+# 生产部署 compose：引用云服务器本机 docker build 出来的镜像并启动
+# MySQL / Redis / MinIO / Manticore / Loki / RabbitMQ 位于云服务器的 tolink-app-net；Qdrant 由主机服务器提供。
+# Java 管理端已下线：Python 负责登录签发与全部管理接口，linkrag-web 是站点唯一的 HTTPS 入口。
+# 用法：
+#   TAG=xxx RAG_ENV_FILE=/opt/tolink/toLink-Rag/.env.production \
+#     RAG_SECRET_ENV_FILE=/opt/tolink/toLink-Rag/.env.production.local \
+#     docker compose -p linkrag-production -f deploy/docker-compose.yml up -d --no-deps tolink-rag
+#   WEB_TAG=xxx docker compose -p linkrag-production -f deploy/docker-compose.yml up -d --no-deps linkrag-web
 services:
   tolink-rag:
     image: tolink-rag:${TAG:-latest}
@@ -16,17 +18,57 @@ services:
       - ${RABBITMQ_APP_ENV_FILE:-/opt/tolink/rabbitmq/app.env}
     environment:
       TZ: Asia/Shanghai
+      # access JWT：Python 用私钥签发、用公钥校验；密钥只保存在服务器 /opt/tolink/auth/production。
+      JAVA_ACCESS_JWT_ENABLED: "true"
+      JAVA_ACCESS_JWT_PUBLIC_KEY_PATH: /run/secrets/java-access-jwt-public.pem
+      JAVA_ACCESS_JWT_ISSUER: tolink-java
+      JAVA_ACCESS_JWT_AUDIENCE: tolink-rag-api
+      JAVA_ACCESS_JWT_TOKEN_USE: access
+      B1_PYTHON_ISSUER_ENABLED: "true"
+      B1_JAVA_PROTECTED_ROUTES_RETIRED: "true"
+      B1_ACCESS_JWT_PRIVATE_KEY_PATH: /run/secrets/java-access-jwt-private.pem
+      # 管理写入全部由 Python 负责；排障时可在 .env.production.local 中逐项置 false 覆盖。
+      B2_GENERIC_UPLOAD_ENABLED: ${B2_GENERIC_UPLOAD_ENABLED:-true}
+      B2_PUBLIC_PREVIEW_ENABLED: ${B2_PUBLIC_PREVIEW_ENABLED:-true}
+      B3_CONTROL_WRITES_ENABLED: ${B3_CONTROL_WRITES_ENABLED:-true}
+      B4_DATASET_WRITES_ENABLED: ${B4_DATASET_WRITES_ENABLED:-true}
+      B5_FILE_WRITES_ENABLED: ${B5_FILE_WRITES_ENABLED:-true}
+      B5_DELETE_WRITES_ENABLED: ${B5_DELETE_WRITES_ENABLED:-true}
+      # 原始文件内部读取地址由 Python 自身提供（/api/v1/internal/files/...）
+      B5_INTERNAL_FILE_BASE_URL: http://tolink-rag:8000
+      B8_DOCUMENT_CONFIG_WRITES_ENABLED: ${B8_DOCUMENT_CONFIG_WRITES_ENABLED:-true}
+      B9_BLOG_WRITES_ENABLED: ${B9_BLOG_WRITES_ENABLED:-true}
+      B10_FEEDBACK_WRITES_ENABLED: ${B10_FEEDBACK_WRITES_ENABLED:-true}
     ports:
       - "8000:8000"
     volumes:
       # 日志持久化到宿主机，避免容器重建（每次重新部署）丢失按日期归档的日志文件。
-      # 相对路径以本 compose 文件所在目录为基准（与 ../.env 同级），即部署目录根
-      # /opt/tolink/toLink-Rag/logs/<YYYY-MM-DD>/...。需保持 .env 中 LOG_DIR=logs（相对路径）。
+      # 相对路径以本 compose 文件所在目录为基准，即 /opt/tolink/toLink-Rag/logs/<YYYY-MM-DD>/...。
+      # 需保持 .env 中 LOG_DIR=logs（相对路径）。
       - ../logs:/app/logs
+      - /opt/tolink/auth/production/java-access-jwt-public.pem:/run/secrets/java-access-jwt-public.pem:ro
+      - /opt/tolink/auth/production/java-access-jwt-private.pem:/run/secrets/java-access-jwt-private.pem:ro
     networks:
       - tolink-app-net
-    # 启动前如需执行 Alembic 迁移，可改用：
-    # command: sh -c "alembic upgrade head && uvicorn src.main:app --host 0.0.0.0 --port 8000"
+
+  # 站点入口：静态前端 + HTTPS 终止 + /api/ 与对象存储反向代理，同时承载 LinkResume 站点配置。
+  # 站点配置由 deploy/scripts/build-web-production-on-cloud.sh 安装到 /opt/tolink/LinkRag-Web/nginx/。
+  linkrag-web:
+    image: linkrag-web:${WEB_TAG:-latest}
+    container_name: linkrag-web
+    restart: always
+    environment:
+      TZ: Asia/Shanghai
+    volumes:
+      - /opt/tolink/LinkRag-Web/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - /opt/tolink/LinkRag-Web/nginx/linkresume.conf:/etc/nginx/conf.d/linkresume.conf:ro
+      - /opt/tolink/letsencrypt/www:/var/www/certbot:ro
+      - /opt/tolink/letsencrypt/conf:/etc/letsencrypt:ro
+    ports:
+      - "80:80"
+      - "443:443"
+    networks:
+      - tolink-app-net
 
 networks:
   tolink-app-net:

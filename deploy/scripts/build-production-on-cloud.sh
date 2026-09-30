@@ -31,6 +31,7 @@ build_dir="${work_root}/rag-${build_number}"
 base_env="${prod_root}/.env.production"
 secret_env="${prod_root}/.env.production.local"
 rabbitmq_env="/opt/tolink/rabbitmq/app.env"
+auth_dir="/opt/tolink/auth/production"
 compose_file="${prod_root}/deploy/docker-compose.yml"
 backup_root="${prod_root}/backups/production-deploy"
 docker_network="tolink-app-net"
@@ -70,6 +71,17 @@ fi
 if [[ "$(stat -c '%a' "${rabbitmq_env}")" != "600" ]]; then
   echo "RabbitMQ application env file must use mode 600" >&2
   exit 13
+fi
+# Python 负责签发和校验 access JWT，密钥对只保存在服务器上。
+for key_file in "${auth_dir}/java-access-jwt-private.pem" "${auth_dir}/java-access-jwt-public.pem"; do
+  if [[ ! -f "${key_file}" ]]; then
+    echo "Missing production access JWT key: ${key_file}" >&2
+    exit 18
+  fi
+done
+if ! grep -q '^B5_INTERNAL_FILE_SERVICE_TOKEN=.\+' "${secret_env}"; then
+  echo "Production secret env must define B5_INTERNAL_FILE_SERVICE_TOKEN" >&2
+  exit 19
 fi
 
 docker network inspect "${docker_network}" >/dev/null
@@ -191,6 +203,10 @@ for _ in $(seq 1 30); do
     echo "Container status: ${running_status}"
     echo "Production deployed: ${image}:${tag}"
     docker tag "${image}:${tag}" "${image}:latest"
+    # RAG 重建后容器 IP 会变化；让站点 Nginx 重新解析上游，避免 /api/ 返回 502。
+    if docker inspect linkrag-web >/dev/null 2>&1; then
+      docker exec linkrag-web nginx -s reload || true
+    fi
     docker image prune -f >/dev/null
     cutover_started="false"
     exit 0

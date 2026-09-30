@@ -21,3 +21,5 @@ tests
 !.env.development
 !.env.production
 nltk_data
+# 前端独立构建镜像（web/Dockerfile），不进入 Python 镜像
+web

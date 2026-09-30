@@ -9,14 +9,6 @@ clients:
   - url: ${LOKI_PUSH_URL}
 
 scrape_configs:
-  - job_name: tolink-service-dev
-    static_configs:
-      - targets: [localhost]
-        labels:
-          environment: dev
-          service: tolink-service
-          __path__: /var/log/tolink-service/**/*.log
-
   - job_name: tolink-rag-dev
     static_configs:
       - targets: [localhost]
