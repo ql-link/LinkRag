@@ -1,5 +1,7 @@
 """Add isolated external model catalog sync job and candidate tables.
 
+Java 管理端曾在生产库中以相同结构建过这两张表；已存在时跳过创建，只补齐缺失的索引。
+
 Revision ID: 0040
 Revises: 0039
 Create Date: 2026-09-28
@@ -11,6 +13,7 @@ from typing import Sequence, Union
 
 import sqlalchemy as sa
 from alembic import op
+from sqlalchemy import inspect
 from sqlalchemy.dialects import mysql
 
 revision: str = "0040"
@@ -19,7 +22,35 @@ branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
 
+def _ensure_index(bind, table: str, name: str, columns: list[str]) -> None:
+    if name not in {ix["name"] for ix in inspect(bind).get_indexes(table)}:
+        op.create_index(name, table, columns)
+
+
 def upgrade() -> None:
+    bind = op.get_bind()
+    if not inspect(bind).has_table("llm_provider_model_sync_job"):
+        _create_sync_job()
+    _ensure_index(bind, "llm_provider_model_sync_job", "idx_sync_job_provider", ["provider_id", "started_at"])
+    _ensure_index(bind, "llm_provider_model_sync_job", "idx_sync_job_source_status", ["sync_source", "status"])
+    if not inspect(bind).has_table("llm_provider_model_sync_candidate"):
+        _create_sync_candidate()
+    _ensure_index(bind, "llm_provider_model_sync_candidate", "idx_sync_candidate_job", ["job_id"])
+    _ensure_index(
+        bind,
+        "llm_provider_model_sync_candidate",
+        "idx_sync_candidate_provider_status",
+        ["provider_id", "review_status"],
+    )
+    _ensure_index(
+        bind,
+        "llm_provider_model_sync_candidate",
+        "idx_sync_candidate_model_cap",
+        ["provider_id", "model_name", "inferred_capability"],
+    )
+
+
+def _create_sync_job() -> None:
     op.create_table(
         "llm_provider_model_sync_job",
         sa.Column("id", mysql.BIGINT(unsigned=True), primary_key=True, autoincrement=True),
@@ -39,12 +70,9 @@ def upgrade() -> None:
         mysql_auto_increment="10000",
         comment="外部模型目录同步任务表",
     )
-    op.create_index(
-        "idx_sync_job_provider", "llm_provider_model_sync_job", ["provider_id", "started_at"]
-    )
-    op.create_index(
-        "idx_sync_job_source_status", "llm_provider_model_sync_job", ["sync_source", "status"]
-    )
+
+
+def _create_sync_candidate() -> None:
     op.create_table(
         "llm_provider_model_sync_candidate",
         sa.Column("id", mysql.BIGINT(unsigned=True), primary_key=True, autoincrement=True),
@@ -91,17 +119,6 @@ def upgrade() -> None:
         mysql_charset="utf8mb4",
         mysql_auto_increment="10000",
         comment="外部模型目录同步候选表",
-    )
-    op.create_index("idx_sync_candidate_job", "llm_provider_model_sync_candidate", ["job_id"])
-    op.create_index(
-        "idx_sync_candidate_provider_status",
-        "llm_provider_model_sync_candidate",
-        ["provider_id", "review_status"],
-    )
-    op.create_index(
-        "idx_sync_candidate_model_cap",
-        "llm_provider_model_sync_candidate",
-        ["provider_id", "model_name", "inferred_capability"],
     )
 
 
