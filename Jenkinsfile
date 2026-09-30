@@ -82,6 +82,23 @@ pipeline {
                 '''
             }
         }
+
+        // 前端与后端同仓：RAG 发布成功后，用同一份源码包构建并切换站点前端。
+        stage('Deploy Web on Cloud') {
+            steps {
+                sh '''
+                    set -eu
+                    remote_dir="/tmp/linkrag-rag-prod-jenkins-${BUILD_NUMBER}"
+                    ssh_opts="-i ${CLOUD_SSH_KEY} -o BatchMode=yes -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new"
+
+                    scp ${ssh_opts} \
+                        deploy/scripts/build-web-production-on-cloud.sh \
+                        "${CLOUD_USER}@${CLOUD_HOST}:${remote_dir}/"
+                    ssh ${ssh_opts} "${CLOUD_USER}@${CLOUD_HOST}" \
+                        "bash '${remote_dir}/build-web-production-on-cloud.sh' '${BUILD_NUMBER}' '${COMMIT_SHORT}' '${remote_dir}/linkrag-rag-source.tar.gz'"
+                '''
+            }
+        }
     }
 
     post {

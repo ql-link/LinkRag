@@ -46,6 +46,18 @@ Cloud 执行，避免 Jenkins 迁移后误用 Primary 的开发 Docker 环境。
 `linkrag-production`，且只更新 `tolink-rag` 服务，不清理同项目中的 Web、RabbitMQ 或
 Promtail 容器。
 
+RAG 发布成功后，`Deploy Web on Cloud` 阶段用同一份源码包执行
+`deploy/scripts/build-web-production-on-cloud.sh`：在 `node:20-alpine` 中完成 `npm ci`、
+typecheck、测试和构建，打包 `linkrag-web` 镜像，把 `deploy/cloud-server/nginx/linkrag.conf`
+安装为 `/opt/tolink/LinkRag-Web/nginx/default.conf`，再重建 `linkrag-web`。`linkrag-web`
+是整台云服务器的 80/443 入口，同时挂载 LinkResume 的站点配置和 Let's Encrypt 证书；新配置在切换前先用
+`nginx -t` 校验，切换后通过首页和公开博客接口检查，失败时还原旧配置与旧镜像。
+
+Java 管理端已下线，Python 负责签发和校验 access JWT：`deploy/docker-compose.yml` 把
+`/opt/tolink/auth/production/java-access-jwt-{private,public}.pem` 只读挂载进 RAG，并默认打开
+B1–B10 的签发与写入开关（可在 `.env.production.local` 中逐项置 `false` 排障）。密钥文件还必须包含
+`B5_INTERNAL_FILE_SERVICE_TOKEN`（随机值，供上传链路读取原始文件）。缺少密钥对或该令牌时，发布脚本在构建前直接失败。
+
 生产作业的 SCM 固定只拉取 `master`，启用 depth 1 浅克隆、禁用 tag，并把 checkout 超时设为
 60 分钟；同时关闭 Pipeline from SCM 的 lightweight checkout。Git 插件的 lightweight Jenkinsfile
 预取不会应用 CloneOption，保持开启会让冷缓存再次拉取完整历史。Jenkins Home 迁移或 Git 缓存

@@ -109,3 +109,36 @@ def test_web_is_built_from_this_repository() -> None:
     )
     assert _read_env(ROOT / "web/.env.production")["VITE_USE_MOCK"] == "false"
     assert "web" in (ROOT / ".dockerignore").read_text(encoding="utf-8").splitlines()
+
+
+def test_production_deploys_python_as_sole_backend_and_web_from_this_repository() -> None:
+    import yaml
+
+    services = yaml.safe_load((ROOT / "deploy/docker-compose.yml").read_text(encoding="utf-8"))["services"]
+    assert set(services) == {"tolink-rag", "linkrag-web"}
+    rag = services["tolink-rag"]
+    env = rag["environment"]
+    assert env["JAVA_ACCESS_JWT_ENABLED"] == "true"
+    assert env["B1_PYTHON_ISSUER_ENABLED"] == "true"
+    assert env["B1_ACCESS_JWT_PRIVATE_KEY_PATH"] == "/run/secrets/java-access-jwt-private.pem"
+    assert env["B5_INTERNAL_FILE_BASE_URL"] == "http://tolink-rag:8000"
+    assert all(v.startswith("/opt/tolink/auth/production/") for v in rag["volumes"] if "/run/secrets/" in v)
+    web = services["linkrag-web"]
+    assert web["ports"] == ["80:80", "443:443"]
+    assert any(v.endswith(":/etc/nginx/conf.d/linkresume.conf:ro") for v in web["volumes"])
+
+    site = (ROOT / "deploy/cloud-server/nginx/linkrag.conf").read_text(encoding="utf-8")
+    assert "tolink-service" not in site
+    assert site.count("proxy_pass         http://tolink-rag:8000;") == 2
+
+    prod_env = _read_env(ROOT / ".env.production")
+    assert prod_env["MINIO_PUBLIC_BASE_URL"] == "/tolink-public"
+
+    jenkinsfile = (ROOT / "Jenkinsfile").read_text(encoding="utf-8")
+    assert jenkinsfile.index("stage('Deploy Production on Cloud')") < jenkinsfile.index(
+        "stage('Deploy Web on Cloud')"
+    )
+    web_script = (ROOT / "deploy/scripts/build-web-production-on-cloud.sh").read_text(encoding="utf-8")
+    assert web_script.index("nginx -t") < web_script.index('cutover_started="true"')
+    assert "rollback_old_site" in web_script
+    assert 'docker build \\\n  --label "org.opencontainers.image.revision=${commit_short}" \\\n  -t "${image}:${tag}" \\\n  "${build_dir}/web"' in web_script
