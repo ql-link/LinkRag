@@ -1,22 +1,28 @@
 """
 内部接口路由
-供 Java 管理端查询配置和用量（不暴露给外部）
+供服务端内部查询配置和用量；要求 ``Authorization: Bearer <INTERNAL_API_TOKEN>``，
+未配置令牌时一律拒绝。``X-User-Id`` 仅在服务令牌通过后才被信任。
 """
 
 from typing import Optional
 from datetime import datetime
 
-from fastapi import APIRouter, Header, HTTPException, Depends
+from fastapi import APIRouter, Header, Depends
 from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.api.route_guards import require_internal_service_token
 from src.core.llm.response import APIResponse
 from src.core.llm.encryption import mask_api_key
 from src.services.llm_catalog_reader import LLMCatalogReader
 from src.services.usage_log_service import UsageLogService
 from src.database import get_db
 
-router = APIRouter(prefix="/api/v1/internal/llm", tags=["internal"])
+router = APIRouter(
+    prefix="/api/v1/internal/llm",
+    tags=["internal"],
+    dependencies=[Depends(require_internal_service_token)],
+)
 
 
 @router.get("/providers")
@@ -125,7 +131,6 @@ async def get_user_usage(
         用量统计
     """
     try:
-        from datetime import date
 
         start = datetime.strptime(start_date, "%Y-%m-%d").date() if start_date else None
         end = datetime.strptime(end_date, "%Y-%m-%d").date() if end_date else None

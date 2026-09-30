@@ -44,7 +44,7 @@ async def user_dashboard(db: AsyncSession, days: int) -> dict:
     breakdown = (await db.execute(text("""
         SELECT SUM(role='USER') AS user_count, SUM(role='ADMIN') AS admin_count,
                SUM(status=1) AS enabled_count, SUM(status<>1) AS disabled_count
-        FROM sys_user
+        FROM sys_user WHERE app_code='tolink'
     """))).mappings().one()
     values = {
         "user": int(breakdown["user_count"] or 0),
@@ -62,7 +62,8 @@ async def user_dashboard(db: AsyncSession, days: int) -> dict:
             await db.execute(
                 text("""
         SELECT DATE(created_at) AS day, COUNT(*) AS count FROM sys_user
-        WHERE created_at >= :previous AND created_at < :end GROUP BY DATE(created_at)
+        WHERE app_code='tolink' AND created_at >= :previous AND created_at < :end
+        GROUP BY DATE(created_at)
     """),
                 params,
             )
@@ -412,8 +413,13 @@ async def overview(db: AsyncSession) -> dict:
     )
     result: dict = {
         "users": {
-            "total": await _count(db, "SELECT COUNT(*) FROM sys_user"),
-            "newThisMonth": await _count(db, "SELECT COUNT(*) FROM sys_user WHERE created_at>=:month", p),
+            # 用户指标只统计本系统用户，不含接入应用影子用户。
+            "total": await _count(db, "SELECT COUNT(*) FROM sys_user WHERE app_code='tolink'"),
+            "newThisMonth": await _count(
+                db,
+                "SELECT COUNT(*) FROM sys_user WHERE app_code='tolink' AND created_at>=:month",
+                p,
+            ),
             "active7d": _metric(active, prev_active),
         },
         "models": {

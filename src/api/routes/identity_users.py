@@ -281,12 +281,23 @@ async def list_users(
     role: str | None = Query(None, pattern="^(ADMIN|USER)$"),
     status: int | None = Query(None, ge=0, le=1),
     sort: str = Query("created", pattern="^(created|lastLogin)$"),
+    appCode: str = Query("tolink", pattern="^[a-z][a-z0-9_]{1,31}$"),
     withStats: bool = False,
 ):
     # 无筛选且不需统计时保持原契约；管理台列表传 withStats=true 获取知识库数 / 近 30 天 Token / 最近登录
-    if not withStats and keyword is None and role is None and status is None and sort == "created":
+    # appCode 默认 tolink：接入应用影子用户不混入本系统用户列表。
+    if (
+        not withStats
+        and keyword is None
+        and role is None
+        and status is None
+        and sort == "created"
+        and appCode == "tolink"
+    ):
         return success(await _users(request).list_users(page, size))
-    return success(await identity_queries.search_users(page, size, keyword, role, status, sort))
+    return success(
+        await identity_queries.search_users(page, size, keyword, role, status, sort, appCode)
+    )
 
 
 @admin_router.get("/users/{user_id:int}")

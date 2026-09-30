@@ -52,6 +52,7 @@ async def test_b2_multipart_http_uses_shared_storage(monkeypatch, biz_type, buck
     monkeypatch.setattr(uploads.StorageFactory, "get_storage", lambda: storage)
     app = FastAPI()
     app.include_router(object_uploads.router)
+    app.dependency_overrides[require_login] = lambda: CurrentUser(7, "USER")
     suffix = "pdf" if biz_type == "document" else "pem" if biz_type == "cert" else "png"
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -74,6 +75,7 @@ async def test_b2_multipart_http_uses_shared_storage(monkeypatch, biz_type, buck
 async def test_b2_multipart_validation_and_disabled_gate(monkeypatch):
     app = FastAPI()
     app.include_router(object_uploads.router)
+    app.dependency_overrides[require_login] = lambda: CurrentUser(7, "USER")
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=app), base_url="http://test"
     ) as client:
@@ -84,6 +86,18 @@ async def test_b2_multipart_validation_and_disabled_gate(monkeypatch):
         bad = await client.post("/api/v1/oss-files/avatar", files={"file": ("a.exe", b"a")})
         assert bad.status_code == 400
         assert bad.json()["code"] == 40001
+
+
+@pytest.mark.asyncio
+async def test_b2_generic_upload_rejects_anonymous(monkeypatch):
+    monkeypatch.setattr(settings, "B2_GENERIC_UPLOAD_ENABLED", True)
+    app = FastAPI()
+    app.include_router(object_uploads.router)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        response = await client.post("/api/v1/oss-files/avatar", files={"file": ("a.png", b"a")})
+    assert response.status_code == 401
 
 
 @pytest.mark.asyncio

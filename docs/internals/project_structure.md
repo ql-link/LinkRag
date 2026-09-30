@@ -84,12 +84,15 @@ toLink-Rag/                         # 仓库根目录
 │   ├── bootstrap/                # 进程启动期引导（须先于业务模块 import）
 │   │   └── nltk_data.py          # NLTK 数据路径引导（项目内 nltk_data 优先）
 │   ├── api/                      # HTTP API 分层
+│   │   ├── app_auth.py          # 接入应用凭证 + X-App-User-Id → 影子用户鉴权依赖
 │   │   ├── java_access_auth.py  # Java 登录 access JWT 独立验签与当前用户上下文
 │   │   ├── management_auth.py   # B1 当前用户、数据库角色和会话鉴权
 │   │   ├── management_http.py   # Java 管理接口响应与异常边界
 │   │   ├── recall_concurrency.py  # RAG Redis 并发保护（不参与 token 验证）
+│   │   ├── route_guards.py      # 内部服务令牌与调试入口开关
 │   │   ├── routes/               # 路由层
-│   │   │   ├── internal.py        # Java 管理端内部 LLM 配置/用量接口
+│   │   │   ├── apps.py            # 接入应用服务端 API（/api/v1/apps/*，APPS_API_ENABLED）
+│   │   │   ├── internal.py        # 服务端内部 LLM 配置/用量接口（INTERNAL_API_TOKEN）
 │   │   │   ├── identity_users.py  # B1 身份与用户入口
 │   │   │   ├── object_uploads.py  # B2 通用对象上传入口
 │   │   │   ├── model_configs.py   # B3 USER 模型配置入口
@@ -113,6 +116,8 @@ toLink-Rag/                         # 仓库根目录
 │   │       ├── mq.py
 │   │       └── parse.py
 │   ├── application/              # Application 层：业务用例 runtime 与装配（api → application → core）
+│   │   ├── app_identity.py       # 接入应用凭证校验、影子用户映射与凭证运维
+│   │   ├── chunk_details.py      # 按 user_id 回读 chunk 正文与来源文件名
 │   │   ├── object_uploads.py     # B2 六类业务上传规则，复用 StorageFactory
 │   │   ├── model_configs.py      # B3 配置与默认关系，复用 fenced runtime cache
 │   │   ├── admin_model_catalog.py # B3 正式厂商/模型目录

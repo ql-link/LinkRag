@@ -90,6 +90,10 @@ async def test_admin_dashboard_distinct_period_users():
             await connection.execute(
                 text("INSERT INTO sys_user VALUES (1,'USER',1,:at),(2,'ADMIN',1,:at)"), {"at": now}
             )
+            # 与 0044 一致：存量行经列默认值归为 tolink。
+            await connection.execute(
+                text("ALTER TABLE sys_user ADD COLUMN app_code TEXT NOT NULL DEFAULT 'tolink'")
+            )
             await connection.execute(
                 text("INSERT INTO user_login_event VALUES (1,:at),(1,:at)"), {"at": now}
             )

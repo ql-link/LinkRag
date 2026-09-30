@@ -1,15 +1,19 @@
 """
 LLM API 路由
 提供 LLM 调用接口：文本生成、向量化、重排等
+
+所有接口要求 ``Authorization: Bearer <access-token>``；用户身份只取自已验证的 token，
+不再信任请求自报的 ``X-User-Id``。
 """
 
 from typing import Optional, List
 
-from fastapi import APIRouter, Header, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends
 from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.api.java_access_auth import AuthContext, verify_user_token
 from src.core.llm.response import APIResponse
 from src.core.llm.base_provider import BaseProvider
 from src.core.llm.exceptions import LLMConfigResolutionError
@@ -47,31 +51,17 @@ def _sniff_image_media_type(image_base64: str) -> str:
     return "image/jpeg"
 
 
-def _coerce_int(value: str, field: str) -> int:
-    """把请求边界传入的 ID 字符串归一成 int，非法值 → 422。
-
-    ``user_id``（来自 ``X-User-Id`` Header）与 ``config_id``（来自请求体）在路由层是
-    字符串，但下游 exact resolver / ``BigInteger`` 主键都按 int 契约。
-    在此显式转换并校验，避免把弱类型一路下沉到 SQL 靠驱动隐式转换。
-    """
-    try:
-        return int(value)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(status_code=422, detail=f"invalid {field}") from exc
-
-
 async def _resolve_provider(
     db: AsyncSession,
-    user_id: str,
+    user_id: int,
     capability: str,
     *,
     config_id: int,
 ) -> BaseProvider:
-    """按全局 config_id 精确解析 Provider。"""
-    uid = _coerce_int(user_id, "X-User-Id")
+    """按全局 config_id 精确解析 Provider；``user_id`` 来自已验证的 access token。"""
     try:
         resolved = await aresolve_model(
-            user_id=uid,
+            user_id=user_id,
             capability=capability,
             config_id=config_id,
             db=db,
@@ -140,14 +130,14 @@ class OcrRequest(BaseModel):
 @router.post("/generate")
 async def generate_text(
     request: GenerateRequest,
-    x_user_id: str = Header(..., alias="X-User-Id"),
+    ctx: AuthContext = Depends(verify_user_token),
     db: AsyncSession = Depends(get_db),
 ) -> APIResponse:
     """生成文本（非流式）
 
     Args:
         request: 生成请求参数
-        x_user_id: 用户 ID
+        ctx: 已验证的调用方身份
         db: 数据库 Session
 
     Returns:
@@ -156,7 +146,7 @@ async def generate_text(
     try:
         client = await _resolve_provider(
             db,
-            x_user_id,
+            ctx.user_id,
             "CHAT",
             config_id=request.config_id,
         )
@@ -178,7 +168,7 @@ async def generate_text(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"/llm/generate 调用失败 (user={x_user_id})")
+        logger.exception(f"/llm/generate 调用失败 (user={ctx.user_id})")
         return APIResponse(
             code=500,
             message=str(e),
@@ -189,7 +179,7 @@ async def generate_text(
 @router.post("/generate/stream")
 async def generate_text_stream(
     request: GenerateRequest,
-    x_user_id: str = Header(..., alias="X-User-Id"),
+    ctx: AuthContext = Depends(verify_user_token),
     db: AsyncSession = Depends(get_db),
 ):
     """流式生成文本
@@ -202,7 +192,7 @@ async def generate_text_stream(
     try:
         client = await _resolve_provider(
             db,
-            x_user_id,
+            ctx.user_id,
             "CHAT",
             config_id=request.config_id,
         )
@@ -225,14 +215,14 @@ async def generate_text_stream(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"/llm 接口调用失败 (user={x_user_id})")
+        logger.exception(f"/llm 接口调用失败 (user={ctx.user_id})")
         return APIResponse(code=500, message=str(e), data=None)
 
 
 @router.post("/embed")
 async def embed_text(
     request: EmbedRequest,
-    x_user_id: str = Header(..., alias="X-User-Id"),
+    ctx: AuthContext = Depends(verify_user_token),
     db: AsyncSession = Depends(get_db),
 ) -> APIResponse:
     """文本向量化
@@ -243,7 +233,7 @@ async def embed_text(
     try:
         client = await _resolve_provider(
             db,
-            x_user_id,
+            ctx.user_id,
             "EMBEDDING",
             config_id=request.config_id,
         )
@@ -259,14 +249,14 @@ async def embed_text(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"/llm 接口调用失败 (user={x_user_id})")
+        logger.exception(f"/llm 接口调用失败 (user={ctx.user_id})")
         return APIResponse(code=500, message=str(e), data=None)
 
 
 @router.post("/rerank")
 async def rerank_documents(
     request: RerankRequest,
-    x_user_id: str = Header(..., alias="X-User-Id"),
+    ctx: AuthContext = Depends(verify_user_token),
     db: AsyncSession = Depends(get_db),
 ) -> APIResponse:
     """语义重排
@@ -277,7 +267,7 @@ async def rerank_documents(
     try:
         client = await _resolve_provider(
             db,
-            x_user_id,
+            ctx.user_id,
             "RERANK",
             config_id=request.config_id,
         )
@@ -297,14 +287,14 @@ async def rerank_documents(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"/llm 接口调用失败 (user={x_user_id})")
+        logger.exception(f"/llm 接口调用失败 (user={ctx.user_id})")
         return APIResponse(code=500, message=str(e), data=None)
 
 
 @router.post("/ocr")
 async def extract_text_from_image(
     request: OcrRequest,
-    x_user_id: str = Header(..., alias="X-User-Id"),
+    ctx: AuthContext = Depends(verify_user_token),
     db: AsyncSession = Depends(get_db),
 ) -> APIResponse:
     """OCR 图像文本提取（兼容旧 endpoint）。
@@ -318,7 +308,7 @@ async def extract_text_from_image(
     try:
         client = await _resolve_provider(
             db,
-            x_user_id,
+            ctx.user_id,
             "VISION",
             config_id=request.config_id,
         )
@@ -338,5 +328,5 @@ async def extract_text_from_image(
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"/llm 接口调用失败 (user={x_user_id})")
+        logger.exception(f"/llm 接口调用失败 (user={ctx.user_id})")
         return APIResponse(code=500, message=str(e), data=None)

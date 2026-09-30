@@ -288,13 +288,13 @@ RAG 问答在 Python 端（`/api/v1/rag/stream`）以**后台任务**执行，�
 
 ## 同步调试接口
 
-业务方在联调阶段可以不经过 MQ，直接调用 HTTP 接口：
+联调阶段可以不经过 MQ，直接调用 HTTP 接口。这些入口默认关闭（`DEBUG_ENDPOINTS_ENABLED=false` 时返回 `404`），开启后仍要求 ADMIN 的 `Authorization: Bearer <access-token>`：
 
 | 路径 | 用途 |
 | --- | --- |
 | `POST /api/v1/parser/extract_sync` | 同步解析，仅测试用 |
 | `POST /api/v1/parser/task/submit` | 触发异步任务（内部投递 MQ） |
-| `POST /api/v1/mq/send/parse-task` | 直接投递 MQ 消息（管理端用） |
+| `POST /api/v1/mq/send/parse-task` | 直接投递 MQ 消息（调试用） |
 
 Swagger 文档：`http://<host>:<port>/docs`
 

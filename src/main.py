@@ -45,6 +45,7 @@ from src.api.routes import (
     admin_model_configs,
     admin_model_sync,
     admin_operations,
+    apps,
     blog,
     chat,
     datasets,
@@ -330,6 +331,7 @@ app.include_router(admin_model_sync.router)
 app.include_router(datasets.router)
 app.include_router(document_files.router)
 app.include_router(internal_document_files.router)
+app.include_router(apps.router)  # 接入应用服务端 API（APPS_API_ENABLED）
 
 
 @app.exception_handler(RecallApiError)

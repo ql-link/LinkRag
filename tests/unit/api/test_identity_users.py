@@ -131,7 +131,7 @@ async def test_existing_user_login_register_and_admin_writes_on_shared_schema(
     async with engine.begin() as conn:
         await conn.execute(
             text(
-                "CREATE TABLE sys_user (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password_hash TEXT, nickname TEXT, email TEXT UNIQUE, phone TEXT, avatar_url TEXT, role TEXT, status INTEGER, bio TEXT, team TEXT, last_login_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)"
+                "CREATE TABLE sys_user (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password_hash TEXT, nickname TEXT, email TEXT UNIQUE, phone TEXT, avatar_url TEXT, role TEXT, status INTEGER, bio TEXT, team TEXT, last_login_at DATETIME, created_at DATETIME DEFAULT CURRENT_TIMESTAMP, app_code TEXT NOT NULL DEFAULT 'tolink')"
             )
         )
         await conn.execute(
@@ -214,6 +214,29 @@ async def test_existing_user_login_register_and_admin_writes_on_shared_schema(
         ).scalar_one()
     assert sources == ["LOGIN", "REGISTER"]
     assert new_hash.startswith("$2a$") and bcrypt.checkpw(b"new-password", new_hash.encode())
+    # 接入应用影子用户：即便凭证碰巧写入合法 bcrypt，密码登录也按账号不存在拒绝，
+    # 不记失败日志；Web 鉴权回查同样视为不存在。
+    shadow_hash = bcrypt.hashpw(b"shadow-password", bcrypt.gensalt(prefix=b"2a")).decode()
+    async with session_factory() as session:
+        async with session.begin():
+            shadow_id = (
+                await session.execute(
+                    text(
+                        "INSERT INTO sys_user (username,password_hash,role,status,app_code) "
+                        "VALUES ('linkresume_x',:hash,'USER',1,'linkresume') RETURNING id"
+                    ),
+                    {"hash": shadow_hash},
+                )
+            ).scalar_one()
+    with pytest.raises(Exception) as shadow_login:
+        await users.login("linkresume_x", "shadow-password")
+    assert getattr(shadow_login.value, "code", None) == 20001
+    assert (await users.list_users(1, 10))["total"] == 2
+    monkeypatch.setattr("src.api.management_auth.get_db_context", read_context)
+    from src.api.management_auth import SqlUserAuthorizationRepository
+
+    assert await SqlUserAuthorizationRepository().get_user(shadow_id) is None
+    assert await SqlUserAuthorizationRepository().get_user(logged_in["userId"]) is not None
     await engine.dispose()
 
 
@@ -245,7 +268,7 @@ async def test_failed_session_registration_rolls_back_new_user(monkeypatch):
     async with engine.begin() as connection:
         await connection.execute(
             text(
-                "CREATE TABLE sys_user (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password_hash TEXT, nickname TEXT, email TEXT UNIQUE, role TEXT, status INTEGER, last_login_at DATETIME)"
+                "CREATE TABLE sys_user (id INTEGER PRIMARY KEY AUTOINCREMENT, username TEXT UNIQUE, password_hash TEXT, nickname TEXT, email TEXT UNIQUE, role TEXT, status INTEGER, last_login_at DATETIME, app_code TEXT NOT NULL DEFAULT 'tolink')"
             )
         )
 

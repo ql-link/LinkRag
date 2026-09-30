@@ -63,6 +63,9 @@ Java 签发的旧令牌尚在有效期内时，继续保留 Java 会话桥接和
 | 开关 | 默认 | 含义 |
 | --- | --- | --- |
 | `MQ_VENDOR` | `rabbitmq` | 当前默认 RabbitMQ；`kafka` 仅保留回滚兼容 |
+| `INTERNAL_API_TOKEN` | 空 | `/api/v1/internal/llm/*` 服务端调用令牌（`Authorization: Bearer <token>`）；为空时这些内部接口一律 401。公网 nginx 另对 `/api/v1/internal/` 返回 404 |
+| `DEBUG_ENDPOINTS_ENABLED` | `false` | `/api/v1/parser/*`、`/api/v1/mq/*` 联调入口；关闭时 404，开启后仍要求 ADMIN。生产保持关闭 |
+| `APPS_API_ENABLED` | `false` | 接入应用服务端 API `/api/v1/apps/*` 总开关；关闭时 404。公网 nginx 对该前缀恒 404，调用方走容器网络。凭证注册见下文“接入应用凭证” |
 | `VECTOR_STORE_TYPE` | `qdrant` | 当前唯一支持 Qdrant；readiness 据此决定是否执行 Qdrant 探测 |
 | `SPARSE_VECTOR_ENABLED` | `true` | 是否在向量化阶段同步生成稀疏向量；关闭后保持旧 dense-only 语义 |
 | `STORAGE_TYPE` | `minio` | 对象存储实现；当前可用实现为 MinIO，OSS 适配器仍为占位 |
@@ -400,7 +403,7 @@ Java 私钥不得进入 Python 环境、代码仓库或日志。轮换时先让 
 
 ### B2–B5 迁移开关（默认关闭）
 
-`B2_GENERIC_UPLOAD_ENABLED` 控制通用六类对象上传；`B3_CONTROL_WRITES_ENABLED` 控制模型配置 USER/SYSTEM 写入；`B4_DATASET_WRITES_ENABLED` 控制数据集创建、更新与解析配置写入；`B5_FILE_WRITES_ENABLED` 控制普通文件上传和解析提交；`B5_DELETE_WRITES_ENABLED` 控制文件/数据集删除。按路径确认 Java/Python 单一写入者、目标 schema 和真实依赖验收后再分别启用。
+`B2_GENERIC_UPLOAD_ENABLED` 控制通用六类对象上传（开启后仍要求登录）；`B3_CONTROL_WRITES_ENABLED` 控制模型配置 USER/SYSTEM 写入；`B4_DATASET_WRITES_ENABLED` 控制数据集创建、更新与解析配置写入；`B5_FILE_WRITES_ENABLED` 控制普通文件上传和解析提交；`B5_DELETE_WRITES_ENABLED` 控制文件/数据集删除。按路径确认 Java/Python 单一写入者、目标 schema 和真实依赖验收后再分别启用。
 
 B5 写入还要求 0041 outbox migration 已执行、`B5_INTERNAL_FILE_SERVICE_TOKEN` 有独立服务令牌、`B5_INTERNAL_FILE_BASE_URL` 指向解析服务可访问的 Python 内部文件路由；缺任一项时启动拒绝接流量。Markdown 资源包上传已在本地 Python 入口接入，并用 Dev 中间件完成上传、manifest 读取及 MQ 解析；仍须核对目标环境的 Java/Python 单一写入者和切流后的前端行为。B3 ADMIN 候选同步已用临时厂商完成真实 models.dev/Dev 写入和清理；目标环境切流仍需确认单一写入者。B3 旧密文需要与 Java 使用同一受控密钥材料；解密失败时读配置返回 503。
 
@@ -408,6 +411,21 @@ B5 写入还要求 0041 outbox migration 已执行、`B5_INTERNAL_FILE_SERVICE_T
 - `.env` 由 [src/config.py](../../src/config.py) 通过 `Settings`（pydantic-settings）加载。
 - 运行时环境变量**优先级高于** `.env`（部署时通过容器环境变量注入即可覆盖）。
 - 新增配置必须在 `Settings` 中声明，并在 [.env.example](../../.env.example) 补充示例值。
+
+### 接入应用凭证（Link Resume 等）
+
+接入应用以服务端凭证调用 `/api/v1/apps/*`，凭证只能通过 CLI 管理，没有 HTTP 管理接口。在已配置数据库环境变量的容器内执行：
+
+```bash
+python scripts/ops/app_client.py create linkresume --dense-config-id <SYSTEM EMBEDDING 配置 ID> --sparse-config-id <SYSTEM SPARSE_EMBEDDING 配置 ID> --description "Link Resume"
+python scripts/ops/app_client.py rotate-secret linkresume
+python scripts/ops/app_client.py disable linkresume
+python scripts/ops/app_client.py enable linkresume
+```
+
+- `create` 和 `rotate-secret` 只输出一次 `<client_id>.<secret>`，库里只存 bcrypt 哈希。把凭证交给接入应用放进它的密钥配置，不要写进仓库或日志。
+- embedding 配置 ID 必须是 active 的 SYSTEM 配置，且能力要匹配；不满足时 CLI 直接拒绝。
+- 各进程会把校验通过的凭证缓存最多 60 秒。轮换或停用后，旧凭证最迟 60 秒失效；需要立即生效时，重启服务。
 
 ## 相关文档
 
