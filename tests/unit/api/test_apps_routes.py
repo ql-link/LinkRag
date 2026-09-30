@@ -217,8 +217,13 @@ async def test_upload_uses_shadow_user_and_auto_parse(identity, monkeypatch):
     identity.defaults[5001] = 901
     captured = {}
 
-    async def upload(user_id, dataset_id, file, *, parse_immediately, executor):
-        captured.update(user_id=user_id, dataset_id=dataset_id, parse=parse_immediately)
+    async def upload(user_id, dataset_id, file, *, parse_immediately, executor, rename_on_conflict):
+        captured.update(
+            user_id=user_id,
+            dataset_id=dataset_id,
+            parse=parse_immediately,
+            rename=rename_on_conflict,
+        )
         return {"id": 3001, "datasetId": dataset_id, "uploadStatus": "UPLOADING"}
 
     monkeypatch.setattr(apps, "upload", upload)
@@ -234,7 +239,7 @@ async def test_upload_uses_shadow_user_and_auto_parse(identity, monkeypatch):
         )
     assert response.status_code == 200
     assert response.json()["data"]["externalRef"] == "mat-9"
-    assert captured == {"user_id": 5001, "dataset_id": 901, "parse": True}
+    assert captured == {"user_id": 5001, "dataset_id": 901, "parse": True, "rename": True}
 
 
 @pytest.mark.asyncio

@@ -313,3 +313,28 @@ async def test_set_default_dataset_updates_only_own_binding(factory):
     assert (
         await app_identity.resolve_shadow_user(_app(), "8")
     ).default_dataset_id == 555
+
+
+@pytest.mark.asyncio
+async def test_shadow_user_is_invisible_to_web_auth_lookups(factory, monkeypatch):
+    """影子用户即使拿到合法签名的 Web token，两条 Web 鉴权读路径都按不存在处理。"""
+
+    from src.api import management_auth
+    from src.core.storage.auth_identity import load_current_user_identity
+
+    app = await app_identity.verify_app_credential(await _create())
+    shadow = await app_identity.resolve_shadow_user(app, "42")
+
+    @asynccontextmanager
+    async def read_ctx():
+        async with factory() as session:
+            yield session
+
+    monkeypatch.setattr(management_auth, "get_db_context", read_ctx)
+    repo = management_auth.SqlUserAuthorizationRepository()
+    async with factory() as session:
+        assert await load_current_user_identity(session, shadow.user_id) is None
+        # 对照：tolink 存量用户（id=1）照常可见，证明过滤条件不是整体失效。
+        assert (await load_current_user_identity(session, 1)).user_id == 1
+    assert await repo.get_user(shadow.user_id) is None
+    assert (await repo.get_user(1)).user_id == 1
