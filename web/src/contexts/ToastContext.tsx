@@ -13,7 +13,7 @@ type ShowToast = (message: string, opts?: Partial<Omit<ToastState, 'id' | 'messa
 
 const ToastContext = createContext<ShowToast>(() => {});
 
-/** 深色胶囊提示：bg #1d1d1b、圆角 10、底部居中 */
+/** 浅色提示卡：白底描边 + 柔和阴影、圆角 10、底部居中；状态以图标颜色区分 */
 export function ToastProvider({ children }: { children: ReactNode }) {
   const [toast, setToast] = useState<ToastState | null>(null);
   const timer = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -29,18 +29,18 @@ export function ToastProvider({ children }: { children: ReactNode }) {
       {children}
       <div aria-live="polite" className="pointer-events-none fixed inset-x-0 bottom-9 z-[60] flex justify-center">
         {toast && (
-          <div key={toast.id} className="pointer-events-auto flex items-center gap-2 rounded-[10px] bg-ink py-2.5 pr-4 pl-3.5 text-[12.5px] text-white shadow-toast">
+          <div key={toast.id} className="pointer-events-auto flex animate-rise-in items-center gap-2 rounded-[10px] border border-line bg-white py-2.5 pr-4 pl-3.5 text-[12.5px] text-ink shadow-[0_2px_6px_0_rgba(28,26,20,0.05),0_12px_28px_-6px_rgba(28,26,20,0.14)]">
             {toast.icon ??
               (toast.tone === 'error' ? (
-                <AlertCircle aria-hidden className="size-3.5 text-[#f08a80]" />
+                <AlertCircle aria-hidden className="size-3.5 text-red" />
               ) : toast.tone === 'success' ? (
-                <CheckCircle2 aria-hidden className="size-3.5 text-[#7fd49a]" />
+                <CheckCircle2 aria-hidden className="size-3.5 text-green" />
               ) : null)}
             <span>{toast.message}</span>
             {toast.action && (
               <button
                 type="button"
-                className="font-medium underline-offset-2 hover:underline"
+                className="ml-1 font-medium text-[#a8733f] underline-offset-2 hover:underline"
                 onClick={() => {
                   toast.action?.onClick();
                   setToast(null);

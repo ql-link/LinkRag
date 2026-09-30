@@ -55,6 +55,7 @@ function toUser(p: ProfileDTO): User {
     bio: p.bio ?? undefined,
     team: p.team ?? undefined,
     createdAt: p.createdAt?.slice(0, 10) ?? undefined,
+    role: p.role,
   };
 }
 
@@ -128,7 +129,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await delay(500);
     if (password.length < 6) throw new AuthError('账号或密码错误', 'password');
     const username = account.includes('@') ? account.split('@')[0] : account;
-    persist({ username, displayName: username === 'chenmo' ? '陈默' : username, email: account.includes('@') ? account : `${account}@example.com`, createdAt: '2026-03-12' });
+    persist({ username, displayName: username === 'chenmo' ? '陈默' : username, email: account.includes('@') ? account : `${account}@example.com`, createdAt: '2026-03-12', role: 'ADMIN' });
   }, []);
 
   const register = useCallback(async (input: { username: string; email: string; password: string }) => {

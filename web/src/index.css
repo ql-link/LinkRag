@@ -5,6 +5,7 @@
   --font-sans: 'Noto Sans SC', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', system-ui, sans-serif;
   --font-serif: 'Noto Serif SC', 'Songti SC', serif;
   --font-num: 'Inter', 'Noto Sans SC', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', Menlo, Consolas, monospace;
 
   --color-page: #f1f1ef;
   --color-ink: #1d1d1b;
@@ -22,6 +23,11 @@
   --color-red: #d0493f;
   --color-blue: #3f6fd8;
   --color-purple: #7a5bd0;
+
+  /* 品牌强调色：取自落地页暖琥珀主色 #c8925a 的深色版本，白字对比度 4.6:1（WCAG AA） */
+  --color-brand: #9c6a3a;
+  --color-brand-hover: #8a5a2b;
+  --color-brand-soft: #f6f1e9;
 
   --shadow-card: 0 4px 16px 0 rgba(0, 0, 0, 0.04);
   --shadow-doc: 0 4px 10px 0 rgba(0, 0, 0, 0.06);
@@ -58,6 +64,12 @@ body {
   color: var(--color-ink);
   font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
+}
+/* 落地页按设计稿 1:1 呈现，不参与工作台的整体放大（见 pages/landing/LandingPage） */
+html.no-ui-scale body {
+  zoom: 1;
+  width: 100vw;
+  height: 100vh;
 }
 
 @layer base {
@@ -155,13 +167,129 @@ body {
   animation: rise-in 0.24s ease-out both;
 }
 
+/* 落地页动效（设计稿 L3 动效规范）：入场 expo-out，切换 easeOut */
+@keyframes hero-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@utility hero-fade-in {
+  animation: hero-fade-in 0.22s ease-out both;
+}
+@keyframes land-rise {
+  from {
+    opacity: 0;
+    transform: translateY(var(--rise, 16px));
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* Hero 标题 / 副标题逐行入场：600ms，stagger 由 style 的 animation-delay 指定 */
+@utility animate-land-rise {
+  animation: land-rise 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+@keyframes hero-window {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+/* Hero 演示窗口：900ms，delay 200ms */
+@utility animate-hero-window {
+  animation: hero-window 0.9s cubic-bezier(0.22, 1, 0.36, 1) 0.2s both;
+}
+/* Section 滚动出现：opacity 0→1，y 24→0，500ms easeOut，仅一次（由 Reveal 切换类名） */
+@utility land-reveal {
+  opacity: 0;
+  transform: translateY(24px);
+  transition:
+    opacity 0.5s ease-out,
+    transform 0.5s ease-out;
+}
+@utility land-revealed {
+  opacity: 1;
+  transform: none;
+}
+/* Tab 画布 crossfade：300ms easeOut */
+@utility animate-tab-in {
+  animation: fade-in 0.3s ease-out both;
+}
+/* Tab 画布内元素依次上浮（间隔由 animation-delay 指定） */
+@utility animate-stagger-up {
+  animation: land-rise 0.4s ease-out both;
+  --rise: 10px;
+}
+/* 扫描线自上而下 · 1.2s */
+@keyframes scan-down {
+  from {
+    transform: translateY(0);
+  }
+  to {
+    transform: translateY(var(--scan, 200px));
+  }
+}
+@utility animate-scan {
+  animation: scan-down 1.2s ease-in-out infinite alternate;
+}
+/* 连线依次描绘 */
+@keyframes draw-line {
+  from {
+    stroke-dashoffset: var(--len, 300);
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@utility animate-draw {
+  stroke-dasharray: var(--len, 300);
+  animation: draw-line 0.6s ease-out both;
+}
+/* 琥珀色光标 1s 闪烁 */
+@keyframes caret-amber {
+  50% {
+    opacity: 0;
+  }
+}
+@utility animate-caret-amber {
+  animation: caret-amber 1s steps(1) infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .text-shimmer,
   .animate-pulse-ring,
   .animate-caret,
   .animate-rise-in,
-  .animate-progress-slide {
+  .animate-progress-slide,
+  .animate-scan,
+  .animate-caret-amber {
     animation: none;
+  }
+  /* 减少动效：关闭位移与循环，只保留 ≤150ms 的透明度过渡 */
+  .animate-land-rise,
+  .animate-hero-window,
+  .animate-tab-in,
+  .animate-stagger-up,
+  .hero-fade-in {
+    animation: fade-in 0.15s ease-out both;
+  }
+  .animate-draw {
+    animation: none;
+    stroke-dasharray: none;
+  }
+  .land-reveal {
+    transform: none;
+    transition: opacity 0.15s ease-out;
   }
   .text-shimmer {
     -webkit-text-fill-color: currentColor;

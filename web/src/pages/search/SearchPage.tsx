@@ -90,7 +90,7 @@ export default function SearchPage() {
   return (
     <PageColumn top={39}>
       <div className="text-[11px]">
-        <Breadcrumb items={[{ label: '工作台', to: '/' }, { label: '搜索' }]} />
+        <Breadcrumb items={[{ label: '工作台', to: '/home' }, { label: '搜索' }]} />
       </div>
 
       <form

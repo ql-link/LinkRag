@@ -50,6 +50,8 @@ export interface User {
   team?: string;
   /** 注册日期 YYYY-MM-DD */
   createdAt?: string;
+  /** 角色：ADMIN 可进入管理台 */
+  role?: 'ADMIN' | 'USER';
 }
 
 export interface ConversationSummary {

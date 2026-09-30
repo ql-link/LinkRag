@@ -1,0 +1,117 @@
+{
+  "dataset": "BEIR SciFact official test",
+  "query_count": 300,
+  "rerank_model": "qwen3.7-text-rerank",
+  "endpoint": "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
+  "input_top_n_chunks": 30,
+  "output_top_n_chunks": 30,
+  "scoring_unit": "source document after chunk deduplication",
+  "rerank_location": "external isolated evaluation script; neither product native pipeline",
+  "sources_sha256": {
+    "prepared/collection.tsv": "7c8beba4c0eb32a8b141eb7f7c2530cc39f1894e01da5ac8532c3da84c64ba0c",
+    "prepared/manifest.jsonl": "06d4c80081ffce3ab14e06dd8fa55c8d55cd89cf00e7d8292f2c838234827da7",
+    "prepared/golden.jsonl": "9949de8334177b4afcb1b31706d73f2acabb15d9021bf646e4563657da3a38d0",
+    "evaluation/per_query.jsonl": "21f7ec490afb8195bab08406a86b9aa41c533797d17806403b4d24371a97d859",
+    "weknora/retrieval.json": "5b92338492d5df488bf644d0372ba38d766f0511fbe95e3fbf187073fcb80ee5",
+    "weknora/chunk_text.csv": "b6f16e5545c4ae53d4f9bda2050a3999ed7b083b2d375217bff31da990cb4aa3",
+    "rerank_top30/linkrag_chunk_text.csv": "aab59e4b753b9b2ebaf22cdb4e398c69adbb4371b5df3fff9f055dccda5d24a1"
+  },
+  "results": {
+    "linkrag_three_weighted": {
+      "before_top30_metrics": {
+        "recall@1": 0.5909444444444444,
+        "recall@5": 0.7991111111111111,
+        "recall@10": 0.8652222222222222,
+        "hit_rate@5": 0.8133333333333334,
+        "mrr@10": 0.7036746031746032,
+        "ndcg_binary@10": 0.7379697184816824,
+        "hit_count@10": 263,
+        "query_count": 300,
+        "recall@30": 0.9376666666666668
+      },
+      "after_rerank_metrics": {
+        "recall@1": 0.6524444444444444,
+        "recall@5": 0.8528888888888888,
+        "recall@10": 0.902,
+        "hit_rate@5": 0.8633333333333333,
+        "mrr@10": 0.7571693121693122,
+        "ndcg_binary@10": 0.7889080658396092,
+        "hit_count@10": 273,
+        "query_count": 300,
+        "recall@30": 0.9376666666666668
+      },
+      "top30_recall_ceiling": 0.9376666666666668,
+      "query_changes": {
+        "recall@10_improved": 15,
+        "recall@10_worsened": 3,
+        "recall@10_unchanged": 282
+      },
+      "mean_input_chars": 42106.85,
+      "latency_ms_p50": 300.35699999999997,
+      "latency_ms_p95": 882.3655000000007
+    },
+    "weknora_native_hybrid": {
+      "before_top30_metrics": {
+        "recall@1": 0.5856666666666667,
+        "recall@5": 0.7754444444444444,
+        "recall@10": 0.8695555555555555,
+        "hit_rate@5": 0.7966666666666666,
+        "mrr@10": 0.699015873015873,
+        "ndcg_binary@10": 0.7346543569442617,
+        "hit_count@10": 265,
+        "query_count": 300,
+        "recall@30": 0.931
+      },
+      "after_rerank_metrics": {
+        "recall@1": 0.6524444444444444,
+        "recall@5": 0.8528888888888888,
+        "recall@10": 0.8953333333333334,
+        "hit_rate@5": 0.8633333333333333,
+        "mrr@10": 0.7564060846560846,
+        "ndcg_binary@10": 0.7868815215778442,
+        "hit_count@10": 271,
+        "query_count": 300,
+        "recall@30": 0.931
+      },
+      "top30_recall_ceiling": 0.931,
+      "query_changes": {
+        "recall@10_improved": 15,
+        "recall@10_worsened": 6,
+        "recall@10_unchanged": 279
+      },
+      "mean_input_chars": 43390.82,
+      "latency_ms_p50": 287.92,
+      "latency_ms_p95": 772.4804000000007
+    }
+  },
+  "paired_bootstrap": {
+    "bootstrap_seed": 20260929,
+    "bootstrap_replicates": 10000,
+    "resampling_unit": "paired query",
+    "metric": "source-document macro Recall@10",
+    "comparisons": {
+      "linkrag_three_weighted_after_minus_before": {
+        "delta": 0.036777777777777784,
+        "paired_bootstrap_95_percentile": [
+          0.013444444444444445,
+          0.06133333333333333
+        ]
+      },
+      "weknora_native_hybrid_after_minus_before": {
+        "delta": 0.02577777777777778,
+        "paired_bootstrap_95_percentile": [
+          -0.0005555555555555554,
+          0.052222222222222225
+        ]
+      },
+      "linkrag_after_minus_weknora_after": {
+        "delta": 0.006666666666666667,
+        "paired_bootstrap_95_percentile": [
+          -0.006666666666666667,
+          0.02
+        ]
+      }
+    }
+  },
+  "progress_sha256": "814dc95e56251c5db5fdfc13184cc2f305a1cdb703de8c9bf3cbcabf972b9dda"
+}

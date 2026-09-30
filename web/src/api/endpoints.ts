@@ -261,3 +261,27 @@ export const usageApi = {
   trend: (r: Range) => request<UsageTrendDTO>('/api/v1/llm/usage/trend', { query: r }),
   logs: (r: Range, page: number, pageSize: number) => request<Page<UsageLogDTO>>('/api/v1/llm/usage/logs', { query: { ...r, page, pageSize } }),
 };
+
+/* ---------------- 反馈（B10，匿名） ---------------- */
+
+export type FeedbackTypeDTO = 'BUG' | 'FEATURE' | 'EXPERIENCE' | 'OTHER';
+
+export interface FeedbackDTO {
+  id: number;
+  type: FeedbackTypeDTO;
+  title: string;
+  status: 'PENDING' | 'PROCESSING' | 'RESOLVED' | 'CLOSED';
+  createdAt: string;
+}
+
+export const feedbackApi = {
+  /** multipart：type,title(≤128),content(≤5000),file?(≤10 MB)；后端未开启写入时返回 503 */
+  submit: (input: { type: FeedbackTypeDTO; title: string; content: string; file?: File }) => {
+    const form = new FormData();
+    form.set('type', input.type);
+    form.set('title', input.title);
+    form.set('content', input.content);
+    if (input.file) form.set('file', input.file);
+    return request<FeedbackDTO>('/api/v1/feedback', { body: form, anonymous: true });
+  },
+};

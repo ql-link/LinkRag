@@ -1,0 +1,154 @@
+{
+  "dataset": "BEIR SciFact full corpus, official test",
+  "query_count": 300,
+  "source_document_count": 5183,
+  "unit": "source document, duplicate chunks collapsed in original WeKnora order",
+  "metric": "macro binary qrels",
+  "confidence_interval": "paired query bootstrap percentile",
+  "bootstrap_replicates": 10000,
+  "bootstrap_seed": 20260929,
+  "sources_sha256": {
+    "linkrag_per_query": "21f7ec490afb8195bab08406a86b9aa41c533797d17806403b4d24371a97d859",
+    "weknora_retrieval": "5b92338492d5df488bf644d0372ba38d766f0511fbe95e3fbf187073fcb80ee5",
+    "lambdamart_per_query": "5467da42f3a5578ee656d3a04e9945ef1ade6900a607948f9204860886ba71a9"
+  },
+  "results": {
+    "linkrag_three_weighted": {
+      "recall@1": 0.5909444444444444,
+      "recall@5": 0.7991111111111111,
+      "recall@10": 0.8652222222222222,
+      "recall@100": 0.9633333333333334,
+      "hit_rate@5": 0.8133333333333334,
+      "mrr@10": 0.7036746031746032,
+      "ndcg_binary@10": 0.7379697184816827,
+      "hit_count@10": 263,
+      "query_count": 300
+    },
+    "weknora_native_hybrid": {
+      "recall@1": 0.5856666666666667,
+      "recall@5": 0.7754444444444444,
+      "recall@10": 0.8695555555555555,
+      "recall@100": 0.9566666666666667,
+      "hit_rate@5": 0.7966666666666666,
+      "mrr@10": 0.699015873015873,
+      "ndcg_binary@10": 0.7346543569442623,
+      "hit_count@10": 265,
+      "query_count": 300
+    },
+    "linkrag_lambdamart_offline": {
+      "recall@1": 0.5884444444444444,
+      "recall@5": 0.798,
+      "recall@10": 0.8842222222222221,
+      "recall@100": 0.9633333333333334,
+      "hit_rate@5": 0.8133333333333334,
+      "mrr@10": 0.7069708994708995,
+      "ndcg_binary@10": 0.7447905141161923,
+      "hit_count@10": 268,
+      "query_count": 300
+    }
+  },
+  "differences": {
+    "linkrag_three_weighted_minus_weknora": {
+      "recall@1": {
+        "delta": 0.005277777777777778,
+        "paired_bootstrap_95_percentile": [
+          -0.023333333333333334,
+          0.03444444444444444
+        ]
+      },
+      "recall@5": {
+        "delta": 0.023666666666666666,
+        "paired_bootstrap_95_percentile": [
+          -0.001612499999999999,
+          0.04911249999999998
+        ]
+      },
+      "recall@10": {
+        "delta": -0.004333333333333333,
+        "paired_bootstrap_95_percentile": [
+          -0.029333333333333336,
+          0.02
+        ]
+      },
+      "recall@100": {
+        "delta": 0.006666666666666667,
+        "paired_bootstrap_95_percentile": [
+          0.0,
+          0.016666666666666666
+        ]
+      },
+      "hit_rate@5": {
+        "delta": 0.016666666666666666,
+        "paired_bootstrap_95_percentile": [
+          -0.01,
+          0.043333333333333335
+        ]
+      },
+      "mrr@10": {
+        "delta": 0.004658730158730159,
+        "paired_bootstrap_95_percentile": [
+          -0.014735813492063493,
+          0.02452390873015873
+        ]
+      },
+      "ndcg_binary@10": {
+        "delta": 0.0033153615374204035,
+        "paired_bootstrap_95_percentile": [
+          -0.01362912829374029,
+          0.019996419636894833
+        ]
+      }
+    },
+    "linkrag_lambdamart_offline_minus_weknora": {
+      "recall@1": {
+        "delta": 0.0027777777777777775,
+        "paired_bootstrap_95_percentile": [
+          -0.026673611111111106,
+          0.03222222222222223
+        ]
+      },
+      "recall@5": {
+        "delta": 0.02255555555555555,
+        "paired_bootstrap_95_percentile": [
+          -0.0061125000000000025,
+          0.05205694444444442
+        ]
+      },
+      "recall@10": {
+        "delta": 0.014666666666666668,
+        "paired_bootstrap_95_percentile": [
+          -0.012666666666666666,
+          0.042
+        ]
+      },
+      "recall@100": {
+        "delta": 0.006666666666666667,
+        "paired_bootstrap_95_percentile": [
+          -0.006666666666666667,
+          0.02
+        ]
+      },
+      "hit_rate@5": {
+        "delta": 0.016666666666666666,
+        "paired_bootstrap_95_percentile": [
+          -0.013333333333333334,
+          0.04666666666666667
+        ]
+      },
+      "mrr@10": {
+        "delta": 0.007955026455026456,
+        "paired_bootstrap_95_percentile": [
+          -0.011947123015873015,
+          0.028624007936507923
+        ]
+      },
+      "ndcg_binary@10": {
+        "delta": 0.010136157171930069,
+        "paired_bootstrap_95_percentile": [
+          -0.007199767440572168,
+          0.027511488162122833
+        ]
+      }
+    }
+  }
+}
