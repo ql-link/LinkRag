@@ -185,15 +185,15 @@ MQ 发送失败统一返回不含底层连接地址和异常文本的 `500` 通�
 > `SendUsageReportRequest`（用量上报全链路归属）：必填 `user_id` / `provider_type` / `model_name` / `stage` / `operation` /
 > 正整数全局 `config_id`；token 计数默认 0。可选 `task_id` / `latency_ms` / `status`。字段语义与 MQ 载荷一致。
 
-> parse_result 终态回传 topic（Python→Java 解析终态通知）已下线（LINK-166）：终态只写 DB，前端轮询 Java 查询读取，见下方「解析终态读取」。
+> parse_result 终态回传 topic 已下线（LINK-166）：终态只写 DB，前端通过 Python 管理接口轮询读取，见下方「解析终态读取」。
 
 ### 解析终态读取
 
-parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权威单源是 `document_parse_pipeline.pipeline_status`，前端改由轮询 Java `parse-results` 接口读 DB 获取（LINK-98）。
+parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权威单源是 `document_parse_pipeline.pipeline_status`；前端通过 Python 的 `GET /api/v1/datasets/{dataset_id}/files/parse-results?fileIds=...` 读取。
 
 `SUCCESS` 表示解析+上传、分片、向量化、预分词与 ES 入库均完成；任一阶段失败写 `FAILED`，并在 `failure_reason` 中携带业务化原因。
 
-> **数据库权威单源**：整体任务状态以 `document_parse_pipeline.pipeline_status` 为准；`document_parsed_log.task_status` / `failure_reason` 已下线（migration 0007）。Java 侧直接查表读取：
+> **数据库权威单源**：整体任务状态以 `document_parse_pipeline.pipeline_status` 为准；`document_parsed_log.task_status` / `failure_reason` 已下线（migration 0007）。Python 管理接口据此读取：
 > - 整体任务是否成功 → `document_parse_pipeline.pipeline_status == SUCCESS`
 > - markdown 是否已上传 → `document_parsed_log.parsed_object_key IS NOT NULL`
 > - 失败原因 → `document_parse_pipeline.failure_reason`

@@ -1,6 +1,6 @@
 # toLink-Rag
 
-`toLink-Rag` 是基于 FastAPI 的 RAG 后端，负责文档解析、分块、向量化索引，并通过 MQ 与 Java 业务系统集成。
+`toLink-Rag` 是基于 FastAPI 的 LinkRag 后端，负责管理接口、文档解析、分块、向量化索引和异步 MQ 任务；同仓 `web/` 前端通过 HTTP 调用该服务。Java 管理端已下线，遗留的 Java 命名仅用于 JWT、数据和消息兼容。
 
 本文件是**项目使用入口**，覆盖运行与开发的最小必要信息。文档导航与按角色查阅路线见 [docs/README.md](docs/README.md)。
 

@@ -1,13 +1,13 @@
 # MQ Integration
 
-本文面向业务方介绍解析和删除任务的 MQ 契约。B6/B7 迁移代码已将 `chat_turn`、`usage_report` 改为 Python 本地持久化，后文这两种消息仅为旧 Java 消费者排空和历史兼容保留；新接入方不得继续投递。文档解析的 `parse_task` 和异步清理的 `document_delete` 仍使用 MQ。详见 [B6–B8 迁移说明](../internals/b6_b8_migration.md)。
+本文面向业务方介绍解析和删除任务的 MQ 契约。当前同仓 Python 管理层在文件上传、重试和删除后投递 `parse_task` / `document_delete`；外部生产者若直接接入，必须遵循同一载荷和幂等约束。B6/B7 已将 `chat_turn`、`usage_report` 改为 Python 本地持久化，后文两种消息仅为历史兼容记录；新接入方不得继续投递。详见 [B6–B8 迁移说明](../internals/b6_b8_migration.md)。
 
 权威消息定义见 [src/core/mq/messages](../../src/core/mq/messages)，本文是面向接入方的精简版。
 
 ## 协作模式
 
 ```
-Java 管理端                          toLink-Rag (Python)
+Python 管理层 / 外部生产者             toLink-Rag (Python)
     │                                      │
     │  ① 投递解析任务 (ParseTaskMessage)   │
     ├─────────────────────────────────────►│
@@ -17,11 +17,11 @@ Java 管理端                          toLink-Rag (Python)
     │                                      │     解析 → 分片 → 向量化 → 索引
     │                                      │     终态写入 document_parse_pipeline (DB)
     │                                      │
-    │  ③ 前端轮询 Java parse-results 接口读 DB 取终态
-    │      （不再有 Python→Java 的 MQ 回传，见下方「终态读取」）
+    │  ③ 前端轮询 Python parse-results 接口读 DB 取终态
+    │      （不再有 parse_result MQ 回传，见下方「终态读取」）
 ```
 
-> **parse_result 终态回传 MQ 已下线（LINK-166）**：Python 端不再发送解析终态通知消息。解析终态的权威源是 MySQL `document_parse_pipeline`，前端改由轮询 Java `parse-results` 接口读 DB 获取（LINK-98）。Java 端停止消费见 LINK-165。
+> **parse_result 终态回传 MQ 已下线（LINK-166）**：Python 端不再发送解析终态通知消息。解析终态的权威源是 MySQL `document_parse_pipeline`，前端轮询 Python 的 `GET /api/v1/datasets/{dataset_id}/files/parse-results?fileIds=...` 读取。
 
 > **cache_sync 已下线**：用户 LLM 配置和系统厂商每次直接读取共享 MySQL，不再声明或初始化缓存同步 topic，也不再提供 `CacheSyncMessage`。Broker 上的历史 topic 不由应用自动物理删除，可在稳定观察期后由运维单独清理。
 
@@ -29,11 +29,11 @@ Java 管理端                          toLink-Rag (Python)
 
 ## 公共消息头
 
-所有 MQ 消息可选携带 `X-Trace-Id` header，用于和 HTTP 请求、Java 服务日志、Python 服务日志串联。Python 端发送消息时会把当前日志上下文中的 trace id 写入 `X-Trace-Id`；消费消息时会读取 `X-Trace-Id`、`x-trace-id`、`trace_id` 或 `trace-id` header 并绑定到当前处理协程的日志上下文。
+所有 MQ 消息可选携带 `X-Trace-Id` header，用于和 HTTP 请求、生产者日志、Python 服务日志串联。Python 端发送消息时会把当前日志上下文中的 trace id 写入 `X-Trace-Id`；消费消息时会读取 `X-Trace-Id`、`x-trace-id`、`trace_id` 或 `trace-id` header 并绑定到当前处理协程的日志上下文。
 
 该字段是消息头，不属于业务 payload；缺失时不影响消费兼容性。
 
-## 解析任务投递（Java → Python）
+## 解析任务投递（生产者 → Python）
 
 ### Topic
 
@@ -68,8 +68,8 @@ Java 管理端                          toLink-Rag (Python)
 > 不变；该约束用于防止对象存储路径或未来新增的敏感字段被异常日志原样采集。
 
 > **重试链路约束**（与 [parse_task_pipeline.md §4 重试分支](../internals/parse_task_pipeline.md) 配套）：
-> - 重试请求由 Java 端在判定旧任务 `pipeline_status=FAILED` 后发起；Python 端不计数、不限次。若旧任务 `recover_from_stage=CLEANING`，允许旧 log 没有 `parsed_object_key`，Python 会重新下载源文件、解析并上传 markdown。
-> - 重试请求的 `md_object_key` 是本次 markdown 产物目标 key；bucket 由 Python 侧 `MINIO_PRIVATE_BUCKET` 决定。恢复点晚于 `CLEANING` 时 key 应与上轮一致（Java 直接回填）；从 `CLEANING` 恢复时用于承接重新上传后的 markdown。
+> - 重试请求由管理层在判定旧任务 `pipeline_status=FAILED` 后发起；Python 端不计数、不限次。若旧任务 `recover_from_stage=CLEANING`，允许旧 log 没有 `parsed_object_key`，Python 会重新下载源文件、解析并上传 markdown。
+> - 重试请求的 `md_object_key` 是本次 markdown 产物目标 key；bucket 由 Python 侧 `MINIO_PRIVATE_BUCKET` 决定。恢复点晚于 `CLEANING` 时 key 应与上轮一致（管理层按旧记录回填）；从 `CLEANING` 恢复时用于承接重新上传后的 markdown。
 > - Python 通过 CAS 第 2 层（`mark_superseded` UPDATE rowcount）仲裁并发重试，失败方仍会建一行 `pipeline_status=FAILED` + `failed_stage=RETRY_VALIDATION` 的审计记录（终态写 DB，前端轮询读取）。
 
 ### 消息示例
@@ -96,7 +96,7 @@ Java 管理端                          toLink-Rag (Python)
 }
 ```
 
-重试任务（后处理阶段恢复时 Java 直接回填上轮 markdown 坐标；`CLEANING` 恢复时作为本次重新上传目标坐标）：
+重试任务（后处理阶段恢复时管理层回填上轮 markdown 坐标；`CLEANING` 恢复时作为本次重新上传目标坐标）：
 
 ```json
 {
@@ -125,9 +125,9 @@ Kafka 以 `file_type` 作为 partition key。RabbitMQ 使用默认交换器按
 `tolink.rag.parse_task` Queue 名路由，`file_type` 仅保留为 AMQP `message_id`，不会改投到
 `pdf` / `docx` 等不存在的 Queue。
 
-## 删除通知（Java → Python，LINK-55）
+## 删除通知（管理层 → Python，LINK-55）
 
-数据集 / 文件删除采用「Java 隐性软删 + Python 清产物」两段式：Java 在删除事务里软删原文件行（`document_original_file.is_deleted=1`，保留 OSS 原文件对象）、物理删会话消息，提交后（afterCommit）发本通知；Python 据此删除**解析域衍生产物**（解析三表 + `kb_document_chunk` + Qdrant 向量点 + ES 索引 + OSS `parsed/.../{taskId}/` 下的 Markdown 与图片），**不碰原文件**。
+数据集 / 文件删除采用「Python 管理层软删 + Python 清产物」两段式：管理层在删除事务中软删原文件行（`document_original_file.is_deleted=1`，保留原始对象）并写入投递账本，提交后发送本通知；消费者据此删除**解析域衍生产物**（解析三表 + `kb_document_chunk` + Qdrant 向量点 + ES 索引 + `parsed/.../{taskId}/` 下的 Markdown 与图片），**不碰原文件**。
 
 ### Topic
 
@@ -137,14 +137,14 @@ Kafka 以 `file_type` 作为 partition key。RabbitMQ 使用默认交换器按
 
 ### 消息体（DocumentDeletePayload）
 
-扁平裸 JSON + snake_case，**无信封**（与 parse_task 一致，区别于 chat_turn / usage_report 的 `{mq_type,mq_name,payload}` 信封）；Java 侧 `JSON.toJSONString` 直发，消费端 `json.loads` 即得下表。
+扁平裸 JSON + snake_case，**无信封**（与 parse_task 一致，区别于 chat_turn / usage_report 的 `{mq_type,mq_name,payload}` 信封）；生产者发送 JSON，消费端 `json.loads` 即得下表。
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `delete_type` | string | ✅ | 删除范围：`dataset` / `file` |
 | `dataset_id` | int (BIGINT) | ✅ | 所属数据集 id |
 | `user_id` | int (BIGINT) | ✅ | 操作用户 id（归属维度，删除时兜底校验防越权） |
-| `original_file_id` | int (BIGINT) | 仅 `file` 必填 | 被软删的原文件 id；`dataset` 范围不下发（Java 端为 null，fastjson 省略） |
+| `original_file_id` | int (BIGINT) | 仅 `file` 必填 | 被软删的原文件 id；`dataset` 范围不下发该字段 |
 
 ### 消息示例
 
@@ -164,32 +164,32 @@ Kafka 以 `file_type` 作为 partition key。RabbitMQ 使用默认交换器按
 
 - **幂等**：按 id / filter 删，重复消费 no-op；删不存在产物按成功处理。
 - **删除次序（Python 侧）**：先删外部存储（Qdrant/ES/OSS），最后删 DB 行——DB 行是定位外部产物的账本，留到最后删保证崩溃/重试安全。
-- **无顺序保证**：Java 发送不带 key，分区轮询；删除通知之间、与 parse_task 之间均无时序约束。
-- **可靠性**：Java 尽力发（afterCommit 失败仅告警吞掉，无对账）；Python 坏消息进死信跳过，暂时性失败退避重试（≤3 次）耗尽进 `.DLT`。
+- **无顺序保证**：删除通知之间、与 parse_task 之间均无时序保证；消费者必须保持幂等。
+- **可靠性**：Python 管理层以 `management_mq_outbox` 保存提交后的待投递事件并补发；消费端坏消息进死信跳过，暂时性失败退避重试（≤3 次）耗尽进 `.DLT`。
 
 ### 边界
 
-- 不删原文件：`document_original_file` 行（Java 软删保留）与 OSS 原文件对象（Java 保留）。md/markdown 透传的 `parsed_object_key` 现在也落在 `parsed/` 前缀下（不再指向原文件对象），与其余格式一样按前缀正常参与删除；`_PARSED_PRODUCT_PREFIX` 护栏仍保留，仅作为异常兜底（防御非规范 key 误删原文件）。
-- 不删账务/用户态：`llm_usage_log`、`chat_*`（会话消息由 Java 物理删）。
+- 不删原文件：软删保留的 `document_original_file` 行与原始对象。md/markdown 透传的 `parsed_object_key` 现在也落在 `parsed/` 前缀下（不再指向原文件对象），与其余格式一样按前缀正常参与删除；`_PARSED_PRODUCT_PREFIX` 护栏仍保留，仅作为异常兜底（防御非规范 key 误删原文件）。
+- 不删账务/用户态：`llm_usage_log`、`chat_*`。
 
 ## 终态读取（Python → DB → 前端轮询）
 
-> **parse_result 终态回传 MQ 已下线（LINK-166）**。Python 端解析完成后**只写 DB 终态**，不再向 Java 发送 MQ 通知；`ParseResultMessage` 消息体与生产侧代码、`PARSE_RESULT_TOPIC` 配置项均已删除。Java 端停止消费见 LINK-165。
+> **parse_result 终态回传 MQ 已下线（LINK-166）**。Python 端解析完成后**只写 DB 终态**，不再发送 MQ 通知；`ParseResultMessage` 消息体与生产侧代码、`PARSE_RESULT_TOPIC` 配置项均已删除。
 
 ### 终态权威源
 
-解析终态的权威源是 MySQL `document_parse_pipeline`（`pipeline_status` = `SUCCESS` / `FAILED`，附 `failed_stage` / `recover_from_stage` / `failure_reason` / 各阶段耗时）。前端改由轮询 Java 的 `parse-results` 接口读 DB 获取状态（LINK-98），不再依赖 Python 的回传消息。
+解析终态的权威源是 MySQL `document_parse_pipeline`（`pipeline_status` = `SUCCESS` / `FAILED`，附 `failed_stage` / `recover_from_stage` / `failure_reason` / 各阶段耗时）。前端通过 Python 的 `GET /api/v1/datasets/{dataset_id}/files/parse-results?fileIds=...` 读取状态，不再依赖回传消息。
 
 ### 终态语义
 
 - `SUCCESS`：Markdown 转换 + 分片 + 向量化 + 索引入库**全部完成**。
 - `FAILED`：上述任一环节失败，具体原因见 `failure_reason`。
 
-不存在 "部分成功" 状态。中间步骤的细节状态由 toLink-Rag 写入 `document_parse_pipeline`，前端通过 Java 查询接口读取。
+不存在 "部分成功" 状态。中间步骤的细节状态由 toLink-Rag 写入 `document_parse_pipeline`，前端通过 Python 查询接口读取。
 
 ## 对话轮次上报（Python→Java）
 
-RAG 问答在 Python 端（`/api/v1/rag/stream`）以**后台任务**执行，生成起点与终态各发一条 `ChatTurnMessage`，由 **Java 消费并落库**：在单事务里 upsert `chat_message` 一行（一行一轮：query + answer 同行），并更新 `chat_conversation` 的 `last_config_id` / `last_model_name` / `updated_at`。Python 侧不写这两张表。
+以下载荷记录 Java 退场前的协议，供旧 Broker 清理和数据排查使用；当前 RAG 问答以 Python 本地事务写入 `chat_message` 与 `chat_conversation`，不会生产 `ChatTurnMessage`，新接入方不得按本节实现。
 
 > 职责拆分（LINK-191）：本消息**只负责对话内容持久化，不再携带 token**；本轮 `generate` 的 token 用量随统一的[用量上报消息](#用量上报pythonjava统计侧)单独上报（`stage='chat'`、`operation='generate'`），不再由 `chat_turn` 触发 `llm_usage_log` 落库。动机：token 统计链路不应依赖携带大文本（query/answer）的消息。
 
@@ -236,6 +236,8 @@ RAG 问答在 Python 端（`/api/v1/rag/stream`）以**后台任务**执行，�
 - **归属校验（Java 必做）**：`conversation_id` 来自前端请求体，`user_id` 取自 access token claims，Python 仅透传、不校验二者归属关系。Java 落库前**必须**校验 `conversation_id` 属于该 `user_id`（不匹配则丢弃/告警），否则存在跨用户写入他人对话的风险。
 
 ## 用量上报（Python→Java/统计侧）
+
+以下为 Java 退场前的历史载荷说明；当前用量埋点由 Python 后台任务直接写入 `llm_usage_log`，不会生产 `TokenUsageMessage`，新接入方不得按本节实现。
 
 **全部模型调用**的 token 用量经统一的 `TokenUsageMessage` 上报，由 Java 消费后落 `llm_usage_log` 一行：对话 `generate`（stage=`chat`）、解析侧 dense embed / 图片增强(vision) / 表格增强(table)、召回侧 query embed / rerank。对话内容持久化另走 [`chat_turn`](#对话轮次上报pythonjava)，与本用量解耦（LINK-191）。
 
