@@ -181,3 +181,14 @@ def test_runtime_image_installs_with_locked_versions() -> None:
     }
     # opencv 4.12+ 要求 numpy 2，与 infinity-sdk 冲突；锁文件必须固定两者。
     assert {"numpy", "opencv-python-headless", "infinity-sdk"} <= lock
+
+
+def test_dev_rag_deploy_chains_web_from_the_same_source() -> None:
+    source = (ROOT / "deploy/dev-server/build-component-on-primary.sh").read_text(encoding="utf-8")
+    # 代理需在拉源码前确定，才能让 codeload 下载走代理
+    assert source.index("build_proxy_args=()") < source.index('echo "[$component] fetch ql-link/')
+    assert 'curl -fsSL --proxy "$BUILD_PROXY"' in source
+    chain = source[source.index('if [[ "$component" == rag && "${DEV_CHAIN_WEB:-1}" == 1 ]]'):]
+    # 先释放构建锁再启动 web，避免 flock 自锁
+    assert chain.index("exec 9>&-") < chain.index('DEV_CHAIN_WEB=0 "$0" web "$build_number"')
+    assert '"$jenkins_root/incoming/LinkRag-Web-${source_ref_slug}.tgz"' in chain

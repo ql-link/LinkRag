@@ -127,11 +127,12 @@ Java 管理端已下线，Python 是唯一后端：
 当前业务 Queue 名由代码常量固定。开发环境使用独立 vhost `/tolink-dev` 与独立 RabbitMQ 数据卷，
 生产使用 `/tolink-prod`，两套环境不共享 Broker 或凭据。开发 Loki 独立保存日志并保留 7 天。
 
-Cloud Jenkins 使用两个独立 dev 作业：`linkrag-rag-dev`、`linkrag-web-dev`（原
-`linkrag-service-dev` 已随 Java 下线停用）。Jenkins 只负责调度和保留日志，两个作业均通过
-Tailscale SSH 在 Primary 拉取本仓库的 `dev` 分支、构建镜像并部署，镜像使用 `dev-b<build>` 标签；
-Web 作业在 `web/` 子目录执行 `npm ci`、typecheck、测试与构建，再用 `web/Dockerfile` 打包 Nginx 镜像。
-Primary 通过构建锁避免两个开发作业同时占用 Docker 构建资源。
+开发环境只有一个 Jenkins 作业 `linkrag-rag-dev`（由本仓库 `dev` 分支的 push 触发）。Jenkins 只负责调度和
+保留日志，作业通过 Tailscale SSH 在 Primary 执行 `build-component-on-primary.sh rag`：拉取本仓库 `dev`
+分支、构建并部署 RAG，镜像使用 `dev-b<build>` 标签。RAG 部署成功后，脚本用同一份源码继续执行
+`web` 组件：在 `web/` 子目录执行 `npm ci`、typecheck、测试与构建，再用 `web/Dockerfile` 打包 Nginx
+镜像，前后端始终来自同一提交。原 `linkrag-service-dev`、`linkrag-web-dev` 已随 Java 与旧前端下线删除。
+Primary 通过构建锁串行执行构建；链式部署前端前会先释放锁。
 其中 `linkrag-rag-dev` 在启动新 RAG 容器前自动执行 Alembic，固定加载
 `.env.development` + `.env.development.local`，并输出最终 revision；迁移失败时不会部署新镜像。
 
@@ -142,7 +143,9 @@ Primary 通过构建锁避免两个开发作业同时占用 Docker 构建资源�
 自动生成的 dev-only 密文，避免日常 dev 发布覆盖已有可用 Key。
 Web 构建把 npm 缓存持久化到 `/opt/tolink/dev/jenkins/npm-cache`，`npm ci` 设置超时并最多重试三次；
 安装失败会立即终止，不再继续执行 typecheck、测试和打包。
-公网源码下载不稳定时，可将完整 tar 包预置到
+服务器存在 `/opt/tolink/build-proxy.env` 时，源码经构建代理从 codeload.github.com 下载，pip / npm
+改用官方源并走代理（见仓库 `deploy/scripts` 中的构建脚本）；代理只转发境外流量。
+公网源码下载仍不稳定时，可将完整 tar 包预置到
 `/opt/tolink/dev/jenkins/incoming/<workspace>-dev.tgz`；下一次对应构建会校验并消费该文件，随后仍在
 Primary 完成镜像构建。
 
