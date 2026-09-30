@@ -29,6 +29,9 @@
 | POST | `/api/v1/oss-files/{bizType}` | Java 现行为匿名；Python 入口默认关闭 | multipart `file`；六类规则见对象存储内部文档。PUBLIC 返回公开 URL，RAW/PRIVATE 返回 key。需确认权限矩阵后设置 `B2_GENERIC_UPLOAD_ENABLED=true` 并按路径切流；关闭时返回 503。 |
 | GET | `/api/v1/oss-files/public/{objectKey}` | 匿名，仅 PUBLIC 桶 | Python 接管此路径且启用 `B2_PUBLIC_PREVIEW_ENABLED` 时，经现有 MinIO 适配器读取公开桶；返回原字节、后缀对应 Content-Type 和 30 天缓存头。非法或不存在 key 返回 404，存储故障返回 503；关闭时返回 503。RAW/PRIVATE 不可由此读取。 |
 | GET | `/api/v1/admin/users` | ADMIN | `page` 默认 1、`size` 默认 10；返回 `items,total,page,pageSize,totalPages`。 |
+| GET | `/api/v1/admin/users?keyword=&role=&status=&sort=&withStats=true` | ADMIN | 管理台列表：`keyword` 匹配用户名 / 昵称 / 邮箱，纯数字或 `#数字` 同时匹配 ID；`role` ADMIN/USER；`status` 0/1；`sort` `created`（默认）/`lastLogin`。带任一筛选或 `withStats=true` 时项额外含 `lastLoginAt,datasetCount,tokens30d`（未删除知识库数、近 30 天总 Token）。 |
+| GET | `/api/v1/admin/users/{user_id}` | ADMIN | 资料 + `lastLoginAt` + `stats{datasetCount,fileCount,fileBytes,conversationCount,conversations30d,promptTokens30d,completionTokens30d,tokens30d,modelConfigCount,modelProviders[]}` + `datasets[{id,name,status,fileCount,fileBytes,updatedAt}]` + `recentLogins[{time,success,source,reason,ip,userAgent}]`（最近 10 条，成功事件与失败记录按时间合并；`reason` 为 `BAD_PASSWORD`/`DISABLED`；0043 未迁移时仅成功事件且无 IP/UA）。不存在返回 404 / 20001。 |
+| POST | `/api/v1/admin/users/{user_id}/password/reset` | ADMIN | 可选 `{newPassword}`（8–64 位）；不传时生成 12 位临时密码，`data:{temporaryPassword}` 只返回这一次（指定密码时为 null）。该用户此前签发的全部令牌立即失效。与状态修改同受 `B1_JAVA_PROTECTED_ROUTES_RETIRED` 控制，关闭时 503。 |
 | PATCH | `/api/v1/admin/users/{user_id}/status` | ADMIN | `{status:0|1}`；`data:null`。Java 受保护路由退场前返回 503，避免禁用状态与旧会话不一致。 |
 | PATCH | `/api/v1/admin/users/{user_id}/role` | ADMIN | `{role:"ADMIN"|"USER"}`；`data:null`。 |
 
@@ -59,6 +62,7 @@ B5 解析和删除消息使用 0041 `management_mq_outbox` 同事务记账，再
 | B6 文件分块 | `GET /api/v1/knowledge/chunks?fileId=&page=&pageSize=` | 按文件分页列出 ACTIVE 分块（`chunk_index` 升序，`pageSize` ≤100）；文件须归当前用户且未删除，否则 404。项字段 `chunkId,fileId,datasetId,index,chunkType,startLine,endLine,content,updatedAt`。 |
 | B7 用量 | `GET /api/v1/llm/usage/{summary,daily,logs,by-model,trend}` | 必传 `startDate,endDate`；前三项 `stage` 默认 `chat`，`all` 表示全链路；日志分页用 `page,pageSize`。 |
 | B8 看板 | `GET /api/v1/admin/users/dashboard?days=7\|30\|90` | 默认 30 日，返回角色/状态分布、新增/活跃与逐日趋势。 |
+| B8 总览 | `GET /api/v1/admin/overview` | 管理台首页计数：`users{total,newThisMonth,active7d{current,previous,growthRate}}`、`models{providers,activeProviderModels,platformConfigs}`、`blog{published,drafts,staleDrafts}`（超过 30 天未更新的草稿）、`feedback{pending}`、`sync{pendingCandidates,failedJobs7d,lastFailure,recentJobs[5]}`；模型同步表未迁移时 `sync` 为 null。 |
 | B8 上传配置 | `GET/PUT /api/v1/admin/document-file-config` | PUT 完整覆盖 `{maxSizeBytes,allowedSuffixes}`；写入默认关闭，需切流后设置 `B8_DOCUMENT_CONFIG_WRITES_ENABLED=true` 且默认指纹一致，Redis 写入成功后生效。 |
 | B8 日志 | `GET /api/v1/admin/logs`、`GET /api/v1/admin/logs/labels` | 日志筛选参数 `service,level,trace_id,keyword,start_time,end_time,page,page_size`；代理 Loki。 |
 

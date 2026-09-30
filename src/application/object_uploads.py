@@ -98,3 +98,16 @@ async def upload_object(
     except Exception as exc:
         raise BusinessError(50002, "文件上传失败", 500) from exc
     return UploadedObject(bucket, key, result)
+
+
+def public_object_url(object_key: str | None, stored_url: str | None = None) -> str | None:
+    """Rebuild a public object URL from its key so stale stored hosts do not leak to clients.
+
+    Falls back to the stored URL when no key is recorded or the public base is not configured.
+    """
+    if not object_key:
+        return stored_url
+    try:
+        return StorageFactory.get_storage().build_public_url(settings.MINIO_PUBLIC_BUCKET, object_key)
+    except ValueError:
+        return stored_url

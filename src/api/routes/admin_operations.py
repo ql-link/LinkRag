@@ -27,6 +27,11 @@ async def dashboard(admin: Admin, db: DB, days: int = 30) -> ApiResult[dict]:
     return success(await admin_operations.user_dashboard(db, days))
 
 
+@router.get("/overview")
+async def overview(admin: Admin, db: DB) -> ApiResult[dict]:
+    return success(await admin_operations.overview(db))
+
+
 @router.get("/document-file-config")
 async def get_document_file_config(admin: Admin) -> ApiResult[dict]:
     return success(await admin_operations.get_upload_config())

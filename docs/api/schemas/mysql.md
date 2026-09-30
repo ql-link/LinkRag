@@ -11,11 +11,11 @@ ORM 或 `scripts/db/init.sql` 与 migration 不一致时，以 migration 为准�
 
 ## 表清单
 
-按业务域共 22 张表：
+按业务域共 24 张表：
 
 | 业务域 | 表 | 主键 ID 起始 |
 | --- | --- | --- |
-| [用户](#1-用户) | `sys_user` | 10000 |
+| [用户](#1-用户) | `sys_user`, `user_login_event`, `user_login_failure` | 10000 |
 | [LLM 配置与用量](#2-llm-配置与用量) | `llm_system_provider`, `llm_provider_model`, `llm_provider_model_sync_job`, `llm_provider_model_sync_candidate`, `llm_model_config`, `llm_capability_default`, `llm_usage_log` | 10000 |
 | [数据集与对话](#3-数据集与对话) | `dataset`, `dataset_parse_config`, `chat_conversation`, `chat_message` | 10000 |
 | [文档解析](#4-文档解析) | `document_original_file`, `document_parse_file`, `document_parsed_log`, `document_parse_pipeline` | 10000 |
@@ -53,6 +53,36 @@ ORM：（未在 `src/models/` 中映射，由业务侧管理）
 | `created_at` / `updated_at` | DATETIME | 创建 / 更新时间 |
 
 索引：`uk_username`, `uk_email`。
+
+### `user_login_event` — 用户成功登录事件表
+
+ORM：（未映射，由 `src/application/identity_users.py` 直接读写）
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | BIGINT UNSIGNED PK | 事件唯一标识 |
+| `user_id` | BIGINT UNSIGNED | 登录用户 ID |
+| `login_source` | VARCHAR(16) | `LOGIN` 普通登录 / `REGISTER` 注册后自动登录 |
+| `created_at` | DATETIME | 登录成功时间（Asia/Shanghai） |
+| `ip` | VARCHAR(64) NULL | 来源 IP，优先取 `X-Forwarded-For` 首项（0043） |
+| `user_agent` | VARCHAR(255) NULL | User-Agent，截断至 255（0043） |
+
+索引：`idx_user_login_event_created_user (created_at, user_id)`。管理看板活跃用户按本表去重统计。
+
+### `user_login_failure` — 用户登录失败记录表（0043）
+
+仅记录账号存在时的失败（账号不存在不落库，避免被用于枚举）。
+
+| 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `id` | BIGINT UNSIGNED PK | 失败记录唯一标识 |
+| `user_id` | BIGINT UNSIGNED | 被尝试登录的用户 ID |
+| `reason` | VARCHAR(32) | `BAD_PASSWORD` 密码错误 / `DISABLED` 账号已禁用 |
+| `ip` | VARCHAR(64) NULL | 来源 IP |
+| `user_agent` | VARCHAR(255) NULL | User-Agent |
+| `created_at` | DATETIME | 失败时间（Asia/Shanghai） |
+
+索引：`idx_user_login_failure_user_created (user_id, created_at)`。
 
 ---
 

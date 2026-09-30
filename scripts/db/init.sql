@@ -47,9 +47,23 @@ CREATE TABLE IF NOT EXISTS user_login_event (
     user_id         BIGINT UNSIGNED NOT NULL COMMENT '登录用户ID',
     login_source    VARCHAR(16) NOT NULL COMMENT '登录来源：LOGIN 普通登录, REGISTER 注册自动登录',
     created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '登录成功时间（Asia/Shanghai）',
+    ip              VARCHAR(64) COMMENT '登录来源 IP（migration 0043）',
+    user_agent      VARCHAR(255) COMMENT '登录 User-Agent（migration 0043）',
 
     INDEX idx_user_login_event_created_user (created_at, user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '用户成功登录事件表';
+
+-- 1.2 用户登录失败记录表（migration 0043）
+CREATE TABLE IF NOT EXISTS user_login_failure (
+    id              BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY COMMENT '失败记录唯一标识',
+    user_id         BIGINT UNSIGNED NOT NULL COMMENT '被尝试登录的用户 ID',
+    reason          VARCHAR(32) NOT NULL COMMENT '失败原因：BAD_PASSWORD / DISABLED',
+    ip              VARCHAR(64) COMMENT '来源 IP',
+    user_agent      VARCHAR(255) COMMENT 'User-Agent（截断至 255）',
+    created_at      DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '失败时间（Asia/Shanghai）',
+
+    INDEX idx_user_login_failure_user_created (user_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci AUTO_INCREMENT=10000 COMMENT '用户登录失败记录表';
 
 -- 2. LLM 系统级厂商配置表
 CREATE TABLE IF NOT EXISTS llm_system_provider (
