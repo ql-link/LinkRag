@@ -1,7 +1,8 @@
 import { lazy, Suspense } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 
-import { AuthProvider } from '@/contexts/AuthContext';
+import { PageLoading } from '@/components/ui/Loading';
+import { AuthProvider, useAuth } from '@/contexts/AuthContext';
 import { ToastProvider } from '@/contexts/ToastContext';
 import { AppLayout } from '@/layouts/AppLayout';
 import AccountPage from '@/pages/account/AccountPage';
@@ -16,7 +17,7 @@ import ModelsPage from '@/pages/models/ModelsPage';
 import SearchPage from '@/pages/search/SearchPage';
 import UsagePage from '@/pages/usage/UsagePage';
 
-// 落地页动画较重，按需加载，不进入工作台首屏包；根路径 / 始终是落地页（登录与否一致），工作台首页在 /home
+// 落地页动画较重，按需加载；已登录访问根路径时直接进入 /home，不加载落地页。
 const LandingPage = lazy(() => import('@/pages/landing/LandingPage'));
 const ResearchPage = lazy(() => import('@/pages/research/ResearchPage'));
 const ReportPage = lazy(() => import('@/pages/research/ReportPage'));
@@ -33,6 +34,16 @@ const AdminBlogEditorPage = lazy(() => import('@/pages/admin/blog/BlogEditorPage
 const AdminModelsPage = lazy(() => import('@/pages/admin/models/ModelsAdminPage'));
 const AdminLogsPage = lazy(() => import('@/pages/admin/logs/LogsPage'));
 
+function RootEntry() {
+  const { user } = useAuth();
+  if (user) return <Navigate to="/home" replace />;
+  return (
+    <Suspense fallback={<PageLoading label="正在加载首页…" />}>
+      <LandingPage />
+    </Suspense>
+  );
+}
+
 export default function App() {
   return (
     <ToastProvider>
@@ -40,14 +51,7 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<AuthPage mode="login" />} />
           <Route path="/register" element={<AuthPage mode="register" />} />
-          <Route
-            index
-            element={
-              <Suspense fallback={null}>
-                <LandingPage />
-              </Suspense>
-            }
-          />
+          <Route index element={<RootEntry />} />
           <Route
             path="/research"
             element={
