@@ -81,6 +81,8 @@ toLink-Rag/                         # 仓库根目录
 │   ├── config.py                 # 全局配置
 │   ├── database.py               # 数据库初始化入口
 │   ├── main.py                   # FastAPI 应用入口（组合根：路由/消费者装配）
+│   ├── assets/
+│   │   └── demo_dataset/         # 随包发布的三份购物演示 Markdown
 │   ├── bootstrap/                # 进程启动期引导（须先于业务模块 import）
 │   │   └── nltk_data.py          # NLTK 数据路径引导（项目内 nltk_data 优先）
 │   ├── api/                      # HTTP API 分层
@@ -116,6 +118,7 @@ toLink-Rag/                         # 仓库根目录
 │   │       ├── mq.py
 │   │       └── parse.py
 │   ├── application/              # Application 层：业务用例 runtime 与装配（api → application → core）
+│   │   ├── demo_dataset.py       # 新用户独立演示库初始化与原件补偿
 │   │   ├── app_identity.py       # 接入应用凭证校验、影子用户映射与凭证运维
 │   │   ├── chunk_details.py      # 按 user_id 回读 chunk 正文与来源文件名
 │   │   ├── object_uploads.py     # B2 六类业务上传规则，复用 StorageFactory

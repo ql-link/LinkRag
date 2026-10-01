@@ -12,7 +12,24 @@ from src.services.storage.base import BaseObjectStorage
 class MinioStorage(BaseObjectStorage):
     """基于 S3 兼容接口的 MinIO 存储实现。"""
 
-    def __init__(self) -> None:
+    def __init__(
+        self, *, request_timeout_seconds: float | None = None, max_attempts: int | None = None
+    ) -> None:
+        client_config = Config(signature_version="s3v4")
+        if request_timeout_seconds is not None:
+            if request_timeout_seconds <= 0:
+                raise ValueError("storage request timeout must be positive")
+            client_config = client_config.merge(
+                Config(
+                    connect_timeout=request_timeout_seconds, read_timeout=request_timeout_seconds
+                )
+            )
+        if max_attempts is not None:
+            if max_attempts < 1:
+                raise ValueError("storage max attempts must be positive")
+            client_config = client_config.merge(
+                Config(retries={"total_max_attempts": max_attempts, "mode": "standard"})
+            )
         endpoint = settings.MINIO_ENDPOINT
         access_key = settings.MINIO_ACCESS_KEY
         secret_key = settings.MINIO_SECRET_KEY
@@ -32,7 +49,7 @@ class MinioStorage(BaseObjectStorage):
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
             use_ssl=use_ssl,
-            config=Config(signature_version="s3v4"),
+            config=client_config,
         )
 
     def download_to_path(self, bucket: str, object_key: str, dst: Path) -> None:

@@ -20,6 +20,7 @@
 | 数据库迁移（Alembic，schema 演进的唯一入口） | [migrations/](migrations/) |
 | HTTP 路由 | [src/api/routes](src/api/routes) |
 | 核心业务模块 | [src/core](src/core) |
+| 新用户演示数据集 | [src/application/demo_dataset.py](src/application/demo_dataset.py)，素材位于 [src/assets/demo_dataset/](src/assets/demo_dataset/) |
 | 单元测试 | [tests/unit](tests/unit) |
 | 集成测试 | [tests/integration](tests/integration) |
 

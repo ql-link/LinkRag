@@ -161,6 +161,62 @@ async def _evict(dataset_id: int) -> None:
         raise BusinessError(503, "数据集配置已保存，但缓存失效失败", 503) from exc
 
 
+async def create_dataset_records(
+    db: AsyncSession,
+    user_id: int,
+    name: str,
+    description: str | None,
+    dense_id: int,
+    sparse_id: int,
+) -> int:
+    """在调用者事务内创建数据集与解析配置，供普通创建和注册初始化复用。"""
+    normalized = name.strip()
+    if not normalized:
+        raise BusinessError(400, "数据集名称不能为空", 400)
+    await _binding(db, user_id, dense_id, "EMBEDDING", "dense_embedding_config_id")
+    await _binding(db, user_id, sparse_id, "SPARSE_EMBEDDING", "sparse_embedding_config_id")
+    result = await db.execute(
+        text(
+            "INSERT INTO dataset(user_id,name,description,status,is_deleted,deleted_seq) "
+            "VALUES(:uid,:name,:description,'ACTIVE',0,0)"
+        ),
+        {"uid": user_id, "name": normalized, "description": description},
+    )
+    dataset_id = int(cast(CursorResult[Any], result).lastrowid)
+    await db.execute(
+        text("""
+        INSERT INTO dataset_parse_config
+        (user_id,dataset_id,chunking_config,enhancement_config,pdf_config,recall_config,
+         sparse_embedding_config_id,dense_embedding_config_id,is_active)
+        VALUES(:uid,:did,:chunking,:enhancement,:pdf,:recall,:sparse,:dense,1)
+    """),
+        {
+            "uid": user_id,
+            "did": dataset_id,
+            "chunking": "{}",
+            "enhancement": json.dumps(
+                {
+                    "enable_table_enhancement": False,
+                    "enable_image_enhancement": False,
+                    "enable_heading_hierarchy": False,
+                }
+            ),
+            "pdf": "{}",
+            "recall": json.dumps(
+                {
+                    "enable_rerank": False,
+                    "recall_enabled_sources": ["bm25", "sparse", "dense"],
+                    "rerank_top_n": 8,
+                    "recall_strict": False,
+                }
+            ),
+            "sparse": sparse_id,
+            "dense": dense_id,
+        },
+    )
+    return dataset_id
+
+
 async def create_dataset(
     user_id: int,
     name: str,
@@ -168,51 +224,10 @@ async def create_dataset(
     dense_id: int,
     sparse_id: int,
 ) -> dict:
-    normalized = name.strip()
-    if not normalized:
-        raise BusinessError(400, "数据集名称不能为空", 400)
     try:
         async with write_transaction() as db:
-            await _binding(db, user_id, dense_id, "EMBEDDING", "dense_embedding_config_id")
-            await _binding(db, user_id, sparse_id, "SPARSE_EMBEDDING", "sparse_embedding_config_id")
-            result = await db.execute(
-                text(
-                    "INSERT INTO dataset(user_id,name,description,status,is_deleted,deleted_seq) "
-                    "VALUES(:uid,:name,:description,'ACTIVE',0,0)"
-                ),
-                {"uid": user_id, "name": normalized, "description": description},
-            )
-            dataset_id = int(cast(CursorResult[Any], result).lastrowid)
-            await db.execute(
-                text("""
-                INSERT INTO dataset_parse_config
-                (user_id,dataset_id,chunking_config,enhancement_config,pdf_config,recall_config,
-                 sparse_embedding_config_id,dense_embedding_config_id,is_active)
-                VALUES(:uid,:did,:chunking,:enhancement,:pdf,:recall,:sparse,:dense,1)
-            """),
-                {
-                    "uid": user_id,
-                    "did": dataset_id,
-                    "chunking": "{}",
-                    "enhancement": json.dumps(
-                        {
-                            "enable_table_enhancement": False,
-                            "enable_image_enhancement": False,
-                            "enable_heading_hierarchy": False,
-                        }
-                    ),
-                    "pdf": "{}",
-                    "recall": json.dumps(
-                        {
-                            "enable_rerank": False,
-                            "recall_enabled_sources": ["bm25", "sparse", "dense"],
-                            "rerank_top_n": 8,
-                            "recall_strict": False,
-                        }
-                    ),
-                    "sparse": sparse_id,
-                    "dense": dense_id,
-                },
+            dataset_id = await create_dataset_records(
+                db, user_id, name, description, dense_id, sparse_id
             )
     except IntegrityError as exc:
         raise BusinessError(400, "当前用户下已存在同名数据集", 400) from exc

@@ -408,6 +408,21 @@ Wiki 标题搜索只复用 `RECALL_STRICT_DEFAULT` 与 `RECALL_STREAM_TIMEOUT_MS
 
 B5 写入还要求 0041 outbox migration 已执行、`B5_INTERNAL_FILE_SERVICE_TOKEN` 有独立服务令牌、`B5_INTERNAL_FILE_BASE_URL` 指向解析服务可访问的 Python 内部文件路由；缺任一项时启动拒绝接流量。Markdown 资源包上传已在 Python 入口接入，并用 Dev 中间件完成上传、manifest 读取及 MQ 解析；目标环境仍须核对其实际迁移、路由和前端行为。B3 旧密文需要沿用受控密钥材料；解密失败时读配置返回 503。
 
+### 新用户购物演示数据集
+
+| 配置 | 默认值 | 说明 |
+| --- | --- | --- |
+| `DEMO_DATASET_ENABLED` | `true` | 本系统新用户注册时创建独立购物演示库；仅在 B4 数据集写入和 B5 文件写入均开启时执行 |
+| `DEMO_DATASET_DENSE_CONFIG_ID` | 未设置 | 演示库精确绑定的 SYSTEM EMBEDDING 配置 ID |
+| `DEMO_DATASET_SPARSE_CONFIG_ID` | 未设置 | 演示库精确绑定的 SYSTEM SPARSE_EMBEDDING 配置 ID |
+| `DEMO_DATASET_CHAT_CONFIG_ID` | 未设置 | 新用户默认 SYSTEM CHAT 配置 ID |
+
+配置 ID 必须为正整数，属于活跃的 SYSTEM / owner_user_id=0 配置且能力一致。某项 ID 未设置时，只有对应能力恰好存在一个活跃平台配置才自动选择；零个或多个时注册返回503，不自动选第一条。可选配置不要填写空字符串。演示初始化使用平台模型，解析和聊天仍按既有用量流程计量，不代表免计费。
+
+发布前应核对三项平台配置、0041 outbox、B5 内部文件 token/URL、RAW 桶和解析索引依赖。新素材随 Python 包和容器发布，不需要从开发机器上传。平台注册成功后，文件解析异步完成；需等待三份文件解析成功再验证真实问答。使用两个新账号核对独立数据集及文件 ID、跨用户不可访问、修改与删除互不影响、删除后登录不重建。
+
+将 `DEMO_DATASET_ENABLED=false` 可暂停后续注册初始化，不删除已建演示库，不影响既有账号登录。B4 或 B5 写入关闭时沿用原注册行为；关闭门禁的旧部署不会绕过唯一写入者边界创建演示记录。开关重新开启也不自动回填既有账号。
+
 
 - `.env` 由 [src/config.py](../../src/config.py) 通过 `Settings`（pydantic-settings）加载。
 - 运行时环境变量**优先级高于** `.env`（部署时通过容器环境变量注入即可覆盖）。

@@ -18,6 +18,25 @@ class FakeS3:
         self.deleted = kwargs
 
 
+def test_demo_client_has_bounded_timeouts_and_retry_budget(monkeypatch):
+    from src.services.storage import minio_storage
+    from src.services.storage.factory import StorageFactory
+
+    clients = []
+
+    def client(*args, **kwargs):
+        clients.append(kwargs["config"])
+        return FakeS3()
+
+    monkeypatch.setattr(minio_storage.boto3, "client", client)
+    StorageFactory.get_storage(request_timeout_seconds=5, max_attempts=2)
+    assert clients[0].connect_timeout == clients[0].read_timeout == 5
+    assert clients[0].retries == {"total_max_attempts": 2, "mode": "standard"}
+    StorageFactory.get_storage()
+    assert clients[1].connect_timeout == clients[1].read_timeout == 60
+    assert clients[1].retries is None
+
+
 def test_path_upload_and_exact_delete(tmp_path: Path):
     source = tmp_path / "avatar.png"
     source.write_bytes(b"image-data")
