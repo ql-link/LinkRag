@@ -1,8 +1,8 @@
-import { authApi } from '@/api/endpoints';
 import { ApiError, request, setToken, setUnauthorizedHandler, withQuery } from '@/api/http';
 import { parseSseFrames } from '@/api/stream';
 import { displayTime, toDataset, toFile, toModelState } from '@/services/backend';
 import { blocksFromAnswer, toChunks } from '@/services/chatRemote';
+import { authApi } from '@/api/endpoints';
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
