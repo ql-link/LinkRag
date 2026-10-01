@@ -59,7 +59,7 @@ export function AuthLayout({ children }: { children: ReactNode }) {
         <p className="mt-auto pt-10 font-num text-[11px] font-medium text-faint">© 2026 LinkRag</p>
       </section>
       <section className="relative my-3 mr-3 ml-3 flex flex-1 flex-col rounded-2xl border border-line bg-white">
-        <Link to="/" className="absolute top-[31px] left-[39px] text-[12px] text-text2 hover:text-ink">
+        <Link to="/home" className="absolute top-[31px] left-[39px] text-[12px] text-text2 hover:text-ink">
           返回首页
         </Link>
         <div className="flex flex-1 items-center justify-center py-20">

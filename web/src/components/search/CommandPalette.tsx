@@ -452,7 +452,7 @@ function Preview({ item, query, onOpen, onAsk }: { item?: Item; query: string; o
 
   if (item.kind === 'file') {
     const { file, dataset, passages, titleHit, contentHits } = item.hit;
-    const status = file.status === 'done' ? `已完成 · ${file.chunkCount} 个分块` : file.status === 'failed' ? '解析失败' : `解析中 ${file.progress}%`;
+    const status = file.status === 'done' ? `已完成 · ${file.chunkCount} 个分块` : file.status === 'failed' ? '解析失败' : `解析中 ${file.progressEstimated ? '≈' : ''}${file.progress}%`;
     return (
       <div className="flex flex-col gap-3">
         <p className="text-[11px] font-medium text-muted">预览</p>

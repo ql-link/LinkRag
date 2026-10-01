@@ -45,7 +45,7 @@ Java 签发的旧令牌尚在有效期内时，继续保留 Java 会话桥接和
 | --- | --- |
 | `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` | MySQL 连接 |
 | `REDIS_HOST` / `REDIS_PORT` | Redis 连接 |
-| `LOKI_BASE_URL` | B8 管理日志代理访问的内网 Loki 地址，默认 `http://localhost:3100`；不由请求方指定。 |
+| `LOKI_BASE_URL` | B8 管理日志代理访问的内网 Loki 地址，本地运行默认 `http://localhost:3100`；开发 Compose 显式设置 `http://tolink-dev-loki:3100`，生产 Compose 显式设置 `http://tolink-loki:3100`。容器内 `localhost` 指向后端自身，不能用于访问独立的 Loki 容器；不由请求方指定。 |
 | `B8_DOCUMENT_CONFIG_WRITES_ENABLED` | B8 上传配置写入切流开关，默认关闭；Java 配置写入退场且默认指纹对齐后才启用。 |
 | `B9_BLOG_WRITES_ENABLED` | B9 博客管理写入开关，默认关闭；Java 博客写入口退场且 PUBLIC 桶联调通过后启用。 |
 | `B10_FEEDBACK_WRITES_ENABLED` | B10 匿名反馈及管理员处理写入开关，默认关闭；Java 反馈写入口退场且附件补偿联调通过后启用。 |
@@ -407,6 +407,21 @@ Wiki 标题搜索只复用 `RECALL_STRICT_DEFAULT` 与 `RECALL_STREAM_TIMEOUT_MS
 `B2_GENERIC_UPLOAD_ENABLED` 控制通用六类对象上传（开启后仍要求登录）；`B3_CONTROL_WRITES_ENABLED` 控制模型配置 USER/SYSTEM 写入；`B4_DATASET_WRITES_ENABLED` 控制数据集创建、更新与解析配置写入；`B5_FILE_WRITES_ENABLED` 控制普通文件上传和解析提交；`B5_DELETE_WRITES_ENABLED` 控制文件/数据集删除。`Settings` 的安全默认值均为关闭；当前 Dev/生产 Compose 将这些已切流路径设为 `true`，独立本地或自定义部署需按自身路由和依赖状态显式选择。
 
 B5 写入还要求 0041 outbox migration 已执行、`B5_INTERNAL_FILE_SERVICE_TOKEN` 有独立服务令牌、`B5_INTERNAL_FILE_BASE_URL` 指向解析服务可访问的 Python 内部文件路由；缺任一项时启动拒绝接流量。Markdown 资源包上传已在 Python 入口接入，并用 Dev 中间件完成上传、manifest 读取及 MQ 解析；目标环境仍须核对其实际迁移、路由和前端行为。B3 旧密文需要沿用受控密钥材料；解密失败时读配置返回 503。
+
+### 新用户购物演示数据集
+
+| 配置 | 默认值 | 说明 |
+| --- | --- | --- |
+| `DEMO_DATASET_ENABLED` | `true` | 本系统新用户注册时创建独立购物演示库；仅在 B4 数据集写入和 B5 文件写入均开启时执行 |
+| `DEMO_DATASET_DENSE_CONFIG_ID` | 未设置 | 演示库精确绑定的 SYSTEM EMBEDDING 配置 ID |
+| `DEMO_DATASET_SPARSE_CONFIG_ID` | 未设置 | 演示库精确绑定的 SYSTEM SPARSE_EMBEDDING 配置 ID |
+| `DEMO_DATASET_CHAT_CONFIG_ID` | 未设置 | 新用户默认 SYSTEM CHAT 配置 ID |
+
+配置 ID 必须为正整数，属于活跃的 SYSTEM / owner_user_id=0 配置且能力一致。某项 ID 未设置时，只有对应能力恰好存在一个活跃平台配置才自动选择；零个或多个时注册返回503，不自动选第一条。可选配置不要填写空字符串。演示初始化使用平台模型，解析和聊天仍按既有用量流程计量，不代表免计费。
+
+发布前应核对三项平台配置、0041 outbox、B5 内部文件 token/URL、RAW 桶和解析索引依赖。新素材随 Python 包和容器发布，不需要从开发机器上传。平台注册成功后，文件解析异步完成；需等待三份文件解析成功再验证真实问答。使用两个新账号核对独立数据集及文件 ID、跨用户不可访问、修改与删除互不影响、删除后登录不重建。
+
+将 `DEMO_DATASET_ENABLED=false` 可暂停后续注册初始化，不删除已建演示库，不影响既有账号登录。B4 或 B5 写入关闭时沿用原注册行为；关闭门禁的旧部署不会绕过唯一写入者边界创建演示记录。开关重新开启也不自动回填既有账号。
 
 
 - `.env` 由 [src/config.py](../../src/config.py) 通过 `Settings`（pydantic-settings）加载。

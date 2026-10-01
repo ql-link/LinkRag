@@ -88,8 +88,17 @@ MinIO endpoint 可带 `http://` 或 `https://`；不带 scheme 时由 `MINIO_USE
 `MINIO_PUBLIC_BUCKET` 默认 `tolink-public`，用于后续头像、博客等公开资源业务；Dev 与 Java 对齐为 `tolink-dev-public`。
 `MINIO_PUBLIC_BASE_URL` 是其浏览器路由前缀，可以是同源相对路径 `/api/v1/oss-files/public` 或网关完整地址；为空时公开 URL 构造失败。
 Dev 公开桶没有匿名读取策略，不能直接把 MinIO 桶 URL 返回给浏览器。Python 在 `B2_PUBLIC_PREVIEW_ENABLED=true` 时复用 `StorageFactory`，只从 PUBLIC 桶读取 `/api/v1/oss-files/public/{objectKey}`，按后缀返回 Content-Type；公开路径的网关切流须与该开关配套。该路由不访问 RAW/PRIVATE。生产环境若已有网关公开路由，也可保持该开关关闭。
+开发 Web Nginx 将历史 `/tolink-dev-public/{objectKey}` 地址兼容转发到上述 Python 预览接口，保留存量图片链接可用；该路径同样依赖 `B2_PUBLIC_PREVIEW_ENABLED=true`，无需为 MinIO 桶增加匿名读取策略。直接访问 MinIO 桶地址仍受桶权限约束。
 
 迁移中的 B2 通用上传复用同一 `StorageFactory`。`src/application/object_uploads.py` 保存 Java 的六类业务规则：`avatar`、`providerIcon`、`chatImage` 为 PUBLIC 图片 5 MiB；`feedback` 为 PUBLIC 指定后缀 10 MiB；`document` 为 RAW 的 `pdf/doc/docx/txt/md`、上限 20 MiB；`cert` 为 PRIVATE 5 MiB。PUBLIC 返回公开 URL，RAW/PRIVATE 只返回对象 key。`B2_GENERIC_UPLOAD_ENABLED=false` 默认关闭兼容入口，待匿名访问权限矩阵和网关切流确认后启用；B1 头像已复用其校验和上传流程。
+
+### 演示文档原件
+
+新用户演示库从随包发布的 `src/assets/demo_dataset/` 准备三份小型 Markdown，以 RAW 桶中的 `demo/<本次注册随机UUID>/<文件名>` 保存。每次尝试使用不同前缀，原件由注册事务中的 document_original_file 归属于新用户；浏览器仍通过文件 ID 及所有权授权访问，不开放 RAW 匿名读取。
+
+原件在数据库写事务之前上传，提交失败或取消时只补偿清理本次尝试的精确 key，不能删除其他用户或既有账号的对象。该调用通过 `StorageFactory.get_storage(request_timeout_seconds=5, max_attempts=2)` 为 SDK 设置5秒连接/读取超时和最多2次尝试，其他调用保留现有默认。取消协程时先等待执行中的存储线程结束，再清理对象，避免删后写回。
+
+进程在准备原件与注册提交之间崩溃，或对象补偿删除失败时，可能留下不可通过普通用户文件接口访问的 RAW 孤儿对象；删除失败记录审计，跨数据库与对象存储不承诺强事务。注册成功后的对象转入既有文件生命周期，软删除与衍生物清理规则保持不变。
 
 ## 5. 在解析链路中的使用
 

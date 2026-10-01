@@ -53,6 +53,8 @@ export function fileStats(datasetId: string) {
     parsing: count(['parsing', 'queued']),
     uploading: count(['uploading']),
     failed: count(['failed']),
+    progress: files.length + hidden ? (hidden * 100 + files.reduce((sum, f) => sum + (f.status === 'done' ? 100 : ['parsing', 'uploading'].includes(f.status) ? f.progress : 0), 0)) / (files.length + hidden) : 0,
+    progressEstimated: files.some((f) => ['parsing', 'uploading'].includes(f.status) && f.progressEstimated),
   };
 }
 
@@ -200,14 +202,24 @@ const polls = new Map<string, ReturnType<typeof setInterval>>();
 /** 有进行中的文件时每 3 秒刷新一次该知识库的文件与解析状态 */
 function watchDataset(datasetId: string) {
   if (polls.has(datasetId)) return;
+  let refreshing = false;
   const t = setInterval(async () => {
+    if (refreshing) return;
+    refreshing = true;
+    db.update((d) => {
+      d.files = d.files.map((f) => f.datasetId === datasetId && f.status === 'uploading'
+        ? { ...f, progressEstimated: true, progress: Math.min(90, Math.floor(90 * (1 - Math.exp(-(Date.now() - (f.progressSince ?? Date.now())) / 30000)))) }
+        : f);
+    });
     try {
-      await loadFiles(datasetId);
-      await loadDatasets();
+      await loadFiles(datasetId, true);
+      await loadDatasets(true);
     } catch {
       return;
+    } finally {
+      refreshing = false;
     }
-    const busy = db.state.files.some((f) => f.datasetId === datasetId && ['uploading', 'parsing'].includes(f.status));
+    const busy = db.state.files.some((f) => f.datasetId === datasetId && (['uploading', 'parsing'].includes(f.status) || (f.status === 'queued' && !!f.parseTaskId)));
     if (!busy) {
       clearInterval(t);
       polls.delete(datasetId);
@@ -239,7 +251,7 @@ export async function refreshFiles(datasetId: string) {
   if (USE_MOCK) return;
   // 文件列表与模型绑定并行拉取，全部返回后页面再一次性展示
   await Promise.all([loadBoundModels(datasetId).catch(() => undefined), loadFiles(datasetId)]);
-  if (db.state.files.some((f) => f.datasetId === datasetId && ['uploading', 'parsing'].includes(f.status))) watchDataset(datasetId);
+  if (db.state.files.some((f) => f.datasetId === datasetId && (['uploading', 'parsing'].includes(f.status) || (f.status === 'queued' && !!f.parseTaskId)))) watchDataset(datasetId);
 }
 
 export function uploadFiles(datasetId: string, files: File[], autoParse: boolean): string[] {
@@ -252,18 +264,21 @@ export function uploadFiles(datasetId: string, files: File[], autoParse: boolean
       size: formatSize(file.size),
       status: 'uploading',
       progress: 0,
+      progressEstimated: true,
+      progressSince: Date.now(),
       chunkCount: 0,
       updatedAt: '刚刚',
     }));
     db.update((d) => {
       d.files = [...placeholders, ...d.files];
     });
+    watchDataset(datasetId);
     placeholders.forEach((ph, i) => {
       datasetApi
         .upload(Number(datasetId), files[i], autoParse)
         .then((dto) => {
           db.update((d) => {
-            d.files = d.files.map((f) => (f.id === ph.id ? toFile(dto) : f));
+            d.files = d.files.filter((f) => f.id !== String(dto.id)).map((f) => (f.id === ph.id ? toFile(dto) : f));
           });
         })
         .catch((e: unknown) => {
@@ -320,7 +335,7 @@ export function cancelUploads(datasetId: string) {
 export function reparseFile(fileId: string) {
   if (!USE_MOCK) {
     const file = db.state.files.find((f) => f.id === fileId);
-    patchFile(fileId, { status: 'parsing', note: undefined });
+    patchFile(fileId, { status: 'parsing', progress: 0, parseTaskId: undefined, progressSince: Date.now(), updatedAt: '刚刚', note: undefined });
     datasetApi
       .parse(Number(fileId))
       .catch((e: unknown) => patchFile(fileId, { status: 'failed', note: e instanceof Error ? e.message : '解析启动失败' }))

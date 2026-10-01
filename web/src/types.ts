@@ -32,6 +32,10 @@ export interface KbFile {
   status: FileStatus;
   /** 0-100，上传中 / 解析中有效 */
   progress: number;
+  progressEstimated?: boolean;
+  parseTaskId?: string | null;
+  progressStage?: string;
+  progressSince?: number;
   chunkCount: number;
   /** 行内补充说明：失败原因、排队信息、解析阶段等 */
   note?: string;

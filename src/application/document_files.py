@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from zoneinfo import ZoneInfo
 
 from sqlalchemy import bindparam, text
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -15,6 +17,35 @@ from src.application.datasets import owned_dataset
 from src.config import settings
 from src.database import get_db_context
 from src.services.storage.factory import StorageFactory
+
+_BEIJING = ZoneInfo("Asia/Shanghai")
+
+
+def _file_datetime(value, *, database_generated: bool = True):
+    """无时区 DATETIME 按写入来源和切换边界解释；不改变数据库原值。"""
+    if not isinstance(value, datetime):
+        return value
+    if value.tzinfo is None:
+        boundary = settings.FILE_DB_BEIJING_SINCE
+        local = database_generated and boundary is not None and value >= boundary
+        value = value.replace(tzinfo=_BEIJING if local else timezone.utc)
+    return value.astimezone(_BEIJING)
+
+
+def _file_time(value, *, database_generated: bool = True):
+    value = _file_datetime(value, database_generated=database_generated)
+    return value.isoformat() if isinstance(value, datetime) else value
+
+
+def _activity_time(row: dict):
+    # f/pf 是数据库默认时间；p 始终由解析 ORM 显式 UTC 写入。
+    candidates = [
+        _file_datetime(row.get("updated_at")),
+        _file_datetime(row.get("parse_pointer_updated_at")),
+        _file_datetime(row.get("pipeline_updated_at"), database_generated=False),
+    ]
+    times = [value for value in candidates if isinstance(value, datetime)]
+    return max(times).isoformat() if times else _file_time(row.get("updated_at"))
 
 
 def _dto(row: dict, summary: dict | None = None) -> dict:
@@ -31,8 +62,8 @@ def _dto(row: dict, summary: dict | None = None) -> dict:
         "isUploadSuccess": bool(row["is_upload_success"]),
         "failureReason": row["failure_reason"],
         "assetSummary": summary,
-        "createdAt": row["created_at"],
-        "updatedAt": row["updated_at"],
+        "createdAt": _file_time(row["created_at"]),
+        "updatedAt": _file_time(row["updated_at"]),
     }
 
 
@@ -136,13 +167,46 @@ async def list_files(
     }
 
 
+# 等权阶段完成度反映已完成的工作节点，不表示页数或字节完成比例。
+_PARSE_STAGES = (
+    ("cleaning", "文档解析与清洗"),
+    ("chunking", "分块"),
+    ("vectorizing", "稠密向量化"),
+    ("pretokenize", "预分词"),
+    ("es_indexing", "全文索引"),
+    ("sparse_vectorizing", "稀疏向量化"),
+)
+
+
+def _parse_progress(row: dict) -> dict:
+    stages = [
+        {"key": key, "label": label, "status": row.get(key + "_status") or "PENDING"}
+        for key, label in _PARSE_STAGES
+    ]
+    completed = sum(stage["status"] == "SUCCESS" for stage in stages)
+    status = row.get("pipeline_status")
+    active = [stage["label"] for stage in stages if stage["status"] == "PROCESSING"]
+    return {
+        "taskId": row.get("latest_parse_task_id"),
+        "updatedAt": _activity_time(row),
+        "progress": 100 if status == "SUCCESS" else min(99, completed * 100 // len(stages)),
+        "progressKind": "stages",
+        "stageLabel": "、".join(active) or ("等待任务执行" if not completed else "等待后续阶段"),
+        "stages": stages,
+    }
+
+
 async def parse_results(user_id: int, dataset_id: int, file_ids: list[int]) -> list[dict]:
     ids = list(dict.fromkeys(file_ids))
     if not ids:
         raise BusinessError(400, "请选择要查看的文件", 400)
     stmt = text("""
         SELECT f.*,pf.latest_parse_task_id,l.parsed_filename,
-               p.pipeline_status,p.failure_reason AS parse_failure_reason
+               p.pipeline_status,p.failure_reason AS parse_failure_reason,
+               p.cleaning_status,p.chunking_status,p.vectorizing_status,
+               p.pretokenize_status,p.es_indexing_status,p.sparse_vectorizing_status,
+               pf.updated_at AS parse_pointer_updated_at,
+               p.updated_at AS pipeline_updated_at
         FROM document_original_file f
         LEFT JOIN document_parse_file pf ON pf.document_original_file_id=f.id
         LEFT JOIN document_parsed_log l ON l.task_id=pf.latest_parse_task_id
@@ -182,6 +246,7 @@ async def parse_results(user_id: int, dataset_id: int, file_ids: list[int]) -> l
                 "parseStatus": parsed,
                 "failureReason": row["parse_failure_reason"] if status == "FAILED" else None,
                 "assetSummary": await _asset_summary(row, required=False),
+                **_parse_progress(row),
             }
         )
     return result

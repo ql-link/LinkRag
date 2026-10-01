@@ -10,8 +10,8 @@ import { removeFile, reparseFile } from '@/services/datasets';
 import type { KbFile } from '@/types';
 
 const statusView: Record<KbFile['status'], { tone: Tone; label: (f: KbFile) => string; bar?: string }> = {
-  uploading: { tone: 'blue', label: (f) => `上传中 ${f.progress}%`, bar: '#3f6fd8' },
-  parsing: { tone: 'amber', label: (f) => `解析中 ${f.progress}%`, bar: '#d9912b' },
+  uploading: { tone: 'blue', label: (f) => `上传中 ${f.progressEstimated ? '≈' : ''}${f.progress}%`, bar: '#3f6fd8' },
+  parsing: { tone: 'amber', label: (f) => `解析中 ${f.progressEstimated ? '≈' : ''}${f.progress}%`, bar: '#d9912b' },
   queued: { tone: 'gray', label: () => '待解析' },
   done: { tone: 'green', label: () => '已完成' },
   failed: { tone: 'red', label: () => '失败' },

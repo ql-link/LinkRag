@@ -11,7 +11,10 @@ beforeEach(() => {
 });
 afterEach(() => vi.useRealTimers());
 
-const setup = () => renderAt('/datasets', [{ path: '/datasets', element: <DatasetListPage /> }]);
+const setup = () => renderAt('/datasets', [
+  { path: '/datasets', element: <DatasetListPage /> },
+  { path: '/datasets/:id', element: <div>知识库详情</div> },
+]);
 
 describe('DatasetListPage', () => {
   it('renders cards and filters by search', () => {
@@ -20,6 +23,46 @@ describe('DatasetListPage', () => {
     fireEvent.change(screen.getByLabelText('搜索知识库...'), { target: { value: '人事' } });
     expect(screen.queryByText('产品知识库')).not.toBeInTheDocument();
     expect(screen.getByText('人事制度库')).toBeInTheDocument();
+  });
+
+  it.each([
+    { label: 'IME candidate confirmation', isComposing: true, keyCode: 13 },
+    { label: 'IME confirmation after compositionend', isComposing: false, keyCode: 229 },
+    { label: 'ordinary Enter', isComposing: false, keyCode: 13 },
+  ])('requires explicit creation after $label in the name field', async ({ isComposing, keyCode }) => {
+    setup();
+    const count = db.state.datasets.length;
+    fireEvent.click(screen.getByRole('button', { name: '新建知识库' }));
+    const dialog = screen.getByRole('dialog');
+    const name = within(dialog).getByLabelText(/名称/);
+    if (isComposing || keyCode === 229) fireEvent.compositionStart(name);
+    fireEvent.change(name, { target: { value: '输入法知识库' } });
+    if (keyCode === 229) fireEvent.compositionEnd(name);
+
+    // jsdom 不执行回车的默认表单提交；验证事件被取消，并模拟未取消时的浏览器提交。
+    const uncancelled = fireEvent.keyDown(name, { key: 'Enter', code: 'Enter', keyCode, isComposing });
+    await act(async () => {
+      if (uncancelled) fireEvent.submit(name.closest('form')!);
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(uncancelled).toBe(false);
+    expect(db.state.datasets).toHaveLength(count);
+    expect(dialog).toBeInTheDocument();
+    expect(name).toHaveValue('输入法知识库');
+    if (isComposing) fireEvent.compositionEnd(name);
+
+    const description = within(dialog).getByLabelText('描述');
+    expect(fireEvent.keyDown(description, { key: 'Enter' })).toBe(true);
+    fireEvent.change(description, { target: { value: '第一行\n第二行' } });
+    const create = within(dialog).getByRole('button', { name: '创建' });
+    expect(fireEvent.keyDown(create, { key: 'Enter' })).toBe(true);
+    await act(async () => {
+      fireEvent.click(create);
+      await vi.advanceTimersByTimeAsync(300);
+    });
+    expect(db.state.datasets).toHaveLength(count + 1);
+    expect(db.state.datasets.find((d) => d.name === '输入法知识库')?.description).toBe('第一行\n第二行');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('disables a dataset through the menu and confirm dialog (C10→C12→C13)', async () => {

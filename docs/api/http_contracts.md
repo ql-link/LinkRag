@@ -23,7 +23,7 @@
 | Method | Path | 身份 | `data` / 行为 |
 | --- | --- | --- | --- |
 | POST | `/api/v1/auth/login` | 匿名 | `{account,password}`；返回 `accessToken,tokenType,expiresIn,userId`。仅 Java 受保护路由已退场并显式启用 Python 签发后可用。 |
-| POST | `/api/v1/auth/register` | 匿名 | `{username,password,email}`；创建 `USER` 后自动登录，响应同上。 |
+| POST | `/api/v1/auth/register` | 匿名 | `{username,password,email}`；创建 `USER` 后自动登录，响应同上。演示初始化启用时，同时创建当前用户独立的“购物演示数据集”、三份购物文档和解析任务；平台模型或素材准备失败返回 `503`，不留下半成品账号。解析异步完成，详见[注册初始化](../internals/identity_users.md#新用户购物演示数据集)。 |
 | POST | `/api/v1/auth/refresh` | 登录用户 | 滑动续期：用仍有效的 `satoken` 换取新 access token（响应同登录），旧 token 随即撤销。需启用 Python 签发。 |
 | POST | `/api/v1/auth/logout` | 可匿名调用 | 无效或缺失 token 幂等返回成功；有效 token 撤销本次登录态，`data:null`，Java 旧会话还通过 Java 登出接口撤销。 |
 | GET / PATCH | `/api/v1/user/profile` | 登录用户 | 读取/更新当前用户资料；可修改 `nickname,email,phone,avatarUrl,bio(≤200),team(≤64)`（`bio`/`team` 传空白串即清空），响应分别为资料对象/`null`。 |
@@ -190,6 +190,12 @@ MQ 发送失败统一返回不含底层连接地址和异常文本的 `500` 通�
 ### 解析终态读取
 
 parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权威单源是 `document_parse_pipeline.pipeline_status`；前端通过 Python 的 `GET /api/v1/datasets/{dataset_id}/files/parse-results?fileIds=...` 读取。
+
+解析状态响应额外提供 `taskId`、`progress`、`progressKind="stages"`、`stageLabel` 和 `stages`（每项含 `key`、`label`、`status`）。`progress` 是六个持久化阶段等权计算的已完成阶段比例，非页数/字节比例；进行中最多 99，只有 `pipeline_status=SUCCESS` 为 100。并行阶段可同时处于 PROCESSING。前端在阶段内使用有上限的时间估算并显示 `≈`，服务端终态和新任务 ID 优先，重试重置估算。没有提交解析任务的文件保持待解析状态。
+
+文件列表/详情的 `createdAt`、`updatedAt` 和解析状态的 `updatedAt` 返回带北京时间 `+08:00` 偏移的 ISO 8601 时间。原件与解析指针的数据库默认 DATETIME 按 `FILE_DB_BEIJING_SINCE` 区分历史 UTC 与新北京时间；pipeline 的显式 UTC 写入单独解释。先转换为带时区的同一时间轴，再取原件、解析指针和最新 pipeline 更新时间的最大值，前端文件行优先使用此时间，以覆盖重试提交、运行与终态变化。客户端按本地时区展示；重试提交期间先显示“刚刚”，下次查询使用服务端时间。
+
+后台文件/状态/数据集轮询及具有局部上传/解析进度的请求不触发页面顶部加载条。上传期间无字节遥测时显示最多 90% 的估算；服务端确认上传成功后切换为解析或待解析状态。汇总条包含进行中文件的部分进度，已完成文件计数仍只计算真正成功的文件。
 
 `SUCCESS` 表示解析+上传、分片、向量化、预分词与 ES 入库均完成；任一阶段失败写 `FAILED`，并在 `failure_reason` 中携带业务化原因。
 

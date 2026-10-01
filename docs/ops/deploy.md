@@ -123,15 +123,17 @@ Java 管理端已下线，Python 是唯一后端：
 - B5 上传执行器通过 Python 自身的内部文件接口读取原始文件，令牌
   `B5_INTERNAL_FILE_SERVICE_TOKEN` 由 `configure-dev-env.sh` 生成并写入 `.env.development.local`。
 - Web Nginx（`deploy/dev-server/nginx.conf`）把 `/api/` 全部转发到 `tolink-dev-rag:8000`。
+- 开发公开图片预览及旧路径兼容约定见 [对象存储配置](../internals/object_storage.md#4-配置)，发布时须同步上述 Nginx 配置。
 
 当前业务 Queue 名由代码常量固定。开发环境使用独立 vhost `/tolink-dev` 与独立 RabbitMQ 数据卷，
 生产使用 `/tolink-prod`，两套环境不共享 Broker 或凭据。开发 Loki 独立保存日志并保留 7 天。
 
-Cloud Jenkins 使用两个独立 dev 作业：`linkrag-rag-dev`、`linkrag-web-dev`（原
-`linkrag-service-dev` 已随 Java 下线停用）。Jenkins 只负责调度和保留日志，两个作业均通过
-Tailscale SSH 在 Primary 拉取本仓库的 `dev` 分支、构建镜像并部署，镜像使用 `dev-b<build>` 标签；
-Web 作业在 `web/` 子目录执行 `npm ci`、typecheck、测试与构建，再用 `web/Dockerfile` 打包 Nginx 镜像。
-Primary 通过构建锁避免两个开发作业同时占用 Docker 构建资源。
+开发环境只有一个 Jenkins 作业 `linkrag-rag-dev`（由本仓库 `dev` 分支的 push 触发）。Jenkins 只负责调度和
+保留日志，作业通过 Tailscale SSH 在 Primary 执行 `build-component-on-primary.sh rag`：拉取本仓库 `dev`
+分支、构建并部署 RAG，镜像使用 `dev-b<build>` 标签。RAG 部署成功后，脚本用同一份源码继续执行
+`web` 组件：在 `web/` 子目录执行 `npm ci`、typecheck、测试与构建，再用 `web/Dockerfile` 打包 Nginx
+镜像，前后端始终来自同一提交。原 `linkrag-service-dev`、`linkrag-web-dev` 已随 Java 与旧前端下线删除。
+Primary 通过构建锁串行执行构建；链式部署前端前会先释放锁。
 其中 `linkrag-rag-dev` 在启动新 RAG 容器前自动执行 Alembic，固定加载
 `.env.development` + `.env.development.local`，并输出最终 revision；迁移失败时不会部署新镜像。
 
@@ -142,7 +144,9 @@ Primary 通过构建锁避免两个开发作业同时占用 Docker 构建资源�
 自动生成的 dev-only 密文，避免日常 dev 发布覆盖已有可用 Key。
 Web 构建把 npm 缓存持久化到 `/opt/tolink/dev/jenkins/npm-cache`，`npm ci` 设置超时并最多重试三次；
 安装失败会立即终止，不再继续执行 typecheck、测试和打包。
-公网源码下载不稳定时，可将完整 tar 包预置到
+服务器存在 `/opt/tolink/build-proxy.env` 时，源码经构建代理从 codeload.github.com 下载，pip / npm
+改用官方源并走代理（见仓库 `deploy/scripts` 中的构建脚本）；代理只转发境外流量。
+公网源码下载仍不稳定时，可将完整 tar 包预置到
 `/opt/tolink/dev/jenkins/incoming/<workspace>-dev.tgz`；下一次对应构建会校验并消费该文件，随后仍在
 Primary 完成镜像构建。
 
@@ -246,3 +250,11 @@ alembic upgrade head
 - 配置项详解：[configuration.md](configure.md)
 - MQ 接入对接：[mq_integration.md](../api/mq_contracts.md)
 - 项目架构：[docs/internals/project_structure.md](../internals/project_structure.md)
+
+### MySQL 默认时区
+
+开发与生产数据 Compose 的 MySQL 启动参数均使用 `--default-time-zone=+08:00`（北京时间）。2026-10-01 在线环境通过 `SET PERSIST time_zone = '+08:00'` 同步了全局默认值；已有连接需要重新建立才能继承新默认，LinkRag 解析服务已重启连接池。数据库本身无需重启。
+
+此设置只影响数据库默认时间函数、新会话和 TIMESTAMP 的会话转换，**不转换已有 DATETIME 数据，也不改变 Python 显式 UTC 写入**。切换前开发、生产文件时间实际为 UTC；解析流水线、workflow store 等代码仍显式写 UTC。历史记录与新数据库生成的时间不得统一按一个无时区规则解释。统一存储语义需要单独的备份、写入代码调整和可追踪数据迁移；禁止直接全库加八小时。2026-10-01 的在线切换验证时间分别为开发北京时间 14:12:48、生产北京时间 14:12:53。
+
+文件接口使用 `FILE_DB_BEIJING_SINCE` 兼容时间切换前后的记录：开发配置 `2026-10-01T14:12:48+08:00`，生产配置 `2026-10-01T14:12:53+08:00`。只对数据库生成的原件、解析指针时间使用此边界；pipeline 显式 UTC 时间始终按 UTC 解释，再统一输出 `+08:00`。已切换数据库的边界不能留空或随部署时间重置；旧 UTC 库可留空，全新北京时间库使用 `1970-01-01T00:00:00+08:00`。配置不会修改历史数据，也不会统一改变其他模块的 UTC 写入。切换时必须关闭旧 UTC 数据库连接，避免旧会话在边界后的八小时以上继续写 UTC 而产生歧义。

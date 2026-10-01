@@ -21,12 +21,14 @@ import { FailurePanel } from './components/FailurePanel';
 import { FailedPreview, PreviewPane } from './components/PagePreview';
 
 function toMarkdown(chunks: Chunk[]): string {
+  // 真实分块已包含 Markdown；行号是定位信息，不能作为正文标题插入。
+  if (!USE_MOCK) return chunks.map((c) => c.text).join('\n\n');
   let last = '';
   return chunks
     .map((c) => {
       const head = c.section !== last ? `## ${(last = c.section)}\n\n` : '';
       if (c.table) return head + c.table.map((r, i) => `| ${r.join(' | ')} |${i === 0 ? `\n|${r.map(() => ' --- ').join('|')}|` : ''}`).join('\n');
-      if (c.kind === 'image') return `${head}![${c.imageCaption}](image)\n\n> ${c.text}`;
+      if (c.kind === 'image') return `${head}*${c.imageCaption ?? c.imageTitle ?? '图片'}*\n\n> ${c.text}`;
       return head + c.text;
     })
     .join('\n\n');
@@ -131,7 +133,7 @@ export default function FileDetailPage() {
         </div>
         {done && <Chip tone="green">已完成</Chip>}
         {failed && <Chip tone="red">失败</Chip>}
-        {(file.status === 'parsing' || file.status === 'queued') && <Chip tone={file.status === 'parsing' ? 'amber' : 'gray'}>{file.status === 'parsing' ? `解析中 ${file.progress}%` : '待解析'}</Chip>}
+        {(file.status === 'parsing' || file.status === 'queued') && <Chip tone={file.status === 'parsing' ? 'amber' : 'gray'}>{file.status === 'parsing' ? `解析中 ${file.progressEstimated ? '≈' : ''}${file.progress}%` : '待解析'}</Chip>}
         <span className="flex-1" />
         <Button variant="secondary" icon={<Download className="size-3" />} onClick={() => toast('Mock 模式下不提供下载')}>
           下载
@@ -244,7 +246,7 @@ export default function FileDetailPage() {
           ) : (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-[12.5px] text-muted">
               <Loader2 aria-hidden className="size-5 animate-spin text-amber" />
-              {file.status === 'parsing' ? `正在解析 · ${file.progress}%` : '文件排队中，解析完成后可预览分块'}
+              {file.status === 'parsing' ? `正在解析 · ${file.progressEstimated ? '≈' : ''}${file.progress}%` : '文件排队中，解析完成后可预览分块'}
               {file.status === 'parsing' && <Progress value={file.progress} color="#d9912b" className="w-56" label="解析进度" />}
             </div>
           )}

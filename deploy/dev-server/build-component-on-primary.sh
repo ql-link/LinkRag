@@ -55,29 +55,6 @@ fi
 source_ref_slug=${source_ref//\//-}
 incoming_archive="$jenkins_root/incoming/${workspace_name}-${source_ref_slug}.tgz"
 
-echo "[$component] fetch ql-link/$github_repo $source_ref on Primary"
-rm -rf "$next_dir"
-mkdir -p "$next_dir"
-archive_url="https://codeload.github.com/ql-link/${github_repo}/tar.gz/refs/heads/${source_ref}"
-if [[ -s "$incoming_archive" ]]; then
-  echo "[$component] use preloaded dev archive"
-  mv "$incoming_archive" "$archive"
-else
-  if ! curl -fsSL --retry 3 --retry-all-errors --retry-delay 3 \
-    --connect-timeout 15 --speed-time 30 --speed-limit 1024 --max-time 300 \
-    "https://gh-proxy.com/${archive_url}" -o "$archive"; then
-    echo "[$component] GitHub proxy unavailable, fallback to codeload"
-    curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 \
-      --connect-timeout 15 --speed-time 30 --speed-limit 1024 --max-time 1200 \
-      "$archive_url" -o "$archive"
-  fi
-fi
-tar -tzf "$archive" >/dev/null
-tar -xzf "$archive" --strip-components=1 -C "$next_dir"
-rm -f "$archive"
-rm -rf "$source_dir"
-mv "$next_dir" "$source_dir"
-
 # 可选的构建代理：仅在服务器存在 /opt/tolink/build-proxy.env（BUILD_PROXY=http://host:port）时启用，
 # 且只作用于本次 docker build / npm ci，不修改系统或 Docker daemon 代理。
 # 代理端（Clash rule 模式）负责只转发境外流量；NO_PROXY 再显式排除国内镜像与内网地址。
@@ -104,6 +81,34 @@ if [[ -f /opt/tolink/build-proxy.env ]]; then
     echo "ignore invalid BUILD_PROXY in /opt/tolink/build-proxy.env" >&2
   fi
 fi
+
+echo "[$component] fetch ql-link/$github_repo $source_ref on Primary"
+rm -rf "$next_dir"
+mkdir -p "$next_dir"
+archive_url="https://codeload.github.com/ql-link/${github_repo}/tar.gz/refs/heads/${source_ref}"
+if [[ -s "$incoming_archive" ]]; then
+  echo "[$component] use preloaded dev archive"
+  mv "$incoming_archive" "$archive"
+elif [[ -n "${BUILD_PROXY:-}" && ${#build_proxy_args[@]} -gt 0 ]]; then
+  # codeload.github.com 在代理规则中走境外节点
+  curl -fsSL --proxy "$BUILD_PROXY" --retry 5 --retry-all-errors --retry-delay 3 \
+    --connect-timeout 15 --speed-time 30 --speed-limit 1024 --max-time 600 \
+    "$archive_url" -o "$archive"
+else
+  if ! curl -fsSL --retry 3 --retry-all-errors --retry-delay 3 \
+    --connect-timeout 15 --speed-time 30 --speed-limit 1024 --max-time 300 \
+    "https://gh-proxy.com/${archive_url}" -o "$archive"; then
+    echo "[$component] GitHub proxy unavailable, fallback to codeload"
+    curl -fsSL --retry 8 --retry-all-errors --retry-delay 5 \
+      --connect-timeout 15 --speed-time 30 --speed-limit 1024 --max-time 1200 \
+      "$archive_url" -o "$archive"
+  fi
+fi
+tar -tzf "$archive" >/dev/null
+tar -xzf "$archive" --strip-components=1 -C "$next_dir"
+rm -f "$archive"
+rm -rf "$source_dir"
+mv "$next_dir" "$source_dir"
 
 image_tag="dev-b${build_number}"
 echo "[$component] build $image_name:$image_tag on Primary"
@@ -260,3 +265,14 @@ fi
 curl -fsS "$health_url" >/dev/null
 
 echo "[$component] deployed $image_name:$image_tag on Primary"
+
+# 前后端同仓：RAG 部署成功后，用同一份源码继续部署前端。
+# 需先释放构建锁，再以子进程运行 web（它会重新获取锁）。
+if [[ "$component" == rag && "${DEV_CHAIN_WEB:-1}" == 1 ]]; then
+  install -d -m 700 "$jenkins_root/incoming"
+  # 解包时 --strip-components=1 去掉顶层目录，目录名不影响结果
+  tar -czf "$jenkins_root/incoming/LinkRag-Web-${source_ref_slug}.tgz" -C "$workspace_root" toLink-Rag
+  exec 9>&-
+  echo "[rag] chain web deploy from the same source"
+  DEV_CHAIN_WEB=0 "$0" web "$build_number"
+fi

@@ -19,6 +19,7 @@ services:
       - mysqld
       - --character-set-server=utf8mb4
       - --collation-server=utf8mb4_unicode_ci
+      - --default-time-zone=+08:00
     ports:
       - "${TAILSCALE_IP:-100.86.10.52}:${DEV_MYSQL_PORT:-13306}:3306"
     volumes:
@@ -140,6 +141,7 @@ services:
       TZ: Asia/Shanghai
       APP_ENV: development
       LOG_SERVICE_NAME: tolink-rag-dev
+      LOKI_BASE_URL: http://tolink-dev-loki:3100
       DB_HOST: tolink-dev-mysql
       DB_PORT: 3306
       REDIS_HOST: tolink-dev-redis

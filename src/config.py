@@ -1,6 +1,8 @@
 import math
 import os
+from datetime import datetime
 from typing import List, Optional, Union
+from zoneinfo import ZoneInfo
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -57,6 +59,23 @@ class Settings(BaseSettings):
 
     # 支持直接从 env 读取 DATABASE_URL，如果不存在则由上述字段构建
     DATABASE_URL: Optional[str] = None
+    # 文件/解析指针的数据库默认 DATETIME 切换边界（北京时间）。None 表示历史 UTC 库。
+    # 全新 +08:00 数据库使用 1970-01-01T00:00:00+08:00；切换库填写真实切换时间。
+    FILE_DB_BEIJING_SINCE: Optional[datetime] = None
+
+    @field_validator("FILE_DB_BEIJING_SINCE", mode="before")
+    @classmethod
+    def empty_file_time_boundary(cls, value):
+        return None if value == "" else value
+
+    @field_validator("FILE_DB_BEIJING_SINCE")
+    @classmethod
+    def normalize_file_time_boundary(cls, value):
+        if value is None:
+            return None
+        if value.tzinfo is None:
+            raise ValueError("FILE_DB_BEIJING_SINCE 必须携带时区，例如 +08:00")
+        return value.astimezone(ZoneInfo("Asia/Shanghai")).replace(tzinfo=None)
 
     @field_validator("DATABASE_URL", mode="before")
     @classmethod
@@ -611,6 +630,11 @@ class Settings(BaseSettings):
     # B5 控制面必须与 Java 文件入口保持单一生产者。
     B5_FILE_WRITES_ENABLED: bool = False
     B5_DELETE_WRITES_ENABLED: bool = False
+    # 新用户独立演示库；仅在 B4/B5 写入均开启时初始化。
+    DEMO_DATASET_ENABLED: bool = True
+    DEMO_DATASET_DENSE_CONFIG_ID: Optional[int] = Field(default=None, gt=0)
+    DEMO_DATASET_SPARSE_CONFIG_ID: Optional[int] = Field(default=None, gt=0)
+    DEMO_DATASET_CHAT_CONFIG_ID: Optional[int] = Field(default=None, gt=0)
     # Blog and feedback share Java's tables. Enable each only after its write
     # paths are routed to Python so there is one owner during migration.
     B9_BLOG_WRITES_ENABLED: bool = False
