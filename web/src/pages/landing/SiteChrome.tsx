@@ -46,7 +46,7 @@ export function PublicShell({ children, className }: { children: React.ReactNode
 
 /** 顶栏导航：首页回到落地页顶部，其余为站内页面 */
 const LINKS = [
-  { label: '首页', to: '/', match: (p: string) => p === '/' },
+  { label: '首页', to: '/home', match: (p: string) => p === '/' || p === '/home' },
   { label: '评测', to: '/research', match: (p: string) => p.startsWith('/research') },
   { label: '博客', to: BLOG_URL, match: (p: string) => p.startsWith('/blog') },
   { label: '反馈', to: FEEDBACK_URL, match: (p: string) => p.startsWith('/feedback') },
@@ -60,7 +60,7 @@ const navPrimary = 'inline-flex items-center justify-center rounded-full bg-bran
 /** 已登录时入口改为进入工作台；落地页的「开始使用」面向新访客，直达注册 */
 export function useEntry() {
   const { user } = useAuth();
-  return { authed: !!user, start: user ? '/home' : '/register' };
+  return { authed: !!user, start: user ? '/' : '/register' };
 }
 
 export function Brand({ size = 28, text = 'text-[17px]' }: { size?: number; text?: string }) {
@@ -84,12 +84,12 @@ function GithubButton({ className }: { className?: string }) {
 function Nav() {
   const { authed } = useEntry();
   // 顶栏只保留一个入口：未登录进登录页（页内可切换到注册），已登录进工作台
-  const entry = authed ? '/home' : '/login';
+  const entry = authed ? '/' : '/login';
   const { pathname } = useLocation();
   const current = LINKS.find((l) => l.match(pathname));
   // 已在落地页时点「首页」/ 品牌：路由不变，手动回到顶部
   const toTop = (to: string) => () => {
-    if (to === '/' && pathname === '/') document.getElementById(SCROLL_ROOT_ID)?.scrollTo({ top: 0 });
+    if (to === '/home' && (pathname === '/' || pathname === '/home')) document.getElementById(SCROLL_ROOT_ID)?.scrollTo({ top: 0 });
   };
   const [scrolled, setScrolled] = useState(false);
   const [open, setOpen] = useState(false);
@@ -105,7 +105,7 @@ function Nav() {
     <header className={cn('sticky top-0 z-30 transition-[background-color,box-shadow] duration-200', scrolled || open ? 'bg-[#fbfbf9]/85 shadow-[0_1px_0_0_#ececea] backdrop-blur-md' : 'bg-transparent')}>
       {/* 三栏：品牌 / 居中导航 / 右侧操作；两侧等宽，导航不随右侧按钮宽度偏移 */}
       <nav aria-label="主导航" className="flex h-[60px] items-center px-4 md:grid md:h-[72px] md:grid-cols-[1fr_auto_1fr] md:px-12">
-        <Link to="/" onClick={toTop('/')} aria-label="LinkRag 首页" className="justify-self-start">
+        <Link to="/home" onClick={toTop('/home')} aria-label="LinkRag 首页" className="justify-self-start">
           <Brand />
         </Link>
         <span className="flex-1 md:hidden" />

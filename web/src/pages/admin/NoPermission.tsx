@@ -12,7 +12,7 @@ export function NoPermission() {
         title="当前账户没有管理员权限"
         desc="管理台仅对 ADMIN 角色开放。如需访问，请联系平台管理员为你的账号分配权限。"
         action={
-          <Link to="/home" className={actionBtn}>
+          <Link to="/" className={actionBtn}>
             返回用户端
           </Link>
         }
