@@ -3,8 +3,8 @@ import { useEffect, useMemo, useRef } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
 import { cn } from '@/lib/cn';
-import { PageIntro, pill } from '@/pages/landing/shared';
-import { PublicShell, SCROLL_ROOT_ID } from '@/pages/landing/SiteChrome';
+import { pill } from '@/pages/landing/shared';
+import { PublicShell } from '@/pages/landing/SiteChrome';
 import { RELEASES_URL } from '@/pages/research/data';
 
 import { BlogStatus, CategoryLabel, Cover } from './components';
@@ -12,9 +12,11 @@ import { useBlog } from './data';
 import { allTags, CATEGORIES, postText, readMinutes, type BlogData, type Category, type Post } from './posts';
 
 /**
- * 博客列表（设计稿「10 博客」L11）：刊头 + 分类页签 + 头条 + 文章列表 / 粘性侧栏。
+ * 博客列表（设计稿「10 博客 · V2 单栏」L11 v2）：全部区块居中于同一条 720 内容栏，
+ * 依次为 刊头与搜索 → 分类页签 → 标签横排 → 头条卡片 → 纯文字文章列表 → 专题与关注更新。
  * 分类、标签、搜索词与页码写在 URL 查询参数里，便于分享与返回。
  */
+const COL = 'mx-auto w-full max-w-[768px] px-5 md:px-6';
 const PAGE_SIZE = 5;
 
 export default function BlogListPage() {
@@ -58,15 +60,17 @@ function BlogList({ data }: { data: BlogData }) {
     <>
       <Masthead q={q} onSearch={(v) => update({ q: v || undefined })} />
       <Tabs posts={data.posts} category={category} onChange={(c) => update({ c, tag: undefined })} />
+      <TagRow tags={allTags(data.posts)} active={tag} onTag={(t) => update({ tag: t === tag ? undefined : t, c: undefined })} />
       {featured && current === 1 && <Featured post={featured} />}
-      <div className="mx-auto flex max-w-[1440px] flex-col gap-12 px-5 pt-6 pb-24 md:px-[100px] xl:flex-row xl:gap-[60px]">
-        <section id="blog-list" aria-labelledby="blog-list-title" className="min-w-0 flex-1 scroll-mt-24">
-          <div className="flex items-center gap-3 pb-2">
+      <div className={cn(COL, 'flex flex-col gap-14 pt-4 pb-24')}>
+        <section id="blog-list" aria-labelledby="blog-list-title" className="scroll-mt-24">
+          <div className="flex flex-wrap items-end gap-3 border-b border-divider pb-3">
             <h2 id="blog-list-title" className="font-serif text-[20px] font-semibold text-ink">
               {plain ? '最新文章' : `找到 ${filtered.length} 篇`}
             </h2>
             {tag && <FilterChip label={`标签：${tag}`} onClear={() => update({ tag: undefined })} />}
             {q && <FilterChip label={`搜索：${q}`} onClear={() => update({ q: undefined })} />}
+            {plain && <span className="ml-auto pb-0.5 text-[12.5px] text-muted">{data.posts.length} 篇 · 按发布时间</span>}
           </div>
           {shown.length ? (
             <ul>
@@ -79,7 +83,7 @@ function BlogList({ data }: { data: BlogData }) {
           )}
           {pages > 1 && <Pagination current={current} pages={pages} onChange={goPage} />}
         </section>
-        <Sidebar data={data} activeTag={tag} onTag={(t) => update({ tag: t === tag ? undefined : t, c: undefined })} />
+        <More data={data} />
       </div>
     </>
   );
@@ -99,48 +103,46 @@ function Masthead({ q, onSearch }: { q: string; onSearch: (v: string) => void })
     return () => document.removeEventListener('keydown', on);
   }, []);
   return (
-    <PageIntro
-      title="检索这件事，我们做了什么"
-      desc={
-        <>
+    <header className={cn(COL, 'flex flex-col gap-7 pt-12 pb-8 md:pt-20')}>
+      <div className="flex flex-col gap-3.5">
+        <h1 className="font-serif text-[clamp(32px,4.4vw,42px)] leading-[1.3] font-semibold tracking-[-0.01em] text-ink">检索这件事，我们做了什么</h1>
+        <p className="text-[16px] leading-[28px] text-[#6b6a64] md:text-[16.5px]">
           评测复盘、技术笔记和版本更新。文章里的数字都能在
           <Link to="/research" className="text-[#a8733f] hover:underline">
             评测中心
           </Link>
           找到原始结果。
-        </>
-      }
-      aside={
-          <form
-            role="search"
-            onSubmit={(e) => {
-              e.preventDefault();
-              onSearch(input.current?.value.trim() ?? '');
-            }}
-            className="flex h-10 w-full items-center gap-2 rounded-full border border-line bg-white px-4 focus-within:border-brand md:w-[260px]"
-          >
-            <Search aria-hidden className="size-4 text-muted" />
-            <input
-              ref={input}
-              key={q}
-              type="search"
-              defaultValue={q}
-              placeholder="搜索文章"
-              aria-label="搜索文章"
-              className="min-w-0 flex-1 bg-transparent text-[13.5px] text-ink outline-none placeholder:text-muted [&::-webkit-search-cancel-button]:hidden"
-            />
-            <kbd className="hidden rounded-[5px] border border-line px-1.5 font-num text-[11px] font-medium text-muted md:block">/</kbd>
-          </form>
-      }
-    />
+        </p>
+      </div>
+      <form
+        role="search"
+        onSubmit={(e) => {
+          e.preventDefault();
+          onSearch(input.current?.value.trim() ?? '');
+        }}
+        className="flex h-11 w-full items-center gap-2.5 rounded-xl border border-line bg-white px-[18px] transition-colors focus-within:border-brand"
+      >
+        <Search aria-hidden className="size-4 text-muted" />
+        <input
+          ref={input}
+          key={q}
+          type="search"
+          defaultValue={q}
+          placeholder="搜索文章标题、正文或标签"
+          aria-label="搜索文章"
+          className="min-w-0 flex-1 bg-transparent text-[14px] text-ink outline-none placeholder:text-muted [&::-webkit-search-cancel-button]:hidden"
+        />
+        <kbd className="hidden rounded-[5px] border border-line px-1.5 font-num text-[11px] font-medium text-muted md:block">/</kbd>
+      </form>
+    </header>
   );
 }
 
 function Tabs({ posts, category, onChange }: { posts: Post[]; category?: Category; onChange: (c?: Category) => void }) {
   const items: { c?: Category; label: string; n: number }[] = [{ label: '全部', n: posts.length }, ...CATEGORIES.map((c) => ({ c, label: c, n: posts.filter((p) => p.category === c).length }))];
   return (
-    <div className="mx-auto max-w-[1440px] px-5 md:px-[100px]">
-      <div role="tablist" aria-label="文章分类" className="flex gap-7 overflow-x-auto overflow-y-hidden border-b border-divider [scrollbar-width:none]">
+    <div className={COL}>
+      <div role="tablist" aria-label="文章分类" className="flex gap-[26px] overflow-x-auto overflow-y-hidden border-b border-divider [scrollbar-width:none]">
         {items.map((it) => {
           const on = it.c === category;
           return (
@@ -172,64 +174,59 @@ function Byline({ post }: { post: Post }) {
   );
 }
 
+/** 头条卡片：封面在上、文字在下 */
 function Featured({ post }: { post: Post }) {
   return (
-    <section aria-label="头条文章" className="mx-auto grid max-w-[1440px] items-center gap-8 px-5 py-8 md:px-[100px] md:py-12 lg:grid-cols-[540fr_640fr] lg:gap-[60px]">
-      <div className="flex flex-col gap-4">
-        <p className="flex items-center gap-2.5 text-[13px]">
-          <span className="rounded-full bg-brand px-[9px] py-[3px] text-[11.5px] font-medium text-white">最新</span>
-          <CategoryLabel post={post} />
-          <span className="text-faint">·</span>
-          <time dateTime={post.date} className="font-num text-muted">
-            {post.date}
-          </time>
-        </p>
-        <h2 className="font-serif text-[clamp(26px,3vw,34px)] leading-[1.4] font-semibold text-ink">
-          <Link to={`/blog/${post.slug}`} className="hover:text-[#6b4a2a]">
-            {post.title}
-          </Link>
-        </h2>
-        <p className="text-[15.5px] leading-[27px] text-text2">{post.lead}</p>
-        <Byline post={post} />
-        <Link to={`/blog/${post.slug}`} className={cn(pill.secondary, 'mt-2 gap-2 self-start px-[18px] py-2.5 text-[14px]')}>
-          阅读全文
-          <span aria-hidden className="text-muted">
-            →
-          </span>
+    <section aria-label="头条文章" className={cn(COL, 'pt-9 pb-12')}>
+      <div className="group overflow-hidden rounded-[20px] border border-divider bg-white shadow-[0_8px_24px_rgba(0,0,0,0.04)]">
+        <Link to={`/blog/${post.slug}`} tabIndex={-1} aria-hidden className="block overflow-hidden">
+          <Cover post={post} size="lg" className="aspect-[720/280] rounded-none transition-transform duration-300 group-hover:scale-[1.01]" />
         </Link>
+        <div className="flex flex-col gap-3.5 px-6 pt-6 pb-7 md:px-8 md:pt-7 md:pb-8">
+          <p className="flex items-center gap-2.5 text-[13px]">
+            <span className="rounded-full bg-brand px-[9px] py-[3px] text-[11.5px] font-medium text-white">最新</span>
+            <CategoryLabel post={post} />
+            <span className="text-faint">·</span>
+            <time dateTime={post.date} className="font-num text-muted">
+              {post.date}
+            </time>
+          </p>
+          <h2 className="font-serif text-[clamp(24px,3vw,30px)] leading-[1.4] font-semibold tracking-[-0.005em] text-ink">
+            <Link to={`/blog/${post.slug}`} className="hover:text-[#6b4a2a]">
+              {post.title}
+            </Link>
+          </h2>
+          <p className="line-clamp-3 text-[15.5px] leading-[27px] text-[#6b6a64] md:text-[16px]">{post.lead}</p>
+          <div className="flex flex-wrap items-center justify-between gap-4 pt-2.5">
+            <Byline post={post} />
+            <Link to={`/blog/${post.slug}`} className="inline-flex items-center gap-2 rounded-full bg-ink px-[18px] py-2.5 text-[14px] font-medium text-white transition-colors hover:bg-[#35342f]">
+              阅读全文 <span aria-hidden>→</span>
+            </Link>
+          </div>
+        </div>
       </div>
-      <Link to={`/blog/${post.slug}`} tabIndex={-1} aria-hidden className="hidden lg:block">
-        <Cover post={post} size="lg" className="aspect-[640/380] transition-transform duration-300 hover:scale-[1.01]" />
-      </Link>
     </section>
   );
 }
 
+/** 列表行：纯文字，标题 → 摘要 → 日期 · 分类 · 时长 · 作者 */
 function Row({ post }: { post: Post }) {
-  const [y, m, d] = post.date.split('-');
   return (
     <li className="border-b border-divider">
-      <Link to={`/blog/${post.slug}`} className="group flex gap-5 py-7 md:gap-7">
-        <span className="hidden w-[72px] shrink-0 flex-col gap-0.5 sm:flex">
-          <span className="font-num text-[26px] leading-tight font-semibold text-ink">{d}</span>
-          <span className="font-num text-[12px] font-medium text-muted">
-            {y}.{m}
-          </span>
+      <Link to={`/blog/${post.slug}`} className="group flex flex-col gap-2.5 py-7">
+        <span className="font-serif text-[19px] leading-[1.5] font-semibold text-ink transition-colors group-hover:text-[#6b4a2a] md:text-[20px]">{post.title}</span>
+        <span className="line-clamp-2 text-[14.5px] leading-6 text-[#6b6a64]">{post.lead}</span>
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1 pt-0.5 text-[12.5px]">
+          <time dateTime={post.date} className="font-num font-medium text-muted">
+            {post.date.replaceAll('-', '.')}
+          </time>
+          <span className="text-faint">·</span>
+          <CategoryLabel post={post} />
+          <span className="text-faint">·</span>
+          <span className="text-muted">{readMinutes(post)} 分钟</span>
+          <span className="text-faint">·</span>
+          <span className="text-muted">{post.author}</span>
         </span>
-        <span className="flex min-w-0 flex-1 flex-col gap-2.5">
-          <span className="flex items-center gap-2 text-[12.5px]">
-            <CategoryLabel post={post} />
-            <span className="text-faint">·</span>
-            <span className="text-muted">{readMinutes(post)} 分钟</span>
-            <time dateTime={post.date} className="font-num text-muted sm:hidden">
-              · {post.date}
-            </time>
-          </span>
-          <span className="font-serif text-[19px] leading-[1.5] font-semibold text-ink group-hover:text-[#6b4a2a] md:text-[21px]">{post.title}</span>
-          <span className="line-clamp-2 text-[14px] leading-[23px] text-text2">{post.lead}</span>
-          <span className="text-[12.5px] text-muted">{post.author}</span>
-        </span>
-        <Cover post={post} size="sm" className="hidden h-32 w-48 shrink-0 md:flex" />
       </Link>
     </li>
   );
@@ -276,63 +273,66 @@ function Pagination({ current, pages, onChange }: { current: number; pages: numb
   );
 }
 
-/**
- * 侧栏：列表比侧栏长时保持吸顶（top 96）；视口矮于侧栏时取消吸顶，避免底部被裁掉。
- * 1280 以下改为单栏，侧栏排在列表之后。
- */
-function Sidebar({ data, activeTag, onTag }: { data: BlogData; activeTag?: string; onTag: (t: string) => void }) {
-  const tags = allTags(data.posts);
-  const card = 'flex flex-col gap-2.5 rounded-[18px] p-[18px]';
+/** 标签横排：窄屏横向滚动，宽屏自动换行 */
+function TagRow({ tags, active, onTag }: { tags: string[]; active?: string; onTag: (t: string) => void }) {
+  if (!tags.length) return null;
   return (
-    <aside aria-label="专题与标签" className="w-full shrink-0 xl:w-[360px]">
-      <div className="grid gap-4 md:grid-cols-2 xl:sticky xl:top-24 xl:flex xl:flex-col [@media(max-height:720px)]:static">
-        {data.series.length > 0 && (
+    <div className={cn(COL, 'pt-[18px]')}>
+      <div aria-label="按标签筛选" role="group" className="-mx-5 flex gap-2 overflow-x-auto px-5 pb-1 [scrollbar-width:none] md:mx-0 md:flex-wrap md:px-0">
+        {tags.map((t) => (
+          <button
+            key={t}
+            type="button"
+            aria-pressed={t === active}
+            onClick={() => onTag(t)}
+            className={cn(
+              'shrink-0 rounded-full border px-3 py-[5px] text-[12.5px] transition-colors',
+              t === active ? 'border-ink bg-ink text-white' : 'border-[#e7e6e1] bg-white text-[#6b6a64] hover:border-dash hover:text-ink',
+            )}
+          >
+            # {t}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** 列表之后：专题 + 关注更新 */
+function More({ data }: { data: BlogData }) {
+  const card = 'flex flex-col gap-3 rounded-2xl p-6';
+  return (
+    <aside aria-label="专题与关注更新" className="flex flex-col gap-4">
+      {data.series.length > 0 && (
         <section className={cn(card, 'border border-divider bg-white')}>
-          <h2 className="text-[14.5px] font-medium text-ink">专题</h2>
+          <h2 className="text-[15px] font-medium text-ink">专题</h2>
           <ul>
             {data.series.map((s, i) => (
               <li key={s.id} className={cn(i > 0 && 'border-t border-[#f1f0ec]')}>
-                <Link to={`/blog/${s.slugs[s.slugs.length - 1]}`} className="group flex items-center gap-3 py-[9px]">
-                  <span className="flex min-w-0 flex-1 flex-col gap-[3px]">
-                    <span className="text-[14px] font-medium text-ink group-hover:text-[#6b4a2a]">{s.title}</span>
-                    <span className="truncate text-[12.5px] text-muted">{s.desc}</span>
+                <Link to={`/blog/${s.slugs[s.slugs.length - 1]}`} className="group flex items-center gap-3 py-3">
+                  <span className="flex min-w-0 flex-1 flex-col gap-1">
+                    <span className="text-[14.5px] font-medium text-ink group-hover:text-[#6b4a2a]">{s.title}</span>
+                    <span className="truncate text-[13px] text-muted">{s.desc}</span>
                   </span>
                   <span className="font-num text-[12px] font-medium text-muted">{s.slugs.length} 篇</span>
+                  <span aria-hidden className="text-faint transition-colors group-hover:text-[#a8733f]">
+                    →
+                  </span>
                 </Link>
               </li>
             ))}
           </ul>
         </section>
-        )}
-        <section className={cn(card, 'bg-brand-soft')}>
-          <h2 className="text-[14.5px] font-medium text-ink">关注更新</h2>
+      )}
+      <section className={cn(card, 'bg-brand-soft sm:flex-row sm:items-center sm:gap-6')}>
+        <span className="flex flex-1 flex-col gap-1.5">
+          <h2 className="text-[15px] font-medium text-ink">关注更新</h2>
           <p className="text-[13px] leading-[21px] text-text2">新文章与评测结果随版本发布。在 GitHub 上 Watch 仓库的 Releases，发版时会收到通知。</p>
-          <a href={RELEASES_URL} target="_blank" rel="noreferrer noopener" className={cn(pill.primary, 'mt-1 self-start px-[18px] py-2 text-[13.5px]')}>
-            查看 Releases ↗
-          </a>
-        </section>
-        {tags.length > 0 && (
-        <section className={cn(card, 'border border-divider bg-white')}>
-          <h2 className="text-[14.5px] font-medium text-ink">标签</h2>
-          <div className="flex flex-wrap gap-2">
-            {tags.map((t) => (
-              <button
-                key={t}
-                type="button"
-                aria-pressed={t === activeTag}
-                onClick={() => {
-                  onTag(t);
-                  document.getElementById(SCROLL_ROOT_ID)?.scrollTo({ top: 0 });
-                }}
-                className={cn('rounded-full px-[11px] py-[5px] text-[12.5px] transition-colors', t === activeTag ? 'bg-ink text-white' : 'bg-soft text-text2 hover:bg-active')}
-              >
-                {t}
-              </button>
-            ))}
-          </div>
-        </section>
-        )}
-      </div>
+        </span>
+        <a href={RELEASES_URL} target="_blank" rel="noreferrer noopener" className={cn(pill.primary, 'shrink-0 self-start px-[18px] py-2 text-[13.5px] sm:self-center')}>
+          查看 Releases ↗
+        </a>
+      </section>
     </aside>
   );
 }
