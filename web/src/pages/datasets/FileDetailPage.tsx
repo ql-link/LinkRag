@@ -21,12 +21,14 @@ import { FailurePanel } from './components/FailurePanel';
 import { FailedPreview, PreviewPane } from './components/PagePreview';
 
 function toMarkdown(chunks: Chunk[]): string {
+  // 真实分块已包含 Markdown；行号是定位信息，不能作为正文标题插入。
+  if (!USE_MOCK) return chunks.map((c) => c.text).join('\n\n');
   let last = '';
   return chunks
     .map((c) => {
       const head = c.section !== last ? `## ${(last = c.section)}\n\n` : '';
       if (c.table) return head + c.table.map((r, i) => `| ${r.join(' | ')} |${i === 0 ? `\n|${r.map(() => ' --- ').join('|')}|` : ''}`).join('\n');
-      if (c.kind === 'image') return `${head}![${c.imageCaption}](image)\n\n> ${c.text}`;
+      if (c.kind === 'image') return `${head}*${c.imageCaption ?? c.imageTitle ?? '图片'}*\n\n> ${c.text}`;
       return head + c.text;
     })
     .join('\n\n');
