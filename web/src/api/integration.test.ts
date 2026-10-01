@@ -1,7 +1,15 @@
+import { pending } from '@/api/pending';
 import { ApiError, request, setToken, setUnauthorizedHandler, withQuery } from '@/api/http';
 import { parseSseFrames } from '@/api/stream';
-import { displayTime, toDataset, toFile, toModelState } from '@/services/backend';
+import { db } from '@/mock/db';
+import { displayTime, loadFiles, toDataset, toFile, toModelState } from '@/services/backend';
+import { refreshFiles } from '@/services/datasets';
 import { blocksFromAnswer, toChunks } from '@/services/chatRemote';
+
+vi.mock('@/api/http', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/api/http')>(),
+  USE_MOCK: false,
+}));
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 
@@ -20,6 +28,60 @@ describe('http request', () => {
     const [url, init] = fetchMock.mock.calls[0];
     expect(url).toBe('/api/v1/user/profile');
     expect(init.headers).toMatchObject({ satoken: 'jwt-1' });
+  });
+
+  it('keeps background requests out of the top loading bar', async () => {
+    let finish!: (value: Response) => void;
+    vi.stubGlobal('fetch', vi.fn(() => new Promise<Response>((resolve) => { finish = resolve; })));
+    const quiet = request('/background', { silent: true, anonymous: true });
+    expect(pending.get()).toBe(0);
+    finish(json({ code: 200, data: [] }));
+    await quiet;
+    const foreground = request('/foreground', { anonymous: true });
+    expect(pending.get()).toBe(1);
+    finish(json({ code: 200, data: [] }));
+    await foreground;
+    expect(pending.get()).toBe(0);
+  });
+
+  it('preserves an in-flight upload across silent file polling', async () => {
+    db.update((state) => { state.files = [{ id: 'tmp_upload', datasetId: '12', name: 'a.docx', type: 'DOCX', size: '1 KB', status: 'uploading', progress: 12, chunkCount: 0, updatedAt: '刚刚' }]; });
+    const seen: number[] = [];
+    const unsubscribe = pending.subscribe(() => seen.push(pending.get()));
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(json({ code: 200, data: { items: [], total: 0, totalPages: 1 } })));
+    try {
+      await loadFiles('12', true);
+      expect(db.state.files.find((f) => f.id === 'tmp_upload')?.progress).toBe(12);
+      expect(seen).toEqual([]);
+    } finally {
+      unsubscribe();
+      db.reset();
+    }
+  });
+
+  it('keeps polling an accepted queued task until it reaches a terminal state', async () => {
+    vi.useFakeTimers();
+    const dto = { id: 5, datasetId: 12, originalFilename: 'a.pdf', fileSuffix: 'pdf', fileSize: 10, uploadStatus: 'UPLOAD_SUCCESS', isUploadSuccess: true, failureReason: null, createdAt: '', updatedAt: '' };
+    let reads = 0;
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => {
+      if (url.includes('parse-results')) {
+        reads += 1;
+        return json({ code: 200, data: [{ fileId: 5, taskId: 'queued-task', frontendStatus: reads < 3 ? 'parse_waiting' : 'parse_success' }] });
+      }
+      return json({ code: 200, data: { items: url.includes('/files') ? [dto] : [], totalPages: 1 } });
+    }));
+    try {
+      await refreshFiles('12');
+      await vi.advanceTimersByTimeAsync(6000);
+      expect(reads).toBe(3);
+      expect(db.state.files.find((f) => f.id === '5')?.status).toBe('done');
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(reads).toBe(3);
+    } finally {
+      vi.clearAllTimers();
+      vi.useRealTimers();
+      db.reset();
+    }
   });
 
   it('uses Bearer for RAG routes and JSON-encodes bodies', async () => {
@@ -105,6 +167,27 @@ describe('backend DTO mapping', () => {
     expect(toFile(dto, { fileId: 5, originalFilename: 'a.md', frontendStatus: 'parse_success', parseStatus: 'success', failureReason: null }).status).toBe('done');
     expect(toFile(dto, { fileId: 5, originalFilename: 'a.md', frontendStatus: 'parse_failed', parseStatus: 'failed', failureReason: 'bad' })).toMatchObject({ status: 'failed', note: 'bad' });
     expect(toFile({ ...dto, uploadStatus: 'UPLOADING' }).status).toBe('uploading');
+  });
+
+  it('advances bounded stage estimates, resets retries and honors terminal states', () => {
+    const dto = { id: 5, datasetId: 12, originalFilename: 'a.pdf', fileSuffix: 'pdf', fileSize: 10, uploadStatus: 'UPLOAD_SUCCESS' as const, isUploadSuccess: true, failureReason: null, createdAt: '', updatedAt: '' };
+    const parse = { fileId: 5, originalFilename: 'a.pdf', frontendStatus: 'parsing' as const, parseStatus: 'created', failureReason: null, taskId: 'task1', progress: 0, stageLabel: '文档解析与清洗', stages: [{ key: 'cleaning', label: '文档解析与清洗', status: 'PROCESSING' }] };
+    const first = toFile(dto, parse);
+    const later = toFile(dto, parse, { ...first, progressSince: Date.now() - 60000 });
+    expect(later.progress).toBeGreaterThan(first.progress);
+    expect(later.progress).toBeLessThanOrEqual(16);
+    expect(later.progressEstimated).toBe(true);
+    expect(toFile(dto, { ...parse, taskId: 'task2' }, later).progress).toBe(first.progress);
+    expect(toFile(dto, { ...parse, frontendStatus: 'parse_success' }, later)).toMatchObject({ progress: 100, progressEstimated: false });
+    expect(toFile(dto, { ...parse, frontendStatus: 'parse_failed', failureReason: '401' }, later)).toMatchObject({ status: 'failed', note: '401', progressEstimated: false });
+    expect(toFile(dto, { ...parse, frontendStatus: 'parse_waiting' }).status).toBe('queued');
+  });
+
+  it('shows latest parse activity instead of the old upload date', () => {
+    const dto = { id: 5, datasetId: 12, originalFilename: 'a.pdf', fileSuffix: 'pdf', fileSize: 10, uploadStatus: 'UPLOAD_SUCCESS' as const, isUploadSuccess: true, failureReason: null, createdAt: '2026-09-01T00:00:00+00:00', updatedAt: '2026-09-01T00:00:00+00:00' };
+    const updatedAt = new Date().toISOString();
+    expect(toFile(dto, { fileId: 5, originalFilename: 'a.pdf', frontendStatus: 'parse_success', parseStatus: 'success', failureReason: null, updatedAt }).updatedAt).toBe(displayTime(updatedAt));
+    expect(new Date('2026-10-01T05:52:48+00:00').getTime()).toBe(new Date('2026-10-01T13:52:48+08:00').getTime());
   });
 
   it('groups model configs by provider and resolves defaults', () => {

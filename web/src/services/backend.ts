@@ -82,7 +82,6 @@ export function toFile(dto: FileDTO, parse?: ParseResultDTO, existing?: KbFile):
         note = parse.failureReason ?? '解析失败';
         break;
       case 'parsing':
-      case 'parse_waiting':
         status = 'parsing';
         break;
       default:
@@ -90,6 +89,21 @@ export function toFile(dto: FileDTO, parse?: ParseResultDTO, existing?: KbFile):
         note = '等待解析';
     }
   }
+  const sameTask = existing?.status === status && existing?.parseTaskId === parse?.taskId;
+  const stage = parse?.stageLabel ?? '文档解析';
+  const sameStage = sameTask && existing?.progressStage === stage;
+  const since = sameStage ? (existing?.progressSince ?? Date.now()) : Date.now();
+  const base = Math.max(0, Math.min(99, parse?.progress ?? 0));
+  const processing = parse?.stages?.filter((s) => s.status === 'PROCESSING').length ?? 1;
+  // 无页数/字节遥测时，只在当前阶段范围内渐进估算；停止推进后永不到 100%。
+  const room = parse?.stages ? Math.min(15, processing * 15) : 90;
+  const estimating = status === 'parsing' && room > 0;
+  const estimate = Math.floor(base + 1 + room * (1 - Math.exp(-(Date.now() - since) / 60000)));
+  const progress = status === 'done' ? 100 : status === 'parsing'
+    ? Math.min(99, Math.max(base, estimating ? estimate : base, sameTask ? (existing?.progress ?? 0) : 0))
+    : status === 'uploading' ? (existing?.progress ?? 0) : 0;
+  const estimated = status === 'uploading' || (status === 'parsing' && (estimating || progress > base));
+  if (status === 'parsing') note = `${stage}${estimated ? ' · 进度为阶段估算' : ''}`;
   return {
     id: String(dto.id),
     datasetId: String(dto.datasetId),
@@ -97,11 +111,14 @@ export function toFile(dto: FileDTO, parse?: ParseResultDTO, existing?: KbFile):
     type: fileTypeFromName(dto.originalFilename),
     size: formatSize(dto.fileSize ?? 0),
     status,
-    // 后端不提供百分比进度：进行中显示不确定进度
-    progress: status === 'done' ? 100 : (existing?.progress ?? 0),
+    progress,
+    progressEstimated: estimated,
+    parseTaskId: parse?.taskId,
+    progressStage: stage,
+    progressSince: since,
     chunkCount: existing?.chunkCount ?? 0,
     note,
-    updatedAt: displayTime(dto.updatedAt),
+    updatedAt: displayTime(parse?.updatedAt ?? dto.updatedAt),
     uploadedAt: dto.createdAt ? dto.createdAt.slice(5, 10) : undefined,
   };
 }
@@ -238,24 +255,24 @@ function setReady(v: boolean) {
 }
 
 /** 按知识库拉取文件及解析状态 */
-export async function loadFiles(datasetId: string) {
-  const dtos = await datasetApi.files(Number(datasetId));
+export async function loadFiles(datasetId: string, silent = false) {
+  const dtos = await datasetApi.files(Number(datasetId), silent);
   const ids = dtos.filter((f) => f.uploadStatus === 'UPLOAD_SUCCESS').map((f) => f.id);
   const parse = new Map<number, ParseResultDTO>();
   // parse-results 按批查询，避免 URL 过长
   for (let i = 0; i < ids.length; i += 50) {
-    for (const r of await datasetApi.parseResults(Number(datasetId), ids.slice(i, i + 50))) parse.set(r.fileId, r);
+    for (const r of await datasetApi.parseResults(Number(datasetId), ids.slice(i, i + 50), silent)) parse.set(r.fileId, r);
   }
   db.update((d) => {
     const prev = new Map(d.files.map((f) => [f.id, f]));
     const others = d.files.filter((f) => f.datasetId !== datasetId);
-    d.files = [...dtos.map((f) => toFile(f, parse.get(f.id), prev.get(String(f.id)))), ...others];
+    d.files = [...dtos.map((f) => toFile(f, parse.get(f.id), prev.get(String(f.id)))), ...d.files.filter((f) => f.datasetId === datasetId && f.id.startsWith('tmp_')), ...others];
     d.hiddenCounts[datasetId] = 0;
   });
 }
 
-export async function loadDatasets() {
-  const dtos = await datasetApi.list();
+export async function loadDatasets(silent = false) {
+  const dtos = await datasetApi.list(silent);
   db.update((d) => {
     const prev = new Map(d.datasets.map((x) => [x.id, x]));
     d.datasets = dtos.map((x) => toDataset(x, prev.get(String(x.id))));

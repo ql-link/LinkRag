@@ -155,6 +155,7 @@ async def file_status(file_id: int, principal: Principal):
             "parseStatus": parse["parseStatus"],
             "frontendStatus": parse["frontendStatus"],
             "parseFailureReason": parse["failureReason"],
+            "updatedAt": parse.get("updatedAt") or info.get("updatedAt"),
         }
     )
 

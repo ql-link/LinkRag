@@ -118,6 +118,12 @@ export interface FileDTO {
 export type ParseFrontendStatus = 'parse_success' | 'parse_failed' | 'parsing' | 'parse_waiting';
 
 export interface ParseResultDTO {
+  taskId?: string | null;
+  progress?: number;
+  progressKind?: 'stages';
+  updatedAt?: string | null;
+  stageLabel?: string;
+  stages?: { key: string; label: string; status: string }[];
   fileId: number;
   originalFilename: string;
   frontendStatus: ParseFrontendStatus | null;
@@ -138,7 +144,7 @@ export interface ChunkDTO {
 }
 
 export const datasetApi = {
-  list: () => fetchAll<DatasetDTO>('/api/v1/datasets'),
+  list: (silent = false) => fetchAll<DatasetDTO>('/api/v1/datasets', {}, 100, 20, silent),
   detail: (id: number) => request<DatasetDTO>(`/api/v1/datasets/${id}`),
   create: (input: { name: string; description?: string; denseEmbeddingConfigId: number; sparseEmbeddingConfigId: number }) =>
     request<DatasetDTO>('/api/v1/datasets', { body: input }),
@@ -148,17 +154,17 @@ export const datasetApi = {
   /** 解析配置（仅取模型绑定字段；其余配置项页面暂未对接） */
   parseConfig: (id: number) =>
     request<{ dense_embedding_config_id: number | null; sparse_embedding_config_id: number | null }>(`/api/v1/datasets/${id}/parse-config`),
-  files: (datasetId: number) => fetchAll<FileDTO>(`/api/v1/datasets/${datasetId}/files`),
+  files: (datasetId: number, silent = false) => fetchAll<FileDTO>(`/api/v1/datasets/${datasetId}/files`, {}, 100, 20, silent),
   recentFiles: (pageSize = 5) => request<Page<FileDTO>>('/api/v1/files/recent', { query: { page: 1, pageSize } }),
-  parseResults: (datasetId: number, fileIds: number[]) =>
-    request<ParseResultDTO[]>(`/api/v1/datasets/${datasetId}/files/parse-results`, { query: { fileIds: fileIds.join(',') } }),
+  parseResults: (datasetId: number, fileIds: number[], silent = false) =>
+    request<ParseResultDTO[]>(`/api/v1/datasets/${datasetId}/files/parse-results`, { query: { fileIds: fileIds.join(',') }, silent }),
   upload: (datasetId: number, file: File, parseImmediately: boolean) => {
     const form = new FormData();
     form.append('file', file);
     form.append('parseImmediately', String(parseImmediately));
-    return request<FileDTO>(`/api/v1/datasets/${datasetId}/files`, { body: form });
+    return request<FileDTO>(`/api/v1/datasets/${datasetId}/files`, { body: form, silent: true });
   },
-  parse: (fileId: number) => request<{ fileId: number; frontendStatus: ParseFrontendStatus }>(`/api/v1/files/${fileId}/parse`, { method: 'POST' }),
+  parse: (fileId: number) => request<{ fileId: number; frontendStatus: ParseFrontendStatus }>(`/api/v1/files/${fileId}/parse`, { method: 'POST', silent: true }),
   removeFile: (fileId: number) => request<null>(`/api/v1/files/${fileId}`, { method: 'DELETE' }),
   chunks: (fileId: number, page = 1, pageSize = 50) => request<Page<ChunkDTO>>('/api/v1/knowledge/chunks', { query: { fileId, page, pageSize } }),
 };

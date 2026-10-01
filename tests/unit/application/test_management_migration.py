@@ -359,3 +359,61 @@ async def test_outbox_retries_the_same_payload_after_broker_failure(monkeypatch)
     assert state["status"] == "SENT"
     assert state["attempts"] == 2
     assert mq.send_raw.call_args_list[0].args == mq.send_raw.call_args_list[1].args
+
+
+def test_parse_stage_progress_handles_parallel_and_terminal_states():
+    row = {
+        "latest_parse_task_id": "task-1",
+        "pipeline_status": "PROCESSING",
+        "cleaning_status": "SUCCESS",
+        "chunking_status": "SUCCESS",
+        "vectorizing_status": "PROCESSING",
+        "pretokenize_status": "PROCESSING",
+    }
+    progress = document_files._parse_progress(row)
+    assert progress["progress"] == 33
+    assert progress["taskId"] == "task-1"
+    assert "稠密向量化" in progress["stageLabel"]
+    assert "预分词" in progress["stageLabel"]
+    assert len(progress["stages"]) == 6
+    for stage in document_files._PARSE_STAGES:
+        row[stage[0] + "_status"] = "SUCCESS"
+    assert document_files._parse_progress(row)["progress"] == 99
+    row["pipeline_status"] = "SUCCESS"
+    assert document_files._parse_progress(row)["progress"] == 100
+    assert document_files._parse_progress({})["progress"] == 0
+
+
+def test_file_times_distinguish_history_database_defaults_and_pipeline(monkeypatch):
+    from datetime import datetime, timezone
+
+    monkeypatch.setattr(
+        document_files.settings, "FILE_DB_BEIJING_SINCE", datetime(2026, 10, 1, 14, 12, 48)
+    )
+    old = datetime(2026, 10, 1, 5, 52, 48)
+    new = datetime(2026, 10, 1, 14, 13, 0)
+    assert document_files._file_time(old) == "2026-10-01T13:52:48+08:00"
+    assert document_files._file_time(new) == "2026-10-01T14:13:00+08:00"
+    assert (
+        document_files._file_time(datetime(2026, 10, 1, 15), database_generated=False)
+        == "2026-10-01T23:00:00+08:00"
+    )
+    assert (
+        document_files._file_time(old.replace(tzinfo=timezone.utc)) == "2026-10-01T13:52:48+08:00"
+    )
+    row = {
+        "updated_at": old,
+        "parse_pointer_updated_at": new,
+        "pipeline_updated_at": datetime(2026, 10, 1, 6, 14),
+    }
+    assert document_files._parse_progress(row)["updatedAt"] == "2026-10-01T14:14:00+08:00"
+    row["parse_pointer_updated_at"] = datetime(2026, 10, 1, 14, 15)
+    assert document_files._parse_progress(row)["updatedAt"] == "2026-10-01T14:15:00+08:00"
+
+
+def test_file_times_without_transition_keep_legacy_utc(monkeypatch):
+    from datetime import datetime
+
+    monkeypatch.setattr(document_files.settings, "FILE_DB_BEIJING_SINCE", None)
+    assert document_files._file_time(datetime(2026, 10, 1, 15)) == "2026-10-01T23:00:00+08:00"
+    assert document_files._activity_time({}) is None

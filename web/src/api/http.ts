@@ -73,6 +73,8 @@ interface RequestOptions {
   /** 不附带 token（登录 / 注册） */
   anonymous?: boolean;
   signal?: AbortSignal;
+  /** 后台轮询和拥有局部进度的操作不触发顶部加载条 */
+  silent?: boolean;
 }
 
 export function authHeaders(bearer = false): Record<string, string> {
@@ -111,7 +113,8 @@ async function parseError(res: Response): Promise<ApiError> {
 
 /** 管理接口请求：返回解包后的 `data`；请求期间计入全局加载状态（顶部进度条） */
 export function request<T>(path: string, opts: RequestOptions = {}): Promise<T> {
-  return track(send<T>(path, opts));
+  const task = send<T>(path, opts);
+  return opts.silent ? task : track(task);
 }
 
 async function send<T>(path: string, opts: RequestOptions): Promise<T> {
@@ -154,10 +157,10 @@ export interface Page<T> {
 }
 
 /** 拉取分页接口的全部数据（管理端列表量级小；上限防止异常数据导致死循环） */
-export async function fetchAll<T>(path: string, query: Query = {}, pageSize = 100, maxPages = 20): Promise<T[]> {
+export async function fetchAll<T>(path: string, query: Query = {}, pageSize = 100, maxPages = 20, silent = false): Promise<T[]> {
   const out: T[] = [];
   for (let page = 1; page <= maxPages; page += 1) {
-    const res = await request<Page<T>>(path, { query: { ...query, page, pageSize } });
+    const res = await request<Page<T>>(path, { query: { ...query, page, pageSize }, silent });
     out.push(...res.items);
     if (page >= res.totalPages) break;
   }
