@@ -36,7 +36,7 @@ export function PublicShell({ children, className }: { children: React.ReactNode
   }, [pathname, hash]);
   return (
     // 纵向 flex + main 撑满：内容不足一屏时页脚仍贴底
-    <div id={SCROLL_ROOT_ID} className={cn('relative flex h-full flex-col overflow-y-auto text-ink [scroll-behavior:smooth]', className ?? 'bg-[#fbfbf9]')}>
+    <div id={SCROLL_ROOT_ID} className={cn('relative flex h-full flex-col overflow-y-auto overscroll-y-none text-ink [scroll-behavior:smooth]', className ?? 'bg-[#fbfbf9]')}>
       <Nav />
       <main className="flex-1">{children}</main>
       <Footer />
