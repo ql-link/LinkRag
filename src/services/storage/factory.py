@@ -15,6 +15,12 @@ class StorageFactory:
             raise ValueError(f"不支持的存储提供方: {provider}")
 
     @staticmethod
-    def get_storage() -> BaseObjectStorage:
+    def get_storage(
+        *, request_timeout_seconds: float | None = None, max_attempts: int | None = None
+    ) -> BaseObjectStorage:
         StorageFactory.validate_provider()
-        return MinioStorage()
+        if request_timeout_seconds is None and max_attempts is None:
+            return MinioStorage()
+        return MinioStorage(
+            request_timeout_seconds=request_timeout_seconds, max_attempts=max_attempts
+        )

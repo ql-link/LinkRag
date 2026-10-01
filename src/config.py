@@ -630,6 +630,11 @@ class Settings(BaseSettings):
     # B5 控制面必须与 Java 文件入口保持单一生产者。
     B5_FILE_WRITES_ENABLED: bool = False
     B5_DELETE_WRITES_ENABLED: bool = False
+    # 新用户独立演示库；仅在 B4/B5 写入均开启时初始化。
+    DEMO_DATASET_ENABLED: bool = True
+    DEMO_DATASET_DENSE_CONFIG_ID: Optional[int] = Field(default=None, gt=0)
+    DEMO_DATASET_SPARSE_CONFIG_ID: Optional[int] = Field(default=None, gt=0)
+    DEMO_DATASET_CHAT_CONFIG_ID: Optional[int] = Field(default=None, gt=0)
     # Blog and feedback share Java's tables. Enable each only after its write
     # paths are routed to Python so there is one owner during migration.
     B9_BLOG_WRITES_ENABLED: bool = False

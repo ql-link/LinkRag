@@ -23,7 +23,7 @@
 | Method | Path | 身份 | `data` / 行为 |
 | --- | --- | --- | --- |
 | POST | `/api/v1/auth/login` | 匿名 | `{account,password}`；返回 `accessToken,tokenType,expiresIn,userId`。仅 Java 受保护路由已退场并显式启用 Python 签发后可用。 |
-| POST | `/api/v1/auth/register` | 匿名 | `{username,password,email}`；创建 `USER` 后自动登录，响应同上。 |
+| POST | `/api/v1/auth/register` | 匿名 | `{username,password,email}`；创建 `USER` 后自动登录，响应同上。演示初始化启用时，同时创建当前用户独立的“购物演示数据集”、三份购物文档和解析任务；平台模型或素材准备失败返回 `503`，不留下半成品账号。解析异步完成，详见[注册初始化](../internals/identity_users.md#新用户购物演示数据集)。 |
 | POST | `/api/v1/auth/refresh` | 登录用户 | 滑动续期：用仍有效的 `satoken` 换取新 access token（响应同登录），旧 token 随即撤销。需启用 Python 签发。 |
 | POST | `/api/v1/auth/logout` | 可匿名调用 | 无效或缺失 token 幂等返回成功；有效 token 撤销本次登录态，`data:null`，Java 旧会话还通过 Java 登出接口撤销。 |
 | GET / PATCH | `/api/v1/user/profile` | 登录用户 | 读取/更新当前用户资料；可修改 `nickname,email,phone,avatarUrl,bio(≤200),team(≤64)`（`bio`/`team` 传空白串即清空），响应分别为资料对象/`null`。 |

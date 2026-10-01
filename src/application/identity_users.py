@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 from src.api.management_auth import AccessClaims
 from src.api.management_http import BusinessError
 from src.application.app_identity import TOLINK_APP_CODE
+from src.application.demo_dataset import DemoDatasetSeed
 from src.application.identity_session import AccessTokenIssuer, HybridSessionState
 from src.cache.fenced_json_cache import FencedJsonCacheStore
 from src.database import get_db_context, write_transaction
@@ -91,7 +92,13 @@ _NO_CONTEXT = LoginContext()
 
 
 async def _record_login(user_id: int, source: str, ctx: LoginContext = _NO_CONTEXT) -> None:
-    params = {"uid": user_id, "source": source, "created": _shanghai_now(), "ip": ctx.ip, "ua": ctx.user_agent}
+    params = {
+        "uid": user_id,
+        "source": source,
+        "created": _shanghai_now(),
+        "ip": ctx.ip,
+        "ua": ctx.user_agent,
+    }
     try:
         async with write_transaction() as session:
             await session.execute(
@@ -158,9 +165,7 @@ class IdentityUsers:
             "userId": user_id,
         }, claims
 
-    async def login(
-        self, account: str, password: str, ctx: LoginContext = _NO_CONTEXT
-    ) -> dict:
+    async def login(self, account: str, password: str, ctx: LoginContext = _NO_CONTEXT) -> dict:
         AccessTokenIssuer.from_settings()  # 禁用签发时不触碰账号与密码。
         account = account.strip()
         async with get_db_context() as session:
@@ -214,7 +219,9 @@ class IdentityUsers:
             secrets.choice("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") for _ in range(7)
         )
         issued: tuple[dict, AccessClaims] | None = None
+        seed: DemoDatasetSeed | None = None
         try:
+            seed = await DemoDatasetSeed.prepare()
             async with write_transaction() as session:
                 result = await session.execute(
                     text(
@@ -231,13 +238,19 @@ class IdentityUsers:
                     },
                 )
                 user_id = int(cast(CursorResult[Any], result).lastrowid)
+                if seed is not None:
+                    await seed.bind(session, user_id)
                 # 会话登记失败时，数据库事务一并回滚，避免客户端收到错误却留下账号。
                 issued = await self._issue(user_id, "USER")
         except IntegrityError as exc:
+            if seed is not None:
+                await seed.discard()
             if issued is not None:
                 await self._revoke_failed_registration(issued)
             raise await self._unique_error(username, email) from exc
-        except Exception:
+        except BaseException:
+            if seed is not None:
+                await seed.discard()
             if issued is not None:
                 await self._revoke_failed_registration(issued)
             raise
@@ -423,14 +436,17 @@ class IdentityUsers:
         """
         issuer = AccessTokenIssuer.from_settings()
         password = new_password or "".join(
-            secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789") for _ in range(12)
+            secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789")
+            for _ in range(12)
         )
         password_hash = await asyncio.to_thread(
             bcrypt.hashpw, _bcrypt_input(password), bcrypt.gensalt(prefix=b"2a")
         )
         async with write_transaction() as session:
             exists = (
-                await session.execute(text("SELECT id FROM sys_user WHERE id=:uid"), {"uid": user_id})
+                await session.execute(
+                    text("SELECT id FROM sys_user WHERE id=:uid"), {"uid": user_id}
+                )
             ).scalar_one_or_none()
             if exists is None:
                 raise BusinessError(20001, "用户不存在", 404)
@@ -661,7 +677,10 @@ async def user_detail(user_id: int) -> dict:
         config_count = int(
             (
                 await session.execute(
-                    text("SELECT COUNT(*) FROM llm_model_config WHERE scope='USER' AND owner_user_id=:uid"), p
+                    text(
+                        "SELECT COUNT(*) FROM llm_model_config WHERE scope='USER' AND owner_user_id=:uid"
+                    ),
+                    p,
                 )
             ).scalar_one()
         )
@@ -712,14 +731,20 @@ async def _recent_logins(session, user_id: int, limit: int = 10) -> list[dict]:
         "WHERE user_id=:uid ORDER BY created_at DESC LIMIT :limit"
     )
     if ok is None:
-        ok = await rows(
-            "SELECT created_at,login_source FROM user_login_event "
+        ok = (
+            await rows(
+                "SELECT created_at,login_source FROM user_login_event "
+                "WHERE user_id=:uid ORDER BY created_at DESC LIMIT :limit"
+            )
+            or []
+        )
+    failed = (
+        await rows(
+            "SELECT created_at,reason,ip,user_agent FROM user_login_failure "
             "WHERE user_id=:uid ORDER BY created_at DESC LIMIT :limit"
-        ) or []
-    failed = await rows(
-        "SELECT created_at,reason,ip,user_agent FROM user_login_failure "
-        "WHERE user_id=:uid ORDER BY created_at DESC LIMIT :limit"
-    ) or []
+        )
+        or []
+    )
     items = [
         {
             "time": _iso(r["created_at"]),

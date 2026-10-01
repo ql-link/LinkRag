@@ -92,6 +92,14 @@ Dev 公开桶没有匿名读取策略，不能直接把 MinIO 桶 URL 返回给�
 
 迁移中的 B2 通用上传复用同一 `StorageFactory`。`src/application/object_uploads.py` 保存 Java 的六类业务规则：`avatar`、`providerIcon`、`chatImage` 为 PUBLIC 图片 5 MiB；`feedback` 为 PUBLIC 指定后缀 10 MiB；`document` 为 RAW 的 `pdf/doc/docx/txt/md`、上限 20 MiB；`cert` 为 PRIVATE 5 MiB。PUBLIC 返回公开 URL，RAW/PRIVATE 只返回对象 key。`B2_GENERIC_UPLOAD_ENABLED=false` 默认关闭兼容入口，待匿名访问权限矩阵和网关切流确认后启用；B1 头像已复用其校验和上传流程。
 
+### 演示文档原件
+
+新用户演示库从随包发布的 `src/assets/demo_dataset/` 准备三份小型 Markdown，以 RAW 桶中的 `demo/<本次注册随机UUID>/<文件名>` 保存。每次尝试使用不同前缀，原件由注册事务中的 document_original_file 归属于新用户；浏览器仍通过文件 ID 及所有权授权访问，不开放 RAW 匿名读取。
+
+原件在数据库写事务之前上传，提交失败或取消时只补偿清理本次尝试的精确 key，不能删除其他用户或既有账号的对象。该调用通过 `StorageFactory.get_storage(request_timeout_seconds=5, max_attempts=2)` 为 SDK 设置5秒连接/读取超时和最多2次尝试，其他调用保留现有默认。取消协程时先等待执行中的存储线程结束，再清理对象，避免删后写回。
+
+进程在准备原件与注册提交之间崩溃，或对象补偿删除失败时，可能留下不可通过普通用户文件接口访问的 RAW 孤儿对象；删除失败记录审计，跨数据库与对象存储不承诺强事务。注册成功后的对象转入既有文件生命周期，软删除与衍生物清理规则保持不变。
+
 ## 5. 在解析链路中的使用
 
 源文件（流式下载到 `PARSE_TEMP_DIR` 临时文件，解析完成后立即清理）：
