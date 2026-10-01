@@ -100,7 +100,7 @@ export default function AuthPage({ mode }: { mode: Mode }) {
 
   return (
     <AuthLayout>
-      <form onSubmit={submit} noValidate>
+      <form className="auth-form" onSubmit={submit} noValidate>
         <p className="text-[11px] text-muted">{isLogin ? '登录 LinkRag' : '创建账号'}</p>
         <h1 className="mt-2 font-serif text-[28px] font-semibold text-ink">{isLogin ? '欢迎回来' : '创建知识空间'}</h1>
         <p className="mt-2 text-[13px] text-text2">{isLogin ? '登录后继续使用你的知识空间。' : '创建账号，开始整理和检索资料。'}</p>

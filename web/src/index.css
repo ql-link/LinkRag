@@ -95,6 +95,13 @@ html.no-ui-scale body {
   }
 }
 
+/* 浏览器自动填充会给 input 盖上默认蓝底；认证页的输入框保持白色。 */
+.auth-form input:is(:autofill, :-webkit-autofill) {
+  box-shadow: 0 0 0 1000px white inset;
+  -webkit-text-fill-color: var(--color-ink);
+  caret-color: var(--color-ink);
+}
+
 /* 对话 · 生成中（F4）：流光文字、进行中节点脉冲、流式光标 */
 @keyframes shimmer {
   from {
