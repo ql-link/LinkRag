@@ -2,9 +2,12 @@ import { AlertCircle, ZoomIn, ZoomOut } from 'lucide-react';
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react';
 
 import { Segmented } from '@/components/ui/Segmented';
+import { USE_MOCK } from '@/api/http';
 import { cn } from '@/lib/cn';
 import { useElementWidth } from '@/lib/useElementWidth';
 import { samplePageChunks, type Chunk } from '@/mock/chunks';
+
+import { MarkdownBody } from './MarkdownBody';
 
 /** 原文页面按 A4 比例排版：基准宽 595，再整体缩放到预览区宽度 */
 const PAGE_W = 595;
@@ -37,7 +40,7 @@ interface CanvasProps {
 
 /** 单页原文：按当前页的分块顺序渲染标题、正文、表格与图片，选中分块虚线高亮 */
 export function PageCanvas({ chunks, page, selectedId, onSelect, dim }: CanvasProps) {
-  const blocks = chunks.length ? chunks : samplePageChunks;
+  const blocks = chunks.length ? chunks : dim ? samplePageChunks : [];
   const refs = useRef(new Map<string, HTMLElement>());
 
   useEffect(() => {
@@ -51,7 +54,7 @@ export function PageCanvas({ chunks, page, selectedId, onSelect, dim }: CanvasPr
       className={cn('flex flex-col gap-3 rounded-[4px] border border-line bg-white px-12 pt-12 pb-14 shadow-[0_6px_20px_0_rgba(0,0,0,0.06)]', dim && 'opacity-90')}
     >
       {blocks.map((c, i) => {
-        const heading = c.section !== lastSection ? (lastSection = c.section) : null;
+        const heading = USE_MOCK && c.section !== lastSection ? (lastSection = c.section) : null;
         const selected = c.id === selectedId;
         const box = (children: ReactNode, extra?: string) => (
           <div
@@ -66,7 +69,7 @@ export function PageCanvas({ chunks, page, selectedId, onSelect, dim }: CanvasPr
             onClick={onSelect ? () => onSelect(c) : undefined}
             onKeyDown={onSelect ? (e) => e.key === 'Enter' && onSelect(c) : undefined}
             className={cn(
-              'rounded-[3px] border border-dashed px-2 py-1.5 transition-colors',
+              'min-w-0 rounded-[3px] border border-dashed px-2 py-1.5 transition-colors',
               selected ? 'border-amber bg-amber/10' : 'border-transparent',
               onSelect && !selected && 'cursor-pointer hover:border-dash hover:bg-soft/60',
               extra,
@@ -94,7 +97,7 @@ export function PageCanvas({ chunks, page, selectedId, onSelect, dim }: CanvasPr
                     </tbody>
                   </table>,
                 )
-              : c.kind === 'image'
+              : c.kind === 'image' && c.imageCaption
                 ? box(
                     <figure className="flex flex-col items-center gap-2 rounded bg-soft py-5">
                       <div className="flex items-center gap-2 text-[11.5px]">
@@ -110,11 +113,12 @@ export function PageCanvas({ chunks, page, selectedId, onSelect, dim }: CanvasPr
                       </figcaption>
                     </figure>,
                   )
-                : box(<p className="text-[13px] leading-[1.85] text-ink">{c.text}</p>)}
+                : box(<MarkdownBody>{c.text}</MarkdownBody>)}
             {c.kind === 'text' && <Filler seed={c.index} />}
           </Fragment>
         );
       })}
+      {!blocks.length && <p className="text-[13px] text-muted">当前页暂无正文内容</p>}
       <Filler seed={page + 3} />
     </div>
   );
@@ -205,7 +209,9 @@ export function PreviewPane({ page, pages, onPage, pageChunks, selectedId, onSel
           </ScaledPage>
         </div>
       ) : (
-        <pre className="m-4 mt-0 min-h-0 flex-1 overflow-auto rounded-md border border-line bg-white p-6 font-mono text-[12.5px] leading-[1.75] whitespace-pre-wrap text-text2">{markdown}</pre>
+        <div className="m-4 mt-0 min-h-0 min-w-0 flex-1 overflow-auto rounded-md border border-line bg-white p-6">
+          {markdown.trim() ? <MarkdownBody>{markdown}</MarkdownBody> : <p className="text-[13px] text-muted">暂无正文内容</p>}
+        </div>
       )}
       {tab === 'raw' && (
         <div className="absolute bottom-6 left-1/2 flex -translate-x-1/2 items-center gap-2.5 rounded-lg border border-line bg-white px-2.5 py-[5px] shadow-[0_4px_12px_0_rgba(0,0,0,0.06)]">
