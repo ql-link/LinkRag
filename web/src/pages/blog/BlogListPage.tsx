@@ -178,7 +178,7 @@ function Byline({ post }: { post: Post }) {
 function Featured({ post }: { post: Post }) {
   return (
     <section aria-label="头条文章" className={cn(COL, 'pt-9 pb-12')}>
-      <div className="group overflow-hidden rounded-[20px] border border-divider bg-white shadow-[0_8px_24px_rgba(0,0,0,0.04)]">
+      <div className="group overflow-hidden rounded-[18px] border border-divider bg-white shadow-[0_8px_24px_rgba(0,0,0,0.04)]">
         <Link to={`/blog/${post.slug}`} tabIndex={-1} aria-hidden className="block overflow-hidden">
           <Cover post={post} size="lg" className="aspect-[720/280] rounded-none transition-transform duration-300 group-hover:scale-[1.01]" />
         </Link>
@@ -277,8 +277,8 @@ function Pagination({ current, pages, onChange }: { current: number; pages: numb
 function TagRow({ tags, active, onTag }: { tags: string[]; active?: string; onTag: (t: string) => void }) {
   if (!tags.length) return null;
   return (
-    <div className={cn(COL, 'pt-[18px]')}>
-      <div aria-label="按标签筛选" role="group" className="-mx-5 flex gap-2 overflow-x-auto px-5 pb-1 [scrollbar-width:none] md:mx-0 md:flex-wrap md:px-0">
+    <div className={cn(COL, 'pt-[18px] pb-3')}>
+      <div aria-label="按标签筛选" role="group" className="flex flex-wrap gap-2">
         {tags.map((t) => (
           <button
             key={t}
@@ -286,7 +286,7 @@ function TagRow({ tags, active, onTag }: { tags: string[]; active?: string; onTa
             aria-pressed={t === active}
             onClick={() => onTag(t)}
             className={cn(
-              'shrink-0 rounded-full border px-3 py-[5px] text-[12.5px] transition-colors',
+              'shrink-0 rounded-full border px-2.5 py-[5px] text-[12.5px] transition-colors',
               t === active ? 'border-ink bg-ink text-white' : 'border-[#e7e6e1] bg-white text-[#6b6a64] hover:border-dash hover:text-ink',
             )}
           >
