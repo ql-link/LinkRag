@@ -2,6 +2,7 @@ import { Search, X } from 'lucide-react';
 import { useEffect, useMemo, useRef } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
+import logo from '@/assets/brand/logo-mark.png';
 import { cn } from '@/lib/cn';
 import { pill } from '@/pages/landing/shared';
 import { PublicShell } from '@/pages/landing/SiteChrome';
@@ -167,7 +168,7 @@ function Tabs({ posts, category, onChange }: { posts: Post[]; category?: Categor
 function Byline({ post }: { post: Post }) {
   return (
     <span className="flex items-center gap-2.5">
-      <span aria-hidden className="size-7 rounded-full bg-[#e8d9c3]" />
+      <img src={logo} alt="" width={28} height={28} className="size-7 shrink-0 object-contain" />
       <span className="text-[13.5px] font-medium text-ink">{post.author}</span>
       <span className="text-[13px] text-muted">· {readMinutes(post)} 分钟阅读</span>
     </span>

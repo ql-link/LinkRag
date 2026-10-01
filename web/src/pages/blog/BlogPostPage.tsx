@@ -2,6 +2,7 @@ import { Check, ChevronDown, Copy, Link2, List as ListIcon, Share2, ThumbsDown, 
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
 
+import logo from '@/assets/brand/logo-mark.png';
 import { useToast } from '@/contexts/ToastContext';
 import { cn } from '@/lib/cn';
 import { Inline } from '@/lib/inlineMarkdown';
@@ -118,7 +119,7 @@ function Article({ post, data }: { post: Post; data: BlogData }) {
       <div className={cn(COL, 'flex flex-col gap-3 pb-20')}>
         <Helpful slug={post.slug} />
         <div className="flex flex-col gap-4 rounded-2xl bg-soft px-6 py-5 sm:flex-row sm:items-center">
-          <span aria-hidden className="size-12 shrink-0 rounded-full bg-[#e8d9c3]" />
+          <img src={logo} alt="" width={48} height={48} className="size-12 shrink-0 object-contain" />
           <span className="flex flex-1 flex-col gap-1">
             <span className="text-[15px] font-medium text-ink">{post.author}</span>
             <span className="text-[13px] leading-5 text-text2">{AUTHOR.bio}</span>
@@ -219,7 +220,7 @@ function Byline({ post }: { post: Post }) {
   const btn = cn(pill.secondary, 'gap-1.5 px-3.5 py-[7px] text-[12.5px]');
   return (
     <div className="mt-1 flex flex-wrap items-center gap-3 border-t border-divider pt-5">
-      <span aria-hidden className="size-10 rounded-full bg-[#e8d9c3]" />
+      <img src={logo} alt="" width={40} height={40} className="size-10 shrink-0 object-contain" />
       <span className="flex flex-col gap-[3px]">
         <span className="text-[14.5px] font-medium text-ink">{post.author}</span>
         <span className="font-num text-[12.5px] text-muted">

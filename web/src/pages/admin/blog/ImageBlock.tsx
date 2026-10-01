@@ -18,7 +18,7 @@ export function ImageBlock({ b, ctx }: { b: ImgB; ctx: BlockCtx }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [over, setOver] = useState(false);
   const [url, setUrl] = useState('');
-  const [broken, setBroken] = useState(false);
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
 
   const pick = (f: File | undefined) => f && ctx.uploadImage(b.id, f);
   const input = <input ref={fileRef} type="file" accept="image/jpeg,image/png,image/gif,image/webp" hidden onChange={(e) => (pick(e.target.files?.[0]), (e.target.value = ''))} />;
@@ -87,13 +87,13 @@ export function ImageBlock({ b, ctx }: { b: ImgB; ctx: BlockCtx }) {
     <figure {...dropProps} className="group flex flex-col gap-1.5">
       {input}
       <div className={cn('relative overflow-hidden rounded-[10px] border bg-soft', over ? 'border-ink' : 'border-line')}>
-        {broken ? (
+        {failedSrc === b.src ? (
           <div className="flex flex-col items-center gap-1 py-10 text-[12px] text-muted">
             <ImageIcon aria-hidden className="size-5" />
             图片无法加载：<span className="max-w-full truncate px-6 font-mono text-[11px]">{b.src}</span>
           </div>
         ) : (
-          <img src={b.src} alt={b.alt} onError={() => setBroken(true)} className="mx-auto max-h-[480px] w-full object-contain" />
+          <img key={b.src} src={b.src} alt={b.alt} onError={() => setFailedSrc(b.src)} onLoad={() => setFailedSrc(null)} className="mx-auto max-h-[480px] w-full object-contain" />
         )}
         {over && <div className="absolute inset-0 flex items-center justify-center bg-white/70 text-[13px] font-medium text-ink">松开以替换</div>}
         <div className="absolute top-2 right-2 flex items-center gap-0.5 rounded-[8px] border border-line bg-white/95 p-1 shadow-toast opacity-0 transition-opacity group-focus-within:opacity-100 group-hover:opacity-100">
