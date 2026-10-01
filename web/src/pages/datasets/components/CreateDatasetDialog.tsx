@@ -64,6 +64,10 @@ export function CreateDatasetDialog({ open, onClose, onCreated }: Props) {
                 invalid={!!error}
                 aria-describedby={d}
                 placeholder="例如：产品知识库"
+                onKeyDown={(e) => {
+                  // 名称框的回车只用于输入（包括 IME 选词），创建需显式激活按钮。
+                  if (e.key === 'Enter') e.preventDefault();
+                }}
                 onChange={(e) => {
                   setName(e.target.value);
                   setError('');
