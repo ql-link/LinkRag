@@ -33,6 +33,11 @@ export const authApi = {
     request<LoginResult>('/api/v1/auth/register', { body: { username, email, password }, anonymous: true }),
   logout: () => request<null>('/api/v1/auth/logout', { method: 'POST' }),
   profile: () => request<ProfileDTO>('/api/v1/user/profile'),
+  uploadAvatar: (file: File) => {
+    const form = new FormData();
+    form.append('file', file);
+    return request<ProfileDTO>('/api/v1/user/avatar', { body: form });
+  },
   updateProfile: (patch: Partial<Pick<ProfileDTO, 'nickname' | 'email' | 'bio' | 'team'>>) =>
     request<null>('/api/v1/user/profile', { method: 'PATCH', body: patch }),
   changePassword: (currentPassword: string, newPassword: string) =>

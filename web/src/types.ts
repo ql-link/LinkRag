@@ -48,6 +48,7 @@ export interface User {
   username: string;
   displayName: string;
   email: string;
+  avatarUrl?: string;
   /** 个人简介，可选 */
   bio?: string;
   /** 所在团队 / 部门，可选 */

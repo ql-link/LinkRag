@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "account-design-preview",
+      "runtimeExecutable": "env",
+      "runtimeArgs": ["VITE_USE_MOCK=true", "npm", "--prefix", "web", "run", "dev", "--", "--port", "3007"],
+      "port": 3007
+    }
+  ]
+}

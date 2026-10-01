@@ -1,9 +1,11 @@
 import { ChartColumn, Cpu, Database, House, Plus, Search } from 'lucide-react';
-import type { ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 
 import { ConversationList } from './ConversationList';
 
+import { AvatarDialog } from '@/components/AvatarDialog';
+import { UserAvatar } from '@/components/UserAvatar';
 import { Brand } from '@/components/brand/Brand';
 import { useAuth } from '@/contexts/AuthContext';
 import { useSearch } from '@/contexts/SearchContext';
@@ -27,6 +29,7 @@ function NavItem({ to, icon, label, badge, end }: { to: string; icon: ReactNode;
 export function Sidebar() {
   const datasetCount = useStore((s) => s.datasets.length);
   const { user } = useAuth();
+  const [avatarOpen, setAvatarOpen] = useState(false);
   const navigate = useNavigate();
   const { openPalette } = useSearch();
 
@@ -59,19 +62,22 @@ export function Sidebar() {
       </NavLink>
       <ConversationList />
       <div className="h-4 shrink-0" />
-      <NavLink
-        to="/account"
-        aria-label="用户信息"
-        className={({ isActive }) => cn('flex w-full items-center gap-2 rounded-[7px] py-1 pl-2 text-left hover:bg-active/60', isActive && 'bg-active')}
-      >
-        <span className="flex size-[30px] shrink-0 items-center justify-center rounded-full bg-ink text-[12px] font-medium text-white">
-          {user?.displayName.slice(0, 1).toUpperCase()}
-        </span>
-        <span className="flex min-w-0 flex-col gap-0.5">
+      <div className="flex w-full items-center gap-2 pl-2">
+        {user && (
+          <button type="button" aria-label="修改头像" onClick={() => setAvatarOpen(true)} className="shrink-0 rounded-full outline-none focus-visible:ring-2 focus-visible:ring-ink focus-visible:ring-offset-2">
+            <UserAvatar user={user} className="size-[30px] text-[12px]" />
+          </button>
+        )}
+        <NavLink
+          to="/account"
+          aria-label="用户信息"
+          className={({ isActive }) => cn('flex min-w-0 flex-1 flex-col gap-0.5 rounded-[7px] py-1 pr-2 pl-1 text-left hover:bg-active/60', isActive && 'bg-active')}
+        >
           <span className="truncate text-[12px] font-medium text-ink">{user?.displayName}</span>
           <span className="truncate text-[10px] text-muted">{user?.email}</span>
-        </span>
-      </NavLink>
+        </NavLink>
+      </div>
+      <AvatarDialog open={avatarOpen} onClose={() => setAvatarOpen(false)} />
     </aside>
   );
 }
