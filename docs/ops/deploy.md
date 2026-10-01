@@ -123,6 +123,7 @@ Java 管理端已下线，Python 是唯一后端：
 - B5 上传执行器通过 Python 自身的内部文件接口读取原始文件，令牌
   `B5_INTERNAL_FILE_SERVICE_TOKEN` 由 `configure-dev-env.sh` 生成并写入 `.env.development.local`。
 - Web Nginx（`deploy/dev-server/nginx.conf`）把 `/api/` 全部转发到 `tolink-dev-rag:8000`。
+- 开发公开图片预览及旧路径兼容约定见 [对象存储配置](../internals/object_storage.md#4-配置)，发布时须同步上述 Nginx 配置。
 
 当前业务 Queue 名由代码常量固定。开发环境使用独立 vhost `/tolink-dev` 与独立 RabbitMQ 数据卷，
 生产使用 `/tolink-prod`，两套环境不共享 Broker 或凭据。开发 Loki 独立保存日志并保留 7 天。

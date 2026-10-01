@@ -64,4 +64,22 @@ describe('live-render editor', () => {
     expect(screen.getByTestId('md').textContent).toBe('- a\n');
     expect(area().value).toBe('');
   });
+
+  it('loads a replacement image after the previous image failed', () => {
+    const { rerender } = render(
+      <BlockEditor blocks={[{ id: 'image', t: 'img', src: '/missing.png', alt: '图注' }]} onChange={() => {}} onUpload={() => {}} />,
+    );
+    fireEvent.error(screen.getByRole('img', { name: '图注' }));
+    expect(screen.getByText('图片无法加载：')).toBeInTheDocument();
+
+    rerender(
+      <BlockEditor blocks={[{ id: 'image', t: 'img', src: '/replacement.png', alt: '图注' }]} onChange={() => {}} onUpload={() => {}} />,
+    );
+    const replacement = screen.getByRole('img', { name: '图注' });
+    expect(replacement).toHaveAttribute('src', '/replacement.png');
+    expect(screen.queryByText('图片无法加载：')).toBeNull();
+    fireEvent.load(replacement);
+    fireEvent.error(replacement);
+    expect(screen.getByText('图片无法加载：')).toBeInTheDocument();
+  });
 });
