@@ -17,7 +17,7 @@ import ModelsPage from '@/pages/models/ModelsPage';
 import SearchPage from '@/pages/search/SearchPage';
 import UsagePage from '@/pages/usage/UsagePage';
 
-// 落地页动画较重，按需加载；已登录访问根路径时直接进入 /home，不加载落地页。
+// /home 固定展示落地页；根路径 / 按登录态展示工作台或落地页。
 const LandingPage = lazy(() => import('@/pages/landing/LandingPage'));
 const ResearchPage = lazy(() => import('@/pages/research/ResearchPage'));
 const ReportPage = lazy(() => import('@/pages/research/ReportPage'));
@@ -34,14 +34,17 @@ const AdminBlogEditorPage = lazy(() => import('@/pages/admin/blog/BlogEditorPage
 const AdminModelsPage = lazy(() => import('@/pages/admin/models/ModelsAdminPage'));
 const AdminLogsPage = lazy(() => import('@/pages/admin/logs/LogsPage'));
 
-function RootEntry() {
-  const { user } = useAuth();
-  if (user) return <Navigate to="/home" replace />;
+function LandingEntry() {
   return (
     <Suspense fallback={<PageLoading label="正在加载首页…" />}>
       <LandingPage />
     </Suspense>
   );
+}
+
+function RootEntry() {
+  const { user } = useAuth();
+  return user ? <AppLayout /> : <LandingEntry />;
 }
 
 export default function App() {
@@ -51,7 +54,10 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<AuthPage mode="login" />} />
           <Route path="/register" element={<AuthPage mode="register" />} />
-          <Route index element={<RootEntry />} />
+          <Route path="/" element={<RootEntry />}>
+            <Route index element={<HomePage />} />
+          </Route>
+          <Route path="/home" element={<LandingEntry />} />
           <Route
             path="/research"
             element={
@@ -110,7 +116,6 @@ export default function App() {
             <Route path="logs" element={<AdminLogsPage />} />
           </Route>
           <Route element={<AppLayout />}>
-            <Route path="home" element={<HomePage />} />
             <Route path="search" element={<SearchPage />} />
             <Route path="chat" element={<ChatPage />} />
             <Route path="chat/:conversationId" element={<ChatPage />} />
@@ -122,7 +127,7 @@ export default function App() {
             <Route path="usage" element={<UsagePage />} />
             <Route path="account" element={<AccountPage />} />
           </Route>
-          <Route path="*" element={<Navigate to="/home" replace />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </AuthProvider>
     </ToastProvider>

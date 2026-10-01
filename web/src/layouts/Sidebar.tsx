@@ -41,7 +41,7 @@ export function Sidebar() {
       </button>
       <div className="h-2.5" />
       <nav aria-label="主导航" className="flex flex-col">
-        <NavItem to="/home" end icon={<House />} label="首页" />
+        <NavItem to="/" end icon={<House />} label="首页" />
         <NavItem to="/datasets" icon={<Database />} label="知识库" badge={datasetCount} />
         <NavItem to="/models" icon={<Cpu />} label="模型配置" />
         <NavItem to="/usage" icon={<ChartColumn />} label="用量" />

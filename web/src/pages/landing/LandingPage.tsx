@@ -12,7 +12,7 @@ import { PublicShell, useEntry } from './SiteChrome';
 
 /**
  * 公开落地页（设计稿「06 落地页」L1 桌面 / L4 移动端 390）。
- * 未登录访问 / 时展示；已登录直接进入工作台首页（见 App 路由）。
+ * /home 始终展示；根路径 / 仅未登录时展示，已登录时显示工作台。
  */
 export default function LandingPage() {
   return (

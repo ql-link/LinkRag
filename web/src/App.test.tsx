@@ -39,7 +39,21 @@ describe('域名入口按登录态分流', () => {
     );
 
     expect(await screen.findByRole('heading', { name: '工作台主页' })).toBeInTheDocument();
-    expect(screen.getByTestId('current-path')).toHaveTextContent(/^\/home$/);
+    expect(screen.getByTestId('current-path')).toHaveTextContent(/^\/$/);
     expect(screen.queryByRole('heading', { name: 'Hero 页' })).not.toBeInTheDocument();
+  });
+
+  it.each([false, true])('/home 固定展示 Hero 页（已登录：%s）', async (authed) => {
+    if (authed) localStorage.setItem('linkrag.user', JSON.stringify({ username: 'tester', displayName: '测试用户', email: 'tester@example.com' }));
+    render(
+      <MemoryRouter initialEntries={['/home']}>
+        <App />
+        <CurrentPath />
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole('heading', { name: 'Hero 页' })).toBeInTheDocument();
+    expect(screen.getByTestId('current-path')).toHaveTextContent(/^\/home$/);
+    expect(screen.queryByRole('heading', { name: '工作台主页' })).not.toBeInTheDocument();
   });
 });

@@ -312,7 +312,7 @@ function Success({ result, onAgain }: { result: FeedbackDTO; onAgain: () => void
         <button type="button" onClick={onAgain} className={cn(pill.secondary, 'px-5 py-2.5 text-[14px]')}>
           再提交一条
         </button>
-        <Link to="/" className={cn(pill.primary, 'px-5 py-2.5 text-[14px]')}>
+        <Link to="/home" className={cn(pill.primary, 'px-5 py-2.5 text-[14px]')}>
           返回首页
         </Link>
       </div>
