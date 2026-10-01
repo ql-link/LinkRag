@@ -140,6 +140,7 @@ services:
       TZ: Asia/Shanghai
       APP_ENV: development
       LOG_SERVICE_NAME: tolink-rag-dev
+      LOKI_BASE_URL: http://tolink-dev-loki:3100
       DB_HOST: tolink-dev-mysql
       DB_PORT: 3306
       REDIS_HOST: tolink-dev-redis

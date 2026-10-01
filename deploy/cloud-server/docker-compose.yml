@@ -46,6 +46,7 @@ services:
     environment:
       TZ: Asia/Shanghai
       LOG_SERVICE_NAME: tolink-rag
+      LOKI_BASE_URL: http://tolink-loki:3100
     volumes:
       - ${RAG_LOG_PATH:-/opt/tolink/toLink-Rag/logs}:/app/logs
     ports:
