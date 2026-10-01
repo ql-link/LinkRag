@@ -18,6 +18,7 @@ services:
       - ${RABBITMQ_APP_ENV_FILE:-/opt/tolink/rabbitmq/app.env}
     environment:
       TZ: Asia/Shanghai
+      LOKI_BASE_URL: http://tolink-loki:3100
       # access JWT：Python 用私钥签发、用公钥校验；密钥只保存在服务器 /opt/tolink/auth/production。
       JAVA_ACCESS_JWT_ENABLED: "true"
       JAVA_ACCESS_JWT_PUBLIC_KEY_PATH: /run/secrets/java-access-jwt-public.pem
