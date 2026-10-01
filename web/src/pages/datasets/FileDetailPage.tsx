@@ -131,7 +131,7 @@ export default function FileDetailPage() {
         </div>
         {done && <Chip tone="green">已完成</Chip>}
         {failed && <Chip tone="red">失败</Chip>}
-        {(file.status === 'parsing' || file.status === 'queued') && <Chip tone={file.status === 'parsing' ? 'amber' : 'gray'}>{file.status === 'parsing' ? `解析中 ${file.progress}%` : '待解析'}</Chip>}
+        {(file.status === 'parsing' || file.status === 'queued') && <Chip tone={file.status === 'parsing' ? 'amber' : 'gray'}>{file.status === 'parsing' ? `解析中 ${file.progressEstimated ? '≈' : ''}${file.progress}%` : '待解析'}</Chip>}
         <span className="flex-1" />
         <Button variant="secondary" icon={<Download className="size-3" />} onClick={() => toast('Mock 模式下不提供下载')}>
           下载
@@ -244,7 +244,7 @@ export default function FileDetailPage() {
           ) : (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-[12.5px] text-muted">
               <Loader2 aria-hidden className="size-5 animate-spin text-amber" />
-              {file.status === 'parsing' ? `正在解析 · ${file.progress}%` : '文件排队中，解析完成后可预览分块'}
+              {file.status === 'parsing' ? `正在解析 · ${file.progressEstimated ? '≈' : ''}${file.progress}%` : '文件排队中，解析完成后可预览分块'}
               {file.status === 'parsing' && <Progress value={file.progress} color="#d9912b" className="w-56" label="解析进度" />}
             </div>
           )}

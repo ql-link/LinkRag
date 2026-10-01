@@ -248,13 +248,14 @@ async def test_file_routes_pass_only_shadow_user_id(identity, monkeypatch):
 
     async def detail(user_id, file_id):
         seen.append(("detail", user_id, file_id))
-        return {"id": file_id, "datasetId": 901, "uploadStatus": "UPLOAD_SUCCESS"}
+        return {"id": file_id, "datasetId": 901, "uploadStatus": "UPLOAD_SUCCESS", "updatedAt": "2026-09-30T10:00:00+08:00"}
 
     async def parse_results(user_id, dataset_id, file_ids):
         seen.append(("parse_results", user_id, dataset_id))
         return [
             {
                 "parseStatus": "success",
+                "updatedAt": "2026-10-01T14:15:00+08:00",
                 "frontendStatus": "parse_success",
                 "failureReason": None,
             }
@@ -276,6 +277,7 @@ async def test_file_routes_pass_only_shadow_user_id(identity, monkeypatch):
         await client.post("/api/v1/apps/files/11/parse", headers=_headers("B"))
         await client.delete("/api/v1/apps/files/11", headers=_headers("B"))
     assert status.json()["data"]["parseStatus"] == "success"
+    assert status.json()["data"]["updatedAt"] == "2026-10-01T14:15:00+08:00"
     assert seen == [
         ("detail", 5002, 11),
         ("parse_results", 5002, 901),

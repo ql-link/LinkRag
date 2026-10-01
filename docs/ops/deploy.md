@@ -250,3 +250,11 @@ alembic upgrade head
 - 配置项详解：[configuration.md](configure.md)
 - MQ 接入对接：[mq_integration.md](../api/mq_contracts.md)
 - 项目架构：[docs/internals/project_structure.md](../internals/project_structure.md)
+
+### MySQL 默认时区
+
+开发与生产数据 Compose 的 MySQL 启动参数均使用 `--default-time-zone=+08:00`（北京时间）。2026-10-01 在线环境通过 `SET PERSIST time_zone = '+08:00'` 同步了全局默认值；已有连接需要重新建立才能继承新默认，LinkRag 解析服务已重启连接池。数据库本身无需重启。
+
+此设置只影响数据库默认时间函数、新会话和 TIMESTAMP 的会话转换，**不转换已有 DATETIME 数据，也不改变 Python 显式 UTC 写入**。切换前开发、生产文件时间实际为 UTC；解析流水线、workflow store 等代码仍显式写 UTC。历史记录与新数据库生成的时间不得统一按一个无时区规则解释。统一存储语义需要单独的备份、写入代码调整和可追踪数据迁移；禁止直接全库加八小时。2026-10-01 的在线切换验证时间分别为开发北京时间 14:12:48、生产北京时间 14:12:53。
+
+文件接口使用 `FILE_DB_BEIJING_SINCE` 兼容时间切换前后的记录：开发配置 `2026-10-01T14:12:48+08:00`，生产配置 `2026-10-01T14:12:53+08:00`。只对数据库生成的原件、解析指针时间使用此边界；pipeline 显式 UTC 时间始终按 UTC 解释，再统一输出 `+08:00`。已切换数据库的边界不能留空或随部署时间重置；旧 UTC 库可留空，全新北京时间库使用 `1970-01-01T00:00:00+08:00`。配置不会修改历史数据，也不会统一改变其他模块的 UTC 写入。切换时必须关闭旧 UTC 数据库连接，避免旧会话在边界后的八小时以上继续写 UTC 而产生歧义。

@@ -347,8 +347,8 @@ function fileStatusText(file: KbFile) {
   if (file.status === 'done') return '已解析';
   if (file.status === 'failed') return '解析失败';
   if (file.status === 'queued') return '排队中';
-  if (file.status === 'uploading') return `上传中 ${file.progress}%`;
-  return `解析中 ${file.progress}%`;
+  if (file.status === 'uploading') return `上传中 ${file.progressEstimated ? '≈' : ''}${file.progress}%`;
+  return `解析中 ${file.progressEstimated ? '≈' : ''}${file.progress}%`;
 }
 
 /** 最近资料卡片：文档插画 + 类型标签；解析中时底部显示进度条 */

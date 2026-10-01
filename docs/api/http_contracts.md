@@ -191,6 +191,12 @@ MQ 发送失败统一返回不含底层连接地址和异常文本的 `500` 通�
 
 parse_result 终态回传 MQ 已下线（LINK-166）。整体任务状态的权威单源是 `document_parse_pipeline.pipeline_status`；前端通过 Python 的 `GET /api/v1/datasets/{dataset_id}/files/parse-results?fileIds=...` 读取。
 
+解析状态响应额外提供 `taskId`、`progress`、`progressKind="stages"`、`stageLabel` 和 `stages`（每项含 `key`、`label`、`status`）。`progress` 是六个持久化阶段等权计算的已完成阶段比例，非页数/字节比例；进行中最多 99，只有 `pipeline_status=SUCCESS` 为 100。并行阶段可同时处于 PROCESSING。前端在阶段内使用有上限的时间估算并显示 `≈`，服务端终态和新任务 ID 优先，重试重置估算。没有提交解析任务的文件保持待解析状态。
+
+文件列表/详情的 `createdAt`、`updatedAt` 和解析状态的 `updatedAt` 返回带北京时间 `+08:00` 偏移的 ISO 8601 时间。原件与解析指针的数据库默认 DATETIME 按 `FILE_DB_BEIJING_SINCE` 区分历史 UTC 与新北京时间；pipeline 的显式 UTC 写入单独解释。先转换为带时区的同一时间轴，再取原件、解析指针和最新 pipeline 更新时间的最大值，前端文件行优先使用此时间，以覆盖重试提交、运行与终态变化。客户端按本地时区展示；重试提交期间先显示“刚刚”，下次查询使用服务端时间。
+
+后台文件/状态/数据集轮询及具有局部上传/解析进度的请求不触发页面顶部加载条。上传期间无字节遥测时显示最多 90% 的估算；服务端确认上传成功后切换为解析或待解析状态。汇总条包含进行中文件的部分进度，已完成文件计数仍只计算真正成功的文件。
+
 `SUCCESS` 表示解析+上传、分片、向量化、预分词与 ES 入库均完成；任一阶段失败写 `FAILED`，并在 `failure_reason` 中携带业务化原因。
 
 > **数据库权威单源**：整体任务状态以 `document_parse_pipeline.pipeline_status` 为准；`document_parsed_log.task_status` / `failure_reason` 已下线（migration 0007）。Python 管理接口据此读取：

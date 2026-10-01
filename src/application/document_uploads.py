@@ -565,9 +565,11 @@ async def fail_stuck_uploads(minutes: int = 10) -> int:
             UPDATE document_original_file SET upload_status='failed',is_upload_success=0,
                 failure_reason='文件上传失败，请稍后重试'
             WHERE upload_status='uploading'
-              AND updated_at < DATE_SUB(NOW(), INTERVAL :minutes MINUTE)
+              AND (CASE WHEN :boundary IS NOT NULL AND updated_at < :boundary
+                        THEN DATE_ADD(updated_at, INTERVAL 8 HOUR)
+                        ELSE updated_at END) < DATE_SUB(NOW(), INTERVAL :minutes MINUTE)
         """),
-            {"minutes": minutes},
+            {"minutes": minutes, "boundary": settings.FILE_DB_BEIJING_SINCE},
         )
         count = int(cast(CursorResult[Any], result).rowcount or 0)
     # Crash leftovers are not in the in-process queue. Give other workers a

@@ -6,7 +6,7 @@ import type { Dataset } from '@/types';
 
 interface Props {
   dataset: Dataset;
-  stats: { total: number; done: number; parsing: number; failed: number };
+  stats: { total: number; done: number; parsing: number; failed: number; progress?: number; progressEstimated?: boolean };
   onUpload: () => void;
   onParseAll: () => void;
   onClearFailed: () => void;
@@ -15,7 +15,7 @@ interface Props {
 
 /** C4 顶部解析进度卡片 */
 export function ParseSummaryCard({ dataset, stats, onUpload, onParseAll, onClearFailed, disabled }: Props) {
-  const pct = stats.total ? (stats.done / stats.total) * 100 : 0;
+  const pct = stats.progress ?? (stats.total ? (stats.done / stats.total) * 100 : 0);
   const detail = [
     stats.parsing > 0 && `${stats.parsing} 个文件解析中`,
     stats.failed > 0 && `${stats.failed} 个失败`,
@@ -45,9 +45,9 @@ export function ParseSummaryCard({ dataset, stats, onUpload, onParseAll, onClear
         <p className="mt-2.5 truncate text-[13px] text-text2">{detail.join(' · ')}</p>
         <div className="flex-1" />
         <div className="flex items-center gap-3">
-          <Progress value={pct} className="w-40" label="解析完成度" />
+          <Progress value={pct} className="w-40" label={stats.progressEstimated ? '整体解析进度（估算）' : '整体解析进度'} />
           <p className="text-[11px] text-muted">
-            {pct.toFixed(1)}%
+            {stats.progressEstimated ? '≈' : ''}{pct.toFixed(1)}%
             {stats.failed > 0 && (
               <>
                 {' · '}
