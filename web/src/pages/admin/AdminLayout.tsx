@@ -1,4 +1,4 @@
-import { Cpu, FileText, LayoutGrid, MoreHorizontal, ScrollText, Search, Settings, Users } from 'lucide-react';
+import { Cpu, FileText, LayoutGrid, ScrollText, Search, Settings, Users } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { Navigate, NavLink, Outlet, useLocation } from 'react-router-dom';
 
@@ -61,7 +61,6 @@ function AdminSidebar() {
           <span className="truncate text-[12.5px] font-medium text-ink">{user?.displayName}</span>
           <span className="truncate font-num text-[10.5px] text-muted">{user?.email}</span>
         </span>
-        <MoreHorizontal aria-hidden className="ml-auto size-3.5 shrink-0 text-muted" />
       </div>
     </aside>
   );
