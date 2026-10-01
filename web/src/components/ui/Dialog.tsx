@@ -14,25 +14,38 @@ interface DialogProps {
   children?: ReactNode;
   footer?: ReactNode;
   width?: number;
+  className?: string;
+  closeIcon?: ReactNode;
 }
 
 /** 模态弹窗：遮罩 rgba(29,29,27,.28)，Esc / 点击遮罩关闭，打开时聚焦面板 */
-export function Dialog({ open, onClose, title, description, icon, children, footer, width = 480 }: DialogProps) {
+export function Dialog({ open, onClose, title, description, icon, children, footer, width = 480, className, closeIcon }: DialogProps) {
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
 
   useEffect(() => {
     if (!open) return;
     const prev = document.activeElement as HTMLElement | null;
-    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && onClose();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') closeRef.current();
+      if (e.key !== 'Tab') return;
+      const elements = Array.from(panelRef.current?.querySelectorAll<HTMLElement>('button:not(:disabled), input:not(:disabled):not([type="hidden"]), textarea:not(:disabled), select:not(:disabled), a[href], [tabindex="0"]') ?? []).filter((element) => element.getClientRects().length > 0);
+      const first = elements[0];
+      const last = elements.at(-1);
+      if (!first) { e.preventDefault(); panelRef.current?.focus(); }
+      else if (e.shiftKey && (document.activeElement === first || document.activeElement === panelRef.current)) { e.preventDefault(); last?.focus(); }
+      else if (!e.shiftKey && (document.activeElement === last || document.activeElement === panelRef.current)) { e.preventDefault(); first.focus(); }
+    };
     document.addEventListener('keydown', onKey);
-    const first = panelRef.current?.querySelector<HTMLElement>('input, textarea, select, button[data-autofocus]');
+    const first = panelRef.current?.querySelector<HTMLElement>('input:not([type="file"]):not([type="hidden"]), textarea, select, button[data-autofocus]');
     (first ?? panelRef.current)?.focus();
     return () => {
       document.removeEventListener('keydown', onKey);
       prev?.focus?.();
     };
-  }, [open, onClose]);
+  }, [open]);
 
   if (!open) return null;
   return createPortal(
@@ -44,7 +57,7 @@ export function Dialog({ open, onClose, title, description, icon, children, foot
         aria-labelledby={titleId}
         tabIndex={-1}
         style={{ width }}
-        className="max-h-full overflow-y-auto rounded-[18px] bg-white px-7 pt-[26px] pb-[22px] shadow-dialog outline-none"
+        className={cn('max-h-full max-w-full overflow-y-auto rounded-[18px] bg-white px-7 pt-[26px] pb-[22px] shadow-dialog outline-none', className)}
       >
         <div className="flex items-start gap-3">
           {icon}
@@ -55,7 +68,7 @@ export function Dialog({ open, onClose, title, description, icon, children, foot
             {description && <div className="text-[12.5px] leading-[1.6] text-text2">{description}</div>}
           </div>
           <button type="button" onClick={onClose} aria-label="关闭" className="rounded-md p-0.5 text-muted hover:bg-soft hover:text-ink">
-            <X className="size-4" />
+            {closeIcon ?? <X className="size-4" />}
           </button>
         </div>
         {children && <div className="mt-[22px]">{children}</div>}

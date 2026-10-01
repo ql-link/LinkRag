@@ -1,0 +1,11 @@
+<svg preserveAspectRatio="none" overflow="visible" style="display: block;" width="320" height="320" viewBox="0 0 320 320" fill="none" xmlns="http://www.w3.org/2000/svg">
+<g id="Circular crop guide" clip-path="url(#clip0_0_19)">
+<path id="Vector" fill-rule="evenodd" clip-rule="evenodd" d="M0 0H320V320H0V0ZM160 16C121.809 16 85.1819 31.1714 58.1766 58.1766C31.1714 85.1819 16 121.809 16 160C16 198.191 31.1714 234.818 58.1766 261.823C85.1819 288.829 121.809 304 160 304C198.191 304 234.818 288.829 261.823 261.823C288.829 234.818 304 198.191 304 160C304 121.809 288.829 85.1819 261.823 58.1766C234.818 31.1714 198.191 16 160 16Z" fill="#1D1D1B" fill-opacity="0.42"/>
+<path id="Vector_2" d="M160 304C239.529 304 304 239.529 304 160C304 80.471 239.529 16 160 16C80.471 16 16 80.471 16 160C16 239.529 80.471 304 160 304Z" stroke="white" stroke-width="2" stroke-dasharray="6 4"/>
+</g>
+<defs>
+<clipPath id="clip0_0_19">
+<rect width="320" height="320" fill="white"/>
+</clipPath>
+</defs>
+</svg>

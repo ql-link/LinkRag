@@ -21,6 +21,7 @@ interface AuthValue {
   updateProfile: (patch: Partial<Pick<User, 'displayName' | 'email' | 'bio' | 'team'>>) => Promise<void>;
   /** 修改登录密码：对应 POST /api/v1/user/password（成功后其他会话失效） */
   changePassword: (current: string, next: string) => Promise<void>;
+  uploadAvatar: (file: File) => Promise<void>;
 }
 
 const STORAGE_KEY = 'linkrag.user';
@@ -52,6 +53,7 @@ function toUser(p: ProfileDTO): User {
     username: p.username,
     displayName: p.nickname?.trim() || p.username,
     email: p.email ?? '',
+    avatarUrl: p.avatarUrl ?? undefined,
     bio: p.bio ?? undefined,
     team: p.team ?? undefined,
     createdAt: p.createdAt?.slice(0, 10) ?? undefined,
@@ -185,7 +187,26 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (next === current) throw new AuthError('新密码不能与当前密码相同', 'password');
   }, []);
 
-  return <AuthContext.Provider value={{ user, login, register, logout, updateProfile, changePassword }}>{children}</AuthContext.Provider>;
+  const uploadAvatar = useCallback<AuthValue['uploadAvatar']>(async (file) => {
+    if (!USE_MOCK) {
+      try {
+        persist(toUser(await authApi.uploadAvatar(file)));
+      } catch (e) {
+        throw authError(e);
+      }
+      return;
+    }
+    const avatarUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result as string);
+      reader.onerror = () => reject(new Error('无法读取头像，请重新选择图片。'));
+      reader.readAsDataURL(file);
+    });
+    const current = readUser();
+    if (current) persist({ ...current, avatarUrl });
+  }, []);
+
+  return <AuthContext.Provider value={{ user, login, register, logout, updateProfile, changePassword, uploadAvatar }}>{children}</AuthContext.Provider>;
 }
 
 // eslint-disable-next-line react-refresh/only-export-components

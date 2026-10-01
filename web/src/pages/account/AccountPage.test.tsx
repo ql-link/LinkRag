@@ -1,5 +1,6 @@
 import { act, fireEvent, screen, within } from '@testing-library/react';
 
+import * as authContext from '@/contexts/AuthContext';
 import { renderAt } from '@/test/render';
 
 import AccountPage from './AccountPage';
@@ -9,6 +10,7 @@ beforeEach(() => {
   localStorage.setItem('linkrag.user', JSON.stringify({ username: 'chenmo', displayName: '陈默', email: 'chenmo@example.com', createdAt: '2026-03-12' }));
 });
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.useRealTimers();
   localStorage.clear();
 });
@@ -37,6 +39,32 @@ describe('AccountPage', () => {
     expect(JSON.parse(localStorage.getItem('linkrag.user')!)).toMatchObject({ displayName: '陈默 Chen', email: 'chen@linkrag.dev', team: '平台组' });
     expect(screen.getByText('个人资料已保存')).toBeInTheDocument();
     expect(save).toBeDisabled();
+  });
+
+  it('keeps the draft and allows retry after a failed save', async () => {
+    const originalUseAuth = authContext.useAuth;
+    const updateProfile = vi.fn().mockRejectedValue(new Error('保存失败，请重试'));
+    vi.spyOn(authContext, 'useAuth').mockImplementation(() => ({ ...originalUseAuth(), updateProfile }));
+    setup();
+    const form = screen.getByRole('form', { name: '个人资料' });
+    const name = within(form).getByLabelText(/显示名称/);
+    fireEvent.change(name, { target: { value: '新的显示名称' } });
+    const save = within(form).getByRole('button', { name: '保存修改' });
+    await act(async () => { fireEvent.click(save); });
+    expect(within(form).getByRole('alert')).toHaveTextContent('保存失败，请重试');
+    expect(name).toHaveValue('新的显示名称');
+    expect(save).toBeEnabled();
+    expect(screen.queryByText('个人资料已保存')).not.toBeInTheDocument();
+    fireEvent.click(within(form).getByRole('button', { name: '撤销修改' }));
+    expect(name).toHaveValue('陈默');
+    expect(within(form).queryByRole('alert')).not.toBeInTheDocument();
+  });
+
+  it('opens avatar editing from the overview button', () => {
+    setup();
+    fireEvent.click(screen.getByRole('button', { name: '修改头像' }));
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByRole('form', { name: '个人资料' })).toBeInTheDocument();
   });
 
   it('changes the password in a dialog', async () => {

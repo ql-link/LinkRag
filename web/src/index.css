@@ -17,6 +17,11 @@
   --color-dash: #dcdcd8;
   --color-soft: #f4f4f1;
   --color-active: #e6e6e2;
+  --color-account-soft: #f7f7f5;
+  --color-account-line: #e5e5df;
+  --color-account-muted: #808078;
+  --color-account-disabled: #e9e9e4;
+  --color-account-danger: #b93d34;
 
   --color-green: #3b9a5b;
   --color-amber: #d9912b;

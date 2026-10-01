@@ -1,3 +1,4 @@
+import { authApi } from '@/api/endpoints';
 import { ApiError, request, setToken, setUnauthorizedHandler, withQuery } from '@/api/http';
 import { parseSseFrames } from '@/api/stream';
 import { displayTime, toDataset, toFile, toModelState } from '@/services/backend';
@@ -12,6 +13,21 @@ afterEach(() => {
 });
 
 describe('http request', () => {
+  it('uploads the avatar as multipart and returns the updated profile', async () => {
+    setToken({ accessToken: 'avatar-token', expiresIn: 7200, userId: 7 });
+    const profile = { username: 'chenmo', avatarUrl: '/avatars/7.png' };
+    const fetchMock = vi.fn().mockResolvedValue(json({ code: 200, data: profile }));
+    vi.stubGlobal('fetch', fetchMock);
+    const file = new File(['png'], 'avatar.png', { type: 'image/png' });
+    await expect(authApi.uploadAvatar(file)).resolves.toEqual(profile);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/v1/user/avatar');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toMatchObject({ satoken: 'avatar-token' });
+    expect(init.headers['Content-Type']).toBeUndefined();
+    expect(init.body).toBeInstanceOf(FormData);
+    expect(init.body.get('file').name).toBe('avatar.png');
+  });
   it('sends satoken and unwraps {code:200,data}', async () => {
     setToken({ accessToken: 'jwt-1', expiresIn: 7200, userId: 7 });
     const fetchMock = vi.fn().mockResolvedValue(json({ code: 200, message: 'success', data: { id: 1 } }));
