@@ -1,4 +1,4 @@
-import { ChartColumn, Cpu, Database, House, Plus, Search, ShieldCheck } from 'lucide-react';
+import { ChartColumn, Cpu, Database, House, Plus, Search } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 
@@ -41,11 +41,10 @@ export function Sidebar() {
       </button>
       <div className="h-2.5" />
       <nav aria-label="主导航" className="flex flex-col">
-        <NavItem to="/home" end icon={<House />} label="首页" />
+        <NavItem to="/" end icon={<House />} label="首页" />
         <NavItem to="/datasets" icon={<Database />} label="知识库" badge={datasetCount} />
         <NavItem to="/models" icon={<Cpu />} label="模型配置" />
         <NavItem to="/usage" icon={<ChartColumn />} label="用量" />
-        {user?.role === 'ADMIN' && <NavItem to="/admin" icon={<ShieldCheck />} label="管理台" />}
       </nav>
       <div className="h-[22px]" />
       <div className="flex h-5 items-center px-3 text-[10px] text-muted">

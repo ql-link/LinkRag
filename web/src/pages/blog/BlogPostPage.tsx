@@ -1,5 +1,5 @@
-import { Check, Copy, Link2, Share2, ThumbsDown, ThumbsUp } from 'lucide-react';
-import { Fragment, useEffect, useState } from 'react';
+import { Check, ChevronDown, Copy, Link2, List as ListIcon, Share2, ThumbsDown, ThumbsUp } from 'lucide-react';
+import { Fragment, useEffect, useRef, useState } from 'react';
 import { Link, Navigate, useParams } from 'react-router-dom';
 
 import logo from '@/assets/brand/logo-mark.png';
@@ -13,19 +13,16 @@ import { findReport } from '@/pages/research/data';
 
 import { BlogStatus, CategoryLabel } from './components';
 import { useBlog } from './data';
-import { AUTHOR, neighbors, readMinutes, relatedPosts, type BlogData, type Block, type Post } from './posts';
+import { AUTHOR, CATEGORY_TONE, neighbors, readMinutes, relatedPosts, type BlogData, type Block, type Post } from './posts';
 
 /**
- * 博客文章详情（设计稿「10 博客」L12）。
- * 统一栅格：左侧目录 200 + 间距 64 + 正文 800，标题、关键数字、正文、文末、继续阅读都对齐同一正文栏；
- * 1024 以下隐藏目录，正文单栏。
+ * 博客文章详情（设计稿「10 博客 · V2 单栏」L12 v2）。
+ * 全部区块居中于同一条 720 内容栏：文章头、关键数字、目录卡片、正文、文末、继续阅读。
+ * 目录放在正文之前，可折叠；目录卡片滚出视口后，右下角出现「目录」按钮，点开为抽屉。
  */
 const ext = { target: '_blank', rel: 'noreferrer noopener' } as const;
-/** 页面容器：内容宽 1064（左右各留 40），与正文区同一坐标系 */
-const COL = 'mx-auto w-full max-w-[1144px] px-5 md:px-10';
-const TEXT = 'max-w-[800px]';
-/** 目录以外的区块：桌面左侧让出目录 264（200 + 64），与正文栏左缘对齐 */
-const ALIGN = 'max-w-[800px] lg:ml-[264px]';
+/** 内容栏：720 居中，左右留白 20 / 24 */
+const COL = 'mx-auto w-full max-w-[768px] px-5 md:px-6';
 
 export default function BlogPostPage() {
   const { slug } = useParams();
@@ -46,124 +43,131 @@ function Article({ post, data }: { post: Post; data: BlogData }) {
   const { series, index, prev, next } = neighbors(data, post);
   const related = relatedPosts(data, post);
   const report = findReport(post.reportId);
+  const tocRef = useRef<HTMLElement>(null);
+  const tocGone = useScrolledPast(tocRef);
 
   return (
     <article aria-labelledby="post-title">
       <ReadingProgress />
       {/* 文章头 */}
-      <header className={cn(COL, 'pt-8 pb-8 md:pt-12')}>
-        <div className={cn(ALIGN, 'flex flex-col gap-4')}>
-          <p className="flex flex-wrap items-center gap-2 text-[13px]">
-            <Link to="/blog" className="text-muted hover:text-ink">
-              ← 博客
-            </Link>
-            <span className="text-faint">/</span>
-            {series ? <span className="font-medium text-[#a8733f]">{series.title}</span> : <CategoryLabel post={post} />}
-            {series && (
-              <span className="text-muted">
-                · 第 {index + 1} 篇，共 {series.slugs.length} 篇
-              </span>
-            )}
-          </p>
-          <h1 id="post-title" className="font-serif text-[clamp(28px,4vw,44px)] leading-[1.36] font-semibold tracking-[-0.01em] text-ink">
-            {post.title}
-          </h1>
-          <p className="text-[17px] leading-[30px] text-text2 md:text-[19px] md:leading-[32px]">{post.lead}</p>
-          <Byline post={post} />
-        </div>
+      <header className={cn(COL, 'flex flex-col gap-[18px] pt-10 pb-8 md:pt-14')}>
+        <p className="flex flex-wrap items-center gap-2.5 text-[13px]">
+          <Link to="/blog" className="text-muted hover:text-ink">
+            ← 博客
+          </Link>
+          <span className="text-faint">/</span>
+          <span style={{ color: CATEGORY_TONE[post.category].fg, backgroundColor: CATEGORY_TONE[post.category].bg }} className="rounded-full px-2.5 py-[3px] text-[12.5px] font-medium">
+            {series ? series.title : post.category}
+          </span>
+          {series && (
+            <span className="text-muted">
+              第 {index + 1} 篇，共 {series.slugs.length} 篇
+            </span>
+          )}
+        </p>
+        <h1 id="post-title" className="font-serif text-[clamp(28px,4vw,40px)] leading-[1.36] font-semibold tracking-[-0.01em] text-balance text-ink">
+          {post.title}
+        </h1>
+        <p className="text-[17px] leading-[30px] text-[#6b6a64] md:text-[18px] md:leading-[31px]">{post.lead}</p>
+        <Byline post={post} />
       </header>
 
       {post.figures && (
-        <div className={cn(COL, 'pb-12')}>
-          <dl className={cn(ALIGN, 'grid overflow-hidden rounded-[20px] bg-brand-soft sm:grid-cols-3')}>
+        <div className={cn(COL, 'pb-10')}>
+          <dl className="grid overflow-hidden rounded-2xl border border-divider bg-white sm:grid-cols-3">
             {post.figures.map((f, i) => (
-              <div key={f.label} className={cn('flex flex-col gap-2 px-6 py-[22px]', i > 0 && 'border-t border-[#e8d9c3] sm:border-t-0 sm:border-l')}>
+              <div key={f.label} className={cn('flex flex-col gap-2 p-6', i > 0 && 'border-t border-divider sm:border-t-0 sm:border-l')}>
                 <dt className="text-[12.5px] font-medium text-[#a8733f]">{f.label}</dt>
-                <dd className="font-num text-[36px] leading-tight font-semibold tracking-[-0.02em] text-ink">{f.value}</dd>
-                <dd className="text-[12.5px] text-text2">{f.note}</dd>
+                <dd className="font-num text-[34px] leading-tight font-semibold tracking-[-0.02em] text-ink">{f.value}</dd>
+                <dd className="text-[12.5px] leading-5 text-text2">{f.note}</dd>
               </div>
             ))}
           </dl>
         </div>
       )}
 
-      {/* 正文：左侧粘性目录 + 800 正文 */}
-      <div className={cn(COL, 'flex gap-16 pb-16')}>
-        <Toc post={post} active={active} />
-        <div className={cn(TEXT, 'flex min-w-0 flex-1 flex-col gap-[22px]')}>
+      <div className={cn(COL, 'flex flex-col gap-12 pb-16')}>
+        {post.sections.length > 1 && <Toc ref={tocRef} post={post} active={active} />}
+        {/* 正文：第二节起以细线分隔 */}
+        <div className="flex min-w-0 flex-col">
           {post.sections.map((s, i) => (
-            <section key={s.id} aria-labelledby={s.id} className="flex flex-col gap-[22px]">
-              <h2 id={s.id} className="flex scroll-mt-24 flex-col gap-1.5 pt-4">
+            <section key={s.id} aria-labelledby={s.id} className={cn('flex flex-col gap-5', i > 0 && 'mt-12 border-t border-divider pt-10')}>
+              <h2 id={s.id} className="flex scroll-mt-24 flex-col gap-1.5">
                 <span className="font-num text-[13px] font-medium text-[#a8733f]">{String(i + 1).padStart(2, '0')}</span>
-                <span className="font-serif text-[24px] font-semibold text-ink md:text-[27px]">{s.title}</span>
+                <span className="font-serif text-[23px] leading-[1.45] font-semibold text-ink md:text-[26px]">{s.title}</span>
               </h2>
               {s.blocks.map((b, j) => (
                 <BlockView key={j} block={b} />
               ))}
             </section>
           ))}
-          {report && <Resources post={post} />}
-          <p className="flex flex-wrap items-center gap-2 pt-2">
+        </div>
+        {report && <Resources post={post} />}
+        {post.tags.length > 0 && (
+          <p className="flex flex-wrap items-center gap-2">
             <span className="text-[12.5px] font-medium text-muted">标签</span>
             {post.tags.map((t) => (
-              <Link key={t} to={`/blog?tag=${encodeURIComponent(t)}`} className="rounded-full bg-soft px-[11px] py-[5px] text-[12.5px] text-text2 hover:bg-active">
-                {t}
+              <Link key={t} to={`/blog?tag=${encodeURIComponent(t)}`} className="rounded-full border border-line bg-white px-3 py-[5px] text-[12.5px] text-text2 transition-colors hover:border-dash hover:text-ink">
+                # {t}
               </Link>
             ))}
           </p>
-        </div>
+        )}
       </div>
 
       {/* 文末 */}
-      <div className={cn(COL, 'pb-20')}>
-        <div className={cn(ALIGN, 'flex flex-col gap-4')}>
-          <Helpful slug={post.slug} />
-          <div className="flex flex-col gap-4 rounded-2xl bg-soft px-6 py-[18px] sm:flex-row sm:items-center">
-            <img src={logo} alt="" width={48} height={48} className="size-12 shrink-0 object-contain" />
-            <span className="flex flex-1 flex-col gap-1">
-              <span className="text-[15px] font-medium text-ink">{post.author}</span>
-              <span className="text-[13px] leading-5 text-text2">{AUTHOR.bio}</span>
-            </span>
-            <a href={GITHUB_URL} {...ext} className={cn(pill.secondary, 'gap-1.5 self-start px-3.5 py-[7px] text-[12.5px] sm:self-center')}>
-              关注仓库 <span className="text-muted">↗</span>
-            </a>
-          </div>
-          {series && (
-            <nav aria-label="同专题文章" className="grid gap-4 sm:grid-cols-2">
-              <Neighbor dir="prev" post={prev} />
-              <Neighbor dir="next" post={next} />
-            </nav>
-          )}
+      <div className={cn(COL, 'flex flex-col gap-3 pb-20')}>
+        <Helpful slug={post.slug} />
+        <div className="flex flex-col gap-4 rounded-2xl bg-soft px-6 py-5 sm:flex-row sm:items-center">
+          <img src={logo} alt="" width={48} height={48} className="size-12 shrink-0 object-contain" />
+          <span className="flex flex-1 flex-col gap-1">
+            <span className="text-[15px] font-medium text-ink">{post.author}</span>
+            <span className="text-[13px] leading-5 text-text2">{AUTHOR.bio}</span>
+          </span>
+          <a href={GITHUB_URL} {...ext} className={cn(pill.secondary, 'gap-1.5 self-start px-3.5 py-[7px] text-[12.5px] sm:self-center')}>
+            关注仓库 <span className="text-muted">↗</span>
+          </a>
         </div>
+        {series && (
+          <nav aria-label="同专题文章" className="flex flex-col gap-3">
+            <Neighbor dir="prev" post={prev} />
+            <Neighbor dir="next" post={next} />
+          </nav>
+        )}
       </div>
 
       {related.length > 0 && (
-        <section aria-labelledby="read-next" className="bg-soft pt-12 pb-[72px]">
-          <div className={COL}>
-            <div className={cn(ALIGN, 'flex flex-col gap-5')}>
-              <div className="flex items-center justify-between">
-                <h2 id="read-next" className="font-serif text-[22px] font-semibold text-ink">
-                  继续阅读
-                </h2>
-                <Link to="/blog" className="text-[13.5px] font-medium text-[#a8733f] hover:underline">
-                  全部文章 →
-                </Link>
-              </div>
-              <div className="grid gap-4 sm:grid-cols-2">
-                {related.map((r) => (
-                  <Link key={r.slug} to={`/blog/${r.slug}`} className="group flex flex-col gap-2.5 rounded-2xl border border-divider bg-white px-[22px] pt-5 pb-[22px] transition-colors hover:border-line">
-                    <CategoryLabel post={r} className="text-[12.5px]" />
+        <section aria-labelledby="read-next" className="bg-[#f4f3ef] pt-14 pb-16">
+          <div className={cn(COL, 'flex flex-col gap-5')}>
+            <div className="flex items-center justify-between">
+              <h2 id="read-next" className="font-serif text-[22px] font-semibold text-ink">
+                继续阅读
+              </h2>
+              <Link to="/blog" className="text-[13.5px] font-medium text-[#a8733f] hover:underline">
+                全部文章 →
+              </Link>
+            </div>
+            <ul className="flex flex-col gap-3">
+              {related.map((r) => (
+                <li key={r.slug}>
+                  <Link to={`/blog/${r.slug}`} className="group flex flex-col gap-2 rounded-2xl border border-divider bg-white px-6 py-5 transition-colors hover:border-line">
                     <span className="font-serif text-[18px] leading-[1.5] font-semibold text-ink group-hover:text-[#6b4a2a]">{r.title}</span>
-                    <span className="font-num text-[12px] text-muted">
-                      {r.date} · {readMinutes(r)} 分钟
+                    <span className="flex items-center gap-2 text-[12.5px]">
+                      <CategoryLabel post={r} />
+                      <span className="text-faint">·</span>
+                      <span className="font-num text-muted">
+                        {r.date} · {readMinutes(r)} 分钟
+                      </span>
                     </span>
                   </Link>
-                ))}
-              </div>
-            </div>
+                </li>
+              ))}
+            </ul>
           </div>
         </section>
       )}
+
+      {post.sections.length > 1 && <TocFab post={post} active={active} visible={tocGone} />}
     </article>
   );
 }
@@ -237,30 +241,111 @@ function Byline({ post }: { post: Post }) {
   );
 }
 
-function Toc({ post, active }: { post: Post; active: string }) {
+/** 目录卡片完全滚出滚动容器顶部后返回 true（用来切换浮动「目录」按钮） */
+function useScrolledPast(ref: React.RefObject<HTMLElement | null>) {
+  const [past, setPast] = useState(false);
+  useEffect(() => {
+    const root = document.getElementById(SCROLL_ROOT_ID);
+    const el = ref.current;
+    if (!root || !el) return;
+    const on = () => setPast(el.getBoundingClientRect().bottom < root.getBoundingClientRect().top + 72);
+    on();
+    root.addEventListener('scroll', on, { passive: true });
+    return () => root.removeEventListener('scroll', on);
+  }, [ref]);
+  return past;
+}
+
+function TocLinks({ post, active, onPick, columns }: { post: Post; active: string; onPick?: () => void; columns?: boolean }) {
   return (
-    <aside className="hidden w-[200px] shrink-0 lg:block">
-      <nav aria-label="本文目录" className="sticky top-24 flex flex-col [@media(max-height:560px)]:static">
-        <p className="pb-2.5 text-[12px] font-medium text-muted">本文目录</p>
-        {post.sections.map((s, i) => {
-          const on = active === s.id;
-          return (
+    <ol className={cn('grid gap-x-8', columns && 'sm:grid-cols-2')}>
+      {post.sections.map((s, i) => {
+        const on = active === s.id;
+        return (
+          <li key={s.id}>
             <a
-              key={s.id}
               href={`#${s.id}`}
+              onClick={onPick}
               aria-current={on ? 'location' : undefined}
-              className={cn('flex items-baseline gap-2.5 border-l-2 py-[7px] pl-3.5 transition-colors', on ? 'border-brand' : 'border-divider hover:border-line')}
+              className={cn('group flex items-baseline gap-2.5 py-2 transition-colors', on ? 'text-[#9c6a3a]' : 'text-text2 hover:text-ink')}
             >
               <span className={cn('font-num text-[11.5px] font-medium', on ? 'text-brand' : 'text-[#b5b4ac]')}>{String(i + 1).padStart(2, '0')}</span>
-              <span className={cn('text-[13.5px]', on ? 'font-medium text-ink' : 'text-text2 hover:text-ink')}>{s.title}</span>
+              <span className={cn('text-[14px] leading-[21px]', on && 'font-medium')}>{s.title}</span>
             </a>
-          );
-        })}
-        <button type="button" onClick={() => document.getElementById(SCROLL_ROOT_ID)?.scrollTo({ top: 0 })} className="self-start pt-4 pl-3.5 text-[12.5px] text-muted hover:text-ink">
-          回到顶部 ↑
+          </li>
+        );
+      })}
+    </ol>
+  );
+}
+
+/** 正文前的目录卡片：两列，可折叠 */
+function Toc({ ref, post, active }: { ref: React.Ref<HTMLElement>; post: Post; active: string }) {
+  const [open, setOpen] = useState(true);
+  return (
+    <nav ref={ref} aria-label="本文目录" className="rounded-2xl bg-[#f7f5f0] px-6 py-5">
+      <div className="flex items-center justify-between">
+        <p className="text-[12.5px] font-medium text-text2">本文目录 · {post.sections.length} 节</p>
+        <button type="button" aria-expanded={open} onClick={() => setOpen((v) => !v)} className="flex items-center gap-1 text-[12.5px] text-muted hover:text-ink">
+          {open ? '收起' : '展开'}
+          <ChevronDown aria-hidden className={cn('size-3.5 transition-transform', open && 'rotate-180')} />
         </button>
-      </nav>
-    </aside>
+      </div>
+      {open && (
+        <div className="pt-2">
+          <TocLinks post={post} active={active} columns />
+        </div>
+      )}
+    </nav>
+  );
+}
+
+/** 滚过目录卡片后出现的浮动按钮；点开为右下角目录面板（窄屏为底部抽屉） */
+function TocFab({ post, active, visible }: { post: Post; active: string; visible: boolean }) {
+  const [open, setOpen] = useState(false);
+  const panel = useRef<HTMLDivElement>(null);
+  const i = Math.max(0, post.sections.findIndex((s) => s.id === active));
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => e.key === 'Escape' && setOpen(false);
+    const onDown = (e: MouseEvent) => panel.current && !panel.current.contains(e.target as Node) && setOpen(false);
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('mousedown', onDown);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('mousedown', onDown);
+    };
+  }, [open]);
+  useEffect(() => {
+    if (!visible) setOpen(false);
+  }, [visible]);
+  return (
+    <div ref={panel} className={cn('fixed right-4 bottom-4 z-30 flex flex-col items-end gap-3 transition-[opacity,transform] duration-200 md:right-8 md:bottom-8', visible ? 'opacity-100' : 'pointer-events-none translate-y-2 opacity-0')}>
+      {open && (
+        <div role="dialog" aria-label="本文目录" className="max-h-[min(70dvh,560px)] w-[min(calc(100vw-32px),360px)] overflow-y-auto rounded-2xl border border-divider bg-white px-5 py-4 shadow-[0_12px_40px_-12px_rgba(0,0,0,0.18)]">
+          <div className="flex items-center justify-between pb-1">
+            <p className="text-[12.5px] font-medium text-text2">本文目录</p>
+            <button type="button" onClick={() => document.getElementById(SCROLL_ROOT_ID)?.scrollTo({ top: 0 })} className="text-[12.5px] text-muted hover:text-ink">
+              回到顶部 ↑
+            </button>
+          </div>
+          <TocLinks post={post} active={active} onPick={() => setOpen(false)} />
+        </div>
+      )}
+      <button
+        type="button"
+        aria-expanded={open}
+        tabIndex={visible ? 0 : -1}
+        onClick={() => setOpen((v) => !v)}
+        className="flex max-w-[calc(100vw-32px)] items-center gap-2 rounded-full border border-line bg-white py-2.5 pr-4 pl-3.5 text-[13px] font-medium text-ink shadow-[0_4px_16px_rgba(0,0,0,0.08)] hover:border-dash"
+      >
+        <ListIcon aria-hidden className="size-4 text-muted" />
+        目录
+        <span className="truncate font-normal text-muted">
+          · <span className="font-num">{String(i + 1).padStart(2, '0')}</span> {post.sections[i]?.title}
+        </span>
+      </button>
+    </div>
   );
 }
 

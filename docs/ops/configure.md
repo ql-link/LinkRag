@@ -45,7 +45,7 @@ Java 签发的旧令牌尚在有效期内时，继续保留 Java 会话桥接和
 | --- | --- |
 | `DB_HOST` / `DB_PORT` / `DB_USER` / `DB_PASSWORD` / `DB_NAME` | MySQL 连接 |
 | `REDIS_HOST` / `REDIS_PORT` | Redis 连接 |
-| `LOKI_BASE_URL` | B8 管理日志代理访问的内网 Loki 地址，默认 `http://localhost:3100`；不由请求方指定。 |
+| `LOKI_BASE_URL` | B8 管理日志代理访问的内网 Loki 地址，本地运行默认 `http://localhost:3100`；开发 Compose 显式设置 `http://tolink-dev-loki:3100`，生产 Compose 显式设置 `http://tolink-loki:3100`。容器内 `localhost` 指向后端自身，不能用于访问独立的 Loki 容器；不由请求方指定。 |
 | `B8_DOCUMENT_CONFIG_WRITES_ENABLED` | B8 上传配置写入切流开关，默认关闭；Java 配置写入退场且默认指纹对齐后才启用。 |
 | `B9_BLOG_WRITES_ENABLED` | B9 博客管理写入开关，默认关闭；Java 博客写入口退场且 PUBLIC 桶联调通过后启用。 |
 | `B10_FEEDBACK_WRITES_ENABLED` | B10 匿名反馈及管理员处理写入开关，默认关闭；Java 反馈写入口退场且附件补偿联调通过后启用。 |
