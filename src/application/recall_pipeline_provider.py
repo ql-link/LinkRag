@@ -15,6 +15,7 @@ from typing import cast
 
 from src.config import settings
 from src.core.dataset_config import (
+    DatasetConfigService,
     DatasetExecutionContext,
     DatasetExecutionContextLoader,
     DatasetExecutionPurpose,
@@ -106,6 +107,17 @@ def _build_pipeline() -> RecallPipeline:
         ),
         readiness_gate=MySqlDocumentReadinessGate(),
     )
+
+
+async def aresolve_bm25_recall_config(user_id: int, dataset_ids: list[int]) -> RecallConfig:
+    """读取首个数据集召回配置；关键词召回不解析任何模型绑定。"""
+    if not dataset_ids:
+        return RecallConfig.from_settings()
+    from src.database import get_db_context
+
+    async with get_db_context() as db:
+        config = await DatasetConfigService().get_config(user_id, dataset_ids[0], db)
+    return config.recall
 
 
 async def aresolve_recall_execution(

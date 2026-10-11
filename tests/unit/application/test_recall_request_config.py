@@ -6,9 +6,38 @@
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from unittest.mock import AsyncMock
+
+import pytest
+
 from src.application import recall_pipeline_provider as provider
 from src.application.recall_pipeline_provider import build_recall_request_from_config
 from src.core.dataset_config import RecallConfig
+
+
+@pytest.mark.asyncio
+async def test_bm25_config_does_not_require_model_bindings(monkeypatch):
+    from src.core.dataset_config import DatasetConfigService, DatasetParseConfigBundle
+
+    bundle = DatasetParseConfigBundle.defaults()
+    bundle.recall.bm25_top_k = 73
+    db = object()
+
+    @asynccontextmanager
+    async def db_context():
+        yield db
+
+    get_config = AsyncMock(return_value=bundle)
+    model_loader = AsyncMock(side_effect=AssertionError("must not resolve models"))
+    monkeypatch.setattr("src.database.get_db_context", db_context)
+    monkeypatch.setattr(DatasetConfigService, "get_config", get_config)
+    monkeypatch.setattr(provider.DatasetExecutionContextLoader, "load_many", model_loader)
+    config = await provider.aresolve_bm25_recall_config(7, [10, 11])
+    assert config.bm25_top_k == 73
+    assert bundle.model_bindings.dense_embedding_config_id is None
+    get_config.assert_awaited_once_with(7, 10, db)
+    model_loader.assert_not_awaited()
 
 
 def test_build_recall_request_maps_fusion_limit_and_route_top_k(monkeypatch):
