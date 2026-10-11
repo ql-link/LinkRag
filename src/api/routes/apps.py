@@ -9,7 +9,8 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from dataclasses import replace
+from typing import Annotated, Literal
 
 from fastapi import Depends, File, Form, Request, UploadFile
 from pydantic import BaseModel, ConfigDict, Field
@@ -28,11 +29,13 @@ from src.application.parse_task_control import submit_parse
 from src.application.recall_errors import RecallApiError
 from src.application.recall_json_runtime import run_recall_json
 from src.application.recall_pipeline_provider import (
+    aresolve_bm25_recall_config,
     aresolve_recall_execution,
     build_recall_request_from_config,
     get_recall_pipeline,
 )
 from src.config import settings
+from src.core.dataset_config import DatasetExecutionContext
 from src.core.llm.exceptions import (
     DatasetModelBindingRequiredError,
     LLMConfigResolutionError,
@@ -60,9 +63,7 @@ async def _ensure_default_dataset(principal: AppPrincipal) -> int:
 
     if principal.default_dataset_id is not None:
         try:
-            await dataset_service.detail(
-                principal.user_id, principal.default_dataset_id
-            )
+            await dataset_service.detail(principal.user_id, principal.default_dataset_id)
             return principal.default_dataset_id
         except BusinessError as exc:
             if exc.http_status != 404:
@@ -94,9 +95,7 @@ async def _dataset_id_by_name(user_id: int, name: str) -> int:
     async with get_db_context() as db:
         row = (
             await db.execute(
-                text(
-                    "SELECT id FROM dataset WHERE user_id=:uid AND name=:name AND is_deleted=0"
-                ),
+                text("SELECT id FROM dataset WHERE user_id=:uid AND name=:name AND is_deleted=0"),
                 {"uid": user_id, "name": name},
             )
         ).scalar_one_or_none()
@@ -144,11 +143,7 @@ async def upload_file(
 @router.get("/files/{file_id}")
 async def file_status(file_id: int, principal: Principal):
     info = await document_files.detail(principal.user_id, file_id)
-    parse = (
-        await document_files.parse_results(
-            principal.user_id, info["datasetId"], [file_id]
-        )
-    )[0]
+    parse = (await document_files.parse_results(principal.user_id, info["datasetId"], [file_id]))[0]
     return success(
         info
         | {
@@ -180,6 +175,9 @@ class AppRecallRequest(BaseModel):
     datasetIds: list[int] | None = Field(default=None, max_length=20)
     fileIds: list[int] | None = Field(default=None, max_length=MAX_RECALL_FILE_IDS)
     topK: int | None = Field(default=None, ge=1, le=50)
+    mode: Literal["hybrid", "bm25"] = Field(
+        default="hybrid", description="hybrid 沿用数据集召回配置；bm25 仅关键词召回，不调用模型"
+    )
 
 
 async def _assert_owned_files(
@@ -191,9 +189,7 @@ async def _assert_owned_files(
         text(
             "SELECT id FROM document_original_file "
             "WHERE id IN :fids AND user_id=:uid AND dataset_id IN :dids AND is_deleted=0"
-        ).bindparams(
-            bindparam("fids", expanding=True), bindparam("dids", expanding=True)
-        ),
+        ).bindparams(bindparam("fids", expanding=True), bindparam("dids", expanding=True)),
         {"fids": file_ids, "uid": user_id, "dids": dataset_ids},
     )
     if {int(row[0]) for row in rows} != set(file_ids):
@@ -221,9 +217,15 @@ async def recall(
     if file_ids:
         await _assert_owned_files(db, principal.user_id, dataset_ids, file_ids)
     try:
-        recall_cfg, contexts = await aresolve_recall_execution(
-            principal.user_id, dataset_ids
-        )
+        if body.mode == "bm25":
+            recall_cfg = await aresolve_bm25_recall_config(principal.user_id, dataset_ids)
+            # 请求级覆盖，不污染缓存；独立于数据集启用来源与融合权重。
+            recall_cfg = recall_cfg.model_copy(
+                update={"recall_enabled_sources": ["bm25"], "fusion_bm25_weight": 1.0}
+            )
+            contexts: dict[int, DatasetExecutionContext] = {}
+        else:
+            recall_cfg, contexts = await aresolve_recall_execution(principal.user_id, dataset_ids)
     except DatasetModelBindingRequiredError as exc:
         raise BusinessError(409, str(exc), 409) from exc
     except LLMConfigResolutionError as exc:
@@ -239,6 +241,9 @@ async def recall(
         dataset_contexts=contexts,
         doc_ids=file_ids,
     )
+    if body.mode == "bm25":
+        # BM25 未装配时必须失败，防止 pipeline 的来源回退调用向量模型。
+        recall_req = replace(recall_req, required_sources=["bm25"])
     try:
         payload = await run_recall_json(pipeline, recall_req, principal.request_id)
     except RecallApiError as exc:

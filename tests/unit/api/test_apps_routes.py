@@ -35,9 +35,7 @@ class FakeIdentity:
 
     async def verify(self, token: str) -> AppClient:
         if token != TOKEN:
-            raise AppIdentityError(
-                401, "APP_CREDENTIAL_INVALID", "invalid app credential"
-            )
+            raise AppIdentityError(401, "APP_CREDENTIAL_INVALID", "invalid app credential")
         return APP
 
     async def resolve(self, app: AppClient, external: str | None) -> ShadowUser:
@@ -227,9 +225,7 @@ async def test_upload_uses_shadow_user_and_auto_parse(identity, monkeypatch):
         return {"id": 3001, "datasetId": dataset_id, "uploadStatus": "UPLOADING"}
 
     monkeypatch.setattr(apps, "upload", upload)
-    monkeypatch.setattr(
-        apps.dataset_service, "detail", AsyncMock(return_value={"id": 901})
-    )
+    monkeypatch.setattr(apps.dataset_service, "detail", AsyncMock(return_value={"id": 901}))
     async with _client() as client:
         response = await client.post(
             "/api/v1/apps/files",
@@ -321,9 +317,7 @@ def recall_env(identity, monkeypatch):
         if requested_dataset_ids and not set(requested_dataset_ids) <= set(owned):
             from src.application.recall_errors import RecallApiError
 
-            raise RecallApiError(
-                403, "RECALL_SCOPE_FORBIDDEN", "dataset scope is not authorized"
-            )
+            raise RecallApiError(403, "RECALL_SCOPE_FORBIDDEN", "dataset scope is not authorized")
         return list(requested_dataset_ids or owned)
 
     async def execution(user_id, dataset_ids):
@@ -411,25 +405,27 @@ async def test_recall_scopes_to_user_and_returns_content(recall_env):
 
 
 @pytest.mark.asyncio
-async def test_recall_rejects_other_users_file(recall_env):
+@pytest.mark.parametrize("mode", ["hybrid", "bm25"])
+async def test_recall_rejects_other_users_file(recall_env, mode):
     app, _ = recall_env
     async with _client(app) as client:
         response = await client.post(
             "/api/v1/apps/recall",
             headers=_headers(),
-            json={"query": "q", "fileIds": [11, 21]},
+            json={"query": "q", "fileIds": [11, 21], "mode": mode},
         )
     assert response.status_code == 403
 
 
 @pytest.mark.asyncio
-async def test_recall_rejects_other_users_dataset(recall_env):
+@pytest.mark.parametrize("mode", ["hybrid", "bm25"])
+async def test_recall_rejects_other_users_dataset(recall_env, mode):
     app, _ = recall_env
     async with _client(app) as client:
         response = await client.post(
             "/api/v1/apps/recall",
             headers=_headers(),
-            json={"query": "q", "datasetIds": [902]},
+            json={"query": "q", "datasetIds": [902], "mode": mode},
         )
     assert response.status_code == 403
 
@@ -444,12 +440,71 @@ async def test_recall_rejects_other_users_dataset(recall_env):
         {"query": "q", "topK": 51},
         {"query": "q", "userId": 1},
         {"query": "q", "fileIds": list(range(101))},
+        {"query": "q", "mode": "dense"},
+        {"query": "q", "mode": None},
     ],
 )
 async def test_recall_validates_body(recall_env, body):
     app, _ = recall_env
     async with _client(app) as client:
-        response = await client.post(
-            "/api/v1/apps/recall", headers=_headers(), json=body
-        )
+        response = await client.post("/api/v1/apps/recall", headers=_headers(), json=body)
     assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_recall_explicit_hybrid_keeps_existing_config(recall_env):
+    app, captured = recall_env
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/v1/apps/recall",
+            headers=_headers(),
+            json={"query": "项目经历", "mode": "hybrid"},
+        )
+    assert response.status_code == 200
+    assert captured["recall_cfg"].recall_enabled_sources == ["bm25", "sparse", "dense"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bm25_state", ["ready", "missing", "failed"])
+async def test_bm25_recall_never_calls_vector_routes(recall_env, monkeypatch, bm25_state):
+    from src.application import recall_pipeline_provider as provider
+    from src.application.recall_json_runtime import run_recall_json
+    from src.core.dataset_config import RecallConfig
+    from src.core.pipeline.recall import RetrieverHit
+    from tests.unit.core.pipeline.recall.conftest import FakeRetriever, make_recall_pipeline
+
+    app, _ = recall_env
+    config = RecallConfig(recall_enabled_sources=["dense"], fusion_bm25_weight=0)
+    config_loader = AsyncMock(return_value=config)
+    model_loader = AsyncMock(side_effect=AssertionError("must not resolve models"))
+    monkeypatch.setattr(apps, "aresolve_bm25_recall_config", config_loader)
+    monkeypatch.setattr(apps, "aresolve_recall_execution", model_loader)
+    monkeypatch.setattr(
+        apps, "build_recall_request_from_config", provider.build_recall_request_from_config
+    )
+    monkeypatch.setattr(apps, "run_recall_json", run_recall_json)
+    bm25 = FakeRetriever(
+        source="bm25",
+        hits=[RetrieverHit(chunk_id="c1", doc_id=11, dataset_id=901, score=8, source="bm25")],
+        exc=RuntimeError("BM25 unavailable") if bm25_state == "failed" else None,
+    )
+    dense = FakeRetriever(source="dense", hits=[])
+    sparse = FakeRetriever(source="sparse", hits=[])
+    pipeline = make_recall_pipeline(([bm25] if bm25_state != "missing" else []) + [dense, sparse])
+    app.dependency_overrides[apps.get_recall_pipeline] = lambda: pipeline
+    async with _client(app) as client:
+        response = await client.post(
+            "/api/v1/apps/recall",
+            headers=_headers(),
+            json={"query": "Redis 二级缓存", "mode": "bm25", "fileIds": [11], "topK": 1},
+        )
+    assert response.status_code == (200 if bm25_state == "ready" else 500)
+    if bm25_state == "ready":
+        hit = response.json()["data"]["hits"][0]
+        assert hit["fileId"] == 11 and hit["content"] == "正文" and hit["score"] == 1
+        assert bm25.user_ids == [5001]
+        assert bm25.calls == [("Redis 二级缓存", [901], [11])]
+    assert dense.user_ids == [] and sparse.user_ids == []
+    model_loader.assert_not_awaited()
+    config_loader.assert_awaited_once_with(5001, [901])
+    assert config.recall_enabled_sources == ["dense"] and config.fusion_bm25_weight == 0
