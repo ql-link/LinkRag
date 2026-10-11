@@ -23,7 +23,7 @@ src/core/llm/
     ├── google.py           # GoogleProvider（protocol=google，Gemini 原生）
     ├── jina.py             # JinaProvider（protocol=jina，平铺 rerank+embedding）
     ├── dashscope.py        # DashScopeProvider（protocol=dashscope，千问原生 rerank）
-    ├── doubao_vision.py    # DoubaoVisionProvider（protocol=doubao_vision，火山多模态稀疏）
+    ├── doubao_vision.py    # DoubaoVisionProvider（protocol=doubao_vision，火山多模态联合向量）
     └── bge_m3.py           # BgeM3ServiceProvider（protocol=bge_m3，自部署 bge-m3-service 稀疏）
 ```
 
@@ -31,7 +31,7 @@ src/core/llm/
 
 LLM 调用拆成两个正交维度：
 
-- **`protocol`（API 家族）**：决定怎么拼 HTTP 请求体、鉴权、解析响应。7 个枚举（小写、大小写敏感）：`openai` / `anthropic` / `google` / `jina` / `dashscope` / `doubao_vision` / `bge_m3`（后两个为稀疏向量专用）。
+- **`protocol`（API 家族）**：决定怎么拼 HTTP 请求体、鉴权、解析响应。7 个枚举（小写、大小写敏感）：`openai` / `anthropic` / `google` / `jina` / `dashscope` / `doubao_vision` / `bge_m3`（`doubao_vision` 支持联合稠密/稀疏，`bge_m3` 为稀疏向量专用）。
 - **`capability`（用途）**：`CHAT` / `EMBEDDING` / `SPARSE_EMBEDDING` / `RERANK` / `VISION`，决定调哪个能力分支。`OCR` 不再作为独立 LLM capability。
   > 命名口径：对外字符串用 `"CHAT"`，内部枚举为 `CapabilityType.TEXT`（值 `"text"`），二者经 `user_model_resolver` 映射对应（`"CHAT" → CapabilityType.TEXT`）；下表 `TEXT(CHAT)` 即此意。
 
@@ -46,7 +46,7 @@ LLM 调用拆成两个正交维度：
 | `google` | `GoogleProvider` | `TEXT`(CHAT) / `VISION` | Python 补全（见 §2.3） |
 | `jina` | `JinaProvider` | `RERANK` / `EMBEDDING` / `SPARSE_EMBEDDING` | 直打 `api_base_url`（平铺 `/rerank` 或 `/embeddings`） |
 | `dashscope` | `DashScopeProvider` | `RERANK` | 直打 `api_base_url`（原生嵌套 `/services/rerank/text-rerank/text-rerank`） |
-| `doubao_vision` | `DoubaoVisionProvider` | `SPARSE_EMBEDDING` | 直打 `api_base_url`（火山多模态 `/embeddings/multimodal`，逐条编码） |
+| `doubao_vision` | `DoubaoVisionProvider` | `EMBEDDING` / `SPARSE_EMBEDDING` | 直打 `api_base_url`（火山多模态 `/embeddings/multimodal`，逐条联合编码）；等价 Dataset 绑定共享一次响应，见 [vectorization.md §9.7](vectorization.md#97-豆包联合编码与模型升级) |
 | `bge_m3` | `BgeM3ServiceProvider` | `SPARSE_EMBEDDING` | 直打 `api_base_url`（自部署 `bge-m3-service` 编码端点） |
 
 每个 adapter 的 `_capabilities` 集合即"本期 (protocol, capability) 矩阵"的唯一真源。`openai` 吃掉全部 OpenAI 兼容厂商（openai/千问 chat/glm/deepseek/硅基流动…）。**`VISION` 已接入 `openai` / `anthropic` / `google` 三协议**：复用各自 CHAT 通路（chat_completions / messages / generateContent），仅请求体多拼一个图片块，响应解析与 CHAT 一致；其余协议不支持 `VISION`，返回 `UnsupportedProtocolCapabilityError`。`OCR` 仍不作为独立能力，图片文字提取 = `VISION` + prompt（`/ocr` 兼容 endpoint 读 `VISION` 配置）。**ASR 本期不做。**
@@ -116,7 +116,7 @@ API Key 不写入文档 / 测试 / 提交；用户密钥库内密文保存，读
 | API/链路 | 能力 | 协议（典型） |
 | --- | --- | --- |
 | `/api/v1/llm/generate(/stream)` | `CHAT` | openai / anthropic / google |
-| `/api/v1/llm/embed` | `EMBEDDING` | openai / jina |
+| `/api/v1/llm/embed` | `EMBEDDING` | openai / jina / doubao_vision |
 | 用户配置解析 | `SPARSE_EMBEDDING` | doubao_vision / bge_m3（已接入 RAG 稀疏写入/召回）；openai / jina 仅声明能力 |
 | `/api/v1/llm/rerank` | `RERANK` | jina（平铺）/ dashscope（千问原生） |
 | Markdown 表格/标题增强 | `CHAT` | 数据集 `enhancement_chat_config_id` |

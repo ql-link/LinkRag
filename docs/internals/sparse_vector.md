@@ -66,6 +66,7 @@ SparseVectorService(encoder, vector_name=SPARSE_VECTOR_QDRANT_VECTOR_NAME)
 
 - `AdapterSparseVectorEncoder`（`adapter_encoder.py`）是 llm 层与 encoding 层之间**唯一**的桥接点：llm 层（provider / adapter）只懂 protocol 与 HTTP、不认识 `SparseVector`；encoding 层只认识 `SparseVector`、不关心走哪个厂商。它调 `provider.embed_sparse` 拿到中性的 `SparseEmbeddingResult`，再用 `normalize_lexical_weights` 做 `top_k` / `min_weight` 清洗、升序排序、空向量报错，转成 `SparseVector`。
 - 清洗参数 `top_k` / `min_weight` 与命名 `vector_name` 仍取全局 `SPARSE_VECTOR_*`（见 §8），各 provider 复用同一套规则，保证不同用户、不同 provider 产出的稀疏向量在召回侧表现一致。
+- 豆包 dense/sparse 等价绑定在同一 Dataset 执行上下文中复用一次联合响应，覆盖写入与 query 编码；能力配置 ID 仍分别校验，稀疏清洗与状态推进保持独立。具体复用、用量和重试边界见 [vectorization.md §9.7](vectorization.md#97-豆包联合编码与模型升级)。
 - **写入与召回共用 dataset 绑定入口**，保证同一数据集写入 / 召回走同一份解析配置；多数据集召回时逐 dataset 编码与检索，再由召回 Pipeline 合并。
 - 配置缺失或无效（字段为空、配置不存在/停用/非当前用户/系统预设/能力非 `SPARSE_EMBEDDING`）抛 `SparseEmbeddingConfigMissingError`；错误信息包含 `dataset_id` 与字段名。
 
@@ -75,7 +76,7 @@ SparseVectorService(encoder, vector_name=SPARSE_VECTOR_QDRANT_VECTOR_NAME)
 >
 > | protocol | provider 类 | 对接服务 |
 > | --- | --- | --- |
-> | `doubao_vision` | `DoubaoVisionProvider` | 火山方舟 doubao-embedding-vision 多模态 embedding 端点 |
+> | `doubao_vision` | `DoubaoVisionProvider` | 火山方舟 doubao-embedding-vision 多模态 embedding 端点，联合输出稠密/稀疏向量 |
 > | `bge_m3` | `BgeM3ServiceProvider` | 自部署 `bge-m3-service` 编码端点 |
 
 ---

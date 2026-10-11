@@ -6,7 +6,7 @@
   sparse_embedding={"type":"enabled"}；
 - 响应 data 为单对象，sparse_embedding 是 [{"index":int,"value":float}, ...] 数组；
 - 多模态端点一次融合出一个向量 → N 条文本逐条请求；
-- 仅声明 SPARSE_EMBEDDING；清洗不在 provider 做。
+- 同时声明 EMBEDDING 与 SPARSE_EMBEDDING；清洗不在 provider 做。
 """
 
 from __future__ import annotations
@@ -38,18 +38,21 @@ def _resp(sparse_items: list) -> dict:
         "model": "doubao-embedding-vision-251215",
         "object": "list",
         "data": {
-            "embedding": [0.1, 0.2],
+            "embedding": [0.1] * 1024,
             "object": "embedding",
             "sparse_embedding": sparse_items,
         },
     }
 
 
-def test_declares_only_sparse_embedding():
+def test_declares_joint_embedding():
     provider = DoubaoVisionProvider(api_key="k")
-    assert provider.get_capabilities() == {CapabilityType.SPARSE_EMBEDDING}
+    assert provider.get_capabilities() == {
+        CapabilityType.EMBEDDING,
+        CapabilityType.SPARSE_EMBEDDING,
+    }
     assert provider.has_capability(CapabilityType.SPARSE_EMBEDDING)
-    assert not provider.has_capability(CapabilityType.EMBEDDING)
+    assert provider.has_capability(CapabilityType.EMBEDDING)
 
 
 def test_default_model_and_base_url():
@@ -80,6 +83,8 @@ async def test_embed_sparse_parses_array_and_request_contract():
         "model": "doubao-embedding-vision-251215",
         "input": [{"type": "text", "text": "今天天气很好"}],
         "sparse_embedding": {"type": "enabled"},
+        "dimensions": 1024,
+        "encoding_format": "float",
     }
     # sparse_embedding 数组按序转成 indices/values，权重原样透传（清洗交给桥接器）。
     assert len(result.embeddings) == 1
@@ -302,3 +307,197 @@ def test_max_concurrency_normalizes_invalid_or_nonpositive_to_one():
     # 非法字符串与 <=0 都规整为 >=1（参照 ProviderVisionClient 的兜底）。
     assert DoubaoVisionProvider(api_key="k", max_concurrency="oops")._max_concurrency == 1
     assert DoubaoVisionProvider(api_key="k", max_concurrency=0)._max_concurrency == 1
+
+
+@pytest.mark.asyncio
+async def test_joint_failure_is_not_cached_and_can_retry():
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(503, text="busy")
+        return httpx.Response(200, json=_resp([{"index": 1, "value": 0.5}]))
+
+    provider = _provider(handler, max_retries=0)
+    provider.enable_joint_reuse()
+    try:
+        with pytest.raises(ProviderConnectionError):
+            await provider.embed("retry")
+        sparse = await provider.embed_sparse("retry")
+        dense = await provider.embed("retry")
+        assert sparse.embeddings[0].indices == [1]
+        assert dense.embeddings == [[0.1] * 1024]
+        assert calls == 2
+    finally:
+        await provider.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_dense", [None, [0.1], [float("inf")] * 1024, [True] * 1024])
+async def test_joint_rejects_invalid_dense_before_caching(bad_dense):
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        data = _resp([{"index": 1, "value": 0.5}])
+        data["data"]["embedding"] = bad_dense if calls == 1 else [0.1] * 1024
+        # httpx JSON 序列化拒绝非有限数，使用原始 JSON 模拟供应商响应。
+        return httpx.Response(200, content=jsonlib.dumps(data))
+
+    provider = _provider(handler)
+    provider.enable_joint_reuse()
+    try:
+        with pytest.raises(InvalidResponseError):
+            await provider.embed_sparse("invalid")
+        assert (await provider.embed("invalid")).embeddings == [[0.1] * 1024]
+        assert calls == 2
+    finally:
+        await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_waiter_leaves_joint_request_available():
+    started = asyncio.Event()
+    proceed = asyncio.Event()
+    calls = 0
+
+    async def handler(request):
+        nonlocal calls
+        calls += 1
+        started.set()
+        await proceed.wait()
+        return httpx.Response(200, json=_resp([{"index": 1, "value": 0.5}]))
+
+    provider = _provider(handler)
+    provider.enable_joint_reuse()
+    try:
+        pending = asyncio.create_task(provider.embed("cancelled"))
+        await started.wait()
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        proceed.set()
+        await provider.embed_sparse("cancelled")
+        assert calls == 1
+    finally:
+        await provider.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("sparse_first", [True, False])
+async def test_sequential_branches_reuse_response_and_count_usage_once(sparse_first):
+    calls = 0
+
+    def handler(request):
+        nonlocal calls
+        calls += 1
+        payload = _resp([{"index": 1, "value": 0.5}])
+        payload["usage"] = {"prompt_tokens": 7, "total_tokens": 7}
+        return httpx.Response(200, json=payload)
+
+    provider = _provider(handler)
+    provider.enable_joint_reuse()
+    try:
+        first = provider.embed_sparse if sparse_first else provider.embed
+        second = provider.embed if sparse_first else provider.embed_sparse
+        assert (await first("text")).usage.total_tokens == 7
+        assert (await second("text")).usage.total_tokens == 0
+        assert calls == 1
+    finally:
+        await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_cancel_sparse_waiter_does_not_cancel_dense():
+    started, release = asyncio.Event(), asyncio.Event()
+    calls = 0
+
+    async def handler(request):
+        nonlocal calls
+        calls += 1
+        started.set()
+        await release.wait()
+        return httpx.Response(200, json=_resp([{"index": 1, "value": 0.5}]))
+
+    provider = _provider(handler)
+    provider.enable_joint_reuse()
+    try:
+        dense = asyncio.create_task(provider.embed("query"))
+        await started.wait()
+        sparse = asyncio.create_task(provider.embed_sparse("query"))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        sparse.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await sparse
+        release.set()
+        assert (await dense).embeddings == [[0.1] * 1024]
+        assert calls == 1
+    finally:
+        release.set()
+        await provider.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("callback", [False, True])
+async def test_partial_batch_success_usage_is_not_lost(callback):
+    counts = {}
+    events = []
+
+    async def handler(request):
+        text = jsonlib.loads(request.content)["input"][0]["text"]
+        counts[text] = counts.get(text, 0) + 1
+        if text == "bad" and counts[text] == 1:
+            await asyncio.sleep(0.01)
+            return httpx.Response(400, text="failed")
+        payload = _resp([{"index": 1, "value": 0.5}])
+        payload["usage"] = {"prompt_tokens": 7, "total_tokens": 7}
+        return httpx.Response(200, json=payload)
+
+    provider = _provider(handler, max_retries=0)
+    provider.enable_joint_reuse(
+        (lambda model, usage: events.append(usage.total_tokens)) if callback else None
+    )
+    try:
+        with pytest.raises(ProviderConnectionError):
+            await provider.embed(["good", "bad"])
+        result = await provider.embed_sparse(["good", "bad"])
+        assert counts == {"good": 1, "bad": 2}
+        assert result.usage.total_tokens + sum(events) == 14
+        assert (await provider.embed(["good", "bad"])).usage.total_tokens == 0
+    finally:
+        await provider.close()
+
+
+@pytest.mark.asyncio
+async def test_threaded_semantic_embed_and_indexing_use_one_loop():
+    from types import SimpleNamespace
+
+    from src.core.splitter.factory import build_embedding_client
+
+    main_loop = asyncio.get_running_loop()
+    loops = []
+
+    async def handler(request):
+        loops.append(asyncio.get_running_loop())
+        await asyncio.sleep(0.001)
+        return httpx.Response(200, json=_resp([{"index": 1, "value": 0.5}]))
+
+    provider = _provider(handler, max_concurrency=1)
+    provider.enable_joint_reuse()
+    client = build_embedding_client(
+        SimpleNamespace(
+            provider=provider,
+            model_name=provider.DEFAULT_MODEL,
+            config_id=1,
+        )
+    )
+    try:
+        await asyncio.to_thread(lambda: asyncio.run(client.embed(["candidate1", "candidate2"])))
+        await client.embed(["final1", "final2"])
+        assert loops == [main_loop] * 4
+    finally:
+        await provider.close()

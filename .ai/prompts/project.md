@@ -17,6 +17,7 @@
 | 数据库初始化入口 | [src/database.py](src/database.py) |
 | 数据库 DDL baseline（0001 冻结快照，**不应改动**） | [migrations/db.sql](migrations/db.sql) |
 | 数据库当前完整结构快照（baseline + 已应用 migration，仅供查阅） | [scripts/db/init.sql](scripts/db/init.sql) |
+| 豆包联合向量默认配置（默认只读预览） | [scripts/ops/embedding_defaults.py](scripts/ops/embedding_defaults.py) |
 | 数据库迁移（Alembic，schema 演进的唯一入口） | [migrations/](migrations/) |
 | HTTP 路由 | [src/api/routes](src/api/routes) |
 | 核心业务模块 | [src/core](src/core) |

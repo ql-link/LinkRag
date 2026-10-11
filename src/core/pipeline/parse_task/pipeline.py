@@ -474,6 +474,7 @@ class ParseTaskPipeline:
             user_id,
             dataset_id,
             DatasetExecutionPurpose.PARSE,
+            task_id=str(payload.task_id),
         )
 
     # ------------------------------------------------------------------

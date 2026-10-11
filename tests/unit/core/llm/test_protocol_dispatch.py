@@ -18,6 +18,7 @@ from src.core.llm.interfaces import CapabilityType as T
 from src.core.llm.providers.anthropic import AnthropicProvider
 from src.core.llm.providers.bge_m3 import BgeM3ServiceProvider
 from src.core.llm.providers.dashscope import DashScopeProvider
+from src.core.llm.providers.doubao_vision import DoubaoVisionProvider
 from src.core.llm.providers.google import GoogleClient, GoogleProvider
 from src.core.llm.providers.jina import JinaProvider
 from src.core.llm.providers.openai import OpenAICompatibleProvider
@@ -32,6 +33,7 @@ from src.core.llm.providers.openai import OpenAICompatibleProvider
         ("jina", JinaProvider),
         ("dashscope", DashScopeProvider),
         ("bge_m3", BgeM3ServiceProvider),
+        ("doubao_vision", DoubaoVisionProvider),
     ],
 )
 def test_create_client_dispatches_by_protocol(protocol, cls):
@@ -48,6 +50,7 @@ def test_create_client_dispatches_by_protocol(protocol, cls):
         ("jina", {T.RERANK, T.EMBEDDING}),
         ("dashscope", {T.RERANK}),
         ("bge_m3", {T.SPARSE_EMBEDDING}),
+        ("doubao_vision", {T.EMBEDDING, T.SPARSE_EMBEDDING}),
     ],
 )
 def test_capability_matrix(protocol, expected):

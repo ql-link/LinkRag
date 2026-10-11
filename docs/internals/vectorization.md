@@ -716,9 +716,36 @@ ordered = [
 | 内部 Python 直调（调试脚本 / 内部 service / 评测 harness） | **caller 侧**按上面模式自行处理 |
 | hybrid 融合 / reranker | 融合后的候选已先经过公共文档门禁；reranker 消费可见候选 |
 
-### 9.7 Embedding 模型升级 SOP
+### 9.7 豆包联合编码与模型升级
 
-dense 召回正确性建立在「query 与 chunk 走同一份 embedding 接口、同一个模型字符串、同一份 token 化策略」这一前提上。本项目锁定 **Qwen `text-embedding-v4`（对称模型）**、**dense 维度 1024**。模型切换 SOP：
+数据集执行上下文仍分别校验 `dense_embedding_config_id`（`EMBEDDING`）和
+`sparse_embedding_config_id`（`SPARSE_EMBEDDING`）的权限、启用状态与能力。两项配置
+都使用 `doubao_vision`，且模型名、完整端点 URL、解密后的 API key 完全相同时，
+`DatasetExecutionContextLoader` 将它们连接到同一个 provider；两项配置 ID 保持独立。
+
+provider 每条文本只向 `/api/v3/embeddings/multimodal` 发起一次请求，显式设置
+`dimensions=1024`、`encoding_format=float`、`sparse_embedding={"type":"enabled"}`，
+从同一响应提取稠密 `embedding` 和稀疏 `sparse_embedding`。`embed` / `embed_sparse`
+分别投影结果；稀疏的 top_k/min_weight 清洗继续由 encoding 层负责。
+
+复用只在当前 Dataset 执行上下文中生效，按模型与原文合并在飞请求并保留成功结果，
+因此写入侧不同批次、并行分支以及召回侧 dense/sparse query 不会重复推理。
+执行上下文在每次 HTTP 成功响应时通过业务计量回调上报一次用量，消费方返回零用量，
+因此批次部分失败、语义分块丢弃 usage 或某个等待方取消都不会造成漏记或重复计量。
+独立 provider 未配置回调时，用量由首次成功返回整批结果的消费方领取。失败结果不保留；
+取消单个等待方不会取消共享请求，其他等待方继续复用，关闭 provider 时才统一取消在飞请求。
+供应商网络/5xx 的有限重试仍可能产生新的 HTTP 请求。多文本保持逐条请求，
+不能把多条 chunk 合并进一个 input，否则接口会融合为一个向量。
+同一次 `load_many` 多数据集请求中，已分别校验且配置身份相同的绑定也共享 provider，
+同一 query 只编码一次。独立任务和用户上下文不共享缓存；配置身份不同的分支保持独立编码。
+
+请求与联合响应格式见[火山方舟向量化接口](https://docs.volcengine.com/docs/ark/vectorization?lang=en&redirect=1)。
+
+
+语义分块在工作线程中运行时，`ModelBoundEmbedder` 将编码请求提交回创建客户端的
+执行循环，保证 HTTP 客户端、信号量和联合响应缓存始终属于同一循环。
+
+dense 召回正确性建立在「query 与 chunk 走同一份 embedding 接口、同一个模型字符串、同一份 token 化策略」这一前提上。新安装与已有环境通过独立配置入口将系统稠密、稀疏默认配置统一为 **豆包 `doubao-embedding-vision-251215`**，使用 `doubao_vision` 协议与多模态 embedding 端点，**dense 维度 1024**。实际写入和召回仍以数据集绑定为准，历史迁移种子保持固定；新默认设置入口见 [configure.md](../ops/configure.md#稀疏向量配置)，不会修改已有数据集绑定。模型切换 SOP：
 
 | 升级场景 | Qdrant 行为 | 运维 SOP |
 | --- | --- | --- |
