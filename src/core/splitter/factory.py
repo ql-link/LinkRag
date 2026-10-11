@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any, Callable
 from urllib.parse import urlsplit
 
@@ -133,12 +134,26 @@ class ModelBoundEmbedder(IEmbedder):
         self.provider_type = getattr(embedder, "provider_type", None)
         self.api_base_url = getattr(embedder, "api_base_url", None)
         self.config_id = config_id
+        self._execution_loop: asyncio.AbstractEventLoop | None
+        try:
+            self._execution_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            self._execution_loop = None
 
     def has_capability(self, capability: CapabilityType) -> bool:
         return self._embedder.has_capability(capability)
 
     async def embed(self, texts: str | list[str], model: str | None = None, **kwargs):
-        return await self._embedder.embed(texts=texts, model=model or self.model_name, **kwargs)
+        call = self._embedder.embed(texts=texts, model=model or self.model_name, **kwargs)
+        if (
+            self._execution_loop is not None
+            and asyncio.get_running_loop() is not self._execution_loop
+        ):
+            # semantic splitter 在工作线程中运行；网络、信号量与联合缓存始终
+            # 回到创建客户端的执行循环，避免绑定到 asyncio.run 的临时循环。
+            future = asyncio.run_coroutine_threadsafe(call, self._execution_loop)
+            return await asyncio.wrap_future(future)
+        return await call
 
 
 def build_embedding_client(resolved: Any) -> ModelBoundEmbedder:

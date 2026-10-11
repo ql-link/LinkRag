@@ -247,6 +247,11 @@ StagePipeline.run（串行 6 阶段编排）
 
 demo DAG 当前依赖关系为：`cleaning → chunking`；`chunking → ensure_points`；之后 **dense / sparse / es 三路并行**——`ensure_points → dense_vectorizing`、`ensure_points → sparse_vectorizing`、`chunking → pretokenize → es_indexing`。dense 额外声明 `CHUNKS`（向量化文本）依赖，故并行 DAG 中其上游为 `{chunking, ensure_points}`；ensure_points 本就在 chunking 之后，这条边不损失并行度，但**节点 `run()` 从 ctx 读的每个 product 都必须进 `requires`，否则续跑（resume）按声明回放上游产物时会漏 restore 导致 `KeyError`**。
 
+**豆包联合编码**：数据集的稠密和稀疏绑定使用相同豆包请求身份时，两条分支共享一次
+响应；状态、Qdrant 写入与失败清理仍独立。执行上下文携带 task_id，在每次成功响应时
+统一旁路上报用量，避免批次部分失败或分支取消后漏记。语义分块在线程中执行的编码
+会提交回主执行循环。复用与取消边界见 [vectorization.md §9.7](vectorization.md#97-豆包联合编码与模型升级)。
+
 **named-dense 解耦（让 dense / sparse 真正并行的前提）**：dense 向量从 Qdrant **匿名默认向量**改为**命名向量 `dense`**（`settings.DENSE_VECTOR_QDRANT_VECTOR_NAME`）。命名向量下 collection 无强制默认向量，于是可由 `EnsurePointsNode` 先建只含 payload 的空 point（`QdrantIndexStore.ensure_points`，create-if-missing 幂等、单写者防并发建点相互覆盖），dense 与 sparse 再各自 `update_vectors` 写自己的命名向量（`dense` / `sparse_text`），互不覆盖、顺序无关。`sparse_vectorizing` 因此不再依赖 dense（旧实现里 sparse 依赖 dense 仅因 sparse 向量需追加在 dense 建出的 point 上）。这一存储层改动同样作用于生产 StagePipeline（见 §3 表 dense / sparse 行）。串行 DAG 在此真实数据边上叠加 `dense_vectorizing → pretokenize`、`es_indexing → sparse_vectorizing` 两条纯定序边，把并行分支串成一条线。
 
 各阶段的特例（均封装在对应 Stage 子类内，对编排循环透明）：

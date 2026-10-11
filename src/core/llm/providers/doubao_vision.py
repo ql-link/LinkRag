@@ -1,37 +1,20 @@
-"""火山方舟 doubao-embedding-vision 稀疏向量 adapter（protocol = "doubao_vision"）。
+"""火山方舟豆包联合向量 adapter（protocol = "doubao_vision"）。
 
-对接火山引擎 Ark 多模态 embedding 端点 ``/api/v3/embeddings/multimodal``，仅承载
-SPARSE_EMBEDDING——把响应中 ``sparse_embedding`` 数组转成框架中性的
-:class:`~src.core.llm.response.SparseEmbeddingResult`。
+POST 完整 ``api_base_url``（``/api/v3/embeddings/multimodal``），每条文本作为
+单独的 input 内容块请求，显式启用 sparse_embedding、指定 1024 维及 float 编码。
+响应 data 单对象同时包含 embedding 和 sparse_embedding；embed / embed_sparse
+分别投影同一中性 JointEmbeddingResult。稀疏清洗仍由 encoding 层负责。
 
-服务契约（已对真实接口实测确认）::
-
-    POST {api_base_url}     # api_base_url 即完整端点（与种子 llm_provider_model 约定一致），直打
-    Header:   Authorization: Bearer {api_key}
-    Body:     {"model": "doubao-embedding-vision-251215",
-               "input": [{"type": "text", "text": "..."}],
-               "sparse_embedding": {"type": "enabled"}}
-    Response: {"data": {"embedding": [...dense...], "object": "embedding",
-                        "sparse_embedding": [{"index": 0, "value": 0.15}, ...]}}
-
-关键语义：多模态端点把一次请求的 ``input``（一组内容块）融合成**单个**向量，故
-``data`` 是单对象、不是数组。因此本 adapter 对 N 条文本**逐条**发请求（每条 ``input``
-仅含一个 text 块）；外层取多少 chunk 一批由索引阶段 ``SPARSE_VECTOR_BATCH_SIZE`` 控制，
-本 provider 内部对这一批的逐条请求用 ``asyncio.gather`` 并发发出，并发上限由
-``SPARSE_VECTOR_DOUBAO_CONCURRENCY`` 限制、``gather`` 保序。
-
-与 :class:`~src.core.llm.providers.bge_m3.BgeM3ServiceProvider` 同样的两层解耦纪律：
-本类（llm 层）只产出中性 ``SparseEmbeddingResult``、**不做** top_k/min_weight 清洗
-（清洗由 encoding 层桥接器 ``AdapterSparseVectorEncoder`` 统一执行，保证各 sparse
-provider 召回侧表现一致），不触碰 Qdrant。
-
-本 adapter 不做文本生成（``generate`` / ``stream`` 为满足抽象签名的占位，调用即报错）。
+Dataset 执行上下文对等价绑定启用结果复用：不同批次、并发分支按模型和原文
+合并在飞请求，每条文本仅推理一次；失败不缓存，等待方取消与共享请求隔离。缓存只随本次上下文存活，
+不使用跨用户、跨任务的全局缓存。多文本请求保持输入顺序并共享 provider 并发上限。
 """
 
 from __future__ import annotations
 
 import asyncio
-from typing import Any, AsyncIterator, List, Optional, Union
+import math
+from typing import Any, AsyncIterator, Callable, List, Optional, Union
 
 import httpx
 from loguru import logger
@@ -41,6 +24,8 @@ from src.core.llm.base_provider import BaseProvider
 from src.core.llm.exceptions import InvalidResponseError, ProviderConnectionError
 from src.core.llm.interfaces import CapabilityType
 from src.core.llm.response import (
+    EmbeddingResult,
+    JointEmbeddingResult,
     SparseEmbedding,
     SparseEmbeddingResult,
     StreamChunk,
@@ -49,7 +34,7 @@ from src.core.llm.response import (
 
 
 class DoubaoVisionProvider(BaseProvider):
-    """火山方舟 doubao-embedding-vision 协议 adapter：仅稀疏向量化（文本）。"""
+    """火山方舟 doubao-embedding-vision 协议 adapter：联合向量化（文本）。"""
 
     DEFAULT_MODEL = "doubao-embedding-vision-251215"
 
@@ -76,7 +61,12 @@ class DoubaoVisionProvider(BaseProvider):
             **kwargs,
         )
         self.model_name = model_name or self.DEFAULT_MODEL
-        self._capabilities = {CapabilityType.SPARSE_EMBEDDING}
+        self._capabilities = {CapabilityType.EMBEDDING, CapabilityType.SPARSE_EMBEDDING}
+        # 仅由 DatasetExecutionContextLoader 对等价绑定启用；不使用进程级缓存。
+        self._reuse_joint_results = False
+        self._joint_requests: dict[tuple[str, str], asyncio.Task[JointEmbeddingResult]] = {}
+        self._claimed_usage: set[tuple[str, str]] = set()
+        self._usage_callback: Callable[[str, UsageInfo], None] | None = None
         # 允许测试注入 httpx 客户端；生产按需懒建。
         self._http_client = http_client
         # 逐条请求的并发上限：缺省读全局 SPARSE_VECTOR_DOUBAO_CONCURRENCY，可由构造参数覆盖（测试）。
@@ -84,6 +74,107 @@ class DoubaoVisionProvider(BaseProvider):
             max_concurrency
             if max_concurrency is not None
             else getattr(settings, "SPARSE_VECTOR_DOUBAO_CONCURRENCY", 16)
+        )
+        self._semaphore = asyncio.Semaphore(self._max_concurrency)
+
+    def enable_joint_reuse(
+        self, usage_callback: Callable[[str, UsageInfo], None] | None = None
+    ) -> None:
+        """为本次 Dataset 执行启用按模型、原文复用及并发请求合并。"""
+        self._reuse_joint_results = True
+        self._usage_callback = usage_callback
+
+    async def embed(
+        self, texts: str | list[str], model: str | None = None, **kwargs
+    ) -> EmbeddingResult:
+        result = await self.embed_joint(texts, model=model)
+        return EmbeddingResult(
+            model=result.model, embeddings=result.dense_embeddings, usage=result.usage
+        )
+
+    async def embed_joint(
+        self, texts: str | list[str], model: str | None = None
+    ) -> JointEmbeddingResult:
+        """每条文本一次请求拿到两种向量；已共享的响应不重复计量。"""
+        ordered = [texts] if isinstance(texts, str) else list(texts)
+        resolved_model = model or self.model_name
+        if ordered and not (self.api_key or "").strip():
+            raise ProviderConnectionError(
+                message="Ark api_key is not configured.", provider_type=self.provider_type
+            )
+        results = await asyncio.gather(
+            *[self._joint_for_text(resolved_model, text) for text in ordered]
+        )
+        # 只有整批响应成功返回时才领取用量，失败批的成功子项留待后续消费方领取。
+        usages = []
+        for text, result in zip(ordered, results):
+            key = (resolved_model, text)
+            if not self._reuse_joint_results or key not in self._claimed_usage:
+                usages.append(result.usage)
+                if self._reuse_joint_results:
+                    self._claimed_usage.add(key)
+        return JointEmbeddingResult(
+            model=resolved_model,
+            dense_embeddings=[item.dense_embeddings[0] for item in results],
+            sparse_embeddings=[item.sparse_embeddings[0] for item in results],
+            usage=UsageInfo(
+                prompt_tokens=sum(item.prompt_tokens for item in usages),
+                total_tokens=sum(item.total_tokens for item in usages),
+            ),
+        )
+
+    async def _joint_for_text(self, model: str, text: str) -> JointEmbeddingResult:
+        key = (model, text)
+        task = self._joint_requests.get(key) if self._reuse_joint_results else None
+        if task is None:
+            task = asyncio.create_task(self._encode_joint_one(model, text))
+            if self._reuse_joint_results:
+                self._joint_requests[key] = task
+                task.add_done_callback(lambda done: self._evict_failed(key, done))
+        try:
+            result = await asyncio.shield(task) if self._reuse_joint_results else await task
+        except BaseException:
+            # 底层请求已失败或已取消时回收；单个等待方取消时保留在飞请求。
+            if task.done() and self._joint_requests.get(key) is task:
+                self._joint_requests.pop(key, None)
+            raise
+        return result
+
+    def _evict_failed(self, key, task) -> None:
+        # 即使所有等待方取消，也回收失败任务并取出异常，避免后台未处理异常。
+        if task.cancelled() or task.exception() is not None:
+            if self._joint_requests.get(key) is task:
+                self._joint_requests.pop(key, None)
+
+    async def _encode_joint_one(self, model: str, text: str) -> JointEmbeddingResult:
+        async with self._semaphore:
+            data = await self._encode_one(model, text)
+        usage = UsageInfo(**data.get("_usage", {}))
+        if self._usage_callback is not None:
+            # 执行上下文注入业务计量回调；独立于整批成败和首个等待方是否取消。
+            self._usage_callback(model, usage)
+            usage = UsageInfo()
+        dense = data.get("embedding")
+        dimension = int(settings.DENSE_VECTOR_DIMENSION)
+        if (
+            not isinstance(dense, list)
+            or len(dense) != dimension
+            or any(
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(value)
+                for value in dense
+            )
+        ):
+            raise InvalidResponseError(
+                message=f"Ark response must contain a finite {dimension}-dim embedding.",
+                provider_type=self.provider_type,
+            )
+        return JointEmbeddingResult(
+            model=model,
+            dense_embeddings=[dense],
+            sparse_embeddings=[self._to_sparse_embedding(data)],
+            usage=usage,
         )
 
     async def embed_sparse(
@@ -103,39 +194,12 @@ class DoubaoVisionProvider(BaseProvider):
             InvalidResponseError: 响应缺少 ``data`` / ``sparse_embedding`` 或权重非法。
         """
 
-        if isinstance(texts, str):
-            texts = [texts]
-        ordered = list(texts)
-        resolved_model = model or self.model_name
-        if not ordered:
-            return SparseEmbeddingResult(model=resolved_model, embeddings=[], usage=UsageInfo())
-        if not (self.api_key or "").strip():
-            raise ProviderConnectionError(
-                message="Ark api_key is not configured.",
-                provider_type=self.provider_type,
-            )
-
-        # 多模态端点一次只融合出一个向量 → 必须逐条请求（与 bge-m3 的批量请求不同）。
-        # 逐条请求彼此独立，用 Semaphore 限并发的 asyncio.gather 并发发出（参照
-        # ProviderVisionClient 的 per-image 并发写法）；gather 保序，返回与输入一一对应。
-        semaphore = asyncio.Semaphore(self._max_concurrency)
-        data_objs = await asyncio.gather(
-            *[self._encode_one_guarded(resolved_model, t, semaphore) for t in ordered]
-        )
-        embeddings = [self._to_sparse_embedding(obj) for obj in data_objs]
+        result = await self.embed_joint(texts, model=model)
         return SparseEmbeddingResult(
-            model=resolved_model,
-            embeddings=embeddings,
-            usage=UsageInfo(),
+            model=result.model,
+            embeddings=result.sparse_embeddings,
+            usage=result.usage,
         )
-
-    async def _encode_one_guarded(
-        self, model: str, text: str, semaphore: asyncio.Semaphore
-    ) -> dict:
-        """在并发信号量保护下编码单条文本，约束同时在飞的请求数。"""
-
-        async with semaphore:
-            return await self._encode_one(model, text)
 
     async def _encode_one(self, model: str, text: str) -> dict:
         """对单条文本调 ``/embeddings/multimodal`` 并取出 ``data`` 单对象。"""
@@ -150,6 +214,8 @@ class DoubaoVisionProvider(BaseProvider):
             "model": model,
             "input": [{"type": "text", "text": text}],
             "sparse_embedding": {"type": "enabled"},
+            "dimensions": int(settings.DENSE_VECTOR_DIMENSION),
+            "encoding_format": "float",
         }
         data = await self._post(url, payload)
         obj = data.get("data") if isinstance(data, dict) else None
@@ -158,7 +224,7 @@ class DoubaoVisionProvider(BaseProvider):
                 message="Ark multimodal embedding response missing 'data' object.",
                 provider_type=self.provider_type,
             )
-        return obj
+        return {**obj, "_usage": data.get("usage") or {}}
 
     def _to_sparse_embedding(self, data_obj: Any) -> SparseEmbedding:
         """把单条响应的 ``sparse_embedding`` 数组转成整数 token index 的 SparseEmbedding。
@@ -263,6 +329,14 @@ class DoubaoVisionProvider(BaseProvider):
     async def close(self) -> None:
         """关闭内部 httpx 客户端（生命周期管理，可选调用）。"""
 
+        tasks = list(self._joint_requests.values())
+        for task in tasks:
+            if not task.done():
+                task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        self._joint_requests.clear()
+        self._claimed_usage.clear()
         if self._http_client is not None and not self._http_client.is_closed:
             await self._http_client.aclose()
 

@@ -276,6 +276,26 @@ RabbitMQ 使用同名 Queue；Kafka 回滚模式使用同名 topic（见 [mq_con
 `dense_embedding_config_id` 精确指向全局 `llm_model_config.id`。表格/标题、图片与 rerank 分别使用
 `enhancement_chat_config_id`、`enhancement_vision_config_id`、`rerank_config_id`。必需字段缺失或配置无效时明确失败，不回退默认。
 
+豆包联合编码的推荐默认模型为 `doubao-embedding-vision-251215`，两条能力配置均使用
+`doubao_vision` 协议、同一完整多模态端点与同一凭据。运行时显式请求 1024 维稠密向量
+并启用稀疏输出。等价绑定的复用、计量与重试边界见
+[vectorization.md §9.7](../internals/vectorization.md#97-豆包联合编码与模型升级)。
+
+`0036` 和它的 `scripts/release/llm_seed_manifest.json` 保持历史定义，避免破坏中断恢复。
+新安装及已有环境都通过独立运维入口设置新默认配置，**本命令不会随代码部署自动执行**：
+
+```bash
+# 在目标环境预览；源配置须为启用的 SYSTEM 豆包 SPARSE_EMBEDDING 配置。
+python scripts/ops/embedding_defaults.py --sparse-config-id <ID> --expected-app-env development
+# 确认目标环境后显式写入；生产环境用 production。
+python scripts/ops/embedding_defaults.py --sparse-config-id <ID> --expected-app-env development --apply
+```
+
+该入口复用目标库的源配置密文，只新增对应的稠密能力配置并更新 SYSTEM 默认指针，
+不会修改已有配置、USER 默认、接入应用配置、数据集绑定或索引。如同名稠密配置已经
+存在但请求身份不同，直接拒绝修改，防止改变已绑定数据集的向量空间。
+新数据集仍须显式绑定这两条配置 ID；已有数据集切换模型必须另行重建索引。
+
 当前可选的稀疏 provider 为 `doubao_vision`（火山方舟 doubao-embedding-vision 多模态端点）/ `bge_m3`（自部署 `bge-m3-service` 端点）。原先用 `SPARSE_VECTOR_PROVIDER` 在本地 / HTTP / 远程 BGE-M3 间切换的整套机制已移除。详见 [vectorization.md §6.6](../internals/vectorization.md) 与 [sparse_vector.md](../internals/sparse_vector.md)。
 
 下表是仍保留的系统级配置项，均与具体 provider 无关，是全局开关与清洗 / 命名规则：
