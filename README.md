@@ -151,6 +151,10 @@ LinkRag 由本仓的 Python 后端与 `web/` 前端组成：前端经 Nginx 调�
 - **贡献者规范**：[docs/contributing.md](./docs/contributing.md) — 分支、提交、测试、迁移、文档同步
 - **项目入口（AI / 新成员）**：[CLAUDE.md](./CLAUDE.md)
 
+## 团队的其他产品
+
+[DrawOffer 职绘](https://www.drawoffer.com) 是同一团队开发的 AI 求职工具：AI 改简历、按岗位 JD 调整简历、AI 模拟面试与求职进度管理。LinkRag 为它提供资料检索。
+
 ## 许可证
 
 本项目基于 MIT License 开源。
