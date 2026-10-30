@@ -144,6 +144,10 @@ For full navigation, see [docs/README.md](./docs/README.md). Common entry points
 - **Contributing**: [docs/contributing.md](./docs/contributing.md) — branching, commits, testing, migrations, doc sync
 - **Project entry (AI / new members)**: [CLAUDE.md](./CLAUDE.md)
 
+## Also from our team
+
+[DrawOffer](https://www.drawoffer.com) is an AI job-search tool built by the same team: AI resume editing, tailoring to job descriptions, mock interviews and application tracking. It uses LinkRag for document retrieval.
+
 ## License
 
 Released under the MIT License.
